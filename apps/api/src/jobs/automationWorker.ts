@@ -71,7 +71,16 @@ import {
   switchedConvertedAutomationCondition,
   type ClaimExisting,
   type ConversionStateView,
+  type ShadowFanoutView,
 } from '../services/flows/conversion/claims';
+import type { ShadowRunTrigger } from '../services/flows/conversion/shadow';
+
+/**
+ * #5221 B4 — the shadow hooks load on first use: only a row with a shadow
+ * conversion ever reaches them, so the worker (and every suite that mocks its
+ * DB and schema partially) never loads the converter's read path otherwise.
+ */
+const loadShadow = () => import('../services/flows/conversion/shadow');
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -536,20 +545,25 @@ type TriggerResult = { runId?: string; skipped?: string; claimedBy?: ClaimExisti
 async function legacyOccurrenceGate(
   automation: typeof automations.$inferSelect,
   o: { key: string | null; instant: Date | null; enqueuedWhileUnswitched: boolean; eventLabel?: string },
-): Promise<{ skip?: 'occurrence_not_preferred'; onCreated?: NonNullable<Parameters<typeof createAutomationRunRecord>[0]['onCreated']> }> {
+): Promise<{
+  skip?: 'occurrence_not_preferred';
+  onCreated?: NonNullable<Parameters<typeof createAutomationRunRecord>[0]['onCreated']>;
+  conversion?: ConversionStateView;
+}> {
   const conversion = await currentConversionForAutomation(db, automation.id);
   if (!conversion) return {};
   if (o.eventLabel !== undefined) {
     if (!o.key) reportOccurrenceAnomaly('flow_conversion_event_key_unbuildable', 'legacy', o.eventLabel);
     else if (!o.instant) reportOccurrenceAnomaly('flow_conversion_event_instant_missing', 'legacy', o.key);
   }
-  if (!legacyPrefers(conversion, o.instant, o.enqueuedWhileUnswitched)) return { skip: 'occurrence_not_preferred' };
+  if (!legacyPrefers(conversion, o.instant, o.enqueuedWhileUnswitched)) return { skip: 'occurrence_not_preferred', conversion };
   const key = o.key;
   if (!key) {
     if (o.eventLabel === undefined) console.warn(`[AutomationWorker] automation ${automation.id}: occurrence has no claim key; admitted without a claim`);
-    return {};
+    return { conversion };
   }
   return {
+    conversion,
     onCreated: async (tx, run) => {
       const claim = await claimOccurrence(tx, {
         automationId: automation.id,
@@ -575,6 +589,49 @@ async function createGatedRunRecord(
   } catch (err) {
     if (err instanceof OccurrenceClaimedError) return { claimedBy: err.existing };
     throw err;
+  }
+}
+
+/**
+ * #5221 B4 (Decision 3) — after a legacy run of a SHADOW row commits, compare
+ * it with the converted draft (target set, fleet cap, would-park). Gated on the
+ * conversion the occurrence gate already read: a row without a conversion, or
+ * a switched / reverted one, does nothing here. Best effort: the observation
+ * never throws, and this wrapper guarantees a failure can never fail the run.
+ */
+async function observeShadowAfterRun(
+  conversion: ConversionStateView | undefined,
+  automation: typeof automations.$inferSelect,
+  run: ShadowRunTrigger,
+  legacyTargetIds: readonly string[],
+): Promise<void> {
+  if (conversion?.state !== 'shadow') return;
+  try {
+    const { observeShadowRun } = await loadShadow();
+    await observeShadowRun({
+      conversionId: conversion.id,
+      automation: { id: automation.id, orgId: automation.orgId, partnerId: automation.partnerId },
+      run,
+      legacyTargetIds,
+    });
+  } catch (err) {
+    console.error(`[AutomationWorker] shadow observation failed for automation ${automation.id}`, err);
+  }
+}
+
+/** #5221 B4 — the fan-out's trigger comparison for a shadow row (both directions). Never throws. */
+async function observeShadowTrigger(
+  conversionId: string,
+  shadow: ShadowFanoutView,
+  event: BreezeEvent<Record<string, unknown>>,
+  legacyMatched: boolean,
+): Promise<void> {
+  try {
+    const { recordShadow, shadowTriggerVerdict } = await loadShadow();
+    const verdict = shadowTriggerVerdict({ flowTrigger: shadow.flowTrigger, eventType: event.type, payload: event.payload, legacyMatched });
+    if (verdict) await recordShadow(conversionId, { ...verdict, documentDigest: shadow.documentDigest });
+  } catch (err) {
+    console.error(`[AutomationWorker] shadow trigger comparison failed for conversion ${conversionId}`, err);
   }
 }
 
@@ -705,6 +762,8 @@ async function admitTriggerSchedule(
     // #7187 — enqueued only after this transaction commits (commitThenEnqueue).
     afterCommit: async () => {
       await enqueueAutomationRun(run.id, targetDeviceIds);
+      // A replayed job that got its first run back was observed the first time.
+      if (!created.reused) await observeShadowAfterRun(gate.conversion, automation, { kind: 'schedule', at: slotInstant }, targetDeviceIds);
     },
   };
 }
@@ -902,6 +961,7 @@ async function admitTriggerEvent(
   // conversion (the converter refuses managed_row / policy_workflow), so their
   // admission is left exactly as it was.
   let onCreated: Parameters<typeof createAutomationRunRecord>[0]['onCreated'];
+  let conversion: ConversionStateView | undefined;
   if (!isManaged && !isPolicyWorkflow) {
     const gate = await legacyOccurrenceGate(automation, {
       key: eventOccurrenceKey(data.eventId),
@@ -911,6 +971,7 @@ async function admitTriggerEvent(
     });
     if (gate.skip) return { skipped: gate.skip };
     onCreated = gate.onCreated;
+    conversion = gate.conversion;
   }
 
   const created = await createGatedRunRecord({
@@ -951,6 +1012,7 @@ async function admitTriggerEvent(
       } else {
         await enqueueAutomationRun(run.id, targetDeviceIds);
       }
+      if (!created.reused) await observeShadowAfterRun(conversion, automation, { kind: 'event', eventType: data.eventType, payload }, targetDeviceIds);
     },
   };
 }
@@ -1631,7 +1693,12 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   // what this read saw (`enqueuedWhileUnswitched: false`), and an event at or
   // after switch_at is the flow's: not enqueued here, and refused again at
   // admission if a job for it exists anyway.
-  const switchedRows = await loadSwitchedConvertedAutomations(db, ownershipCondition);
+  // #5221 B4 — the same read also returns the owners' SHADOW generations (with
+  // the draft's trigger), the only rows the shadow hook looks at; a row with
+  // no conversion is never in it.
+  const convertedRows = await loadSwitchedConvertedAutomations(db, ownershipCondition, { withShadow: true });
+  const switchedRows = convertedRows.filter((r) => r.conversion.state === 'switched');
+  const shadowById = new Map(convertedRows.flatMap((r) => (r.shadow ? [[r.automation.id, { conversionId: r.conversion.id, view: r.shadow }] as const] : [])));
   const eventAt = eventInstant(event.metadata?.timestamp);
 
   const payload = normalizePayload(event.payload);
@@ -1664,7 +1731,10 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
       trigger = { ...trigger, filter };
     }
 
-    if (!shouldTriggerEventAutomation(trigger, event.type, payload)) {
+    const legacyMatched = shouldTriggerEventAutomation(trigger, event.type, payload);
+    const shadow = switched ? undefined : shadowById.get(automation.id);
+    if (shadow) await observeShadowTrigger(shadow.conversionId, shadow.view, event, legacyMatched);
+    if (!legacyMatched) {
       continue;
     }
 

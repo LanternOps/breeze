@@ -46,6 +46,13 @@ import {
   loadSwitchedConvertedAutomations,
   reportOccurrenceAnomaly,
 } from '../services/flows/conversion/claims';
+// #5221 B4 — the shadow writes are mocked; the trigger comparison is the real one.
+vi.mock('../services/flows/conversion/shadow', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/flows/conversion/shadow')>()),
+  recordShadow: vi.fn(async () => true),
+  observeShadowRun: vi.fn(async () => undefined),
+}));
+import { observeShadowRun, recordShadow } from '../services/flows/conversion/shadow';
 vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
   isRedisAvailable: vi.fn(() => true),
@@ -513,5 +520,146 @@ describe('occurrence claims across the cutover (#5221 B2)', () => {
     expect(await __testOnly.processTriggerEvent(job({ eventTimestamp: 'not-a-time', enqueuedWhileUnswitched: false }))).toEqual({ runId: 'run-1' });
     expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toMatchObject({ occurrenceAt: null });
     expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_instant_missing', 'legacy', `event:${EVENT_UUID}`);
+  });
+});
+
+describe('shadow hooks (#5221 B4)', () => {
+  const ORG = '22222222-2222-4222-8222-222222222222';
+  const AUTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const CONV = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const EVENT_UUID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const DEVICE = '11111111-1111-4111-8111-111111111111';
+  const DIGEST = 'd'.repeat(64);
+  const shadowState = { id: CONV, state: 'shadow' as const, switchAt: null };
+  const standalone = {
+    id: AUTO, orgId: ORG, partnerId: null, createdBy: null, managedByAgentId: null, managedByMonitorId: null, enabled: true,
+    trigger: { type: 'event', eventType: 'device.offline', filter: { 'device.siteId': 'site-legacy' } }, conditions: {},
+  };
+  const flowTrigger = { type: 'event', event: 'device.offline', filter: { 'device.siteId': 'site-flow' } };
+  function rows(result: unknown[]) {
+    const q: any = {
+      from: vi.fn().mockReturnThis(), innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue(result), then: (yes: any, no: any) => Promise.resolve(result).then(yes, no),
+    };
+    selectMock.mockReturnValueOnce(q);
+    return q;
+  }
+  const event = (payload: Record<string, unknown>) => ({
+    id: EVENT_UUID, orgId: ORG, type: 'device.offline', payload, metadata: { timestamp: '2027-01-09T03:00:00.000Z' },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    createRunMock.mockReset();
+    vi.mocked(currentConversionForAutomation).mockReset().mockResolvedValue(null);
+    vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+    vi.mocked(loadSwitchedConvertedAutomations).mockReset().mockResolvedValue([]);
+    vi.mocked(recordShadow).mockReset().mockResolvedValue(true);
+    vi.mocked(observeShadowRun).mockReset().mockResolvedValue(undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('shadow fan-out records a flow-only match', async () => {
+    rows([{ partnerId: 'partner', type: 'customer' }]);
+    rows([standalone]);
+    vi.mocked(loadSwitchedConvertedAutomations).mockResolvedValue([
+      { automation: standalone as never, conversion: shadowState, shadow: { documentDigest: DIGEST, flowTrigger } },
+    ] as never);
+
+    await queueEventTriggers(event({ device: { siteId: 'site-flow' } }) as never);
+
+    // The fan-out's existing converted-row read is the gate: it is asked for shadow rows too.
+    expect(loadSwitchedConvertedAutomations).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(loadSwitchedConvertedAutomations).mock.calls[0]![2]).toEqual({ withShadow: true });
+    expect(recordShadow).toHaveBeenCalledTimes(1);
+    expect(recordShadow).toHaveBeenCalledWith(CONV, expect.objectContaining({
+      divergent: true, kind: 'trigger_mismatch', documentDigest: DIGEST,
+    }));
+    // Shadow never executes anything: the Job did not match, so nothing is enqueued.
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('a legacy match the flow does not share is recorded once, and legacy still runs it', async () => {
+    rows([{ partnerId: 'partner', type: 'customer' }]);
+    rows([standalone]);
+    vi.mocked(loadSwitchedConvertedAutomations).mockResolvedValue([
+      { automation: standalone as never, conversion: shadowState, shadow: { documentDigest: DIGEST, flowTrigger } },
+    ] as never);
+    await queueEventTriggers(event({ device: { siteId: 'site-legacy' } }) as never);
+    expect(recordShadow).toHaveBeenCalledTimes(1);
+    expect(recordShadow).toHaveBeenCalledWith(CONV, expect.objectContaining({ kind: 'trigger_mismatch' }));
+    expect(addMock).toHaveBeenCalledWith('trigger-event', expect.objectContaining({ automationId: AUTO }), expect.any(Object));
+    // The shadow row is an ordinary candidate: its job carries no switch marker.
+    expect((addMock.mock.calls[0] as unknown[])[1]).not.toHaveProperty('enqueuedWhileUnswitched');
+  });
+
+  it('rows without a conversion do no shadow work at the fan-out', async () => {
+    rows([{ partnerId: 'partner', type: 'customer' }]);
+    rows([{ ...standalone, trigger: { type: 'event', eventType: 'device.offline' } }]);
+    await queueEventTriggers(event({}) as never);
+    expect(addMock).toHaveBeenCalledTimes(1);
+    expect(recordShadow).not.toHaveBeenCalled();
+  });
+
+  it('after run creation a shadow row is observed with the legacy target set', async () => {
+    rows([{ ...standalone, trigger: { type: 'event', eventType: 'device.offline' } }]);
+    rows([{ orgId: ORG, partnerId: 'partner', siteId: 'site' }]);
+    vi.mocked(currentConversionForAutomation).mockResolvedValue(shadowState);
+    createRunMock.mockResolvedValue({ run: { id: 'run-1' }, targetDeviceIds: [DEVICE] });
+
+    const result = await __testOnly.processTriggerEvent({
+      type: 'trigger-event', automationId: AUTO, eventType: 'device.offline', eventId: EVENT_UUID,
+      eventTimestamp: '2027-01-09T03:00:00.000Z', eventPayload: { deviceId: DEVICE },
+    });
+    expect(result).toEqual({ runId: 'run-1' });
+    expect(observeShadowRun).toHaveBeenCalledTimes(1);
+    expect(observeShadowRun).toHaveBeenCalledWith({
+      conversionId: CONV,
+      automation: { id: AUTO, orgId: ORG, partnerId: null },
+      run: { kind: 'event', eventType: 'device.offline', payload: { deviceId: DEVICE } },
+      legacyTargetIds: [DEVICE],
+    });
+  });
+
+  it('shadow hook failure never fails the legacy run', async () => {
+    rows([{ ...standalone, trigger: { type: 'schedule', cronExpression: '0 3 * * *', timezone: 'UTC' } }]);
+    vi.mocked(currentConversionForAutomation).mockResolvedValue(shadowState);
+    createRunMock.mockResolvedValue({ run: { id: 'run-1' }, targetDeviceIds: [DEVICE] });
+    vi.mocked(observeShadowRun).mockRejectedValue(new Error('shadow exploded'));
+
+    const result = await __testOnly.processTriggerSchedule({
+      type: 'trigger-schedule', automationId: AUTO, slotKey: '202701090300', scanAt: '2027-01-09T03:00:04.000Z',
+    });
+    expect(result).toEqual({ runId: 'run-1' });
+    expect(addMock).toHaveBeenCalledWith('execute-run', expect.objectContaining({ runId: 'run-1' }), expect.any(Object));
+    expect(observeShadowRun).toHaveBeenCalledWith(expect.objectContaining({
+      conversionId: CONV, run: { kind: 'schedule', at: new Date('2027-01-09T03:00:00Z') },
+    }));
+  });
+
+  it('a replayed job that gets its first run back is not observed twice', async () => {
+    rows([{ ...standalone, trigger: { type: 'schedule', cronExpression: '0 3 * * *', timezone: 'UTC' } }]);
+    vi.mocked(currentConversionForAutomation).mockResolvedValue(shadowState);
+    createRunMock.mockResolvedValue({ run: { id: 'run-1' }, targetDeviceIds: [DEVICE], reused: true });
+    expect(await __testOnly.processTriggerSchedule({
+      type: 'trigger-schedule', automationId: AUTO, slotKey: '202701090300', scanAt: '2027-01-09T03:00:04.000Z',
+    })).toEqual({ runId: 'run-1' });
+    expect(observeShadowRun).not.toHaveBeenCalled();
+  });
+
+  it('switched, reverted and unconverted rows are never observed after run creation', async () => {
+    for (const conversion of [null, { id: CONV, state: 'reverted' as const, switchAt: new Date() }]) {
+      rows([{ ...standalone, trigger: { type: 'event', eventType: 'device.offline' } }]);
+      vi.mocked(currentConversionForAutomation).mockResolvedValue(conversion);
+      createRunMock.mockResolvedValue({ run: { id: 'run-1' }, targetDeviceIds: [] });
+      await __testOnly.processTriggerEvent({
+        type: 'trigger-event', automationId: AUTO, eventType: 'device.offline', eventId: EVENT_UUID,
+        eventTimestamp: '2027-01-09T03:00:00.000Z', eventPayload: {},
+      });
+    }
+    expect(observeShadowRun).not.toHaveBeenCalled();
   });
 });

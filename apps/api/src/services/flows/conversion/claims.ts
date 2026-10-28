@@ -33,9 +33,9 @@
  * Everything runs on the executor the caller passes (its transaction): this
  * module opens no DB context and commits nothing.
  */
-import { and, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { OCCURRENCE_KEY_RE, occurrenceKey, type FlowConversionState } from '@breeze/shared';
-import { automations, flowAutomationConversions } from '../../../db/schema';
+import { automations, flowAutomationConversions, flows } from '../../../db/schema';
 import { captureMessage } from '../../sentry';
 import type { DbExecutor } from './ledger';
 
@@ -270,30 +270,80 @@ export function switchedConvertedAutomationCondition(): SQL {
   )!;
 }
 
-/** The switched rows for the scan and the event fan-out, with the state the enqueuer reads. */
+/** What the event fan-out's shadow comparison needs of a shadow row (#5221 B4): the draft's trigger and digest. */
+export interface ShadowFanoutView {
+  documentDigest: string;
+  flowTrigger: unknown;
+}
+
+export interface ConvertedAutomationRow {
+  automation: AutomationRow;
+  conversion: ConversionStateView;
+  /** Present exactly for a `shadow` generation (only with `withShadow`). */
+  shadow?: ShadowFanoutView;
+}
+
+/**
+ * The switched rows for the scan and the event fan-out, with the state the
+ * enqueuer reads. With `withShadow` (the event fan-out, #5221 B4) the SAME
+ * statement also returns each enabled, unretired row's `shadow` generation
+ * with its draft's trigger, so the shadow hook needs no query of its own and
+ * a row without a conversion costs nothing more.
+ */
 export async function loadSwitchedConvertedAutomations(
   tx: DbExecutor,
   where?: SQL,
-): Promise<Array<{ automation: AutomationRow; conversion: ConversionStateView }>> {
+  opts: { withShadow?: boolean } = {},
+): Promise<ConvertedAutomationRow[]> {
+  const switchedRow = and(
+    eq(flowAutomationConversions.state, 'switched'),
+    isNotNull(automations.convertedToFlowId),
+    eq(automations.enabled, false),
+    eq(automations.retiredReason, 'converted_to_flow'),
+  );
+  if (!opts.withShadow) {
+    const rows = await tx
+      .select({
+        automation: automations,
+        id: flowAutomationConversions.id,
+        state: flowAutomationConversions.state,
+        switchAt: flowAutomationConversions.switchAt,
+      })
+      .from(automations)
+      .innerJoin(flowAutomationConversions, and(
+        eq(flowAutomationConversions.automationId, automations.id),
+        eq(flowAutomationConversions.state, 'switched'),
+      ))
+      .where(and(switchedRow, where));
+    return rows.map((r) => ({ automation: r.automation, conversion: { id: r.id, state: r.state, switchAt: r.switchAt } }));
+  }
   const rows = await tx
     .select({
       automation: automations,
       id: flowAutomationConversions.id,
       state: flowAutomationConversions.state,
       switchAt: flowAutomationConversions.switchAt,
+      documentDigest: flowAutomationConversions.documentDigest,
+      flowTrigger: sql<unknown>`CASE WHEN ${flowAutomationConversions.state} = 'shadow' THEN ${flows.definition}->'trigger' END`,
     })
     .from(automations)
     .innerJoin(flowAutomationConversions, and(
       eq(flowAutomationConversions.automationId, automations.id),
-      eq(flowAutomationConversions.state, 'switched'),
+      inArray(flowAutomationConversions.state, ['switched', 'shadow']),
     ))
+    .innerJoin(flows, eq(flows.id, flowAutomationConversions.flowId))
     .where(and(
-      isNotNull(automations.convertedToFlowId),
-      eq(automations.enabled, false),
-      eq(automations.retiredReason, 'converted_to_flow'),
+      or(
+        switchedRow,
+        and(eq(flowAutomationConversions.state, 'shadow'), eq(automations.enabled, true), isNull(automations.retiredAt)),
+      ),
       where,
     ));
-  return rows.map((r) => ({ automation: r.automation, conversion: { id: r.id, state: r.state, switchAt: r.switchAt } }));
+  return rows.map((r) => ({
+    automation: r.automation,
+    conversion: { id: r.id, state: r.state, switchAt: r.switchAt },
+    ...(r.state === 'shadow' ? { shadow: { documentDigest: r.documentDigest, flowTrigger: r.flowTrigger } } : {}),
+  }));
 }
 
 // ── the claim ───────────────────────────────────────────────────────────────

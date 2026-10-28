@@ -134,7 +134,13 @@ export type CreateFlowRunInput = CreateFlowRunBase & (
 export type CreateFlowRunResult =
   | { created: true; runId: string; preApprovalsHonored: boolean }
   | { created: false; reason: 'duplicate'; runId: string; preApprovalsHonored: boolean }
-  | { created: false; reason: 'not_enabled' | FlowRunAdmissionRefusal };
+  | { created: false; reason: 'not_enabled' | FlowRunAdmissionRefusal }
+  /**
+   * #5221 B4 (Decision 7): the flow was converted from a legacy Job and that
+   * conversion was reverted — the Job runs on the legacy engine again and the
+   * flow admits nothing new. (An occurrence-carrying run gets `not_enabled`.)
+   */
+  | { created: false; reason: 'flow_conversion_reverted' };
 
 /**
  * #5221 B2 (Decision 6) — the trigger occurrence as both engines key it
@@ -166,7 +172,7 @@ export type StartManualRunResult =
   | {
       ok: false;
       error: 'flow_not_found' | 'not_enabled' | 'not_manual' | 'org_required' | 'org_forbidden' | 'interactive_user_required'
-        | 'delegation_scope_restricted' | 'flow_tool_changed' | FlowRunAdmissionRefusal;
+        | 'delegation_scope_restricted' | 'flow_tool_changed' | 'flow_conversion_reverted' | FlowRunAdmissionRefusal;
     };
 
 export type CancelFlowRunResult =
@@ -322,7 +328,11 @@ class FlowRunRefused extends Error {
  * legacy automation, two more steps in the same transaction:
  *  5a. after the dedupe probe: the flow attempts only while its
  *      generation is switched (`flowPrefers`; reverted ⇒ `not_enabled`, it
- *      admits nothing new) and only an occurrence it can key;
+ *      admits nothing new) and only an occurrence it can key. Without an
+ *      occurrence (manual, tool, webhook and — until B5 — schedule runs) a
+ *      reverted generation's flow refuses `flow_conversion_reverted` (#5221
+ *      B4, Decision 7); the generation is read for every run (one indexed
+ *      lookup by flow id);
  *  8a. after the charge, before the webhook hook: the occurrence claim
  *      (`claimOccurrence`, engine `flow`, naming the new run). A conflict
  *      throws, rolling back run, charge and claim; the caller gets
@@ -407,18 +417,18 @@ export async function createFlowRun(
       if (existing) return { created: false, reason: 'duplicate', runId: existing.id, preApprovalsHonored: existing.preApprovalsHonored };
 
       // 5a. A converted flow attempts an occurrence only while switched, and
-      // only one it can key (legacy owns an unkeyable one).
-      let conversion: FlowConversionView | null = null;
-      if (i.occurrence) {
-        conversion = await conversionForFlow(db, flow.id);
-        if (conversion) {
-          if (!flowPrefers(conversion)) return { created: false, reason: 'not_enabled' };
-          if (i.occurrence.keys.length === 0) {
-            reportOccurrenceAnomaly('flow_conversion_event_key_unbuildable', 'flow', i.dedupeKey);
-            return { created: false, reason: 'not_enabled' };
-          }
-          if (!i.occurrence.at) reportOccurrenceAnomaly('flow_conversion_event_instant_missing', 'flow', i.dedupeKey);
+      // only one it can key (legacy owns an unkeyable one). #5221 B4: a
+      // REVERTED generation's flow admits nothing new however it is started
+      // (Decision 7); its admitted runs never come back through here.
+      const conversion: FlowConversionView | null = await conversionForFlow(db, flow.id);
+      if (conversion?.state === 'reverted' && !i.occurrence) return { created: false, reason: 'flow_conversion_reverted' };
+      if (i.occurrence && conversion) {
+        if (!flowPrefers(conversion)) return { created: false, reason: 'not_enabled' };
+        if (i.occurrence.keys.length === 0) {
+          reportOccurrenceAnomaly('flow_conversion_event_key_unbuildable', 'flow', i.dedupeKey);
+          return { created: false, reason: 'not_enabled' };
         }
+        if (!i.occurrence.at) reportOccurrenceAnomaly('flow_conversion_event_instant_missing', 'flow', i.dedupeKey);
       }
 
       const at = new Date();
@@ -475,7 +485,8 @@ export async function createFlowRun(
   }
 
   if (!result.created) {
-    if (result.reason !== 'duplicate' && result.reason !== 'not_enabled' && result.reason !== 'occurrence_claimed') {
+    if (result.reason !== 'duplicate' && result.reason !== 'not_enabled' && result.reason !== 'occurrence_claimed'
+        && result.reason !== 'flow_conversion_reverted') {
       await recordAdmissionRefusal(i.flowId, result.reason);
     }
     return result;

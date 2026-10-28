@@ -7,12 +7,15 @@
  *   GET  /api/v1/flows/conversions[?state=&automationId=]  automations.read
  *   GET  /api/v1/flows/conversions/:id                     automations.read
  *   POST /api/v1/flows/conversions/:id/switch              automations.write + MFA + interactive session
+ *   POST /api/v1/flows/conversions/:id/revert              automations.write + MFA + interactive session
  *
  * Mounted by routes/flows.ts BEFORE its `/:id` routes, so it inherits that
  * router's auth, scope, FLOWS_ENABLED kill switch (404 when off) and the
  * automations.read floor. A partner-wide owner additionally needs
  * canManagePartnerWidePolicies (enforced in the service, partner_wide_forbidden).
- * The switch also runs everything enableFlow runs. Revert (`/:id/revert`) is B4.
+ * The switch also runs everything enableFlow runs. Revert re-enables the Job
+ * and closes the flow's admission (it neither disables the flow nor cancels
+ * anything, plan Decision 7).
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -26,6 +29,7 @@ import {
   listConversions,
   previewConversion,
 } from '../services/flows/conversion/service';
+import { revertConversion } from '../services/flows/conversion/revert';
 import { switchConversion } from '../services/flows/conversion/switch';
 
 export const flowConversionRoutes = new Hono();
@@ -68,6 +72,15 @@ const SWITCH_STATUS: Record<string, Status> = {
   delegation_scope_restricted: 403,
   // Everything else (scope_widening_not_accepted, unconvertible, draft_rejected,
   // generated_script_rejected and enable's 422s) is 422 via `failure`.
+};
+const REVERT_STATUS: Record<string, Status> = {
+  conversion_not_found: 404,
+  not_switched: 409,
+  // Revert is closed on this installation (R3, PR E).
+  revert_closed: 409,
+  partner_wide_forbidden: 403,
+  interactive_session_required: 403,
+  delegation_scope_restricted: 403,
 };
 const BULK_STATUS: Record<string, Status> = {
   partner_wide_forbidden: 403,
@@ -146,5 +159,17 @@ flowConversionRoutes.post(
     if (!result.ok) return failure(c, SWITCH_STATUS, result);
     const { ok: _ok, ...body } = result;
     return c.json(body);
+  },
+);
+
+flowConversionRoutes.post(
+  '/:id/revert',
+  ...requireConversionWrite,
+  zValidator('param', idParamSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const result = await revertConversion(c.get('auth'), id);
+    if (!result.ok) return failure(c, REVERT_STATUS, result);
+    return c.json({ conversion: result.conversion });
   },
 );

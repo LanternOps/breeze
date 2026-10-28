@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 
 /**
@@ -635,6 +635,10 @@ describe('createFlowRun — occurrence claims (#5221 B2)', () => {
     vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
     vi.mocked(reportOccurrenceAnomaly).mockReset();
   });
+  // Every later suite runs plain flows (the ledger read happens for every run since B4).
+  afterEach(() => {
+    vi.mocked(conversionForFlow).mockReset().mockResolvedValue(null);
+  });
 
   it('a switched flow claims the occurrence in the run transaction, after the insert and the charge', async () => {
     vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
@@ -695,13 +699,60 @@ describe('createFlowRun — occurrence claims (#5221 B2)', () => {
     expect(reportOccurrenceAnomaly).toHaveBeenCalledWith('flow_conversion_event_instant_missing', 'flow', KEY);
   });
 
-  it('a flow with no conversion never claims, and without an occurrence the ledger is never read', async () => {
+  it('a flow with no conversion never claims, with or without an occurrence', async () => {
     queueCreate();
     expect(await createFlowRun({ ...event, occurrence: { keys: [], at: null } })).toMatchObject({ created: true });
     expect(claimOccurrence).not.toHaveBeenCalled();
     queueCreate();
-    await createFlowRun({ ...event, dedupeKey: 'event:other' });
-    expect(conversionForFlow).toHaveBeenCalledTimes(1);
+    expect(await createFlowRun({ ...event, dedupeKey: 'event:other' })).toMatchObject({ created: true });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  // #5221 B4 (Decision 7): a reverted generation's flow attempts nothing new,
+  // whatever starts it; what it already admitted keeps running.
+  const manual = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: 'manual:k1',
+    triggerKind: 'manual' as const, triggeredVia: 'ui' as const, triggeredByUserId: USER, aiSessionId: null,
+    triggererCleared: true, expectedPublicationSeq: 2,
+  };
+  const tool = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: at.toISOString() }, inputs: {}, dedupeKey: 'tool:ai_tool:u:k1',
+    triggerKind: 'tool' as const, triggeredVia: 'ai_tool' as const, triggeredByUserId: USER, triggeredByApiKeyId: null,
+    parentAgentRunId: null, aiSessionId: null, expectedPublicationSeq: 2,
+  };
+
+  it('a reverted flow refuses new manual and tool runs with flow_conversion_reverted', async () => {
+    for (const input of [manual, tool]) {
+      calls.length = 0;
+      vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+      queueCreate();
+      expect(await createFlowRun(input as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+      expect(callsOf('execute')).toHaveLength(0);
+    }
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    // Not an admission refusal: the flow carries no banner for it.
+    expect(recordAdmissionRefusal).not.toHaveBeenCalled();
+  });
+
+  it('a reverted flow admits no schedule run either; a switched flow runs manual runs as before', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    queueCreate();
+    expect(await createFlowRun({ ...event, triggerKind: 'schedule', dedupeKey: 'schedule:k' } as CreateFlowRunInput))
+      .toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    expect(callsOf('execute')).toHaveLength(0);
+
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('switched'));
+    queueCreate();
+    expect(await createFlowRun(manual as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('startManualRun surfaces flow_conversion_reverted', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    queueStart();
+    queueCreate();
+    expect(await startManualRun(auth(), FLOW_ID, { inputs: {} }, 'ui')).toEqual({ ok: false, error: 'flow_conversion_reverted' });
   });
 });
 

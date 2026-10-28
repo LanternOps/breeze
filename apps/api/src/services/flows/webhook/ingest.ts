@@ -270,7 +270,10 @@ export async function ingestFlowWebhook(i: {
     });
     if (result.created) return { http: 202, body: { status: 'accepted', runId: result.runId, deliveryId: acceptedId ?? '' } };
     if (result.reason === 'duplicate') return { http: 200, body: { status: 'duplicate', runId: result.runId } };
-    if (result.reason === 'not_enabled') return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
+    // A reverted conversion's flow admits nothing new (#5221 B4): to the sender it changed.
+    if (result.reason === 'not_enabled' || result.reason === 'flow_conversion_reverted') {
+      return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
+    }
     const code: FlowAdmissionRefusal = result.reason;
     if (!isFlowAdmissionRefusal(code)) throw new Error(`flow webhook: unhandled createFlowRun refusal '${String(code)}'`);
     // The refusal is the answer; a failed log write must not turn it into a 503.

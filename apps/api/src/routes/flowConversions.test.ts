@@ -43,6 +43,7 @@ vi.mock('../services/flows/conversion/service', () => ({
   listConversions: vi.fn(),
 }));
 vi.mock('../services/flows/conversion/switch', () => ({ switchConversion: vi.fn() }));
+vi.mock('../services/flows/conversion/revert', () => ({ revertConversion: vi.fn() }));
 
 import { authMiddleware } from '../middleware/auth';
 import { getFlow } from '../services/flows/service';
@@ -54,6 +55,7 @@ import {
   previewConversion,
 } from '../services/flows/conversion/service';
 import { switchConversion } from '../services/flows/conversion/switch';
+import { revertConversion } from '../services/flows/conversion/revert';
 import { flowsRoutes } from './flows';
 
 const AUTOMATION = '66666666-6666-4666-8666-666666666666';
@@ -79,7 +81,7 @@ describe('flow conversion routes', () => {
   beforeEach(() => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     setAuth(session());
-    for (const fn of [previewConversion, createConversion, createConversionsForOwner, getConversion, listConversions, switchConversion]) vi.mocked(fn).mockReset();
+    for (const fn of [previewConversion, createConversion, createConversionsForOwner, getConversion, listConversions, switchConversion, revertConversion]) vi.mocked(fn).mockReset();
     vi.mocked(getFlow).mockReset();
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -247,6 +249,60 @@ describe('flow conversion routes', () => {
         const body = await res.json();
         expect(body).not.toHaveProperty('ok');
         expect(body.error).toBe((result as { error: string }).error);
+      }
+    });
+  });
+  // W06 (#5221) Task B4 — POST /conversions/:id/revert.
+  describe('revert', () => {
+    it('revert needs automations.write, MFA and an interactive session', async () => {
+      setAuth(session({ deny: ['automations:write'] }));
+      const denied = await post(`/conversions/${CONV}/revert`, {});
+      expect(denied.status).toBe(403);
+      expect(denied.headers.get('X-Test-Permission-Checked')).toBe('automations:write');
+
+      setAuth(session({ mfaUnsatisfied: true }));
+      const noMfa = await post(`/conversions/${CONV}/revert`, {});
+      expect(noMfa.status).toBe(403);
+      expect(await noMfa.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+
+      setAuth(session({ principal: { kind: 'api_key' } } as TestAuth));
+      const apiKey = await post(`/conversions/${CONV}/revert`, {});
+      expect(apiKey.status).toBe(403);
+      expect(await apiKey.json()).toEqual({ error: 'interactive_session_required' });
+      expect(revertConversion).not.toHaveBeenCalled();
+    });
+
+    it('flag off is 404', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      expect((await post(`/conversions/${CONV}/revert`, {})).status).toBe(404);
+      expect(revertConversion).not.toHaveBeenCalled();
+    });
+
+    it('reverts the conversion named in the path', async () => {
+      expect((await post('/conversions/not-a-uuid/revert', {})).status).toBe(400);
+      expect(revertConversion).not.toHaveBeenCalled();
+      vi.mocked(revertConversion).mockResolvedValueOnce({ ok: true, conversion: { id: CONV, state: 'reverted' } } as never);
+      const ok = await post(`/conversions/${CONV}/revert`, {});
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ conversion: { id: CONV, state: 'reverted' } });
+      expect(revertConversion).toHaveBeenCalledWith(expect.anything(), CONV);
+    });
+
+    it('maps revert outcomes to statuses (revert of a shadow conversion is not_switched)', async () => {
+      const cases: Array<[unknown, number]> = [
+        [{ ok: false, error: 'conversion_not_found' }, 404],
+        [{ ok: false, error: 'not_switched' }, 409],
+        [{ ok: false, error: 'revert_closed' }, 409],
+        [{ ok: false, error: 'partner_wide_forbidden' }, 403],
+        [{ ok: false, error: 'delegation_scope_restricted' }, 403],
+        [{ ok: false, error: 'interactive_session_required' }, 403],
+      ];
+      for (const [result, status] of cases) {
+        vi.mocked(revertConversion).mockResolvedValueOnce(result as never);
+        const res = await post(`/conversions/${CONV}/revert`, {});
+        expect(res.status, JSON.stringify(result)).toBe(status);
+        const body = await res.json();
+        expect(body).toEqual({ error: (result as { error: string }).error });
       }
     });
   });

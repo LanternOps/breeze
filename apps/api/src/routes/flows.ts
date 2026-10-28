@@ -114,6 +114,8 @@ const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enable
 const RUN_STATUS: Record<string, Status> = {
   flow_not_found: 404,
   not_enabled: 409,
+  // W06 (#5221) B4: the flow's conversion was reverted; it admits nothing new.
+  flow_conversion_reverted: 409,
   not_manual: 409,
   org_required: 422,
   org_forbidden: 403,
