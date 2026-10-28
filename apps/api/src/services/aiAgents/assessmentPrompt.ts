@@ -53,7 +53,7 @@ export const ASSESSMENT_FIRST_LOOK_EMPTY_LINE =
  * nothing when nothing changed" rule must not end it with zero tool calls.
  */
 const FIRST_LOOK_LINE =
-  'First look: there is no earlier assessment of this org, so judge its current state, not what changed — '
+  'First look: there is no completed earlier assessment of this org, so judge its current state, not what changed — '
   + '"call nothing when nothing changed" does not apply. Read what is open now with your tools (the open alerts '
   + 'below, failed patches, pending reboots, backups, security findings) before you choose an outcome; stay quiet '
   + 'only once you have looked and found nothing worth tracking.';

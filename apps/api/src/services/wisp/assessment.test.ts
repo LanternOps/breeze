@@ -733,6 +733,24 @@ describe('loadAssessmentContext', () => {
       expect(compile(q.where[0]).sql).toMatch(/"triggered_at" >= \$\d+/);
     });
 
+    it('the open-alerts read stays gated on alerts:read (ceiling and org term): no alerts query, empty section', async () => {
+      for (const c of [
+        ceiling({ permissionKeys: keys(['alerts:read']) }),
+        ceiling({ permissionKeys: new Set(['*:*']), orgTerms: new Map([[ORG, { permissionKeys: keys(['alerts:read']), siteIds: null }]]) }),
+      ]) {
+        h.queries.length = 0;
+        h.results.length = 0;
+        h.resolveGrantCeiling.mockResolvedValue(c);
+        h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+        h.results.push([], [], []);
+        const ctx = await loadAssessmentContext(firstLookRun());
+        expect(ctx!.firstLook).toBe(true);
+        expect(tablesQueried().has(alerts)).toBe(false);
+        expect(ctx!.digest.alerts).toEqual([]);
+        expect(ctx!.digest.tickets.map((r) => r.id)).toEqual(['t1']);
+      }
+    });
+
     it('an onboarding reason is a first look even when a watermark exists', async () => {
       queueDigest();
       const ctx = await loadAssessmentContext(run({

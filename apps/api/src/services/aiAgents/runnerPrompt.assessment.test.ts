@@ -171,7 +171,7 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'onboarding' }, firstLook: true })));
       const line = p.split('\n').find((l) => l.startsWith('First look:'));
       expect(line).toBeDefined();
-      expect(line).toMatch(/no earlier assessment/i);
+      expect(line).toMatch(/no completed earlier assessment/i);
       expect(line).toMatch(/current state/i);
       expect(line).toMatch(/"call nothing when nothing changed" does not apply/i);
       expect(line).toMatch(/failed patches/i);

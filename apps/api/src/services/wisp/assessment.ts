@@ -550,9 +550,10 @@ const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
  * #10389: a first look's alerts — the org's open alerts whenever they fired
  * (a 24 h window on triggered_at hid a high alert open for three weeks),
  * worst severity first (the enum is declared critical → info), newest first
- * within a severity, ≤ 25. Served by the (org_id, status, triggered_at) index
- * (alerts_org_status_triggered_at_idx); the sort covers only the org's open
- * rows. Runs inside loadDigest's system context.
+ * within a severity, ≤ 25. The (org_id, status, triggered_at) index
+ * (alerts_org_status_triggered_at_idx) finds the org's open rows; the
+ * severity order is a top-N sort over all of them — one sort per (grant, org)
+ * first look. Runs inside loadDigest's system context.
  */
 function loadOpenAlertRows(orgId: string) {
   return db
