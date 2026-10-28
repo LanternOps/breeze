@@ -217,6 +217,8 @@ export type EventType =
   | 'elevation.activated'
   | 'elevation.expired'
   | 'elevation.revoked'
+  // #8971: the end user declined a pending request on the device.
+  | 'elevation.withdrawn'
   // AI operator agents (spec 2026-08-22 §7). Wave 1 publishes policy_changed;
   // the run.* members are reserved for the wave-3 runner.
   | 'ai.agent.policy_changed'
@@ -787,6 +789,7 @@ export const EVENT_TYPES = {
   ELEVATION_ACTIVATED: 'elevation.activated' as const,
   ELEVATION_EXPIRED: 'elevation.expired' as const,
   ELEVATION_REVOKED: 'elevation.revoked' as const,
+  ELEVATION_WITHDRAWN: 'elevation.withdrawn' as const,
   // AI agents
   AI_AGENT_POLICY_CHANGED: 'ai.agent.policy_changed' as const,
   AI_AGENT_RUN_QUEUED: 'ai.agent.run.queued' as const,

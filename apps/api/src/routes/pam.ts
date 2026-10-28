@@ -268,7 +268,7 @@ function getPagination(query: { page?: string; limit?: string }) {
 
 const listQuerySchema = z.object({
   status: z
-    .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating'])
+    .enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn'])
     .optional(),
   flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
   deviceId: z.string().guid().optional(),
@@ -701,7 +701,16 @@ pamRoutes.post(
           .returning({ id: elevationRequests.id, status: elevationRequests.status });
 
         if (updated.length === 0) {
-          return { kind: 'conflict' as const, currentStatus: row.status };
+          // `row.status` is the pre-CAS read: when a concurrent withdraw,
+          // decide or expiry won between that read and the CAS it still says
+          // 'pending'. Re-read so the conflict names the status that won
+          // (#8971: the web console tells the approver the user withdrew).
+          const [current] = await tx
+            .select({ status: elevationRequests.status })
+            .from(elevationRequests)
+            .where(eq(elevationRequests.id, id))
+            .limit(1);
+          return { kind: 'conflict' as const, currentStatus: current?.status ?? row.status };
         }
 
         await tx.insert(elevationAudit).values({
@@ -800,6 +809,7 @@ pamRoutes.post(
         {
           success: false,
           error: `Request is not pending (current status: ${result.currentStatus})`,
+          currentStatus: result.currentStatus,
         },
         409,
       );
@@ -1232,6 +1242,7 @@ pamRoutes.post(
       expired: 0,
       revoked: 0,
       actuating: 0,
+      withdrawn: 0,
     };
     const sample: Array<Record<string, unknown>> = [];
 
