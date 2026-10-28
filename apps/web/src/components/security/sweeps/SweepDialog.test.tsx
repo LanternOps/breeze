@@ -350,7 +350,43 @@ describe('SweepDialog', () => {
     expect(field.getAttribute('aria-invalid')).toBe('true');
     expect(message.id).not.toBe('');
     expect((field.getAttribute('aria-describedby') ?? '').split(' ')).toContain(message.id);
+    expectDescribedByResolves(field);
   };
+
+  const expectDescribedByResolves = (field: HTMLElement) => {
+    const ids = (field.getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean);
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) expect(document.getElementById(id), id).not.toBeNull();
+  };
+
+  it('does not flag an empty or blank path list, but keeps Next disabled', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    fireEvent.change(screen.getByTestId('sweep-dialog-scan-type'), { target: { value: 'custom' } });
+    const field = screen.getByTestId('sweep-dialog-paths');
+    for (const value of ['', '  \n \n']) {
+      fireEvent.change(field, { target: { value } });
+      expect(screen.queryByTestId('sweep-dialog-paths-error')).toBeNull();
+      expect(screen.queryByTestId('sweep-dialog-paths-count')).toBeNull();
+      expect(field.getAttribute('aria-invalid')).toBe('false');
+      expectDescribedByResolves(field);
+      expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(true);
+    }
+  });
+
+  it('accepts a path of exactly 1024 characters, and reports too many paths before a long line', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    fireEvent.change(screen.getByTestId('sweep-dialog-scan-type'), { target: { value: 'custom' } });
+    const field = screen.getByTestId('sweep-dialog-paths');
+    fireEvent.change(field, { target: { value: 'x'.repeat(1024) } });
+    expect(screen.queryByTestId('sweep-dialog-paths-error')).toBeNull();
+    expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(false);
+
+    const many = [...Array.from({ length: 21 }, (_, i) => `C:\\p${i}`), 'x'.repeat(1025)].join('\n');
+    fireEvent.change(field, { target: { value: many } });
+    expect(screen.getByTestId('sweep-dialog-paths-error').textContent).toBe('22 of 20 paths: remove 2.');
+  });
 
   it('says how many paths to remove when there are more than 20', async () => {
     renderDialog();
@@ -398,6 +434,17 @@ describe('SweepDialog', () => {
     fireEvent.change(field, { target: { value: '72' } });
     expect(screen.queryByTestId('sweep-dialog-ttl-error')).toBeNull();
     expect(field.getAttribute('aria-invalid')).toBe('false');
+    expectDescribedByResolves(field);
+
+    for (const value of ['', '1.5', '-1']) {
+      fireEvent.change(field, { target: { value } });
+      expectInvalidField(field, 'sweep-dialog-ttl-error', 'Enter a whole number of hours from 1 to 72.');
+    }
+    // Leaving the field clamps it into range, which clears the message.
+    fireEvent.change(field, { target: { value: '100' } });
+    fireEvent.blur(field);
+    expect((field as HTMLInputElement).value).toBe('72');
+    expect(screen.queryByTestId('sweep-dialog-ttl-error')).toBeNull();
   });
 
   it('keeps the prefilled scan type and says the scope must be chosen again', async () => {

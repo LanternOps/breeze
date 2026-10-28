@@ -732,7 +732,7 @@ const namespaceDuplicateBaselines = {
     // in fr-CA.
     'scripts.json': 66, // +2 W01 #10132: script-editor panel title, empty-state title, button "Breeze AI" brand name
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'security.json': 149, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name; +1 #10080: sweeps.dialog.preview.org "{{org}}: {{devices}}" is placeholders only
+    'security.json': 148, // +1 W01 #10132: sweeps.panel.origin.ai_chat "Breeze AI" brand name
     // +1: orgDefaultsEditor.enrollment.capMinutes — "{{minutes}} minutes" is
     // spelled identically in French.
     // +2: bulkOrgImport.mapping.site + preview.site — "Site" is the same word

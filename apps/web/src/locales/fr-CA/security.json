@@ -2438,8 +2438,8 @@
       "confirm_one": "Balayer {{count}} appareil",
       "confirm_other": "Balayer {{count}} appareils",
       "viewRunning": "Voir le balayage en cours",
-      "confirmSummary_one": "{{devices}} réparti dans {{orgs}} sera analysé avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur l'appareil.",
-      "confirmSummary_other": "{{devices}} répartis dans {{orgs}} seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "confirmSummary_one": "{{devices}} dans {{orgs}} sera analysé avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur l'appareil.",
+      "confirmSummary_other": "{{devices}} dans {{orgs}} seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
       "counts": {
         "devices_one": "{{count}} appareil",
         "devices_other": "{{count}} appareils",
@@ -2476,7 +2476,7 @@
         "paths": "Chemins, un par ligne",
         "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun.",
         "pathsCount": "{{paths}} chemins sur {{max}}",
-        "pathsTooMany": "{{paths}} chemins sur {{max}}: retirez-en {{remove}}.",
+        "pathsTooMany": "{{paths}} chemins sur {{max}} : retirez-en {{remove}}.",
         "pathTooLong": "La ligne {{line}} dépasse {{chars}} caractères."
       },
       "duration": {
@@ -2486,7 +2486,7 @@
       },
       "preview": {
         "targeted": "{{devices}} dans {{orgs}}",
-        "org": "{{org}}: {{devices}}",
+        "org": "{{org}} : {{devices}}",
         "ruleSets": "Ensembles de règles",
         "skipped": "Ignorés",
         "scopeChanged": "Les appareils ou les ensembles de règles ont changé depuis l'aperçu. Vérifiez les nouveaux chiffres, puis confirmez à nouveau."

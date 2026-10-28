@@ -2438,8 +2438,8 @@
       "confirm_one": "Barrer {{count}} dispositivo",
       "confirm_other": "Barrer {{count}} dispositivos",
       "viewRunning": "Ver el barrido en curso",
-      "confirmSummary_one": "Se analizará {{devices}} de {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en el dispositivo.",
-      "confirmSummary_other": "Se analizarán {{devices}} de {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en los dispositivos.",
+      "confirmSummary_one": "Se analizará {{devices}} en {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en el dispositivo.",
+      "confirmSummary_other": "Se analizarán {{devices}} en {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en los dispositivos.",
       "counts": {
         "devices_one": "{{count}} dispositivo",
         "devices_other": "{{count}} dispositivos",
