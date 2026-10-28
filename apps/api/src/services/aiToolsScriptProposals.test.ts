@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { flagMock, createMock, enqueueMock, waitMock, getMock, verifyDeviceAccessMock, executionsMock } = vi.hoisted(() => ({
+const { flagMock, createMock, enqueueMock, waitMock, getMock, verifyDeviceAccessMock, executionsMock, latestReviewMock } = vi.hoisted(() => ({
   executionsMock: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+  latestReviewMock: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
   verifyDeviceAccessMock: vi.fn(
     async (id: string): Promise<{ device: { id: string; orgId: string } } | { error: string }> =>
       ({ device: { id, orgId: 'org-dev' } }),
@@ -63,7 +64,7 @@ vi.mock('./aiTools', () => ({ verifyDeviceAccess: verifyDeviceAccessMock }));
 vi.mock('./scriptProposals', () => ({
   createScriptProposal: createMock, enqueueScriptReview: enqueueMock,
   waitForReviewCompletion: waitMock, getScriptProposalForPrincipal: getMock,
-  selectProposalExecutions: executionsMock,
+  selectProposalExecutions: executionsMock, selectLatestModelReview: latestReviewMock,
 }));
 
 import { registerScriptProposalTools } from './aiToolsScriptProposals';
@@ -88,10 +89,22 @@ const input = {
   deviceIds: ['11111111-1111-4111-8111-111111111111'],
 };
 
+/** A completed model review whose reviewer asked for changes (#10399). */
+const MODEL_REVIEW_ROW = {
+  id: 'r1', proposalId: 'p1', reviewerKind: 'model', status: 'completed',
+  summary: 'Reboots without a warning to the signed-in user', riskTier: 'medium', goalMatch: 'yes',
+  reversible: true, verificationAdequate: false, recommendedAction: 'changes',
+  verdict: {
+    findings: [{ severity: 'warning', text: 'No user warning before restart', lineRef: 2 }],
+    blastRadius: ['one workstation'],
+  },
+};
+
 const held = (): string => (dbState.current ? `held:${dbState.current.label}` : 'none');
 
 beforeEach(() => {
   enqueueMock.mockClear(); waitMock.mockClear(); createMock.mockClear(); getMock.mockClear();
+  latestReviewMock.mockReset(); latestReviewMock.mockResolvedValue(null);
   dbState.current = undefined;
   dbState.events.length = 0;
   captureExceptionMock.mockClear();
@@ -150,6 +163,19 @@ describe('propose_script', () => {
         + 'its status is no longer pending, then call run_script.',
     });
     expect(out.proposalId).toBe('p1');
+  });
+
+  // #10399: the model reported "the automated review passed it" because the
+  // output carried no plain verdict field it read as such.
+  it('returns the reviewer\'s plain verdict when the review finishes inline (#10399)', async () => {
+    waitMock.mockResolvedValueOnce(MODEL_REVIEW_ROW as never);
+    const out = JSON.parse(await tools.get('propose_script')!.handler(input, auth));
+    expect(out.status).toBe('reviewed');
+    expect(out.review).toMatchObject({
+      status: 'completed', verdict: 'changes', summary: 'Reboots without a warning to the signed-in user',
+      verificationAdequate: false,
+      findings: [{ severity: 'warning', text: 'No user warning before restart', lineRef: 2 }],
+    });
   });
 
   // #7128: the chat wrapper used to hold ONE transaction around the whole
@@ -298,6 +324,42 @@ describe('get_script_proposal', () => {
 
     expect(out.executions).toEqual([]);
     expect(out.nextStep).toBeUndefined();
+  });
+
+  // #10399: get_script_proposal returned no review at all, so the model told
+  // the user "the automated review passed it" for a proposal whose reviewer
+  // had recommended changes.
+  it('returns the reviewer\'s plain verdict, summary and findings (#10399)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status: 'reviewed', intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+    latestReviewMock.mockResolvedValueOnce(MODEL_REVIEW_ROW);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(latestReviewMock).toHaveBeenCalledWith('p7');
+    expect(out.review).toEqual({
+      status: 'completed', verdict: 'changes', summary: 'Reboots without a warning to the signed-in user',
+      riskTier: 'medium', goalMatch: 'yes', reversible: true, verificationAdequate: false,
+      findings: [{ severity: 'warning', text: 'No user warning before restart', lineRef: 2 }],
+    });
+  });
+
+  it('reports a proposal still under review as pending, not as reviewed (#10399)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status: 'proposed', intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.review).toEqual({ status: 'pending', verdict: null });
+  });
+
+  it('reports a scan-rejected proposal\'s review as never requested (#10399)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status: 'scan_rejected', intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.review).toEqual({ status: 'not_requested', verdict: null });
   });
 
   it('reports not found for a proposal outside the caller org', async () => {

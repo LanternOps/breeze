@@ -1409,7 +1409,8 @@ export default function ApprovalsInbox() {
       {hashProposalId && (
         // The deep-linked proposal, read-only: decisions still happen on the
         // pending row below (or in chat); this surface exists for the
-        // post-decision states — verification progress and Save to library.
+        // post-decision states — verification progress and Save to library —
+        // and says plainly when the proposal has not run at all (#10399).
         <section className="rounded-xl border bg-card p-4" data-testid="approval-proposal-detail">
           <ScriptProposalApprovalCard proposalId={hashProposalId} readOnly />
         </section>

@@ -198,4 +198,64 @@ describe('ScriptProposalApprovalCard', () => {
     expect(line).toHaveTextContent(copy);
     expect(screen.queryByTestId('script-proposal-save-to-library')).not.toBeInTheDocument();
   });
+
+  // #10399: the detail read reports outcome 'pending' for every proposal that
+  // has not verified yet, including one that never ran. The card said
+  // "Verification pending" for a reviewed proposal nobody had approved.
+  it.each([
+    ['proposed', /awaiting review.*not run yet/i],
+    ['reviewed', /reviewed.*not run yet/i],
+    ['approved', /approved.*not run yet/i],
+    ['changes_requested', /^not run$/i],
+    ['rejected', /^not run$/i],
+    ['expired', /^not run$/i],
+    ['superseded', /^not run$/i],
+    ['scan_rejected', /^not run$/i],
+    ['review_failed', /^not run$/i],
+  ] as const)('says a %s proposal with no runs has not run, not that verification is pending (#10399)', (status, copy) => {
+    useScriptProposal.mockReturnValue({
+      data: dto({ proposal: { status }, executions: [] }), loading: false, error: null, reload: vi.fn(),
+    });
+    render(<ScriptProposalApprovalCard proposalId="p1" readOnly />);
+    const line = screen.getByTestId('script-proposal-verification-state');
+    expect(line).toHaveAttribute('data-outcome', 'not_run');
+    expect(line).toHaveTextContent(copy);
+    expect(line).not.toHaveTextContent(/verification pending/i);
+  });
+
+  it('keeps "Verification pending" for an approved proposal whose run has started (#10399)', () => {
+    useScriptProposal.mockReturnValue({
+      data: dto({
+        proposal: { status: 'approved' },
+        executions: [{ id: 'e1', deviceId: 'd1', deviceHostname: 'HOST-1', status: 'running', exitCode: null, startedAt: new Date().toISOString(), completedAt: null }],
+      }),
+      loading: false, error: null, reload: vi.fn(),
+    });
+    render(<ScriptProposalApprovalCard proposalId="p1" readOnly />);
+    const line = screen.getByTestId('script-proposal-verification-state');
+    expect(line).toHaveAttribute('data-outcome', 'pending');
+    expect(line).toHaveTextContent(/verification pending/i);
+  });
+
+  it.each([
+    ['approve', /recommends approving/i],
+    ['changes', /recommends changes/i],
+    ['reject', /recommends rejecting/i],
+  ] as const)('states the reviewer\'s %s recommendation in plain words (#10399)', (verdict, copy) => {
+    useScriptProposal.mockReturnValue({
+      data: dto({ review: { recommendedAction: verdict } }), loading: false, error: null, reload: vi.fn(),
+    });
+    render(<ScriptProposalApprovalCard proposalId="p1" readOnly />);
+    const chip = screen.getByTestId('script-proposal-review-verdict');
+    expect(chip).toHaveAttribute('data-verdict', verdict);
+    expect(chip).toHaveTextContent(copy);
+  });
+
+  it('shows no reviewer recommendation when the review has none (#10399)', () => {
+    useScriptProposal.mockReturnValue({
+      data: dto({ review: { recommendedAction: null } }), loading: false, error: null, reload: vi.fn(),
+    });
+    render(<ScriptProposalApprovalCard proposalId="p1" readOnly />);
+    expect(screen.queryByTestId('script-proposal-review-verdict')).not.toBeInTheDocument();
+  });
 });
