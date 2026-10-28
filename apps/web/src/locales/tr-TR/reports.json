@@ -1096,7 +1096,7 @@
       "groups": {
         "business": "İş",
         "general": "Genel",
-        "businessDescription": "Yalnızca personel için MSP içi rakamlar — SLA başarımı, teknisyen faturalandırılabilirliği ve alacak yaşlanırması."
+        "businessDescription": "Müşteri cihazlarına değil, MSP'nin kendi işine ait rakamlar — yalnızca personel için."
       },
       "delivery": {
         "contactsLoading": "Kuruluş kişileri yükleniyor…",

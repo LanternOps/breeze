@@ -1096,7 +1096,7 @@
       "groups": {
         "business": "Negocio",
         "general": "Otros",
-        "businessDescription": "Cifras internas del MSP — cumplimiento de SLA, facturabilidad de técnicos y cuentas por cobrar — solo para el personal."
+        "businessDescription": "Cifras del propio negocio del MSP, no de los dispositivos de los clientes — solo para el personal."
       },
       "delivery": {
         "contactsLoading": "Cargando los contactos de la organización…",

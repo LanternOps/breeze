@@ -1,5 +1,5 @@
 import { render } from '@testing-library/react';
-import type { QuoteCoverModel } from '@breeze/shared/documents';
+import type { DocumentBranding, QuoteCoverModel } from '@breeze/shared/documents';
 import { DocumentCover } from '../DocumentCover';
 import { DocumentCoverCrop } from '../DocumentCoverCrop';
 import { STAND_IN_COMPONENTS } from '../__fixtures__/testing';
@@ -14,8 +14,12 @@ const COVER: QuoteCoverModel = {
   preparedByLabel: 'Prepared by',
 };
 
-const renderCover = (cover: QuoteCoverModel, pageSize: 'a4' | 'letter') =>
-  render(<DocumentCover cover={cover} pageSize={pageSize} components={STAND_IN_COMPONENTS} />);
+const BRANDING: DocumentBranding = {
+  logo: null, logoAlt: 'Example MSP', wordmark: 'Example MSP', theme: 'classic', pageSize: 'a4', seller: null,
+};
+
+const renderCover = (cover: QuoteCoverModel, pageSize: 'a4' | 'letter', branding: Partial<DocumentBranding> = {}) =>
+  render(<DocumentCover cover={cover} branding={{ ...BRANDING, ...branding, pageSize }} components={STAND_IN_COMPONENTS} />);
 
 describe('DocumentCover — OD-5 geometry (the PDF page, as classes)', () => {
   it.each([['a4', 'doc-cover-a4', 'doc-cover-letter'], ['letter', 'doc-cover-letter', 'doc-cover-a4']] as const)(
@@ -44,6 +48,39 @@ describe('DocumentCover — OD-5 geometry (the PDF page, as classes)', () => {
     const { queryByTestId, getByTestId } = renderCover({ ...COVER, image: null }, 'a4');
     expect(queryByTestId('document-cover-frame')).toBeNull();
     expect(getByTestId('document-cover').querySelector('h1')!.textContent).toBe('Network refresh proposal');
+  });
+});
+
+// #9957: the PDF cover draws the partner logo (or name) top-left, on a white pill
+// over artwork; the screen cover drew neither, so the two did not match.
+describe('DocumentCover — brand mark (PDF parity)', () => {
+  it('an image cover carries the wordmark on a pill inside the page frame, above the band', () => {
+    const { getByTestId } = renderCover(COVER, 'letter');
+    const mark = getByTestId('document-cover-brand');
+    expect(mark.textContent).toBe('Example MSP');
+    expect(mark.className).toContain('doc-cover-brand');
+    expect(getByTestId('document-cover-frame').contains(mark)).toBe(true);
+    expect(getByTestId('document-cover-band').contains(mark)).toBe(false);
+  });
+
+  it('an uploaded logo replaces the wordmark', () => {
+    const { getByTestId } = renderCover(COVER, 'a4', { logo: { kind: 'url', url: 'https://example.test/logo.png' } });
+    const img = getByTestId('document-cover-brand').querySelector('img')!;
+    expect(img.getAttribute('src')).toBe('https://example.test/logo.png');
+    expect(img.getAttribute('alt')).toBe('Example MSP');
+    expect(getByTestId('document-cover-brand').textContent).toBe('');
+  });
+
+  it('a cover without an image still leads with the brand mark, and no pill', () => {
+    const { getByTestId } = renderCover({ ...COVER, image: null }, 'a4');
+    const mark = getByTestId('document-cover-brand');
+    expect(mark.textContent).toBe('Example MSP');
+    expect(mark.className).not.toContain('doc-cover-brand');
+  });
+
+  it('no logo and no wordmark renders no brand slot', () => {
+    const { queryByTestId } = renderCover(COVER, 'a4', { wordmark: null, logoAlt: '' });
+    expect(queryByTestId('document-cover-brand')).toBeNull();
   });
 });
 

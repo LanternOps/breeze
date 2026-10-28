@@ -1096,7 +1096,7 @@
       "groups": {
         "business": "Business",
         "general": "General",
-        "businessDescription": "MSP-facing numbers — SLA attainment, technician billability, and accounts receivable — for staff only."
+        "businessDescription": "Numbers about your own MSP business rather than your clients’ devices — for staff only."
       },
       "delivery": {
         "contactsLoading": "Loading organization contacts…",

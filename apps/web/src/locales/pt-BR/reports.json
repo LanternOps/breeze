@@ -1096,7 +1096,7 @@
       "groups": {
         "business": "Negócio",
         "general": "Geral",
-        "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+        "businessDescription": "Números do próprio negócio do MSP, não dos dispositivos dos clientes — apenas para a equipe."
       },
       "delivery": {
         "contactsLoading": "Carregando os contatos da organização…",
