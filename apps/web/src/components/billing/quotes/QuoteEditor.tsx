@@ -52,6 +52,7 @@ import {
 } from './QuoteBlockContentForms';
 import { QuoteBulkBar } from './QuoteBulkBar';
 import { UnassignedLines } from './QuoteUnassignedLines';
+import { QuoteIntroFields } from './QuoteIntroFields';
 import { UNAUTHORIZED, type LineUpdate, SrSaved, fieldRing, pendingKey, useSavedFlash, useShowInternalMargin } from './quoteEditorShared';
 import { useServerSyncedDraft } from '../shared/useServerSyncedDraft';
 import { useMenuKeyboard } from '../shared/menuKeyboard';
@@ -287,7 +288,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
 
   // Per-item "saving" state, keyed so one in-flight mutation never freezes the
   // rest of the editor. Scoped keys come from `pendingKey` (quoteEditorShared)
-  // plus a few editor-local literals ('terms', 'deposit', 'add-block',
+  // plus a few editor-local literals ('terms', 'expiry', 'intro', 'deposit', 'add-block',
   // 'cover-page', 'cover-image'). `pending` drives disabled styling;
   // `inFlight` is the synchronous double-submit guard (state updates are async).
   const inFlight = useRef<Set<string>>(new Set());
@@ -346,6 +347,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // Quiet "Saved" cue for the blur-to-save terms field (title moved to the
   // workspace header — see QuoteHeaderMeta).
   const [termsSaved, flashTermsSaved] = useSavedFlash();
+  // "Valid until" + intro notes (#9859): both print on the proposal. The date
+  // column is date-only (YYYY-MM-DD); '' in the draft means no expiry.
+  const { draft: expiry, dirty: expiryDirty, edit: editExpiry, markSaved: markExpirySaved } =
+    useServerSyncedDraft((quote.expiryDate ?? '').slice(0, 10));
+  const [expirySaved, flashExpirySaved] = useSavedFlash();
+  const { draft: introNotes, dirty: introDirty, edit: editIntro, markSaved: markIntroSaved } =
+    useServerSyncedDraft(quote.introNotes ?? '');
+  const [introSaved, flashIntroSaved] = useSavedFlash();
   const canCatalogWrite = can('catalog', 'write');
 
   // Two separate questions, mirroring the invoice editor (see the long note
@@ -359,7 +368,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const hasPendingEdits = pending.size > 0
     || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
   // Unsaved input blocks the g/c chords and queue keys (see useRegisterDirtyForm).
-  useRegisterDirtyForm(hasPendingEdits || termsDirty || footerDirty);
+  useRegisterDirtyForm(hasPendingEdits || termsDirty || footerDirty || expiryDirty || introDirty);
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
   // (e.g. the quote was just issued and the tab switched).
@@ -553,6 +562,42 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     }, t('quotes.editor.errors.saveFooter'));
     if (ok) flashFooterSaved();
   }, [footerDirty, footer, quote.id, refresh, runScoped, flashFooterSaved, markFooterSaved, t]);
+
+  // Blank → null (no expiry), never '' — the API's date validator rejects it.
+  const saveExpiry = useCallback(async () => {
+    if (!expiryDirty) return;
+    const value = expiry === '' ? null : expiry;
+    const ok = await runScoped('expiry', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ expiryDate: value }),
+        }),
+        errorFallback: t('quotes.editor.errors.saveExpiry'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      markExpirySaved(value ?? '');
+      refresh();
+    }, t('quotes.editor.errors.saveExpiry'));
+    if (ok) flashExpirySaved();
+  }, [expiryDirty, expiry, quote.id, refresh, runScoped, flashExpirySaved, markExpirySaved, t]);
+
+  // Blank → null so the document prints no intro paragraph at all.
+  const saveIntro = useCallback(async () => {
+    if (!introDirty) return;
+    const value = introNotes.trim() === '' ? null : introNotes.trim();
+    const ok = await runScoped('intro', async () => {
+      await runAction({
+        request: () => fetchWithAuth(`/quotes/${quote.id}`, {
+          method: 'PATCH', body: JSON.stringify({ introNotes: value }),
+        }),
+        errorFallback: t('quotes.editor.errors.saveIntroNotes'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      markIntroSaved(value ?? '');
+      refresh();
+    }, t('quotes.editor.errors.saveIntroNotes'));
+    if (ok) flashIntroSaved();
+  }, [introDirty, introNotes, quote.id, refresh, runScoped, flashIntroSaved, markIntroSaved, t]);
 
   // Persist a deposit-config change via the quote-header PATCH. runAction surfaces
   // the API's 400 DEPOSIT_* validation message (e.g. "Deposit must be less than the
@@ -760,11 +805,13 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     if (pending.size > 0) return null;
     if (failedKeys.has('terms') && termsDirty) return t('quotes.editor.terms.title');
     if (failedKeys.has('footer') && footerDirty) return t('quotes.editor.footer.title');
+    if (failedKeys.has('expiry') && expiryDirty) return t('quotes.editor.intro.expiryLabel');
+    if (failedKeys.has('intro') && introDirty) return t('quotes.editor.intro.notesLabel');
     for (const id of Object.keys(lineDrafts)) {
       if (failedKeys.has(pendingKey.line(id))) return t('quotes.editor.unsavedField.lines');
     }
     return null;
-  }, [pending.size, failedKeys, termsDirty, footerDirty, lineDrafts, t]);
+  }, [pending.size, failedKeys, termsDirty, footerDirty, expiryDirty, introDirty, lineDrafts, t]);
   useEffect(() => { onUnsavedEditsChange?.(unsavedFieldLabel); }, [unsavedFieldLabel, onUnsavedEditsChange]);
   useEffect(() => () => onUnsavedEditsChange?.(null), [onUnsavedEditsChange]);
 
@@ -2669,6 +2716,20 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           min-width floor (QuoteBlockCard.tsx) has to stay well under that,
           not just under the full 650px this column could theoretically
           offer. */}
+      {/* Proposal opening (#9859): above the canvas, in document order — the
+          date prints in the header, the notes above the first section. */}
+      <QuoteIntroFields
+        canWrite={canWrite}
+        expiry={{
+          value: expiry, dirty: expiryDirty, saved: expirySaved, busy: isPending('expiry'),
+          onChange: editExpiry, onBlur: () => void saveExpiry(),
+        }}
+        intro={{
+          value: introNotes, dirty: introDirty, saved: introSaved, busy: isPending('intro'),
+          onChange: editIntro, onBlur: () => void saveIntro(),
+        }}
+      />
+
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with a min-width

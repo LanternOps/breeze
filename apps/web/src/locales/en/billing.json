@@ -1124,7 +1124,9 @@
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
         "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
-        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it.",
+        "saveExpiry": "Could not save the expiry date.",
+        "saveIntroNotes": "Could not save the intro notes."
       },
       "image": {
         "alt": "Quote image",
@@ -1348,6 +1350,14 @@
       },
       "warnings": {
         "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Rich text supports headings, bold, italic, underline, lists and links."
+      },
+      "intro": {
+        "expiryLabel": "Valid until",
+        "expiryHelper": "Printed on the proposal. The customer can accept through the end of this day. Leave blank for no expiry.",
+        "expiryPast": "This date has passed — the customer cannot accept an expired proposal.",
+        "notesLabel": "Intro notes",
+        "notesHelper": "Printed above the first section of the proposal.",
+        "notesPlaceholder": "A short note to the customer, e.g. what this proposal covers."
       }
     },
     "actions": {

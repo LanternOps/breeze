@@ -1104,7 +1104,9 @@
         "uploadImage": "Impossibile caricare l'immagine.",
         "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
         "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
-        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
+        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
+        "saveExpiry": "Impossibile salvare la data di scadenza.",
+        "saveIntroNotes": "Impossibile salvare le note introduttive."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -1348,6 +1350,14 @@
       },
       "warnings": {
         "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il testo formattato supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+      },
+      "intro": {
+        "expiryLabel": "Valida fino al",
+        "expiryHelper": "Stampata sulla proposta. Il cliente può accettarla fino alla fine di questo giorno. Lascia vuoto per nessuna scadenza.",
+        "expiryPast": "Questa data è già passata — il cliente non può accettare una proposta scaduta.",
+        "notesLabel": "Note introduttive",
+        "notesHelper": "Stampate sopra la prima sezione della proposta.",
+        "notesPlaceholder": "Una breve nota per il cliente, ad es. cosa copre questa proposta."
       }
     },
     "actions": {
