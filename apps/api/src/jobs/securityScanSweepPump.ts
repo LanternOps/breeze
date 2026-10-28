@@ -15,6 +15,8 @@
  *          claim -> `failed`. The command's own 30-minute server timeout is
  *          NOT used: scans legitimately run up to 720 minutes, and a late
  *          result still lands (the result handler overwrites the status).
+ *      Then scheduled and manual (non-sweep) scans, by the same two clocks
+ *      (jobs/securityScanOrphanFinalize.ts, #10057).
  *   3. Complete active sweeps with no queued or running child.
  *   4. Admit queued scans of online, unparked devices with nothing else in
  *      flight, oldest sweep first, at most
@@ -37,6 +39,7 @@ import {
   sweepRunningGraceMinutes,
 } from '../services/securityScanSweepConfig';
 import { stopSweepChildren } from '../services/securityScanSweepStop';
+import { finalizeOrphanedDeviceScans } from './securityScanOrphanFinalize';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import type { SecurityScanQueueJobData } from './queueSchemas';
 
@@ -50,6 +53,8 @@ export interface PumpResult {
   finalized: number;
   completed: number;
   admitted: number;
+  /** #10057: scheduled/manual scans finalized this tick (not part of `finalized`, which is sweep scans). */
+  deviceScansFinalized: number;
 }
 
 const orgCap = () => parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
@@ -89,7 +94,9 @@ export async function pumpSweeps(
     const [lock] = (await db.execute(
       sql`SELECT pg_try_advisory_xact_lock(hashtext('security-sweep-pump')) AS locked`,
     )) as unknown as Array<{ locked: boolean }>;
-    if (!lock?.locked) return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0 };
+    if (!lock?.locked) {
+      return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0 };
+    }
 
     // 1. Expire. Lock the expiring rows in id order first (a group cancel
     // locks its rows in id order too, so the two cannot deadlock); the lock
@@ -146,6 +153,8 @@ export async function pumpSweeps(
          AND s.started_at < ${ceiling.toISOString()}
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
+    // #10057: the same backstop for scans outside any sweep.
+    const orphans = await finalizeOrphanedDeviceScans(now);
 
     // 3. Complete.
     const completed = await db
@@ -253,6 +262,7 @@ export async function pumpSweeps(
       finalized: undelivered.length + stale.length,
       completed: completed.length,
       admitted: jobs.length,
+      deviceScansFinalized: orphans.expired + orphans.failed,
     };
   }, 'securityScanSweepPump');
 
