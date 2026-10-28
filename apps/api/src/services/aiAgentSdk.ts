@@ -54,6 +54,8 @@ import { isFlowToolName } from './flows/toolNames';
 import type { FlowToolCallInput, FlowToolDescriptor } from './flows/flowTools';
 import type { GrantCeiling } from './wisp/grantAuthority';
 import type { WispCeilingRefusal } from './wisp/chatCeiling';
+// Leaf data module (no imports): loading it never pulls in the Wisp graph.
+import { WISP_SELF_STATE_TOOLS } from './wisp/selfStateTools';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { applyHelperDeviceScope } from './helperToolFilter';
@@ -313,7 +315,8 @@ type ApprovalMethod =
   | 'pam' // helper session — PAM elevation policy/approver decision
   | 'plan_step' // pre-authorized step of a human-approved action plan
   | 'auto_approve_mode' // session runs auto_approve; Tier 2 executes unprompted
-  | 'read_only_auto'; // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
+  | 'read_only_auto' // #3130 read-only Tier-2 allowlist; auto-executes in any un-paused mode
+  | 'wisp_self_state_auto'; // #10392 Wisp bookkeeping write under a live grant (wisp/selfStateTools.ts)
 const lastApprovalBySession = new WeakMap<ActiveSession, { toolName: string; method: ApprovalMethod }>();
 
 // Methods that represent an explicit decision on this specific call (a human
@@ -1467,11 +1470,23 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       //     auto-execute through the plan branch below anyway (tier < 3);
       //     an UNmatched read during a plan is a deviation and deliberately
       //     still prompts, same as before this change.
-      const readOnlyAutoExec =
-        guardrailCheck.readOnly === true &&
-        !session.isPaused &&
-        !(session.activePlanId && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan'));
-      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec)) {
+      const planInFlight = Boolean(session.activePlanId)
+        && (effectiveMode === 'action_plan' || effectiveMode === 'hybrid_plan');
+      const readOnlyAutoExec = guardrailCheck.readOnly === true && !session.isPaused && !planInFlight;
+      // #10392: Wisp's own bookkeeping writes (wisp/selfStateTools.ts —
+      // memory, concerns, thread links; never a device) skip the card the
+      // same way, with the same two carve-outs, but only for a call that
+      // passed the live Wisp ceiling gate this turn (`wispCall.current`): the
+      // tools are inert without a grant, and an ordinary session keeps its
+      // card. Still Tier 2 (the `tier === 2` check below), so a Tier-3
+      // resolution never takes this path.
+      const wispSelfStateAutoExec = wispCall.current !== null
+        && !tenant
+        && !flowTool
+        && WISP_SELF_STATE_TOOLS.has(toolName)
+        && !session.isPaused
+        && !planInFlight;
+      if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
         );
@@ -1493,7 +1508,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         }
         lastApprovalBySession.set(session, {
           toolName,
-          method: effectiveMode === 'auto_approve' ? 'auto_approve_mode' : 'read_only_auto',
+          method: effectiveMode === 'auto_approve'
+            ? 'auto_approve_mode'
+            : readOnlyAutoExec ? 'read_only_auto' : 'wisp_self_state_auto',
         });
         return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }
