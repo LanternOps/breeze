@@ -1171,5 +1171,10 @@
     "checking": "Verificando",
     "unverified": "Não verificado",
     "failed": "Falha na verificação de integridade"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} ponto de nova análise ignorado: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
+    "summary_other": "{{count}} pontos de nova análise ignorados: junções e pontos de montagem não são seguidos nem restaurados. Isso é esperado, não é um erro.",
+    "showDetails": "Mostrar caminhos ignorados"
   }
 }

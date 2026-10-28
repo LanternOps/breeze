@@ -20,6 +20,8 @@ import BackupVerificationTab from './BackupVerificationTab';
 import ExternalBackupCard from './ExternalBackupCard';
 import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
+import ReparseSkipNotice from './ReparseSkipNotice';
+import { splitReparseSkipNotice } from './reparseSkipSplit';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -420,7 +422,11 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
   // note, not an error — and it is the only channel a total VSS failure has,
   // since that outcome produces no vssMetadata at all. This tab used to ignore
   // errorLog entirely, so such a run displayed as a clean green backup.
-  const lastJobDiagnostic = lastJob?.errorLog?.trim() || null;
+  // #9543: deliberately skipped reparse points are informational — shown on
+  // their own muted line, so a run whose only note is the skip is not framed
+  // as "completed with warnings" and a failed run's banner keeps its reason.
+  const { diagnostic: lastJobDiagnostic, reparseSkipped: lastJobReparseSkipped } =
+    splitReparseSkipNotice(lastJob?.errorLog);
   const lastJobFailed = lastJobStatus === 'failed';
   // #5396: distinct from the generic "completed with warnings" framing — this
   // run has a concrete, agent-reported count of files that failed to read or
@@ -637,6 +643,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
           </div>
         </div>
       )}
+      {lastJobReparseSkipped && <ReparseSkipNotice summary={lastJobReparseSkipped} />}
 
       {/* VSS Status */}
       {showVssStatus && (

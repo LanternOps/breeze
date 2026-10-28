@@ -1107,6 +1107,80 @@ describe('BackupJobList', () => {
     expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
   });
 
+  describe('skipped reparse points (#9543)', () => {
+    // Verbatim shape of the agent's summarizeSkippedReparsePoints fragment.
+    const reparseNote =
+      '159 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 159 other): ' +
+      'C:\\a.exe (other reparse point, tag 0x8000001B); C:\\b.exe (other reparse point, tag 0x8000001B); ' +
+      'C:\\c.exe (other reparse point, tag 0x8000001B); C:\\d.exe (other reparse point, tag 0x8000001B); ' +
+      'C:\\e.exe (other reparse point, tag 0x8000001B) (+154 more)';
+
+    const mockJob = (status: string, errorLog: string) => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') {
+          return makeJsonResponse({ data: [partialJob({ status, errorCount: 0, errorLog })] });
+        }
+        if (url === '/backup/jobs/job-partial') {
+          return makeJsonResponse({
+            id: 'job-partial',
+            type: 'file',
+            deviceId: 'device-2',
+            configId: 'config-1',
+            status,
+            createdAt: '2026-04-01T17:59:00.000Z',
+            errorCount: 0,
+            errorLog,
+          });
+        }
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+    };
+
+    it('keeps the real failure reason in the Errors column and error log, and shows the skip as info', async () => {
+      mockJob('failed', `backup stopped; ${reparseNote}`);
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      const summary = within(row).getByTestId('backup-job-error-summary');
+      expect(summary.textContent).toContain('backup stopped');
+      expect(summary.textContent).not.toContain('reparse');
+      expect(summary.getAttribute('title')).toBe('backup stopped');
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      const notice = await screen.findByTestId('backup-job-reparse-skipped');
+      expect(notice.textContent).toContain('159 reparse points skipped');
+      // The agent's sampled paths stay reachable behind the disclosure.
+      expect(notice.textContent).toContain('C:\\a.exe (other reparse point, tag 0x8000001B)');
+      const errorLog = screen.getByText('Error Log').nextElementSibling as HTMLElement;
+      expect(errorLog.textContent).toBe('backup stopped');
+    });
+
+    it('shows no error at all for a completed run whose only note is skipped reparse points', async () => {
+      mockJob('completed', reparseNote);
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      expect(within(row).queryByTestId('backup-job-error-summary')).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      expect((await screen.findByTestId('backup-job-reparse-skipped')).textContent).toContain('159');
+      expect(screen.getByText('No error log recorded.')).toBeTruthy();
+    });
+
+    it('does not open the "files not backed up" block for a completed_with_errors run on the skip alone', async () => {
+      // errorCount 0 + a reparse-only note: the warning block must not claim
+      // files failed when the only thing in errorLog is the deliberate skip.
+      mockJob('completed_with_errors', reparseNote);
+
+      render(<BackupJobList />);
+      await screen.findByText('Gamma Laptop');
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      await screen.findByTestId('backup-job-reparse-skipped');
+      expect(screen.queryByTestId('backup-job-files-not-backed-up')).toBeNull();
+    });
+  });
+
   it('labels the running-job action button "Stop"', async () => {
     fetchMock.mockImplementation(async (input) => {
       if (String(input) === '/backup/jobs') {

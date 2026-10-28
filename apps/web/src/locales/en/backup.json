@@ -1171,5 +1171,10 @@
     "checking": "Checking",
     "unverified": "Not verified",
     "failed": "Failed integrity check"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} reparse point skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
+    "summary_other": "{{count}} reparse points skipped: junctions and mount points are not followed and are not restored. This is expected, not an error.",
+    "showDetails": "Show skipped paths"
   }
 }
