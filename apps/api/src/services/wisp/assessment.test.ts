@@ -327,6 +327,35 @@ describe('enqueueAssessment', () => {
     expect(input.triggerRef.wisp).toEqual({ grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark: null });
   });
 
+  // #10389: a floor tick for an org this grant has never assessed is its first
+  // look, so it runs as onboarding (framing + readiness note) rather than as a
+  // periodic "what changed" check.
+  it('a tick for a never-assessed org is recorded as onboarding; a tick with a watermark stays a tick', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    const first = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { wisp: { reason: unknown; watermark: unknown } } };
+    expect(first.triggerRef.wisp).toMatchObject({ reason: { kind: 'onboarding' }, watermark: null });
+
+    const finished = new Date('2026-10-24T08:00:00.000Z');
+    h.results.push([grantRow()]);
+    h.results.push([{ at: finished }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    const later = h.createAndEnqueueAgentRun.mock.calls[1]![0] as { triggerRef: { wisp: { reason: unknown; watermark: unknown } } };
+    expect(later.triggerRef.wisp).toMatchObject({ reason: { kind: 'tick' }, watermark: finished.toISOString() });
+  });
+
+  it('an event or watch reason for a never-assessed org keeps its reason', async () => {
+    for (const reason of [alertReason, { kind: 'watch' as const, watchId: WATCH }]) {
+      h.createAndEnqueueAgentRun.mockClear();
+      h.results.push([grantRow()]);
+      h.results.push([{ at: null }]);
+      await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason });
+      const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { wisp: { reason: unknown } } };
+      expect(input.triggerRef.wisp.reason).toEqual(reason);
+    }
+  });
+
   it('maps an admission skip to { skipped }', async () => {
     h.results.push([grantRow()]);
     h.results.push([{ at: null }]);
@@ -651,6 +680,67 @@ describe('loadAssessmentContext', () => {
     const since = Date.parse(ctx!.changedSince!);
     expect(since).toBeGreaterThanOrEqual(before - 24 * 3600_000 - 1000);
     expect(since).toBeLessThanOrEqual(Date.now() - 24 * 3600_000 + 1000);
+  });
+
+  // #10389: with no watermark the run is the org's first look; a 24 h window
+  // on triggered_at hid a high alert open for weeks. The first look reads the
+  // org's OPEN alerts instead, worst first, still bounded at 25.
+  describe('first look (no watermark)', () => {
+    const firstLookRun = (reason: Record<string, unknown> = { kind: 'tick' }) => run({
+      triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason, watermark: null } },
+    });
+    const alertsSelect = () => {
+      const i = h.queries.findIndex((x) => x.table === alerts);
+      return { q: h.queries[i]!, chain: h.db.select.mock.results[i]!.value as Record<string, { mock: { calls: unknown[][] } }> };
+    };
+
+    it('lists the org\'s open alerts with no time bound, worst severity first, bounded at 25', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(firstLookRun());
+      expect(ctx!.firstLook).toBe(true);
+      const { q, chain } = alertsSelect();
+      const { sql: text, params } = compile(q.where[0]);
+      expect(text).toMatch(/"org_id" = \$\d+/);
+      expect(params).toContain(ORG);
+      expect(text).toMatch(/"status" in \(\$\d+, \$\d+\)/);
+      expect(params).toEqual(expect.arrayContaining(['active', 'acknowledged']));
+      expect(text).not.toMatch(/triggered_at/);
+      const order = chain.orderBy!.mock.calls[0]!.map((c) => compile(c).sql);
+      expect(order).toEqual(['"alerts"."severity" asc', '"alerts"."triggered_at" desc']);
+      expect(chain.limit!.mock.calls[0]![0]).toBe(25);
+      // The row is the open alert, stamped with when it fired.
+      expect(ctx!.digest.alerts).toEqual([{ id: 'a1', title: 'CPU high', severity: 'high', status: 'active', at: '2026-10-24T07:00:00.000Z' }]);
+    });
+
+    it('applies to an onboarding or event reason too, and the other sections keep the 24 h window', async () => {
+      for (const reason of [{ kind: 'onboarding' }, alertReason]) {
+        h.queries.length = 0;
+        h.db.select.mockClear();
+        queueDigest();
+        const ctx = await loadAssessmentContext(firstLookRun(reason));
+        expect(ctx!.firstLook).toBe(true);
+        expect(compile(alertsSelect().q.where[0]).sql).not.toMatch(/triggered_at/);
+        const ticketsQ = h.queries.find((x) => x.table === tickets)!;
+        expect(compile(ticketsQ.where[0]).sql).toMatch(/"updated_at" >= \$\d+/);
+      }
+    });
+
+    it('a run with a watermark is not a first look and keeps the triggered-since window', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(run());
+      expect(ctx!.firstLook).toBe(false);
+      const { q } = alertsSelect();
+      expect(compile(q.where[0]).sql).toMatch(/"triggered_at" >= \$\d+/);
+    });
+
+    it('an onboarding reason is a first look even when a watermark exists', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(run({
+        triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark } },
+      }));
+      expect(ctx!.firstLook).toBe(true);
+      expect(compile(alertsSelect().q.where[0]).sql).not.toMatch(/triggered_at/);
+    });
   });
 
   it('resolves the reason watch from listWatches', async () => {

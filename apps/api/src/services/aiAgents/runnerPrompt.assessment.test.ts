@@ -8,6 +8,8 @@ import type { Concern } from '@breeze/shared';
 import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import {
   AGENT_PROMPT_AUTHORITY_DISCLAIMER,
+  ASSESSMENT_FIRST_LOOK_EMPTY_LINE,
+  ASSESSMENT_NO_CHANGES_LINE,
   buildAgentRunTaskPrompt,
   buildAssessmentTaskPrompt,
   type AgentRunAssessmentPromptContext,
@@ -65,6 +67,7 @@ function assessment(overrides: Partial<AgentRunAssessmentPromptContext> = {}): A
     watchLines: null,
     readiness: null,
     nudgeFeedback: [],
+    firstLook: false,
     ...overrides,
   };
 }
@@ -158,6 +161,45 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
       },
     })));
     expect(p).toContain('ticket T-1042 | open | Printer is down | 2026-10-21T07:00:00.000Z');
+  });
+
+  // #10389: a first look has no earlier assessment to diff against — it must
+  // not be told to "call nothing when nothing changed", and an empty digest
+  // must not read "No changes since the last assessment."
+  describe('first look', () => {
+    it('tells the model to judge the current state and look before staying quiet', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ reason: { kind: 'onboarding' }, firstLook: true })));
+      const line = p.split('\n').find((l) => l.startsWith('First look:'));
+      expect(line).toBeDefined();
+      expect(line).toMatch(/no earlier assessment/i);
+      expect(line).toMatch(/current state/i);
+      expect(line).toMatch(/"call nothing when nothing changed" does not apply/i);
+      expect(line).toMatch(/failed patches/i);
+      expect(line).toMatch(/pending reboots/i);
+      // After the reason line, before the authority disclaimer.
+      expect(p.indexOf('First look:')).toBeGreaterThan(p.indexOf('Why this assessment:'));
+      expect(p.indexOf('First look:')).toBeLessThan(p.indexOf(AGENT_PROMPT_AUTHORITY_DISCLAIMER));
+    });
+
+    it('heads the digest as the org\'s open alerts plus recent changes', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ firstLook: true })));
+      expect(p).toContain('Open alerts now (worst first, at most 25) and other changes since 2026-10-21T00:00:00.000Z:');
+      expect(p).not.toContain('What changed since');
+      expect(p).toContain('alert al-1 | high | active | Disk almost full on FS-01 | 2026-10-21T08:00:00.000Z');
+    });
+
+    it('an empty first-look digest says nothing is open, never "No changes since the last assessment."', () => {
+      const p = buildAssessmentTaskPrompt(ctx(assessment({ firstLook: true, digest: EMPTY_DIGEST })));
+      const fence = p.slice(p.indexOf('<untrusted_data source="wisp-changes-since-watermark">'));
+      expect(fence).toContain(ASSESSMENT_FIRST_LOOK_EMPTY_LINE);
+      expect(p).not.toContain(ASSESSMENT_NO_CHANGES_LINE);
+    });
+
+    it('a later run keeps the "what changed" framing and has no first-look line', () => {
+      const p = buildAssessmentTaskPrompt(ctx());
+      expect(p).not.toContain('First look:');
+      expect(p).toContain('What changed since 2026-10-21T00:00:00.000Z:');
+    });
   });
 
   it('adds the watch lines only when the run was requested by a watch', () => {

@@ -253,7 +253,7 @@ function assessmentCtx(): AssessmentRunContext {
     grantId: GRANT_ID, grantRevisionId: REVISION_ID, grantorUserId: GRANTOR, threadId: THREAD_ID,
     threadSummary: 'Wisp picture', openConcerns: [], changedSince: null,
     digest: { alerts: [], tickets: [], incidents: [], runs: [], intents: [] },
-    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [],
+    watch: null, reason: { kind: 'tick' }, readiness: null, nudgeFeedback: [], firstLook: false,
   };
 }
 

@@ -61,7 +61,7 @@ import type { NarrativeContext } from './narrativeContext';
 // Wisp W05b — the assessment task turn lives in its own module (this file is
 // already ~2k lines); re-exported here so callers keep one import path.
 import { buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
-export { ASSESSMENT_NO_CHANGES_LINE, buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
+export { ASSESSMENT_FIRST_LOOK_EMPTY_LINE, ASSESSMENT_NO_CHANGES_LINE, buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
 
 export const OPERATOR_GUIDANCE_OPEN_TAG = '<operator-guidance>';
 export const OPERATOR_GUIDANCE_CLOSE_TAG = '</operator-guidance>';
