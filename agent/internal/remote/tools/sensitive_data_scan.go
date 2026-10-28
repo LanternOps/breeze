@@ -175,38 +175,82 @@ func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
 	return scope
 }
 
+// resolveDefaultSensitiveIncludePaths is the scan scope when the request names
+// no includePaths (#10380). The agent runs as root/SYSTEM, so its own home
+// (C:\Windows\system32\config\systemprofile, /var/root, /root) holds no user
+// data — and on Windows it sits under the excluded C:\Windows, which made every
+// default scan walk nothing and report "completed" with 0 files. Scan the
+// common document folders of every user profile on the device instead.
 func resolveDefaultSensitiveIncludePaths() []string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		if runtime.GOOS == "windows" {
-			if profile := strings.TrimSpace(os.Getenv("USERPROFILE")); profile != "" {
-				home = profile
+	return defaultSensitiveIncludePathsUnder(sensitiveProfileRoots())
+}
+
+// sensitiveDefaultProfileFolders are the per-profile folders a default scan
+// covers. AppData / Library are deliberately left out: walking them first
+// (they sort ahead of Desktop) would spend the whole timeout on caches before
+// any document is read. OneDrive is left out because reading a cloud-only
+// placeholder downloads it.
+var sensitiveDefaultProfileFolders = []string{"Desktop", "Documents", "Downloads"}
+
+// sensitiveSkippedProfileNames are profile-root entries that are templates or
+// system junctions, not people (lower-cased for comparison).
+var sensitiveSkippedProfileNames = map[string]struct{}{
+	"default":      {},
+	"default user": {},
+	"all users":    {},
+}
+
+// sensitiveProfileRoots returns the directories that hold user profiles.
+func sensitiveProfileRoots() []string {
+	switch runtime.GOOS {
+	case "windows":
+		// %PUBLIC% is C:\Users\Public on every supported Windows and is set in
+		// the SYSTEM environment; its parent is the profiles directory even
+		// when that is not on C:.
+		if public := strings.TrimSpace(os.Getenv("PUBLIC")); public != "" {
+			return []string{filepath.Dir(filepath.Clean(public))}
+		}
+		drive := strings.TrimSpace(os.Getenv("SystemDrive"))
+		if drive == "" {
+			drive = "C:"
+		}
+		return []string{drive + `\Users`}
+	case "darwin":
+		return []string{"/Users"}
+	default:
+		return []string{"/home"}
+	}
+}
+
+// defaultSensitiveIncludePathsUnder lists <root>/<profile>/<folder> for every
+// existing common document folder of every profile under the given roots.
+// Missing roots and folders are skipped: an empty result is reported by the
+// scan as "nothing to scan", never as a clean scan.
+func defaultSensitiveIncludePathsUnder(roots []string) []string {
+	var out []string
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			// DirEntry.IsDir does not follow links, so junctions such as
+			// "All Users" and symlinked profiles are not walked twice.
+			if !entry.IsDir() {
+				continue
+			}
+			if _, skip := sensitiveSkippedProfileNames[strings.ToLower(entry.Name())]; skip {
+				continue
+			}
+			for _, folder := range sensitiveDefaultProfileFolders {
+				candidate := filepath.Join(root, entry.Name(), folder)
+				if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+					out = append(out, candidate)
+				}
 			}
 		}
 	}
-	if strings.TrimSpace(home) == "" {
-		if runtime.GOOS == "windows" {
-			return []string{`C:\Users`}
-		}
-		return []string{"/home", "/Users"}
-	}
-
-	switch runtime.GOOS {
-	case "windows":
-		return []string{
-			home,
-			filepath.Join(home, "Desktop"),
-			filepath.Join(home, "Documents"),
-			filepath.Join(home, "Downloads"),
-		}
-	default:
-		return []string{
-			home,
-			filepath.Join(home, "Desktop"),
-			filepath.Join(home, "Documents"),
-			filepath.Join(home, "Downloads"),
-		}
-	}
+	return normalizePaths(out)
 }
 
 func defaultSensitiveExcludePaths() []string {
@@ -945,8 +989,15 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 		})
 	}
 
+	// rootsWalked counts include paths the scan actually descended into. Every
+	// other outcome below records an error, so a scan that walked nothing can
+	// say why instead of reading as a clean scan (#10380).
+	rootsWalked := 0
 	for _, include := range scope.includePaths {
 		if shouldExcludeSensitivePath(include, scope.excludePaths) {
+			mu.Lock()
+			recordErrors([]SensitiveDataScanError{{Path: include, Error: "include path is inside an excluded path"}})
+			mu.Unlock()
 			continue
 		}
 		// Containment (#3397): includePaths is caller-supplied, so gate each
@@ -965,8 +1016,12 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 			continue
 		}
 		if !info.IsDir() {
+			mu.Lock()
+			recordErrors([]SensitiveDataScanError{{Path: include, Error: "include path is not a folder"}})
+			mu.Unlock()
 			continue
 		}
+		rootsWalked++
 		if err := walkErr(include); err != nil {
 			break
 		}
@@ -997,6 +1052,27 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 		Status:   "completed",
 		Summary:  summary,
 		Findings: resultFindings,
+	}
+
+	if rootsWalked == 0 {
+		// Nothing was read, so "0 findings" means nothing. Fail the command and
+		// still send the summary: its errors say why each path was not scanned.
+		response.Status = "failed"
+		message := "no folder in the scan scope could be scanned"
+		if len(scope.includePaths) == 0 {
+			message += ": no user profile document folders (Desktop, Documents, Downloads) were found; set includePaths in the scan scope"
+		} else {
+			message += ": every include path was missing, excluded, refused, or not a folder"
+		}
+		durationMs := time.Since(start).Milliseconds()
+		result := NewSuccessResult(response, durationMs)
+		if result.Status != "completed" {
+			return result
+		}
+		result.Status = "failed"
+		result.ExitCode = 1
+		result.Error = message
+		return result
 	}
 
 	return NewSuccessResult(response, time.Since(start).Milliseconds())

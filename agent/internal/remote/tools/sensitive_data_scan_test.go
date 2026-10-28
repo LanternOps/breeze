@@ -203,3 +203,121 @@ func TestParseSensitiveScopeSkipsOversizedRegexPatterns(t *testing.T) {
 		t.Fatalf("expected only valid regex patterns to be compiled, got %d", len(scope.suppressFilePathRegex))
 	}
 }
+
+// #10380: the agent runs as root/SYSTEM, so the service account's own home
+// (C:\Windows\system32\config\systemprofile, /var/root, /root) is never where
+// user data lives. The default scope enumerates the device's user profiles.
+func TestDefaultSensitiveIncludePathsEnumeratesUserProfileFolders(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mk := func(parts ...string) string {
+		p := filepath.Join(append([]string{root}, parts...)...)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+		return p
+	}
+	aliceDesktop := mk("alice", "Desktop")
+	aliceDocuments := mk("alice", "Documents")
+	mk("alice", "AppData", "Local")
+	bobDownloads := mk("bob", "Downloads")
+	mk("Default", "Documents")
+	mk("Default User", "Desktop")
+	mk("carol") // a profile with none of the common folders
+	if err := os.WriteFile(filepath.Join(root, "desktop.ini"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	got := defaultSensitiveIncludePathsUnder([]string{root, filepath.Join(root, "missing-root")})
+	want := []string{aliceDesktop, aliceDocuments, bobDownloads}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("default include paths = %v, want %v", got, want)
+	}
+}
+
+func TestSensitiveProfileRootsNeverUseServiceAccountHome(t *testing.T) {
+	t.Parallel()
+
+	roots := sensitiveProfileRoots()
+	if len(roots) == 0 {
+		t.Fatalf("expected at least one profile root")
+	}
+	for _, r := range roots {
+		lower := strings.ToLower(r)
+		if strings.Contains(lower, "systemprofile") || r == "/var/root" || r == "/root" {
+			t.Fatalf("profile root %q is a service-account home", r)
+		}
+	}
+}
+
+// #10380: a scan that walked no folder at all must not read as a clean,
+// completed scan with zero findings.
+func TestScanSensitiveDataFailsWhenNoIncludePathCanBeWalked(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	missing := filepath.Join(tempDir, "does-not-exist")
+	excluded := filepath.Join(tempDir, "excluded")
+	if err := os.MkdirAll(excluded, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	notADir := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(notADir, []byte("AKIA1234567890ABCDEF"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result := ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{missing, excluded, notADir},
+			"excludePaths": []any{excluded},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed status when nothing was scanned, got %s", result.Status)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("expected nonzero exit code on failure")
+	}
+	if !strings.Contains(result.Error, "no folder in the scan scope") {
+		t.Fatalf("unexpected error: %q", result.Error)
+	}
+	var response SensitiveDataScanResponse
+	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
+		t.Fatalf("expected JSON summary on stdout so the server records why: %v", err)
+	}
+	if response.Status != "failed" {
+		t.Fatalf("response status = %q, want failed", response.Status)
+	}
+	if response.Summary.FilesScanned != 0 {
+		t.Fatalf("filesScanned = %d, want 0", response.Summary.FilesScanned)
+	}
+	paths := map[string]bool{}
+	for _, e := range response.Summary.Errors {
+		paths[e.Path] = true
+	}
+	for _, p := range []string{missing, excluded, notADir} {
+		if !paths[filepath.Clean(p)] {
+			t.Fatalf("expected an error entry for %s, got %+v", p, response.Summary.Errors)
+		}
+	}
+}
+
+func TestScanSensitiveDataEmptyFolderStillCompletes(t *testing.T) {
+	t.Parallel()
+
+	result := ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{t.TempDir()},
+			"excludePaths": []any{},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	response := decodeSensitiveScanResult(t, result)
+	if response.Summary.FilesScanned != 0 || len(response.Findings) != 0 {
+		t.Fatalf("expected an empty but completed scan, got %+v", response.Summary)
+	}
+}
