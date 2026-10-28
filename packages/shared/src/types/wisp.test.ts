@@ -3,6 +3,7 @@ import {
   CONCERN_KIND_TO_ENTITY_KIND,
   WISP_THREAD_LINK_LIMIT,
   WISP_THREAD_AUTO_LINK_LIMIT,
+  WISP_WORKING_SET_CONCERN_LIMIT,
   WISP_AUTO_LINKS_PER_TURN,
   WISP_SEED_AUTO_LINK_MAX_LINES,
 } from './wisp';
@@ -28,6 +29,7 @@ describe('working-set links', () => {
   it('defines the working-set limits', () => {
     expect(WISP_THREAD_LINK_LIMIT).toBe(50);
     expect(WISP_THREAD_AUTO_LINK_LIMIT).toBe(20);
+    expect(WISP_WORKING_SET_CONCERN_LIMIT).toBe(50);
     expect(WISP_AUTO_LINKS_PER_TURN).toBe(5);
     expect(WISP_SEED_AUTO_LINK_MAX_LINES).toBe(15);
   });

@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   orderBy: vi.fn(),
   resolve: vi.fn(),
   createResolver: vi.fn(),
+  inSystemContext: vi.fn(),
   insert: vi.fn(),
   update: vi.fn(),
   delete: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock('../../db', () => {
 vi.mock('../../db/partnerAxisRead', () => ({
   readOwnPartnerAxisRows: <T>(_partner: string, fn: () => Promise<T>) => fn(),
 }));
-vi.mock('./grantAuthority', () => ({ inSystemContext: <T>(fn: () => Promise<T>) => fn() }));
+vi.mock('./grantAuthority', () => ({ inSystemContext: h.inSystemContext }));
 vi.mock('./entityRefs', () => ({
   createEntityResolver: h.createResolver,
   resolveEntityRef: h.resolve,
@@ -50,6 +51,7 @@ function concern(id: string, kind: Concern['subject']['kind'] = 'ticket', status
 beforeEach(() => {
   vi.resetAllMocks();
   h.rows = [];
+  h.inSystemContext.mockImplementation(<T>(fn: () => Promise<T>) => fn());
   h.createResolver.mockReturnValue(h.resolve);
   h.resolve.mockImplementation(async (ref: { kind: WispEntityKind; id: string }) => ({
     ref: { ...ref, orgId: 'org' }, orgId: 'org', label: ref.id, status: 'open', href: '/' + ref.id,
@@ -57,6 +59,41 @@ beforeEach(() => {
 });
 
 describe('listWorkingSet', () => {
+  it('considers only the first 50 of 60 distinct open concerns in caller order', async () => {
+    const concerns = Array.from({ length: 60 }, (_, i) => concern('subject-' + (60 - i)));
+    const links = await listWorkingSet(ctx, 'thread', { concerns });
+    expect(links).toHaveLength(50);
+    expect(links.every((link) => link.source === 'concern')).toBe(true);
+    expect(links.map((link) => link.ref.id)).toEqual(concerns.slice(0, 50).map((c) => c.subject.id));
+    expect(h.resolve).toHaveBeenCalledTimes(50);
+  });
+
+  it('caps active concerns before mapping or deduplicating their subjects', async () => {
+    const concerns = [
+      concern('resolved', 'ticket', 'resolved'), concern('dismissed', 'ticket', 'dismissed'),
+      concern('unmapped', 'integration'),
+      ...Array.from({ length: 49 }, () => concern('duplicate', 'ticket', 'snoozed')),
+      concern('beyond-cap'),
+    ];
+    const links = await listWorkingSet(ctx, 'thread', { concerns });
+    expect(links.map((link) => link.ref.id)).toEqual(['duplicate']);
+    expect(h.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: 'empty', concerns: [] },
+    { name: 'resolved only', concerns: [concern('resolved', 'ticket', 'resolved')] },
+  ])(
+    'skips the concern system context when concerns are $name', async ({ concerns }) => {
+      h.rows = [row('auto', 'auto', 9), row('pin', 'user_pin', 5)];
+      const links = await listWorkingSet(ctx, 'thread', { concerns });
+      expect(links.map((link) => link.ref.id)).toEqual(['pin', 'auto']);
+      expect(h.resolve).toHaveBeenCalledTimes(2);
+      // Only the existing stored-row read enters system context.
+      expect(h.inSystemContext).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('orders pins, then concern subjects, then autos', async () => {
     // Rows arrive in database last_touched_at order, interleaving source classes.
     h.rows = [row('auto-new', 'auto', 9), row('wisp', 'wisp_pin', 7), row('user', 'user_pin', 5), row('auto-old', 'auto', 3)];

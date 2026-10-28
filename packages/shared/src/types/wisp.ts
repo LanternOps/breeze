@@ -53,6 +53,8 @@ export const PARTNER_LEVEL_ENTITY_KINDS: ReadonlySet<WispEntityKind> = new Set<W
 export const WISP_THREAD_LINK_LIMIT = 50;
 /** Maximum automatic links retained per thread. */
 export const WISP_THREAD_AUTO_LINK_LIMIT = 20;
+/** Maximum open or snoozed concerns considered for the working set. */
+export const WISP_WORKING_SET_CONCERN_LIMIT = 50;
 /** Maximum automatic links added per turn. */
 export const WISP_AUTO_LINKS_PER_TURN = 5;
 /** Maximum automatic-link lines included in the session seed. */

@@ -26,6 +26,7 @@ import {
   CONCERN_KIND_TO_ENTITY_KIND,
   WISP_THREAD_AUTO_LINK_LIMIT,
   WISP_THREAD_LINK_LIMIT,
+  WISP_WORKING_SET_CONCERN_LIMIT,
   type BreezeEntityRef,
   type Concern,
   type WispEntityKind,
@@ -287,12 +288,18 @@ export async function listWorkingSet(
 ): Promise<WispThreadLink[]> {
   const resolve = createEntityResolver(ctx);
   const stored = await readStoredLinks(ctx, threadId, resolve);
+  const pins = stored.filter((link) => link.source !== 'auto');
+  const autos = stored.filter((link) => link.source === 'auto');
+  const concerns = (opts?.concerns ?? [])
+    .filter((concern) => concern.status === 'open' || concern.status === 'snoozed')
+    .slice(0, WISP_WORKING_SET_CONCERN_LIMIT);
+  if (concerns.length === 0) return [...pins, ...autos];
+
   const key = (ref: { kind: WispEntityKind; id: string }) => `${ref.kind}:${ref.id}`;
   const seen = new Set(stored.map((link) => key(link.ref)));
   const subjects: WispThreadLink[] = [];
   await inSystemContext(async () => {
-    for (const concern of opts?.concerns ?? []) {
-      if (concern.status !== 'open' && concern.status !== 'snoozed') continue;
+    for (const concern of concerns) {
       const kind = CONCERN_KIND_TO_ENTITY_KIND[concern.subject.kind];
       if (!kind) continue;
       const ref = { kind, id: concern.subject.id };
@@ -314,8 +321,8 @@ export async function listWorkingSet(
     }
   });
   return [
-    ...stored.filter((link) => link.source !== 'auto'),
+    ...pins,
     ...subjects,
-    ...stored.filter((link) => link.source === 'auto'),
+    ...autos,
   ];
 }
