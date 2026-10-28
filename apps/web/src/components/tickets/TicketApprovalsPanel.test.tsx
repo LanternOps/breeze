@@ -131,4 +131,20 @@ describe('TicketApprovalsPanel', () => {
     expect(screen.queryByTestId('approval-record-req-1')).toBeNull();
     expect(screen.queryByTestId('approval-reask-req-2')).toBeNull();
   });
+
+  it('drops an open cancel confirm or record dialog when the ticket becomes read-only', async () => {
+    const summary = summaryWith([req()]);
+    const { rerender } = render(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('approval-cancel-req-1'));
+    expect(await screen.findByTestId('approval-cancel-confirm')).toBeInTheDocument();
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('approval-cancel-confirm')).toBeNull());
+
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('approval-record-req-1'));
+    expect(await screen.findByTestId('record-approval-dialog')).toBeInTheDocument();
+    rerender(<TicketApprovalsPanel summary={summary} onChanged={vi.fn()} readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('record-approval-dialog')).toBeNull());
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
 });

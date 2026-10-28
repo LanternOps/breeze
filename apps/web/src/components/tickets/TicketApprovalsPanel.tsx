@@ -212,8 +212,10 @@ export default function TicketApprovalsPanel({ summary, onChanged, readOnly = fa
         })}
       </ul>
 
+      {/* #10073: canWrite folds in readOnly, so a dialog left open when the
+          ticket turns read-only (merged meanwhile) stops rendering. */}
       <ConfirmDialog
-        open={cancelTarget !== null}
+        open={cancelTarget !== null && canWrite}
         onClose={() => { if (!cancelling) setCancelTarget(null); }}
         onConfirm={() => void confirmCancel()}
         title={t('ticketApproval.panel.cancelConfirmTitle')}
@@ -224,7 +226,7 @@ export default function TicketApprovalsPanel({ summary, onChanged, readOnly = fa
         confirmTestId="approval-cancel-confirm"
         dialogTestId="approval-cancel-dialog"
       />
-      {recordTarget && (
+      {recordTarget && canWrite && (
         <RecordApprovalDialog
           open
           request={recordTarget}

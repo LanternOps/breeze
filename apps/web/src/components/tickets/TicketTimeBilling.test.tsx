@@ -867,5 +867,13 @@ describe('read-only (merged tombstone)', () => {
     rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
     expect(screen.queryByTestId('ticket-billing-quick-add')).toBeNull();
   });
-});
 
+  it('drops an open delete confirm when the ticket becomes read-only', async () => {
+    const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-delete-te-1'));
+    expect(await screen.findByTestId('ticket-billing-delete-confirm')).toBeInTheDocument();
+    rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('ticket-billing-delete-confirm')).toBeNull());
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+  });
+});

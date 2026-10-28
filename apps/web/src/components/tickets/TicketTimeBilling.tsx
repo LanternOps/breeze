@@ -238,7 +238,7 @@ export default function TicketTimeBilling({ ticketId, readOnly = false }: {
   // workbench feed and the header timer.
   const confirmDelete = async () => {
     const entry = pendingDelete;
-    if (!entry) return;
+    if (!entry || readOnly) return;
     setDeletingId(entry.id);
     try {
       await deleteTimeEntryAction(entry, {
@@ -552,8 +552,10 @@ export default function TicketTimeBilling({ ticketId, readOnly = false }: {
         </ul>
       )}
 
+      {/* #10073: a confirm left open when the ticket turns read-only (merged
+          meanwhile) stops rendering; the delete would only 409. */}
       <ConfirmDialog
-        open={pendingDelete !== null}
+        open={pendingDelete !== null && !readOnly}
         onClose={() => { if (!deletingShown) setPendingDelete(null); }}
         onConfirm={() => void confirmDelete()}
         title={t('ticketTimeBilling.deleteConfirmTitle')}
