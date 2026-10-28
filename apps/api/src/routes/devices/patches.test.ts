@@ -1001,7 +1001,10 @@ describe('device patch routes', () => {
         source: 'third_party',
         externalId: 'winget:Google.Chrome',
         packageId: 'winget:Google.Chrome',
-        title: 'Google Chrome'
+        title: 'Google Chrome',
+        // #10249: a machine-scope row passes the per-user gate, and its scope
+        // must not leak into the command payload asserted below.
+        scope: 'machine'
       }
     ]);
     const observationFrom = vi.fn().mockReturnValue({
