@@ -531,6 +531,20 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     expect(conflictArg.set.primaryColor).toBe('#0f766e');
   });
 
+  it('a PATCH without primaryColor leaves the stored colour untouched (#9962)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+    const res = await patch({ customCss: null });
+    expect(res.status).toBe(200);
+
+    const { db } = await import('../db');
+    const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect('primaryColor' in valuesArg).toBe(false);
+    const conflictArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.calls[0]?.[0];
+    expect('primaryColor' in conflictArg.set).toBe(false);
+  });
+
   it('accepts null to clear primaryColor back to the partner colour (#9962)', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
     dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, primaryColor: null }]);

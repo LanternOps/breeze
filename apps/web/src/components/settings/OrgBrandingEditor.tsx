@@ -94,6 +94,11 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
   // value is never re-sent, so a legacy value the strict schema would reject
   // cannot block an unrelated Save.
   const [primaryColorTouched, setPrimaryColorTouched] = useState(false);
+  // The colour field stays disabled until portal-settings has loaded, so a
+  // slow GET can never overwrite what the admin has already typed. Without an
+  // orgId (isolated tests) there is nothing to load.
+  const [primaryColorLoaded, setPrimaryColorLoaded] = useState(!orgId);
+  const primaryColorDisabled = customCssLoadFailed || !primaryColorLoaded;
   const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -142,6 +147,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
         if (!cancelled) {
           setPrimaryColor(typeof loadedColor === 'string' ? loadedColor : '');
           setPartnerPrimaryColor(typeof inheritedColor === 'string' ? inheritedColor : null);
+          setPrimaryColorLoaded(true);
         }
       } catch (err) {
         console.warn('[OrgBrandingEditor] failed to load portal custom CSS', err);
@@ -339,7 +345,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
                 <input
                   type="color"
                   value={resolvedPrimaryColor}
-                  disabled={customCssLoadFailed}
+                  disabled={primaryColorDisabled}
                   aria-label={t('orgBrandingEditor.colors.primary')}
                   data-testid="branding-primary-color-picker"
                   onChange={event => {
@@ -362,7 +368,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
                     }}
                     inheritedValue={partnerPrimaryColor}
                     inheritedSource={t('orgBrandingEditor.colors.primaryInheritedSource')}
-                    disabled={customCssLoadFailed}
+                    disabled={primaryColorDisabled}
                     ariaInvalid={primaryColorInvalid}
                     ariaDescribedBy="org-branding-primary-color-help"
                     data-testid="branding-primary-color"

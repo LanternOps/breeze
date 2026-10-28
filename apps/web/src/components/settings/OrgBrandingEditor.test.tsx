@@ -381,9 +381,11 @@ describe('OrgBrandingEditor primary color (#9962)', () => {
   it('ignores the legacy organizations.settings.branding.primaryColor value', async () => {
     mockPortal({ primaryColor: null, partnerPrimaryColor: null });
     render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} branding={{ primaryColor: '#ff0000' } as never} />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(colorInput().disabled).toBe(false));
     expect(colorInput().value).toBe('');
     expect(screen.getByText('No Partner brand color configured')).toBeTruthy();
+    // The picker shows the app default, not the legacy red.
+    expect((screen.getByTestId('branding-primary-color-picker') as HTMLInputElement).value).toBe('#2563eb');
   });
 
   it('saves a changed colour through the portal-settings PATCH, not the org settings blob', async () => {
@@ -401,12 +403,26 @@ describe('OrgBrandingEditor primary color (#9962)', () => {
     expect(onSave.mock.calls[0][0]).not.toHaveProperty('primaryColor');
   });
 
-  it('the colour picker sets the override too', async () => {
+  it('the colour picker sets the override, and it is saved', async () => {
     mockPortal({ primaryColor: null, partnerPrimaryColor: null });
     render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(colorInput().disabled).toBe(false));
     fireEvent.change(screen.getByTestId('branding-primary-color-picker'), { target: { value: '#123456' } });
     expect(colorInput().value).toBe('#123456');
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await screen.findByText('Branding settings saved.');
+    expect(patchBody()).toEqual({ customCss: null, primaryColor: '#123456' });
+  });
+
+  it('keeps the colour field disabled until portal-settings has loaded (a slow GET cannot overwrite typing)', async () => {
+    let resolveLoad!: (r: Response) => void;
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { resolveLoad = resolve; }));
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} />);
+    expect(colorInput().disabled).toBe(true);
+    expect((screen.getByTestId('branding-primary-color-picker') as HTMLInputElement).disabled).toBe(true);
+    resolveLoad(makeJsonResponse({ data: { customCss: null, primaryColor: '#c2410c', partnerPrimaryColor: null } }));
+    await waitFor(() => expect(colorInput().disabled).toBe(false));
+    expect(colorInput().value).toBe('#c2410c');
   });
 
   it('clearing the field sends null so the org inherits the partner colour again', async () => {
@@ -445,7 +461,7 @@ describe('OrgBrandingEditor primary color (#9962)', () => {
     mockPortal({ primaryColor: null, partnerPrimaryColor: null });
     const onSave = vi.fn();
     render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(colorInput().disabled).toBe(false));
 
     fireEvent.change(colorInput(), { target: { value: 'red' } });
     expect(colorInput().getAttribute('aria-invalid')).toBe('true');
