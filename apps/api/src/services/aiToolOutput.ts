@@ -990,6 +990,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Huntress incident text: vendor-authored, but routinely echoes
   // endpoint-chosen artifact names (filenames, process names, paths).
   get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // Huntress agent rows (#10393): hostname is chosen on the endpoint, and
+  // platform/status are vendor-reported strings; deviceHostname is the
+  // Breeze device's agent-reported hostname.
+  get_huntress_agents: new Set(['hostname', 'deviceHostname', 'platform', 'status']),
   // EDR-framework detection rows: vendor-authored strings that routinely echo
   // endpoint-chosen artifact names (threat/file/process names). get_edr_status
   // is deliberately absent: it carries Breeze-generated labels and notes only.

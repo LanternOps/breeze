@@ -210,6 +210,64 @@ describe('get_huntress_incidents — list rows are lean enough to reach the mode
     expect(where).not.toMatch(/not in \('resolved'/);
   });
 
+  it('incidentId keeps the org condition and the requested org in the by-id WHERE, and refuses an inaccessible org before querying', async () => {
+    const { sql } = await import('drizzle-orm');
+    const log: Captured[] = [];
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) =>
+      chain(cols, [project(cols, fullIncident(7))], log));
+    await handlerFor('get_huntress_incidents')(
+      { incidentId: '00000000-0000-4000-8000-000000000007', orgId: '11111111-1111-4111-8111-111111111111' },
+      makeAuth({ orgCondition: () => sql`AUTH_ORG_CONDITION` } as Partial<AuthContext>),
+    );
+    const where = renderWhere(log.find((q) => q.cols && 'details' in q.cols)!.where);
+    expect(where).toContain('AUTH_ORG_CONDITION');
+    expect(where).toContain('"huntress_incidents"."org_id" = $');
+
+    mockDb.select.mockClear();
+    const denied = JSON.parse(await handlerFor('get_huntress_incidents')(
+      { incidentId: '00000000-0000-4000-8000-000000000007', orgId: 'org-x' },
+      makeAuth({ canAccessOrg: () => false } as Partial<AuthContext>),
+    ));
+    expect(denied.error).toMatch(/access denied/i);
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+
+  it('incidentId for a site-restricted caller: no in-scope devices → error without reading the incident; otherwise the site device set narrows the by-id read', async () => {
+    const siteAuth = makeAuth({
+      allowedSiteIds: ['site-A'],
+      canAccessSite: (s: string | null | undefined) => s === 'site-A',
+    } as Partial<AuthContext>);
+
+    let incidentRead = false;
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return { from: () => ({ where: () => Promise.resolve([{ id: 'd-siteB', siteId: 'site-B' }]) }) };
+      }
+      incidentRead = true;
+      return chain(cols as Record<string, unknown>, [project(cols as Record<string, unknown>, fullIncident(7))], []);
+    });
+    const empty = JSON.parse(await handlerFor('get_huntress_incidents')(
+      { incidentId: '00000000-0000-4000-8000-000000000007' }, siteAuth,
+    ));
+    expect(empty.error).toMatch(/not found/i);
+    expect(empty.scopeNote).toBeDefined();
+    expect(empty.incident).toBeUndefined();
+    expect(incidentRead).toBe(false);
+
+    const log: Captured[] = [];
+    mockDb.select.mockImplementation((cols?: unknown) => {
+      if (isDeviceResolverSelect(cols)) {
+        return { from: () => ({ where: () => Promise.resolve([{ id: 'd-siteA', siteId: 'site-A' }]) }) };
+      }
+      return chain(cols as Record<string, unknown>, [project(cols as Record<string, unknown>, fullIncident(7))], log);
+    });
+    await handlerFor('get_huntress_incidents')({ incidentId: '00000000-0000-4000-8000-000000000007' }, siteAuth);
+    const q = log.find((entry) => entry.cols && 'details' in entry.cols)!;
+    const where = renderWhere(q.where);
+    expect(where).toContain('"huntress_incidents"."id" = $');
+    expect(where).toContain('"huntress_incidents"."device_id" in');
+  });
+
   it('incidentId that matches nothing in scope is a not-found error, not an empty success', async () => {
     const log: Captured[] = [];
     mockDb.select.mockImplementation((cols?: Record<string, unknown>) => chain(cols, [], log));
