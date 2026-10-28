@@ -517,9 +517,9 @@ GET /security/dashboard?orgId={orgId}
 | Field | Description |
 |-------|-------------|
 | `totalDevices` | Total number of devices with posture data |
-| `protectedDevices` | Devices with low risk and online status |
-| `atRiskDevices` | Devices with medium or high risk |
-| `unprotectedDevices` | Devices with critical risk level |
+| `protectedDevices` | Devices at posture risk level `low` that are online (posture score 85 or higher) |
+| `atRiskDevices` | Devices at posture risk level `medium` or `high` |
+| `unprotectedDevices` | Devices at posture risk level `critical` |
 | `offlineDevices` | Devices not currently reporting |
 | `totalThreatsDetected` | Total threat count across all devices |
 | `activeThreats` | Threats in `active` status |
@@ -535,6 +535,8 @@ GET /security/dashboard?orgId={orgId}
 | `adminAudit` | Summary of default/weak/stale admin account issues with top affected devices |
 | `recommendations` | Top security recommendations with priority and category |
 | `trend` | 30-day score trend as timestamp/score data points |
+
+`protectedDevices`, `atRiskDevices` and `unprotectedDevices` measure overall posture risk (falling back to per-device status when no posture snapshot exists), not antivirus coverage: a device with real-time protection on still counts as at risk when its posture score is below 85. For antivirus coverage, read the `antivirus` block. The **Antivirus** page tiles and the **Security** overview card both use it: the total is `protected + unprotected + unknown`, and coverage is `protected` divided by that total.
 
 ### Score Breakdown
 
