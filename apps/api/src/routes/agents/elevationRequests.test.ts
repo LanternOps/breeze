@@ -120,7 +120,11 @@ const pamConfigMocks = vi.hoisted(() => ({
 }));
 vi.mock('./helpers', () => pamConfigMocks);
 
-import { db, withDbAccessContext } from '../../db';
+// #8928: the 201 carries the MSP's name for the end-user toasts.
+const brandingMocks = vi.hoisted(() => ({ resolveMessageBranding: vi.fn() }));
+vi.mock('../../services/endpointMessaging/brandingSnapshot', () => brandingMocks);
+
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { elevationRequestsRoutes } from './elevationRequests';
 import { writeAuditEvent } from '../../services/auditEvents';
 
@@ -255,6 +259,7 @@ describe('agent elevation-requests ingestion route', () => {
     bridgeMocks.getUserPushTokens.mockResolvedValue([]);
     bridgeMocks.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ insert: db.insert }));
+    brandingMocks.resolveMessageBranding.mockResolvedValue(null);
     lifecycleMocks.createPamDecisionIntent.mockImplementation(async (_tx, input) => ({
       actuationId: 'actuation-1',
       elevationRequestId: input.request.id,
@@ -262,6 +267,94 @@ describe('agent elevation-requests ingestion route', () => {
       generation: 1,
       desiredState: input.decision === 'denied' ? 'cleanup' : 'active',
     }));
+  });
+
+  describe('supportName for the end-user notices (#8928)', () => {
+    const submit = () => buildApp().request('/agents/agent-123/elevation-requests', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(goodPayload),
+    });
+    const partnerBranding = {
+      partnerId: 'partner-1', senderIdentity: 'partner' as const,
+      branding: { companyName: 'Contoso IT', displayName: 'Contoso IT', accent: null },
+    };
+
+    it('returns supportName from partner branding', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      brandingMocks.resolveMessageBranding.mockResolvedValueOnce(partnerBranding);
+      const res = await submit();
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', supportName: 'Contoso IT' });
+      expect(brandingMocks.resolveMessageBranding).toHaveBeenCalledWith('org-1');
+    });
+
+    it('omits supportName when branding is null', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const res = await submit();
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+    });
+
+    it('omits supportName for the generic sender identity (the agent says "IT")', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      brandingMocks.resolveMessageBranding.mockResolvedValueOnce({
+        ...partnerBranding, senderIdentity: 'generic',
+        branding: { companyName: 'Your IT support team', displayName: 'Your IT support team', accent: null },
+      });
+      expect(await (await submit()).json()).toEqual({ id: 'req-uuid', status: 'pending' });
+    });
+
+    it('caps supportName at 120 code points', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const long = 'é'.repeat(130);
+      brandingMocks.resolveMessageBranding.mockResolvedValueOnce({
+        ...partnerBranding, branding: { companyName: long, displayName: long, accent: null },
+      });
+      const body = await (await submit()).json() as { supportName: string };
+      expect(Array.from(body.supportName)).toHaveLength(120);
+    });
+
+    it('submit succeeds when branding throws, and the failed lookup is logged at warn', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      brandingMocks.resolveMessageBranding.mockRejectedValueOnce(new Error('partner lookup failed'));
+      const res = await submit();
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+      // A lookup broken fleet-wide would make every toast say "IT": it must be
+      // visible at warn, not hidden at debug.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('support-name lookup failed for org=org-1'),
+        expect.any(Error),
+      );
+      warn.mockRestore();
+    });
+
+    it('branding resolves outside the org transaction, in a system context', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const order: string[] = [];
+      vi.mocked(withDbAccessContext).mockImplementation(async (_ctx: any, fn: any) => {
+        order.push('org:open');
+        try { return await fn(); } finally { order.push('org:close'); }
+      });
+      vi.mocked(runOutsideDbContext).mockImplementation(((fn: any) => { order.push('outside'); return fn(); }) as any);
+      vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: any) => { order.push('system'); return fn(); }) as any);
+      brandingMocks.resolveMessageBranding.mockImplementationOnce(async () => {
+        order.push('branding');
+        return partnerBranding;
+      });
+      expect((await submit()).status).toBe(201);
+      // The org-scoped transaction has closed before branding opens its own
+      // system context, so the submit never holds two pooled connections.
+      const brandingAt = order.indexOf('branding');
+      expect(order.lastIndexOf('org:close')).toBeLessThan(brandingAt);
+      expect(order.slice(brandingAt - 2, brandingAt)).toEqual(['outside', 'system']);
+    });
+
+    it('a non-201 response resolves no branding', async () => {
+      mockSelects([]);
+      const res = await submit();
+      expect(res.status).not.toBe(201);
+      expect(brandingMocks.resolveMessageBranding).not.toHaveBeenCalled();
+    });
   });
 
   it('inserts an elevation request and returns id + status', async () => {

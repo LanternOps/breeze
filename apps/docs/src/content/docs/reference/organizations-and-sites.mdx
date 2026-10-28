@@ -338,6 +338,12 @@ From v0.124.0 a merge also expires every live, not-yet-actuated PAM elevation re
 
 A **Site** represents a physical or logical location within an organisation -- for example, a branch office, data centre, or remote office.
 
+### The Sites list
+
+**Fleet Management → Sites** (`/settings/sites`, v0.125.0+) lists sites in one place. With no organisation selected in the header it lists every site you can see, across organisations, with an **Organization** column; with an organisation selected it lists that organisation's sites. Each row's device count opens the device list filtered to that site. Anyone with `sites:read` sees the page; **Add**, **Edit** and **Delete** need `sites:write`, and adding a site from the cross-organisation view asks which organisation it belongs to. The organisation record's **Sites** tab is unchanged.
+
+To move devices between sites, see [Moving devices to another site](/features/devices/#moving-devices-to-another-site).
+
 ### Site Fields
 
 | Field | Type | Description |

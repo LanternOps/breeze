@@ -565,7 +565,7 @@ async function walkUnit(
     case 'failed':
       // Only an onFailure 'continue' failure leaves a run going (a stop
       // failure is written with the run's terminal status).
-      return { flow: 'continue', status: 'failed', output: null };
+      return { flow: 'continue', status: 'failed', output: failedUnitOutput(row!) };
     case 'parked':
       return resumeParkedUnit(s, step, index, itemIndex, itemCount, row!);
     case 'end':
@@ -676,6 +676,7 @@ async function runStepExecutor(
       scope: scopeFor(s),
       auth: s.auth!,
       deadline: t0 + step.timeoutSec * 1000,
+      leaseToken: s.token,
       stepRowId,
     });
   } catch (err) {
@@ -735,8 +736,9 @@ async function executeUnitRow(
   const { outcome, elapsed: durationMs } = exec;
   const finishedAt = new Date();
   const rendered = outcome.kind === 'skipped' ? null : (outcome.renderedInput ?? null);
+  const ai = aiUsageColumns(outcome);
   const write = (values: StepRowValues) => checkpoint(s.runId, s.token, {}, {
-    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...values } },
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...ai, ...values } },
   });
 
   switch (outcome.kind) {
@@ -848,6 +850,28 @@ async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, it
   return 'continue';
 }
 
+/**
+ * W6 (#5221): what a failed unit puts in the scope — its recorded output (a
+ * fleet step's device sets survive a partial failure) or null.
+ */
+export function failedUnitOutput(row: Pick<FlowRunStepRow, 'output'> | { output: unknown }): FlowValue | null {
+  return (row.output ?? null) as FlowValue | null;
+}
+
+/**
+ * W5 (#5220, Decision 13): an `ai` step's model usage on its step row
+ * (`flow_run_steps_ai_usage_chk`: all three set, or none). Whole cents.
+ */
+export function aiUsageColumns(outcome: StepOutcome): Pick<StepRowValues, 'aiInputTokens' | 'aiOutputTokens' | 'aiCostCents'> {
+  const u = outcome.kind === 'skipped' ? undefined : outcome.aiUsage;
+  if (!u) return {};
+  return {
+    aiInputTokens: Math.max(0, Math.round(u.inputTokens)),
+    aiOutputTokens: Math.max(0, Math.round(u.outputTokens)),
+    aiCostCents: Math.max(0, Math.round(u.costCents)),
+  };
+}
+
 async function applyOutcome(
   s: Slice,
   step: FlowStep,
@@ -863,8 +887,9 @@ async function applyOutcome(
   const approvalMode = outcome.kind !== 'skipped' && outcome.approvalMode === 'pre_approved' ? 'pre_approved' as const : undefined;
   const cursor = nextCursor(s, index, itemIndex, itemCount);
   const advance = { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs };
+  const ai = aiUsageColumns(outcome);
   const write = (values: StepRowValues): FlowRunCheckpointStep => ({
-    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...values } },
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...ai, ...values } },
   });
 
   switch (outcome.kind) {
@@ -878,7 +903,10 @@ async function applyOutcome(
       return ok ? { flow: 'continue', status: 'completed', output: outcome.output } : STOP;
     }
     case 'failed': {
-      const stepWrite = write({ status: 'failed', errorCode: outcome.code, error: outcome.message, finishedAt });
+      const stepWrite = write({
+        status: 'failed', errorCode: outcome.code, error: outcome.message, finishedAt,
+        ...(outcome.output !== undefined ? { output: outcome.output } : {}),
+      });
       const pause = PAUSE_FOR_CODE[outcome.code] ?? null;
       if (outcome.policy || step.onFailure === 'stop') {
         await finish(s, { status: 'failed', errorCode: outcome.code, error: `Step ${step.id}: ${outcome.message}` }, stepWrite, { pause });
@@ -886,7 +914,7 @@ async function applyOutcome(
       }
       const ok = await checkpoint(s.runId, s.token, advance, stepWrite);
       if (pause) await safePause(s.run, s.publication.publicationSeq, pause);
-      return ok ? { flow: 'continue', status: 'failed', output: null } : STOP;
+      return ok ? { flow: 'continue', status: 'failed', output: outcome.output ?? null } : STOP;
     }
     case 'unknown_outcome':
       await finish(s, { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${step.id}: ${outcome.message}` },

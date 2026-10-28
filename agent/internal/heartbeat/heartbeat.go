@@ -40,6 +40,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/httputil"
+	"github.com/breeze-rmm/agent/internal/inbox"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
@@ -48,10 +49,13 @@ import (
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
 	"github.com/breeze-rmm/agent/internal/privilege"
+	"github.com/breeze-rmm/agent/internal/prompthost"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/remote/desktop/x11"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -332,6 +336,16 @@ type SecurityCapabilities struct {
 	// The API records it non-sticky; only exactly 1 makes this device eligible
 	// to be the source of a reattach. Never declared by a Quick Support client.
 	RebindProtocolVersion int `json:"rebindProtocolVersion,omitempty"`
+	// PromptIdentityProtocolVersion (#10190 W03) declares that this build
+	// caches HeartbeatResponse.PromptIdentity and fetches its logo from
+	// /agents/:id/prompt-identity/logo. The API sends the block only to a
+	// beat declaring exactly 1.
+	PromptIdentityProtocolVersion int `json:"promptIdentityProtocolVersion,omitempty"`
+	// PamUserNotifyProtocolVersion (#8928) declares that this build claims
+	// pam_request_notify and shows the end-user PAM outcome notices. Windows
+	// builds only (PAM interception is Windows-only); the API normalizes any
+	// value other than 1 to 0 and never dispatches the command to 0.
+	PamUserNotifyProtocolVersion int `json:"pamUserNotifyProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -386,6 +400,12 @@ type HeartbeatResponse struct {
 	// the parked beat while this install is the source of an open intent.
 	// Verified before use; see rebind_directive.go and rebind_flow.go.
 	Rebind *RebindDirective `json:"rebind,omitempty"`
+	// PromptHost is the prompt-host kill switch (#10190); absent = nothing enabled.
+	PromptHost *PromptHostSettings `json:"promptHost,omitempty"`
+	// PromptIdentity is the MSP identity block (#10190 W03), kept raw so a
+	// malformed block never fails the rest of the response; absent = keep
+	// the last-known identity. See prompt_identity.go.
+	PromptIdentity json.RawMessage `json:"promptIdentity,omitempty"`
 }
 
 type HelperSettings struct {
@@ -562,9 +582,18 @@ type Heartbeat struct {
 	patchSendFailures int
 
 	// User session helper (IPC)
-	helperToken     string // retained copy of the helper-scoped token for connect-time pushes
-	helperTokenMu   sync.RWMutex
-	sessionBroker   *sessionbroker.Broker
+	helperToken   string // retained copy of the helper-scoped token for connect-time pushes
+	helperTokenMu sync.RWMutex
+	sessionBroker *sessionbroker.Broker
+	promptHost    *prompthost.Host // on-device prompts (#10190); W04 registers notice.info (live only where the server enables it)
+	// MSP identity cache and the prompt list it purges on a scope change
+	// (#10190 W03); see prompt_identity.go.
+	promptIdentity  *promptidentity.Store
+	promptListStore *inbox.Store
+	promptLogoState promptLogoFetchState
+	// tccNotices tracks the macOS permission notice per user (#10190 W04);
+	// see notices.go.
+	tccNotices      tccNoticeState
 	helperLifecycle helperLifecycleController
 	lifecycleCancel context.CancelFunc
 	shutdownTimeout time.Duration
@@ -619,7 +648,25 @@ type Heartbeat struct {
 	// pamReportUnable sends the "cannot act on this elevation" report (#9517);
 	// nil means reportPamUnable's real POST (sendPamElevationUnable), sent off
 	// the etwlua loop goroutine.
-	pamReportUnable   func(requestID string, unable pamUnable)
+	pamReportUnable func(requestID string, unable pamUnable)
+	// pamDeclines is the durable record of the end user's answer to a PAM
+	// dialog (#8971): both apply paths refuse a declined request, and the
+	// declined entries are the outbox for the server withdraw. Memory-only
+	// until SetStatePath swaps in the file-backed store; read it through
+	// pamDeclineStore().
+	pamDeclinesMu sync.Mutex
+	pamDeclines   *pamdecline.Store
+	// pamDeclineCheckerInstalled is true once the lifetime manager took the
+	// decline re-check. pam_apply_v2 refuses every apply until it is.
+	pamDeclineCheckerInstalled atomic.Bool
+	// pamWithdrawKick wakes the withdraw drain right after a decline.
+	pamWithdrawKick chan struct{}
+	// pamDeclineWait bounds how long an apply waits for an open dialog's
+	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
+	pamDeclineWait time.Duration
+	// pamWithdrawNow is the withdraw drain's clock (backoff); nil means
+	// time.Now.
+	pamWithdrawNow    func() time.Time
 	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
@@ -628,6 +675,23 @@ type Heartbeat struct {
 	// technician approval was raised from, so a verified pam_apply_v2 launch
 	// can dismiss that prompt and no other (pam_approved_consent.go).
 	pamPendingConsents pendingPamConsents
+	// pamRequests tracks the requests the user handed to IT so the outcome
+	// notices (#8928) can be shown; created lazily by pamTracker().
+	pamRequestsOnce sync.Once
+	pamRequests     *pamRequestTracker
+	// pamNotifySink, when set, receives every PAM outcome notice instead of
+	// the session broker (test seam); a non-nil error means "not shown". nil
+	// means sendSessionNotifyTitled.
+	pamNotifySink func(title, body, winSession string) error
+	// pamSupportNameCached is the MSP support name last returned by a
+	// successful elevation submit (pam_support_name.go), loaded from its
+	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
+	pamSupportNameMu     sync.Mutex
+	pamSupportNameCached string
+	// pamOfflineLimiter rate-limits the offline notice per program and user
+	// (pam_offline_notify.go); created lazily by pamOfflineRateLimiter().
+	pamOfflineLimiterOnce sync.Once
+	pamOfflineLimiter     *pamOfflineNoticeLimiter
 	// pamApprovedConsentQuiesceWait bounds how long an uncertain approved-
 	// prompt dismissal keeps pamActuateMu while waiting for the helper to
 	// prove it finished. Zero means pamDismissTimeout; tests shrink it.
@@ -1169,11 +1233,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		client:        httpClient,
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
-		metricsCol:    collectors.NewMetricsCollector(),
-		hardwareCol:   collectors.NewHardwareCollector(),
-		softwareCol:   collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:  collectors.NewInventoryCollector(),
-		vpnCol:        collectors.NewVPNCollector(),
+		// Memory-only until SetStatePath gives it a file.
+		pamDeclines:     pamdecline.NewStore("", nil),
+		pamWithdrawKick: make(chan struct{}, 1),
+		metricsCol:      collectors.NewMetricsCollector(),
+		hardwareCol:     collectors.NewHardwareCollector(),
+		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:    collectors.NewInventoryCollector(),
+		vpnCol:          collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -1347,6 +1414,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// explicitly configured. macOS daemons handle desktop capture directly
 	// but still need the broker for user-context operations (run_as_user
 	// scripts and Breeze Helper launch).
+	// The MSP identity cache (#10190 W03) exists with or without the broker:
+	// it is what the device was last told, kept offline.
+	h.initPromptIdentity(config.GetDataDir())
+
 	needsBroker := cfg.UserHelperEnabled || cfg.IsService || cfg.IsHeadless
 	if needsBroker {
 		socketPath := cfg.IPCSocketPath
@@ -1356,6 +1427,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		h.sessionBroker = sessionbroker.New(socketPath, h.handleUserHelperMessage)
 		h.sessionBroker.SetSessionClosedHandler(h.handleHelperSessionClosed)
 		h.sessionBroker.SetSessionAuthenticatedHandler(h.handleHelperSessionAuthenticated)
+		h.startPromptHost(config.GetDataDir())
 		// Retain the helper-scoped token so connect-time pushes have it even after
 		// the config copy is cleared post-persist during rotation.
 		h.setHelperToken(h.config.HelperAuthToken)
@@ -1406,6 +1478,11 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		),
 		cfg.PatchRebootMaxPerDay,
 	)
+	// The restart card (#10190 W05): each rung is offered to the prompt host
+	// first; a rung no session can draw goes out as above, unchanged.
+	if card := h.newRestartCard(); card != nil {
+		h.rebootMgr.SetRestartSurface(card)
+	}
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
@@ -1697,6 +1774,11 @@ func (h *Heartbeat) SetStatePath(path string) {
 	if path != "" && h.pamLifetimeManager == nil {
 		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
 	}
+	if path != "" {
+		h.loadPamDeclineStore(filepath.Join(filepath.Dir(path), pamDeclineFileName))
+		h.installPamDeclineChecker()
+	}
+	h.loadPamSupportName()
 }
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
@@ -2171,6 +2253,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
+	// #8971: deliver the user's PAM declines to the server (outbox drain).
+	go h.runPamWithdrawDrain()
 
 	// #8318 — know whether a staged reattach set is on disk before the
 	// credential and certificate work below starts, so none of it runs on an
@@ -2212,6 +2296,10 @@ func (h *Heartbeat) Start() {
 	if h.scmSessionCh != nil && h.sessionBroker != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		lifecycle = sessionbroker.NewHelperLifecycleManager(h.sessionBroker, h.scmSessionCh, h.config.HelperLifecycleMode)
+		// Windows session lock / unlock reach the prompt host, which holds a
+		// prompt for a locked session (list entry only) and draws it at
+		// unlock with the time it has left (#10190 W05, spec §3.3).
+		lifecycle.SetSessionLockObserver(h.promptSessionLockChanged)
 		h.installHelperLifecycle(lifecycle, cancel)
 		go bootstrapThenListenWithRetry(ctx, lifecycle.Bootstrap, func() {
 			go h.sessionBroker.Listen(h.stopChan)
@@ -2222,6 +2310,11 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
+	}
+	if h.promptHost != nil {
+		promptCtx, promptCancel := context.WithCancel(context.Background())
+		go func() { <-h.stopChan; promptCancel() }()
+		go h.promptHost.Run(promptCtx)
 	}
 	if h.sessionCol != nil {
 		h.sessionCol.Start(h.stopChan)
@@ -5713,6 +5806,11 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	// First: a scope change purges the old MSP's prompt list entries and
+	// replaces the identity before anything else in this response can create
+	// or replay a prompt (spec §3.6).
+	h.applyPromptIdentity(response)
+	h.applyPromptHostSettings(response)
 	h.ackNetworkContext(response.NetworkContextReceipt)
 	// Bare-metal recovery W04a: only clear the marker once the server has
 	// actually acked it — a failed/lost beat must resend it next time.
@@ -8824,5 +8922,17 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 		RetainStateProtocolVersion:            retainStateProtocolVersion,
 		RebindProtocolVersion:                 rebindProtocolVersion,
+		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
+		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}
+}
+
+// pamUserNotifyProtocolVersion is 1 on Windows builds, the only platform with
+// UAC interception and so the only one that can have a tracked hand-off to
+// notify about (#8928). Elsewhere it is 0 and omitted from the beat.
+func pamUserNotifyProtocolVersion() int {
+	if runtime.GOOS == "windows" {
+		return 1
+	}
+	return 0
 }

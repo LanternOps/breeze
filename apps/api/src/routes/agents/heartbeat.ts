@@ -36,6 +36,10 @@ import {
 } from '../../services/backupHelperProtocols';
 import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
+import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
+import { enabledPromptKinds } from '../../services/promptHostConfig';
+import { buildHeartbeatPromptIdentity } from '../../services/promptIdentity';
+import { noteRebootUserActionDropped, recordRebootUserAction } from '../../services/rebootUserActionAudit';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -397,6 +401,14 @@ export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
 }
 
 /**
+ * #8928 — normalize the PAM user-notify protocol (pam_request_notify outcome
+ * notices). Anything other than exactly 1 means "not capable".
+ */
+export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
  * Normalize the only revocation-lease protocol version implemented here.
  * Anything other than exactly 1 — absent, malformed, or a future version this
  * server does not speak — is capability 0, and every desktop-start dispatch
@@ -438,6 +450,16 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2
  * never persisted — each beat is answered from its own report.
  */
 export function normalizeRetainStateProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Normalize the prompt identity protocol (#10190 W03): whether THIS beat's
+ * agent caches the response's `promptIdentity` block. Exactly 1 only
+ * (PROMPT_IDENTITY_PROTOCOL_VERSION); absent, malformed or a future version is
+ * 0 and gets no block. Parse-only, never persisted.
+ */
+export function normalizePromptIdentityProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
@@ -1150,6 +1172,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
     pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+    pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+      data.securityCapabilities?.pamUserNotifyProtocolVersion,
+    ),
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -1988,6 +2013,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
       pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+      pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+        data.securityCapabilities?.pamUserNotifyProtocolVersion,
+      ),
     },
   );
 
@@ -2417,6 +2445,57 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // call for it; readiness written before a flag-off lapses on its TTL.
   if (agent.role !== 'watchdog' && callerVerificationEnabled()) {
     await recordWorkstationCapabilities(scoped.deviceOrgId, scoped.deviceId, data.helperCapabilities);
+  }
+
+  // #10190 W02 — the live prompt-renderer observation for the device page and
+  // the Assist-floor evidence (compatibility rule 8). Main-agent beats only,
+  // keyed by the authenticated device. Absent (old agent, no renderer, or a
+  // block the schema dropped) DELETES it, so what the page shows is always
+  // this beat's report. Redis only, after the org transaction released;
+  // bounded and never throws, so it cannot fail or stall the beat. A block the
+  // schema dropped would look like "no renderer", so that collapse is logged
+  // (throttled); Hono caches the parsed body, so the re-read is free (#1121).
+  if (agent.role !== 'watchdog') {
+    const promptHostReport = data.helperCapabilities?.promptHost;
+    if (promptHostReport === undefined) {
+      try {
+        notePromptHostReportDropped(scoped.deviceId, await c.req.json(), promptHostReport);
+      } catch {
+        // Raw body unavailable — nothing to report.
+      }
+    }
+    await recordPromptHostObservation(scoped.deviceId, promptHostReport);
+  }
+
+  // #10190 W05 — the restart decision the person at the keyboard made
+  // (Postpone / Restart now). The agent re-sends it on every beat while the
+  // restart is scheduled; the service writes one audit row per decision
+  // (Redis NX on device + decision time). Keyed by the authenticated device
+  // and its org (the row's, not the token's), after the org transaction
+  // released, and NOT awaited: the beat's answer never waits on Redis or the
+  // audit writer, and the service never throws (the catch is belt and braces
+  // for the floating promise). A schedule whose lastUserAction the schema
+  // dropped is logged (throttled); Hono caches the parsed body, so the
+  // re-read is free.
+  const rebootStatus = data.rebootStatus;
+  const lastUserAction = rebootStatus?.lastUserAction;
+  if (agent.role !== 'watchdog' && rebootStatus && !lastUserAction) {
+    try {
+      noteRebootUserActionDropped(scoped.deviceId, await c.req.json(), lastUserAction);
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
+  }
+  if (agent.role !== 'watchdog' && rebootStatus && lastUserAction) {
+    void recordRebootUserAction(scoped.deviceId, scoped.deviceOrgId, lastUserAction, {
+      c,
+      agentId,
+      scheduledAt: rebootStatus.scheduledAt,
+      deferralsUsed: rebootStatus.deferralsUsed,
+      maxDeferrals: rebootStatus.maxDeferrals,
+    }).catch((err) => {
+      console.error('[heartbeat] restart decision audit failed', { deviceId: scoped.deviceId, err });
+    });
   }
 
   // Self-health is independent from reachability and is persisted only after
@@ -2929,6 +3008,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
 
+  // #10190 W03 — the MSP identity drawn on every device prompt. Only for an
+  // agent that speaks the block, and only when this beat's own hierarchy
+  // loaded (the device's org and partner were just checked against the
+  // authenticated ones). Otherwise, and on any resolution failure, the block
+  // is OMITTED, never `cleared`: an absent block keeps the agent's last-known
+  // identity, so a transient DB or Redis error never strips the MSP name from
+  // a prompt. `cleared` is sent only when the device's org resolves no partner
+  // row (services/promptIdentity.ts). Resolved here, after the policy context
+  // is released: it runs its own short system read and may fetch the logo
+  // (#1105). A sibling of helperSettings, not inside it: native prompts need
+  // the identity on a device with no helper policy.
+  let promptIdentity: Awaited<ReturnType<typeof buildHeartbeatPromptIdentity>>;
+  if (
+    normalizePromptIdentityProtocolVersion(data.securityCapabilities?.promptIdentityProtocolVersion) === 1
+    && hierarchyOutcome === 'loaded'
+  ) {
+    try {
+      promptIdentity = await buildHeartbeatPromptIdentity({
+        deviceId: scoped.deviceId,
+        orgId: scoped.deviceOrgId,
+        partnerId: agent.partnerId,
+      });
+    } catch (err) {
+      console.error(`[agents] failed to resolve the prompt identity for ${agentId}; block omitted:`, err);
+      captureException(err);
+    }
+  }
+
   const {
     eventLogSettings,
     monitoringSettings,
@@ -3013,6 +3120,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uacInterceptionEnabled: settingsDecision.uacInterceptionEnabled,
     helperEnabled: settingsDecision.helperEnabled,
     helperSettings: settingsDecision.helperSettings,
+    // #10190 — the prompt host kill switch (spec §3.1 rule 2). ALWAYS sent,
+    // with or without a helper policy: the agent reads an absent block as an
+    // empty list, so omitting it would be indistinguishable from the kill
+    // switch. Server config only; the agent still needs the renderer's live
+    // advertisement and its own build to speak a kind before using it.
+    promptHost: { enabledKinds: enabledPromptKinds() },
+    ...(promptIdentity ? { promptIdentity } : {}),
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
     ...(rebind ? { rebind } : {}),

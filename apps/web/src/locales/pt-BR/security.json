@@ -1129,6 +1129,8 @@
       "durationHelp": "1 a 1440 minutos (máx. 24h).",
       "reasonRecommended": "Motivo (recomendado)",
       "reasonOptional": "Motivo (opcional)",
+      "reasonShownToUser": "Motivo (exibido ao usuário)",
+      "reasonShownToUserHint": "O usuário final vê isto na notificação (primeiros 500 caracteres).",
       "reasonPlaceholder": "Registrado na trilha de auditoria"
     },
     "actions": {

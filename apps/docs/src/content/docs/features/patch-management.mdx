@@ -39,7 +39,15 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`low`** | Minor improvement or non-security fix with minimal operational impact |
 | **`unknown`** | Severity not yet classified by the patch source |
 
-A patch whose source published no severity is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
+**Derived ratings for Windows updates (agent 0.125.0+).** Windows Update often sends no MSRC rating. When it doesn't, the agent derives one from the update's classification and title, and the badge carries a small **Derived rating** note:
+
+- Security Updates and Critical Updates, and other updates titled "security update" or "cumulative update" (not preview cumulative updates), are rated **important**. A derived rating is never **critical**: only a real MSRC rating can be.
+- Update Rollups are rated **important** only when the title mentions security.
+- Definition updates (including Defender security intelligence), drivers, feature packs, tools and upgrades stay unrated.
+
+A derived rating counts for ring auto-approval like any other, so a ring that auto-approves **important** now also approves Windows cumulative and security updates that used to be unrated. A ring that auto-approves only **critical** is unaffected. A later real MSRC rating replaces the derived one.
+
+A patch whose source published no severity, and that the agent cannot rate, is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
 
 ### Approval States
 

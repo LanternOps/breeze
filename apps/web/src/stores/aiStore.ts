@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
@@ -1520,4 +1521,21 @@ export const useAiStore = create<AiState>()(
 // its reader is cancelled instead of waiting for its next frame.
 useAiStore.subscribe((state) => {
   if (currentAttach && currentAttach.sessionId !== state.sessionId) abortCurrentAttach();
+});
+
+// #9840 lab row F1: sign-out navigates to /login without a page load, so this
+// store keeps its memory. Removing `breeze-ai-chat` from storage is not enough:
+// the next persist write would put the old session back, and the next person
+// to sign in on this browser would see the previous user's conversation,
+// rendered from memory. Reset to the initial state here, before auth.ts clears
+// storage, and stop anything still streaming into the old session.
+registerLogoutHook(() => {
+  claimSessionOwnership();
+  ++activeStreamToken;
+  const reader = currentSendReader;
+  currentSendReader = null;
+  if (reader) void reader.cancel().catch(() => undefined);
+  abortCurrentAttach();
+  useAiModelPickerStore.getState().reset();
+  useAiStore.setState(useAiStore.getInitialState(), true);
 });

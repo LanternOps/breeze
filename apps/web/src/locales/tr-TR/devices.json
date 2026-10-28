@@ -4633,5 +4633,38 @@
     "untitledAlert": "Uyarı bildirildi",
     "alertsUnavailable": "Açık uyarılar yüklenemedi",
     "viewAlerts": "Uyarıları görüntüle"
+  },
+  "physicalPlacementCard": {
+    "title": "Fiziksel konum",
+    "room": "Oda",
+    "rack": "Kabinet",
+    "rackUnit": "Kabinet birimi",
+    "heightU": "Yükseklik (U)",
+    "add": "Konum ekle",
+    "edit": "Düzenle",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor...",
+    "cancel": "İptal",
+    "remove": "Konumu kaldır",
+    "loadFailed": "Fiziksel konum yüklenemedi.",
+    "linkedNotice": "Bu varlık yönetilen bir cihaza bağlı. Konumu <deviceLink>{{name}}</deviceLink> üzerinden düzenleyin.",
+    "openDevice": "cihaz",
+    "removeConfirm": {
+      "title": "Fiziksel konum kaldırılsın mı?",
+      "message": "Bu varlığın oda, kabin, kabin birimi ve yükseklik bilgileri silinir."
+    },
+    "validation": {
+      "roomTooLong": "Oda en fazla 255 karakter olabilir.",
+      "rackTooLong": "Kabinet en fazla 128 karakter olabilir.",
+      "unitRange": "1 ile 100 arasında bir tam sayı girin."
+    },
+    "toasts": {
+      "saved": "Fiziksel konum kaydedildi",
+      "removed": "Fiziksel konum kaldırıldı",
+      "saveFailed": "Fiziksel konum kaydedilemedi",
+      "concurrent": "Konum başka bir yerde değiştirildi. En son değerler yeniden yüklendi; tekrar deneyin.",
+      "authorityDevice": "Bu varlık artık yönetilen bir cihaza bağlı. Konumu cihazda düzenleyin.",
+      "mfaRequired": "Fiziksel konumu değiştirmek için çok faktörlü kimlik doğrulama gerekir."
+    }
   }
 }

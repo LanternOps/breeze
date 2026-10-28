@@ -90,6 +90,16 @@ describe('heartbeatSchema — PAM reconciliation telemetry', () => {
     if (parsed.success) expect(parsed.data.securityCapabilities?.pamReconciliationResetProtocolVersion).toBe(1);
   });
 
+  // #8928
+  it('accepts the PAM user-notify capability and drops a malformed one without failing the beat', () => {
+    const ok = heartbeatSchema.safeParse({ ...minimal, securityCapabilities: { pamUserNotifyProtocolVersion: 1 } });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.securityCapabilities?.pamUserNotifyProtocolVersion).toBe(1);
+    const bad = heartbeatSchema.safeParse({ ...minimal, securityCapabilities: { pamUserNotifyProtocolVersion: 'yes' } });
+    expect(bad.success).toBe(true);
+    if (bad.success) expect(bad.data.securityCapabilities?.pamUserNotifyProtocolVersion).toBeUndefined();
+  });
+
   it('accepts exact bounded reconciliation status', () => {
     const parsed = heartbeatSchema.safeParse({
       ...minimal,

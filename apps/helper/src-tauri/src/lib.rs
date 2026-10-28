@@ -1,4 +1,5 @@
 mod app_shell;
+mod chrome;
 mod ipc;
 mod requirements;
 mod single_instance;
@@ -837,6 +838,30 @@ fn get_caller_verify_request(
         .ok_or_else(|| "request unavailable".into())
 }
 
+/// The MSP logo for the caller-verify card (#10190 W04): the logo bytes the
+/// agent synced in `prompt_branding_sync`, only for the window of a live
+/// request, and only when `sha256` (from `/helper/config` `branding.logo`) is
+/// the synced logo's sha. `None` when it is not: the card then falls back to
+/// the https `logoUrl`, or no logo. Hands out the logo and nothing else of
+/// the identity (`get_prompt_identity` stays closed to caller-verify windows).
+#[tauri::command]
+fn get_caller_verify_logo(
+    window: tauri::WebviewWindow,
+    caller: tauri::State<'_, std::sync::Arc<crate::ipc::caller_verify::CallerVerifyBridge>>,
+    prompts: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    verification_id: String,
+    sha256: String,
+) -> Result<Option<crate::ipc::prompt::CallerVerifyLogo>, String> {
+    if !crate::ipc::caller_verify::label_matches(window.label(), &verification_id) {
+        return Err("wrong window".into());
+    }
+    if caller.get(&verification_id).is_none() {
+        return Err("request unavailable".into());
+    }
+    let logo = prompts.tracker().identity_logo_for(&sha256);
+    Ok(logo)
+}
+
 /// What the message card in this window should render. Only the window
 /// labelled `message-<message_id>` may read it.
 #[tauri::command]
@@ -948,6 +973,193 @@ fn chat_mark_read(
         refresh_chat_tray(&app);
     }
     Ok(())
+}
+
+/// What the prompt card in this window should render (#10190). Only the window
+/// labelled `prompt-<hash of prompt_id>` may read it.
+#[tauri::command]
+fn get_prompt_view(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+) -> Result<crate::ipc::prompt::PromptView, String> {
+    if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
+        return Err("wrong window".into());
+    }
+    let now = crate::ipc::client::now_unix_ms();
+    let view = bridge.tracker().view(&prompt_id, now);
+    view.ok_or_else(|| "prompt unavailable".into())
+}
+
+/// The person chose an action on the card (click or keyboard). At most one
+/// action is in flight per prompt; an Err (no live session, already sending)
+/// is shown on the card, which stays up so the person can retry.
+#[tauri::command]
+fn prompt_card_action(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+    action_id: String,
+    via: String,
+) -> Result<(), String> {
+    if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
+        return Err("wrong window".into());
+    }
+    // A card can only be clicked or keyed; "list" belongs to the main window.
+    let via = match via.as_str() {
+        "click" => crate::ipc::prompt::ActionVia::Click,
+        "keyboard" => crate::ipc::prompt::ActionVia::Keyboard,
+        _ => return Err("invalid via".into()),
+    };
+    let sent = bridge.act(crate::ipc::client::now_unix_ms(), &prompt_id, &action_id, via);
+    crate::ipc::desktop::publish_prompt_state(&app, Some(&prompt_id));
+    sent
+}
+
+/// Esc / the card's hide control: the safe action on a pending decision (the
+/// card stays up), otherwise hide the card (`prompt_closed{hidden}`); the list
+/// entry stays either way. Hiding is never a domain action. `via` is how the
+/// person did it (`keyboard` for Esc, `click` otherwise).
+#[tauri::command]
+fn prompt_card_hide(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+    via: String,
+) -> Result<(), String> {
+    if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
+        return Err("wrong window".into());
+    }
+    let via = match via.as_str() {
+        "click" => crate::ipc::prompt::ActionVia::Click,
+        "keyboard" => crate::ipc::prompt::ActionVia::Keyboard,
+        _ => return Err("invalid via".into()),
+    };
+    let effect = bridge.dismiss(crate::ipc::client::now_unix_ms(), &prompt_id, via);
+    if let Ok(crate::ipc::prompt::DismissEffect::Hidden | crate::ipc::prompt::DismissEffect::Nothing) = effect {
+        if let Err(e) = window.destroy() {
+            eprintln!("[helper] prompt card could not be closed (promptId={prompt_id}): {e}");
+            return Err("This notification could not be closed. Try again.".into());
+        }
+    }
+    crate::ipc::desktop::publish_prompt_state(&app, Some(&prompt_id));
+    effect.map(|_| ())
+}
+
+/// The remote-session pill (#10190 W06) asks its own window to grow (expanded)
+/// or shrink (collapsed). Renderer-local (P7): nothing is sent to the agent.
+/// Only the pill's own window, and only while the tracker holds it open.
+#[tauri::command]
+fn prompt_pill_expand(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+    expanded: bool,
+) -> Result<(), String> {
+    if !crate::ipc::prompt::label_matches(window.label(), &prompt_id) {
+        return Err("wrong window".into());
+    }
+    if !bridge.tracker().indicator_open(&prompt_id) {
+        return Err("not a session indicator".into());
+    }
+    crate::ipc::desktop::size_prompt_pill(&window, expanded)
+}
+
+/// The script that points the main window at Request Support for
+/// `session_id` (#10190 W06, OD-6 (b)): it sets the hash AppShell reads
+/// (`#request-support/<locale>/<id>`, `locale` = the session prompt's, for the
+/// pre-filled draft) and nothing else. None unless the id is of the promptId
+/// charset (`[A-Za-z0-9._:-]`, at most 200) and the locale is a prompt locale
+/// tag, so nothing else can reach the script; it is also a JSON string
+/// literal, never spliced code.
+fn request_support_script(session_id: &str, locale: &str) -> Option<String> {
+    let ok = !session_id.is_empty()
+        && session_id.len() <= 200
+        && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+        && crate::ipc::prompt::valid_locale(locale);
+    if !ok {
+        return None;
+    }
+    let hash = serde_json::to_string(&format!("#request-support/{locale}/{session_id}")).ok()?;
+    Some(format!("window.location.hash = {hash};"))
+}
+
+/// Open the main window's Request Support flow pre-filled for the remote
+/// session (#10190 W06, OD-6 (b)). The ONE prompt path to the main window
+/// besides the tray (#8138): called only from the IPC loop's
+/// `prompt_action_result` handler, with what the tracker hands out once after
+/// the agent `accepted` the person's own "Report a problem" click
+/// (`PromptTracker::take_request_support`). Pinned by
+/// `prompt_rs_never_shows_main_window`.
+pub(crate) fn open_request_support(app: &tauri::AppHandle, req: &crate::ipc::prompt::RequestSupport) {
+    let Some(script) = request_support_script(&req.session_id, &req.locale) else {
+        eprintln!("[helper] Request Support not opened: unexpected session id or locale");
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("[helper] Request Support not opened: the main window does not exist");
+        return;
+    };
+    if let Err(e) = window.eval(script) {
+        eprintln!("[helper] Request Support could not be opened: {e}");
+        return;
+    }
+    show_window(app);
+}
+
+/// The MSP identity for the prompt header (#10190 W03): the main window
+/// (Notifications tab locale) and prompt cards only.
+#[tauri::command]
+fn get_prompt_identity(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+) -> Result<crate::ipc::prompt::PromptIdentityView, String> {
+    if !crate::ipc::desktop::identity_window_allowed(window.label()) {
+        return Err("wrong window".into());
+    }
+    let view = bridge.tracker().identity_view();
+    Ok(view)
+}
+
+/// The one notification list for the main window's Notifications tab
+/// (#10190 W04): this session's prompt entries and endpoint message cards.
+/// The main window only; the `prompt-list-updated` notice that prompts this
+/// pull carries a version and nothing else.
+#[tauri::command]
+fn get_notification_list(
+    window: tauri::WebviewWindow,
+    prompts: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    messages: tauri::State<'_, std::sync::Arc<crate::ipc::message::MessageBridge>>,
+) -> Result<crate::ipc::notifications::NotificationListView, String> {
+    if !crate::ipc::desktop::list_window_allowed(window.label()) {
+        return Err("wrong window".into());
+    }
+    let now = crate::ipc::client::now_unix_ms();
+    Ok(crate::ipc::notifications::list_view(&prompts, &messages, now))
+}
+
+/// An action chosen from the Notifications tab (`via: list`). Main window only.
+#[tauri::command]
+fn prompt_list_action(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::prompt::PromptBridge>>,
+    prompt_id: String,
+    action_id: String,
+) -> Result<(), String> {
+    if !crate::ipc::desktop::list_window_allowed(window.label()) {
+        return Err("wrong window".into());
+    }
+    let sent = bridge.act(
+        crate::ipc::client::now_unix_ms(),
+        &prompt_id,
+        &action_id,
+        crate::ipc::prompt::ActionVia::List,
+    );
+    crate::ipc::desktop::publish_prompt_state(&app, Some(&prompt_id));
+    sent
 }
 
 /// Submit the local user's choice (`<one of the 3 numbers>` | `not_me` |
@@ -1551,6 +1763,49 @@ pub(crate) fn refresh_chat_tray(app: &AppHandle) {
     let summary = chat_summary(app);
     let Some(tray) = app.tray_by_id("main") else { return };
     let _ = tray.set_tooltip(Some(&chat_tooltip(&summary)));
+    refresh_tray_menu(app);
+}
+
+/// The tray's Notifications entry (#10190): hidden while the list is empty;
+/// "(N)" is the number of entries. Windows 11 hides most tray icons in the
+/// overflow, so the on-screen card, not this entry, is what people rely on.
+/// The label is the shared catalog's `chrome.notificationsCount` (W03).
+fn notifications_menu_label(count: usize, locale: &str) -> Option<String> {
+    (count > 0).then(|| chrome::chrome_string("chrome.notificationsCount", locale, &[("count", &count.to_string())]))
+}
+
+/// The tray's language: the last branding sync's locale, else the OS UI
+/// language negotiated onto the eight prompt locales, else en.
+fn tray_locale_from(synced: Option<&str>, os_tag: &str) -> &'static str {
+    chrome::negotiate(synced.unwrap_or(os_tag))
+}
+
+fn tray_locale_for(bridge: Option<&crate::ipc::prompt::PromptBridge>) -> &'static str {
+    let synced = bridge.and_then(|b| b.tracker().chrome_locale().map(str::to_string));
+    tray_locale_from(synced.as_deref(), chrome::os_ui_locale())
+}
+
+fn tray_locale(app: &AppHandle) -> &'static str {
+    let bridge = app.try_state::<std::sync::Arc<crate::ipc::prompt::PromptBridge>>();
+    tray_locale_for(bridge.as_deref().map(|b| b.as_ref()))
+}
+
+/// Entries in the one notification list (prompts and message cards, W04).
+fn notification_list_len(app: &AppHandle) -> usize {
+    let now = crate::ipc::client::now_unix_ms();
+    let prompts = app.try_state::<std::sync::Arc<crate::ipc::prompt::PromptBridge>>();
+    let messages = app.try_state::<std::sync::Arc<crate::ipc::message::MessageBridge>>();
+    crate::ipc::notifications::list_len(
+        prompts.as_deref().map(|b| b.as_ref()),
+        messages.as_deref().map(|b| b.as_ref()),
+        now,
+    )
+}
+
+/// Re-render the tray menu (the Notifications entry follows the prompt list).
+/// Never shows a window.
+pub(crate) fn refresh_tray_menu(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id("main") else { return };
     match build_tray_menu(app, &load_helper_config()) {
         Ok(menu) => {
             if let Err(e) = tray.set_menu(Some(menu)) {
@@ -1581,6 +1836,10 @@ fn build_tray_menu(
     let mut builder = MenuBuilder::new(app);
     if let Some(label) = chat_menu_label(&chat_summary(app)) {
         let item = MenuItemBuilder::with_id("open_chat", label).build(app)?;
+        builder = builder.item(&item);
+    }
+    if let Some(label) = notifications_menu_label(notification_list_len(app), tray_locale(app)) {
+        let item = MenuItemBuilder::with_id("notifications", label).build(app)?;
         builder = builder.item(&item);
     }
     for id in tray_menu_item_ids(config) {
@@ -1642,6 +1901,7 @@ pub fn run() {
             consent_presented,
             get_consent_request,
             get_caller_verify_request,
+            get_caller_verify_logo,
             submit_caller_verify,
             get_message_view,
             message_ack,
@@ -1649,6 +1909,13 @@ pub fn run() {
             get_chat_view,
             chat_send_reply,
             chat_mark_read,
+            get_prompt_view,
+            prompt_card_action,
+            prompt_card_hide,
+            prompt_pill_expand,
+            get_prompt_identity,
+            get_notification_list,
+            prompt_list_action,
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
@@ -1789,6 +2056,13 @@ pub fn run() {
                 }
                 // Endpoint live chat (#8743): the user asked for the chat window.
                 "open_chat" => open_chat_from_tray(&menu_handle),
+                // Prompt host (#10190): the user asked for the notification list.
+                "notifications" => {
+                    if let Err(e) = menu_handle.emit("show-notifications", ()) {
+                        eprintln!("[helper] Failed to emit show-notifications: {}", e);
+                    }
+                    show_window(&menu_handle);
+                }
                 // macOS app menu Cmd+Q (#8399): hide, never quit.
                 #[cfg(target_os = "macos")]
                 app_shell::HIDE_WINDOW_MENU_ID => {
@@ -1881,12 +2155,21 @@ pub fn run() {
             // lives in its own `chat-<id>` window, never the main one.
             let chat = std::sync::Arc::new(crate::ipc::chat::ChatBridge::default());
             app.manage(chat.clone());
+            // Prompt host (#10190): prompts in process memory only; each card
+            // is its own `prompt-<hash>` window, never the main one.
+            let prompts = std::sync::Arc::new(crate::ipc::prompt::PromptBridge::default());
+            // A branding sync or session end tells the identity windows and
+            // relabels the tray (#10190 W03).
+            let identity_app = app.handle().clone();
+            prompts.set_identity_notifier(move || crate::ipc::desktop::publish_prompt_identity(&identity_app));
+            app.manage(prompts.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
                 bridge,
                 caller_verify,
                 messages,
                 chat,
+                prompts,
             };
             let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
                 stop: stop_rx,
@@ -2174,6 +2457,582 @@ mod tests {
         assert!(!card.contains("\"main\""));
     }
 
+    // #8138 + prompt host (#10190): a prompt renders in its own `prompt-<hash>`
+    // card window or only in the notification list. Nothing in prompt.rs can
+    // reach the main window; the card is built from exactly one call site (the
+    // `prompt_show` handler); the prompt arms, their handlers, the window
+    // helpers and the card/list commands never show, focus or name `main`.
+    // The only main-window paths are the user's own tray click and (W06) the
+    // agent's `accepted` answer to the user's "Report a problem" click.
+    #[test]
+    fn prompt_rs_never_shows_main_window() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let body_of = |src: &'static str, sig: &str| -> &'static str {
+            let start = src.find(sig).unwrap_or_else(|| panic!("{sig} not found"));
+            let end = src[start..].find("\n}\n").map(|i| i + start).unwrap();
+            &src[start..end]
+        };
+        const NO_SURFACING: &[&str] =
+            &["\"main\"", "show_window(", ".show()", "set_focus", "unminimize", "show_chat_window", "show_message_window"];
+
+        let prompt = prod_of(include_str!("ipc/prompt.rs"));
+        for forbidden in NO_SURFACING.iter().chain(&["WebviewWindowBuilder", "get_webview_window", "AppHandle"]) {
+            assert!(!prompt.contains(forbidden), "prompt.rs contains {forbidden}");
+        }
+
+        let client = prod_of(include_str!("ipc/client.rs"));
+        assert_eq!(client.matches("desktop::show_prompt_window").count(), 1);
+        let show = body_of(client, "fn handle_prompt_show(");
+        assert!(show.contains("desktop::show_prompt_window"), "the card is built only by the prompt_show handler");
+        let arms_start = client.find("\"prompt_show\" =>").expect("prompt_show arm");
+        let arms_end = client[arms_start..].find("\"ping\" =>").map(|i| i + arms_start).expect("ping arm");
+        let arms = &client[arms_start..arms_end];
+        for sig in [
+            "fn handle_prompt_show(",
+            "fn handle_prompt_update(",
+            "fn handle_prompt_close(",
+            "fn handle_prompt_action_result(",
+            "fn handle_prompt_branding_sync(",
+            "fn handle_prompt_unknown(",
+            "fn drop_prompt(",
+        ] {
+            let body = body_of(client, sig);
+            for forbidden in NO_SURFACING {
+                assert!(!body.contains(forbidden), "{sig} contains {forbidden}");
+                assert!(!arms.contains(forbidden), "the prompt arms contain {forbidden}");
+            }
+        }
+
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        for sig in [
+            "pub fn show_prompt_window(",
+            "pub fn close_prompt_window(",
+            "pub fn emit_prompt_view_notice(",
+            "pub fn publish_prompt_state(",
+            "pub fn emit_notification_list_notice(",
+            "pub fn publish_notification_list(",
+            "pub fn publish_prompt_identity(",
+            "fn emit_version_notice(",
+            "pub fn size_prompt_pill(",
+        ] {
+            let body = body_of(desktop, sig);
+            for forbidden in NO_SURFACING {
+                if sig == "pub fn emit_notification_list_notice(" && *forbidden == "\"main\"" {
+                    // A version notice to the Notifications tab, never a show.
+                    assert!(body.contains("emit_version_notice(app, \"main\""));
+                    continue;
+                }
+                assert!(!body.contains(forbidden), "{sig} contains {forbidden}");
+            }
+        }
+        assert!(body_of(desktop, "pub fn show_prompt_window(").contains("WebviewWindowBuilder::new"));
+
+        let lib = prod_of(include_str!("lib.rs"));
+        for sig in [
+            "fn get_prompt_view(",
+            "fn prompt_card_action(",
+            "fn prompt_card_hide(",
+            "fn prompt_pill_expand(",
+            "fn get_notification_list(",
+            "fn prompt_list_action(",
+            "fn get_caller_verify_logo(",
+            "pub(crate) fn refresh_tray_menu(",
+        ] {
+            // `tray_by_id("main")` is the tray icon's id, not the window.
+            let body = body_of(lib, sig).replace("tray_by_id(\"main\")", "");
+            for forbidden in NO_SURFACING {
+                assert!(!body.contains(forbidden), "{sig} contains {forbidden}");
+            }
+        }
+        // The tray's Notifications item is the user's own click...
+        assert_eq!(lib.matches("\"notifications\" =>").count(), 1);
+        // ...and the one other prompt path (#10190 W06, OD-6 (b)) is the
+        // person's own "Report a problem" click on the session pill, opened
+        // only on the agent's `accepted` answer to it: the tracker hands the
+        // session id out once (`take_request_support`, prompt.rs tests), the
+        // bridge's `action_result` is the only taker and returns it as
+        // `ResultEffect::OpenSupport`, and the action-result handler is the
+        // only caller of the lib.rs opener.
+        assert_eq!(client.matches("crate::open_request_support(").count(), 1);
+        let result = body_of(client, "fn handle_prompt_action_result(");
+        let apply = result.find("prompts.action_result(").expect("gated on the tested bridge call");
+        let open = result.find("crate::open_request_support(").expect("opened from the result handler");
+        assert!(apply < open, "the result is applied before the opener runs");
+        assert!(
+            result.contains("if let prompt::ResultEffect::OpenSupport(req) = &effect"),
+            "opened only for the one-shot the bridge handed out"
+        );
+        // W05: an accepted Postpone or OK collapses the restart card, so the
+        // handler takes its window down (no handler test has a desktop).
+        let collapsed = result.find("effect == prompt::ResultEffect::Collapsed").expect("collapse handled");
+        let close = result.find("desktop::close_prompt_window(&ctx.app, &result.prompt_id)").expect("collapsed card closed");
+        assert!(collapsed < close, "the window is closed only on Collapsed");
+        assert!(!client.contains("take_request_support"), "only the bridge takes the one-shot");
+        // The bridge (behaviour-tested in prompt.rs and client.rs) takes it
+        // only after the result released the person's own action, under the
+        // same lock.
+        let bridge_start = prompt.find("pub fn action_result(").expect("bridge action_result");
+        let bridge_end = prompt[bridge_start..].find("\n    }\n").map(|i| i + bridge_start).unwrap();
+        let bridge = &prompt[bridge_start..bridge_end];
+        let applied = bridge.find(".on_action_result(").unwrap();
+        let take = bridge.find(".take_request_support()").unwrap();
+        assert!(applied < take);
+        assert_eq!(prompt.matches(".take_request_support()").count(), 1);
+        assert_eq!(lib.matches("open_request_support(").count(), 1, "lib.rs defines the opener and never calls it");
+        for (name, src) in [
+            ("prompt.rs", prompt),
+            ("desktop.rs", desktop),
+            ("app_shell.rs", include_str!("app_shell.rs")),
+            ("message.rs", prod_of(include_str!("ipc/message.rs"))),
+            ("chat.rs", prod_of(include_str!("ipc/chat.rs"))),
+        ] {
+            assert!(!src.contains("open_request_support"), "{name} opens Request Support");
+        }
+        let opener = body_of(lib, "pub(crate) fn open_request_support(");
+        assert!(
+            opener.contains("request_support_script(&req.session_id, &req.locale)"),
+            "the hash is built by the tested helper"
+        );
+        assert!(opener.contains("show_window(app)"));
+        // Main window still built hidden, and lib.rs builds no card.
+        assert!(lib.contains(".visible(false);"));
+        assert!(!lib.contains("show_prompt_window"));
+    }
+
+    // #10190 review: the hide command reports how the person dismissed the
+    // card and never swallows a failed close; the close box is a click.
+    #[test]
+    fn prompt_hide_paths_report_via_and_failures() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let start = lib.find("fn prompt_card_hide(").expect("prompt_card_hide");
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let hide = &lib[start..end];
+        assert!(hide.contains("via: String"), "hide takes the caller's via");
+        assert!(hide.contains("&prompt_id, via)"), "dismiss gets the caller's via, not a hard-coded one");
+        assert!(hide.contains("window.destroy()") && !hide.contains("let _ = window.destroy()"));
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let start = desktop.find("pub fn show_prompt_window(").unwrap();
+        let end = desktop[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let card = &desktop[start..end];
+        assert!(card.contains("ActionVia::Click") && !card.contains("ActionVia::Keyboard"));
+        assert!(card.contains("eprintln!"), "a refused close box is logged");
+        // W06 review: the session indicator's close box keeps its window.
+        assert!(card.contains("Ok(DismissEffect::Kept) => api.prevent_close()"), "the pill survives its close box");
+        let start = lib.find("fn prompt_card_hide(").unwrap();
+        let hide = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        assert!(!hide.contains("DismissEffect::Kept"), "a kept pill is never destroyed by the hide command");
+    }
+
+    // #10190 W06 (OD-6 (b)): Request Support is opened by setting the main
+    // window's hash (AppShell reads `#request-support/<sessionId>`). Only a
+    // session id of the prompt-id charset gets a script, and the script only
+    // sets the hash: the id is a JSON string literal, never spliced code.
+    #[test]
+    fn request_support_script_sets_only_a_validated_hash() {
+        let id = "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        // The prompt's locale rides along so the draft is in the user's language.
+        assert_eq!(
+            request_support_script(id, "de-DE").as_deref(),
+            Some("window.location.hash = \"#request-support/de-DE/8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c\";")
+        );
+        for bad in ["", "a\"b", "a'b", "a;alert(1)", "a b", "a/b", "a<b", "a\\b", &"x".repeat(201)] {
+            assert_eq!(request_support_script(bad, "en"), None, "{bad:?}");
+        }
+        for bad_locale in ["", "EN", "e", "en/x", "en\"", "en-", "de-DE;x", &"a".repeat(36)] {
+            assert_eq!(request_support_script(id, bad_locale), None, "{bad_locale:?}");
+        }
+        // The same charset the agent's promptId suffix may carry.
+        assert!(request_support_script("abc.DEF_1:2-3", "pt-BR").is_some());
+    }
+
+    // #10190 W06: the session pill grows and shrinks in place (same width, so
+    // it stays centred at the top of the screen) and only for its own window
+    // while the tracker holds it as an open pill.
+    #[test]
+    fn prompt_pill_expand_is_label_checked_and_pill_only() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let lib = prod_of(include_str!("lib.rs"));
+        let start = lib.find("fn prompt_pill_expand(").expect("prompt_pill_expand");
+        let body = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        let label = body.find("label_matches(window.label(), &prompt_id)").unwrap();
+        let open = body.find(".indicator_open(&prompt_id)").expect("pill only");
+        let size = body.find("size_prompt_pill(").expect("resizes through desktop.rs");
+        assert!(label < open && open < size);
+        assert!(!body.contains(".act(") && !body.contains("dismiss("), "expanding is never a wire action");
+        use crate::ipc::desktop::{PROMPT_PILL, PROMPT_PILL_EXPANDED};
+        assert_eq!(PROMPT_PILL.width, PROMPT_PILL_EXPANDED.width);
+        assert!(PROMPT_PILL.height < PROMPT_PILL_EXPANDED.height);
+    }
+
+    // #10190: the card capability grants only listening for its own
+    // `prompt-updated` event; the card calls only its label-checked commands.
+    #[test]
+    fn prompt_card_capability_is_minimal() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/prompt-card.json")).unwrap();
+        assert_eq!(cap["identifier"], "prompt-card");
+        assert_eq!(cap["windows"], serde_json::json!(["prompt-*"]));
+        let perms: Vec<&str> = cap["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+        assert_eq!(perms, vec!["core:event:allow-listen", "core:event:allow-unlisten"]);
+        let description = cap["description"].as_str().unwrap();
+        assert!(description.len() > 40, "justify the permissions");
+        // The text matches the W04 pull model: version notices, label-checked pulls.
+        for word in ["get_prompt_view", "get_prompt_identity", "prompt-updated", "only a version"] {
+            assert!(description.contains(word), "capability description lacks {word}");
+        }
+        assert_eq!(
+            include_str!("../gen/schemas/capabilities.json").contains(description),
+            true,
+            "gen/schemas/capabilities.json carries the same description"
+        );
+        let default: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        for w in default["windows"].as_array().unwrap() {
+            assert!(!w.as_str().unwrap().starts_with("prompt"), "default capability covers {w}");
+        }
+        let gen: serde_json::Value =
+            serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
+        assert_eq!(gen["prompt-card"]["windows"], cap["windows"]);
+        assert_eq!(gen["prompt-card"]["permissions"], cap["permissions"]);
+        // The window label the capability covers is the one the tracker builds.
+        assert!(crate::ipc::prompt::window_label("restart:42").starts_with("prompt-"));
+    }
+
+    #[test]
+    fn tray_notifications_entry_hidden_while_the_list_is_empty() {
+        assert_eq!(notifications_menu_label(0, "en"), None);
+        assert_eq!(notifications_menu_label(1, "en").as_deref(), Some("Notifications (1)"));
+        assert_eq!(notifications_menu_label(12, "en").as_deref(), Some("Notifications (12)"));
+        // The static ids are untouched: the entry is added dynamically.
+        assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"notifications"));
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        let start = lib.find("fn build_tray_menu(").unwrap();
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        assert!(lib[start..end].contains("notifications_menu_label(notification_list_len(app), tray_locale(app))"));
+        // W04: the count is the one list, prompts and message cards together.
+        let start = lib.find("fn notification_list_len(").unwrap();
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        assert!(lib[start..end].contains("notifications::list_len("));
+    }
+
+    // #10190 W04 (event exposure fix): a JS `listen()` without a target
+    // registers `Any`, which Tauri 2.12 delivers to on EVERY emit (`emit`,
+    // `emit_to` and `emit_filter` alike), so a payload on a prompt event would
+    // reach chat, consent, caller-verify and message windows too. Every prompt
+    // event is therefore a version notice, emitted from one helper whose payload
+    // type is `VersionNotice`; views, the list and the identity are pulled
+    // through label-checked commands.
+    #[test]
+    fn prompt_events_carry_only_version_notices() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let sources: &[(&str, &str)] = &[
+            ("lib.rs", prod_of(include_str!("lib.rs"))),
+            ("main.rs", prod_of(include_str!("main.rs"))),
+            ("app_shell.rs", prod_of(include_str!("app_shell.rs"))),
+            ("chrome.rs", prod_of(include_str!("chrome.rs"))),
+            ("requirements.rs", prod_of(include_str!("requirements.rs"))),
+            ("single_instance.rs", prod_of(include_str!("single_instance.rs"))),
+            ("workspace_open.rs", prod_of(include_str!("workspace_open.rs"))),
+            ("ipc/mod.rs", prod_of(include_str!("ipc/mod.rs"))),
+            ("ipc/caller_verify.rs", prod_of(include_str!("ipc/caller_verify.rs"))),
+            ("ipc/chat.rs", prod_of(include_str!("ipc/chat.rs"))),
+            ("ipc/client.rs", prod_of(include_str!("ipc/client.rs"))),
+            ("ipc/consent.rs", prod_of(include_str!("ipc/consent.rs"))),
+            ("ipc/desktop.rs", prod_of(include_str!("ipc/desktop.rs"))),
+            ("ipc/envelope.rs", prod_of(include_str!("ipc/envelope.rs"))),
+            ("ipc/message.rs", prod_of(include_str!("ipc/message.rs"))),
+            ("ipc/notifications.rs", prod_of(include_str!("ipc/notifications.rs"))),
+            ("ipc/prompt.rs", prod_of(include_str!("ipc/prompt.rs"))),
+            ("ipc/token.rs", prod_of(include_str!("ipc/token.rs"))),
+            ("ipc/transport.rs", prod_of(include_str!("ipc/transport.rs"))),
+        ];
+        // The scan covers every Rust source file (a new one must be added above).
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut on_disk = Vec::new();
+        for dir in [src_dir.clone(), src_dir.join("ipc")] {
+            for e in std::fs::read_dir(&dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.extension().is_some_and(|x| x == "rs") {
+                    on_disk.push(p.strip_prefix(&src_dir).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        on_disk.sort();
+        let mut scanned: Vec<String> = sources.iter().map(|(n, _)| n.to_string()).collect();
+        scanned.sort();
+        assert_eq!(scanned, on_disk, "scan every source file");
+
+        // Every emit call, with its balanced argument list.
+        let emits_in = |src: &str| -> Vec<(usize, String)> {
+            let mut out = Vec::new();
+            let mut from = 0;
+            while let Some(i) = src[from..].find(".emit") {
+                let at = from + i;
+                let open = at + src[at..].find('(').unwrap();
+                let (mut depth, mut end) = (0i32, open);
+                for (j, c) in src[open..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + j;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push((at, src[at..=end].to_string()));
+                from = end + 1;
+            }
+            out
+        };
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let helper_start = desktop.find("fn emit_version_notice(").expect("emit_version_notice");
+        let helper_end = helper_start + desktop[helper_start..].find("\n}\n").unwrap();
+        let mut prompt_emits = 0;
+        for (name, src) in sources {
+            for (at, call) in emits_in(src) {
+                let prompt_event = call.contains("PROMPT_") || call.contains("prompt-") || call.contains("event,");
+                if !prompt_event {
+                    continue;
+                }
+                prompt_emits += 1;
+                assert!(
+                    *name == "ipc/desktop.rs" && (helper_start..helper_end).contains(&at),
+                    "{name}: a prompt event emitted outside emit_version_notice: {call}"
+                );
+            }
+        }
+        assert_eq!(prompt_emits, 1, "emit_version_notice is the only prompt emit");
+        // ...and its payload is the version-only notice, by type.
+        let helper = &desktop[helper_start..helper_end];
+        assert!(helper.contains("notice: super::prompt::VersionNotice)"), "{helper}");
+        assert!(helper.contains(", event, notice)"), "{helper}");
+        // The event names exist once each (their const), so no other emit can
+        // name them; the payload struct has the one field.
+        let all: String = sources.iter().map(|(_, s)| *s).collect();
+        for ev in ["\"prompt-updated\"", "\"prompt-list-updated\"", "\"prompt-identity-updated\""] {
+            assert_eq!(all.matches(ev).count(), 1, "{ev}");
+        }
+        let prompt = prod_of(include_str!("ipc/prompt.rs"));
+        let s = prompt.find("pub struct VersionNotice {").unwrap();
+        let body = &prompt[s..s + prompt[s..].find('}').unwrap()];
+        assert_eq!(body.matches("pub ").count(), 2, "VersionNotice has exactly one field: {body}");
+        assert!(body.contains("pub version: u64,"));
+        assert_eq!(
+            serde_json::to_value(crate::ipc::prompt::VersionNotice { version: 9 }).unwrap(),
+            serde_json::json!({ "version": 9 })
+        );
+        // Every caller hands it a notice built by a tracker, never a view.
+        for (at, _) in desktop.match_indices("emit_version_notice(") {
+            if at == helper_start + "fn ".len() {
+                continue;
+            }
+            let line = &desktop[at..at + desktop[at..].find(')').unwrap()];
+            assert!(line.ends_with("notice"), "emit_version_notice called with: {line}");
+        }
+
+        // The webviews listen with notice types only.
+        for (file, ts) in [
+            ("PromptCardWindow.tsx", include_str!("../../src/prompt/PromptCardWindow.tsx")),
+            ("NotificationsTab.tsx", include_str!("../../src/prompt/NotificationsTab.tsx")),
+            ("identity.ts", include_str!("../../src/prompt/identity.ts")),
+        ] {
+            let mut n = 0;
+            for (at, _) in ts.match_indices("listen<") {
+                let ty = &ts[at + "listen<".len()..at + ts[at..].find('>').unwrap()];
+                assert!(ty.ends_with("Notice"), "{file}: listen<{ty}>");
+                n += 1;
+            }
+            assert_eq!(n, 1, "{file} listens once");
+        }
+    }
+
+    // #10190 W04: the pull commands behind the notices check the caller's
+    // label before they read anything, and the list is the main window's only.
+    #[test]
+    fn prompt_pull_commands_check_the_callers_label_first() {
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        for (cmd, check) in [
+            ("fn get_prompt_view(", "crate::ipc::prompt::label_matches(window.label(), &prompt_id)"),
+            ("fn prompt_pill_expand(", "crate::ipc::prompt::label_matches(window.label(), &prompt_id)"),
+            ("fn get_notification_list(", "crate::ipc::desktop::list_window_allowed(window.label())"),
+            ("fn prompt_list_action(", "crate::ipc::desktop::list_window_allowed(window.label())"),
+            ("fn get_prompt_identity(", "crate::ipc::desktop::identity_window_allowed(window.label())"),
+            ("fn get_caller_verify_logo(", "crate::ipc::caller_verify::label_matches(window.label(), &verification_id)"),
+        ] {
+            let start = lib.find(cmd).expect(cmd);
+            let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+            let body = &lib[start..end];
+            let at = body.find(check).unwrap_or_else(|| panic!("{cmd} lacks {check}"));
+            assert!(body[at..].contains("return Err(\"wrong window\".into())"), "{cmd} refuses");
+            for state in ["bridge.", "prompts.", "messages.", "caller.", "tracker()", "notifications::list_view("] {
+                if let Some(use_at) = body.find(state) {
+                    assert!(at < use_at, "{cmd} reads {state} before its label check");
+                }
+            }
+        }
+        // The logo goes only to the window of a LIVE request: the request
+        // gate comes after the label check and before the identity is read.
+        let start = lib.find("fn get_caller_verify_logo(").unwrap();
+        let logo = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        let label = logo.find("caller_verify::label_matches(").unwrap();
+        let live = logo
+            .find("if caller.get(&verification_id).is_none() {\n        return Err(\"request unavailable\".into());")
+            .expect("get_caller_verify_logo refuses a window with no live request");
+        let read = logo.find("prompts.tracker().identity_logo_for(&sha256)").expect("reads the logo by sha");
+        assert!(label < live && live < read, "label, then live request, then the logo");
+
+        use crate::ipc::desktop::list_window_allowed;
+        assert!(list_window_allowed("main"));
+        for other in ["mainx", "prompt-0123abcd", "message-1", "chat-1", "consent", "session-banner", "caller-verify-1", ""] {
+            assert!(!list_window_allowed(other), "{other}");
+        }
+        // The caller-verify logo is NOT a widening of the identity read.
+        assert!(!crate::ipc::desktop::identity_window_allowed("caller-verify-1"));
+        // The removed W02 pull is gone (one list command, main only).
+        assert!(!lib.contains("fn get_prompt_list("));
+    }
+
+    // #10190 W03: the tray label comes from the shared catalog, in the locale
+    // of the last branding sync, else the OS UI language, else en.
+    #[test]
+    fn tray_notifications_label_is_localized() {
+        assert_eq!(notifications_menu_label(3, "de-DE").as_deref(), Some("Benachrichtigungen (3)"));
+        assert_eq!(notifications_menu_label(2, "pt-BR").as_deref(), Some("Notificações (2)"));
+        assert_eq!(notifications_menu_label(1, "xx").as_deref(), Some("Notifications (1)"));
+        assert_eq!(notifications_menu_label(0, "de-DE"), None);
+        // A synced locale wins; without one the OS language is negotiated.
+        assert_eq!(tray_locale_from(Some("tr-TR"), "de-AT"), "tr-TR");
+        assert_eq!(tray_locale_from(None, "de-AT"), "de-DE");
+        assert_eq!(tray_locale_from(None, ""), "en");
+    }
+
+    // #10190 W03 review: the tray follows the bridge's synced locale.
+    #[test]
+    fn tray_locale_reads_the_bridge() {
+        let bridge = crate::ipc::prompt::PromptBridge::default();
+        assert_eq!(tray_locale_for(Some(&bridge)), chrome::negotiate(chrome::os_ui_locale()));
+        assert_eq!(tray_locale_for(None), chrome::negotiate(chrome::os_ui_locale()));
+        let mut sync: crate::ipc::prompt::PromptBrandingSync = serde_json::from_str(include_str!(
+            "../../../../packages/shared/src/fixtures/prompt-host/branding_sync.cleared.json"
+        ))
+        .unwrap();
+        // A locale the OS of a CI runner is unlikely to report.
+        sync.locale = "tr-TR".into();
+        assert!(bridge.branding_sync(sync));
+        assert_eq!(tray_locale_for(Some(&bridge)), "tr-TR");
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        let start = lib.find("fn tray_locale(app").unwrap();
+        let body = &lib[start..start + lib[start..].find("\n}\n").unwrap()];
+        assert!(body.contains("tray_locale_for("), "tray_locale goes through the tested seam");
+    }
+
+    // #10190 W03 review: a JS `listen()` without a target registers `Any`,
+    // which Tauri delivers to on every emit (emit_filter and emit_to alike,
+    // `match_any_or_filter`). So the identity event carries only a version
+    // notice, sent to the allowed labels; the identity itself is read through
+    // the label-checked `get_prompt_identity` command.
+    #[test]
+    fn prompt_identity_event_is_a_targeted_notice_without_the_identity() {
+        let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
+        let desktop = prod_of(include_str!("ipc/desktop.rs"));
+        let start = desktop.find("pub fn publish_prompt_identity(").unwrap();
+        let body = &desktop[start..start + desktop[start..].find("\n}\n").unwrap()];
+        assert!(!body.contains("emit_filter"), "emit_filter reaches Any listeners in every window");
+        assert!(!body.contains("identity_view()"), "the event must not carry the identity");
+        assert!(body.contains("identity_notice()"));
+        assert!(body.contains("webview_windows()") && body.contains("identity_window_allowed("));
+        assert!(body.contains("emit_version_notice("));
+        // The bridge's notifier is wired to it at setup.
+        let lib = prod_of(include_str!("lib.rs"));
+        let setup = &lib[lib.find("let prompts = std::sync::Arc::new(crate::ipc::prompt::PromptBridge::default());").unwrap()..];
+        let setup = &setup[..setup.find("app.manage(prompts.clone());").unwrap()];
+        assert!(setup.contains("set_identity_notifier(") && setup.contains("publish_prompt_identity("));
+        // The card capability text names the identity command and notice.
+        let cap = include_str!("../capabilities/prompt-card.json");
+        assert!(cap.contains("get_prompt_identity") && cap.contains("prompt-identity-updated"));
+    }
+
+    // #10190 W03: the identity is readable by the main window and prompt
+    // cards only, and high contrast always beats the brand accent.
+    #[test]
+    fn prompt_identity_windows_and_high_contrast() {
+        use crate::ipc::desktop::identity_window_allowed;
+        assert!(identity_window_allowed("main"));
+        assert!(identity_window_allowed(&crate::ipc::prompt::window_label("restart:42")));
+        for other in ["message-1", "chat-1", "consent", "banner", "caller-verify-1", "mainx", ""] {
+            assert!(!identity_window_allowed(other), "{other}");
+        }
+        let css = include_str!("../../src/prompt/prompt.css");
+        let forced = &css[css.find("@media (forced-colors: active)").expect("forced-colors block")..];
+        assert!(forced.contains(".prompt-identity") && forced.contains("--prompt-brand-accent: CanvasText"));
+        // W04: "more contrast" also never shows the brand colour.
+        let more = &css[css.find("@media (prefers-contrast: more)").expect("prefers-contrast block")..];
+        let more = &more[..more.find("\n}\n").unwrap()];
+        assert!(more.contains(".prompt-identity") && more.contains("color: var(--accent)"));
+        // The caller-verify window may read the synced logo only through its
+        // own label-checked command, never through the identity read.
+        let id = "11111111-1111-4111-8111-111111111111";
+        assert!(crate::ipc::caller_verify::label_matches(&crate::ipc::caller_verify::window_label(id), id));
+        for other in ["main", "prompt-0123abcd", "message-1", "chat-1", "consent", "caller-verify-22222222-2222-4222-8222-222222222222"] {
+            assert!(!crate::ipc::caller_verify::label_matches(other, id), "{other}");
+        }
+        // The header and the CSP agree: logos are local blob: URLs only.
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+        let img = csp.split(';').map(str::trim).find(|d| d.starts_with("img-src")).unwrap();
+        assert!(img.split_whitespace().any(|t| t == "blob:"), "{img}");
+        assert!(img.contains("'self'") && img.contains("https:"), "existing sources kept: {img}");
+    }
+
+    // #10190 W04 review: the brand accent is checked against the card surface
+    // the card really paints (`.prompt-card` = --bg-secondary = --ws-surface),
+    // not only the canvas. theme.ts holds those surfaces as hex; they must be
+    // the --ws-surface values of tokens.css in each theme.
+    #[test]
+    fn card_surface_constants_match_tokens_css() {
+        fn hsl_hex(h: f64, s: f64, l: f64) -> String {
+            let (s, l) = (s / 100.0, l / 100.0);
+            let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+            let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+            let m = l - c / 2.0;
+            let (r, g, b) = match h {
+                h if h < 60.0 => (c, x, 0.0),
+                h if h < 120.0 => (x, c, 0.0),
+                h if h < 180.0 => (0.0, c, x),
+                h if h < 240.0 => (0.0, x, c),
+                h if h < 300.0 => (x, 0.0, c),
+                _ => (c, 0.0, x),
+            };
+            let to = |v: f64| ((v + m) * 255.0).round() as u8;
+            format!("#{:02X}{:02X}{:02X}", to(r), to(g), to(b))
+        }
+        fn surface(block: &str) -> String {
+            let at = block.find("--ws-surface: hsl(").expect("--ws-surface") + "--ws-surface: hsl(".len();
+            let args = &block[at..at + block[at..].find(')').unwrap()];
+            let n: Vec<f64> = args.split_whitespace().map(|p| p.trim_end_matches('%').parse().unwrap()).collect();
+            hsl_hex(n[0], n[1], n[2])
+        }
+        let tokens = include_str!("../../src/styles/tokens.css");
+        let dark = tokens.find(":root[data-theme='dark']").unwrap();
+        let theme = include_str!("../../src/prompt/theme.ts");
+        let constant = |name: &str| -> String {
+            let at = theme.find(&format!("export const {name} = '")).unwrap_or_else(|| panic!("{name}")) + name.len() + 17;
+            theme[at..at + 7].to_string()
+        };
+        assert_eq!(constant("CARD_SURFACE_LIGHT"), surface(&tokens[..dark]));
+        assert_eq!(constant("CARD_SURFACE_DARK"), surface(&tokens[dark..]));
+        // ...and the card does paint that surface.
+        let css = include_str!("../../src/prompt/prompt.css");
+        let card = &css[css.find(".prompt-card {").unwrap()..];
+        assert!(card[..card.find('}').unwrap()].contains("background: var(--bg-secondary)"));
+        assert!(include_str!("../../src/styles.css").contains("--bg-secondary: var(--ws-surface);"));
+    }
+
     // #8741: build.rs declares no app-command ACL, so Tauri does not gate app
     // commands per window -- a `message-*` card window (technician-authored
     // content) could otherwise invoke every registered command. The test reads
@@ -2203,6 +3062,28 @@ mod tests {
             ("get_chat_view", "crate::ipc::chat::label_matches(window.label()"),
             ("chat_send_reply", "crate::ipc::chat::label_matches(window.label()"),
             ("chat_mark_read", "crate::ipc::chat::label_matches(window.label()"),
+            //  - get_prompt_view / prompt_card_action / prompt_card_hide: the
+            //    prompt card (src/prompt/PromptCardWindow.tsx), valid only for
+            //    `prompt-<hash of promptId>` (#10190).
+            ("get_prompt_view", "crate::ipc::prompt::label_matches(window.label()"),
+            ("prompt_card_action", "crate::ipc::prompt::label_matches(window.label()"),
+            ("prompt_card_hide", "crate::ipc::prompt::label_matches(window.label()"),
+            //  - prompt_pill_expand: the remote-session pill (#10190 W06) asks
+            //    its own window to grow or shrink; nothing goes to the agent.
+            ("prompt_pill_expand", "crate::ipc::prompt::label_matches(window.label()"),
+            //  - get_prompt_identity: the identity header (#10190 W03), read by
+            //    the main window and prompt cards only.
+            ("get_prompt_identity", "crate::ipc::desktop::identity_window_allowed(window.label())"),
+            //  - get_notification_list / prompt_list_action: the one notification
+            //    list (#10190 W04), the main window only.
+            ("get_notification_list", "crate::ipc::desktop::list_window_allowed(window.label())"),
+            ("prompt_list_action", "crate::ipc::desktop::list_window_allowed(window.label())"),
+            //  - get_caller_verify_logo: the synced logo bytes for the caller-verify
+            //    window of a live request only (#10190 W04).
+            (
+                "get_caller_verify_logo",
+                "crate::ipc::caller_verify::label_matches(window.label()",
+            ),
             (
                 "get_caller_verify_request",
                 "crate::ipc::caller_verify::label_matches(window.label()",
@@ -2299,6 +3180,9 @@ mod tests {
         let start = msg.find("pub fn deny_message_window").expect("guard");
         let end = msg[start..].find("\n}\n").map(|i| i + start).unwrap();
         assert!(msg[start..end].contains("deny_chat_window"));
+        // Prompt cards (#10190) render agent and operator text too.
+        assert!(msg[start..end].contains("deny_prompt_window"));
+        assert!(crate::ipc::message::deny_message_window("prompt-0123abcd").is_err());
         assert!(crate::ipc::message::deny_message_window("chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").is_err());
         assert!(crate::ipc::message::deny_message_window("message-x").is_err());
         assert!(crate::ipc::message::deny_message_window("main").is_ok());

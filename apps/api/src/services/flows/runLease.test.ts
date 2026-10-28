@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
     updateStepRow: vi.fn(async () => {}),
     renewLease: vi.fn(),
     releaseLease: vi.fn(async () => {}),
+    casReserveRunAiTokens: vi.fn(),
+    settleRunAiTokensSql: vi.fn(),
   },
   order: [] as string[],
 }));
@@ -35,7 +37,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('./runStore', () => ({ ...h.store, TERMINAL_FLOW_RUN_STATUSES: ['completed', 'failed', 'cancelled', 'expired'] }));
 
-import { acquireRunLease, checkpoint, releaseRunLease, startLeaseHeartbeat } from './runLease';
+import { acquireRunLease, checkpoint, releaseRunLease, reserveRunAiTokens, settleRunAiTokens, startLeaseHeartbeat } from './runLease';
 
 const RUN_ID = 'bbbbbbbb-0000-4000-8000-000000000001';
 const TOKEN = 'aaaaaaaa-0000-4000-8000-000000000009';
@@ -214,5 +216,37 @@ describe('releaseRunLease', () => {
   it('releases only this token', async () => {
     await releaseRunLease(RUN_ID, TOKEN);
     expect(h.store.releaseLease).toHaveBeenCalledWith(RUN_ID, TOKEN);
+  });
+});
+
+// W5 PR B (#5220, Decision 13 / quorum Q3): the per-run AI token ceiling is
+// ADMISSION, not accounting — reserved before each model call with one
+// lease-fenced conditional increment, so parallel ai items cannot jointly
+// overshoot. The SQL predicate itself is proven on a real DB (B6 integration).
+describe('reserveRunAiTokens / settleRunAiTokens', () => {
+  it('reserveRunAiTokens refuses over the cap and on a superseded lease (the fenced conditional increment answers)', async () => {
+    h.store.casReserveRunAiTokens.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await expect(reserveRunAiTokens(RUN_ID, TOKEN, 1_500, 100_000)).resolves.toBe(true);
+    await expect(reserveRunAiTokens(RUN_ID, 'other-token', 1_500, 100_000)).resolves.toBe(false);
+    expect(h.store.casReserveRunAiTokens).toHaveBeenNthCalledWith(1, RUN_ID, TOKEN, 1_500, 100_000);
+    expect(h.order).toContain('tx:commit');
+  });
+
+  it('a reservation larger than the cap, zero or not an integer is refused without a write', async () => {
+    await expect(reserveRunAiTokens(RUN_ID, TOKEN, 100_001, 100_000)).resolves.toBe(false);
+    await expect(reserveRunAiTokens(RUN_ID, TOKEN, 0, 100_000)).resolves.toBe(false);
+    await expect(reserveRunAiTokens(RUN_ID, TOKEN, 1.5, 100_000)).resolves.toBe(false);
+    expect(h.store.casReserveRunAiTokens).not.toHaveBeenCalled();
+  });
+
+  it('settleRunAiTokens moves the counter by actual - reserved under the same fence', async () => {
+    h.store.settleRunAiTokensSql.mockResolvedValueOnce(undefined);
+    await settleRunAiTokens(RUN_ID, TOKEN, 2_000, 1_250);
+    expect(h.store.settleRunAiTokensSql).toHaveBeenCalledWith(RUN_ID, TOKEN, -750);
+  });
+
+  it('settling exactly the reserved amount writes nothing', async () => {
+    await settleRunAiTokens(RUN_ID, TOKEN, 2_000, 2_000);
+    expect(h.store.settleRunAiTokensSql).not.toHaveBeenCalled();
   });
 });

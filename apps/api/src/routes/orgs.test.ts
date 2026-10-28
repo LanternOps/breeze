@@ -1441,6 +1441,28 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(getCaptured().settings).not.toHaveProperty('ai');
       });
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The system
+      // wholesale write can neither erase nor set it.
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 100_000 }, branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+      });
+
+      it('cannot create settings.flows when none is stored', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 1 } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings).not.toHaveProperty('flows');
+      });
     });
 
     // SR2-05: the system-scoped wholesale settings write is a THIRD write path
@@ -2068,6 +2090,27 @@ describe('org routes', () => {
     function patchMe(body: unknown) {
       return app.request('/orgs/partners/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
+
+    // settings.flows has one home: PUT /flows/limits (W05 #5220). PATCH
+    // /partners/me (no automations.write, no partner-wide gate) must neither
+    // change nor erase it.
+    it('cannot write settings.flows, and keeps the stored block', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+    });
+
+    it('cannot create settings.flows when none is stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings).not.toHaveProperty('flows');
+    });
 
     it('persists settings.ml.anomalies (the schema must not strip it) and keeps sibling ml keys', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
@@ -3760,6 +3803,24 @@ describe('org routes', () => {
       });
     });
 
+    // settings.flows has one home: PUT /flows/limits (W05 #5220); creating an
+    // org (orgs:write) cannot seed it.
+    it('drops an incoming settings.flows on create', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      queueCreateSelects();
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      const res = await app.request('/orgs/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Org', slug: 'org-flows', settings: { flows: { monthlyRunsPerFlow: 1 }, timezone: 'UTC' } }),
+      });
+      expect(res.status).toBe(201);
+      const inserted = values.mock.calls.map((c) => c[0]).find((v) => v && typeof v === 'object' && 'settings' in v);
+      expect(inserted?.settings).toBeDefined();
+      expect(inserted.settings).not.toHaveProperty('flows');
+    });
+
     it('should create an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       queueCreateSelects();
@@ -4444,6 +4505,30 @@ describe('org routes', () => {
           .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any) // assertNotLocked: partner settings (no locks)
           .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { eventLogs: storedEventLogs } }]) as any); // current org settings
       }
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The
+      // wholesale org settings write keeps the stored block and ignores an
+      // incoming one (orgs:write is not automations:write).
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(noLockSelect([{ partnerId: 'partner-123' }]) as any)
+          .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any)
+          .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { flows: { monthlyRunsPerFlow: 50 } } }]) as any);
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }]) }),
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { flows: { monthlyRunsPerFlow: 9_999 }, eventLogs: { enabled: false } } }),
+        });
+
+        expect(res.status).toBe(200);
+        const written = set.mock.calls[0]![0].settings as Record<string, unknown>;
+        expect(written.flows).toEqual({ monthlyRunsPerFlow: 50 });
+      });
 
       it('refuses a URL change that would carry the stored API key ciphertext to a new origin', async () => {
         queueSelects({

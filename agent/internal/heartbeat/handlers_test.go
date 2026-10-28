@@ -150,6 +150,9 @@ var allCommandTypes = []string{
 	tools.CmdPamApplyV2, tools.CmdPamCleanupV2,
 	tools.CmdPamReconcileV2,
 
+	// handlers_pam_notify.go init() — #8928 outcome notices
+	tools.CmdPamRequestNotify,
+
 	// handlers_encryption.go init()
 	tools.CmdEncryptionCollectKeys, tools.CmdEncryptionRotateKey,
 }

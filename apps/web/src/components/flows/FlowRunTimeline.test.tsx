@@ -72,4 +72,98 @@ describe('FlowRunTimeline', () => {
     rerender(<FlowRunTimeline runId="r1" definition={definition} steps={[row({ status: 'completed' })]} runActive={false} />);
     expect(screen.getByTestId('flow-run-step-final').textContent).toContain('Not reached');
   });
+
+  it('overlapping items render as one group', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const item = (n: number, start: string, end: string) =>
+      row({ id: `i${n}`, stepId: 'each', itemIndex: n, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[
+          item(0, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:05.000Z'),
+          item(1, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:06.000Z'),
+          item(2, '2026-10-20T02:00:10.000Z', '2026-10-20T02:00:11.000Z'),
+        ]}
+      />,
+    );
+    const groups = screen.getAllByTestId('flow-run-parallel-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].textContent).toContain('2 items ran in parallel');
+    expect(groups[0].querySelectorAll('[data-testid^="flow-run-item-"]')).toHaveLength(2);
+    expect(screen.getByTestId('flow-run-item-i2')).toBeTruthy();
+  });
+
+  it('retry attempts of one item are not parallel items: the group counts distinct items and rows sort by (item, attempt)', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const att = (id: string, n: number, attempt: number, start: string, end: string) =>
+      row({ id, stepId: 'each', itemIndex: n, attempt, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[
+          att('i1a1', 1, 1, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:06.000Z'),
+          att('i0a2', 0, 2, '2026-10-20T02:00:03.000Z', '2026-10-20T02:00:05.000Z'),
+          att('i0a1', 0, 1, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:02.000Z'),
+        ]}
+      />,
+    );
+    const groups = screen.getAllByTestId('flow-run-parallel-group');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].textContent).toContain('2 items ran in parallel');
+    const ids = [...groups[0].querySelectorAll('[data-testid^="flow-run-item-"]')].map((n) => n.getAttribute('data-testid'));
+    expect(ids).toEqual(['flow-run-item-i0a1', 'flow-run-item-i0a2', 'flow-run-item-i1a1']);
+  });
+
+  it('two attempts of a single item render as plain rows, not a parallel group', () => {
+    const fe = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'each', tool: 'manage_tags', input: {}, forEach: { items: 'x', as: 'item', maxItems: 10, concurrency: 3 }, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const att = (id: string, attempt: number, start: string, end: string) =>
+      row({ id, stepId: 'each', itemIndex: 0, attempt, status: 'completed', startedAt: start, finishedAt: end, durationMs: 1000 });
+    render(
+      <FlowRunTimeline
+        runId="r1"
+        definition={fe}
+        steps={[att('a1', 1, '2026-10-20T02:00:00.000Z', '2026-10-20T02:00:02.000Z'), att('a2', 2, '2026-10-20T02:00:01.000Z', '2026-10-20T02:00:03.000Z')]}
+      />,
+    );
+    expect(screen.queryByTestId('flow-run-parallel-group')).toBeNull();
+    expect(screen.getByTestId('flow-run-item-a1')).toBeTruthy();
+    expect(screen.getByTestId('flow-run-item-a2')).toBeTruthy();
+  });
+
+  it('a row with aiUsage shows tokens and dollars', () => {
+    render(
+      <FlowRunTimeline runId="r1" definition={definition}
+        steps={[row({ status: 'completed', aiUsage: { inputTokens: 120, outputTokens: 30, costCents: 3 } })]} />,
+    );
+    const el = screen.getByTestId('flow-run-step-aiusage-row-list');
+    expect(el.textContent).toContain('120');
+    expect(el.textContent).toContain('30');
+    expect(el.textContent).toContain('$0.03');
+  });
+
+  it('an expanded http_request row shows the HTTP status from its loaded output', async () => {
+    const http = {
+      version: 1, name: 'n', trigger: { type: 'manual' }, inputs: [],
+      steps: [{ id: 'call', tool: 'http_request', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 60 }],
+    } as never;
+    const r = row({ id: 'row-call', stepId: 'call', tool: 'http_request', status: 'completed' });
+    api.getFlowRunStep.mockResolvedValue({ ...(r as object), renderedInput: {}, output: { status: 503, headers: {}, body: '' } });
+    render(<FlowRunTimeline runId="r1" definition={http} steps={[r]} />);
+    expect(screen.queryByTestId('flow-run-step-httpstatus-row-call')).toBeNull();
+    await userEvent.setup().click(screen.getByTestId('flow-run-step-toggle-row-call'));
+    const el = await screen.findByTestId('flow-run-step-httpstatus-row-call');
+    expect(el.textContent).toContain('HTTP 503');
+  });
 });

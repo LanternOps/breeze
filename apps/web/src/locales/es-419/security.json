@@ -1129,6 +1129,8 @@
       "durationHelp": "1 a 1440 minutos (24h máx.).",
       "reasonRecommended": "Razón (recomendado)",
       "reasonOptional": "Razón (opcional)",
+      "reasonShownToUser": "Motivo (se muestra al usuario)",
+      "reasonShownToUserHint": "El usuario final ve esto en su notificación (primeros 500 caracteres).",
       "reasonPlaceholder": "Registrado en la pista de auditoría"
     },
     "actions": {

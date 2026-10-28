@@ -449,6 +449,11 @@ const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [strin
   // transaction; a request-long wrap would hold a pooled connection across
   // both and re-open the #6671 two-connection shape.
   ['topology', 'adjacency'],
+  // #10190 W03: the prompt logo. On a cache miss the handler may fetch the
+  // MSP's https logo (routes/agents/promptIdentityLogo.ts), which must never
+  // run inside the request-long org transaction (#1105); its DB read is one
+  // short system context keyed by the authenticated device's org.
+  ['prompt-identity', 'logo'],
 ];
 
 /**

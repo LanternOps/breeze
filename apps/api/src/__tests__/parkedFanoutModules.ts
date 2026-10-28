@@ -61,6 +61,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'services/aiToolsOrgs.ts': { guards: 2, reason: 'organization and site listings' },
   'services/aiToolsAgentMgmt.ts': { guards: 2, reason: 'device verifier and agent-version rollup' },
   'services/aiToolsPeripherals.ts': { guards: 1, reason: 'partner-wide peripheral policy fan-out' },
+  'services/aiToolsAuditBaselines.ts': { guards: 2, reason: 'audit-baseline compliance (visible devices) and apply-request targets (W11, #6781)' },
   'services/timeSync/fleet.ts': { guards: 1, reason: 'fleet time report and list_time_sync_issues AI device lookup' },
   // --- org administration -----------------------------------------------------
   'services/orgImport/index.ts': { guards: 1, reason: 'org import never name-matches the holding org' },

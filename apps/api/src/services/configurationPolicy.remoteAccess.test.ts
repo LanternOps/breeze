@@ -29,7 +29,17 @@ describe('remoteAccessConsentSettingsSchema (decompose subset)', () => {
       notifyOnSessionEnd: true,
       showActiveIndicator: true,
       technicianIdentityLevel: 'name_email',
+      // #10190 W06 (OD-5 (c)): default ON.
+      allowUserEndSession: true,
     });
+  });
+
+  it('keeps an explicit allowUserEndSession = false', () => {
+    expect(remoteAccessConsentSettingsSchema.parse({ allowUserEndSession: false }).allowUserEndSession).toBe(false);
+  });
+
+  it('rejects a non-boolean allowUserEndSession instead of coercing it', () => {
+    expect(() => remoteAccessConsentSettingsSchema.parse({ allowUserEndSession: 'false' })).toThrow();
   });
 
   it('rejects an invalid mode', () => {
@@ -71,6 +81,13 @@ describe('remoteAccessInlineSettingsSchema (write-path combined shape)', () => {
   it('does not inject consent defaults on a capability-only save', () => {
     const parsed = remoteAccessInlineSettingsSchema.parse(CAPABILITY_SETTINGS);
     expect(parsed).not.toHaveProperty('sessionPromptMode');
+    expect(parsed).not.toHaveProperty('allowUserEndSession');
+  });
+
+  it('accepts allowUserEndSession on the write path (#10190 W06)', () => {
+    const parsed = remoteAccessInlineSettingsSchema.parse({ ...CAPABILITY_SETTINGS, allowUserEndSession: false });
+    expect(parsed.allowUserEndSession).toBe(false);
+    expect(() => remoteAccessInlineSettingsSchema.parse({ allowUserEndSession: 1 })).toThrow();
   });
 
   it('strips unknown legacy keys instead of rejecting them', () => {

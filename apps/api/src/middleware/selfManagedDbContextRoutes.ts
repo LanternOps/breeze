@@ -614,6 +614,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },
+  // #10190 W04: the helper config names the caller-verify logo by the sha the
+  // heartbeat's promptIdentity block carries, through the heartbeat's own
+  // resolver. On a device-cache miss that resolver opens a short system read
+  // of its own (and may start a background logo load); under the ambient
+  // request transaction that read would hold a second pooled connection
+  // (#1105 / #2417). The handler reads permissions and branding in one short
+  // helper context (helperDbAccessContext) and resolves the logo after it.
+  { method: 'GET', pattern: /^\/api\/v1\/helper\/config\/?$/ },
   // AI model registry W05 (#7603, D12): the continuation route makes a
   // provider call (the summary) and takes/settles a budget reservation in
   // their own system transactions; it must not hold the request's connection

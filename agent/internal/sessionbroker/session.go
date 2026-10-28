@@ -22,23 +22,23 @@ type pendingResponse struct {
 
 // Session represents a connected user helper with verified identity.
 type Session struct {
-	UID            uint32 // Numeric UID (0 on Windows; kept for logging/compat)
-	IdentityKey    string // Platform identity: UID string on Unix, SID on Windows
-	Username       string
-	DisplayEnv     string
-	SessionID      string
-	PID            int // OS process ID of the helper process
-	Capabilities   *ipc.Capabilities
-	TCCStatus      *ipc.TCCStatus
-	AllowedScopes  []string
-	WinSessionID   string         // Windows session ID string (e.g., "1", "2") for targeting
+	UID           uint32 // Numeric UID (0 on Windows; kept for logging/compat)
+	IdentityKey   string // Platform identity: UID string on Unix, SID on Windows
+	Username      string
+	DisplayEnv    string
+	SessionID     string
+	PID           int // OS process ID of the helper process
+	Capabilities  *ipc.Capabilities
+	TCCStatus     *ipc.TCCStatus
+	AllowedScopes []string
+	WinSessionID  string // Windows session ID string (e.g., "1", "2") for targeting
 	// WinSessionVerified is true when WinSessionID came from the kernel (the
 	// peer PID's session) rather than the helper's self-report. Caller
 	// verification (#6354) only targets verified sessions on Windows.
 	WinSessionVerified bool
-	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
-	BinaryKind     string
-	DesktopContext string
+	HelperRole         ipc.HelperRole // "system" or "user" — determines scopes and capabilities
+	BinaryKind         string
+	DesktopContext     string
 	// ConsentProtocolVersion is the consent prompt exchange this helper
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
@@ -48,7 +48,7 @@ type Session struct {
 	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
 	SupportsTargetedPamDismiss bool
 	ConnectedAt                time.Time
-	LastSeen               time.Time
+	LastSeen                   time.Time
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
@@ -63,6 +63,25 @@ type Session struct {
 
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
+
+	// Prompt host advertisement (#10190), set once at auth by
+	// applyAuthAdvertisements and never changed afterwards: the clamped
+	// prompt protocol, the granted "<kind>@<n>" entries, and the renderer
+	// build version. Read through PromptProtocol / PromptKindAds /
+	// PromptKindVersion / RendererVersion.
+	promptProtocol  int
+	promptKinds     []string
+	rendererVersion string
+	// uiLocale is the UI language the helper probed (AuthRequest.UILocale,
+	// sanitized by uiLocaleFromAuth); set once at auth, read through UILocale.
+	uiLocale string
+	// agentHandlesTCCNotice is what this session's auth response told the
+	// helper (AuthResponse.AgentHandlesTCCNotice, #10190 W04): the agent
+	// shows the macOS permission notice from this helper's tcc_status.
+	agentHandlesTCCNotice atomic.Bool
+	// tccForward orders this session's tcc_status reports to the agent's
+	// handler (tcc_notice.go).
+	tccForward tccForwardQueue
 
 	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
 	helperLogOnce sync.Once

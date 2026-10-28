@@ -24,6 +24,44 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   remove_configuration_policy_assignment: '*',
   manage_configuration_policy: '*',
   manage_policy_feature_link: Object.freeze(['add', 'update', 'remove']),
+  // Full-control W11 (#6781, W11-D10): the writes whose REST twins carry requireMfa().
+  // routes/accessReviews.ts POST / and PATCH /:id/items/:itemId.
+  manage_access_reviews: Object.freeze(['create', 'decide_item']),
+  // routes/policyManagement/actions.ts POST /:id/deactivate.
+  manage_compliance_policies: '*',
+  // routes/pam.ts rule, org-config and signer-group writes.
+  // Full-control W12 (#6782, W12-D5): every W12 write's REST twin carries requireMfa().
+  manage_software_catalog: Object.freeze([
+    'create', 'update', 'archive', 'add_version', 'update_version', 'promote_version',
+    'add_install_method', 'update_install_method', 'delete_install_method', 'import_package',
+  ]),
+  manage_software_deployments: Object.freeze(['create', 'cancel', 'retry']),
+  manage_device_software: '*',
+  bootstrap_homebrew: '*',
+  manage_software_inventory: Object.freeze(['approve', 'deny', 'clear']),
+  manage_fleet_findings: '*',
+  manage_custom_fields: '*',
+  // Full-control W13 (#6783, W13-D6): every PR A write's REST twin carries requireMfa().
+  manage_device_function: Object.freeze(['set']),
+  manage_device_links: Object.freeze(['create', 'update', 'dissolve']),
+  manage_manual_assets: Object.freeze(['create', 'update', 'delete', 'link', 'unlink']),
+  manage_device_warranty: Object.freeze(['refresh']),
+  // Full-control W13 PR B (#6783): the system-tools router carries requireMfa() on every event-log route; tenant-variable
+  // writes and support-session end carry it too (reads stay ungated, as every wave's reads).
+  browse_device_event_log: '*',
+  manage_tenant_variables: Object.freeze(['create', 'update', 'delete']),
+  manage_support_sessions: Object.freeze(['end']),
+  // Full-control W14 (#6784, W14-D3): every billing-profile / work-type / assignment write and both settings writes
+  // carry requireMfa() at REST. Template and signed-agreement routes carry none, so those tools are not listed.
+  manage_billing_profiles: Object.freeze([
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ]),
+  manage_billing_settings: Object.freeze(['update_partner', 'update_org']),
+  manage_pam_rules: Object.freeze([
+    'create_rule', 'update_rule', 'delete_rule', 'set_config',
+    'create_signer_group', 'update_signer_group', 'delete_signer_group',
+  ]),
 });
 
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';

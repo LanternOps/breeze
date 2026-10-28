@@ -681,6 +681,7 @@
       "disconnected": "Déconnecté",
       "failed": "Échec",
       "pending": "En attente",
+      "endedByUser": "Terminée par l’utilisateur",
       "teardownPending": "En cours de fin (en attente de l’appareil)"
     },
     "subtitle": "Journal d’audit d’accès à distance",
@@ -717,6 +718,7 @@
       "timeline": "Chronologie"
     },
     "subtitle": "Consultez et auditez les sessions d’accès à distance",
+    "endedByUser": "Terminée par l’utilisateur",
     "teardownPending": "En attente de la confirmation de l’appareil",
     "title": "Historique des sessions",
     "viewDevice": "Dispositif de vue",

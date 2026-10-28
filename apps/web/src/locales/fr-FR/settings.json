@@ -278,8 +278,7 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    },
-    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Inscription des appareils",
       "ttl": "Durée de validité par défaut du lien",
-      "ttlHint": "Présélectionne la durée de validité des nouveaux liens d’inscription et programmes d’installation. Les organisations peuvent choisir une autre valeur par défaut.",
+      "ttlHint": "Présélectionne la durée de validité des nouveaux liens d’inscription et programmes d’installation.",
       "deviceCount": "Nombre d’appareils par lien par défaut",
-      "deviceCountHint": "Nombre de machines qu’un lien d’inscription peut inscrire par défaut. Les organisations peuvent choisir une autre valeur par défaut.",
+      "deviceCountHint": "Nombre de machines qu’un lien d’inscription peut inscrire par défaut.",
       "maxTtl": "Durée de vie maximale du lien",
       "maxTtlHint": "Un plafond sur la durée de vie des clés, et pas seulement sur ce qu’un administrateur peut demander : rien de ce qui est émis sous ce partenaire ne reste utilisable plus longtemps — liens d’inscription, invitations de déploiement MCP et identifiants enfants émis lors de l’utilisation d’un programme d’installation.",
       "maxTtlWarning": "Les organisations ne peuvent pas l’augmenter. Un plafond court réduit aussi le temps dont dispose une machine pour terminer son inscription après avoir utilisé un lien, et pas seulement le temps de téléchargement."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Objectifs de version de mise à jour",
     "description": "Épinglez l’agent et le watchdog sur une version enregistrée spécifique, ou laissez-le sur <strong>Dernières promotions</strong> pour suivre la sortie promue mondialement. Agent et chien de garde sont indépendants.",
-    "partnerDescription": " Un code PIN ici est la norme par défaut pour toutes vos organisations ; Une organisation peut passer outre ce sujet.",
     "organizationDescription": " Un code PIN d’organisation prend le dessus sur le défaut du partenaire.",
     "components": {
       "agent": "Agent cible",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Proxy réseau",
       "label": "Servir le proxy réseau depuis une origine dédiée",
-      "help": "S'applique à toutes les organisations ; les organisations ne peuvent pas le remplacer. Ne prend effet que là où votre région propose une origine dédiée, et améliore la compatibilité avec les interfaces web des appareils."
+      "help": "Ne prend effet que là où votre région propose une origine dédiée, et améliore la compatibilité avec les interfaces web des appareils."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1123,6 @@
     "description": "Configurez les paramètres par défaut pour {{name}}.",
     "yourMsp": "votre MSP",
     "saveSettings": "Enregistrer les paramètres",
-    "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
     "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
     "modules": {
       "title": "Modules du produit",
@@ -1173,6 +1170,106 @@
     "knownGuests": {
       "added": "Invité connu ajouté",
       "removed": "Invité connu supprimé"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Verrouille les organisations",
+        "locksConditional": "Verrouille les organisations si activé",
+        "overridable": "L’organisation peut le modifier",
+        "overridableCap": "L’organisation peut le modifier, jusqu’à {{limit}}",
+        "partnerOnly": "À l’échelle du partenaire"
+      },
+      "badgeHelp": {
+        "locks": "Tant que ce paramètre est défini, chaque organisation utilise votre valeur. La valeur propre de l’organisation est ignorée.",
+        "locksConditional": "Lorsqu’il est activé, chaque organisation utilise votre valeur au lieu de la sienne. Lorsqu’il est désactivé, les organisations utilisent la leur.",
+        "overridable": "Votre valeur est la valeur par défaut. Une organisation qui définit sa propre valeur utilise plutôt celle-ci.",
+        "overridableCap": "Votre valeur est la valeur par défaut. Une organisation peut définir sa propre valeur, jusqu’à {{limit}}.",
+        "partnerOnly": "Les organisations n’ont pas de paramètre propre. Votre valeur s’applique à toutes."
+      },
+      "badgeHelpLabel": "À propos de « {{badge}} » ({{field}})",
+      "legend": {
+        "title": "Portée des paramètres :",
+        "locks": "chaque organisation utilise votre valeur",
+        "overridable": "votre valeur est la valeur par défaut ; une organisation peut définir la sienne",
+        "partnerOnly": "s’applique à toutes les organisations ; aucun paramètre par organisation"
+      },
+      "value": {
+        "on": "Activé",
+        "off": "Désactivé",
+        "minutes_one": "{{count}} minute",
+        "minutes_other": "{{count}} minutes",
+        "hours_one": "{{count}} heure",
+        "hours_other": "{{count}} heures",
+        "days_one": "{{count}} jour",
+        "days_other": "{{count}} jours"
+      },
+      "line": {
+        "appliesToAll_one": "S’applique à {{count}} organisation",
+        "appliesToAll_other": "S’applique aux {{count}} organisations",
+        "hadOwnValue_one": "{{count}} avait sa propre valeur",
+        "hadOwnValue_other": "{{count}} avaient leur propre valeur",
+        "notSet": "Non défini.",
+        "someSetOwn_one": "{{count}} organisation sur {{total}} définit la sienne",
+        "someSetOwn_other": "{{count}} organisations sur {{total}} définissent la leur",
+        "restUsePlatformDefault": "les autres utilisent la valeur par défaut de la plateforme ({{value}})",
+        "orgsUsePlatformDefault": "Les organisations utilisent la valeur par défaut de la plateforme ({{value}})",
+        "noneSetOwn": "Aucune organisation n’a sa propre valeur",
+        "defaultFor_one": "Valeur par défaut pour {{count}} organisation",
+        "defaultFor_other": "Valeur par défaut pour {{count}} organisations",
+        "override_one": "{{count}} la remplace",
+        "override_other": "{{count}} la remplacent",
+        "setOwn_one": "{{count}} définit la sienne",
+        "setOwn_other": "{{count}} définissent la leur",
+        "clamped_one": "{{count}} est plafonnée à votre limite",
+        "clamped_other": "{{count}} sont plafonnées à votre limite",
+        "notInForce": "Non appliqué (destination désactivée).",
+        "orgsUseOwnDestination": "Les organisations utilisent leur propre destination",
+        "haveOne_one": "{{count}} en a une",
+        "haveOne_other": "{{count}} en ont une",
+        "partnerOnlyDefault": "La valeur par défaut de la plateforme ({{value}}) s’applique à toutes les organisations",
+        "partnerOnlyBlank": "Non défini. La valeur par défaut de la plateforme s’applique à toutes les organisations",
+        "consumerAll": "{{consumer}} : s’applique à toutes les organisations",
+        "consumerOwn_one": "{{consumer}} : {{count}} organisation utilise sa propre valeur",
+        "consumerOwn_other": "{{consumer}} : {{count}} organisations utilisent leur propre valeur",
+        "noOrgs": "Aucune organisation pour le moment",
+        "savedValue": "Valeur enregistrée :",
+        "restricted": "La ventilation par organisation nécessite un accès partenaire complet"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisations ayant leur propre valeur",
+          "overrides": "Organisations qui remplacent votre valeur par défaut",
+          "shadowed": "Organisations dont la valeur propre ne s’applique pas",
+          "clamped": "Organisations plafonnées à votre limite"
+        },
+        "loading": "Chargement des organisations…",
+        "error": "Impossible de charger les organisations.",
+        "empty": "Aucune organisation dans cette liste.",
+        "loadMore": "Charger plus",
+        "set": "Défini",
+        "notSet": "Non défini",
+        "inEffect": "Appliqué",
+        "notInEffect": "Non appliqué",
+        "ownValue": "Valeur propre :",
+        "channels": "Canaux",
+        "readOnly": "Lecture seule. Modifiez la valeur d’une organisation dans ses propres paramètres."
+      },
+      "summary": {
+        "title": "Dans vos organisations",
+        "locks_one": "{{count}} paramètre verrouille les organisations",
+        "locks_other": "{{count}} paramètres verrouillent les organisations",
+        "overridable_one": "{{count}} peut être remplacé",
+        "overridable_other": "{{count}} peuvent être remplacés",
+        "differ_one": "{{count}} a des organisations qui diffèrent de vos valeurs par défaut",
+        "differ_other": "{{count}} ont des organisations qui diffèrent de vos valeurs par défaut",
+        "noneDiffer": "Toutes les organisations utilisent vos valeurs dans cet onglet.",
+        "hint": "Sélectionnez un paramètre, ou un nombre sous un champ, pour lister ses organisations.",
+        "unavailable": "La ventilation par organisation n’est pas disponible pour le moment.",
+        "back": "Retour au résumé"
+      },
+      "fields": {
+        "defaultProvider": "Fournisseur d’accès à distance par défaut"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +7002,6 @@
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
     "description": "Durée pendant laquelle un tour de Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
-    "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
     "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
   },
   "orgAiApprovalTimeout": {

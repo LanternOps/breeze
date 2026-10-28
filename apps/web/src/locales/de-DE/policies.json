@@ -899,7 +899,17 @@
         "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
         "ringDetailsNoHold": "Rollout-Reihenfolge {{order}} · keine Wartezeit vor der Genehmigung",
         "ringDetailsWithHold_one": "Rollout-Reihenfolge {{order}} · {{count}} Tag Wartezeit vor der Genehmigung",
-        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung"
+        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung",
+        "rebootPreviewHeading": "Vorschau",
+        "rebootPreviewDescription": "Das sieht die Person am Computer, wenn jetzt ein Neustart geplant wird. Die Uhrzeiten sind Beispiele.",
+        "rebootPreviewDefaultMarker": "Standard",
+        "rebootPreviewDefaultTitle": "Neustart zum Abschließen der Updateinstallation",
+        "rebootPreviewDefaultBody": "Ihr IT-Support-Team muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
+        "rebootPreviewConsequence": "Wenn Sie nichts tun, wird dieser Computer um {{time}} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
+        "rebootPreviewRestartNow": "Jetzt neu starten",
+        "rebootPreviewPostponeUntil": "Verschieben bis {{time}}",
+        "rebootPreviewDeadline": "Durch Verschieben wird der Neustart nie später als {{time}} durchgeführt.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",
@@ -986,6 +996,9 @@
         "showIndicatorHelp": "Banner auf dem Bildschirm anzeigen, während ein Techniker verbunden ist.",
         "notifyOnEnd": "Hinweis bei Sitzungsende",
         "notifyOnEndHelp": "Endbenutzer benachrichtigen, wenn die Sitzung endet.",
+        "allowUserEnd": "Benutzer darf die Sitzung beenden",
+        "allowUserEndHelp": "Die Person am Gerät kann die Sitzung nach einer Bestätigung über die Anzeige auf dem Bildschirm beenden. Der Techniker sieht „Vom Benutzer beendet“.",
+        "allowUserEndNeedsIndicator": "Aktivieren Sie die Anzeige für aktive Sitzungen, damit Benutzer eine Sitzung beenden können.",
         "identityLevel": "Techniker-Identität",
         "identityLevelHelp": "Wie viel von der Identität des Technikers der Endbenutzer sieht. Der MSP-Name wird immer angezeigt.",
         "identityNameEmail": "Name und E-Mail",
