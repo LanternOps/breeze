@@ -7,13 +7,18 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
+  softwareCatalog, softwareVersions, softwareInstallMethods,
 } from '../../db/schema';
+import {
+  fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
+} from '../softwareDependencyIdentity';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
 import { yaraRuleSets } from '../../db/schema/yara';
 import { canonicalizeArguments } from './canonicalize';
 import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { fleetEffectMaterial } from './fleetEffectDigest';
 import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 import type { VerifiedTopologyDiagnostic } from '../topology/aiDiagnosticEffect';
@@ -243,6 +248,36 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     };
   },
 
+  // run_script_on_targets — Tool Catalog W06 (#5221, plan Decision 5): the
+  // flow fleet built-in, parked for approval with its device list FROZEN in
+  // the intent arguments. Pins the snapshot built for exactly those devices
+  // (the run_script material: content, run context, parameter definitions,
+  // device orgs, variable references) plus the canonical parameters, the
+  // EFFECTIVE run context, the offline policy and the sorted device ids
+  // (fleetEffectDigest.ts). MANDATORY (pinnedEffectPolicy.ts): creation
+  // refuses an unresolved digest and release refuses a missing one. The
+  // snapshot rides along as `verified`, which the release worker hands to the
+  // built-in so dispatch runs from the observation the digest compared.
+  run_script_on_targets: async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds.filter((d): d is string => typeof d === 'string') : [];
+    if (deviceIds.length === 0) return MISSING_ARG;
+    const built = await buildRunScriptSnapshot({ scriptId: args.scriptId, deviceIds }, database);
+    if (built.kind === 'missing_arg') return MISSING_ARG;
+    if (built.kind === 'target_absent') return TARGET_ABSENT;
+    const runAs = typeof args.runAs === 'string' ? args.runAs : built.snapshot.script.runAs;
+    return {
+      kind: 'material',
+      material: fleetEffectMaterial({
+        snapshot: built.snapshot,
+        parameters: args.parameters ?? {},
+        runAs,
+        offlinePolicy: args.whenOffline === 'skip' ? 'skip' : 'queue',
+        deviceIds,
+      }),
+      verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
+    };
+  },
+
   // diagnose_connectivity (Tier 3, SUPERVISED) — topology M4 Task 4 / M4-D3
   // (#6000). Pins the deterministic executable effect of ONE fixed-recipe
   // diagnostic: the materialized proposal (explicit origin/context/family and
@@ -299,6 +334,46 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     } catch {
       return TARGET_ABSENT;
     }
+  },
+
+  // Full-control W12 (#6782, quorum QW3, W12-D12) — a supervised software deployment. The approver signs off on
+  // installing ONE package: a version (its URL / S3 object, checksum, install args, detection, scripts) or a catalog
+  // item's enabled winget / Homebrew methods. Pin the same dependency fingerprint the deployment stores and retry
+  // re-checks, so a version or method edited (or a method added / disabled) between approval and release changes the
+  // digest and the release fails closed instead of installing something the approver never saw.
+  'manage_software_deployments:create': async (args, database) => {
+    const versionId = typeof args.softwareVersionId === 'string' ? args.softwareVersionId : null;
+    const catalogId = typeof args.catalogId === 'string' ? args.catalogId : null;
+    if (versionId && !catalogId) {
+      const [row] = await database
+        .select({ version: softwareVersions, catalog: softwareCatalog })
+        .from(softwareVersions)
+        .innerJoin(softwareCatalog, eq(softwareVersions.catalogId, softwareCatalog.id))
+        .where(and(eq(softwareVersions.id, versionId), isNull(softwareCatalog.deletedAt)))
+        .limit(1);
+      if (!row) return TARGET_ABSENT;
+      return material(JSON.stringify({ kind: 'version', fingerprint: fingerprintSoftwareVersionDependency(row.version, row.catalog) }));
+    }
+    if (catalogId && !versionId) {
+      const [catalog] = await database
+        .select()
+        .from(softwareCatalog)
+        .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt)))
+        .limit(1);
+      if (!catalog) return TARGET_ABSENT;
+      const methods = await database
+        .select()
+        .from(softwareInstallMethods)
+        .where(and(eq(softwareInstallMethods.catalogId, catalogId), eq(softwareInstallMethods.enabled, true)))
+        .orderBy(asc(softwareInstallMethods.id));
+      return material(JSON.stringify({
+        kind: 'catalog',
+        versionMode: args.versionMode === 'exact' ? 'exact' : 'latest',
+        requestedVersion: typeof args.requestedVersion === 'string' ? args.requestedVersion : null,
+        methods: methods.map((m) => fingerprintSoftwareInstallMethodDependency(m, catalog)),
+      }));
+    }
+    return MISSING_ARG;
   },
 
   // W06 (#6776) hard deletes. The approver signs off on deleting a specific

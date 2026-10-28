@@ -33,6 +33,10 @@ const consentTimeoutGraceMs = 2000
 var (
 	desktopPromptsMu sync.Mutex
 	desktopPrompts   = map[string]*ipc.DesktopPrompt{}
+	// desktopPromptStarted is when each remembered prompt's session started,
+	// so the session-ended notice can say how long it lasted (#10190 W04).
+	// Guarded by desktopPromptsMu; taken with the prompt.
+	desktopPromptStarted = map[string]time.Time{}
 )
 
 func rememberDesktopPrompt(sessionID string, prompt *ipc.DesktopPrompt) {
@@ -41,18 +45,43 @@ func rememberDesktopPrompt(sessionID string, prompt *ipc.DesktopPrompt) {
 	}
 	desktopPromptsMu.Lock()
 	desktopPrompts[sessionID] = prompt
+	desktopPromptStarted[sessionID] = time.Now()
 	desktopPromptsMu.Unlock()
 }
 
+// desktopPromptActive reports, without taking it, whether sessionID still
+// has a remembered prompt: the session has not ended yet.
+func desktopPromptActive(sessionID string) bool {
+	desktopPromptsMu.Lock()
+	defer desktopPromptsMu.Unlock()
+	_, ok := desktopPrompts[sessionID]
+	return ok
+}
+
+// indicatorLifecycleMu serializes a session's end against a re-show of its
+// indicator after a failed user end: either the end runs first and the
+// re-show sees the session gone, or the re-show runs first and the end
+// closes what it showed. Never held by anything the prompt host calls.
+var indicatorLifecycleMu sync.Mutex
+
 func takeDesktopPrompt(sessionID string) *ipc.DesktopPrompt {
+	prompt, _ := takeDesktopPromptWithStart(sessionID)
+	return prompt
+}
+
+// takeDesktopPromptWithStart takes the remembered prompt and when its
+// session started (zero when unknown).
+func takeDesktopPromptWithStart(sessionID string) (*ipc.DesktopPrompt, time.Time) {
 	if sessionID == "" {
-		return nil
+		return nil, time.Time{}
 	}
 	desktopPromptsMu.Lock()
 	prompt := desktopPrompts[sessionID]
+	started := desktopPromptStarted[sessionID]
 	delete(desktopPrompts, sessionID)
+	delete(desktopPromptStarted, sessionID)
 	desktopPromptsMu.Unlock()
-	return prompt
+	return prompt, started
 }
 
 // parseDesktopPrompt re-marshals the optional `prompt` block from a start_desktop
@@ -159,6 +188,10 @@ func (h *Heartbeat) runConsentGate(sessionID string, prompt *ipc.DesktopPrompt, 
 		"outcome", v.outcome,
 		"occupancy", v.occupancy,
 		"detail", v.detail,
+		// What drew the prompt (assist | native). Reported here, not in
+		// the start result: the API's strict desk-* result object has no
+		// renderer field yet, and an unknown key would drop the result.
+		"renderer", att.renderer,
 	)
 	return v
 }
@@ -236,6 +269,11 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 	}
 	answerWait := time.Duration(prompt.ConsentTimeoutMs+consentTimeoutGraceMs) * time.Millisecond
 
+	// remote.consent through the prompt host when all three switches are on
+	// for this user's session (W06); otherwise exactly today's request.
+	if att, ok := h.solicitConsentPrompt(ctx, session, req, prompt); ok {
+		return att
+	}
 	var att consentAttempt
 	if session.ConsentProtocolVersion >= ipc.ConsentProtocolVersion {
 		att = solicitConsentV2(ctx, session, "consent-"+sessionID, req, answerWait)
@@ -243,6 +281,7 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		att = solicitConsentLegacy(ctx, session, "consent-"+sessionID, req, answerWait)
 	}
 	att.helper = session
+	att.renderer = consentRendererLabel(session.HelperRole)
 	return att
 }
 
@@ -607,7 +646,9 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 		h.sendSessionNotify(connectedNotifyBody(prompt), targetWinSession)
 	}
 	if prompt.ShowIndicator {
-		h.sendBannerShow(sessionID, prompt, targetWinSession)
+		// remote.session where the session's renderer draws it and the
+		// server enables it (#10190 W06); otherwise exactly today's banner.
+		h.showSessionIndicator(sessionID, prompt, targetWinSession)
 	}
 }
 
@@ -682,7 +723,12 @@ func (h *Heartbeat) sendBannerHide(sessionID, targetWinSession string) {
 func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 	targetWinSession := h.takeDesktopTarget(sessionID)
 
-	prompt := takeDesktopPrompt(sessionID)
+	indicatorLifecycleMu.Lock()
+	prompt, startedAt := takeDesktopPromptWithStart(sessionID)
+	if prompt != nil && prompt.ShowIndicator {
+		h.closeSessionIndicator(sessionID)
+	}
+	indicatorLifecycleMu.Unlock()
 	if prompt == nil {
 		return
 	}
@@ -690,7 +736,9 @@ func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 		h.sendBannerHide(sessionID, targetWinSession)
 	}
 	if prompt.NotifyOnEnd {
-		h.sendSessionNotify("Remote session ended", targetWinSession)
+		// A notice.info card where the session's renderer draws it and the
+		// server enables it (#10190 W04); otherwise exactly today's notice.
+		h.notifySessionEnded(sessionID, prompt, startedAt, targetWinSession)
 	}
 }
 

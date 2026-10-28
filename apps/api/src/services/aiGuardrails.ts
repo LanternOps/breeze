@@ -173,6 +173,28 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_security_recommendations: ['complete', 'dismiss'],
   manage_access_reviews: ['decide_item'],
   manage_audit_baselines: ['request_apply'],
+  // Full-control W12 (#6782): tenant-internal, reversible. A new catalog item is inert until something references it;
+  // a metadata edit changes no install target; cancel stops pending installs (create/retry redo them); a fleet-finding
+  // status is undone by reopen; an org custom-field definition create/edit is undone by another edit. A PARTNER-WIDE
+  // catalog item or definition create is supervised (input-aware, quorum QW1); the tool never edits an existing
+  // partner-wide row (W12-D10). Install-target edits, deploys, inventory policy writes and value writes are tier 3.
+  manage_software_catalog: ['create', 'update', 'import_package'],
+  manage_software_deployments: ['cancel'],
+  manage_fleet_findings: ['acknowledge', 'dismiss', 'reopen'],
+  manage_custom_fields: ['create_definition', 'update_definition'],
+  // Full-control W13 (#6783, plan class review): tenant-internal and reversible. A link group only changes how the
+  // device list renders its members (nothing targets or alerts by it) and is undone by linking again — dissolve
+  // included (members keep their data). A manual asset is one hand-entered inventory row; link / unlink attach it to
+  // a device or a discovered asset for de-duplication. Its hard delete is tier 3.
+  manage_device_links: ['create', 'update', 'dissolve'],
+  // Full-control W13 PR B (#6783): listing a device's event-log channels runs a live agent command (devices:execute,
+  // like execute_command event_logs_list) and returns names and sizes only — read-only, see TIER2_READONLY_ACTIONS.
+  browse_device_event_log: ['list_logs'],
+  manage_manual_assets: ['create', 'update', 'link', 'unlink'],
+  // Full-control W14 (#6784, W14 plan): an ORG-OWNED agreement template's create / rename is tenant-internal and
+  // reversible (archive hides a new one) and pins nowhere until a version is published. A call that asserts
+  // ownerScope 'partner' escalates to supervised (isInputAwareTier3).
+  manage_contract_templates: ['create', 'update'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -287,6 +309,8 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
+  // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3.
+  browse_device_event_log: ['list_logs'],
   file_operations: ['list'],
   manage_processes: ['list'],
   manage_scheduled_tasks: ['list'],
@@ -412,6 +436,23 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_security_policies: ['list'],
   manage_recovery_keys: ['list'],
   manage_pam_rules: ['list_rules', 'get_config', 'list_signer_groups'],
+  // Full-control W12 (#6782): the software reads.
+  manage_software_catalog: ['list', 'get'],
+  manage_software_deployments: ['list', 'get', 'summary', 'results'],
+  manage_software_inventory: ['list', 'names', 'devices'],
+  // Full-control W13 (#6783): the device-record reads.
+  manage_device_function: ['get'],
+  manage_device_links: ['list', 'get', 'for_device'],
+  manage_manual_assets: ['list'],
+  manage_device_warranty: ['get', 'expiring'],
+  // Full-control W13 PR B (#6783).
+  manage_tenant_variables: ['list'],
+  manage_support_sessions: ['list', 'get'],
+  // Full-control W14 (#6784).
+  manage_billing_profiles: ['list', 'get', 'list_work_types', 'get_org_profile'],
+  manage_billing_settings: ['get_partner', 'get_org', 'currency_impact', 'reporting_totals'],
+  manage_contract_templates: ['list', 'get', 'get_version', 'usage'],
+  manage_contract_documents: ['list'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -596,6 +637,31 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
   ],
+  // Full-control W12 (#6782): see TIER3_SUPERVISED_ACTIONS.
+  manage_software_catalog: [
+    'archive', 'add_version', 'update_version', 'promote_version',
+    'add_install_method', 'update_install_method', 'delete_install_method',
+  ],
+  manage_software_deployments: ['create', 'retry'],
+  manage_device_software: ['update', 'uninstall'],
+  manage_software_inventory: ['approve', 'deny', 'clear'],
+  manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783): see TIER3_SUPERVISED_ACTIONS.
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
+  // Full-control W13 PR B (#6783): see TIER3_SUPERVISED_ACTIONS.
+  browse_device_event_log: ['query', 'get_event'],
+  manage_tenant_variables: ['create', 'update', 'delete'],
+  manage_support_sessions: ['end'],
+  // Full-control W14 (#6784): see TIER3_SUPERVISED_ACTIONS.
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -926,6 +992,56 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',
   ],
+  // Full-control W12 (#6782, plan class review). One approver (the requester):
+  // - catalog install-target edits (a version added — auto-promoted —, edited or promoted; an install method added,
+  //   edited or deleted) change what armed auto-install policies, automations and `latest` deployments install on
+  //   customer machines with no further approval (plan fact 1); archive has no restore route;
+  // - deployment create/retry dispatch software_install; device-software update/uninstall queue a device command;
+  // - inventory approve/deny/clear append to (or remove from) the org's default allow/blocklist, which with an
+  //   enforcing policy drives auto-uninstall (plan fact 5);
+  // - a custom-field definition delete cascades every device's value (irreversible); a value write changes installer
+  //   arguments and dynamic-group targeting (quorum QW1; set_values returns the previous values).
+  manage_software_catalog: [
+    'archive', 'add_version', 'update_version', 'promote_version',
+    'add_install_method', 'update_install_method', 'delete_install_method',
+  ],
+  manage_software_deployments: ['create', 'retry'],
+  manage_device_software: ['update', 'uninstall'],
+  manage_software_inventory: ['approve', 'deny', 'clear'],
+  manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783, plan class review). One approver (the requester):
+  // - a device function is an ALLOWED execution-targeting filter (filterEngine.ts field table): setting or clearing it
+  //   changes which devices dynamic groups select for scripts, deployments and policy (plan fact 1);
+  // - a manual-asset delete is a hard delete with no restore (retiredAt is the soft path);
+  // - a warranty refresh sends the device's serial number to the manufacturer's warranty API now (spec class rule:
+  //   nothing that leaves the tenant may be tier 2).
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
+  // Full-control W13 PR B (#6783, plan class review + quorum QW1/QW2/QW6). One approver (the requester):
+  // - an event-log query / event read returns event TEXT from any channel (Security / Application logs can carry
+  //   credentials and PII) — the execute_command event_logs_query base class, without its chat-only exemption;
+  // - a tenant-variable value is substituted into every script dispatched to the org's devices ({{var.<key>}}), and
+  //   a delete loses the value (the tool never touches secrets or existing partner-wide rows, W13-D7/D13);
+  // - ending a support session self-destructs the temporary client and decommissions it (irreversible).
+  browse_device_event_log: ['query', 'get_event'],
+  manage_tenant_variables: ['create', 'update', 'delete'],
+  manage_support_sessions: ['end'],
+  // Full-control W14 (#6784, W14 plan class review + quorum QW2/QW3/QW5). One approver (the requester):
+  // - rate cards and work types are partner-wide by construction and price every org's time entries; an org's
+  //   rate-card assignment picks what that org is billed (the manage_billing_catalog:set_org_price precedent);
+  // - partner billing settings rewrite every org's invoice defaults and customer-facing text; org billing settings
+  //   change one org's tax, terms and the contact its invoices are emailed to;
+  // - an org-owned agreement template's draft versions are append-only, and publish / archive cannot be undone
+  //   (the partner-wide ones are refused in the handler, W14-D5); filing a signed agreement cannot be undone.
+  // Every write's result and audit row carries the previous values (QW3).
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -976,6 +1092,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
   'manage_software_policy', 'manage_browser_policy',
+  // Full-control W12 (#6782): bootstrap_homebrew has no action (whole tool); manage_device_software's two actions are
+  // enumerated in TIER3_SUPERVISED_ACTIONS — this is the backstop.
+  'bootstrap_homebrew', 'manage_device_software',
   // Monitor definitions (#5289 Task 8): ordinary config-object CRUD (create/
   // update/delete/enable/disable/attach/detach), same class as the software/
   // browser/peripheral policy tools above — no identity, tenant-destruction,
@@ -1057,6 +1176,15 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // W06 (#6776): a partner-wide checklist template is supervised; an org-owned one stays at
   // the base tier 2. Only the create INPUT (`data.ownerScope`) says which.
   'manage_ticket_checklist_templates:create',
+  // Full-control W12 (#6782, quorum QW1): a partner-wide catalog item or custom-field definition (`ownerScope:
+  // 'partner'`) is supervised; an org-owned one stays at the base tier 2.
+  'manage_software_catalog:create',
+  'manage_custom_fields:create_definition',
+  // Full-control W14 (#6784, W14-D5): an agreement template that is partner-wide (`ownerScope: 'partner'`) is
+  // supervised on create / update; an org-owned one stays at tier 2. Ownership is immutable DB state, so the call
+  // ASSERTS it and the handler refuses a mismatch at call time and again at release.
+  'manage_contract_templates:create',
+  'manage_contract_templates:update',
   // Full-control W11 (#6781, W11-D4): deactivation is irreversible in the product; an org row is supervised, a
   // partner-wide row (every org) four-eyes. Ownership is DB state, so the call ASSERTS it in `ownerScope` and
   // the handler refuses a mismatch; only the literal 'organization' resolves supervised.
@@ -1148,6 +1276,18 @@ export function isInputAwareTier3(
     return typeof data === 'object' && data !== null && !Array.isArray(data)
       && (data as Record<string, unknown>).ownerScope === 'partner';
   }
+  if (toolName === 'manage_software_catalog' || toolName === 'manage_custom_fields') {
+    // Full-control W12 (#6782, quorum QW1): mirrors both handlers — only the literal ownerScope 'partner' creates a
+    // partner-wide row (every org of the partner); anything else is org-owned at the base tier 2.
+    const create = toolName === 'manage_software_catalog' ? 'create' : 'create_definition';
+    return action === create && input.ownerScope === 'partner';
+  }
+  if (toolName === 'manage_contract_templates') {
+    // Full-control W14 (#6784, W14-D5): mirrors the handler — only the literal ownerScope 'partner' addresses a
+    // partner-wide template (every org of the partner); absent or 'organization' is an org-owned one at tier 2, and
+    // the handler refuses an assertion that does not match the row.
+    return (action === 'create' || action === 'update') && input.ownerScope === 'partner';
+  }
   if (toolName === 'manage_backup_profiles') {
     // Mirrors the handler (aiToolsPolicyPrereqs.ts create branch): only the
     // literal 'partner' creates a partner-wide row; anything else is an
@@ -1215,6 +1355,11 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   manage_backup_profiles: ['ownerScope'],
   // isInputAwareTier3: create with data.ownerScope === 'partner' is supervised (W06, #6776).
   manage_ticket_checklist_templates: ['data'],
+  // isInputAwareTier3: create / create_definition with ownerScope === 'partner' is supervised (W12, #6782).
+  manage_software_catalog: ['ownerScope'],
+  manage_custom_fields: ['ownerScope'],
+  // isInputAwareTier3: template create / update with ownerScope === 'partner' is supervised (W14, #6784).
+  manage_contract_templates: ['ownerScope'],
   // resolveApprovalScope: deactivate is supervised only for ownerScope === 'organization' (W11, #6781).
   manage_compliance_policies: ['ownerScope'],
   // resolveApprovalScope: create with ownerScope === 'partner' is four-eyes (W11, #6781).
@@ -2513,6 +2658,130 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     update_signer_group: { resource: 'pam', action: 'manage_policy' },
     delete_signer_group: { resource: 'pam', action: 'manage_policy' },
   },
+  // Full-control W12 (#6782) — each floor is read from its route by the W12 rows of
+  // aiGuardrails.routeBinding.contract.test.ts.
+  manage_software_catalog: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    archive: { resource: 'devices', action: 'write' },
+    add_version: { resource: 'devices', action: 'write' },
+    update_version: { resource: 'devices', action: 'write' },
+    promote_version: { resource: 'devices', action: 'write' },
+    add_install_method: { resource: 'devices', action: 'write' },
+    update_install_method: { resource: 'devices', action: 'write' },
+    delete_install_method: { resource: 'devices', action: 'write' },
+    import_package: { resource: 'devices', action: 'write' },
+  },
+  search_packages: { resource: 'devices', action: 'read' },
+  manage_software_deployments: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    summary: { resource: 'devices', action: 'read' },
+    results: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'execute' },
+    cancel: { resource: 'devices', action: 'execute' },
+    retry: { resource: 'devices', action: 'execute' },
+  },
+  get_device_software: { resource: 'devices', action: 'read' },
+  manage_device_software: { resource: 'devices', action: 'execute' },
+  bootstrap_homebrew: { resource: 'devices', action: 'execute' },
+  manage_software_inventory: {
+    list: { resource: 'devices', action: 'read' },
+    names: { resource: 'devices', action: 'read' },
+    devices: { resource: 'devices', action: 'read' },
+    approve: { resource: 'devices', action: 'write' },
+    deny: { resource: 'devices', action: 'write' },
+    clear: { resource: 'devices', action: 'write' },
+  },
+  manage_fleet_findings: { resource: 'devices', action: 'write' },
+  manage_custom_fields: { resource: 'devices', action: 'write' },
+  // Full-control W13 (#6783, PR A) — each floor is read from its route by the W13 rows of
+  // aiGuardrails.routeBinding.contract.test.ts.
+  get_device_events: { resource: 'devices', action: 'read' },
+  get_device_health: { resource: 'devices', action: 'read' },
+  get_process_samples: { resource: 'devices', action: 'read' },
+  get_management_posture: { resource: 'devices', action: 'read' },
+  manage_device_function: {
+    get: { resource: 'devices', action: 'read' },
+    set: { resource: 'devices', action: 'write' },
+  },
+  manage_device_links: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    for_device: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    dissolve: { resource: 'devices', action: 'delete' },
+  },
+  manage_manual_assets: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'delete' },
+    link: { resource: 'devices', action: 'write' },
+    unlink: { resource: 'devices', action: 'write' },
+  },
+  manage_device_warranty: {
+    get: { resource: 'devices', action: 'read' },
+    expiring: { resource: 'devices', action: 'read' },
+    refresh: { resource: 'devices', action: 'write' },
+  },
+  // Full-control W13 PR B (#6783): the system-tools router (devices:execute), routes/tenantVariables.ts
+  // (variables:read / variables:manage) and the remote router (remote:access).
+  browse_device_event_log: { resource: 'devices', action: 'execute' },
+  manage_tenant_variables: {
+    list: { resource: 'variables', action: 'read' },
+    create: { resource: 'variables', action: 'manage' },
+    update: { resource: 'variables', action: 'manage' },
+    delete: { resource: 'variables', action: 'manage' },
+  },
+  manage_support_sessions: { resource: 'remote', action: 'access' },
+  // Full-control W14 (#6784): routes/billingProfiles.ts + orgBillingProfile.ts (billing_profiles:*),
+  // routes/invoices/settings.ts (invoices:write; reporting totals has no grant at REST, the tool requires
+  // invoices:read) and the settings read routes GET /orgs/partners/me, /orgs/organizations/:id (organizations:read,
+  // quorum QW6), routes/contracts/templates.ts + documents.ts (agreements:*), routes/devices/billing.ts
+  // (devices:read + contracts:read, the second in TOOL_EXTRA_PERMISSIONS).
+  manage_billing_profiles: {
+    list: { resource: 'billing_profiles', action: 'read' },
+    get: { resource: 'billing_profiles', action: 'read' },
+    list_work_types: { resource: 'billing_profiles', action: 'read' },
+    get_org_profile: { resource: 'billing_profiles', action: 'read' },
+    create: { resource: 'billing_profiles', action: 'write' },
+    update: { resource: 'billing_profiles', action: 'write' },
+    archive: { resource: 'billing_profiles', action: 'write' },
+    set_rows: { resource: 'billing_profiles', action: 'write' },
+    clone: { resource: 'billing_profiles', action: 'write' },
+    create_work_type: { resource: 'billing_profiles', action: 'write' },
+    update_work_type: { resource: 'billing_profiles', action: 'write' },
+    set_org_profile: { resource: 'billing_profiles', action: 'write' },
+    clear_org_profile: { resource: 'billing_profiles', action: 'write' },
+  },
+  manage_billing_settings: {
+    get_partner: { resource: 'organizations', action: 'read' },
+    get_org: { resource: 'organizations', action: 'read' },
+    currency_impact: { resource: 'invoices', action: 'write' },
+    reporting_totals: { resource: 'invoices', action: 'read' },
+    update_partner: { resource: 'invoices', action: 'write' },
+    update_org: { resource: 'invoices', action: 'write' },
+  },
+  manage_contract_templates: {
+    list: { resource: 'agreements', action: 'read' },
+    get: { resource: 'agreements', action: 'read' },
+    get_version: { resource: 'agreements', action: 'read' },
+    usage: { resource: 'agreements', action: 'read' },
+    create: { resource: 'agreements', action: 'write' },
+    update: { resource: 'agreements', action: 'write' },
+    create_version: { resource: 'agreements', action: 'write' },
+    publish: { resource: 'agreements', action: 'write' },
+    archive: { resource: 'agreements', action: 'write' },
+  },
+  manage_contract_documents: {
+    list: { resource: 'agreements', action: 'read' },
+    link: { resource: 'agreements', action: 'write' },
+  },
+  get_device_billing: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -2587,6 +2856,9 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   manage_topology_monitoring: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   manage_topology_templates: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   apply_topology_template: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  // Full-control W14 (#6784): GET /devices/:id/billing requires devices:read AND contracts:read (contract-line
+  // descriptions carry rates).
+  get_device_billing: [{ resource: 'contracts', action: 'read' }],
 };
 
 /**

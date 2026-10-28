@@ -62,6 +62,31 @@ func (d *BrokerDirectory) Renderers(o Owner) []RendererSession {
 	return out
 }
 
+// PromptRenderers returns every live renderer holding a prompt scope (the
+// sessions a prompt_branding_sync may go to).
+func (d *BrokerDirectory) PromptRenderers() []RendererSession {
+	seen := map[string]bool{}
+	var out []RendererSession
+	for _, scope := range []string{ipc.ScopePrompt, ipc.ScopePromptOperator} {
+		for _, s := range d.b.SessionsWithScope(scope) {
+			if !seen[s.SessionID] {
+				seen[s.SessionID] = true
+				out = append(out, RendererFromSession(s, d.goos))
+			}
+		}
+	}
+	return out
+}
+
+// UserLocaleInWinSession is the UI language of a user-context helper in that
+// Windows session (the SYSTEM helper borrows it).
+func (d *BrokerDirectory) UserLocaleInWinSession(winSession uint32) string {
+	if winSession == 0 {
+		return ""
+	}
+	return d.b.UILocaleInWinSession(strconv.FormatUint(uint64(winSession), 10))
+}
+
 // Send delivers through the broker's scope-checked SendPrompt.
 func (d *BrokerDirectory) Send(sessionKey, msgType, kind string, payload any) error {
 	return d.b.SendPrompt(sessionKey, msgType, kind, payload)
@@ -76,6 +101,7 @@ func RendererFromSession(s *sessionbroker.Session, goos string) RendererSession 
 		KindAds:     s.PromptKindAds(),
 		Version:     s.RendererVersion(),
 		ConnectedAt: s.ConnectedAt,
+		UILocale:    s.UILocale(),
 	}
 	if goos == "windows" {
 		ws, _ := strconv.ParseUint(s.WinSessionID, 10, 32)

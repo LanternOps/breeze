@@ -85,6 +85,21 @@ export default function FlowRunPage({ runId }: { runId: string }) {
           <span data-testid="flow-run-duration">{formatDurationMs(runDurationMs(run))}</span>
         </div>
 
+        {run.parentAgentRunId && (
+          <p className="text-xs text-muted-foreground" data-testid="flow-run-agent-run">
+            {t('runDetail.agentRun')}
+            {' · '}
+            <a className="text-primary hover:underline" href={`/ai-agents/runs/${run.parentAgentRunId}`} data-testid="flow-run-agent-run-link">
+              {t('runDetail.openAgentRun')}
+            </a>
+          </p>
+        )}
+        {run.aiTokensUsed > 0 && (
+          <p className="text-xs text-muted-foreground" data-testid="flow-run-ai-tokens">
+            {t('runDetail.aiTokensUsed', { count: run.aiTokensUsed })}
+          </p>
+        )}
+
         {run.errorCode && run.errorCode !== 'unknown_outcome' && (
           <p className="text-sm text-destructive" data-testid="flow-run-error-code">
             {t(/* i18n-dynamic */ `runDetail.error.${run.errorCode}`, { defaultValue: run.errorCode })}

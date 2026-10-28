@@ -153,7 +153,9 @@ export type PreApprovalEligibility =
       eligible: false;
       reason:
         | 'not_tier3' | 'tool_not_supported' | 'script_not_literal' | 'run_context_not_literal' | 'group_target'
-        | 'variable_dependent' | 'script_not_found' | 'four_eyes' | 'tenant_tool';
+        | 'variable_dependent' | 'script_not_found' | 'four_eyes' | 'tenant_tool'
+        // W6 (#5221) fleet lane
+        | 'for_each' | 'run_as_elevated' | 'selector_not_literal' | 'max_targets_invalid';
     };
 
 export interface FlowIssue {
@@ -191,6 +193,8 @@ export interface FlowSummaryDto {
   triggerType: string;
   definitionVersion: number;
   updatedAt: string;
+  /** W5: the last admission refusal (a monthly cap or the active queue), for the list badge and the detail banner. */
+  lastAdmissionRefusal: { at: string; code: FlowAdmissionRefusal } | null;
 }
 
 export interface FlowDetailDto extends FlowSummaryDto {
@@ -209,6 +213,4 @@ export interface FlowDetailDto extends FlowSummaryDto {
   webhook: FlowWebhookInfoDto | null;
   /** W5: this month's run counts against the effective caps; null when not computed. */
   usage: FlowUsageDto | null;
-  /** W5: the last admission refusal (a monthly cap or the active queue), for the banner. */
-  lastAdmissionRefusal: { at: string; code: FlowAdmissionRefusal } | null;
 }

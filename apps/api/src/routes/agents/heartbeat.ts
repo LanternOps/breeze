@@ -38,6 +38,8 @@ import { heartbeatSchema } from './schemas';
 import { recordWorkstationCapabilities } from '../../services/callerVerification/workstationCapabilities';
 import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
 import { enabledPromptKinds } from '../../services/promptHostConfig';
+import { buildHeartbeatPromptIdentity } from '../../services/promptIdentity';
+import { noteRebootUserActionDropped, recordRebootUserAction } from '../../services/rebootUserActionAudit';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -440,6 +442,16 @@ export function normalizeConsentPromptProtocolVersion(value: unknown): 0 | 1 | 2
  * never persisted — each beat is answered from its own report.
  */
 export function normalizeRetainStateProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
+ * Normalize the prompt identity protocol (#10190 W03): whether THIS beat's
+ * agent caches the response's `promptIdentity` block. Exactly 1 only
+ * (PROMPT_IDENTITY_PROTOCOL_VERSION); absent, malformed or a future version is
+ * 0 and gets no block. Parse-only, never persisted.
+ */
+export function normalizePromptIdentityProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
@@ -2441,6 +2453,37 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     await recordPromptHostObservation(scoped.deviceId, promptHostReport);
   }
 
+  // #10190 W05 — the restart decision the person at the keyboard made
+  // (Postpone / Restart now). The agent re-sends it on every beat while the
+  // restart is scheduled; the service writes one audit row per decision
+  // (Redis NX on device + decision time). Keyed by the authenticated device
+  // and its org (the row's, not the token's), after the org transaction
+  // released, and NOT awaited: the beat's answer never waits on Redis or the
+  // audit writer, and the service never throws (the catch is belt and braces
+  // for the floating promise). A schedule whose lastUserAction the schema
+  // dropped is logged (throttled); Hono caches the parsed body, so the
+  // re-read is free.
+  const rebootStatus = data.rebootStatus;
+  const lastUserAction = rebootStatus?.lastUserAction;
+  if (agent.role !== 'watchdog' && rebootStatus && !lastUserAction) {
+    try {
+      noteRebootUserActionDropped(scoped.deviceId, await c.req.json(), lastUserAction);
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
+  }
+  if (agent.role !== 'watchdog' && rebootStatus && lastUserAction) {
+    void recordRebootUserAction(scoped.deviceId, scoped.deviceOrgId, lastUserAction, {
+      c,
+      agentId,
+      scheduledAt: rebootStatus.scheduledAt,
+      deferralsUsed: rebootStatus.deferralsUsed,
+      maxDeferrals: rebootStatus.maxDeferrals,
+    }).catch((err) => {
+      console.error('[heartbeat] restart decision audit failed', { deviceId: scoped.deviceId, err });
+    });
+  }
+
   // Self-health is independent from reachability and is persisted only after
   // the request's org-scoped transaction has released. A failed observation
   // must never turn a valid heartbeat into an outage or roll back the device's
@@ -2951,6 +2994,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ? { onedrive_helper_settings: onedriveSettings }
     : null;
 
+  // #10190 W03 — the MSP identity drawn on every device prompt. Only for an
+  // agent that speaks the block, and only when this beat's own hierarchy
+  // loaded (the device's org and partner were just checked against the
+  // authenticated ones). Otherwise, and on any resolution failure, the block
+  // is OMITTED, never `cleared`: an absent block keeps the agent's last-known
+  // identity, so a transient DB or Redis error never strips the MSP name from
+  // a prompt. `cleared` is sent only when the device's org resolves no partner
+  // row (services/promptIdentity.ts). Resolved here, after the policy context
+  // is released: it runs its own short system read and may fetch the logo
+  // (#1105). A sibling of helperSettings, not inside it: native prompts need
+  // the identity on a device with no helper policy.
+  let promptIdentity: Awaited<ReturnType<typeof buildHeartbeatPromptIdentity>>;
+  if (
+    normalizePromptIdentityProtocolVersion(data.securityCapabilities?.promptIdentityProtocolVersion) === 1
+    && hierarchyOutcome === 'loaded'
+  ) {
+    try {
+      promptIdentity = await buildHeartbeatPromptIdentity({
+        deviceId: scoped.deviceId,
+        orgId: scoped.deviceOrgId,
+        partnerId: agent.partnerId,
+      });
+    } catch (err) {
+      console.error(`[agents] failed to resolve the prompt identity for ${agentId}; block omitted:`, err);
+      captureException(err);
+    }
+  }
+
   const {
     eventLogSettings,
     monitoringSettings,
@@ -3041,6 +3112,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // switch. Server config only; the agent still needs the renderer's live
     // advertisement and its own build to speak a kind before using it.
     promptHost: { enabledKinds: enabledPromptKinds() },
+    ...(promptIdentity ? { promptIdentity } : {}),
     acknowledgedRollbackObservationId,
     ...(identityAssertion ? { identityAssertion } : {}),
     ...(rebind ? { rebind } : {}),

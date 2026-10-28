@@ -185,9 +185,18 @@ function coreStepStillPinned(intent: store.ClaimIntentRow, pin: FlowStepPin): bo
  * `http_request` reaches Tier 3; anything else is drift.
  */
 function builtinStepStillPinned(intent: store.ClaimIntentRow, pin: FlowStepPin): boolean {
-  if (pin.source !== 'builtin' || pin.tool !== intent.actionName || intent.actionName !== 'http_request') return false;
-  if (pin.tier !== 3 || pin.approvalScope !== 'supervised' || intent.approvalScope !== 'supervised') return false;
-  return flowBuiltinTierFor('http_request', intent.arguments) <= pin.tier;
+  if (pin.source !== 'builtin' || pin.tool !== intent.actionName || pin.tier !== 3) return false;
+  if (intent.actionName === 'http_request') {
+    if (pin.approvalScope !== 'supervised' || intent.approvalScope !== 'supervised') return false;
+    return flowBuiltinTierFor('http_request', intent.arguments) <= pin.tier;
+  }
+  // W6 (#5221): the fleet built-in's scope is DERIVED from its script (it may
+  // be four_eyes); the approved intent must carry exactly the pinned scope.
+  if (intent.actionName === 'run_script_on_targets') {
+    if (pin.approvalScope === null || intent.approvalScope !== pin.approvalScope) return false;
+    return flowBuiltinTierFor('run_script_on_targets', intent.arguments) <= pin.tier;
+  }
+  return false;
 }
 
 type Decision =

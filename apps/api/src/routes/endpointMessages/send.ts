@@ -14,7 +14,12 @@ import type { BrandingDecision } from '../../services/helperBranding';
 import { endpointMessageIdentity } from '../../services/helperBrandingEndpointIdentity';
 import { writeAuditEventAsync, type RequestLike } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { resolveMessageBranding, type MessageBranding } from '../../services/endpointMessaging/brandingSnapshot';
+import {
+  resolveMessageBranding,
+  type GENERIC_SENDER_REASON,
+  type MessageBranding,
+  type ResolvedMessageBranding,
+} from '../../services/endpointMessaging/brandingSnapshot';
 import {
   checkActorSendLimit,
   checkPartnerDeliveryLimit,
@@ -148,7 +153,7 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   }
 
   // Sender identity, once per org, from the org itself (never the request).
-  const brandingByOrg = new Map<string, { partnerId: string; branding: MessageBranding } | null>();
+  const brandingByOrg = new Map<string, ResolvedMessageBranding | null>();
   for (const g of groups) brandingByOrg.set(g.orgId, await resolveMessageBranding(g.orgId));
   // Sender identity per org: always the partner name (#9396: org-level Helper branding never
   // reaches the sender slot). Only the accent follows the Helper branding already resolved for
@@ -365,6 +370,12 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
         titleLength: input.title.length,
         ...(auth.aiOrigin ? { aiOrigin: true } : {}),
         ...(ctx.resendOfId ? { resendOf: ctx.resendOfId } : {}),
+        // #10190 W04: the partner's name sanitized to nothing, so this org's
+        // messages went out under the catalog's generic sender. Ids and a
+        // reason code only; never the partner's name.
+        ...(brandingByOrg.get(orgId)?.senderIdentity === 'generic'
+          ? { senderIdentity: 'generic', senderIdentityReason: 'partner_name_sanitized_empty' satisfies typeof GENERIC_SENDER_REASON }
+          : {}),
       },
       ipAddress: ctx.ipAddress,
     });

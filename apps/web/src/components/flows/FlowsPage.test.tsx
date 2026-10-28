@@ -62,6 +62,17 @@ describe('FlowsPage', () => {
     expect(badges[0].textContent).toMatch(/partner-wide/i);
   });
 
+  it('badges a flow whose runs are being refused, and links the flow limits page (W05 #5220)', async () => {
+    api.listFlows.mockResolvedValue({
+      flows: [flow({ id: 'f-capped', lastAdmissionRefusal: { at: '2026-10-25T02:00:00.000Z', code: 'flow_monthly_cap_reached' } }), flow({ id: 'f-ok' })],
+      total: 2,
+    });
+    render(<FlowsPage />);
+    expect((await screen.findAllByTestId('flow-refused-f-capped')).length).toBeGreaterThan(0);
+    expect(screen.queryAllByTestId('flow-refused-f-ok')).toHaveLength(0);
+    expect(screen.getByTestId('flows-limits-link').getAttribute('href')).toBe('/settings/flow-limits');
+  });
+
   it('shows the empty state only when the tenant genuinely has none', async () => {
     api.listFlows.mockResolvedValue({ flows: [], total: 0 });
     render(<FlowsPage />);

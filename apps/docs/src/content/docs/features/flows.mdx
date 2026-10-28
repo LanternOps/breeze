@@ -8,7 +8,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 A flow is a saved, multi-step workflow. Each step runs one Breeze tool (for example, running a script on a device), and steps can wait, set values, or repeat over a list of items. A flow runs under its own automation identity rather than a person's login, so enabling a flow is a delegation decision.
 
 <Aside type="note">
-Flows are off by default. An administrator of your Breeze deployment turns them on with `FLOWS_ENABLED=true`.
+Flows are off by default. An administrator of your Breeze deployment turns them on with `FLOWS_ENABLED=true`. Everything on this page, including webhook triggers, built-in steps, flow tools and monthly limits, is behind that one setting.
 </Aside>
 
 ## Enabling a flow and what it delegates
@@ -63,6 +63,7 @@ Sensitive steps that are not pre-approved park the run in **awaiting approval** 
 | Manual | Start from the flow page, or from Breeze AI with `run_flow`. |
 | Schedule | Runs at each scheduled time. If runs were missed (for example during an outage), only the latest occurrence runs; there is no backfill. |
 | Event | Runs when a matching platform event occurs. |
+| Webhook | Runs when an external system sends a signed `POST` to the flow's webhook URL. See [Webhook trigger](#webhook-trigger). |
 
 ### Event trigger prerequisites
 
@@ -74,6 +75,131 @@ Event flows need durable event delivery. Your deployment must set:
 Without both, enabling an event flow is refused, and event flows that are already enabled are paused when the deployment stops delivering events durably. Event delivery is at-least-once after publication, but an event that fails to be queued at the moment it is published is dropped before any flow sees it.
 
 Flows that are triggered by other flows are limited to a chain depth of 3 to prevent loops.
+
+## Webhook trigger
+
+A webhook flow starts when an outside system sends an HTTP request to the flow's URL. The URL is shown on the flow's **Webhook** tab:
+
+```
+POST /api/v1/webhooks/flows/<flowId>
+```
+
+The body must be a JSON object of at most 256 KB (262,144 bytes). The content type must be `application/json`. Other content types get `415`. A larger body gets `413`.
+
+### Authentication
+
+You choose one of two modes in the trigger.
+
+| Mode | How the sender proves it knows the secret |
+|---|---|
+| `hmac` (default) | Sends `X-Breeze-Timestamp` (unix seconds or milliseconds) and `X-Breeze-Signature: sha256=<hex>`. The signature is HMAC-SHA256 over `<timestamp>.<raw body>`. The timestamp must be within 300 seconds of the server's clock. |
+| `token` | Sends the secret itself in `X-Breeze-Webhook-Token`. |
+
+<Aside type="caution">
+`token` mode is weaker than `hmac`. The secret travels with every request, so anyone who sees one request can send more. Without a delivery id there is no replay protection. Use `token` only for senders that cannot compute a signature.
+</Aside>
+
+Query-string tokens (`?token=`) are not supported, because query strings end up in logs.
+
+```bash
+SECRET="bwh_replace_with_your_secret"
+BODY='{"customer":"acme","event":"disk_low"}'
+TS=$(date +%s)
+SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+
+curl -X POST "https://api.example.com/api/v1/webhooks/flows/00000000-0000-0000-0000-000000000000" \
+  -H "Content-Type: application/json" \
+  -H "X-Breeze-Timestamp: $TS" \
+  -H "X-Breeze-Signature: sha256=$SIG" \
+  -H "X-Breeze-Delivery-Id: ticket-1042-attempt-1" \
+  --data "$BODY"
+```
+
+### Retries and replays
+
+Send an optional `X-Breeze-Delivery-Id` (letters, digits and `. _ : -`, 1 to 128 characters) so that retries of the same delivery run once.
+
+- In `hmac` mode, a replayed signature runs once. The repeat gets `200` with `{ "status": "duplicate", "runId": "..." }`.
+- In `token` mode, only the delivery id dedupes.
+
+### The secret
+
+Create or rotate the secret on the flow's **Webhook** tab. This needs `automations.write` and a session with multi-factor authentication. For a partner-wide flow you also need access to all organizations of the partner.
+
+- The secret is shown once. It starts with `bwh_`.
+- Rotating cuts the old secret off immediately. There is no grace period.
+- A webhook flow cannot be enabled without a secret.
+- If you enable a new version whose draft changed since the secret was created, the secret is cleared and the interface tells you so. Create a new secret and give it to the sender.
+
+### Partner-wide webhook flows
+
+A partner-wide webhook flow must say which organization each delivery is for. Add an org resolver to the trigger:
+
+```json
+{ "orgResolver": { "path": "body.customer", "system": "psa" } }
+```
+
+`path` points at a field in the JSON body. With `system`, the value is matched against organization external IDs of that external system. Alternatively use `{ "path": "body.org", "kind": "breeze_org_id" }` for a Breeze organization ID. Only live organizations of the flow's partner can match. If the value matches nothing, Breeze records an `org_unresolved` delivery, starts no run and answers `422`.
+
+### Approvals
+
+Webhook runs never use pre-approvals. Every step that requires approval waits for a person.
+
+### Delivery log
+
+The Webhook tab lists deliveries with one of these statuses: `accepted`, `org_unresolved`, `refused`, `invalid_body`.
+
+Requests that fail authentication are never logged as deliveries. The tab shows the reason for the last refused request instead. Users limited to some sites or devices see deliveries without the delivery id and the resolver value.
+
+Non-accepted deliveries are deleted after `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS`. The per-flow rate limit is `FLOW_WEBHOOK_RATE_PER_MINUTE`. See [Settings for administrators](#settings-for-administrators).
+
+## Built-in steps
+
+Besides running a Breeze tool, a step can be one of three built-in kinds.
+
+### `http_request`
+
+Calls a URL without credentials. Authenticated calls to a vendor go through Tool Sources (MCP or OpenAPI), not through this step.
+
+- The method and the URL origin (scheme, host and port) must be written out literally. The path, query and body can use templates.
+- HTTPS only. Plain `http` is allowed only for private targets, and only on self-hosted deployments with `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true`.
+- Breeze's own API origin is refused.
+- Redirects are never followed. A `3xx` answer is an `http_status` failure.
+- Timeout up to 30 seconds. Response up to 1 MB (at most 256 KB is stored). Request body up to 256 KB. Up to 100 calls per run.
+- These headers cannot be set: `host`, `content-length`, `transfer-encoding`, `connection`, `upgrade`, `te`, `trailer`, `cookie`, `authorization`, `proxy-*`, `x-forwarded-*`, `forwarded` and `x-breeze-*`.
+- Literal headers or query values that look like credentials are refused when you save.
+- `GET` and `HEAD` are Tier 2. `POST`, `PUT`, `PATCH` and `DELETE` are Tier 3 and wait for approval on every run.
+- Enabling a flow with an `http_request` step needs `external_tools.write`.
+- Failures are `egress_blocked` and `http_status`.
+
+### `notify`
+
+Sends a message to a notification channel: `{ channelId, title, message, severity? }`.
+
+- Tier 2. Needs `alerts.write`.
+- Supported channel types: email, Slack, Teams, SMS and Pushover. Webhook and PagerDuty channels are refused. Use `http_request` for those.
+- Up to 20 per run.
+- The channel must be visible to the flow's owner. A partner-wide flow can use only partner-wide channels.
+
+### `ai`
+
+Asks Breeze AI a question and gets structured data back: `{ prompt, tools?, output, maxTurns?, maxOutputTokens? }`.
+
+- `tools` may list only Tier 1 (read) tools, up to 20.
+- `output` is a JSON Schema of at most 16 KB. The answer must match it.
+- `maxTurns` is 1 to 8 (default 4). `maxOutputTokens` is 256 to 4096 (default 1024).
+- Usage is billed to the run organization's AI budget, and each run has an AI token limit (see [Monthly limits](#monthly-limits)).
+- Failures are `ai_budget_exhausted`, `ai_output_invalid` and `ai_token_cap_reached`.
+- An organization flow with an `ai` step cannot be enabled when the organization has no AI budget to spend.
+- Calls to a partner's own catalog endpoint are recorded in the LLM egress audit.
+
+## For-each concurrency
+
+A for-each normally processes items one at a time. Set `forEach.concurrency` above 1 to run items in parallel. This works only for steps of Tier 2 or lower that are not `wait` steps.
+
+- Effective parallelism is the smaller of `concurrency` and `FLOW_FOREACH_MAX_PARALLEL`.
+- Outputs stay in item order.
+- With `onFailure: stop`, Breeze stops launching new items after a failure.
 
 ## Run statuses
 
@@ -93,13 +219,37 @@ A step can also end **unknown outcome**: a step that changes things timed out or
 | Limit | Value |
 |---|---|
 | Steps per flow | 50 |
-| For-each items | 500, processed one at a time |
+| For-each items | 500, one at a time unless the step sets `forEach.concurrency` |
 | Active time per run | 1 hour (time spent waiting or awaiting approval does not count) |
 | Active runs per owner | 1,000 |
 | Running runs per owner | 20 by default (`FLOW_MAX_RUNNING_PER_OWNER`) |
 | Running runs per flow per organization | 1 |
 | Flow-triggers-flow chain depth | 3 |
 | Run detail retention | Inputs, outputs and payloads are cleared after 90 days by default (`FLOW_RUN_RETENTION_DAYS`); the run record and step history remain |
+
+## Monthly limits
+
+Each owner, flow and AI step has a cap. Defaults and platform ceilings:
+
+| Limit | Default | Ceiling |
+|---|---|---|
+| Runs per flow per month | 10,000 | 100,000 |
+| Runs per owner per month | 100,000 | 1,000,000 |
+| AI tokens per run | 100,000 | 1,000,000 |
+
+The owner is the organization (all its flows) or, for partner-wide flows, the partner. Months are UTC calendar months. A flow's document can set `limits.monthlyRuns` lower still.
+
+Set limits on **Settings > Flow limits** (`/settings/flow-limits`):
+
+- A **partner default** needs `automations.write`, multi-factor authentication and access to all organizations of the partner.
+- An **organization override** can only lower the partner value. The server refuses a raise.
+
+When a cap is reached, new runs are refused with `flow_monthly_cap_reached` or `owner_monthly_cap_reached`. Webhook and manual runs get HTTP `429`. Schedule and event triggers drop the refused run and do not retry. The flow is **not** paused. Its page shows a banner and the flow list shows a "Runs refused" badge. One notice per flow, month and reason goes to the person the flow runs for, and to the flow's notice channel if it has one.
+
+The same limits are available over the API:
+
+- `GET /api/v1/flows/limits` (optionally `?orgId=`) returns the effective values.
+- `PUT /api/v1/flows/limits` with `{ "orgId"?, "limits": { "monthlyRunsPerOwner"?, "monthlyRunsPerFlow"?, "aiTokensPerRun"? } }` sets them. A `null` value clears a limit so it inherits again.
 
 ## Using flows from Breeze AI
 
@@ -110,6 +260,16 @@ Four AI tools work with flows:
 - `cancel_flow_run` cancels an active run. People using Breeze AI can call it directly; autonomous AI agents cannot use it.
 
 There is no AI tool for enabling a flow. Enabling is the delegation decision and stays a person's action in the web interface.
+
+### Flows as tools
+
+An enabled flow with a manual trigger is also a tool named `flow__<slug>`. It appears in Breeze AI chat, in Breeze's MCP server and to AI agents. Its tier is the flow's live tier: the higher of the recorded tier and the tier recomputed now.
+
+- **Chat:** Tier 1 runs directly, Tier 2 asks for confirmation, Tier 3 goes through approval.
+- **MCP:** Tier 3 flows are never listed or callable. Tier 2 flows need an `ai:write` key.
+- **Agents:** only flows named in the agent's tool allowlist, only Tier 1 flows, and only in agent runs that are not limited to a device or site.
+
+A session can use at most 20 flow tools. A flow is never a step of another flow. To chain flows, use the `flow.run.completed` event.
 
 ## Settings for administrators
 

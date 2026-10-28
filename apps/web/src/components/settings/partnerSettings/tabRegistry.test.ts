@@ -64,3 +64,12 @@ describe('partner settings tab registry', () => {
     expect(page.groups.ai).toBe('AI');
   });
 });
+
+describe('per-tab enforced flag is gone (#9790 W4, spec §5.1)', () => {
+  it('TabDef has no enforced key: enforcement is per field, from the catalog', () => {
+    // @ts-expect-error -- `enforced` was removed from TabDef; per-field badges replace it.
+    expect(TAB_BY_KEY.defaults.enforced).toBeUndefined();
+    expect(ALL_TABS.filter(t => 'enforced' in t).map(t => t.key)).toEqual([]);
+  });
+});
+

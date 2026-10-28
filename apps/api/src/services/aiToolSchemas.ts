@@ -60,6 +60,9 @@ import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import { aiReadToolSchemas } from './aiToolSchemasAiReads';
 import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
+import { softwareToolSchemas } from './aiToolSchemasSoftware';
+import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { billingToolSchemas } from './aiToolSchemasBilling';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -564,7 +567,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_elevation_history: z.object({
     deviceId: uuid.optional(),
-    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
   }),
@@ -596,6 +599,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...aiReadToolSchemas,
   // Full-control W11 (#6781): security policy tools.
   ...securityPolicyToolSchemas,
+  // Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+  ...softwareToolSchemas,
+  // Full-control W13 (#6783): device inventory and ops tools (PR A).
+  ...deviceOpsToolSchemas,
+  // Full-control W14 (#6784): billing lifecycle tools (PR A).
+  ...billingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -783,6 +792,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_invoice: z.object({
     invoiceId: uuid,
+    // Full-control W14 (#6784): the devices one line billed (GET /invoices/:id/lines/:lineId/devices).
+    lineId: uuid.optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    cursor: z.string().max(512).optional(),
   }),
 
   manage_invoices: z.object({
@@ -1040,10 +1053,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid.optional(),
     status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    // Full-control W14 (#6784): GET /contracts/currency-mismatches.
+    view: z.enum(['contracts', 'currency_mismatches']).optional(),
+    cursor: uuid.optional(),
   }),
 
   get_contract: z.object({
     contractId: uuid,
+    // Full-control W14 (#6784): GET /contracts/:id/periods/:periodId/outcome.
+    periodId: uuid.optional(),
   }),
 
   manage_contracts: z.object({
@@ -1919,6 +1937,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional(),
     message: z.string().max(500).optional(),
+    // Full-control W13 (#6783): watchdog logs (component `watchdog.*`) only, or excluding them.
+    source: z.enum(['agent', 'watchdog']).optional(),
     ...keysetZodShape(18, 500),
     includeFields: z.boolean().optional(),
   }),

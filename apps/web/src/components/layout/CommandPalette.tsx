@@ -290,6 +290,7 @@ export default function CommandPalette() {
   // /config or autopay fetches the gate hooks fire. An unknown gate hides the
   // entry (the nav's own default), and the sidebar loads /config anyway.
   const toolSourcesEnabled = useFeaturesStore((s) => s.features.toolSources);
+  const flowsEnabled = useFeaturesStore((s) => s.features.flows);
   const { wispEnabled, aiForOfficeEnabled } = usePartnerAiFlags(open);
   const openAiPanel = useAiStore((s) => s.open);
   // #6396: every own-session /ai/* route requires ai_sessions:use — the same
@@ -506,6 +507,7 @@ export default function CommandPalette() {
         permissions,
         getScope: () => getJwtClaims().scope,
         toolSourcesEnabled,
+        flowsEnabled,
         // Read on first open, never at mount (usePartnerAiFlags).
         aiForOfficeEnabled,
         wispEnabled,
@@ -521,7 +523,7 @@ export default function CommandPalette() {
       kind: 'result',
       category: 'settings'
     }));
-  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
+  }, [trimmedQuery, isPlatformAdmin, permissions, toolSourcesEnabled, flowsEnabled, aiForOfficeEnabled, wispEnabled, serviceManagementMode, t]);
 
   const resultItemsByCategory = useMemo(() => {
     const grouped = CATEGORY_ORDER.reduce((acc, category) => {

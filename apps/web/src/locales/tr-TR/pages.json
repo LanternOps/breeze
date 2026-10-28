@@ -190,7 +190,8 @@
     "wispChat": "Breeze AI",
     "aiTasks": "Yapay Zekâ Görevleri",
     "aiTask": "Yapay zekâ görevi",
-    "settingsAi": "Yapay zeka ayarları"
+    "settingsAi": "Yapay zeka ayarları",
+    "settingsFlowLimits": "Akış sınırları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -281,6 +282,10 @@
       "wispMemory": {
         "title": "Wisp belleği",
         "description": "Wisp’in hatırladıklarını inceleyin, onaylayın ve geri çekin."
+      },
+      "flowLimits": {
+        "title": "Akış sınırları",
+        "description": "Akışlar için aylık çalıştırma sınırları ve yapay zeka token sınırı."
       }
     },
     "groups": {

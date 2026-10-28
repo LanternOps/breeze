@@ -78,10 +78,16 @@ function triggerTypeOf(definition: unknown): string {
   return typeof t === 'string' ? t : 'unknown';
 }
 
-type SummaryRow = Pick<FlowRow, 'id' | 'slug' | 'name' | 'orgId' | 'partnerId' | 'status' | 'effectiveTier' | 'definitionVersion' | 'updatedAt'>;
+type SummaryRow = Pick<FlowRow,
+  | 'id' | 'slug' | 'name' | 'orgId' | 'partnerId' | 'status' | 'effectiveTier' | 'definitionVersion' | 'updatedAt'
+  | 'lastAdmissionRefusalAt' | 'lastAdmissionRefusalCode'>;
 
 function toSummaryDto(row: SummaryRow, triggerType: string): FlowSummaryDto {
   return {
+    // W5: the last admission refusal (a monthly cap or the active queue), for the list badge and the banner.
+    lastAdmissionRefusal: row.lastAdmissionRefusalAt && row.lastAdmissionRefusalCode
+      ? { at: iso(row.lastAdmissionRefusalAt), code: row.lastAdmissionRefusalCode }
+      : null,
     id: row.id,
     slug: row.slug,
     name: row.name,
@@ -144,9 +150,6 @@ export function toDetailDto(row: FlowRow, extras: FlowDetailExtras = NO_EXTRAS):
     // Never the ciphertext: the webhook block carries the fingerprint only (W5 Task A5).
     webhook: webhookInfo(row),
     usage: extras.usage ?? null,
-    lastAdmissionRefusal: row.lastAdmissionRefusalAt && row.lastAdmissionRefusalCode
-      ? { at: iso(row.lastAdmissionRefusalAt), code: row.lastAdmissionRefusalCode }
-      : null,
   };
 }
 
@@ -380,6 +383,8 @@ export async function listFlows(auth: AuthContext, f: ListFlowsFilter): Promise<
       effectiveTier: flows.effectiveTier,
       definitionVersion: flows.definitionVersion,
       updatedAt: flows.updatedAt,
+      lastAdmissionRefusalAt: flows.lastAdmissionRefusalAt,
+      lastAdmissionRefusalCode: flows.lastAdmissionRefusalCode,
       triggerType: sql<string>`${flows.definition}->'trigger'->>'type'`,
     })
     .from(flows)

@@ -6,9 +6,11 @@
 // agent's own clock, and replays open prompts into a reconnecting renderer
 // without activating anything.
 //
-// W02 ships the host dormant: no kind is registered in production, every
-// renderer advertises zero kinds, and the server enables none, so every
-// prompt still takes its legacy path.
+// W02 shipped the host dormant. W04 registers the first kind, notice.info@1
+// (agent/internal/promptkinds), and the native user-helper advertises it;
+// the server still enables none by default, so every prompt keeps its legacy
+// path until promptHost.enabledKinds lists the kind. W06 adds remote.consent@1
+// (never re-asked: KindSpec.NeverReask) and remote.session@1.
 package prompthost
 
 import (
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
 )
 
 // Contract timings (plan "Global Constraints"; fixed, not policy).
@@ -44,6 +47,13 @@ type KindSpec struct {
 	// ShowWhileLocked draws the prompt even while its session is locked
 	// (remote consent is never deferred). Default: held until unlock.
 	ShowWhileLocked bool
+	// NeverReask says a prompt of this kind is never moved to another
+	// renderer (remote consent, spec §3.7: a lost prompt must never become
+	// a second chance to allow). When its renderer is lost — gone, refused
+	// it, missed its present budget, or a send failed — the host fences it,
+	// withdraws the whole prompt, and calls Prompt.OnRendererLost; there is
+	// no disconnect grace, no fallback and no replay. Default: moved.
+	NeverReask bool
 }
 
 // Owner is the session and user principal a prompt (and its list entry) is
@@ -96,6 +106,10 @@ type Patch struct {
 	Actions         *[]ipc.PromptAction
 	DefaultActionID string
 	Timing          *ipc.PromptTiming
+	// Relocalize renders the patched Copy, Facts and action labels through
+	// Prompt.Localize for each renderer's locale (a confirm step whose copy
+	// is catalog copy). Default: the patch is sent as given.
+	Relocalize bool
 }
 
 // ActionOutcome is the domain's answer to an action.
@@ -128,9 +142,51 @@ type Prompt struct {
 	// state lock (it may call Update/Close) but serialized with every other
 	// action, so two sessions answering at once apply exactly one decision.
 	OnAction func(actionID string, from Owner) (ActionOutcome, error)
+	// OnActionRenderer is OnAction for a domain that records which renderer
+	// carried the decision (the restart audit's assist | native): role is
+	// the helper role of the renderer whose lease the action quoted. Used
+	// only when OnAction is nil; same locking contract.
+	OnActionRenderer func(actionID string, from Owner, role ipc.HelperRole) (ActionOutcome, error)
 	// OnExpire runs once when the response budget runs out. If the prompt is
 	// still open (not terminal) afterwards, the host closes it as expired.
 	OnExpire func()
+	// Localize renders the prompt's locale-dependent content in one
+	// session's catalog locale (spec §3.1 "Who renders copy": the session's
+	// UI language, then the machine's, then en). Optional: nil means Show is
+	// sent as built. The host calls it under its state lock for every
+	// renderer and every list entry, so it must be pure — catalog lookups
+	// only, no host calls. A copy replaced later by a Patch is sent as given.
+	Localize func(loc promptcatalog.Locale) (Localized, error)
+	// OnRendererLost runs once, outside the host's locks, when a NeverReask
+	// prompt lost its renderer and was withdrawn. info is where the prompt
+	// was (Presented says whether it had been on screen); reason is
+	// renderer_gone, render_failed, present_budget or send_failed.
+	OnRendererLost func(info PlacementInfo, reason string)
+	// Reshowable says the condition the prompt reports can come back (the
+	// macOS permission notice): only a resolved close tombstones it. Closed
+	// undecided — expired, withdrawn, superseded — the domain may show the
+	// same id again at once. Default: every close tombstones for 24 h.
+	Reshowable bool
+}
+
+// Localized is the locale-dependent content of a prompt: the copy, the
+// facts, and the label of each action (by id; an action whose id is absent
+// keeps its label).
+type Localized struct {
+	Copy         ipc.PromptCopy
+	Facts        []ipc.PromptFact
+	ActionLabels map[string]string
+	// ExpiryText, when set, replaces timing.expiry.text (the consequence
+	// sentence) on a prompt that carries an expiry.
+	ExpiryText string
+}
+
+// PlacementInfo is where one owner's copy of an open prompt is.
+type PlacementInfo struct {
+	Path        Path
+	RendererKey string // broker session id while on the prompt path
+	Role        ipc.HelperRole
+	Presented   bool // the renderer confirmed it on screen (prompt_presented)
 }
 
 // RendererSession is a live, authenticated renderer as the broker sees it.
@@ -142,6 +198,8 @@ type RendererSession struct {
 	KindAds     []string // granted "<kind>@<n>"
 	Version     string
 	ConnectedAt time.Time
+	// UILocale is the UI language the renderer reported at auth ("" = unknown).
+	UILocale string
 }
 
 // RendererDirectory is the host's view of the broker.

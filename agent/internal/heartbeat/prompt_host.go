@@ -1,7 +1,12 @@
 package heartbeat
 
 import (
+	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/inbox"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/prompthost"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -63,6 +68,31 @@ func (h *Heartbeat) promptHostTelemetry() *promptHostTelemetry {
 		return nil
 	}
 	return promptTelemetryFrom(s)
+}
+
+// startPromptHost builds the prompt host over the session broker and wires
+// it in. The prompt list and its 24 h tombstones persist next to the
+// endpoint messages (P5: one inbox, two files). It registers the kinds this
+// build constructs (W04: notice.info@1) and installs the macOS permission
+// notice's skew rule: a helper is told the agent shows the notice only while
+// notice.info is live (sessionbroker/tcc_notice.go), and the agent builds the
+// notice from that helper's tcc_status.
+func (h *Heartbeat) startPromptHost(dataDir string) {
+	promptStore, err := inbox.Open(filepath.Join(dataDir, promptInboxFile), inbox.PromptOptions())
+	if err != nil {
+		log.Warn("prompt inbox unreadable; starting empty", "error", err.Error())
+	}
+	h.promptListStore = promptStore
+	h.promptHost = prompthost.New(prompthost.Deps{
+		Broker:   prompthost.NewBrokerDirectory(h.sessionBroker),
+		Inbox:    &inbox.PromptInbox{Store: promptStore},
+		Identity: h.promptIdentity,
+		OSLocale: osUILocale,
+	})
+	h.sessionBroker.SetPromptSink(h.promptHost)
+	promptkinds.Register(h.promptHost)
+	h.sessionBroker.SetTCCNoticeGate(h.tccNoticeLive)
+	h.sessionBroker.SetTCCStatusHandler(h.handleTCCNotice)
 }
 
 // enabledPromptKinds is the response's kill-switch list; absent = empty.

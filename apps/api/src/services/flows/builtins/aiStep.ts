@@ -182,9 +182,9 @@ export async function executeAiStep(input: AiStepInput, ctx: BuiltinContext): Pr
   if (denial) return failed('ai_budget_exhausted', denial.message);
   let client: Anthropic;
   try {
-    // No LLM egress surface for flows exists yet (a CHECK value needs a
-    // migration; W5 PR B adds none): catalog-endpoint egress is not audited.
-    client = anthropicClientFor(resolved, null);
+    // Catalog-endpoint egress is audited against the RUN org (the org whose
+    // AI budget pays), under the flow step's own surface.
+    client = anthropicClientFor(resolved, { surface: 'flow_ai_step', orgId });
   } catch (err) {
     report(err, ctx, 'flows.aiStep.client');
     return failed('ai_budget_exhausted', messageOf(err));

@@ -88,6 +88,51 @@ func TestCatalogLoadsAndHasEveryLocale(t *testing.T) {
 	}
 }
 
+// The notice namespace (W04) ships embedded: the agent renders every
+// notice.info string from it (agent/internal/promptkinds).
+func TestEmbeddedCatalogCarriesTheNoticeNamespace(t *testing.T) {
+	cat, err := load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, ns := range []string{"common", "notice"} {
+		if len(cat[ns]) == 0 {
+			t.Fatalf("namespace %q is not embedded", ns)
+		}
+	}
+	got, err := Render(Locale("tr-TR"), "notice", "action.ok", nil)
+	if err != nil || got != "Tamam" {
+		t.Fatalf("notice/action.ok in tr-TR = %q, %v", got, err)
+	}
+	if _, err := Render(LocaleEN, "notice", "sessionEnded.body", nil); !errors.Is(err, ErrMissingParam) {
+		t.Fatalf("sessionEnded.body without technician: err = %v, want ErrMissingParam", err)
+	}
+}
+
+// The remote namespace (W06) ships embedded: the agent renders every
+// remote.consent and remote.session string from it.
+func TestEmbeddedCatalogCarriesTheRemoteNamespace(t *testing.T) {
+	cat, err := load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cat["remote"]) == 0 {
+		t.Fatal(`namespace "remote" is not embedded`)
+	}
+	got, err := Render(Locale("de-DE"), "remote", "action.deny", nil)
+	if err != nil || got != "Ablehnen" {
+		t.Fatalf("remote/action.deny in de-DE = %q, %v", got, err)
+	}
+	// {remaining} is the renderer's: the catalog leaves it in place.
+	got, err = Render(LocaleEN, "remote", "consent.expiryBlock", nil)
+	if err != nil || got != "If no one answers, the session is declined in {remaining}." {
+		t.Fatalf("consent.expiryBlock = %q, %v", got, err)
+	}
+	if _, err := Render(LocaleEN, "remote", "session.titleFrom", map[string]string{"technician": "Dana"}); !errors.Is(err, ErrMissingParam) {
+		t.Fatalf("session.titleFrom without organization: err = %v, want ErrMissingParam", err)
+	}
+}
+
 func TestValidateRejectsMissingLocale(t *testing.T) {
 	raw := []byte(`{"namespace":"x","messages":{"k":{"en":"Hide","de-DE":"Ausblenden"}}}`)
 	if _, _, err := parseFile(raw); err == nil {
