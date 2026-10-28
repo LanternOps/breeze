@@ -844,7 +844,18 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
 }
 
 // Post-install poll timing and stop rules live in ./patchInstallPolling (#10250).
+// Consecutive failed patch-status reads (one per 5 s tick) before the poll
+// gives up and says so, instead of spinning to the 30-minute cap.
+const INSTALL_POLL_MAX_FETCH_FAILURES = 6;
 const RECENT_LINUX_INSTALL_DAYS = 7;
+
+function readPendingList(data: PatchPayload | null): PatchItem[] | null {
+  if (!data) return null;
+  for (const list of [data.pending, data.pendingPatches, data.available]) {
+    if (Array.isArray(list)) return list;
+  }
+  return null;
+}
 const RECENT_LINUX_INSTALL_HISTORY_LIMIT = 100;
 const RECENT_LINUX_INSTALL_WINDOW_MS = RECENT_LINUX_INSTALL_DAYS * 24 * 60 * 60 * 1000;
 
@@ -1132,6 +1143,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     const commandId = target.commandId;
     let commandStatus: string | null = null;
     let commandStatusWarned = false;
+    let consecutiveFetchFailures = 0;
 
     pollStateRef.current = {
       startedAt: Date.now(),
@@ -1190,15 +1202,20 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         if (!isCurrent() || !state) return;
 
         const now = Date.now();
+        // A response with no pending list at all is a failed read, not "every
+        // targeted patch left the list" — never report success off it.
+        const freshPending = readPendingList(freshData);
         let decision: InstallPollDecision;
-        if (freshData) {
-          decision = decideInstallPoll(state, {
-            now,
-            pending: freshData.pending ?? freshData.pendingPatches ?? freshData.available ?? [],
-            commandStatus,
-          });
+        if (freshPending) {
+          consecutiveFetchFailures = 0;
+          decision = decideInstallPoll(state, { now, pending: freshPending, commandStatus });
         } else if (now - state.startedAt >= INSTALL_POLL_MAX_DURATION_MS) {
           decision = { kind: 'timed_out' };
+        } else if (++consecutiveFetchFailures >= INSTALL_POLL_MAX_FETCH_FAILURES) {
+          console.warn(`[DevicePatchStatusTab] Install poll stopped after ${consecutiveFetchFailures} failed patch-status reads.`);
+          stopPolling();
+          setControlNotice({ kind: 'error', message: t('devicePatchStatusTab.notices.installStatusUnavailable') });
+          return;
         } else {
           return; // transient fetch failure: try again next tick
         }
@@ -1225,7 +1242,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
           setControlNotice(failed + awaitingRestart + unresolved === 0
             ? { kind: 'success', message: t('devicePatchStatusTab.notices.installedSuccessfully', { installed, pending }) }
             : {
-                kind: failed > 0 ? 'error' : 'info',
+                // A failed command with no per-patch marker is still a failure.
+                kind: failed > 0 || commandStatus === 'failed' ? 'error' : 'info',
                 message: t('devicePatchStatusTab.notices.installFinishedWithIssues', { installed, failed, awaitingRestart, unresolved })
               });
         }
@@ -1412,7 +1430,9 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     );
   }
 
-  const isBusy = controlAction !== null || isPolling;
+  // A row install counts from the click, not from when its POST returns, so a
+  // second install cannot start (and replace this one's poll) in that window.
+  const isBusy = controlAction !== null || isPolling || installingPatchIds.size > 0;
 
   return (
     <div className="space-y-6">

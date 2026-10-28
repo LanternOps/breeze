@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Install queued for \"{{name}}\"",
       "installPatchQueuedDetail": "Install queued for \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} queued for {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Could not check the install status: the patch list failed to load. Refresh the page to see the latest status.",
       "installedSuccessfully": "{{installed}} patch(es) installed successfully. {{pending}} still pending.",
       "installingPolling": "Installing patches... Polling for updates.",
       "noPendingForLabel": "No pending patches available for {{label}}.",

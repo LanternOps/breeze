@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Installazione accodata per \"{{name}}\"",
       "installPatchQueuedDetail": "Installazione accodata per \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} accodato per {{count}} patch{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Impossibile verificare lo stato dell'installazione: l'elenco delle patch non è stato caricato. Aggiorna la pagina per vedere lo stato più recente.",
       "installedSuccessfully": "{{installed}} patch installate correttamente. {{pending}} ancora in sospeso.",
       "installingPolling": "Installazione patch in corso... Polling degli aggiornamenti.",
       "noPendingForLabel": "Non sono disponibili patch in sospeso per {{label}}.",

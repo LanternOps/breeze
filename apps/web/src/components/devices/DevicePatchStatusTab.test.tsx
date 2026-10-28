@@ -1301,5 +1301,72 @@ describe('DevicePatchStatusTab', () => {
       expect(await screen.findByText(/1 patch\(es\) installed successfully/)).toBeInTheDocument();
       expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
     }, 15000);
+
+    it('reports a mixed batch from the bulk install button once every targeted patch has an outcome', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const second = { ...patch, id: 'kb-2', title: 'Security Update (KB5050002)' };
+      let done = false;
+      mockInstall({
+        poll: () => (done
+          ? load({ ...patch, installFailure: { deviceCount: 1, error: 'installer exited 1603', failedAt: '2026-10-28T10:00:00.000Z' } })
+          : { data: { compliancePercent: 0, pending: [patch, second], installed: [] } }),
+        commandStatus: () => (done ? 'failed' : 'sent'),
+      });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      fireEvent.click(await screen.findByRole('button', { name: /Install pending Windows patches|Install pending OS patches/i }));
+      fireEvent.click(await screen.findByTestId('confirm-install-patches'));
+      await screen.findByText(/Installing patches/i);
+      const installCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/patches/install'));
+      expect(JSON.parse(String((installCall?.[1] as RequestInit | undefined)?.body)).patchIds).toEqual(['kb-1', 'kb-2']);
+
+      done = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/1 installed, 1 failed, 0 awaiting a restart, 0 not yet confirmed/)).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+    }, 15000);
+
+    it('does not read a response without a pending list as a successful install', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let broken = false;
+      mockInstall({ poll: () => (broken ? { data: {} } : load(patch)), commandStatus: () => 'sent' });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+
+      broken = true;
+      const callsBeforeTick = fetchWithAuthMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      // Stopping would end with a full (non-poll) reload of the patch list.
+      const callsAfter = fetchWithAuthMock.mock.calls.slice(callsBeforeTick).map(([url]) => String(url));
+      expect(callsAfter).toContain(`/devices/${deviceId}/patches?approvalView=0`);
+      expect(callsAfter).not.toContain(`/devices/${deviceId}/patches`);
+      expect(screen.getByText('Polling...')).toBeInTheDocument();
+      expect(screen.queryByText(/installed successfully/)).not.toBeInTheDocument();
+    }, 15000);
+
+    it('stops and says so when the patch list keeps failing to load', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let failing = false;
+      mockInstall({ poll: () => load(patch), commandStatus: () => 'sent' });
+      const base = fetchWithAuthMock.getMockImplementation()!;
+      fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => (
+        failing && url.includes('approvalView=0') ? makeJsonResponse({ error: 'boom' }, false, 503) : base(url, init)
+      ));
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+
+      failing = true;
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(screen.getByText('Polling...')).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/Could not check the install status/)).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+    }, 15000);
   });
 });

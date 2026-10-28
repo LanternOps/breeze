@@ -2074,6 +2074,7 @@
       "installPatchQueued": "L’installation était en file d’attente pour « {{name}} »",
       "installPatchQueuedDetail": "Installation mise en file pour « {{name}} »{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} en file d’attente pour {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Impossible de vérifier l’état de l’installation : la liste des patchs n’a pas pu être chargée. Rafraîchissez la page pour voir l’état le plus récent.",
       "installedSuccessfully": "{{installed}} patch(es) installé(es) avec succès. {{pending}} toujours en attente.",
       "installingPolling": "Installation de correctifs... Sondage pour des mises à jour.",
       "noPendingForLabel": "Aucun correctif en attente n’est disponible pour {{label}}.",

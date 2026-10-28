@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Instalación en cola para \"{{name}}\"",
       "installPatchQueuedDetail": "Instalación en cola para \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} en cola para parches {{count}}{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "No se pudo comprobar el estado de la instalación: la lista de parches no se cargó. Actualice la página para ver el estado más reciente.",
       "installedSuccessfully": "Los parches {{installed}} se aplicaron correctamente. {{pending}} aún pendiente.",
       "installingPolling": "Instalando parches... Sondeo de actualizaciones.",
       "noPendingForLabel": "No hay parches pendientes disponibles para {{label}}.",

@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Kurulum \"{{name}}\" için sıraya alındı",
       "installPatchQueuedDetail": "Kurulum \"{{name}}\"{{dispatchSuffix}} için sıraya alındı.",
       "installQueuedForPatches": "{{label}} {{count}} yamaları için sıraya girdi{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Yükleme durumu denetlenemedi: yama listesi yüklenemedi. En son durumu görmek için sayfayı yenileyin.",
       "installedSuccessfully": "{{installed}} yama(lar)ı başarıyla yüklendi. {{pending}} hâlâ beklemede.",
       "installingPolling": "Yamalar yükleniyor... Güncellemeler için oylama.",
       "noPendingForLabel": "{{label}} için bekleyen yama yok.",

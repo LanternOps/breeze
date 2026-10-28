@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Instalação de \"{{name}}\" adicionada à fila",
       "installPatchQueuedDetail": "Instalação de \"{{name}}\" adicionada à fila{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} adicionado à fila para {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Não foi possível verificar o status da instalação: a lista de patches não carregou. Atualize a página para ver o status mais recente.",
       "installedSuccessfully": "Instalações concluídas: {{installed}}. Ainda pendentes: {{pending}}.",
       "installingPolling": "Instalando patches... Consultando atualizações.",
       "noPendingForLabel": "Nenhum patch pendente disponível para {{label}}.",

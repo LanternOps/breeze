@@ -2074,6 +2074,7 @@
       "installPatchQueued": "Installation steht für „{{name}}“ in der Warteschlange",
       "installPatchQueuedDetail": "Installation steht für „{{name}}“{{dispatchSuffix}} in der Warteschlange.",
       "installQueuedForPatches": "{{label}} in der Warteschlange für {{count}} Patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Der Installationsstatus konnte nicht geprüft werden, da die Patch-Liste nicht geladen wurde. Aktualisieren Sie die Seite, um den aktuellen Status zu sehen.",
       "installedSuccessfully": "{{installed}} Patches wurden erfolgreich installiert. {{pending}} steht noch aus.",
       "installingPolling": "Patches werden installiert... Updates werden abgefragt.",
       "noPendingForLabel": "Für {{label}} sind keine ausstehenden Patches verfügbar.",
