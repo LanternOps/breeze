@@ -435,8 +435,12 @@ export type PreFlightResult = {
   ok: false;
   error: string;
   status?: number;
-  /** A recoverable model-resolution failure (the route answers 409 with it). */
-  code?: ResolveFailureReason;
+  /**
+   * A recoverable refusal the route answers 409 with: a model-resolution
+   * failure (choose another model), or `turn_limit_reached` (the session's
+   * turn budget is spent; start a new session — Wisp rolls one itself).
+   */
+  code?: ResolveFailureReason | 'turn_limit_reached';
   /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
   billingCode?: AiDenialClientCode;
 };
