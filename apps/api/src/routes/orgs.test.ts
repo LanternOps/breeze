@@ -15,6 +15,7 @@ vi.mock('../services/trustPage/servingSet', () => trustServing);
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
+import { PORTAL_CUSTOM_CSS_MAX_LENGTH } from '@breeze/shared';
 
 beforeEach(() => {
   defaultAssigneeSettingsErrorMock.mockReset();
@@ -2557,6 +2558,83 @@ describe('org routes', () => {
       const getCaptured = mockUpdateCapture();
 
       const res = await patchMe({ settings: { topologyFeatureFlags: { ui: 'yes' } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+  });
+
+  // #9674: partner Custom CSS now reaches every child org's portal, so the
+  // partner write path must apply the same disallowed-pattern rules as the org
+  // portal-settings write path (updatePortalSettingsSchema).
+  describe('PATCH /orgs/partners/me — branding.customCss (#9674)', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('stores safe Custom CSS', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: '.portal-card { border-radius: 4px; }' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding.customCss).toBe('.portal-card { border-radius: 4px; }');
+    });
+
+    it.each([
+      ['@import', '@import "https://evil.example/x.css";'],
+      ['a non-https url()', '.a { background: url(http://evil.example/x.png); }'],
+      ['expression()', '.a { width: expression(alert(1)); }'],
+      ['an escaped @import', '@\\69mport "x.css";'],
+    ])('rejects %s with 400 and writes nothing', async (_label, css) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: css } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects Custom CSS over the portal size cap with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: `/*${'a'.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH)}*/` } } });
 
       expect(res.status).toBe(400);
       expect(getCaptured()).toBeUndefined();

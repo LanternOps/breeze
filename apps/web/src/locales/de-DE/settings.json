@@ -905,12 +905,12 @@
     "logoPreview": "Logo-Vorschau",
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
-    "imageHelp": "PNG, JPEG oder WebP · max. 400 KB nach der Kodierung · Größe angepasst an 256×256",
+    "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",
     "customCssPlaceholder": "/* Benutzerdefiniertes CSS wird auf alle untergeordneten Organisationen angewendet */",
-    "customCssHelp": "CSS Überschreibungen wurden auf das Portal für alle untergeordneten Organisationen angewendet."
+    "customCssHelp": "Wird im Portal jedes Kunden eingebunden, vor dem eigenen benutzerdefinierten CSS der Organisation, das es überschreiben kann. @import und url() ohne HTTPS sind nicht erlaubt."
   },
   "partnerSecurity": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",

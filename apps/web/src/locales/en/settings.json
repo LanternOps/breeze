@@ -905,12 +905,12 @@
     "logoPreview": "Logo preview",
     "noLogo": "No logo",
     "uploadImage": "Upload image",
-    "imageHelp": "PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256",
+    "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
     "customCssPlaceholder": "/* Custom CSS applied to all child organizations */",
-    "customCssHelp": "CSS overrides applied to the portal for all child organizations."
+    "customCssHelp": "Added to every client's portal, before that organization's own Custom CSS, which can override it. @import and non-HTTPS url() are not allowed."
   },
   "partnerSecurity": {
     "notSet": "Not set — orgs configure individually",

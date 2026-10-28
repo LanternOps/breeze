@@ -905,12 +905,12 @@
     "logoPreview": "Aperçu du logo",
     "noLogo": "Pas de logo",
     "uploadImage": "Télécharger l’image",
-    "imageHelp": "PNG, JPEG ou WebP · max 400 Ko après encodage · Redimensionné pour 256×256",
+    "imageHelp": "PNG, JPEG ou WebP, jusqu’à 400 Ko après encodage ; les grandes images sont réduites à 800 px.",
     "invalidSavedLogo": "Les données du logo enregistré sont invalides. Supprimez le logo ou téléversez-en un nouveau.",
     "pasteUrl": "Ou coller une image URL",
     "customCss": "Personnalisé CSS",
     "customCssPlaceholder": "/* Personnalisé CSS appliqué à toutes les organisations d’enfants */",
-    "customCssHelp": "CSS S’appliquent au portail pour toutes les organisations d’enfants."
+    "customCssHelp": "Ajouté au portail de chaque client, avant le CSS personnalisé propre à l’organisation, qui peut le remplacer. @import et les url() non HTTPS ne sont pas autorisés."
   },
   "partnerSecurity": {
     "notSet": "Non défini — les organisations se configurent individuellement",

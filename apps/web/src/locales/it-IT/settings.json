@@ -905,12 +905,12 @@
     "logoPreview": "Anteprima logo",
     "noLogo": "Nessun logo",
     "uploadImage": "Carica immagine",
-    "imageHelp": "PNG, JPEG o WebP · max 400 KB dopo la codifica · ridimensionata per adattarsi a 256x256",
+    "imageHelp": "PNG, JPEG o WebP, fino a 400 KB dopo la codifica; le immagini grandi vengono ridotte a 800 px.",
     "invalidSavedLogo": "I dati del logo salvato non sono validi. Rimuovilo o caricane uno nuovo.",
     "pasteUrl": "Oppure incolla un URL immagine",
     "customCss": "CSS personalizzato",
     "customCssPlaceholder": "/* CSS personalizzato applicato a tutte le organizzazioni figlie */",
-    "customCssHelp": "Override CSS applicati al portale per tutte le organizzazioni figlie."
+    "customCssHelp": "Aggiunto al portale di ogni cliente, prima del CSS personalizzato dell’organizzazione, che può sovrascriverlo. @import e url() non HTTPS non sono consentiti."
   },
   "partnerSecurity": {
     "notSet": "Non impostato — le org si configurano singolarmente",

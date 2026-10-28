@@ -95,7 +95,10 @@ export function findUnsafePortalCssPattern(css: string): string | null {
   return null;
 }
 
-const portalCustomCssSchema = z
+// Shared by both Custom CSS write paths: the org portal settings
+// (updatePortalSettingsSchema below) and the partner's branding settings
+// (PATCH /partners/me, #9674), whose CSS reaches every child org's portal.
+export const portalCustomCssSchema = z
   .string()
   .max(PORTAL_CUSTOM_CSS_MAX_LENGTH, `Custom CSS exceeds maximum size (${PORTAL_CUSTOM_CSS_MAX_LENGTH} characters)`)
   .nullable()

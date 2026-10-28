@@ -905,12 +905,12 @@
     "logoPreview": "Prévia do logotipo",
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
-    "imageHelp": "PNG, JPEG ou WebP · máx. 400 KB após codificação · redimensionada para caber em 256×256",
+    "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas as organizações filhas */",
-    "customCssHelp": "Substituições de CSS aplicadas ao portal de todas as organizações filhas."
+    "customCssHelp": "Adicionado ao portal de cada cliente, antes do CSS personalizado da própria organização, que pode substituí-lo. @import e url() sem HTTPS não são permitidos."
   },
   "partnerSecurity": {
     "notSet": "Não definido — as organizações configuram individualmente",
