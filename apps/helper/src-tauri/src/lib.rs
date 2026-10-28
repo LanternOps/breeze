@@ -2562,6 +2562,11 @@ mod tests {
             result.contains("if let prompt::ResultEffect::OpenSupport(req) = &effect"),
             "opened only for the one-shot the bridge handed out"
         );
+        // W05: an accepted Postpone or OK collapses the restart card, so the
+        // handler takes its window down (no handler test has a desktop).
+        let collapsed = result.find("effect == prompt::ResultEffect::Collapsed").expect("collapse handled");
+        let close = result.find("desktop::close_prompt_window(&ctx.app, &result.prompt_id)").expect("collapsed card closed");
+        assert!(collapsed < close, "the window is closed only on Collapsed");
         assert!(!client.contains("take_request_support"), "only the bridge takes the one-shot");
         // The bridge (behaviour-tested in prompt.rs and client.rs) takes it
         // only after the result released the person's own action, under the

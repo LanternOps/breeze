@@ -2023,8 +2023,9 @@ mod tests {
 
     #[test]
     fn unadvertised_kind_render_failed() {
-        // The production tracker advertises notice.info and the restart kinds
-        // (W05): an elevation request is still refused, a notice renders.
+        // The production tracker advertises notice.info (W04), the restart
+        // kinds (W05) and the remote kinds (W06): an elevation request is
+        // still refused, a notice renders.
         let mut t = PromptTracker::default();
         assert_eq!(t.on_show(NOW, &elevation()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
         assert!(rendered(&PromptTracker::default().on_show(NOW, &notice())));

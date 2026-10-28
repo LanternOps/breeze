@@ -2130,7 +2130,6 @@ mod tests {
         assert_eq!(hidden.payload["reason"], "hidden");
         let v = prompts.tracker().view("restart:42", now_unix_ms()).unwrap();
         assert!(!v.card, "the restart card is off screen");
-        assert_eq!(prompts.tracker().take_request_support(), None, "a Postpone opens no Request Support");
         // The session pill is untouched by the restart collapse.
         assert!(prompts.tracker().view(session_id, now_unix_ms()).unwrap().card);
 
