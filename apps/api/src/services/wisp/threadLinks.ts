@@ -126,6 +126,7 @@ export async function addLink(
       label: resolved.label,
       addedByUserId,
       addedByGrantId: opts.addedByGrantId ?? null,
+      source: opts.addedByGrantId == null ? 'user_pin' : 'wisp_pin',
     }).returning();
     if (!inserted) throw new Error('wisp_thread_links insert returned no row');
     return inserted;

@@ -3,6 +3,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -14,6 +15,8 @@ import { organizations, partners } from './orgs';
 import { users } from './users';
 import { wispGrants } from './wisp';
 import { wispThreads } from './wispThreads';
+
+export type WispLinkSource = 'user_pin' | 'wisp_pin' | 'auto';
 
 /**
  * Wisp W08 — soft links from a Wisp thread to Breeze objects (tickets,
@@ -52,6 +55,9 @@ export const wispThreadLinks = pgTable('wisp_thread_links', {
   addedByUserId: uuid('added_by_user_id').notNull(),
   /** Set when `link_entity` added it; FK ... ON DELETE SET NULL (added_by_grant_id) in SQL. */
   addedByGrantId: uuid('added_by_grant_id'),
+  source: text('source').$type<WispLinkSource>().notNull(),
+  lastTouchedAt: timestamp('last_touched_at', { withTimezone: true }).notNull().defaultNow(),
+  touchCount: integer('touch_count').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   threadFk: foreignKey({
@@ -76,6 +82,7 @@ export const wispThreadLinks = pgTable('wisp_thread_links', {
   }),
   // NULLS NOT DISTINCT in SQL.
   threadEntityUq: uniqueIndex('wisp_thread_links_thread_entity_uq').on(t.threadId, t.entityKind, t.entityId),
+  threadTouchedIdx: index('wisp_thread_links_thread_touched_idx').on(t.threadId, t.lastTouchedAt.desc()),
   threadCreatedIdx: index('wisp_thread_links_thread_created_idx').on(t.threadId, t.createdAt.desc()),
   orgIdx: index('wisp_thread_links_org_idx').on(t.orgId).where(sql`org_id IS NOT NULL`),
   entityIdx: index('wisp_thread_links_entity_idx').on(t.entityKind, t.entityId),
@@ -85,6 +92,7 @@ export const wispThreadLinks = pgTable('wisp_thread_links', {
     .on(t.addedByGrantId)
     .where(sql`added_by_grant_id IS NOT NULL`),
   entityKindChk: check('wisp_thread_links_entity_kind_chk', sql`${t.entityKind} IN ('ticket','quote','invoice','contract','device','organization','site','alert','run','task','user')`),
+  sourceChk: check('wisp_thread_links_source_chk', sql`${t.source} IN ('user_pin','wisp_pin','auto')`),
   labelLenChk: check('wisp_thread_links_label_len_chk', sql`char_length(${t.label}) <= 200`),
 }));
 

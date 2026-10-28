@@ -19,7 +19,9 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import * as testSetup from './setup';
+import { replayMigration } from './replayMigration';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
   permissions,
@@ -146,6 +148,62 @@ async function linkAll(env: Env) {
 const rowsOf = (threadId: string) => asSystem(() => db.select().from(wispThreadLinks).where(eq(wispThreadLinks.threadId, threadId)));
 const refusal = async (p: Promise<unknown>) => p.then(() => 'resolved', (e) => (e instanceof ThreadLinkError ? e.code : `threw ${String(e)}`));
 
+describe('thread links working-set migration (real Postgres)', () => {
+  it('migration backfills source and recency', async () => {
+    const env = await seed();
+    const testDb = testSetup.getTestDb();
+    // Fail before DDL when the migration has not shipped yet.
+    await testDb.execute(sql`SELECT source, last_touched_at, touch_count FROM wisp_thread_links LIMIT 0`);
+    const rollback = new Error('rollback migration fixture');
+    await expect(testDb.transaction(async (tx) => {
+      // Roll back all DDL and fixtures even if replay or an assertion fails.
+      await tx.execute(sql`ALTER TABLE wisp_thread_links
+        DROP COLUMN source, DROP COLUMN last_touched_at, DROP COLUMN touch_count`);
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+      for (const grantId of [null, env.grantId]) {
+        await tx.execute(sql`INSERT INTO wisp_thread_links
+          (thread_id, partner_id, org_id, entity_kind, entity_id, label,
+           added_by_user_id, added_by_grant_id, created_at)
+          VALUES (${env.thread.id}, ${env.partner.id}, ${env.orgA.id}, 'ticket',
+            ${randomUUID()}, 'Legacy link', ${env.grantor.id}, ${grantId},
+            '2026-01-02T03:04:05.123456Z')`);
+      }
+      // Route the standard replay helper through this rollback-only transaction.
+      const connection = vi.spyOn(testSetup, 'getTestDb').mockReturnValue(tx);
+      try {
+        await replayMigration('2027-01-09-130000-wisp-thread-links-working-set.sql');
+        const rows = await tx.execute(sql`SELECT source, touch_count,
+          last_touched_at = created_at AS recency_backfilled
+          FROM wisp_thread_links WHERE thread_id = ${env.thread.id} ORDER BY source`);
+        expect([...rows]).toEqual([
+          { source: 'user_pin', touch_count: 1, recency_backfilled: true },
+          { source: 'wisp_pin', touch_count: 1, recency_backfilled: true },
+        ]);
+        const indexes = await tx.execute(sql`SELECT indexdef FROM pg_indexes
+          WHERE schemaname = 'public' AND indexname = 'wisp_thread_links_thread_touched_idx'`);
+        expect(indexes).toHaveLength(1);
+        expect(indexes[0]!.indexdef).toContain('(thread_id, last_touched_at DESC)');
+        await expect(tx.transaction(async (savepoint) => {
+          await savepoint.execute(sql`UPDATE wisp_thread_links SET source = 'unknown'
+            WHERE thread_id = ${env.thread.id}`);
+        })).rejects.toMatchObject({ cause: { code: '23514' } });
+        await tx.execute(sql`UPDATE wisp_thread_links SET source = 'auto', touch_count = 7,
+          last_touched_at = '2026-02-03T04:05:06Z' WHERE thread_id = ${env.thread.id}`);
+        await replayMigration('2027-01-09-130000-wisp-thread-links-working-set.sql');
+        const replayed = await tx.execute(sql`SELECT source, touch_count,
+          last_touched_at = '2026-02-03T04:05:06Z'::timestamptz AS recency_preserved
+          FROM wisp_thread_links WHERE thread_id = ${env.thread.id}`);
+        expect([...replayed]).toEqual(Array(2).fill({
+          source: 'auto', touch_count: 7, recency_preserved: true,
+        }));
+      } finally {
+        connection.mockRestore();
+      }
+      throw rollback;
+    })).rejects.toBe(rollback);
+  });
+});
+
 describe('thread links service (real Postgres)', () => {
   it('links take the org from the entity; labels come from the entity; partner-level user has org null', async () => {
     const env = await seed();
@@ -157,6 +215,23 @@ describe('thread links service (real Postgres)', () => {
     expect(a.addedBy).toBe('user');
     const rows = await rowsOf(env.thread.id);
     expect(rows.map((r) => r.orgId).sort()).toEqual([env.orgA.id, env.orgB.id, null].sort());
+    expect(rows.map((r) => r.source)).toEqual(['user_pin', 'user_pin', 'user_pin']);
+  });
+
+  it.each([false, true])('derives source from the insert grant (has grant: %s)', async (hasGrant) => {
+    const env = await seed();
+    const ceiling = await env.ceiling();
+    await env.inRequest(() => addLink(
+      { auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id },
+      { addedByGrantId: hasGrant ? env.grantId : null },
+    ));
+    const [row] = await rowsOf(env.thread.id);
+    expect(row).toMatchObject({
+      addedByGrantId: hasGrant ? env.grantId : null,
+      source: hasGrant ? 'wisp_pin' : 'user_pin',
+      touchCount: 1,
+    });
+    expect(row!.lastTouchedAt).toEqual(row!.createdAt);
   });
 
   it('re-adding the same entity is idempotent (same row id)', async () => {
@@ -192,7 +267,7 @@ describe('thread links service (real Postgres)', () => {
     const env = await seed();
     await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 50 }, () => ({
       threadId: env.thread.id, partnerId: env.partner.id, orgId: env.orgA.id, entityKind: 'ticket' as const,
-      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id,
+      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id, source: 'user_pin' as const,
     }))));
     const ceiling = await env.ceiling();
     expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }))))
@@ -203,7 +278,7 @@ describe('thread links service (real Postgres)', () => {
     const env = await seed();
     await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 50 }, () => ({
       threadId: env.thread.id, partnerId: env.partner.id, orgId: null, entityKind: 'user' as const,
-      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id,
+      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id, source: 'user_pin' as const,
     }))));
     const ceiling = await env.ceiling();
     const orgToken = { ...env.auth, scope: 'organization', orgId: env.orgA.id } as AuthContext;

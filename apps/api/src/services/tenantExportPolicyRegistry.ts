@@ -1129,7 +1129,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // Wisp W08a (#9914). Plain identifiers + timestamps; `label` is a bounded
   // text display cache; entity_id is a soft reference. No json columns.
   // Partner-level links (org_id NULL) never enter an org export.
-  "wisp_thread_links": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","entity_kind","entity_id","label","added_by_user_id","added_by_grant_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "wisp_thread_links": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","entity_kind","entity_id","label","added_by_user_id","added_by_grant_id","created_at","source","last_touched_at","touch_count"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // wisp_thread_posts (#10212): `sections` is the brief's jsonb section list,
   // an open container, so excludedOpen; dedupe_key is a plain delivery key
   // (wisp.brief: / wisp.nudge: / wisp.digest:), included as on
