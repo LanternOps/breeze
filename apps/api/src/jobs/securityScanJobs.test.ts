@@ -273,6 +273,7 @@ describe('schedule-policies repeatable tick evaluates cron on the wall clock (#1
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.mocked(isCronDue).mockReset();
   });
 
   it('two ticks of the same registration across the 02:00 boundary: the second one schedules', async () => {

@@ -45,7 +45,6 @@ const SECURITY_SWEEP_PUMP_INTERVAL_MS = parsePositiveIntEnv('SECURITY_SWEEP_PUMP
 const SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS =
   parsePositiveIntEnv('SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS', 20);
 
-
 let securityScanQueue: Queue<SecurityScanQueueJobData> | null = null;
 let securityScanWorker: Worker<SecurityScanQueueJobData> | null = null;
 
@@ -293,7 +292,6 @@ async function processSchedulePolicies(now: Date): Promise<{
   scheduledPolicies: number;
   scansQueued: number;
 }> {
-
   const entries = await resolveAllSecurityScanScheduledDevices();
   let scheduledPolicies = 0;
   let scansQueued = 0;

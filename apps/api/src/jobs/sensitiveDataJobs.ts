@@ -724,7 +724,6 @@ async function processSchedulePolicies(now: Date): Promise<{
   scheduledPolicies: number;
   scansQueued: number;
 }> {
-
   const policies = await db
     .select({
       id: sensitiveDataPolicies.id,

@@ -151,6 +151,7 @@ describe('schedule-policies repeatable tick evaluates schedules on the wall cloc
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.mocked(isCronDue).mockReset();
   });
 
   it('two ticks of the same registration across the 02:00 boundary: the second one claims the occurrence', async () => {
