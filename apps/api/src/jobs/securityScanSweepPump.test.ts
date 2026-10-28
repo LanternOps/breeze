@@ -57,6 +57,7 @@ type World = {
   expiredQueued?: Array<{ id: string }>;
   pending?: Array<{ scanId: string; commandId: string }>;
   undeliveredFinal?: Array<{ id: string }>;
+  answeredFinal?: Array<{ id: string }>;
   ceilingFinal?: Array<{ id: string }>;
   completed?: Array<Record<string, unknown>>;
   progress?: Array<Record<string, unknown>>;
@@ -75,6 +76,7 @@ function respondWith(w: World) {
       const text = whereText(o);
       if (text.includes('pg_try_advisory_xact_lock')) return [{ locked: w.locked ?? true }];
       if (text.includes('executed_at is null')) return w.undeliveredFinal ?? [];
+      if (text.includes(`c.status in ('completed', 'failed')`)) return w.answeredFinal ?? [];
       if (text.includes('started_at <')) return w.ceilingFinal ?? [];
       return [];
     }
@@ -201,6 +203,26 @@ describe('pumpSweeps', () => {
     // command was delivered (executed_at set) and is not "undelivered".
     const undelivered = ops().find((o) => o.kind === 'execute' && whereText(o).includes('executed_at is null'))!;
     expect(whereText(undelivered)).not.toContain('timeout');
+  });
+
+  it('#10376 a delivered command that went terminal with a final result → failed; a reopenable one is left alone', async () => {
+    respondWith({ answeredFinal: [{ id: 's4' }] });
+    const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
+    expect(result.finalized).toBe(1);
+    const stmt = ops().find((o) => o.kind === 'execute' && whereText(o).includes(`c.status in ('completed', 'failed')`))!;
+    expect(stmt).toBeDefined();
+    const text = whereText(stmt);
+    expect(text).toContain('c.id = s.command_id');
+    expect(text).toContain('w.org_id = s.org_id');
+    expect(text).toContain(`s.status = 'running'`);
+    expect(text).toContain(`set status = 'failed'`);
+    // A server timeout or a parked processing failure can still accept the
+    // agent's result: those rows keep waiting for it.
+    expect(whereParams(stmt)).toEqual(expect.arrayContaining(['timeout', 'result_processing_failed']));
+    expect(text).toMatch(/coalesce\(c\.result->>'status', ''\) not in/);
+    // Runs after the undelivered rule, so an undelivered command still ends `expired`.
+    const idxUndelivered = ops().findIndex((o) => o.kind === 'execute' && whereText(o).includes('executed_at is null'));
+    expect(ops().indexOf(stmt)).toBeGreaterThan(idxUndelivered);
   });
 
   it('complete: no queued/running → completed + audit', async () => {
