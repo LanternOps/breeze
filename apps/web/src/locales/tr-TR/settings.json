@@ -1186,7 +1186,7 @@
         "overridableCap": "Sizin değeriniz varsayılandır. Bir kuruluş en fazla {{limit}} olmak üzere kendi değerini belirleyebilir.",
         "partnerOnly": "Kuruluşların bunun için kendi ayarı yoktur. Sizin değeriniz hepsine uygulanır."
       },
-      "badgeHelpLabel": "“{{badge}}” hakkında",
+      "badgeHelpLabel": "“{{badge}}” hakkında ({{field}})",
       "legend": {
         "title": "Ayarlar nasıl uygulanır:",
         "locks": "her kuruluş sizin değerinizi kullanır",

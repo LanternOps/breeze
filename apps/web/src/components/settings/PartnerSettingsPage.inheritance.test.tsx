@@ -72,7 +72,7 @@ describe('PartnerSettingsPage inheritance (#9790 W4)', () => {
   it('a full-access user sees the per-field line for the active tab, fetched once without the ambient orgId', async () => {
     await renderPage('#security');
     expect(await screen.findByTestId('partner-settings-line-security.requireMfa')).toHaveTextContent('Applies to all 12 orgs · 2 had their own value');
-    expect(inheritanceCalls()).toEqual([[INHERITANCE, { skipOrgIdInjection: true }]]);
+    expect(inheritanceCalls()).toEqual([[INHERITANCE, expect.objectContaining({ skipOrgIdInjection: true, signal: expect.any(AbortSignal) })]]);
   });
 
   it('restricted state renders badges without counts, never fetches and never toasts (Review Focus 1)', async () => {
@@ -115,7 +115,21 @@ describe('PartnerSettingsPage inheritance (#9790 W4)', () => {
     expect(screen.getByTestId('partner-settings-line-security.sessionTimeout').textContent).toMatch(/^Saved value: /);
     expect(screen.getByTestId('partner-settings-line-security.requireMfa').textContent).not.toMatch(/^Saved value:/);
 
+    // The saved value now locks: the refetched counts replace the old line.
+    inheritance = () => json({ data: { ...SECURITY, fields: [SECURITY.fields[0], { ...SECURITY.fields[1], partnerSet: true, inForce: true }] } });
     await user.click(screen.getByTestId('partner-settings-save'));
     await waitFor(() => expect(inheritanceCalls()).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId('partner-settings-line-security.sessionTimeout')).toHaveTextContent('Applies to all 12 orgs'));
+  });
+
+  it('a failed read retries when its tab is opened again, not on every render', async () => {
+    inheritance = () => json({ error: 'boom' }, 500);
+    const user = await renderPage('#security');
+    await waitFor(() => expect(inheritanceCalls()).toHaveLength(1));
+    inheritance = () => json({ data: SECURITY });
+    await user.click(screen.getByTestId('partner-settings-tab-company'));
+    await user.click(screen.getByTestId('partner-settings-tab-security'));
+    expect(await screen.findByTestId('partner-settings-line-security.requireMfa')).toHaveTextContent('Applies to all 12 orgs');
+    expect(inheritanceCalls()).toHaveLength(2);
   });
 });

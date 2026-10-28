@@ -1186,7 +1186,7 @@
         "overridableCap": "Votre valeur est la valeur par défaut. Une organisation peut définir sa propre valeur, jusqu’à {{limit}}.",
         "partnerOnly": "Les organisations n’ont pas de paramètre propre. Votre valeur s’applique à toutes."
       },
-      "badgeHelpLabel": "À propos de « {{badge}} »",
+      "badgeHelpLabel": "À propos de « {{badge}} » ({{field}})",
       "legend": {
         "title": "Portée des paramètres :",
         "locks": "chaque organisation utilise votre valeur",

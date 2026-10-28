@@ -1186,7 +1186,7 @@
         "overridableCap": "Ihr Wert ist der Standard. Eine Organisation kann einen eigenen Wert festlegen, höchstens {{limit}}.",
         "partnerOnly": "Organisationen haben hierfür keine eigene Einstellung. Ihr Wert gilt für alle."
       },
-      "badgeHelpLabel": "Über „{{badge}}“",
+      "badgeHelpLabel": "Über „{{badge}}“ ({{field}})",
       "legend": {
         "title": "So gelten die Einstellungen:",
         "locks": "jede Organisation verwendet Ihren Wert",

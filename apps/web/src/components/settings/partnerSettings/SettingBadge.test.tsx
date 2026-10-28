@@ -56,7 +56,8 @@ describe('SettingBadge: text per kind and qualifier (spec §5.3)', () => {
 
   it('the badge explains itself through a named help trigger', () => {
     render(<SettingBadge fieldId="security.requireMfa" />);
-    expect(screen.getByRole('button', { name: 'About “Locks orgs”' })).toBeInTheDocument();
+    // Ten "Org can override" triggers on one tab must still be told apart: the name carries the field.
+    expect(screen.getByRole('button', { name: 'About “Locks orgs” (Require MFA for all users)' })).toBeInTheDocument();
   });
 });
 

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { CATALOG_BY_ID, type CatalogEntry } from '@breeze/shared';
 import '@/lib/i18n';
 import HelpTooltip from '../../shared/HelpTooltip';
+import { FIELD_LABEL_KEYS } from './fieldLabels';
 import { formatInheritanceValue } from './formatInheritanceValue';
 import { usePartnerInheritance } from './inheritanceContext';
 
@@ -61,7 +62,10 @@ export default function SettingBadge({ fieldId }: { fieldId: string }) {
       </span>
       <HelpTooltip
         text={t(/* i18n-dynamic */ `${K}.badgeHelp.${variant}`, { limit })}
-        ariaLabel={t(/* i18n-dynamic */ `${K}.badgeHelpLabel`, { badge: label })}
+        ariaLabel={t(/* i18n-dynamic */ `${K}.badgeHelpLabel`, {
+          badge: label,
+          field: FIELD_LABEL_KEYS[fieldId] ? t(/* i18n-dynamic */ FIELD_LABEL_KEYS[fieldId]!) : fieldId,
+        })}
       />
     </span>
   );

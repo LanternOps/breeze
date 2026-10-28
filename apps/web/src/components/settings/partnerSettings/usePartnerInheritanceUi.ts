@@ -34,7 +34,11 @@ export function usePartnerInheritanceUi(args: {
   // 1920 px and up (spec §5.5). Transient within a tab: component state, not the hash.
   const wide = useMediaQuery('(min-width: 1920px)');
   const [drill, setDrill] = useState<DrillSelection | null>(null);
-  useEffect(() => { setDrill(null); }, [activeTab]);
+  // A tab change closes the drill-down and lets a failed read retry on its next view.
+  useEffect(() => {
+    setDrill(null);
+    useInheritanceStore.getState().dropUnavailable();
+  }, [activeTab]);
   const sidePanel = wide && inheritanceTab !== null;
 
   const savedSettings = partner?.settings;

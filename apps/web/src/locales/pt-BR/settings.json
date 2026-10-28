@@ -1186,7 +1186,7 @@
         "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
         "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
       },
-      "badgeHelpLabel": "Sobre “{{badge}}”",
+      "badgeHelpLabel": "Sobre “{{badge}}” ({{field}})",
       "legend": {
         "title": "Como as configurações se aplicam:",
         "locks": "todas as organizações usam o seu valor",

@@ -6,7 +6,7 @@ import { Drawer } from '../../shared/Drawer';
 import InheritanceDrilldown from './InheritanceDrilldown';
 import { FIELD_LABEL_KEYS } from './fieldLabels';
 import { summarizeTab } from './inheritanceSummary';
-import type { TabInheritanceState } from './useTabInheritance';
+import { useInheritanceStore, type TabInheritanceState } from './useTabInheritance';
 
 const K = 'partnerSettingsPage.inheritance';
 
@@ -51,6 +51,8 @@ export default function InheritanceSidePanel({
 }) {
   const { t } = useTranslation('settings');
   const label = useFieldLabel();
+  // A save bumps the revision: an open list re-reads instead of showing pre-save rows.
+  const revision = useInheritanceStore(s => s.revision);
 
   let body: React.ReactNode;
   if (selection) {
@@ -62,7 +64,7 @@ export default function InheritanceSidePanel({
           {t(/* i18n-dynamic */ `${K}.summary.back`)}
         </button>
         <h3 className="text-sm font-semibold"><DrilldownHeading selection={selection} /></h3>
-        <InheritanceDrilldown fieldId={selection.fieldId} bucket={selection.bucket} />
+        <InheritanceDrilldown key={`${selection.fieldId}:${selection.bucket}:${revision}`} fieldId={selection.fieldId} bucket={selection.bucket} />
       </div>
     );
   } else if (!state || state.status === 'loading') {
@@ -124,6 +126,7 @@ export default function InheritanceSidePanel({
 
 /** Below 1920 px the drill-down is the shared drawer (a full-height sheet on narrow screens). */
 export function InheritanceDrawer({ selection, onClose }: { selection: DrillSelection | null; onClose: () => void }) {
+  const revision = useInheritanceStore(s => s.revision);
   return (
     <Drawer
       open={selection !== null}
@@ -134,7 +137,7 @@ export function InheritanceDrawer({ selection, onClose }: { selection: DrillSele
     >
       {selection && (
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          <InheritanceDrilldown fieldId={selection.fieldId} bucket={selection.bucket} />
+          <InheritanceDrilldown key={`${selection.fieldId}:${selection.bucket}:${revision}`} fieldId={selection.fieldId} bucket={selection.bucket} />
         </div>
       )}
     </Drawer>

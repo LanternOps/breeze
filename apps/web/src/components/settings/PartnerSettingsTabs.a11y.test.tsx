@@ -171,7 +171,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
       expect(badge.textContent?.trim()).not.toBe('');
       const help = badge.parentElement!.querySelector('button');
       expect(help, `${badge.getAttribute('data-testid')} has no help trigger`).not.toBeNull();
-      expect(help!).toHaveAccessibleName(`About “${badge.textContent!.trim()}”`);
+      const name = help!.getAttribute('aria-label') ?? '';
+      expect(name.startsWith(`About “${badge.textContent!.trim()}” (`) && name.endsWith(')'), name).toBe(true);
     }
   });
 

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InheritanceTabDto } from '@breeze/shared';
@@ -8,11 +8,12 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { PARTNERS_ME_FIXTURE } from './partnerSettings/partnersMeFixture';
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
-import { useInheritanceStore } from './partnerSettings/useTabInheritance';
+import { invalidateInheritance, useInheritanceStore } from './partnerSettings/useTabInheritance';
 
+const authState = vi.hoisted(() => ({ user: { id: 'u-1', canManagePartnerWide: true as boolean } }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { id: 'u-1', canManagePartnerWide: true } }),
+  useAuthStore: (sel: (s: unknown) => unknown) => sel(authState),
   handleSessionExpired: vi.fn(),
 }));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
@@ -47,6 +48,7 @@ const media = { listeners: new Set<(e: { matches: boolean }) => void>() };
 beforeEach(() => {
   vi.clearAllMocks();
   wide = false;
+  authState.user.canManagePartnerWide = true;
   window.matchMedia = vi.fn((query: string) => ({
     matches: query === '(min-width: 1920px)' && wide,
     media: query,
@@ -82,7 +84,7 @@ describe('PartnerSettingsPage drill-down layout (#9790 W4, spec §5.5, §6)', ()
     expect(within(drawer).getByText('Require MFA for all users')).toBeInTheDocument();
     expect(within(drawer).getByText('Orgs whose own value is not in effect')).toBeInTheDocument();
     expect(await within(drawer).findByTestId('partner-settings-drilldown-row-o-1')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledWith('/orgs/partners/me/settings-inheritance/orgs?field=security.requireMfa&bucket=shadowed', { skipOrgIdInjection: true });
+    expect(fetchMock).toHaveBeenCalledWith('/orgs/partners/me/settings-inheritance/orgs?field=security.requireMfa&bucket=shadowed', expect.objectContaining({ skipOrgIdInjection: true, signal: expect.any(AbortSignal) }));
   });
 
   it('at 1920 the side panel renders the tab summary, and a count opens in it rather than a drawer', async () => {
@@ -116,6 +118,27 @@ describe('PartnerSettingsPage drill-down layout (#9790 W4, spec §5.5, §6)', ()
     await waitFor(() => expect(screen.getByTestId('partner-settings-panel-heading')).toBeInTheDocument());
     expect(screen.queryByTestId('partner-settings-side-panel')).toBeNull();
     expect(document.querySelector('[class*="_360px]"]')).toBeNull();
+  });
+
+  it('at 1920 a selected-access user sees the restricted notice in the side panel and nothing is fetched', async () => {
+    wide = true;
+    authState.user.canManagePartnerWide = false;
+    await renderPage('#security');
+    const panel = await screen.findByTestId('partner-settings-side-panel');
+    expect(panel).toHaveTextContent('Org breakdown requires full partner access');
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('settings-inheritance'))).toHaveLength(0);
+  });
+
+  it('an open org list re-reads after a save instead of keeping pre-save rows', async () => {
+    const user = await renderPage('#security');
+    await user.click(await screen.findByTestId('partner-settings-line-security.requireMfa-shadowed'));
+    await screen.findByTestId('partner-settings-drilldown-row-o-1');
+    const orgReads = () => fetchMock.mock.calls.filter(([url]) => String(url).includes('/settings-inheritance/orgs?')).length;
+    expect(orgReads()).toBe(1);
+    act(() => { invalidateInheritance(['security']); });
+    await waitFor(() => expect(orgReads()).toBe(2));
+    // The counts stay on screen while the tab refetches (no blink).
+    expect(screen.getByTestId('partner-settings-line-security.requireMfa')).toBeInTheDocument();
   });
 
   it('switching tabs closes an open drill-down', async () => {

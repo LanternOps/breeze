@@ -36,12 +36,37 @@ describe('useTabInheritance', () => {
     expect(fetchTabInheritance.mock.calls.map(c => c[0])).toEqual(['defaults', 'security']);
   });
 
-  it('invalidate refetches the active tab, and only catalog tabs are dropped', async () => {
-    const { result } = renderHook(() => useTabInheritance('defaults'));
+  it('invalidate refetches only the named catalog tabs, keeping the old counts until the new ones land', async () => {
+    const { result, rerender } = renderHook(({ tab }) => useTabInheritance(tab), { initialProps: { tab: 'security' } as { tab: 'defaults' | 'security' } });
     await waitFor(() => expect(result.current?.status).toBe('ok'));
-    act(() => { invalidateInheritance(['company', 'defaults', 'security']); });
-    await waitFor(() => expect(fetchTabInheritance).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(result.current?.status).toBe('ok'));
+    rerender({ tab: 'defaults' });
+    await waitFor(() => expect(result.current).toEqual({ status: 'ok', data: dto('defaults') }));
+    expect(fetchTabInheritance).toHaveBeenCalledTimes(2);
+
+    let release!: (v: unknown) => void;
+    fetchTabInheritance.mockImplementationOnce(() => new Promise(r => { release = r; }));
+    act(() => { invalidateInheritance(['company', 'defaults']); });
+    await waitFor(() => expect(fetchTabInheritance).toHaveBeenCalledTimes(3));
+    // Stale-while-refetching: the previous answer stays.
+    expect(result.current).toEqual({ status: 'ok', data: dto('defaults') });
+    await act(async () => { release({ status: 'ok', data: { ...dto('defaults'), orgCount: 7 } }); });
+    await waitFor(() => expect(result.current).toEqual({ status: 'ok', data: { ...dto('defaults'), orgCount: 7 } }));
+
+    // 'security' was not named: still cached, never refetched.
+    rerender({ tab: 'security' });
+    expect(result.current).toEqual({ status: 'ok', data: dto('security') });
+    expect(fetchTabInheritance.mock.calls.map(c => c[0])).toEqual(['security', 'defaults', 'defaults']);
+  });
+
+  it('a failed read is retried only after dropUnavailable (a tab change), never in a loop', async () => {
+    fetchTabInheritance.mockResolvedValueOnce({ status: 'unavailable' });
+    const { result, rerender } = renderHook(() => useTabInheritance('defaults'));
+    await waitFor(() => expect(result.current).toEqual({ status: 'unavailable' }));
+    rerender();
+    expect(fetchTabInheritance).toHaveBeenCalledTimes(1);
+    act(() => { useInheritanceStore.getState().dropUnavailable(); });
+    await waitFor(() => expect(result.current).toEqual({ status: 'ok', data: dto('defaults') }));
+    expect(fetchTabInheritance).toHaveBeenCalledTimes(2);
   });
 
   it('a response that lands after an invalidate is dropped', async () => {

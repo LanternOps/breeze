@@ -1186,7 +1186,7 @@
         "overridableCap": "Il tuo valore è quello predefinito. Un’organizzazione può impostare un proprio valore, fino a {{limit}}.",
         "partnerOnly": "Le organizzazioni non hanno un’impostazione propria. Il tuo valore vale per tutte."
       },
-      "badgeHelpLabel": "Informazioni su «{{badge}}»",
+      "badgeHelpLabel": "Informazioni su «{{badge}}» ({{field}})",
       "legend": {
         "title": "Come si applicano le impostazioni:",
         "locks": "ogni organizzazione usa il tuo valore",

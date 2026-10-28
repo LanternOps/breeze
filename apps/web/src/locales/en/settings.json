@@ -1186,7 +1186,7 @@
         "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
         "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
       },
-      "badgeHelpLabel": "About “{{badge}}”",
+      "badgeHelpLabel": "About “{{badge}}” ({{field}})",
       "legend": {
         "title": "How settings apply:",
         "locks": "every organization uses your value",

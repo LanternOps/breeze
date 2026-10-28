@@ -1186,7 +1186,7 @@
         "overridableCap": "Tu valor es el predeterminado. Una organización puede definir su propio valor, hasta {{limit}}.",
         "partnerOnly": "Las organizaciones no tienen un ajuste propio. Tu valor se aplica a todas."
       },
-      "badgeHelpLabel": "Acerca de «{{badge}}»",
+      "badgeHelpLabel": "Acerca de «{{badge}}» ({{field}})",
       "legend": {
         "title": "Cómo se aplican los ajustes:",
         "locks": "todas las organizaciones usan tu valor",
