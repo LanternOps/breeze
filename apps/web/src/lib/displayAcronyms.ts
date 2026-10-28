@@ -11,7 +11,7 @@ export const DISPLAY_ACRONYMS: Readonly<Record<string, string>> = {
   ai: 'AI', api: 'API', c2c: 'C2C', cidr: 'CIDR', cis: 'CIS', cve: 'CVE', dns: 'DNS', dr: 'DR',
   edr: 'EDR', html: 'HTML', http: 'HTTP', https: 'HTTPS', hyperv: 'Hyper-V', id: 'ID', ids: 'IDs',
   ioc: 'IOC', iocs: 'IOCs', ip: 'IP', ips: 'IPs', json: 'JSON', m365: 'M365', mfa: 'MFA',
-  mssql: 'MSSQL', os: 'OS', pam: 'PAM', psa: 'PSA', rpo: 'RPO', rto: 'RTO', sla: 'SLA', sms: 'SMS',
+  mssql: 'MSSQL', os: 'OS', pam: 'PAM', psa: 'PSA', rca: 'RCA', rpo: 'RPO', rto: 'RTO', sla: 'SLA', sms: 'SMS',
   smtp: 'SMTP', snmp: 'SNMP', ssh: 'SSH', ssl: 'SSL', sso: 'SSO', tls: 'TLS', totp: 'TOTP',
   ttl: 'TTL', unifi: 'UniFi', uri: 'URI', url: 'URL', urls: 'URLs', vm: 'VM', vms: 'VMs', vpn: 'VPN',
 };
