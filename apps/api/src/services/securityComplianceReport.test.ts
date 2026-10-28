@@ -33,6 +33,7 @@ import {
   generateSecurityCompliancePostureReport as generateSecurityCompliancePostureReportWithAuthority,
 } from './securityComplianceReport';
 import type { OrgReportExecutionAuthority } from './siteScope';
+import { POSTURE_DEVICE_ROW_CSV_LABELS } from '@breeze/shared';
 
 /** Thenable that resolves to `rows` and supports any drizzle chain method. */
 function selectChain(rows: any) {
@@ -148,6 +149,18 @@ describe('generateSecurityCompliancePostureReport', () => {
     ]);
     expect(rows['pc-1']).toMatchObject({ openVulnHigh: 2, openVulnCritical: 1 });
     expect(rows['pc-2']).toMatchObject({ openVulnHigh: 1, openVulnCritical: 0 });
+  });
+
+  // #9964: the portal CSV header row is labelled from this map, so every
+  // per-device row column needs an entry (and no label may name a dead column).
+  it('emits exactly the per-device columns the CSV label map covers', async () => {
+    mockGeneratorQueries();
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    const rows = result.rows as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(Object.keys(POSTURE_DEVICE_ROW_CSV_LABELS).sort());
+    }
   });
 
   it('does not query or expose organization-wide posture evidence to a site-restricted caller', async () => {
