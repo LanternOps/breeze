@@ -1587,7 +1587,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       // external I/O, so it runs outside any DB context. Its own deadline
       // (≤ 30 s for http_request) is inside the generic tool timeout.
       rawResult = await inFlowFrame(() => withToolTimeout(
-        runOutsideDbContext(() => executeReleasedFlowBuiltin(intent, auth)),
+        // W6 (#5221): the digest recompute's verified material (the fleet
+        // built-in's script snapshot for the frozen devices) rides along.
+        runOutsideDbContext(() => executeReleasedFlowBuiltin(intent, auth, verifiedContext)),
         getToolTimeout(intent.actionName),
         intent.actionName,
       ));

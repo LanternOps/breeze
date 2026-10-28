@@ -121,7 +121,11 @@
       "variable_dependent": "Bu adım, yalnızca çalışma anında bilinen değerlere bağlıdır.",
       "script_not_found": "Bu adımın kullandığı betik bulunamadı.",
       "four_eyes": "Bu işlem her zaman ikinci bir kişinin onayını gerektirir.",
-      "tenant_tool": "Özel araç kaynakları önceden onaylanamaz."
+      "tenant_tool": "Özel araç kaynakları önceden onaylanamaz.",
+      "for_each": "Her öğe için tekrarlanan adımlar önceden onaylanamaz.",
+      "run_as_elevated": "Bu betik yükseltilmiş yetkiyle çalışır, bu yüzden önceden onaylanamaz.",
+      "selector_not_literal": "Cihazlar çalışma anında seçilir, bu yüzden bu adım önceden onaylanamaz.",
+      "max_targets_invalid": "Önceden onaylamak için bu adımın kaç cihazda çalışabileceğini belirleyin (1–500)."
     },
     "eventScope": "Olay akışları, nedeni ne olursa olsun platform olaylarına tepki verir; buna kişilerin, diğer akışların veya otomasyonların eylemleri de dahildir. Etkinleştirmeden önce tetikleyici filtresini kontrol edin.",
     "missingPermissions": "Bu akışın adımlarının gerektirdiği bazı izinlere sahip değilsiniz:",
@@ -238,7 +242,11 @@
       "notify_failed": "Bildirim gönderilemedi.",
       "ai_budget_exhausted": "Kuruluşun yapay zekâ bütçesi tükendi.",
       "ai_output_invalid": "Yapay zekâ sonucu beklenen biçimle eşleşmedi.",
-      "ai_token_cap_reached": "Çalıştırma yapay zekâ jeton sınırına ulaştı."
+      "ai_token_cap_reached": "Çalıştırma yapay zekâ jeton sınırına ulaştı.",
+      "targets_over_cap": "Adım, bir akış adımının çalışabileceğinden (500) fazla cihazı hedefledi.",
+      "targets_unresolvable": "Adımın cihaz hedefi çözümlenemedi.",
+      "alert_create_failed": "Uyarı oluşturulamadı.",
+      "script_dispatch_failed": "Betik bir veya daha fazla cihaza gönderilemedi."
     },
     "step": {
       "status": {

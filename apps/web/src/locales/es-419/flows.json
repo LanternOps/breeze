@@ -121,7 +121,11 @@
       "variable_dependent": "Este paso depende de valores que solo se conocen al ejecutar.",
       "script_not_found": "No se encontró el script que usa este paso.",
       "four_eyes": "Esta acción siempre necesita la aprobación de una segunda persona.",
-      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar."
+      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar.",
+      "for_each": "Los pasos que se repiten para cada elemento no se pueden aprobar por adelantado.",
+      "run_as_elevated": "Este script se ejecuta con privilegios elevados, por lo que no se puede aprobar por adelantado.",
+      "selector_not_literal": "Los dispositivos se eligen en tiempo de ejecución, por lo que este paso no se puede aprobar por adelantado.",
+      "max_targets_invalid": "Indica en cuántos dispositivos puede ejecutarse este paso (1–500) para aprobarlo por adelantado."
     },
     "eventScope": "Los flujos por evento reaccionan a los eventos de la plataforma sin importar qué los causó, incluidas acciones de personas, de otros flujos o de automatizaciones. Revise el filtro del disparador antes de habilitar.",
     "missingPermissions": "Le faltan permisos que necesitan los pasos de este flujo:",
@@ -238,7 +242,11 @@
       "notify_failed": "No se pudo enviar el aviso.",
       "ai_budget_exhausted": "Se agotó el presupuesto de IA de la organización.",
       "ai_output_invalid": "El resultado de la IA no coincide con el formato esperado.",
-      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA."
+      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA.",
+      "targets_over_cap": "El paso apuntó a más dispositivos de los que un paso de flujo puede usar (500).",
+      "targets_unresolvable": "No se pudo resolver el destino de dispositivos del paso.",
+      "alert_create_failed": "No se pudo crear la alerta.",
+      "script_dispatch_failed": "No se pudo enviar el script a uno o más dispositivos."
     },
     "step": {
       "status": {

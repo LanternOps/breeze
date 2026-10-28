@@ -487,6 +487,36 @@ describe('createActionIntent — built-in flow steps (#5220)', () => {
       .rejects.toMatchObject({ code: 'tool_not_tier3' });
   });
 
+  // W6 (#5221, Decision 5): the fleet built-in's approval scope is derived
+  // from the script (core run_script's classification), never hard-coded;
+  // its digest is mandatory.
+  describe('run_script_on_targets', () => {
+    const FLEET_INPUT = { scriptId: SCRIPT_ID, whenOffline: 'queue', deviceIds: [DEVICE_ID] };
+    const fleetRun = () => serverRun({
+      step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script_on_targets', toolSource: 'builtin', tier: 3 },
+    });
+    const fleetInput = () => builtinInput({ toolName: 'run_script_on_targets', input: FLEET_INPUT });
+
+    it('approval scope follows the script', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'a'.repeat(64) } as never);
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'four_eyes', description: 'x' } as never);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent());
+      dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+      await createActionIntent(flowAuth(), fleetInput());
+      expect(guardrailState.checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] });
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({ actionName: 'run_script_on_targets', approvalScope: 'four_eyes', riskTier: 3 });
+    });
+
+    it('missing digest refuses intent creation', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'unresolved', reason: 'target_absent' } as never);
+      await expect(createActionIntent(flowAuth(), fleetInput())).rejects.toThrow();
+      expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    });
+  });
+
   it('the server step row must be this built-in, pinned Tier 3', async () => {
     flowState.loadFlowIntentRun.mockResolvedValue(builtinRun({ step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script', toolSource: 'core', tier: 3 } }));
     await expect(createActionIntent(flowAuth(), builtinInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
