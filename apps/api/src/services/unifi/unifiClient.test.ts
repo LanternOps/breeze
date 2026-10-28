@@ -33,7 +33,7 @@ describe('unifiClient', () => {
 
     expect(globalFetch).not.toHaveBeenCalled();
     expect(safeFetchMock).toHaveBeenCalledWith(
-      'https://api.ui.com/v1/hosts',
+      'https://api.ui.com/v1/hosts?pageSize=100',
       expect.objectContaining({
         method: 'GET',
         timeoutMs: expect.any(Number),
@@ -61,7 +61,7 @@ describe('unifiClient', () => {
     const hosts = await client.listHosts();
     expect(hosts).toEqual([{ id: 'h1', name: 'Console 1', type: null, model: null }]);
     const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe('https://api.ui.com/v1/hosts');
+    expect(url).toBe('https://api.ui.com/v1/hosts?pageSize=100');
     expect((init.headers as Record<string, string>)['X-API-KEY']).toBe('k');
   });
 
@@ -136,6 +136,55 @@ describe('unifiClient', () => {
     expect(sleepImpl).toHaveBeenCalledWith(1000);
   });
 
+  it('listSites pages through nextToken with an explicit pageSize', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ siteId: 's1', hostId: 'h1', meta: { name: 'One' } }], nextToken: 'tok:2' }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ siteId: 's2', hostId: 'h2', meta: { name: 'Two' } }] }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    expect(await client.listSites()).toEqual([
+      { id: 's1', hostId: 'h1', name: 'One' },
+      { id: 's2', hostId: 'h2', name: 'Two' },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/sites?pageSize=100');
+    const next = new URL(fetchImpl.mock.calls[1]![0]);
+    expect(next.pathname).toBe('/v1/sites');
+    expect(next.searchParams.get('pageSize')).toBe('100');
+    expect(next.searchParams.get('nextToken')).toBe('tok:2');
+  });
+
+  it('listHosts pages through nextToken', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'h1', name: 'One' }], nextToken: 'tok:2' }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 'h2', name: 'Two' }] }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    expect(await client.listHosts()).toEqual([
+      { id: 'h1', name: 'One', type: null, model: null },
+      { id: 'h2', name: 'Two', type: null, model: null },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/hosts?pageSize=100');
+    const next = new URL(fetchImpl.mock.calls[1]![0]);
+    expect(next.pathname).toBe('/v1/hosts');
+    expect(next.searchParams.get('pageSize')).toBe('100');
+    expect(next.searchParams.get('nextToken')).toBe('tok:2');
+  });
+
+  it('refuses to return a partial list when the page cap is exceeded', async () => {
+    let page = 0;
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [{ id: 'h1' }], nextToken: `tok-${++page}` }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listHosts()).rejects.toMatchObject({ name: 'UnifiApiError' });
+    expect(fetchImpl).toHaveBeenCalledTimes(50);
+  });
+
+  it('fails on a repeated nextToken instead of looping', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ data: [{ id: 'h1' }], nextToken: 'same' }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listHosts()).rejects.toBeInstanceOf(UnifiApiError);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   describe('listSites', () => {
     it('parses siteId + meta.name from the real /v1/sites shape (the "undefined" blocker)', async () => {
       // Site Manager /v1/sites has NO top-level id/name — only siteId, hostId, and
@@ -146,7 +195,7 @@ describe('unifiClient', () => {
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
       const sites = await client.listSites();
       expect(sites).toEqual([{ id: 'site-abc', hostId: 'h1', name: 'Default' }]);
-      expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/sites');
+      expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/sites?pageSize=100');
     });
 
     it('never emits an "undefined"/empty site id, dropping malformed rows', async () => {
@@ -170,10 +219,21 @@ describe('unifiClient', () => {
     });
   });
 
-  describe('listDevices', () => {
-    it('fetches /v1/devices and returns only the requested host group', async () => {
+  describe('listDevicesByHost', () => {
+    it('merges groups for the same host across pages', async () => {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ data: [{ hostId: 'h1', devices: [{ id: 'd1' }] }], nextToken: 'next' }))
+        .mockResolvedValueOnce(jsonResponse({ data: [{ hostId: 'h1', devices: [{ id: 'd2' }] }, { hostId: 'h2', devices: [] }] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const devices = await client.listDevicesByHost();
+      expect(devices.get('h1')!.map((d) => d.unifiDeviceId)).toEqual(['d1', 'd2']);
+      expect(devices.get('h2')).toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('fetches /v1/devices and returns devices grouped by host', async () => {
       // The cloud API has no /v1/hosts/{id}/devices endpoint — that 404'd ("non-JSON").
-      // /v1/devices returns every host's devices grouped; we filter to the one host.
+      // /v1/devices returns every host's devices grouped.
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
         { hostId: 'h1', hostName: 'Console 1', devices: [
           { id: 'aa:bb:cc:dd:ee:01', mac: 'aa:bb:cc:dd:ee:01', name: 'AP-1', model: 'U6-Pro', status: 'online', version: '6.6.0', firmwareStatus: 'upToDate', productLine: 'network' },
@@ -183,8 +243,8 @@ describe('unifiClient', () => {
         ] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const devices = await client.listDevices('h1');
-      expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/devices');
+      const devices = (await client.listDevicesByHost()).get('h1')!;
+      expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/devices?pageSize=100');
       expect(devices).toHaveLength(1);
       const dev = devices[0]!;
       expect(dev.unifiDeviceId).toBe('aa:bb:cc:dd:ee:01');
@@ -202,18 +262,16 @@ describe('unifiClient', () => {
         { hostId: 'h1', devices: [{ id: 'd1', mac: 'd1', firmwareStatus: 'upgradable' }] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const dev = (await client.listDevices('h1'))[0]!;
+      const dev = ((await client.listDevicesByHost()).get('h1')!)[0]!;
       expect(dev.firmwareUpdatable).toBe(true);
     });
 
-    it('throws when the host is absent from the grouped payload (not an empty host)', async () => {
-      // Absent host must error so the sync routes it to the per-mapping failure path
-      // and skips the stale-sweep — returning [] would unlink still-good devices.
+    it('omits an absent host from the map (not an empty host)', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
         { hostId: 'other', devices: [{ id: 'd1', mac: 'd1' }] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      await expect(client.listDevices('h1')).rejects.toMatchObject({ name: 'UnifiApiError', status: 404 });
+      expect((await client.listDevicesByHost()).has('h1')).toBe(false);
     });
 
     it('returns [] when the host is present but has zero devices', async () => {
@@ -221,7 +279,10 @@ describe('unifiClient', () => {
         { hostId: 'h1', devices: [] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      await expect(client.listDevices('h1')).resolves.toEqual([]);
+      const devices = await client.listDevicesByHost();
+      expect(devices.has('h1')).toBe(true);
+      expect(devices.get('h1')).toEqual([]);
+      expect(devices.has('missing')).toBe(false);
     });
 
     it('drops a device with neither id nor mac instead of writing an "undefined" id', async () => {
@@ -229,7 +290,7 @@ describe('unifiClient', () => {
         { hostId: 'h1', devices: [{ id: 'good', mac: 'good' }, { name: 'no-identity' }] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const devices = await client.listDevices('h1');
+      const devices = (await client.listDevicesByHost()).get('h1')!;
       expect(devices.map((d) => d.unifiDeviceId)).toEqual(['good']);
     });
 
@@ -238,21 +299,22 @@ describe('unifiClient', () => {
         { hostId: 'h1', devices: [{ id: 'd1', mac: 'd1', firmwareStatus: 'checking' }] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const dev = (await client.listDevices('h1'))[0]!;
+      const dev = ((await client.listDevicesByHost()).get('h1')!)[0]!;
       expect(dev.firmwareUpdatable).toBeNull();
     });
   });
 
-  describe('getIspMetrics', () => {
-    it('hits /v1/isp-metrics/{type} and selects the entry for the site', async () => {
+  describe('listIspMetricsBySite', () => {
+    it('hits /v1/isp-metrics/{type} without paging params and groups entries by site', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
         { siteId: 'other', periods: [] },
         { siteId: 'site-abc', periods: [
+          { data: { wan: { avgLatency: 99 } } },
           { metricTime: '2026-06-30T00:00:00Z', data: { wan: { avgLatency: 12, packetLoss: 0.5, uptime: 99.9, ispName: 'Comcast' } } },
         ] },
       ] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const metrics = await client.getIspMetrics('site-abc');
+      const metrics = (await client.listIspMetricsBySite()).get('site-abc');
       expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/isp-metrics/5m');
       expect(metrics).toMatchObject({ latencyMs: 12, packetLoss: 0.5, uptimePercent: 99.9, isp: 'Comcast' });
       expect(metrics!.raw).toMatchObject({ siteId: 'site-abc' });
@@ -263,21 +325,21 @@ describe('unifiClient', () => {
       // raw is still the entry so wan_metrics records the (empty) sample.
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ siteId: 'site-abc', periods: [] }] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      const metrics = await client.getIspMetrics('site-abc');
+      const metrics = (await client.listIspMetricsBySite()).get('site-abc');
       expect(metrics).toMatchObject({ latencyMs: null, packetLoss: null, uptimePercent: null, isp: null });
       expect(metrics!.raw).toMatchObject({ siteId: 'site-abc' });
     });
 
-    it('returns null when the site has no metrics entry', async () => {
+    it('omits a site with no metrics entry', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ siteId: 'other', periods: [] }] }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      await expect(client.getIspMetrics('site-abc')).resolves.toBeNull();
+      expect((await client.listIspMetricsBySite()).has('site-abc')).toBe(false);
     });
 
-    it('returns null on an explicit data:null envelope', async () => {
+    it('returns an empty map on an explicit data:null envelope', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: null }));
       const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
-      await expect(client.getIspMetrics('s1')).resolves.toBeNull();
+      await expect(client.listIspMetricsBySite()).resolves.toEqual(new Map());
     });
   });
 

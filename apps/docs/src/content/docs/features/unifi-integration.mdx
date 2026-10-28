@@ -45,7 +45,7 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   3. Paste it into the **UniFi Site Manager API key** field and click **Connect to UniFi**. Breeze validates the key before saving -- a bad key is rejected with a clear message, and a UniFi outage is reported separately so a working key isn't wrongly blamed.
 
-  4. In the **Site mapping** card, Breeze lists each discovered UniFi host and its sites. Choose the matching **Breeze site** (grouped by organization) for each UniFi site, then click **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced. Use **Refresh** to re-pull the live host/site list from UniFi.
+  4. In the **Site mapping** card, Breeze lists every UniFi site the key can see, next to the host that runs it. Mapping is manual: Breeze does not match UniFi sites to Breeze sites by name, so choose the matching **Breeze site** (grouped by organization) for each UniFi site, then click **Save mappings**. The organization is derived from the site you pick; unmapped UniFi sites are simply not synced. Use **Refresh** to re-pull the live host/site list from UniFi.
 
   5. Inventory syncs automatically about every half hour. Click **Sync now** to pull immediately, and review each run's created / updated / unchanged / removed counts in the **Sync history** table.
 
@@ -53,6 +53,17 @@ On the not-yet-connected screen, choose a connection type -- **Cloud (Site Manag
 
   <Aside type="tip">
     The site list in the mapping card is a live call out to UniFi, so it can be slow or fail on a bad key or a UniFi outage. That card carries its own loading and error state and never blocks the rest of the panel.
+  </Aside>
+
+  **Which hosts and sites appear**
+
+  - Breeze lists every Site Manager host that runs at least one UniFi Network site. That covers UniFi OS consoles (such as a UniFi gateway) and self-hosted **UniFi Network Application** servers on Windows, Linux, or a VPS, which Site Manager reports as `network-server` hosts.
+  - A host with no UniFi Network site is left out, because there is nothing on it to map.
+  - A site whose host is missing from Site Manager's host list is shown under **Unknown console** so you can still map it.
+  - Breeze reads the full host and site lists page by page, so accounts with hundreds of sites are listed in full.
+
+  <Aside type="caution">
+    The API key sees only what the Ubiquiti account that created it can see: the consoles that account owns or administers. If a site is missing from the mapping card, check that the same account can see it in UniFi Site Manager, or create the key from an account that owns or administers every console. Ubiquiti returns device inventory only for consoles where that account is an owner or super admin.
   </Aside>
 
   </TabItem>
@@ -112,7 +123,7 @@ Each collector shows a status badge reflecting reachability: `pending`, `connect
 
 | Data | Source | Detail |
 |---|---|---|
-| **Consoles / hosts and sites** | Cloud or agent discovery | Each UniFi console (host) and the sites within it, so you can map them to Breeze sites. |
+| **Consoles / hosts and sites** | Cloud or agent discovery | Each UniFi host (a UniFi OS console or a self-hosted UniFi Network Application server) and the sites within it, so you can map them to Breeze sites. |
 | **Device inventory** | Cloud sync | Model, MAC, device type, firmware version and whether an upgrade is available, uptime, and adoption state. |
 | **WAN / ISP health** | Cloud sync | The latest WAN/ISP health per mapped site. |
 | **Per-device deep telemetry** | Collector agent | Device health (uptime, client count) and per-port PoE detail -- power draw, link speed, mode, and up/down state. |

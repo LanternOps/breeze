@@ -260,13 +260,37 @@ export async function collectSyncData(
   } catch (err) {
     return { hostsSeen: 0, fatalError: (err as Error).message, byMapping };
   }
-  for (const m of mappings) {
-    try {
-      const devices = await client.listDevices(m.unifiHostId);
-      const metrics = await client.getIspMetrics(m.unifiSiteId);
-      byMapping.set(m.id, { mappingId: m.id, devices, metrics });
-    } catch (err) {
+  if (mappings.length === 0) return { hostsSeen: hosts.length, byMapping };
+
+  // One read of each account-wide payload per run instead of one per mapping
+  // (#10491: rate-limit exposure once each read is paged). Host type does not
+  // filter sync: a network-server host's devices sync just like a console's.
+  let devicesByHost: Awaited<ReturnType<UnifiClient['listDevicesByHost']>>;
+  let metricsBySite: Awaited<ReturnType<UnifiClient['listIspMetricsBySite']>>;
+  try {
+    devicesByHost = await client.listDevicesByHost();
+    metricsBySite = await client.listIspMetricsBySite();
+  } catch (err) {
+    for (const m of mappings) {
       byMapping.set(m.id, { mappingId: m.id, error: `site ${m.unifiSiteId}: ${(err as Error).message}` });
+    }
+    return { hostsSeen: hosts.length, byMapping };
+  }
+
+  for (const m of mappings) {
+    const devices = devicesByHost.get(m.unifiHostId);
+    // A host absent from /v1/devices (offline/non-reporting, or the key's account is
+    // not owner/super-admin on it) is NOT an empty host: treating it as [] would let
+    // the stale sweep unlink every still-good device on the mapping while reporting
+    // success. Route it to the per-mapping error path instead.
+    if (devices === undefined) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        error: `site ${m.unifiSiteId}: UniFi host ${m.unifiHostId} not present in /v1/devices`,
+      });
+    } else {
+      const metrics = metricsBySite.get(m.unifiSiteId) ?? null;
+      byMapping.set(m.id, { mappingId: m.id, devices, metrics });
     }
   }
   return { hostsSeen: hosts.length, byMapping };

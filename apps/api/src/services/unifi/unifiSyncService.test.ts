@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { syncIntegration, isUnifiDeviceOnline } from './unifiSyncService';
+import { syncIntegration, isUnifiDeviceOnline, collectSyncData } from './unifiSyncService';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
-import type { UnifiClient } from './unifiClient';
+import { createUnifiClient, type UnifiClient } from './unifiClient';
 import type { DbExecutor } from './unifiConnectionService';
 
 // ---------------------------------------------------------------------------
@@ -13,14 +13,14 @@ function fakeClient(devices: any[]): UnifiClient {
   return {
     listHosts: async () => [{ id: 'h1', name: 'Console', type: 'console', model: 'UDM' }],
     listSites: async () => [{ id: 's1', hostId: 'h1', name: 'Site' }],
-    listDevices: async () => devices,
-    getIspMetrics: async () => ({
+    listDevicesByHost: async () => new Map([['h1', devices]]),
+    listIspMetricsBySite: async () => new Map([['s1', {
       latencyMs: 10,
       packetLoss: 0,
       uptimePercent: 99.9,
       isp: 'ACME',
       raw: {},
-    }),
+    }]]),
   };
 }
 
@@ -337,15 +337,12 @@ describe('unifiSyncService.syncIntegration', () => {
     });
 
     // map-1 (h1): succeeds with no devices this run
-    // map-2 (h2): listDevices throws → failedMappingIds captures 'map-2'
+    // map-2 (h2): absent host → failedMappingIds captures 'map-2'
     const staledClient: UnifiClient = {
       listHosts: async () => [{ id: 'h1', name: 'C1', type: 'console', model: null }, { id: 'h2', name: 'C2', type: 'console', model: null }],
       listSites: async () => [],
-      listDevices: async (hostId) => {
-        if (hostId === 'h2') throw new Error('timeout');
-        return [];
-      },
-      getIspMetrics: async () => null,
+      listDevicesByHost: async () => new Map([['h1', []]]),
+      listIspMetricsBySite: async () => new Map(),
     };
 
     const result = await syncIntegration({ db, client: staledClient }, BASE_INTEGRATION, 'manual');
@@ -360,7 +357,7 @@ describe('unifiSyncService.syncIntegration', () => {
     // dev-2 (map-2, failed) must not have been touched
     expect(result.status).toBe('partial');
 
-    // No devices were created (listDevices returned empty / threw)
+    // No devices were created (h1 was empty / h2 was absent)
     const deviceInserts = writes.inserts.filter((w) => w.table === unifiDevices);
     expect(deviceInserts).toHaveLength(0);
   });
@@ -715,4 +712,84 @@ describe('unifiSyncService.isUnifiDeviceOnline (#5643)', () => {
       expect(isUnifiDeviceOnline(input)).toBe(expected);
     });
   }
+});
+
+describe('collectSyncData', () => {
+  const mappings = [
+    { id: 'm1', unifiHostId: 'h1', unifiSiteId: 's1' },
+    { id: 'm2', unifiHostId: 'ns1', unifiSiteId: 's2' },
+    { id: 'm3', unifiHostId: 'ns1', unifiSiteId: 's3' },
+  ];
+
+  it('fetches /v1/devices and ISP metrics once per run, not once per mapping', async () => {
+    const payloads: Record<string, unknown> = {
+      '/v1/hosts': [
+        { id: 'h1', type: 'console', reportedState: { name: 'UDM' } },
+        { id: 'ns1', type: 'network-server', reportedState: { name: 'Self-Hosted' } },
+      ],
+      '/v1/devices': [
+        { hostId: 'h1', devices: [{ id: 'd1', mac: 'aa:bb:cc:dd:ee:01', ip: '10.0.0.1' }] },
+        { hostId: 'ns1', devices: [{ id: 'd2', mac: 'aa:bb:cc:dd:ee:02', ip: '10.0.0.2' }] },
+      ],
+      '/v1/isp-metrics/5m': ['s1', 's2', 's3'].map((siteId) => ({ siteId, periods: [] })),
+    };
+    const fetchImpl = vi.fn(async (url: string) => {
+      const pathname = new URL(url).pathname;
+      if (!(pathname in payloads)) throw new Error(`Unexpected path ${pathname}`);
+      return new Response(JSON.stringify({ data: payloads[pathname] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    const result = await collectSyncData(client, mappings);
+    const paths = fetchImpl.mock.calls.map(([url]) => new URL(url).pathname);
+    expect(paths.filter((path) => path === '/v1/devices')).toHaveLength(1);
+    expect(paths.filter((path) => path === '/v1/isp-metrics/5m')).toHaveLength(1);
+    for (const mapping of mappings) {
+      const row = result.byMapping.get(mapping.id)!;
+      expect(row.error).toBeUndefined();
+      expect(row.devices).toHaveLength(1);
+      expect(row.devices![0]!.unifiDeviceId).toBe(mapping.unifiHostId === 'h1' ? 'd1' : 'd2');
+      expect(row.metrics?.raw).toMatchObject({ siteId: mapping.unifiSiteId });
+    }
+  });
+
+  it('a mapping whose host is absent from /v1/devices is a per-mapping error, not an empty host', async () => {
+    const result = await collectSyncData(fakeClient([NET_NEW_DEVICE]), [
+      BASE_MAPPING,
+      { id: 'map-2', unifiHostId: 'h2', unifiSiteId: 's2' },
+    ]);
+    expect(result.byMapping.get('map-2')?.error).toContain('not present in /v1/devices');
+    expect(result.byMapping.get(BASE_MAPPING.id)?.error).toBeUndefined();
+    expect(result.byMapping.get(BASE_MAPPING.id)?.devices).toEqual([NET_NEW_DEVICE]);
+  });
+
+  it('skips the devices and metrics reads when there are no mappings', async () => {
+    const client = {
+      ...fakeClient([]),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
+    };
+    const result = await collectSyncData(client, []);
+    expect(result).toEqual({ hostsSeen: 1, byMapping: new Map() });
+    expect(client.listDevicesByHost).not.toHaveBeenCalled();
+    expect(client.listIspMetricsBySite).not.toHaveBeenCalled();
+  });
+
+  it('a failed /v1/devices read errors every mapping (no stale sweep) without a fatal', async () => {
+    const client = {
+      ...fakeClient([]),
+      listDevicesByHost: vi.fn(async () => { throw new Error('device timeout'); }),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
+    };
+    const result = await collectSyncData(client, mappings);
+    expect(result.fatalError).toBeUndefined();
+    for (const mapping of mappings) {
+      expect(result.byMapping.get(mapping.id)).toEqual({
+        mappingId: mapping.id,
+        error: `site ${mapping.unifiSiteId}: device timeout`,
+      });
+    }
+    expect(client.listIspMetricsBySite).not.toHaveBeenCalled();
+  });
 });

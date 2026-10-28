@@ -538,7 +538,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     expect(h.svc.listControllerSitesForIntegration).not.toHaveBeenCalled();
   });
 
-  it('hosts lists only consoles that have a mappable site', async () => {
+  it('hosts lists every host that has a site, whatever its type', async () => {
     h.svc.getConnection.mockResolvedValue(conn);
     h.svc.getDecryptedApiKey.mockResolvedValue('k');
     h.svc.createUnifiClient.mockReturnValue({
@@ -550,7 +550,11 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
       listSites: vi.fn().mockResolvedValue([{ id: 's1', name: 'Main', hostId: 'h1' }, { id: 's3', name: 'x', hostId: 'h3' }]),
     });
     const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
-    expect(out.hosts).toEqual([{ id: 'h1', name: 'Console', model: 'UDM', sites: [{ id: 's1', name: 'Main' }] }]);
+    expect(out.hosts).toEqual([
+      { id: 'h1', name: 'Console', model: 'UDM', type: 'console', sites: [{ id: 's1', name: 'Main' }] },
+      { id: 'h3', name: 'Cloud key', model: 'CK', type: 'cloudkey', sites: [{ id: 's3', name: 'x' }] },
+    ]);
+    expect(out.omitted).toEqual({ hostsWithoutSites: 1, sitesWithoutHostId: 0 });
   });
 
   it('sync_runs projects the row shape (no partner or integration id)', async () => {

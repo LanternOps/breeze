@@ -274,8 +274,8 @@ describe('unifi routes', () => {
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new UnifiApiError('Invalid API key', 401); }),
       listSites: vi.fn(async () => []),
-      listDevices: vi.fn(async () => []),
-      getIspMetrics: vi.fn(async () => null),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
     });
     const res = await unifiRoutes.request('/connect', {
       method: 'POST',
@@ -291,8 +291,8 @@ describe('unifi routes', () => {
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
       listSites: vi.fn(async () => []),
-      listDevices: vi.fn(async () => []),
-      getIspMetrics: vi.fn(async () => null),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
     });
     const res = await unifiRoutes.request('/connect', {
       method: 'POST',
@@ -672,8 +672,8 @@ describe('unifi routes', () => {
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
       listSites: vi.fn(async () => []),
-      listDevices: vi.fn(async () => []),
-      getIspMetrics: vi.fn(async () => null),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
     });
     const res = await unifiRoutes.request('/test', { method: 'POST' });
     expect(res.status).toBe(502);
@@ -707,8 +707,8 @@ describe('unifi routes', () => {
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host', type: 'console', model: 'UDM Pro' }]),
       listSites: vi.fn(async () => [{ id: 'usite-1', name: 'My Site', hostId: 'host-1' }]),
-      listDevices: vi.fn(async () => []),
-      getIspMetrics: vi.fn(async () => null),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
     });
     const res = await unifiRoutes.request('/hosts', { method: 'GET' });
     expect(res.status).toBe(200);
@@ -718,7 +718,7 @@ describe('unifi routes', () => {
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
   });
 
-  it('GET /hosts returns only mappable consoles — drops non-consoles and console without sites', async () => {
+  it('GET /hosts keeps network-server hosts and drops only hosts without sites', async () => {
     vi.mocked(svc.getConnection).mockResolvedValue({
       id: CONN_ID,
       partnerId: PARTNER_ID,
@@ -736,20 +736,59 @@ describe('unifi routes', () => {
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [
         { id: 'console-1', name: 'Mappable UDM', type: 'console', model: 'UDM Pro' },
-        { id: 'server-1', name: 'Cloud Key', type: 'network-server', model: null }, // non-console → drop
+        { id: 'server-1', name: 'Cloud Key', type: 'network-server', model: null }, // self-hosted Network Application → keep
         { id: 'console-2', name: 'No-site UDM', type: 'console', model: 'UDM SE' },  // no sites → drop
       ]),
       listSites: vi.fn(async () => [
         { id: 'usite-1', name: 'HQ', hostId: 'console-1' },
         { id: 'usite-2', name: 'Orphan', hostId: 'server-1' },
       ]),
-      listDevices: vi.fn(async () => []),
-      getIspMetrics: vi.fn(async () => null),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
     });
     const res = await unifiRoutes.request('/hosts', { method: 'GET' });
     expect(res.status).toBe(200);
-    const body = await res.json() as { hosts: Array<{ id: string }> };
-    expect(body.hosts.map((h) => h.id)).toEqual(['console-1']);
+    const body = await res.json();
+    expect(body.hosts.map((h: { id: string }) => h.id)).toEqual(['console-1', 'server-1']);
+    expect(body.hosts[1]).toMatchObject({ type: 'network-server', sites: [{ id: 'usite-2', name: 'Orphan' }] });
+    expect(body.omitted).toEqual({ hostsWithoutSites: 1, sitesWithoutHostId: 0 });
+  });
+
+  it('GET /hosts lists sites whose host is not in /v1/hosts under "Unknown console"', async () => {
+    vi.mocked(svc.getConnection).mockResolvedValue({
+      id: CONN_ID,
+      partnerId: PARTNER_ID,
+      connectionType: 'cloud',
+      baseUrl: 'https://api.ui.com',
+      accountLabel: null,
+      isActive: true,
+      status: 'connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      lastSyncError: null,
+    });
+    vi.mocked(svc.getDecryptedApiKey).mockResolvedValue('some-key');
+    const { createUnifiClient } = await import('../../services/unifi/unifiClient');
+    vi.mocked(createUnifiClient).mockReturnValueOnce({
+      listHosts: vi.fn(async () => [{ id: 'console-1', name: 'Mappable UDM', type: 'console', model: 'UDM Pro' }]),
+      listSites: vi.fn(async () => [
+        { id: 'usite-1', name: 'HQ', hostId: 'console-1' },
+        { id: 'usite-9', name: 'Lost', hostId: 'ghost-host' },
+        { id: 'usite-8', name: 'Lost 2', hostId: 'ghost-host' },
+        { id: 'usite-0', name: 'No host', hostId: '' },
+      ]),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
+    });
+    const res = await unifiRoutes.request('/hosts', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.hosts).toEqual([
+      { id: 'console-1', name: 'Mappable UDM', model: 'UDM Pro', type: 'console', sites: [{ id: 'usite-1', name: 'HQ' }] },
+      { id: 'ghost-host', name: 'Unknown console', model: null, type: null, unknownConsole: true,
+        sites: [{ id: 'usite-9', name: 'Lost' }, { id: 'usite-8', name: 'Lost 2' }] },
+    ]);
+    expect(body.omitted).toEqual({ hostsWithoutSites: 0, sitesWithoutHostId: 1 });
   });
 
   // PUT /mappings — cross-org security
