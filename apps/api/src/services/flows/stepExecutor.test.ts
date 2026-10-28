@@ -615,7 +615,7 @@ describe('executeFlowStep — tier-3 external (tool-source) steps', () => {
   it('is never pre-approved: a stored binding for its step on an honouring run fails closed and never executes', async () => {
     const out = await executeFlowStep(input({
       run: run({ preApprovalsHonored: true }),
-      version: version({ preApprovals: [binding('close', { summary: 'resolved on {{trigger.device.id}}' })] }),
+      version: version({ preApprovals: [binding('close', { summary: 'resolved on {{trigger.device.id}}' }) as unknown as Record<string, unknown>] }),
       step: closeStep(),
       pin: tenantPin(TENANT_T3, 'close'),
     }));
