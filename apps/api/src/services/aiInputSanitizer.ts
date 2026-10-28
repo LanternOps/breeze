@@ -5,14 +5,7 @@
  * and enforces input limits for AI chat messages and page context.
  */
 
-// Page context types (mirror aiAgent.ts)
-type AiPageContext =
-  | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
-  | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
-  | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
-  | { type: 'custom'; label: string; data: Record<string, unknown> }
-  // Topology M4 (#6000): IDs only; mirrors @breeze/shared AiTopologyPageContext.
-  | { type: 'topology'; siteId: string; subject: { kind: 'node' | 'relationship'; id: string }; view: 'overview' | 'physical' | 'logical'; graphRevision: string };
+import type { AiPageContext } from '@breeze/shared';
 
 export interface SanitizeResult {
   sanitized: string;
@@ -160,6 +153,12 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
       clone.data = sanitizeRecord(clone.data, sink);
       break;
 
+    case 'record':
+      // Identity is enum/UUID-validated upstream. The label is a client badge
+      // in the snapshot only; the prompt resolves its own label server-side.
+      if (clone.label !== undefined) clone.label = sanitizeField(clone.label, 200, sink);
+      break;
+
     case 'topology':
       // IDs only (validated upstream by aiTopologyPageContextSchema). Rebuild
       // from the known fields so nothing extra — no label, org or evidence —
@@ -171,6 +170,10 @@ export function sanitizePageContext(ctx: AiPageContext, flags?: string[]): AiPag
         view: clone.view,
         graphRevision: clone.graphRevision,
       };
+
+    default:
+      clone satisfies never;
+      throw new Error('Unsupported page context type');
   }
 
   return clone;
