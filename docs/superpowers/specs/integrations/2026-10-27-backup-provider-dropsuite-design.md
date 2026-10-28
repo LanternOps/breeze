@@ -20,7 +20,7 @@ Source: the Dropsuite help article "API Settings" (help.dropsuite.com, article 2
 | Authenticate | Yes | Two static headers: `X-Reseller-Token` (partner-wide) and `X-Access-Token`. API URL and tokens are on the partner portal's API Settings page. The host is regional (`*.dropmyemail.com/api/`). |
 | List customers | Yes | `GET /users` with the reseller **admin** token returns every tenant organization: `id`, `email`, `organization_id`, `external_id`, seats, storage, `customer_deactivated`, `flg_suspended`, and that organization's own `authentication_token`. |
 | Customer name | Partly | `organization_name` appears only in the `GET /users/{id}` sample, not in the `GET /users` list sample. *Not checked:* whether the list returns it too. |
-| Status per mailbox | Yes | `GET /accounts` returns `last_backup`, `current_backup_status`, `errors`, `deactivated_since`, `storage`, `msg_count`. `GET /accounts/connection_failures`, `/deactivated_accounts` and `/deleted_accounts` cover the failure buckets. |
+| Status per mailbox | Yes | `GET /accounts` returns `last_backup`, `current_backup_status`, `errors`, `deactivated_since`, `storage`, `msg_count`. `/deactivated_accounts` and `/deleted_accounts` cover the inactive buckets (`/connection_failures` is forbidden for sub-resellers; see below). |
 | Status for OneDrive, SharePoint, Teams, shared drives, Google Drive | Yes | `/onedrives`, `/sharepoints/domains` → `/{id}/sites`, `/teams_and_groups/domains` → `/{id}/teams`, `/shareddrives/domains` → `/{id}/drives`, `/googledrives`. Each item has `last_backup` and `errors`, and most have `current_backup_status`. |
 | Tenant domains | Yes | `GET /users/{id}/tenants` returns `domain`, `type` (`m365`/`gws`), `total_users` and a numeric `status`. |
 | Retention | Yes | `GET /users/{id}/retention_policies`. |
@@ -34,7 +34,25 @@ Source: the Dropsuite help article "API Settings" (help.dropsuite.com, article 2
 
 Third parties already integrate on this API in read-only mode: Rewst, Backup Radar, SuperOps, and an MSPbots MCP server. That suggests the surface is stable enough to build on (*inferred*).
 
-**What we cannot know before a live account:** the full status vocabulary, whether `errors` is a string or an object (both appear in samples), rate limits, `/accounts` pagination, and whether every `GET /users` row's `authentication_token` works as that organization's `X-Access-Token` (*inferred* from the samples and from the help text "User's Authentication Token … Organization page → Login Accounts → API"). The first wave settles these against our own partner account.
+### Live verification (2026-10-27, our Pax8 sub-reseller account, GET only)
+
+We ran every endpoint the adapter needs against our own partner account: 13 customers, about 140 seats, 143 requests in 72 s sequentially (about 0.5 s per request). **The 2024 PDF is accurate for every endpoint we use.** It is wrong or silent on the points below, and the live behaviour overrides it:
+
+| Finding | Detail | Consequence |
+|---|---|---|
+| Per-customer token works | The `authentication_token` on each `GET /users` row works as that customer's `X-Access-Token`. | **Verified.** The design holds. |
+| Admin token cannot read workloads | With the admin token, `/accounts` returns `[]` and `/users/{id}/tenants` returns 401. | Every workload call and every tenants call **must** use the customer's own token. |
+| Two response shapes | With no `page` param the endpoints return a bare array. With `page` they return `{result_set, pagination:{current_page, per_page:100, total_entries, total_pages}}`. | The client always sends `page` and reads `result_set`, so it never silently treats the envelope as "zero items". That mistake produced a false "all empty" result in our first run. |
+| `page` ignored on some endpoints | `/accounts/deactivated_accounts` and `/googledrives` return the same list for every page. | Fetch them once with no `page`. If the first item repeats across pages, stop and use what was fetched. |
+| `/accounts/connection_failures` is forbidden | It returns 400 "not authorized" for a sub-reseller. | Do not use it. Connection failure is read from `current_backup_status`. |
+| `/accounts` includes deactivated items | 108 of 300 mailboxes had `deactivated_since` set. **Every** failing or stale item in our data was a deactivated one. | Filtering out deactivated items is **load-bearing**. Without it our own fleet would show about 240 false failures. |
+| Status vocabulary | Mail: `Completed`, `Connection Failed`, `Authentication Error`. OneDrive: `Completed`, `Unknown`, `System Error`, `Authentication Error`. SharePoint: `Completed`, `Preparing Backup`, `Connecting`. Teams: `Completed`, `Connecting`. Google Drive has **no** `current_backup_status`; it has an integer `status` (`7`, `10`). | See the status mapping below. |
+| `errors` shape varies | It is an object on `/accounts` (`{}` when empty, `{"host": "…"}` when set) and a string elsewhere. On Google Drive it is a free-text string, sometimes JSON-encoded, often containing vendor-internal details. | Normalise all three shapes. Never show Google Drive `errors` text to customers; keep it only in `raw` for the MSP. |
+| Teams freshness | 17 of 105 active teams had `Completed` but a `last_backup` older than 48 h. | Teams appear to back up only when something changes (*inferred*). They get a longer staleness threshold, or none. |
+| Tenants | `type` is `m365` or `gws`. `status` was `7` for 12 tenants and `0` for 1. | `7` probably means active (*inferred*). The adapter treats tenant `status` as informational only. |
+| Rate limits | No rate-limit headers were returned and nothing was throttled at about 2 requests per second. | Back off on 429 anyway. |
+| `backup_summary` | `null` for every customer. | Ignore it. |
+| Third secret token | The portal now issues an extra "secret" token. Every endpoint we use works without it, and sending it changes nothing. | Not collected. If a later API version requires it, it becomes an optional credential field. |
 
 ## Goals / Non-goals
 
@@ -118,30 +136,31 @@ The cost: per-mailbox history and a per-mailbox alert are not available in Breez
 
 ### Status mapping
 
-The vendor's status strings are undocumented, so the mapping is conservative and anything unrecognised is kept rather than guessed:
+This vocabulary comes from the live capture; anything not listed maps to `unknown` and is kept rather than guessed. **Items with `deactivated_since` set are filtered out first**, before any mapping:
 
-| Dropsuite signal | `ExternalBackupStatus` |
+| Dropsuite signal (active items only) | `ExternalBackupStatus` |
 |---|---|
-| `current_backup_status` `Completed` and empty `errors` | `completed` |
+| `Completed` with empty `errors` | `completed` |
 | `Completed` with non-empty `errors` | `completed_with_errors` |
-| `Running`, `Preparing Backup` | `in_progress` |
-| listed in `/accounts/connection_failures` | `failed` |
+| `Running`, `Preparing Backup`, `Connecting` | `in_progress` |
+| `Connection Failed`, `Authentication Error`, `System Error` | `failed` |
 | `last_backup` null and `added_on` older than 24 h | `no_backups` |
-| `deactivated_since` set | excluded from the rollup and counted separately |
-| any other string | `unknown`, with the raw string kept in `raw.vendorStatuses` |
+| Google Drive (no status string): `last_backup` within the threshold | `completed`, otherwise left to staleness |
+| `Unknown` or any other string | `unknown`, with the raw string kept in `raw.vendorStatuses` |
+| `deactivated_since` set | excluded from the rollup and counted in `raw.deactivatedCount` |
 
-Staleness (no successful backup within the threshold) uses the existing health computation on `lastSuccessAt`. The default SaaS threshold is 48 h, because Dropsuite backs up continuously or several times a day (*inferred*, confirm live).
+Staleness uses the existing health computation on `lastSuccessAt`. Thresholds are 48 h for mail, OneDrive, SharePoint and Google Drive. Teams/Groups get 7 days, because our live data shows healthy teams with no backup for days (see the verification table). Rollup `lastSuccessAt` for Teams is therefore informational.
 
-The **first live-account wave captures the real status vocabulary** into fixtures before this table is frozen.
+Fixtures are captured from our account and anonymised: names, emails, domains, ids and vendor error text are replaced.
 
 ### Sync
 
 The existing `backupProviderSync` job and its three-phase transaction apply unchanged. The adapter's `listDevices` makes the HTTP calls outside the DB context.
 
-- For each customer: `/accounts` (+ `/accounts/connection_failures`), `/onedrives`, `/sharepoints/domains` → `sites`, `/teams_and_groups/domains` → `teams`, `/googledrives`, `/shareddrives/domains` → `drives`. A workload whose top-level list is empty produces no row. It does not produce a `no_backups` row.
+- For each customer, **using that customer's token**: `/accounts`, `/onedrives`, `/sharepoints/domains` → `sites`, `/teams_and_groups/domains` → `teams`, `/googledrives`, `/shareddrives/domains` → `drives`. A workload whose top-level list is empty produces no row. It does not produce a `no_backups` row.
 - **All or nothing**, as the interface requires. Any failed page throws `ProviderRequestError`, and the job writes nothing, because the delete-vanished step would otherwise wipe inventory.
 - Bounded concurrency (2 customers at a time to start), 429/`Retry-After` backoff, and a per-sync request budget that aborts cleanly when exceeded rather than half-finishing.
-- Estimate: about 30 requests per 300-seat customer, so about 1,500 per sync for 50 customers. **The default `syncIntervalMinutes` for Dropsuite is 60, not 30.**
+- Measured on our account: 11 requests per customer at about 0.5 s each with `per_page` 100. Large customers add one request per 100 items per workload. A 50-customer partner is roughly 600–1,000 requests, about 2–4 minutes at concurrency 2. **The default `syncIntervalMinutes` for Dropsuite is 60, not 30.**
 - A `401`/`403` on a **per-customer** token (one organization revoked or deactivated) must **not** mark the whole connection `reauth_required`. It marks that customer's rows `unknown` with a reason. Only an admin-token failure on `GET /users` is `reauth: true`. This needs a small extension to the adapter contract: `listDevices` may return per-customer failures alongside rows without failing the whole run, and those customers' existing rows are **kept, not deleted**. That changes "all or nothing" to "all or nothing per customer". The Cove adapter keeps its current behaviour.
 
 ### Surfaces
@@ -167,14 +186,15 @@ No new tables. `backup_provider_*` already has RLS, cascade and export registrat
 
 ## Rollout
 
-1. **W01, live discovery (on our partner account):** capture scrubbed fixtures for every endpoint we use; confirm the status vocabulary, per-org tokens, `/accounts` pagination, `organization_name` on the list, and rate-limit headers. Output: an updated status table and fixtures. Ship nothing.
-2. **W02, adapter + registry + credentials + sync defaults**, with the token scrub and per-customer failure handling.
-3. **W03, surfaces:** SaaS grouping, the portal count fix, and report and posture evidence.
-4. **W04, live verification** on the partner account, then release notes and docs (`apps/docs` integration page with setup steps: partner portal → Settings → API Settings).
+Live discovery is done (see [Live verification](#live-verification-2026-10-27-our-pax8-sub-reseller-account-get-only)). It confirmed per-customer tokens, the status vocabulary, the two pagination shapes and that `organization_name` is on the list.
+
+1. **W01, adapter + registry + credentials + sync defaults**, with the token scrub, deactivated filtering, per-customer failure handling, and anonymised fixtures from our account.
+2. **W02, surfaces:** SaaS grouping, the portal count fix, and report and posture evidence.
+3. **W03, live verification** on our account, then release notes and docs (`apps/docs` integration page with setup steps: partner portal → Settings → API Settings; works for Pax8 and other sub-reseller accounts).
 
 ## Open decisions
 
-1. **Live account: resolved.** We are a Dropsuite / NinjaOne SaaS Backup partner, and W01 runs against our own partner account. Still open: our tier. A Direct Partner tier would make phase 2 writes possible; a sub-reseller tier would not.
+1. **Live account: resolved.** Our own account is a Pax8 sub-reseller. That means GET calls only, which is all phase 1 needs, and phase 2 writes are off the table unless we become a Direct Partner.
 2. **Granularity.** Per-workload rollup (recommended) or per-item rows.
 3. **Per-customer failure semantics.** Is extending the adapter contract to "all or nothing per customer" acceptable, or should one revoked customer fail the whole sync, as Cove does?
 4. **Domain-based mapping suggestion.** Include it in phase 1 or defer?
