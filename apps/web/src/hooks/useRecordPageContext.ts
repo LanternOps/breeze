@@ -17,7 +17,7 @@ export function useRecordPageContext(ctx: {
 
   useEffect(() => {
     if (kind === undefined || id === undefined || label === undefined) return;
-    setPageContext({ type: 'record', kind, id, orgId: orgId ?? undefined, label: label.slice(0, 200) });
+    setPageContext({ type: 'record', kind, id, orgId: orgId ?? undefined, label: Array.from(label).slice(0, 200).join('') });
     return () => setPageContext(null);
   }, [kind, id, orgId, label, setPageContext]);
 }

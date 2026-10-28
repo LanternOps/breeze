@@ -138,12 +138,20 @@ describe('TicketWorkbench — organization record link', () => {
     mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9', orgName: 'Globex Inc' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'ticket', id: 'tk-1' })));
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-9', label: 'T-2026-0001 Printer is down' })));
 
     const link = screen.getByTestId('org-record-link');
     expect(link.tagName).toBe('A');
     expect(link).toHaveAttribute('href', '/organizations/org-9');
     expect(link).toHaveTextContent('Globex Inc');
+  });
+
+  it('omits trailing whitespace from a ticket context with an empty subject', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ subject: '' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'record', kind: 'ticket', id: 'tk-1', orgId: 'org-1', label: 'T-2026-0001',
+    })));
   });
 
   it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {

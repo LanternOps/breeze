@@ -64,7 +64,7 @@ describe('QuoteWorkspace tabs', () => {
   it('labels the third tab "Details" (not the bare, easy-to-misread "Detail")', async () => {
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
-    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1' }));
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', orgId: 'org-1', label: 'Q-2026-0001' }));
 
     expect(screen.getByTestId('quote-tab-detail')).toHaveTextContent('Details');
     // The Editor tab only renders for drafts (this quote is 'sent') — Preview
@@ -83,7 +83,7 @@ describe('QuoteWorkspace tabs', () => {
       return json({ data: {} });
     });
     render(<QuoteWorkspace id="q-1" />);
-    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', label: 'Draft quote' })));
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', orgId: 'org-1', label: 'Draft quote' })));
   });
 
   it('shows a status badge in the workspace header matching the quote status', async () => {

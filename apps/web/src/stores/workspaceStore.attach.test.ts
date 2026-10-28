@@ -118,6 +118,21 @@ describe('restoreWorkspace hydrates and attaches each session tab', () => {
     expect(useWorkspaceStore.getState().activeTabId).toBe('a'); // restore never moves the active tab
   });
 
+  it('preserves the persisted context label when the snapshot fails parsing', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'a', sessionId: 'sa', contextLabel: 'Saved ticket label' })],
+      activeTabId: 'a',
+    });
+    on('/ai/sessions/sa', () => session('sa', { contextSnapshot: { type: 'record', kind: 'ticket', id: 'invalid' } }));
+    on('/ai/sessions/sa/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
+
+    await useWorkspaceStore.getState().restoreWorkspace();
+    await flush();
+
+    expect(tabOf('a')).toMatchObject({ sessionId: 'sa', contextLabel: 'Saved ticket label' });
+    expect(callsTo('/ai/sessions/sa/stream')).toHaveLength(1);
+  });
+
   it('a non-chat type on restore clears that tab’s session like a 404, with no attach', async () => {
     useWorkspaceStore.setState({ tabs: [tab({ id: 'a', sessionId: 'sa', messages: [{ id: 'x', role: 'user', content: 'q', createdAt: new Date() }] })], activeTabId: 'a' });
     on('/ai/sessions/sa', () => session('sa', { type: 'script_builder' }));

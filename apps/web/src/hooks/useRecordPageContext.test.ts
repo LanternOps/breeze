@@ -30,6 +30,11 @@ describe('useRecordPageContext', () => {
     renderHook(() => useRecordPageContext({ ...ctx, orgId: null, label: 'x'.repeat(201) }));
     expect(setPageContext).toHaveBeenCalledWith({ type: 'record', ...ctx, orgId: undefined, label: 'x'.repeat(200) });
   });
+  it('truncates a 201-code-point emoji label without splitting a surrogate pair', () => {
+    const label = 'x' + '😀'.repeat(200);
+    renderHook(() => useRecordPageContext({ ...ctx, label }));
+    expect(setPageContext).toHaveBeenCalledWith({ type: 'record', ...ctx, label: 'x' + '😀'.repeat(199) });
+  });
   it('updates kind, org and label and clears when the record unloads', () => {
     const { rerender } = renderHook<void, Parameters<typeof useRecordPageContext>[0]>((value) => useRecordPageContext(value), { initialProps: ctx });
     rerender({ ...ctx, kind: 'site', orgId: 'org-2', label: 'Office' });

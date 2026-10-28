@@ -169,7 +169,7 @@ describe('OrganizationRecordPage — happy path', () => {
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
     expect(screen.getByTestId('org-record-header').textContent).toContain('Acme Dental');
     expect(screen.getByTestId('org-record-status')).toBeTruthy();
-    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'organization', id: RECORD_ORG }));
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'organization', id: RECORD_ORG, orgId: RECORD_ORG, label: 'Acme Dental' }));
   });
 
   it('pins EVERY request to the record org while the store points at another org', async () => {

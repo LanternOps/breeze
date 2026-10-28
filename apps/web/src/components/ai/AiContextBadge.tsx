@@ -39,7 +39,8 @@ export default function AiContextBadge({ context }: AiContextBadgeProps) {
       break;
     default: {
       const exhaustive: never = context;
-      return exhaustive;
+      void exhaustive;
+      break;
     }
   }
 

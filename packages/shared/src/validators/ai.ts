@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 import { AI_RECORD_KINDS } from '../types/ai';
 import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';

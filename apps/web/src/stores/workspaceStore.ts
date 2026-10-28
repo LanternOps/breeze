@@ -592,7 +592,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             ...createEmptyTab(view.title ?? undefined),
             sessionId,
             pageContext: view.pageContext,
-            contextLabel: contextLabelOf(view.pageContext),
             messages: result.messages,
             composerDraft: draft ?? '',
             ...sessionFieldsOf(view),
@@ -1152,7 +1151,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 void resolveTabWisp(tab.id);
                 return;
               }
-              updateTab(tab.id, { messages: result.messages, ...sessionFieldsOf(result.view) });
+              updateTab(tab.id, {
+                messages: result.messages,
+                ...sessionFieldsOf(result.view),
+                contextLabel: result.view.pageContext
+                  ? contextLabelOf(result.view.pageContext)
+                  : getTab(tab.id)?.contextLabel ?? null,
+              });
               await startTabAttach(tab.id).ready;
             })
           );

@@ -106,7 +106,7 @@ describe('InvoiceWorkspace', () => {
     render(<InvoiceWorkspace id="inv-1" />);
     await waitFor(() => expect(screen.getByTestId('invoice-workspace-title')).toHaveTextContent('Draft invoice'));
     expect(screen.getByTestId('invoice-editor')).toBeInTheDocument();
-    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'invoice', id: 'inv-1' }));
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'invoice', id: 'inv-1', orgId: 'org-1', label: 'Draft invoice' }));
   });
 
   it('mounts the Link-to-Wisp button in the header with the loaded invoice and its org (W08 Task 10)', async () => {
