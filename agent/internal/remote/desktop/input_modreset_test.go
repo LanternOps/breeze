@@ -55,7 +55,7 @@ func TestReleaseStuckModifiersReportsEveryRefusedRelease(t *testing.T) {
 	err := releaseStuckModifiers(releases, func(k winKeyInput) bool {
 		sent = append(sent, k)
 		left := k.Flags&winKeyeventfExtendedKey == 0
-		return !(left && (k.Scan == 0x1D || k.Scan == 0x38)) // left Ctrl and left Alt refused
+		return !left || (k.Scan != 0x1D && k.Scan != 0x38) // left Ctrl and left Alt refused
 	})
 	if err == nil {
 		t.Fatal("err = nil, want a failure naming the refused releases")
