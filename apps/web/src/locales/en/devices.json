@@ -2608,9 +2608,17 @@
       "refreshFailed": "Warranty refresh failed: {{error}}",
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
-      "updated": "Warranty information updated."
+      "updated": "Warranty information updated.",
+      "agentCollected": "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      "noVendorLookupKept": "No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept."
     },
-    "lookUp": "Look up"
+    "lookUp": "Look up",
+    "sources": {
+      "agentCmsl": "Agent (HP CMSL)",
+      "agentPlist": "Agent (macOS plist)",
+      "import": "Imported",
+      "provider": "Vendor API"
+    }
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",

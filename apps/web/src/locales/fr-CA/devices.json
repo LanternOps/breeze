@@ -2608,9 +2608,17 @@
       "refreshFailed": "Renouvellement de la garantie échouée : {{error}}",
       "refreshing": "Garantie rafraîchissante...",
       "stillInProgress": "La refonte de la garantie est encore en cours ; La carte sera mise à jour une fois terminée.",
-      "updated": "Informations sur la garantie mises à jour."
+      "updated": "Informations sur la garantie mises à jour.",
+      "agentCollected": "La garantie de cet appareil est recueillie par l'agent Breeze; une vérification auprès du fabricant ne peut rien apporter de plus récent.",
+      "noVendorLookupKept": "Aucune vérification de garantie n'est offerte pour ce fabricant. Les données de garantie existantes ont été conservées."
     },
-    "lookUp": "Rechercher"
+    "lookUp": "Rechercher",
+    "sources": {
+      "agentCmsl": "Agent (CMSL d'HP)",
+      "agentPlist": "Agent (plist macOS)",
+      "import": "Importé",
+      "provider": "API du fabricant"
+    }
   },
   "devicesPage": {
     "accessDenied": "Vous n’avez pas la permission de voir les appareils.",

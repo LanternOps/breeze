@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -57,13 +57,27 @@ function formatDate(dateStr: string | null): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function dataSourceLabel(source: string | null): string {
-  if (!source) return '';
-  switch (source) {
-    case 'agent_plist': return 'Agent (macOS plist)';
-    case 'provider': return 'Vendor API';
-    default: return source;
-  }
+// Stored `device_warranty.data_source` tokens → locale keys (#9862). The column
+// has no enum, so an unknown token still prints as stored rather than blank.
+const DATA_SOURCE_LABEL_KEYS: Record<string, string> = {
+  agent_cmsl: 'deviceWarrantyCard.sources.agentCmsl',
+  agent_plist: 'deviceWarrantyCard.sources.agentPlist',
+  import: 'deviceWarrantyCard.sources.import',
+  provider: 'deviceWarrantyCard.sources.provider',
+};
+
+// The refresh route's 409 `reason` (WARRANTY_REFRESH_NOT_AVAILABLE) → toast copy.
+// Both are expected outcomes, not failures, so they are warnings.
+const REFRESH_REFUSAL_TOAST_KEYS: Record<string, string> = {
+  agent_collected: 'deviceWarrantyCard.toasts.agentCollected',
+  no_vendor_lookup: 'deviceWarrantyCard.toasts.noVendorLookupKept',
+};
+
+function refreshRefusalReason(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const { code, reason } = body as { code?: unknown; reason?: unknown };
+  if (code !== 'WARRANTY_REFRESH_NOT_AVAILABLE' || typeof reason !== 'string') return null;
+  return reason in REFRESH_REFUSAL_TOAST_KEYS ? reason : null;
 }
 
 function timeAgo(dateStr: string | null): string {
@@ -165,9 +179,17 @@ export default function DeviceWarrantyCard({
         errorFallback: t('deviceWarrantyCard.toasts.queueFailed'),
         successMessage: t('deviceWarrantyCard.toasts.refreshing'),
         onUnauthorized: UNAUTHORIZED,
+        // A refusal with a known reason is an expected outcome; the catch
+        // below shows it as a warning instead of an error toast.
+        suppressErrorToast: (status, _code, body) => status === 409 && refreshRefusalReason(body) !== null,
       });
     } catch (err) {
-      handleActionError(err, t('deviceWarrantyCard.toasts.queueFailed'));
+      const reason = err instanceof ActionError && err.status === 409 ? refreshRefusalReason(err.body) : null;
+      if (reason) {
+        showToast({ message: t(/* i18n-dynamic */ REFRESH_REFUSAL_TOAST_KEYS[reason]!), type: 'warning' });
+      } else {
+        handleActionError(err, t('deviceWarrantyCard.toasts.queueFailed'));
+      }
       if (mountedRef.current) setRefreshing(false);
       return;
     }
@@ -376,7 +398,13 @@ export default function DeviceWarrantyCard({
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
         <span>{t('deviceWarrantyCard.lastChecked', { time: timeAgo(warranty.lastSyncAt) })}</span>
         {warranty.dataSource && (
-          <span>{t('deviceWarrantyCard.source', { source: dataSourceLabel(warranty.dataSource) })}</span>
+          <span>
+            {t('deviceWarrantyCard.source', {
+              source: DATA_SOURCE_LABEL_KEYS[warranty.dataSource]
+                ? t(/* i18n-dynamic */ DATA_SOURCE_LABEL_KEYS[warranty.dataSource]!)
+                : warranty.dataSource,
+            })}
+          </span>
         )}
         {/* Legacy: pre-v0.13.9 syncs stored "No configured provider..." as lastSyncError.
             Post-v0.13.9, lastSyncError is null for no-provider cases. Remove after re-sync cycle. */}

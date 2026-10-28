@@ -263,6 +263,84 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
   });
 });
 
+describe('DeviceWarrantyCard — imported data and source labels (#9862)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ['import', 'Source: Imported'],
+    ['agent_cmsl', 'Source: Agent (HP CMSL)'],
+    ['agent_plist', 'Source: Agent (macOS plist)'],
+    ['provider', 'Source: Vendor API'],
+  ])('labels data source %s', async (dataSource, label) => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it('falls back to the stored token for a source it does not know', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource: 'some_new_source' })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: some_new_source')).toBeInTheDocument();
+  });
+
+  it('says the imported data was kept when no vendor lookup exists, as a warning, without polling', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
+        return jsonResponse(
+          { error: 'server copy', code: 'WARRANTY_REFRESH_NOT_AVAILABLE', reason: 'no_vendor_lookup' },
+          false,
+          409,
+        );
+      }
+      return jsonResponse(warrantyPayload({ dataSource: 'import', status: 'active', warrantyEndDate: '2099-05-01' }));
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    fireEvent.click(await screen.findByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'warning',
+        message: 'No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept.',
+      });
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
+    });
+    // One GET on mount, the POST, and no poll GETs afterwards.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('explains an agent-collected refusal as a warning too', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
+        return jsonResponse(
+          { error: 'server copy', code: 'WARRANTY_REFRESH_NOT_AVAILABLE', reason: 'agent_collected' },
+          false,
+          409,
+        );
+      }
+      return jsonResponse(warrantyPayload({ dataSource: 'agent_cmsl' }));
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    fireEvent.click(await screen.findByRole('button', { name: /refresh/i }));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({
+        type: 'warning',
+        message: "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      });
+    });
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+});
+
 describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -2608,9 +2608,17 @@
       "refreshFailed": "Garanti yenileme başarısız oldu: {{error}}",
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
-      "updated": "Garanti bilgileri güncellendi."
+      "updated": "Garanti bilgileri güncellendi.",
+      "agentCollected": "Bu cihazın garantisi Breeze ajanı tarafından toplanıyor, bu nedenle üretici sorgusu daha yeni bir bilgi sağlayamaz.",
+      "noVendorLookupKept": "Bu üretici için garanti sorgusu kullanılamıyor. Mevcut garanti verileri korundu."
     },
-    "lookUp": "Sorgula"
+    "lookUp": "Sorgula",
+    "sources": {
+      "agentCmsl": "Ajan (HP CMSL)",
+      "agentPlist": "Ajan (macOS plist)",
+      "import": "İçe aktarıldı",
+      "provider": "Üretici API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",

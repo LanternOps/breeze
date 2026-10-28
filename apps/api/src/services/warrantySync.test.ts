@@ -16,7 +16,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
-  deviceWarranty: { deviceId: 'deviceWarranty.deviceId' },
+  deviceWarranty: { deviceId: 'deviceWarranty.deviceId', dataSource: 'deviceWarranty.dataSource' },
   deviceHardware: {
     deviceId: 'deviceHardware.deviceId',
     serialNumber: 'deviceHardware.serialNumber',
@@ -457,5 +457,113 @@ describe('server upsert never overwrites an agent-owned row (#5511 W01 review: T
     expect(compiled.sql).toContain('is null');
     expect(compiled.sql).toContain('not in');
     expect(compiled.params).toEqual(expect.arrayContaining(['agent_plist', 'agent_cmsl']));
+  });
+});
+
+describe('a sync with nothing better never erases imported or agent data (#9862)', () => {
+  /** Queue the advisory `device_warranty` read(s) syncWarrantyForSubject issues. */
+  function queueReads(...results: unknown[][]) {
+    const queue = [...results];
+    selectMock.mockImplementation(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve(queue.shift() ?? []) }) }),
+    }));
+  }
+
+  const DEVICE = { kind: 'device' as const, deviceId: DEVICE_ID };
+  const IMPORTED = [{ dataSource: 'import' }];
+
+  function vendorAnswers(result: Record<string, unknown>) {
+    providerMock.mockReturnValue({ lookup: vi.fn().mockResolvedValue(new Map([['SN1', result]])) });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    providerMock.mockReset();
+  });
+
+  it('no provider: keeps an imported row — no upsert, dates untouched, lastSyncAt not stamped', async () => {
+    providerMock.mockReturnValue(null);
+    queueReads(IMPORTED);
+    captureUpsert();
+    const { set } = captureUpdate();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Acme', serialNumber: 'SN1', subject: DEVICE });
+
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(set).toHaveBeenCalledTimes(1);
+    const patch = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toMatchObject({ lastSyncError: null });
+    expect(patch.nextSyncAt).toBeInstanceOf(Date);
+    // Nothing was fetched: the card polls lastSyncAt to detect a completed lookup.
+    expect(patch).not.toHaveProperty('lastSyncAt');
+    for (const key of ['warrantyStartDate', 'warrantyEndDate', 'status', 'dataSource', 'entitlements']) {
+      expect(patch).not.toHaveProperty(key);
+    }
+  });
+
+  it('no provider and no row: still records an unknown provider row (unchanged)', async () => {
+    providerMock.mockReturnValue(null);
+    queueReads([]);
+    const { values } = captureUpsert();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Acme', serialNumber: 'SN1', subject: DEVICE });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'unknown', dataSource: 'provider' }));
+  });
+
+  it('vendor miss: keeps an imported row and stamps the check', async () => {
+    vendorAnswers({ found: false, entitlements: [], warrantyStartDate: null, warrantyEndDate: null });
+    queueReads(IMPORTED);
+    captureUpsert();
+    const { set } = captureUpdate();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: DEVICE });
+
+    expect(insertMock).not.toHaveBeenCalled();
+    const patch = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toMatchObject({ lastSyncError: null });
+    expect(patch.lastSyncAt).toBeInstanceOf(Date);
+    expect(patch).not.toHaveProperty('warrantyEndDate');
+    expect(patch).not.toHaveProperty('dataSource');
+  });
+
+  it('vendor lookup error: keeps an imported row and records the error', async () => {
+    providerMock.mockReturnValue({ lookup: vi.fn().mockRejectedValue(new Error('vendor 503')) });
+    queueReads(IMPORTED);
+    captureUpsert();
+    const { set } = captureUpdate();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: DEVICE });
+    errSpy.mockRestore();
+
+    expect(insertMock).not.toHaveBeenCalled();
+    const patch = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch).toMatchObject({ lastSyncError: 'vendor 503' });
+    expect(patch.lastSyncAt).toBeInstanceOf(Date);
+    expect(patch).not.toHaveProperty('warrantyEndDate');
+  });
+
+  it('vendor hit: replaces an imported row (a vendor answer outranks a CSV)', async () => {
+    vendorAnswers({ found: true, entitlements: [], warrantyStartDate: '2024-01-10', warrantyEndDate: inDays(400) });
+    const { values } = captureUpsert();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: DEVICE });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'active', dataSource: 'provider' }));
+  });
+
+  it('vendor miss with no stored row: the unknown upsert is guarded in SQL against a non-vendor row landing first', async () => {
+    vendorAnswers({ found: false, entitlements: [], warrantyStartDate: null, warrantyEndDate: null });
+    queueReads([]);
+    const { onConflictDoUpdate } = captureUpsert();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: DEVICE });
+
+    const compiled = compileWhere(onConflictDoUpdate.mock.calls[0]![0].setWhere);
+    expect(compiled.sql).toContain('is null');
+    expect(compiled.params).toEqual(expect.arrayContaining(['deviceWarranty.dataSource', 'provider']));
+    expect(compiled.params).not.toContain('agent_plist');
   });
 });

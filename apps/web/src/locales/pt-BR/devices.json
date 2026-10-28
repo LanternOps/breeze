@@ -2608,9 +2608,17 @@
       "refreshFailed": "Falha ao atualizar a garantia: {{error}}",
       "refreshing": "Atualizando a garantia…",
       "stillInProgress": "A atualização da garantia ainda está em andamento; o cartão será atualizado quando ela for concluída.",
-      "updated": "Informações da garantia atualizadas."
+      "updated": "Informações da garantia atualizadas.",
+      "agentCollected": "A garantia deste dispositivo é coletada pelo agente Breeze, então uma consulta ao fabricante não pode trazer dados mais recentes.",
+      "noVendorLookupKept": "Nenhuma consulta de garantia está disponível para este fabricante. Os dados de garantia existentes foram mantidos."
     },
-    "lookUp": "Consultar"
+    "lookUp": "Consultar",
+    "sources": {
+      "agentCmsl": "Agente (HP CMSL)",
+      "agentPlist": "Agente (plist do macOS)",
+      "import": "Importado",
+      "provider": "API do fabricante"
+    }
   },
   "devicesPage": {
     "accessDenied": "Você não tem permissão para visualizar dispositivos.",

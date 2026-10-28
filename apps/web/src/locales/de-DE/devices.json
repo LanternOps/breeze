@@ -2608,9 +2608,17 @@
       "refreshFailed": "Garantieaktualisierung fehlgeschlagen: {{error}}",
       "refreshing": "Garantie wird aktualisiert…",
       "stillInProgress": "Die Garantieaktualisierung ist noch im Gange; Die Karte wird aktualisiert, wenn der Vorgang abgeschlossen ist.",
-      "updated": "Garantieinformationen aktualisiert."
+      "updated": "Garantieinformationen aktualisiert.",
+      "agentCollected": "Die Garantie dieses Geräts wird vom Breeze-Agenten erfasst, daher kann eine Herstellerabfrage nichts Neueres liefern.",
+      "noVendorLookupKept": "Für diesen Hersteller ist keine Garantieabfrage verfügbar. Die vorhandenen Garantiedaten wurden beibehalten."
     },
-    "lookUp": "Abfragen"
+    "lookUp": "Abfragen",
+    "sources": {
+      "agentCmsl": "Agent (HP-CMSL)",
+      "agentPlist": "Agent (macOS-plist)",
+      "import": "Importiert",
+      "provider": "Hersteller-API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Geräten.",

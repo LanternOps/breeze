@@ -1,14 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Provider availability is env-driven (vendor API keys); pin it so the refusal
+// tests do not depend on the runner's environment. Only Dell is "configured".
+vi.mock('./warrantyProviders', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./warrantyProviders')>();
+  return {
+    ...actual,
+    getProviderForManufacturer: (manufacturer: string) =>
+      actual.normalizeManufacturer(manufacturer) === 'dell' ? ({ name: 'dell' } as never) : null,
+  };
+});
 
 import {
   AGENT_CMSL_WARRANTY_SOURCE,
   AGENT_OWNED_WARRANTY_SOURCE_LIST,
   AGENT_OWNED_WARRANTY_SOURCES,
   AGENT_PLIST_WARRANTY_SOURCE,
+  IMPORT_WARRANTY_SOURCE,
   MAX_AGENT_WARRANTY_ENTITLEMENTS,
+  PROVIDER_WARRANTY_SOURCE,
   isAgentCollectedWarrantyDevice,
   isAgentOwnedWarrantySource,
+  isNonVendorWarrantySource,
   warrantyEntitlementProviderForSource,
+  warrantyRefreshRefusal,
 } from './warrantyDataSources';
 
 describe('isAgentOwnedWarrantySource', () => {
@@ -84,5 +99,41 @@ describe('isAgentCollectedWarrantyDevice', () => {
 describe('MAX_AGENT_WARRANTY_ENTITLEMENTS', () => {
   it('is the contract bound of 25', () => {
     expect(MAX_AGENT_WARRANTY_ENTITLEMENTS).toBe(25);
+  });
+});
+
+describe('isNonVendorWarrantySource (#9862)', () => {
+  it('counts imported and agent rows, and any future non-vendor writer', () => {
+    expect(isNonVendorWarrantySource(IMPORT_WARRANTY_SOURCE)).toBe(true);
+    expect(isNonVendorWarrantySource(AGENT_PLIST_WARRANTY_SOURCE)).toBe(true);
+    expect(isNonVendorWarrantySource(AGENT_CMSL_WARRANTY_SOURCE)).toBe(true);
+    expect(isNonVendorWarrantySource('some_future_collector')).toBe(true);
+  });
+
+  it('treats a vendor row and a legacy NULL as vendor-shaped', () => {
+    expect(isNonVendorWarrantySource(PROVIDER_WARRANTY_SOURCE)).toBe(false);
+    expect(isNonVendorWarrantySource(null)).toBe(false);
+    expect(isNonVendorWarrantySource(undefined)).toBe(false);
+  });
+});
+
+describe('warrantyRefreshRefusal (#9862)', () => {
+  it('keeps the agent refusal first', () => {
+    expect(warrantyRefreshRefusal({ manufacturer: 'HP', dataSource: IMPORT_WARRANTY_SOURCE })).toBe('agent_collected');
+    expect(warrantyRefreshRefusal({ manufacturer: 'Apple Inc.', dataSource: AGENT_PLIST_WARRANTY_SOURCE })).toBe('agent_collected');
+  });
+
+  it('refuses an imported row when no provider answers for the manufacturer', () => {
+    expect(warrantyRefreshRefusal({ manufacturer: 'Acme Whitebox', dataSource: IMPORT_WARRANTY_SOURCE })).toBe('no_vendor_lookup');
+    expect(warrantyRefreshRefusal({ manufacturer: null, dataSource: IMPORT_WARRANTY_SOURCE })).toBe('no_vendor_lookup');
+  });
+
+  it('lets an imported row refresh when a provider is configured (a vendor hit may replace it)', () => {
+    expect(warrantyRefreshRefusal({ manufacturer: 'Dell Inc.', dataSource: IMPORT_WARRANTY_SOURCE })).toBeNull();
+  });
+
+  it('still queues a device with no row or a vendor row, even with no provider', () => {
+    expect(warrantyRefreshRefusal({ manufacturer: 'Acme Whitebox', dataSource: null })).toBeNull();
+    expect(warrantyRefreshRefusal({ manufacturer: 'Acme Whitebox', dataSource: PROVIDER_WARRANTY_SOURCE })).toBeNull();
   });
 });

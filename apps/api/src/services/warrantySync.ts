@@ -6,7 +6,8 @@ import type { WarrantyEntitlement, WarrantyLookupResult } from './warrantyProvid
 import {
   AGENT_OWNED_WARRANTY_SOURCE_LIST,
   MAX_AGENT_WARRANTY_ENTITLEMENTS,
-  isAgentOwnedWarrantySource,
+  PROVIDER_WARRANTY_SOURCE,
+  isNonVendorWarrantySource,
   warrantyEntitlementProviderForSource,
 } from './warrantyDataSources';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
@@ -154,38 +155,13 @@ export async function syncWarrantyForSubject(input: {
 
   const provider = getProviderForManufacturer(manufacturer);
   if (!provider) {
-    // Check if we already have agent-reported warranty data for this subject.
-    // If so, don't overwrite it with an error — just skip. Only an agent writes
-    // an agent-owned source, so only a device subject can ever carry one.
-    if (subject.kind === 'device') {
-      const [existing] = await db
-        .select({ dataSource: deviceWarranty.dataSource, status: deviceWarranty.status })
-        .from(deviceWarranty)
-        .where(eq(deviceWarranty.deviceId, subject.deviceId))
-        .limit(1);
+    // Nothing can be fetched. Agent-reported or imported data stays exactly as
+    // it is (#5511 W01 for agent rows, #9862 for imported ones). `lastSyncAt`
+    // is deliberately NOT stamped: nothing was fetched, and the device card
+    // polls it to decide whether a manual refresh completed.
+    if (await keepNonVendorRow(subject, { checked: false, error: null })) return;
 
-      // Generalised, not given a second hardcoded string (#5511 W01, D9). Keyed
-      // to the literal 'agent_plist', an `agent_cmsl` row fell through to the
-      // unknown-result upsert below, which nulls both dates, empties
-      // `entitlements` and flips `data_source` back to 'provider'.
-      if (isAgentOwnedWarrantySource(existing?.dataSource)) {
-        // Agent-reported data exists — preserve it regardless of status.
-        // `lastSyncAt` is deliberately NOT stamped: nothing was fetched, and the
-        // device card polls it to decide whether a manual refresh completed.
-        const now = new Date();
-        await db
-          .update(deviceWarranty)
-          .set({
-            lastSyncError: null,
-            nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
-            updatedAt: now,
-          })
-          .where(eq(deviceWarranty.deviceId, subject.deviceId));
-        return;
-      }
-    }
-
-    // No provider and no agent data — upsert as unknown (not an error)
+    // No provider and no non-vendor data — upsert as unknown (not an error)
     await upsertWarranty(subject, orgId, manufacturer, serialNumber, {
       found: false,
       entitlements: [],
@@ -204,11 +180,11 @@ export async function syncWarrantyForSubject(input: {
       warrantyEndDate: null,
     };
 
-    await upsertWarranty(subject, orgId, manufacturer, serialNumber, result);
+    await recordLookupResult(subject, orgId, manufacturer, serialNumber, result);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`[WarrantySync] Error syncing ${label}:`, errorMsg);
-    await upsertWarranty(subject, orgId, manufacturer, serialNumber, {
+    await recordLookupResult(subject, orgId, manufacturer, serialNumber, {
       found: false,
       entitlements: [],
       warrantyStartDate: null,
@@ -260,6 +236,64 @@ export async function syncWarrantyForManualAsset(manualAssetId: string): Promise
     serialNumber: asset.serialNumber,
     subject: { kind: 'manualAsset', manualAssetId },
   });
+}
+
+/**
+ * Write a vendor lookup's outcome. A HIT always goes through `upsertWarranty`
+ * (which still refuses agent-owned rows). A miss or a lookup error carries no
+ * coverage, so it must not replace coverage that came from somewhere else
+ * (#9862): for such a row only the sync bookkeeping is updated.
+ */
+async function recordLookupResult(
+  subject: WarrantySubject,
+  orgId: string,
+  manufacturer: string,
+  serialNumber: string,
+  result: WarrantyLookupResult,
+): Promise<void> {
+  if (!result.found && await keepNonVendorRow(subject, { checked: true, error: result.error ?? null })) {
+    return;
+  }
+  await upsertWarranty(subject, orgId, manufacturer, serialNumber, result);
+}
+
+/**
+ * #9862 — if the subject's stored row holds non-vendor coverage (agent report
+ * or CSV import, see `isNonVendorWarrantySource`), touch only its sync
+ * bookkeeping and return true; otherwise return false and write nothing.
+ *
+ * `checked` says whether a vendor was actually asked: only then is `lastSyncAt`
+ * stamped, because the device card polls it to detect a completed refresh.
+ *
+ * Device subjects only: nothing but `upsertWarranty` writes a manual-asset row,
+ * so one can never carry a non-vendor source. This read is advisory; the
+ * authority against a non-vendor row landing between it and the unknown-result
+ * upsert is `upsertWarranty`'s `setWhere`.
+ */
+async function keepNonVendorRow(
+  subject: WarrantySubject,
+  opts: { checked: boolean; error: string | null },
+): Promise<boolean> {
+  if (subject.kind !== 'device') return false;
+
+  const [existing] = await db
+    .select({ dataSource: deviceWarranty.dataSource })
+    .from(deviceWarranty)
+    .where(eq(deviceWarranty.deviceId, subject.deviceId))
+    .limit(1);
+  if (!isNonVendorWarrantySource(existing?.dataSource)) return false;
+
+  const now = new Date();
+  await db
+    .update(deviceWarranty)
+    .set({
+      ...(opts.checked ? { lastSyncAt: now } : {}),
+      lastSyncError: opts.error,
+      nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
+      updatedAt: now,
+    })
+    .where(eq(deviceWarranty.deviceId, subject.deviceId));
+  return true;
 }
 
 async function upsertWarranty(
@@ -327,17 +361,25 @@ async function upsertWarranty(
         nextSyncAt,
         updatedAt: now,
       },
-      // The read in syncWarrantyForSubject is advisory; this is the authority. An
-      // agent report that lands between that read and this write must not be
-      // overwritten by a server-side result (#5511 W01). NULL-safe: a row with
-      // no data_source stays writable. Manual assets can never carry an agent
-      // source (XOR subject), so only the device arm needs it.
+      // The reads in syncWarrantyForSubject are advisory; this is the
+      // authority. NULL-safe on both arms: a row with no data_source stays
+      // writable. Manual assets can never carry a non-vendor source (only this
+      // function writes them), so only the device arm needs it.
+      //  - A HIT must not overwrite an agent report that landed between the
+      //    read and this write (#5511 W01); it may replace imported data.
+      //  - A miss/error carries no coverage, so it may only land on a
+      //    vendor-shaped row — never on agent or imported data (#9862).
       ...(subject.kind === 'device'
         ? {
-            setWhere: or(
-              isNull(deviceWarranty.dataSource),
-              notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
-            ),
+            setWhere: result.found
+              ? or(
+                  isNull(deviceWarranty.dataSource),
+                  notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
+                )
+              : or(
+                  isNull(deviceWarranty.dataSource),
+                  eq(deviceWarranty.dataSource, PROVIDER_WARRANTY_SOURCE),
+                ),
           }
         : {}),
     });
