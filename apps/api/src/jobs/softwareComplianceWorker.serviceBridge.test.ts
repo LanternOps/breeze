@@ -555,7 +555,7 @@ describe('processCheckPolicy — managed DNS rules: applicability and the bridge
   it.each([
     ['stopped', 'not_running'],
     [null, 'service_unverified'],
-  ] as const)('an inventory-matched rule that is not applicable yields no bridge violation (fresh %s would be %s) (#10126)', async (status) => {
+  ] as const)('an inventory-matched rule that is not applicable yields no bridge violation (fresh %s would be %s) (#10126)', async (status, _wouldBe) => {
     primeManaged({
       devices: [WIN_NEW],
       inventory: [{ name: 'Control D (Windows)', version: '1.0.0', vendor: null, catalogId: CONTROLD }],
