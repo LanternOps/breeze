@@ -350,6 +350,10 @@ export function usePartnersMeUnit() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [serverErrors, setServerErrors] = useState<SecurityServerErrors>({});
+  // Keeps the current object when there is nothing to clear, so React bails out
+  // of the update: `load` can run on every render of the page's effect, and a
+  // fresh `{}` each time would re-render forever.
+  const clearServerErrors = useCallback(() => setServerErrors(prev => (Object.keys(prev).length === 0 ? prev : {})), []);
 
   const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
   const [ipStatusUnavailable, setIpStatusUnavailable] = useState(false);
@@ -377,7 +381,7 @@ export function usePartnersMeUnit() {
       setPartner(null);
       setState(null);
       setBaseline(null);
-      setServerErrors({});
+      clearServerErrors();
     }
     try {
       setLoading(true);
@@ -424,7 +428,7 @@ export function usePartnersMeUnit() {
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, []);
+  }, [clearServerErrors]);
 
   /** Ends the loading state for a confirmed non-partner user (nothing to load). */
   const markNoPartner = useCallback(() => setLoading(false), []);
@@ -481,7 +485,7 @@ export function usePartnersMeUnit() {
       window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // Re-baseline to what was sent: an edit made during the request stays dirty.
       setBaseline(sent);
-      setServerErrors({});
+      clearServerErrors();
       return { status: 'saved', savedAt: Date.now() };
     } catch (err) {
       if (generation.current !== gen) return { status: 'cancelled' };
@@ -495,7 +499,7 @@ export function usePartnersMeUnit() {
       }
       return { status: 'failed' };
     }
-  }, []);
+  }, [clearServerErrors]);
 
   const unit: SaveUnit = useMemo(() => ({
     id: 'partnersMe',
