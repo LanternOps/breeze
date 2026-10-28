@@ -550,6 +550,9 @@ function selectEvidence(executor: DbExecutor) {
       eq(contractDocuments.id, serviceDeliverableEvidence.contractDocumentId),
       eq(contractDocuments.orgId, serviceDeliverableEvidence.orgId),
     ))
+    // Template/version hang off the already org-pinned contract_documents row
+    // (its NOT NULL FKs). A partner-owned template carries no org_id, so the
+    // join is by id; RLS still hides one the caller cannot see → null label.
     .leftJoin(contractTemplates, eq(contractTemplates.id, contractDocuments.templateId))
     .leftJoin(contractTemplateVersions, eq(contractTemplateVersions.id, contractDocuments.templateVersionId));
 }

@@ -1113,6 +1113,33 @@ describe('serviceDeliverableService', () => {
       for (const table of ['org_documents', 'reports', 'contract_documents']) {
         expect(joins.some((j) => j.includes(`"${table}"."org_id" = "service_deliverable_evidence"."org_id"`))).toBe(true);
       }
+      // ...and on the right id column (report_id, not report_run_id), and the
+      // agreement's name comes from ITS template/version, not any other.
+      for (const on of [
+        '"org_documents"."id" = "service_deliverable_evidence"."document_id"',
+        '"reports"."id" = "service_deliverable_evidence"."report_id"',
+        '"contract_documents"."id" = "service_deliverable_evidence"."contract_document_id"',
+        '"contract_templates"."id" = "contract_documents"."template_id"',
+        '"contract_template_versions"."id" = "contract_documents"."template_version_id"',
+      ]) expect(joins.some((j) => j.includes(on))).toBe(true);
+    });
+
+    it('single and bulk reschedule views carry the labels too', async () => {
+      const withAccess = { ...actor, evidenceLabelAccess: allAccess };
+      queueResult([occ({ id: 'o1', status: 'open' })]);                      // load
+      queueResult([{ id: 'o1' }]);                                           // update
+      queueResult([occ({ id: 'o1', status: 'open', dueAt: '2026-11-30' })]); // reload
+      queueResult(evidenceRows());                                           // evidence
+      const single = await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, withAccess);
+      expect(single.evidence[0]!.label).toBe('Q3 backup restore test');
+
+      queueResult([occ({ id: 'o1', status: 'open' })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ id: 'o1', status: 'open', dueAt: '2026-12-31' })]);
+      queueResult(evidenceRows());
+      const [bulk] = await rescheduleOccurrences('org1', { occurrenceIds: ['o1'], dueAt: '2026-12-31' }, withAccess);
+      expect(bulk).toMatchObject({ ok: true });
+      expect(bulk!.ok && bulk!.occurrence.evidence[2]!.label).toBe('Master services agreement v3');
     });
 
     it('a MUTATION view carries the labels too, so a chip keeps its name after a deliver', async () => {

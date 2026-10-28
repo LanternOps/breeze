@@ -99,6 +99,21 @@ describe('signed agreement as deliverable evidence (#9312, live DB)', () => {
     ]);
   });
 
+  runDb('names a linked library document for a documents:read caller; null once it is soft-deleted (#9961)', async () => {
+    const s = await seed();
+    const docId = rows(await sys(() => db.execute(sql`
+      INSERT INTO org_documents (org_id, title, category, storage_backend, data, content_type, byte_size, sha256, original_filename)
+      VALUES (${s.orgA.id}::uuid, 'Q3 backup restore test', 'evidence', 'db', '\\x255044462d'::bytea, 'application/pdf', 5, ${'a'.repeat(64)}, 'scan.pdf')
+      RETURNING id`)))[0]!.id as string;
+    const withDocs = { ...s.actor, evidenceLabelAccess: { documents: true, reports: false, agreements: false } };
+    const view = await withDbAccessContext(s.partnerCtx, () =>
+      addEvidence(s.orgA.id, s.occA, { kind: 'document', documentId: docId }, withDocs));
+    expect(view.evidence).toEqual([expect.objectContaining({ documentId: docId, label: 'Q3 backup restore test' })]);
+    await sys(() => db.execute(sql`UPDATE org_documents SET deleted_at = now() WHERE id = ${docId}::uuid`));
+    const after = await withDbAccessContext(s.partnerCtx, () => getOccurrenceOr404(s.orgA.id, s.occA, withDocs));
+    expect(after.evidence).toEqual([expect.objectContaining({ documentId: docId, label: null })]);
+  });
+
   runDb('another org\'s signed agreement is 404 even when RLS can see both orgs; nothing is inserted', async () => {
     const s = await seed();
     // Positive control: the partner context really can SEE org B's agreement,
