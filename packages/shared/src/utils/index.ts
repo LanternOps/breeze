@@ -19,6 +19,7 @@ export * from './depositMath';
 export * from './laborMath';
 export * from './invoiceLineDetail';
 export * from './csvExport';
+export * from './xlsxExport';
 export * from './reportSchedule';
 export * from './s3Region';
 export * from './s3Endpoint';

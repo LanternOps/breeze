@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "disposable-email-domains": "^1.0.62",
+    "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "zod": "^4.6.7"
