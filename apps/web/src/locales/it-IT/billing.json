@@ -1460,6 +1460,7 @@
         "button": "Accetta per conto del cliente",
         "emptyDraftTitle": "Aggiungi almeno un elemento prima dell'accettazione.",
         "emptySentTitle": "Questo preventivo non contiene elementi. Usa Rivedi preventivo per emettere una versione con elementi.",
+        "errorQuoteEmpty": "Questo preventivo non contiene elementi. Chiudi questa finestra e aggiungi un elemento, oppure usa Rivedi preventivo se è già stato inviato.",
         "title": "Registra l'accettazione del cliente",
         "methodLabel": "Come ha dato il suo assenso?",
         "method": {

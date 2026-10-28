@@ -74,6 +74,7 @@ type Chain = {
   set: { mock: { calls: unknown[][] } };
   values: { mock: { calls: unknown[][] } };
   insert: { mock: { calls: unknown[][] } };
+  update: { mock: { calls: unknown[][] } };
 };
 
 const baseParams = {
@@ -431,6 +432,7 @@ describe('acceptQuote — origin on_behalf', () => {
     expect(err).toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
     expect((err as Error).message).toMatch(/Revise/);
     expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).update.mock.calls.length).toBe(0);
   });
 
   it('refuses a blank signer name rather than recording a nameless acceptance', async () => {

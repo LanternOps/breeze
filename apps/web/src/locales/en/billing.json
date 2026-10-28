@@ -1460,6 +1460,7 @@
         "button": "Accept on behalf",
         "emptyDraftTitle": "Add at least one item before accepting.",
         "emptySentTitle": "This quote has no items. Use Revise quote to issue a version with items.",
+        "errorQuoteEmpty": "This quote has no items. Close this dialog and add an item, or use Revise quote if it was already sent.",
         "title": "Record the customer's acceptance",
         "methodLabel": "How did they agree?",
         "method": {

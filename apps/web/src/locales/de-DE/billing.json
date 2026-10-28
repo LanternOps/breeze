@@ -1460,6 +1460,7 @@
         "button": "Im Namen des Kunden annehmen",
         "emptyDraftTitle": "Fügen Sie vor dem Annehmen mindestens einen Artikel hinzu.",
         "emptySentTitle": "Dieses Angebot enthält keine Artikel. Nutzen Sie „Angebot überarbeiten“, um eine Version mit Artikeln auszustellen.",
+        "errorQuoteEmpty": "Dieses Angebot enthält keine Artikel. Schließen Sie diesen Dialog und fügen Sie einen Artikel hinzu, oder nutzen Sie „Angebot überarbeiten“, falls es bereits gesendet wurde.",
         "title": "Annahme des Kunden erfassen",
         "methodLabel": "Wie hat der Kunde zugestimmt?",
         "method": {

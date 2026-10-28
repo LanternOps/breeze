@@ -71,6 +71,7 @@ type Chain = {
   set: { mock: { calls: unknown[][] } };
   values: { mock: { calls: unknown[][] } };
   insert: { mock: { calls: unknown[][] } };
+  update: { mock: { calls: unknown[][] } };
   leftJoin: { mock: { calls: unknown[][] } };
 };
 
@@ -838,11 +839,19 @@ describe('acceptQuote empty-quote gate (#9963)', () => {
     expect(err).toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
     expect((err as Error).message).toMatch(/contact/i);
     expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).update.mock.calls.length).toBe(0);
   });
 
-  it('refuses a sent quote whose only lines are internal-only', async () => {
-    queueAcceptHappyPath({}, { customerVisible: false });
+  it('refuses a viewed quote whose only lines are internal-only', async () => {
+    queueAcceptHappyPath({ status: 'viewed' }, { customerVisible: false });
     await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
     expect((db as unknown as Chain).insert.mock.calls.length).toBe(0);
+    expect((db as unknown as Chain).update.mock.calls.length).toBe(0);
+  });
+
+  it('keeps the status guard first: an empty DRAFT on the customer path is 409 INVALID_STATE', async () => {
+    queueAcceptHappyPath({ status: 'draft' });
+    results[2] = [];
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 });
