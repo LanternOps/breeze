@@ -32,6 +32,7 @@ import type { TopologyFeatureFlags } from '../PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
 import { UNIT_TABS, type PartnersMeTab, type SaveOutcome, type SaveUnit, type TabValidity } from './saveUnits';
 import type { TabKey } from './tabRegistry';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 export type Partner = {
   id: string;
@@ -254,6 +255,20 @@ function preflight(state: PartnersMeState, ipStatus: IpAllowlistStatus | null, i
 const toLogin = () => { void navigateTo('/login', { replace: true }); };
 
 /**
+ * The Sender Addresses capability, or null when the tab should stay hidden.
+ * /config reports whether this instance has an EMAIL_DOMAINS_PROVIDER (off by
+ * default everywhere); the list is read only when it does, because without one
+ * every sending-domains route answers 404 (#9949). A 404 from the list itself
+ * still reads as "hidden" rather than an error.
+ */
+async function probeSendingDomains(): Promise<SendingDomainsCapabilityDto | null> {
+  await useFeaturesStore.getState().load();
+  if (!useFeaturesStore.getState().features.sendingDomains) return null;
+  const result = await fetchSendingDomains();
+  return result.supported ? (result.data.capability ?? null) : null;
+}
+
+/**
  * The partners/me persistence unit: the partner record, the form state of its
  * ten tabs, the baseline those tabs are compared against, and the side reads
  * the tabs need. Lives in the page shell so panels can unmount freely.
@@ -325,10 +340,8 @@ export function usePartnersMeUnit() {
         .catch(() => { if (isCurrent()) setPinnableVersions(null); });
 
       // Best-effort: decides whether the Sender Addresses tab appears at all.
-      // A 404 means EMAIL_DOMAINS_PROVIDER is unset on this instance (the
-      // default everywhere) and the tab stays hidden.
-      fetchSendingDomains()
-        .then(result => { if (isCurrent()) setSendingDomainsCapability(result.supported ? (result.data.capability ?? null) : null); })
+      probeSendingDomains()
+        .then(capability => { if (isCurrent()) setSendingDomainsCapability(capability); })
         .catch(() => { if (isCurrent()) setSendingDomainsCapability(null); })
         .finally(() => { if (isCurrent()) setSendingDomainsChecked(true); });
     } catch (err) {

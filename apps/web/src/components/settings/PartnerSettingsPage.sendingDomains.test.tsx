@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
 import PartnerSettingsPage from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
@@ -43,8 +44,12 @@ function json(body: unknown, status = 200) {
   return { ok: status < 400, status, json: async () => body } as unknown as Response;
 }
 
-function route(sendingDomains: unknown, status = 200) {
+// `sendingDomainsFlag` is what GET /config reports for features.sendingDomains:
+// true exactly when EMAIL_DOMAINS_PROVIDER is set, which is also exactly when
+// the list route answers 200 rather than 404 (#9949).
+function route(sendingDomains: unknown, status = 200, sendingDomainsFlag = status !== 404) {
   fetchWithAuthMock.mockImplementation((url: string) => {
+    if (url === '/config') return Promise.resolve(json({ features: { sendingDomains: sendingDomainsFlag } }));
     if (url === '/orgs/partners/me') return Promise.resolve(json(PARTNER));
     if (url === '/partner/sending-domains') return Promise.resolve(json(sendingDomains, status));
     if (url === '/ticket-config') {
@@ -54,20 +59,64 @@ function route(sendingDomains: unknown, status = 200) {
   });
 }
 
+const calls = (url: string) => fetchWithAuthMock.mock.calls.filter(([u]) => u === url).length;
+
 beforeEach(() => {
   fetchWithAuthMock.mockReset();
   window.location.hash = '';
+  // The store is a module singleton; every test starts from "not yet read".
+  useFeaturesStore.setState({ loaded: false });
   useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false, adoptPartnerId: vi.fn() } as never);
 });
 
 describe('PartnerSettingsPage — sending domains tab', () => {
-  it('hides the tab when this instance has no provider configured', async () => {
+  it('hides the tab and never requests the list when /config reports the feature off (#9949)', async () => {
     route({ error: 'sending_domains_unsupported' }, 404);
     render(<PartnerSettingsPage />);
 
     await screen.findByTestId('partner-settings-tab-company');
-    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledWith('/partner/sending-domains', expect.anything()));
+    await waitFor(() => expect(calls('/config')).toBeGreaterThan(0));
+    // Let the side reads that follow partners/me settle before asserting absence.
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+    expect(calls('/partner/sending-domains')).toBe(0);
     expect(screen.queryByTestId('partner-settings-tab-sendingDomains')).toBeNull();
+  });
+
+  it('still hides the tab when the flag is on but the list read 404s', async () => {
+    route({ error: 'not_found' }, 404, true);
+    render(<PartnerSettingsPage />);
+
+    await waitFor(() => expect(calls('/partner/sending-domains')).toBe(1));
+    expect(screen.queryByTestId('partner-settings-tab-sendingDomains')).toBeNull();
+  });
+
+  it('reads partners/me and probes the list once while the org store refetches (#9949)', async () => {
+    route({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
+    const view = render(<PartnerSettingsPage />);
+    await screen.findByTestId('partner-settings-tab-sendingDomains');
+
+    // The org switcher's partners/orgs/sites fetches flip isLoading while the
+    // partner id stays put. None of those flips is a partner switch.
+    for (const isLoading of [true, false, true, false]) {
+      useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading, adoptPartnerId: vi.fn() } as never);
+      view.rerender(<PartnerSettingsPage />);
+    }
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+
+    expect(calls('/orgs/partners/me')).toBe(1);
+    expect(calls('/partner/sending-domains')).toBe(1);
+  });
+
+  it('reloads when the partner actually changes', async () => {
+    route({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
+    const view = render(<PartnerSettingsPage />);
+    await screen.findByTestId('partner-settings-tab-sendingDomains');
+
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-2', isLoading: false, adoptPartnerId: vi.fn() } as never);
+    view.rerender(<PartnerSettingsPage />);
+
+    await waitFor(() => expect(calls('/orgs/partners/me')).toBe(2));
+    await waitFor(() => expect(calls('/partner/sending-domains')).toBe(2));
   });
 
   it('shows the tab in the communications group when a provider is configured', async () => {
