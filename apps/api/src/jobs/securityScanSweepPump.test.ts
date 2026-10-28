@@ -218,8 +218,10 @@ describe('pumpSweeps', () => {
     expect(text).toContain(`set status = 'failed'`);
     // A server timeout or a parked processing failure can still accept the
     // agent's result: those rows keep waiting for it.
+    // Mirrors commandAcceptsAgentResult: excluded only with the server stamp.
     expect(whereParams(stmt)).toEqual(expect.arrayContaining(['timeout', 'result_processing_failed']));
-    expect(text).toMatch(/coalesce\(c\.result->>'status', ''\) not in/);
+    expect(text).toContain(`c.result->>'timedoutby' is not null`);
+    expect(text).toContain(`c.result->>'processingfailedat' is not null`);
     // Runs after the undelivered rule, so an undelivered command still ends `expired`.
     const idxUndelivered = ops().findIndex((o) => o.kind === 'execute' && whereText(o).includes('executed_at is null'));
     expect(ops().indexOf(stmt)).toBeGreaterThan(idxUndelivered);

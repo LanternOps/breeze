@@ -964,7 +964,7 @@ async function handleSecurityResult({ command, result, stdout }: Parameters<Comm
     stderr: result.stderr,
     durationMs: result.durationMs,
     error: result.error,
-  } as any);
+  });
 }
 
 const peripheralPolicyResultV2Schema = z.object({

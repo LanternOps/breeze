@@ -141,16 +141,18 @@ export async function pumpSweeps(
          AND c.executed_at IS NULL
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
-    // #10376: the command went terminal with a FINAL result (the agent's own
-    // completed/failed report, e.g. "agent restarted while command was
-    // running") yet the scan is still running — the result never reached
+    // #10376: the command went terminal with a FINAL result (typically the
+    // agent's own completed/failed report, e.g. "agent restarted while command
+    // was running") yet the scan is still running — the result never reached
     // handleSecurityCommandResult, which runs in the same transaction as the
     // command's terminal write. Such a row accepts no further result, so
     // nothing will ever finish the scan; waiting out the 720-minute ceiling
     // only holds the sweep (and an org/partner concurrency slot) for 12 hours.
-    // Results were not recorded, so it is `failed`, never `completed`. A
-    // server timeout or a parked processing failure is excluded: both still
-    // accept the agent's result (services/commandResultAcceptance.ts).
+    // Results were not recorded, so it is `failed`, never `completed`. The two
+    // reopenable shapes are excluded exactly as commandAcceptsAgentResult
+    // defines them — a server timeout (`timedOutBy` stamped) and a parked
+    // processing failure (`processingFailedAt` stamped) — so the agent's
+    // result can still land on them.
     const answered = (await db.execute(sql`
       UPDATE security_scans s SET status = 'failed', completed_at = ${now.toISOString()}
         FROM device_commands c, security_scan_sweeps w
@@ -158,9 +160,20 @@ export async function pumpSweeps(
          AND s.status = 'running'
          AND c.id = s.command_id
          AND c.status IN ('completed', 'failed')
-         AND coalesce(c.result->>'status', '') NOT IN (${SERVER_TIMEOUT_RESULT_STATUS}, ${RESULT_PROCESSING_FAILED_RESULT_STATUS})
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}
+                          AND c.result->>'timedOutBy' IS NOT NULL, false)
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${RESULT_PROCESSING_FAILED_RESULT_STATUS}
+                          AND c.result->>'processingFailedAt' IS NOT NULL, false)
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
+    if (answered.length > 0) {
+      // After this fix a nonzero count means a result was lost on the way to
+      // the scan row (rows stuck before the fix also drain here once).
+      console.warn('[securityScanSweepPump] failed sweep scan(s) whose command finished without a recorded result', {
+        count: answered.length,
+        scanIds: answered.slice(0, 20).map((r) => r.id),
+      });
+    }
     const ceiling = new Date(
       now.getTime() - (SECURITY_SCAN_TIMEOUT_CEILING_MINUTES + sweepRunningGraceMinutes()) * 60_000,
     );
