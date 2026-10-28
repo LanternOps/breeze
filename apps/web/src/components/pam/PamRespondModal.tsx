@@ -117,6 +117,7 @@ export default function PamRespondModal({
   const [settledOtherwise, setSettledOtherwise] = useState(false);
   const dismiss = settledOtherwise ? onActioned : onClose;
   const reasonId = useId();
+  const reasonHintId = `${reasonId}-hint`;
   const durationId = useId();
   const titleId = useId();
   const reauthId = useId();
@@ -493,13 +494,14 @@ export default function PamRespondModal({
         <div>
           <label htmlFor={reasonId} className="mb-1 block text-sm font-medium">
             {decision === 'deny'
-              ? t('pamPamRespondModal.form.reasonRecommended', {
-                  defaultValue: 'Reason (recommended)',
+              ? t('pamPamRespondModal.form.reasonShownToUser', {
+                  defaultValue: 'Reason (shown to the user)',
                 })
               : t('pamPamRespondModal.form.reasonOptional', { defaultValue: 'Reason (optional)' })}
           </label>
           <textarea
             id={reasonId}
+            aria-describedby={decision === 'deny' ? reasonHintId : undefined}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             maxLength={2000}
@@ -510,6 +512,18 @@ export default function PamRespondModal({
               defaultValue: 'Recorded in the audit trail',
             })}
           />
+          {decision === 'deny' && (
+            <p
+              id={reasonHintId}
+              data-testid="pam-respond-reason-hint"
+              className="mt-1 text-xs text-muted-foreground"
+            >
+              {t('pamPamRespondModal.form.reasonShownToUserHint', {
+                defaultValue:
+                  'The end user sees this in their notification (first 500 characters).',
+              })}
+            </p>
+          )}
         </div>
 
         {error && (

@@ -42,6 +42,7 @@
   },
   "denyPrompt": "¿Por qué rechazas esta solicitud? El motivo es opcional.",
   "denyReasonPlaceholder": "Opcional: se comparte con quien lo solicitó",
+  "denyReasonShownToUserHint": "El usuario final ve esto en su notificación (primeros 500 caracteres).",
   "confirmDeny": "Confirmar rechazo",
   "cancel": "Cancelar",
   "deny": "Rechazar",
