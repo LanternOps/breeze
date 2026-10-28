@@ -14,6 +14,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
@@ -91,6 +92,22 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	manager, ok := h.pamLifetimeManager.(pamReceivedObservationManager)
 	if !ok {
 		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
+	// #8971: the manager's re-check below is what refuses a declined request.
+	// A manager that never took the checker must not apply anything.
+	if !h.pamDeclineCheckerInstalled.Load() {
+		log.Error("pam: refusing pam_apply_v2: the lifetime manager has no decline checker",
+			"elevationRequestId", payload.RequestID, "actuationId", payload.ActuationID)
+		return tools.NewErrorResult(errors.New("PAM decline check unavailable"), time.Since(start).Milliseconds())
+	}
+	// #8971: an approval can land while the user still has the PAM dialog
+	// open. Wait (bounded, outside every lock) for their answer before the
+	// operation budget starts. The manager then re-checks non-blockingly under
+	// its operation and refuses a declined or unanswered request with a real
+	// boot id, before admission, PinTarget or any ledger entry.
+	if refuse, code := h.awaitPamDecline(payload.RequestID); refuse {
+		log.Warn("pam: approved apply for a request the user declined or has not answered; refusing",
+			"elevationRequestId", payload.RequestID, "actuationId", payload.ActuationID, "failureCode", code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	defer cancel()
@@ -320,6 +337,15 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
+	// #8971: refuse a request the end user declined (or has not answered)
+	// before admission. The wait for an open dialog comes before the
+	// actuation budget below, so it does not eat into it.
+	if h != nil {
+		if refuse, code := h.awaitPamDecline(payload.ElevationRequestID); refuse {
+			return refuseDeclinedActuation(payload, code, start)
+		}
+	}
+
 	// Bound the overall handler at twice the consent-window timeout so a
 	// stuck Windows desktop can't pin a worker forever. The actuator
 	// itself enforces its own deadline; this ctx is the belt-and-braces.
@@ -353,6 +379,11 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	defer release()
+	// Re-check without blocking under admission, as the v2 manager does under
+	// its operation: a decline recorded while this waited must still win.
+	if refuse, code := h.pamDeclineStore().Check(payload.ElevationRequestID); refuse {
+		return refuseDeclinedActuation(payload, code, start)
+	}
 
 	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
 		pamTarget{
@@ -381,6 +412,40 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	// of the firmup: the server is the one deciding retry/escalate based
 	// on the Reason code, not the agent.
 	return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
+}
+
+// refuseDeclinedActuation is the legacy actuate_elevation answer for a request
+// the end user declined on the device, has not answered, or whose decision
+// record is untrusted (#8971): a success-shaped result carrying the code, a
+// log line, and the PAM refusal event for the endpoint's own event log.
+func refuseDeclinedActuation(payload actuatePayload, code string, start time.Time) tools.CommandResult {
+	target := pamTarget{Path: payload.TargetPath, TargetHash: payload.TargetHash,
+		CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername}
+	message := declinedActuationMessage(code)
+	log.Warn("pam: actuation REFUSED — "+message,
+		"elevationRequestId", payload.ElevationRequestID, "reason", code)
+	writePAMActuationRefused(target.eventLogFields(payload.ElevationRequestID, code))
+	return tools.NewSuccessResult(actuateResult{
+		ElevationRequestID: payload.ElevationRequestID,
+		Success:            false,
+		Reason:             code,
+		Message:            message,
+	}, time.Since(start).Milliseconds())
+}
+
+// declinedActuationMessage is the legacy refusal's message for a decline
+// failure code.
+func declinedActuationMessage(code string) string {
+	switch code {
+	case pamdecline.CodeUserDecisionPending:
+		return "the user has not answered this elevation on the device yet"
+	case pamdecline.CodeDeclineRecordUntrusted:
+		return "the device's record of the user's answers could not be loaded; every remote elevation is refused for now"
+	case pamdecline.CodeUserDeclined:
+		return "the user declined this elevation on the device"
+	default:
+		return "refused because of the user's answer on the device"
+	}
 }
 
 // refusePamActuation builds the fail-closed refusal and logs it at the block

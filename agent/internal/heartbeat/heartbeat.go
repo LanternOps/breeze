@@ -49,6 +49,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/peripheral"
@@ -636,7 +637,25 @@ type Heartbeat struct {
 	// pamReportUnable sends the "cannot act on this elevation" report (#9517);
 	// nil means reportPamUnable's real POST (sendPamElevationUnable), sent off
 	// the etwlua loop goroutine.
-	pamReportUnable   func(requestID string, unable pamUnable)
+	pamReportUnable func(requestID string, unable pamUnable)
+	// pamDeclines is the durable record of the end user's answer to a PAM
+	// dialog (#8971): both apply paths refuse a declined request, and the
+	// declined entries are the outbox for the server withdraw. Memory-only
+	// until SetStatePath swaps in the file-backed store; read it through
+	// pamDeclineStore().
+	pamDeclinesMu sync.Mutex
+	pamDeclines   *pamdecline.Store
+	// pamDeclineCheckerInstalled is true once the lifetime manager took the
+	// decline re-check. pam_apply_v2 refuses every apply until it is.
+	pamDeclineCheckerInstalled atomic.Bool
+	// pamWithdrawKick wakes the withdraw drain right after a decline.
+	pamWithdrawKick chan struct{}
+	// pamDeclineWait bounds how long an apply waits for an open dialog's
+	// answer. Zero means pamDialogTimeout + pamDismissTimeout; tests shrink it.
+	pamDeclineWait time.Duration
+	// pamWithdrawNow is the withdraw drain's clock (backoff); nil means
+	// time.Now.
+	pamWithdrawNow    func() time.Time
 	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
@@ -1203,11 +1222,14 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		client:        httpClient,
 		stopChan:      make(chan struct{}),
 		pamUnableStop: make(chan struct{}),
-		metricsCol:    collectors.NewMetricsCollector(),
-		hardwareCol:   collectors.NewHardwareCollector(),
-		softwareCol:   collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol:  collectors.NewInventoryCollector(),
-		vpnCol:        collectors.NewVPNCollector(),
+		// Memory-only until SetStatePath gives it a file.
+		pamDeclines:     pamdecline.NewStore("", nil),
+		pamWithdrawKick: make(chan struct{}, 1),
+		metricsCol:      collectors.NewMetricsCollector(),
+		hardwareCol:     collectors.NewHardwareCollector(),
+		softwareCol:     collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:    collectors.NewInventoryCollector(),
+		vpnCol:          collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -1741,6 +1763,10 @@ func (h *Heartbeat) SetStatePath(path string) {
 	if path != "" && h.pamLifetimeManager == nil {
 		h.pamLifetimeManager = pamlifetime.NewManager(pamlifetime.NewStore(filepath.Join(filepath.Dir(path), "pam-lifetime-ledger.json")))
 	}
+	if path != "" {
+		h.loadPamDeclineStore(filepath.Join(filepath.Dir(path), pamDeclineFileName))
+		h.installPamDeclineChecker()
+	}
 	h.loadPamSupportName()
 }
 
@@ -2216,6 +2242,8 @@ func (h *Heartbeat) Start() {
 	h.startTimeSync()
 	h.startWorkloads()
 	h.startPamReconciliationRetryLoop()
+	// #8971: deliver the user's PAM declines to the server (outbox drain).
+	go h.runPamWithdrawDrain()
 
 	// Issue #2621 — before the first heartbeat, finish any credential rotation
 	// that was interrupted between the durable disk write and the server

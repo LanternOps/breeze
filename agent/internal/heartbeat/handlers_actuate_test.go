@@ -120,6 +120,11 @@ func (m *fakePamLifetimeManager) ProtocolVersion() int {
 	return m.protocolVersion
 }
 func (m *fakePamLifetimeManager) Available() bool { return m.available }
+
+// SetDeclineChecker accepts the heartbeat's decline checker (#8971) so the
+// pam_apply_v2 guard passes; the fake does not consult it. Tests of the
+// decline refusal use declineAwareManager.
+func (m *fakePamLifetimeManager) SetDeclineChecker(pamlifetime.DeclineChecker) {}
 func (m *fakePamLifetimeManager) AcquireLegacyActuation(ctx context.Context) (func(), error) {
 	gate := m.initLeaseGate()
 	select {
@@ -184,6 +189,7 @@ func readyPamApplyTestHeartbeat(manager pamlifetime.Manager, outbox *pamReconcil
 	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
 	h.uacInterceptionEnabled.Store(true)
+	h.installPamDeclineChecker()
 	return h
 }
 
@@ -502,6 +508,7 @@ func TestPamLifetimeV2HandlersReturnSharedStructuredResult(t *testing.T) {
 	cleanup := apply
 	cleanup.Generation = 2
 	h := &Heartbeat{config: &config.Config{DeviceID: "10000000-0000-4000-8000-000000000003", OrgID: "10000000-0000-4000-8000-000000000004"}, pamLifetimeManager: &fakePamLifetimeManager{applyResult: apply, cleanupResult: cleanup}}
+	h.installPamDeclineChecker()
 	h.pamReconciled.Store(true)
 	h.pamReceivedObservationReady.Store(true)
 	h.pamVerificationAvailable.Store(true)
