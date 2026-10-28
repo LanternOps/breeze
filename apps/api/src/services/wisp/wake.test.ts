@@ -338,7 +338,7 @@ describe('handleWispWakeEvent', () => {
     expect(data).not.toHaveProperty('subject');
     h.jobs.clear();
     h.adds = [];
-    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: 'nope', deviceId: 42 }));
+    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: 'nope', deviceId: 'dev-1' }));
     expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).toEqual({
       kind: 'event', eventType: 'alert.resolved', eventId: 'evt-alert.resolved',
     });

@@ -41,6 +41,7 @@ export type WispAssessmentTriggerRef = {
  * `sanitizeSweepText`. ISO strings for every timestamp.
  */
 export type AssessmentDigest = {
+  /** Triggered or resolved since the watermark; `at` = the later of triggered / resolved. */
   alerts: { id: string; title: string; severity: string; status: string; at: string }[];
   tickets: { id: string; number: string | null; title: string; status: string; updatedAt: string }[];
   incidents: { id: string; sourceKind: string; condition: string; openedAt: string }[];

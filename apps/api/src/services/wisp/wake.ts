@@ -296,7 +296,10 @@ function digestHintFor(event: BreezeEvent): DeterministicDigestHint {
  * #10388: the event reason carries the event's subject — `alertId` /
  * `deviceId` from the payload, uuids only — so the assessment can look up the
  * alert the event is about. The bus event id alone names nothing a tool can
- * read (events live in Redis streams, not a table).
+ * read (events live in Redis streams, not a table). A request that coalesces
+ * onto a live job keeps the FIRST event's reason (requestAssessment), so a
+ * later event's subject can be lost here; the changes digest (alerts
+ * triggered OR resolved since the watermark) is what covers it.
  */
 function eventReason(event: BreezeEvent): AssessmentReason {
   const p = (event.payload ?? {}) as Record<string, unknown>;

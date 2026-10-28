@@ -176,6 +176,16 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     })));
     expect(bare).toContain('Why this assessment: event ticket.sla_breached.');
     expect(bare).not.toContain('bus-evt-1');
+
+    const alertOnly = buildAssessmentTaskPrompt(ctx(assessment({
+      reason: { kind: 'event', eventType: 'alert.triggered', eventId: 'bus-evt-2', alertId: ALERT },
+    })));
+    expect(alertOnly).toContain(`Why this assessment: event alert.triggered for alert ${ALERT}.`);
+
+    const deviceOnly = buildAssessmentTaskPrompt(ctx(assessment({
+      reason: { kind: 'event', eventType: 'edr.detection_detected', eventId: 'bus-evt-3', deviceId: DEVICE },
+    })));
+    expect(deviceOnly).toContain(`Why this assessment: event edr.detection_detected for device ${DEVICE}.`);
   });
 
   it('adds the watch lines only when the run was requested by a watch', () => {

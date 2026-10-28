@@ -479,7 +479,10 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   return sys(async () => {
     const alertRows = !may('alerts') ? [] : await db
-      .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
+      .select({
+        id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status,
+        at: alerts.triggeredAt, resolvedAt: alerts.resolvedAt,
+      })
       .from(alerts)
       // #10388: an alert resolved since the watermark is a change too (a
       // resolve event must leave the run something to read), ordered by
@@ -513,7 +516,9 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
         title: sanitizeSweepText(r.title, 160),
         severity: sanitizeSweepText(String(r.severity), 20),
         status: sanitizeSweepText(String(r.status), 30),
-        at: toIso(r.at),
+        // The row's latest change, matching the ORDER BY: a resolved alert
+        // shows when it was resolved, not when it first fired.
+        at: toIso(r.resolvedAt && r.resolvedAt > r.at ? r.resolvedAt : r.at),
       })),
       tickets: ticketRows.map((r) => ({
         id: r.id,

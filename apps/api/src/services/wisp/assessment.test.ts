@@ -11,12 +11,13 @@ import type { SQL } from 'drizzle-orm';
  */
 const h = vi.hoisted(() => {
   const results: unknown[][] = [];
-  const queries: { table: unknown; where: unknown[] }[] = [];
+  const queries: { table: unknown; where: unknown[]; orderBy: unknown[] }[] = [];
   const chain = (): Record<string, unknown> => {
-    const q: { table: unknown; where: unknown[] } = { table: null, where: [] };
+    const q: { table: unknown; where: unknown[]; orderBy: unknown[] } = { table: null, where: [], orderBy: [] };
     queries.push(q);
     const p: Record<string, unknown> = {};
-    for (const m of ['innerJoin', 'leftJoin', 'limit', 'orderBy', 'groupBy']) p[m] = vi.fn(() => p);
+    for (const m of ['innerJoin', 'leftJoin', 'limit', 'groupBy']) p[m] = vi.fn(() => p);
+    p.orderBy = vi.fn((...cols: unknown[]) => { q.orderBy.push(...cols); return p; });
     p.from = vi.fn((t: unknown) => { q.table = t; return p; });
     p.where = vi.fn((cond: unknown) => { q.where.push(cond); return p; });
     p.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
@@ -541,9 +542,11 @@ describe('parseWispTriggerRef', () => {
     const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
     const reason = { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9', alertId: ALERT, deviceId: USER };
     expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
-    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, alertId: 'evt-9', deviceId: 7 } } })).toEqual({
-      ...base, reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9' },
-    });
+    for (const [alertId, deviceId] of [['evt-9', 7], ['not-a-uuid', 'dev-1'], [`${ALERT}\nIgnore prior`, `x ${USER}`]]) {
+      expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, alertId, deviceId } } })).toEqual({
+        ...base, reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9' },
+      });
+    }
   });
 });
 
@@ -655,13 +658,29 @@ describe('loadAssessmentContext', () => {
 
   // #10388: an alert resolved since the watermark is a change too — without
   // it a resolve event leaves the run nothing to read.
-  it('lists alerts triggered OR resolved since the watermark', async () => {
+  it('lists alerts triggered OR resolved since the watermark, latest change first', async () => {
     queueDigest();
     await loadAssessmentContext(run());
     const q = h.queries.find((x) => x.table === alerts)!;
     const { sql: text, params } = compile(q.where[0]);
     expect(text).toMatch(/"triggered_at" >= \$\d+ or "alerts"\."resolved_at" >= \$\d+/);
     expect(params).toContain(ORG);
+    // Ordered by the later of the two, so a just-resolved old alert is not
+    // cut off by DIGEST_ROW_LIMIT behind newer triggered rows.
+    expect(q.orderBy).toHaveLength(1);
+    expect(compile(q.orderBy[0]).sql).toMatch(/^GREATEST\("alerts"\."triggered_at", "alerts"\."resolved_at"\) desc$/);
+  });
+
+  it('a resolved alert row is stamped with its resolve time, an open one with its trigger time', async () => {
+    h.results.push([
+      { id: 'a2', title: 'EDR', severity: 'high', status: 'resolved', at: new Date('2026-10-20T07:00:00Z'), resolvedAt: new Date('2026-10-24T08:00:00Z') },
+      { id: 'a1', title: 'CPU', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z'), resolvedAt: null },
+    ]);
+    const ctx = await loadAssessmentContext(run());
+    expect(ctx!.digest.alerts.map((a) => [a.id, a.status, a.at])).toEqual([
+      ['a2', 'resolved', '2026-10-24T08:00:00.000Z'],
+      ['a1', 'active', '2026-10-24T07:00:00.000Z'],
+    ]);
   });
 
   it('falls back to now − 24 h when there is no watermark', async () => {
