@@ -82,7 +82,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Wisp W07 (spec §3 "acts alone"): the auto-admit specialist kinds, derived
   // from SPECIALIST_KIND_POLICY (leaf data module).
   launch_specialist: [...AUTO_ADMIT_SPECIALIST_KINDS],
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'], // list is a pure read (#10412); add/update/remove keep their tiers
   // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
   // so it runs without approval. The tool's base tier is 3, so every OTHER
   // action — isolate, release, and any value not offered yet (no adapter
@@ -307,7 +307,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // entry does not belong here; leaving a read out only costs one lightweight
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
-  manage_policy_feature_link: ['describe'],
+  manage_policy_feature_link: ['describe', 'list'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3.
   browse_device_event_log: ['list_logs'],
