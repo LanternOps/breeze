@@ -118,6 +118,8 @@ export const remoteAccessConsentSettingsSchema = z.object({
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
   technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+  // #10190 W06 (OD-5 (c), Gate A): default ON.
+  allowUserEndSession: z.boolean().default(true),
 });
 
 // Write-path validation for the WHOLE remote_access inlineSettings blob: the
@@ -135,6 +137,7 @@ export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSc
   notifyOnSessionEnd: z.boolean().optional(),
   showActiveIndicator: z.boolean().optional(),
   technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+  allowUserEndSession: z.boolean().optional(),
 });
 
 // Exported so the route can import the same schema (single source of truth).
@@ -1112,6 +1115,7 @@ async function decomposeInlineSettings(
         notifyOnSessionEnd: parsed.notifyOnSessionEnd,
         showActiveIndicator: parsed.showActiveIndicator,
         technicianIdentityLevel: parsed.technicianIdentityLevel,
+        allowUserEndSession: parsed.allowUserEndSession,
       });
       break;
     }
@@ -1568,6 +1572,7 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+        allowUserEndSession: row.allowUserEndSession,
       };
     }
 

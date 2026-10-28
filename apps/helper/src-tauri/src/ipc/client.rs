@@ -1052,9 +1052,13 @@ fn handle_prompt_action_result(
 ) {
     match payload_str(payload).map(serde_json::from_str::<prompt::PromptActionResult>) {
         Some(Ok(result)) => {
-            let changed = prompts.tracker().on_action_result(env_id, &result);
-            if changed {
+            let effect = prompts.action_result(env_id, &result);
+            if effect != prompt::ResultEffect::Ignored {
                 if let Some(ctx) = ctx {
+                    // An accepted Postpone or OK collapses a restart card to its list entry.
+                    if effect == prompt::ResultEffect::Collapsed {
+                        desktop::close_prompt_window(&ctx.app, &result.prompt_id);
+                    }
                     desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
                 }
             } else {
@@ -1831,16 +1835,16 @@ mod tests {
     const CLOSED_FAILED: &str =
         include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
 
-    /// Rule 4: a kind this build does not advertise (W04: anything but
-    /// notice.info@1), arriving anyway, is answered
+    /// Rule 4: a kind this build does not advertise (W05: anything but
+    /// notice.info@1 and the restart kinds), arriving anyway, is answered
     /// `prompt_closed{render_failed, unadvertised_kind}` on the same envelope
     /// id -- never dropped silently.
     #[tokio::test]
     async fn test_prompt_show_without_advertisement_is_answered_render_failed() {
         let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
-        let mut restart = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
-        restart["kind"] = serde_json::json!("restart.prompt");
-        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&restart.to_string())))
+        let mut elevation = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
+        elevation["kind"] = serde_json::json!("elevation.request");
+        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&elevation.to_string())))
             .await
             .expect("write prompt_show");
         let reply = read_reply(&mut broker, &key, &mut recv).await;
@@ -2024,7 +2028,7 @@ mod tests {
     }
 
     /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
-    /// (W04) and nothing else, names its version.
+    /// (W04) and the two restart kinds (W05) and nothing else, names its version.
     #[tokio::test]
     async fn test_auth_request_carries_the_prompt_advertisement() {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
@@ -2035,7 +2039,11 @@ mod tests {
         let env = read_frame(&mut broker_half, &ZERO_KEY, &mut recv).await.expect("auth_request");
         let v: serde_json::Value = serde_json::from_str(env.payload.as_ref().unwrap().get()).unwrap();
         assert_eq!(v["promptProtocolVersion"], 1);
-        assert_eq!(v["promptKinds"], serde_json::json!(["notice.info@1"]), "W04 advertises notice.info@1 only");
+        assert_eq!(
+            v["promptKinds"],
+            serde_json::json!(["notice.info@1", "restart.prompt@1", "restart.final@1"]),
+            "W05 advertises notice.info@1 and the restart kinds only"
+        );
         assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
         drop(broker_half);
         let _ = session.await;
@@ -2186,15 +2194,16 @@ mod prompt_auth_tests {
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
     }
 
-    // #10190 W04 (Task 4.2): this build draws notice cards, so the live
-    // authentication advertises exactly `notice.info@1` and nothing else.
+    // #10190 W05 (Task 5.2): this build draws notice cards (W04) and the
+    // restart cards, so the live authentication advertises exactly these.
     #[test]
-    fn advertises_notice_info_v1() {
+    fn advertises_restart_kinds_v1() {
+        let want = ["notice.info@1", "restart.prompt@1", "restart.final@1"];
         let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
         let req = build_auth_request(&id);
-        assert_eq!(req.prompt_kinds, vec!["notice.info@1".to_string()]);
+        assert_eq!(req.prompt_kinds, want.map(String::from).to_vec());
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["promptKinds"], serde_json::json!(["notice.info@1"]));
+        assert_eq!(json["promptKinds"], serde_json::json!(want));
         assert_eq!(json["promptProtocolVersion"], 1);
     }
 

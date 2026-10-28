@@ -226,12 +226,20 @@ func envelopeFor(t *testing.T, typ string, payload any) *ipc.Envelope {
 	return &ipc.Envelope{ID: "e-1", Type: typ, Payload: raw}
 }
 
-// The native user-helper advertises only the kinds whose wave shipped (plan
-// P2): W04 notice.info@1, W06 the remote kinds (TestNativeAdvertisesTheRemoteKinds
-// pins the per-OS rule). The SYSTEM helper still advertises nothing.
-func TestNativeRendererAdvertisesOnlyNoticeInfoInW04(t *testing.T) {
-	if got, want := advertisedNativePromptKinds(ipc.HelperRoleUser), nativePromptKindsFor(ipc.HelperRoleUser, runtime.GOOS, consentUISupported()); !reflect.DeepEqual(got, want) || got[0] != "notice.info@1" {
+// The native user-helper advertises the kinds whose wave has shipped (plan
+// P2): W04 notice.info@1, W05 restart.prompt@1 and restart.final@1 on every
+// OS, then W06's remote kinds where this machine can draw them
+// (TestNativeAdvertisesTheRemoteKinds pins the per-OS rule). The SYSTEM
+// helper still advertises nothing.
+func TestNativeRendererAdvertisesTheShippedKinds(t *testing.T) {
+	got := advertisedNativePromptKinds(ipc.HelperRoleUser)
+	if want := nativePromptKindsFor(ipc.HelperRoleUser, runtime.GOOS, consentUISupported()); !reflect.DeepEqual(got, want) {
 		t.Fatalf("native helper advertises %v; want %v", got, want)
+	}
+	// W04 notice.info, W05 restart.prompt + restart.final lead (append-only).
+	head := []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}
+	if len(got) < len(head) || strings.Join(got[:len(head)], ",") != strings.Join(head, ",") {
+		t.Fatalf("native helper advertises %v; want it to start with %v", got, head)
 	}
 	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
 		if got := advertisedNativePromptKinds(role); len(got) != 0 {
@@ -246,7 +254,8 @@ func TestNativeRendererAdvertisesOnlyNoticeInfoInW04(t *testing.T) {
 	}
 	sink := &promptSink{}
 	r := newNativePromptRenderer(advertisedNativePromptKinds(ipc.HelperRoleUser), (&fakeNativeShow{}).show, sink.send, func() time.Time { return nativeNow })
-	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.restart.json")))
+	// elevation.request is not advertised before W07.
+	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.elevation.waiting.json")))
 	closed := sink.waitFor(t, ipc.TypePromptClosed).(ipc.PromptClosed)
 	if closed.Reason != ipc.PromptClosedRenderFailed || closed.Detail != "unadvertised_kind" {
 		t.Fatalf("closed = %+v; an unadvertised prompt_show is answered render_failed (rule 4)", closed)

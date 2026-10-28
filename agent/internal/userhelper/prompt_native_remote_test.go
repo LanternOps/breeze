@@ -23,12 +23,12 @@ func TestNativeAdvertisesTheRemoteKinds(t *testing.T) {
 		consent bool
 		want    []string
 	}{
-		{"windows", true, []string{"notice.info@1", "remote.consent@1", "remote.session@1"}},
-		{"darwin", true, []string{"notice.info@1", "remote.consent@1"}},
-		{"linux", true, []string{"notice.info@1", "remote.consent@1"}},
+		{"windows", true, []string{"notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1", "remote.session@1"}},
+		{"darwin", true, []string{"notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1"}},
+		{"linux", true, []string{"notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1"}},
 		// No zenity or no display: no native consent (the same rule as
 		// SupportsConsentUI), so the agent never hands it one.
-		{"linux", false, []string{"notice.info@1"}},
+		{"linux", false, []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}},
 	} {
 		if got := nativePromptKindsFor(ipc.HelperRoleUser, tc.goos, tc.consent); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s consent=%v advertises %v, want %v", tc.goos, tc.consent, got, tc.want)

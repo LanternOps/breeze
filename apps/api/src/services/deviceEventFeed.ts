@@ -462,6 +462,11 @@ const actionLabels: Record<string, string> = {
   'device.maintenance.enable': 'Maintenance mode enabled',
   'device.reliability.baseline_set': 'Reliability baseline set',
   'device.reliability.baseline_cleared': 'Reliability baseline cleared',
+  // #10190 W05 — written by services/rebootUserActionAudit.ts from the agent's
+  // heartbeat (actor 'agent'), so they show on the Activities tab and in the
+  // Audit Log, not on the overview's deliberate-action rail.
+  'device.reboot.user_postponed': 'Restart postponed at the device',
+  'device.reboot.user_restart_now': 'Restart now chosen at the device',
   'device.maintenance.extend': 'Maintenance mode extended',
   'device.maintenance.disable': 'Maintenance mode disabled',
   'device.recovery_key.reveal': 'Recovery key revealed',

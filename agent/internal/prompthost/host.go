@@ -114,8 +114,8 @@ type actionKey struct {
 type placement struct {
 	owner       Owner
 	path        Path
-	renderer    string // broker session id while on the prompt path
-	role        ipc.HelperRole
+	renderer    string         // broker session id while on the prompt path
+	role        ipc.HelperRole // that renderer's helper role
 	version     int
 	epoch       uint32
 	presented   bool
@@ -891,6 +891,12 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		offered = offered && hasNext
 	}
 	onAction, owner := rec.p.OnAction, pl.owner
+	if onAction == nil && rec.p.OnActionRenderer != nil {
+		withRole, role := rec.p.OnActionRenderer, pl.role
+		onAction = func(actionID string, from Owner) (ActionOutcome, error) {
+			return withRole(actionID, from, role)
+		}
+	}
 	if !offered || onAction == nil {
 		h.mu.Unlock()
 		if onAction == nil {

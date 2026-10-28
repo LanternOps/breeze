@@ -899,7 +899,17 @@
         "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
         "ringDetailsNoHold": "Rollout-Reihenfolge {{order}} · keine Wartezeit vor der Genehmigung",
         "ringDetailsWithHold_one": "Rollout-Reihenfolge {{order}} · {{count}} Tag Wartezeit vor der Genehmigung",
-        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung"
+        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung",
+        "rebootPreviewHeading": "Vorschau",
+        "rebootPreviewDescription": "Das sieht die Person am Computer, wenn jetzt ein Neustart geplant wird. Die Uhrzeiten sind Beispiele.",
+        "rebootPreviewDefaultMarker": "Standard",
+        "rebootPreviewDefaultTitle": "Neustart zum Abschließen der Updateinstallation",
+        "rebootPreviewDefaultBody": "Ihr IT-Support-Team muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
+        "rebootPreviewConsequence": "Wenn Sie nichts tun, wird dieser Computer um {{time}} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
+        "rebootPreviewRestartNow": "Jetzt neu starten",
+        "rebootPreviewPostponeUntil": "Verschieben bis {{time}}",
+        "rebootPreviewDeadline": "Durch Verschieben wird der Neustart nie später als {{time}} durchgeführt.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",

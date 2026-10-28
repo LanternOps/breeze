@@ -11,11 +11,12 @@
 // timeout into a decision, render operator text on a breeze-class kind, keep
 // a dialog up the agent closed, or draw a second copy of a prompt.
 //
-// W04 advertises notice.info@1 (the user helper only); W06 adds
-// remote.consent@1 (wherever the native dialog can default to Deny) and
-// remote.session@1 (Windows, the native pill: prompt_native_indicator.go).
-// Any other kind that arrives anyway is answered prompt_closed{render_failed}
-// (spec §3.1 rule 4). A kind is live only where the server also enables it.
+// W04 advertises notice.info@1 and W05 restart.prompt@1 / restart.final@1
+// (the user helper only); W06 adds remote.consent@1 (wherever the native
+// dialog can default to Deny) and remote.session@1 (Windows, the native pill:
+// prompt_native_indicator.go). Any other kind that arrives anyway is answered
+// prompt_closed{render_failed} (spec §3.1 rule 4). A kind is live only where
+// the server also enables it.
 package userhelper
 
 import (
@@ -62,6 +63,9 @@ func advertisedNativePromptKinds(role ipc.HelperRole) []string {
 // nativePromptKindsFor is what a native helper of role advertises on goos.
 // Kinds are added by the wave that ships each one (plan P2), append-only:
 //   - W04: notice.info@1;
+//   - W05: restart.prompt@1 and its closing card restart.final@1 (drawn
+//     natively as a TaskDialogIndirect / display dialog / zenity question
+//     with the safe action — Postpone or OK — as the default), on every OS;
 //   - W06: remote.consent@1 where the native dialog can draw a Deny-default
 //     decision — the same condition as SupportsConsentUI (Windows and macOS
 //     always; Linux with zenity and a display) — and remote.session@1 on
@@ -73,7 +77,11 @@ func nativePromptKindsFor(role ipc.HelperRole, goos string, canDrawConsent bool)
 	if role != ipc.HelperRoleUser {
 		return []string{}
 	}
-	kinds := []string{"notice.info@1"}
+	kinds := []string{
+		"notice.info@1",
+		"restart.prompt@1", // W05
+		"restart.final@1",  // W05
+	}
 	if canDrawConsent {
 		kinds = append(kinds, "remote.consent@1")
 	}

@@ -142,6 +142,11 @@ type Prompt struct {
 	// state lock (it may call Update/Close) but serialized with every other
 	// action, so two sessions answering at once apply exactly one decision.
 	OnAction func(actionID string, from Owner) (ActionOutcome, error)
+	// OnActionRenderer is OnAction for a domain that records which renderer
+	// carried the decision (the restart audit's assist | native): role is
+	// the helper role of the renderer whose lease the action quoted. Used
+	// only when OnAction is nil; same locking contract.
+	OnActionRenderer func(actionID string, from Owner, role ipc.HelperRole) (ActionOutcome, error)
 	// OnExpire runs once when the response budget runs out. If the prompt is
 	// still open (not terminal) afterwards, the host closes it as expired.
 	OnExpire func()
