@@ -238,4 +238,22 @@ describe('scan-orgs repeatable tick slots compute-org jobs on the wall clock (#1
       }),
     ]);
   });
+
+  it('a double-fired tick within the same hour reuses the slot, so BullMQ still dedupes it', async () => {
+    createSecurityPostureWorker();
+    const tick = () => workerProcessors[0]!({ data: REGISTERED });
+
+    vi.setSystemTime(new Date('2026-09-18T03:15:00.000Z'));
+    await tick();
+    vi.setSystemTime(new Date('2026-09-18T03:45:00.000Z'));
+    await tick();
+
+    const jobIds = addBulkMock.mock.calls.map(
+      ([jobs]) => (jobs as Array<{ opts: { jobId: string } }>)[0]!.opts.jobId
+    );
+    expect(jobIds).toEqual([
+      `security-posture-${ORG}-2026-09-18T03`,
+      `security-posture-${ORG}-2026-09-18T03`,
+    ]);
+  });
 });
