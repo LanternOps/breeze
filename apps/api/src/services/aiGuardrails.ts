@@ -2345,6 +2345,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   apply_cis_remediation: { resource: 'devices', action: 'execute' },
   get_huntress_status: { resource: 'devices', action: 'read' },
   get_huntress_incidents: { resource: 'devices', action: 'read' },
+  get_huntress_agents: { resource: 'devices', action: 'read' },
   sync_huntress_data: { resource: 'organizations', action: 'write' },
   // User risk scoring tools
   get_user_risk_scores: { resource: 'users', action: 'read' },

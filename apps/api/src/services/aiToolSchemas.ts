@@ -1187,6 +1187,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_huntress_incidents: z.object({
+    incidentId: uuid.optional(),
     orgId: uuid.optional(),
     integrationId: uuid.optional(),
     status: z.enum(['open', 'in_progress', 'resolved', 'dismissed']).optional(),
@@ -1195,6 +1196,17 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     search: z.string().max(200).optional(),
     includeResolved: z.boolean().optional(),
     limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).max(100000).optional(),
+  }),
+
+  get_huntress_agents: z.object({
+    orgId: uuid.optional(),
+    integrationId: uuid.optional(),
+    mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+    offlineOnly: z.boolean().optional(),
+    deviceId: uuid.optional(),
+    search: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
     offset: z.number().int().min(0).max(100000).optional(),
   }),
 

@@ -267,6 +267,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',
+  get_huntress_agents: 'security_response',
   sync_huntress_data: 'security_response',
   create_incident: 'security_response',
   collect_evidence: 'security_response',

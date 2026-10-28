@@ -531,7 +531,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'google.ts': { exempt: 'vendor_console_admin' },
   'groups.ts': { tools: ['manage_groups'] },
   'helper/index.ts': { exempt: 'device_helper' },
-  'huntress.ts': { tools: ['get_huntress_status', 'get_huntress_incidents', 'sync_huntress_data'] },
+  'huntress.ts': { tools: ['get_huntress_status', 'get_huntress_incidents', 'get_huntress_agents', 'sync_huntress_data'] },
   'incidentActions.ts': { tools: ['execute_containment'] },
   'incidents.ts': { tools: ['list_incidents', 'create_incident', 'execute_containment', 'collect_evidence', 'get_incident_timeline', 'generate_incident_report'] },
   'installer.ts': { exempt: 'internal_plumbing' },
