@@ -80,9 +80,9 @@ const (
 
 const (
 	// AckedRetention keeps an entry the server has answered for this long
-	// after the ack. A decline with no withdraw to send (not pending at
-	// ingest) is settled at its decline time and ages out the same way.
-	// Un-acked pending declines never age out.
+	// after the ack. An auto_approved decline (no withdraw to send) is
+	// settled at its decline time and ages out the same way. Other un-acked
+	// declines never age out.
 	AckedRetention = 7 * 24 * time.Hour
 	// MaxEntries bounds the file. Above it the oldest acked entries go
 	// first, then the oldest overall (logged by the caller via Evicted).
@@ -97,17 +97,41 @@ const (
 // withdrawn on the server.
 const serverStatusPending = "pending"
 
-// AckOutcomeNotDelivered settles a decline the server is never told about:
-// the request was not pending at ingest (auto_approved, or no status
-// recorded), so there is no withdraw to send. Settling it lets the
-// AckedRetention prune apply; the local refusal holds until then.
+// serverStatusAutoApproved is the ingest answer for a request a PAM rule
+// approved on submit.
+const serverStatusAutoApproved = "auto_approved"
+
+// AckOutcomeNotDelivered settles the decline of an auto_approved request:
+// the server row is not pending, so there is no withdraw to send. Settling it
+// lets the AckedRetention prune apply; the local refusal holds until then.
 const AckOutcomeNotDelivered = "not_delivered"
 
-// settleIfUndeliverable marks a declined, unsettled entry whose request was
-// not pending at ingest as settled at its decline time. It reports whether it
-// changed e.
-func settleIfUndeliverable(e *Entry) bool {
-	if e.State != StateDeclined || e.ServerStatus == serverStatusPending || !e.AckedAt.IsZero() {
+// settleIfAutoApproved marks a declined, unsettled auto_approved entry as
+// settled at its decline time, and reports whether it changed e.
+//
+// Pruning it 7 days later cannot let the server apply it, because the server
+// bounds an auto_approved request's only actuation to 24 h (origin/main
+// a4ae60a146):
+//   - the actuation is created once, at ingest, with expiresAt = ingest +
+//     approvalDurationMinutes (default 15): apps/api/src/routes/agents/
+//     elevationRequests.ts:65,493-495,552-553,656-667. The rule duration is
+//     capped at MAX_APPROVAL_DURATION_MINUTES = 24*60 by
+//     apps/api/src/services/pamPolicySchemas.ts:13,70-76 (an API-layer cap;
+//     the column has no CHECK).
+//   - the other decision paths only act on a pending row
+//     (apps/api/src/routes/pam.ts:700, services/approvals/
+//     decideApprovalRequest.ts:1607), and legacy actuate_elevation only on
+//     an approved one (apps/api/src/routes/devices/actuateElevation.ts:207).
+//   - pam_apply_v2 is never built after expiresAt
+//     (apps/api/src/jobs/pamActuationCommandPayload.ts:66-73), and the agent
+//     refuses an apply whose expiresAt has passed (pamlifetime/store.go
+//     validateApply).
+//
+// A decline with no recorded status is NOT settled: it may be a pending
+// request a technician can still approve, so it never ages out and only the
+// MaxEntries cap can drop it (fail closed).
+func settleIfAutoApproved(e *Entry) bool {
+	if e.State != StateDeclined || e.ServerStatus != serverStatusAutoApproved || !e.AckedAt.IsZero() {
 		return false
 	}
 	e.AckedAt = e.DeclinedAt
@@ -245,7 +269,7 @@ func (s *Store) Load() error {
 			e.DeclinedAt = now
 			converted = true
 		}
-		if settleIfUndeliverable(&e) {
+		if settleIfAutoApproved(&e) {
 			converted = true
 		}
 		entries[id] = &e
@@ -410,11 +434,11 @@ func (s *Store) Decline(requestID string, reason Reason) error {
 		e.State = StateDeclined
 		e.Reason = reason
 		e.DeclinedAt = now
-		settleIfUndeliverable(e)
+		settleIfAutoApproved(e)
 	default:
 		s.makeRoomLocked()
 		e = &Entry{RequestID: requestID, State: StateDeclined, Reason: reason, CreatedAt: now, DeclinedAt: now}
-		settleIfUndeliverable(e)
+		settleIfAutoApproved(e)
 		s.entries[requestID] = e
 	}
 	s.wakeLocked(requestID)
@@ -445,7 +469,7 @@ func (s *Store) DeclineIfAwaiting(requestID string, reason Reason) (bool, error)
 	e.State = StateDeclined
 	e.Reason = reason
 	e.DeclinedAt = s.now()
-	settleIfUndeliverable(e)
+	settleIfAutoApproved(e)
 	s.wakeLocked(requestID)
 	snap := s.snapshotLocked()
 	s.mu.Unlock()

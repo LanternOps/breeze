@@ -380,8 +380,7 @@ func uuidN(n int) string {
 func TestMaxEntriesEvictsAckedFirst(t *testing.T) {
 	clock := newClock()
 	s := NewStore("", clock.Now)
-	// Pending declines: an undeliverable one is settled at once (and so
-	// acked), which would change which entry the cap evicts.
+	// Pending declines, the entries the withdraw drain acks.
 	declinePending := func(id string) {
 		t.Helper()
 		if _, err := s.BeginAwaiting(id, "pending"); err != nil {
@@ -722,10 +721,11 @@ func TestReadErrorFencesInMemoryAndKeepsFile(t *testing.T) {
 	}
 }
 
-// Review fix (#10420): a decline the server can never be told about (an
-// auto_approved request, or one with no recorded ingest status) is settled
-// locally at decline time, so the 7-day prune applies instead of the cap.
-func TestUndeliverableDeclineSettledAndPruned(t *testing.T) {
+// Review fix (#10420): a decline of an auto_approved request has no withdraw
+// to send, so it is settled locally at decline time and the 7-day prune
+// applies instead of the cap. The server cannot apply it after that: its one
+// actuation expires at most 24 h after ingest (see settleIfAutoApproved).
+func TestAutoApprovedDeclineSettledAndPruned(t *testing.T) {
 	clock := newClock()
 	s, path := newFileStore(t, clock)
 	if _, err := s.BeginAwaiting(reqA, "auto_approved"); err != nil {
@@ -740,10 +740,7 @@ func TestUndeliverableDeclineSettledAndPruned(t *testing.T) {
 	if _, err := s.DeclineIfAwaiting(reqB, ReasonDialogError); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Decline(reqC, ReasonUserTimeout); err != nil { // no entry, no status
-		t.Fatal(err)
-	}
-	for _, id := range []string{reqA, reqB, reqC} {
+	for _, id := range []string{reqA, reqB} {
 		e, ok := s.entry(id)
 		if !ok || e.AckedAt.IsZero() || !e.AckedAt.Equal(e.DeclinedAt) || e.AckOutcome != AckOutcomeNotDelivered {
 			t.Fatalf("entry %s = %+v, want settled at its decline time as %q", id, e, AckOutcomeNotDelivered)
@@ -755,14 +752,14 @@ func TestUndeliverableDeclineSettledAndPruned(t *testing.T) {
 	}
 
 	// An auto_approved dialog that died with the process is settled at load.
-	if _, err := s.BeginAwaiting(uuidN(7), "auto_approved"); err != nil {
+	if _, err := s.BeginAwaiting(reqC, "auto_approved"); err != nil {
 		t.Fatal(err)
 	}
 	reloaded := NewStore(path, clock.Now)
 	if err := reloaded.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if e, _ := reloaded.entry(uuidN(7)); e.AckOutcome != AckOutcomeNotDelivered || e.AckedAt.IsZero() {
+	if e, _ := reloaded.entry(reqC); e.AckOutcome != AckOutcomeNotDelivered || e.AckedAt.IsZero() {
 		t.Fatalf("converted auto_approved entry = %+v, want settled", e)
 	}
 
@@ -779,4 +776,30 @@ func TestUndeliverableDeclineSettledAndPruned(t *testing.T) {
 		t.Fatalf("Len after the prune = %d, want every settled entry pruned", n)
 	}
 	mustAllow(t, reloaded, reqA)
+}
+
+// Security review on #10420: a decline whose ingest status is unknown might be
+// a pending request a technician can still approve, so it is never settled
+// and never pruned (fail closed); only the cap can drop it.
+func TestDeclineWithUnknownStatusNeverSettled(t *testing.T) {
+	clock := newClock()
+	s, path := newFileStore(t, clock)
+	if err := s.Decline(reqA, ReasonUserTimeout); err != nil { // no entry, no status
+		t.Fatal(err)
+	}
+	if e, _ := s.entry(reqA); !e.AckedAt.IsZero() || e.AckOutcome != "" {
+		t.Fatalf("entry = %+v, want un-acked", e)
+	}
+	reloaded := NewStore(path, clock.Now)
+	if err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(30 * 24 * time.Hour)
+	if err := reloaded.Prune(); err != nil {
+		t.Fatal(err)
+	}
+	mustRefuse(t, reloaded, reqA, CodeUserDeclined)
+	if e, _ := reloaded.entry(reqA); !e.AckedAt.IsZero() {
+		t.Fatalf("entry after reload = %+v, want still un-acked", e)
+	}
 }
