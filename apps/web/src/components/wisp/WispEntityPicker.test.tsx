@@ -6,8 +6,12 @@ const h = vi.hoisted(() => ({
   fetchWithAuth: vi.fn(),
   addWispLink: vi.fn(),
   showToast: vi.fn(),
+  user: null as Record<string, unknown> | null,
 }));
-vi.mock('@/stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
+vi.mock('@/stores/auth', () => ({
+  fetchWithAuth: h.fetchWithAuth,
+  useAuthStore: (sel: (s: { user: unknown }) => unknown) => sel({ user: h.user }),
+}));
 vi.mock('@/lib/wispLinksApi', () => ({ addWispLink: h.addWispLink }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: h.showToast }));
 
@@ -44,8 +48,13 @@ function renderPicker(props: Partial<Parameters<typeof WispEntityPicker>[0]> = {
   return { onClose, onLinked };
 }
 
+// A full-access partner admin: the `*:*` grant and orgAccess 'all'.
+const ALL_ORG_ADMIN = { id: 'u-1', permissions: [{ resource: '*', action: '*' }], canManagePartnerWide: true };
+const users = { data: [{ id: 'u-2', name: 'Ada Lovelace', email: 'ada@example.com', status: 'active' }] };
+
 beforeEach(() => {
   vi.clearAllMocks();
+  h.user = ALL_ORG_ADMIN;
   h.fetchWithAuth.mockImplementation(async (url: string) => (url.startsWith('/quotes') ? res(200, quotes) : res(200, tickets)));
 });
 
@@ -215,5 +224,60 @@ describe('WispEntityPicker (W08 T9)', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByTestId('wisp-picker-row-ticket-t2')).toBeNull();
     expect(screen.getByTestId('wisp-picker-row-ticket-t1')).toBeTruthy();
+  });
+
+  // #10113: user links are partner-level, and the partner user list (`GET /users`)
+  // 403s a partner user without orgAccess 'all' — the same condition under which the
+  // grant ceiling refuses a partner-level link. The tab is offered only when both hold.
+  describe('Users tab (#10113)', () => {
+    it('is offered to an all-org partner user with users:read and lists partner users', async () => {
+      h.user = { id: 'u-1', permissions: [{ resource: 'users', action: 'read' }], canManagePartnerWide: true };
+      h.fetchWithAuth.mockImplementation(async (url: string) => (url === '/users' ? res(200, users) : res(200, tickets)));
+      renderPicker();
+      fireEvent.click(screen.getByTestId('wisp-picker-kind-user'));
+      expect((await screen.findByTestId('wisp-picker-row-user-u-2')).textContent).toContain('Ada Lovelace <ada@example.com>');
+      expect(h.fetchWithAuth).toHaveBeenCalledWith('/users');
+    });
+
+    it('is not offered to an org-restricted partner user, and /users is never requested', async () => {
+      h.user = { id: 'u-1', permissions: [{ resource: '*', action: '*' }], canManagePartnerWide: false };
+      renderPicker();
+      await screen.findByTestId('wisp-picker-row-ticket-t1');
+      expect(screen.queryByTestId('wisp-picker-kind-user')).toBeNull();
+      expect(screen.getByTestId('wisp-picker-kind-organization')).toBeTruthy();
+      expect(h.fetchWithAuth.mock.calls.some(([u]) => String(u).startsWith('/users'))).toBe(false);
+    });
+
+    it('is not offered without users:read, even with full org access', async () => {
+      h.user = { id: 'u-1', permissions: [{ resource: 'tickets', action: 'read' }], canManagePartnerWide: true };
+      renderPicker();
+      await screen.findByTestId('wisp-picker-row-ticket-t1');
+      expect(screen.queryByTestId('wisp-picker-kind-user')).toBeNull();
+    });
+
+    it('is not offered while org access is unknown (a session from before the field)', async () => {
+      h.user = { id: 'u-1', permissions: [{ resource: '*', action: '*' }] };
+      renderPicker();
+      await screen.findByTestId('wisp-picker-row-ticket-t1');
+      expect(screen.queryByTestId('wisp-picker-kind-user')).toBeNull();
+    });
+
+    it('falls back to Tickets when access drops while the Users tab is open', async () => {
+      h.fetchWithAuth.mockImplementation(async (url: string) => (url === '/users' ? res(200, users) : res(200, tickets)));
+      const view = render(
+        <WispEntityPicker open threadId="th-1" linkedKeys={new Set<string>()} onClose={vi.fn()} onLinked={vi.fn()} />,
+      );
+      fireEvent.click(screen.getByTestId('wisp-picker-kind-user'));
+      await screen.findByTestId('wisp-picker-row-user-u-2');
+      h.user = { ...ALL_ORG_ADMIN, canManagePartnerWide: false };
+      h.fetchWithAuth.mockClear();
+      view.rerender(
+        <WispEntityPicker open threadId="th-1" linkedKeys={new Set<string>()} onClose={vi.fn()} onLinked={vi.fn()} />,
+      );
+      expect(await screen.findByTestId('wisp-picker-row-ticket-t1')).toBeTruthy();
+      expect(screen.getByTestId('wisp-picker-kind-ticket').getAttribute('aria-selected')).toBe('true');
+      expect(screen.queryByTestId('wisp-picker-row-user-u-2')).toBeNull();
+      expect(h.fetchWithAuth.mock.calls.some(([u]) => String(u).startsWith('/users'))).toBe(false);
+    });
   });
 });

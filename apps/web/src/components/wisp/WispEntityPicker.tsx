@@ -1,11 +1,12 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { WISP_ENTITY_KINDS, type WispEntityKind, type WispThreadLink } from '@breeze/shared';
+import { PARTNER_LEVEL_ENTITY_KINDS, WISP_ENTITY_KINDS, type WispEntityKind, type WispThreadLink } from '@breeze/shared';
 import { Dialog } from '@/components/shared/Dialog';
 import { showToast } from '@/components/shared/Toast';
 import { ActionError } from '@/lib/runAction';
+import { hasPermission } from '@/lib/permissions';
 import { addWispLink } from '@/lib/wispLinksApi';
-import { fetchWithAuth } from '@/stores/auth';
+import { fetchWithAuth, useAuthStore, type Permission } from '@/stores/auth';
 import { filterRows, linkKey, WISP_ENTITY_SOURCES, type PickerRow } from './wispEntitySources';
 
 export type WispEntityPickerProps = {
@@ -20,6 +21,20 @@ export type WispEntityPickerProps = {
 
 const SEARCH_DEBOUNCE_MS = 250;
 
+/**
+ * #10113: whether the caller may pick partner-level kinds (users). Their list,
+ * `GET /users`, is partner-wide user management: the users route 403s a partner
+ * user without orgAccess 'all', and requires users:read. The grant ceiling
+ * refuses a partner-level link under the same orgAccess condition, so an
+ * org-restricted user could not link a user even with a list. `canManagePartnerWide`
+ * is that orgAccess bit from /users/me; absent (a session from before the field)
+ * reads as "no" — a missing tab beats a tab that always fails. UX only: the
+ * server enforces both checks regardless.
+ */
+function canPickPartnerLevel(user: { permissions?: Permission[]; canManagePartnerWide?: boolean } | null | undefined): boolean {
+  return user?.canManagePartnerWide === true && hasPermission(user.permissions, 'users', 'read');
+}
+
 type ListState = { status: 'loading' } | { status: 'failed' } | { status: 'ready'; rows: PickerRow[] };
 
 /**
@@ -31,7 +46,14 @@ type ListState = { status: 'loading' } | { status: 'failed' } | { status: 'ready
 export default function WispEntityPicker({ open, threadId, linkedKeys, onClose, onLinked }: WispEntityPickerProps) {
   const { t } = useTranslation('ai');
   const titleId = useId();
-  const [kind, setKind] = useState<WispEntityKind>('ticket');
+  const partnerLevelAllowed = useAuthStore((s) => canPickPartnerLevel(s.user));
+  const kinds = useMemo(
+    () => WISP_ENTITY_KINDS.filter((k) => partnerLevelAllowed || !PARTNER_LEVEL_ENTITY_KINDS.has(k)),
+    [partnerLevelAllowed],
+  );
+  const [selectedKind, setKind] = useState<WispEntityKind>('ticket');
+  // A tab that disappears while selected (access dropped mid-dialog) falls back to Tickets.
+  const kind: WispEntityKind = kinds.includes(selectedKind) ? selectedKind : 'ticket';
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [list, setList] = useState<ListState>({ status: 'loading' });
@@ -118,7 +140,7 @@ export default function WispEntityPicker({ open, threadId, linkedKeys, onClose, 
         />
 
         <div role="tablist" aria-label={t('wisp.picker.kindsLabel')} className="flex flex-wrap gap-1">
-          {WISP_ENTITY_KINDS.map((k) => (
+          {kinds.map((k) => (
             <button
               key={k}
               type="button"
