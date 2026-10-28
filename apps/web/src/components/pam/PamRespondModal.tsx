@@ -12,6 +12,12 @@ import { type ElevationRequest, FLOW_ICONS, FLOW_LABELS, requestTarget } from '.
 import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
 import { RegisterApproverDeviceLink } from '../approvals/RegisterApproverDeviceLink';
 
+/** `currentStatus` from the respond route's 409 body (`{ success, error, currentStatus }`). */
+function conflictStatus(body: unknown): string | undefined {
+  const b = body as { currentStatus?: unknown } | null | undefined;
+  return typeof b?.currentStatus === 'string' ? b.currentStatus : undefined;
+}
+
 /**
  * True when the assertion ceremony failed because the technician has no
  * registered approver device (the challenge carried no allowCredentials), which
@@ -288,6 +294,17 @@ export default function PamRespondModal({
           if (!isFactorRejection(err.body)) return;
           if (rejectionToken(err.body) === 'reauth_required') setReauthRequested(true);
           setError(err.message);
+          return;
+        }
+        if (err.status === 409 && conflictStatus(err.body) === 'withdrawn') {
+          // #8971: the device user declined (or did not answer) and the agent
+          // withdrew the request first. Nothing is pending any more, so say so
+          // and keep submit disabled; dismissing refreshes the list.
+          const message = t('pamRespond.withdrawnConflict', {
+            defaultValue: 'The user withdrew this request on the device.',
+          });
+          setSettledOtherwise(true);
+          setError(message);
           return;
         }
         if (err.status === 409) {

@@ -46,6 +46,7 @@ const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   'denied',
   'expired',
   'revoked',
+  'withdrawn',
 ];
 const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_jit_admin', 'ai_tool_action'];
 

@@ -960,6 +960,19 @@
     "statusFilterLabel": "Stato della minaccia",
     "categoryFilterLabel": "Categoria"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Rifiutata: registro della decisione del dispositivo non disponibile",
+    "userDeclined": "Rifiutata sul dispositivo",
+    "userDecisionPending": "Nessuna risposta sul dispositivo"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "L'utente ha ritirato questa richiesta sul dispositivo."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Richiesta non riuscita sul dispositivo",
+    "user_denied": "Rifiutata dall'utente",
+    "user_timeout": "Nessuna risposta sul dispositivo"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Impossibile caricare la cronologia audit (HTTP {{status}})",

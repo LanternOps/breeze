@@ -666,3 +666,52 @@ describe('PamRespondModal non-success outcomes on a 200', () => {
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+// #8971: the device user declined (or the prompt timed out) and the agent
+// withdrew the request before the technician answered. The respond route 409s
+// with `currentStatus: 'withdrawn'`; the modal says so instead of silently
+// closing, and a resubmit could only 409 again, so submit stays disabled.
+describe('PamRespondModal withdrawn conflict (#8971)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows the withdrew copy on a 409 with currentStatus withdrawn and keeps submit disabled', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        { success: false, error: 'Request is not pending', currentStatus: 'withdrawn' },
+        false,
+        409,
+      ),
+    );
+    const onActioned = vi.fn();
+    const onClose = vi.fn();
+    render(<PamRespondModal request={requestFixture()} onClose={onClose} onActioned={onActioned} />);
+    submit();
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The user withdrew this request on the device.',
+      ),
+    );
+    expect(screen.getByTestId('pam-respond-submit')).toBeDisabled();
+    // Dismissing refreshes the list so the row shows its real status.
+    expect(onActioned).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('pam-respond-cancel'));
+    expect(onActioned).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the close-and-refresh behaviour for a 409 with any other status', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse(
+        { success: false, error: 'Request is not pending', currentStatus: 'denied' },
+        false,
+        409,
+      ),
+    );
+    const onActioned = vi.fn();
+    render(<PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={onActioned} />);
+    submit();
+    await waitFor(() => expect(onActioned).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

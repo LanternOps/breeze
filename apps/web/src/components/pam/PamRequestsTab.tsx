@@ -53,6 +53,7 @@ const STATUS_OPTIONS: Array<ElevationStatus | ''> = [
   'denied',
   'expired',
   'revoked',
+  'withdrawn',
 ];
 const FLOW_OPTIONS: Array<ElevationFlowType | ''> = ['', 'uac_intercept', 'tech_jit_admin', 'ai_tool_action'];
 
@@ -79,6 +80,45 @@ function deviceUnableLabel(t: TFunction, reason: string | null | undefined): str
       return t('pamPamRequestsTab.table.deviceUnable.generic', {
         defaultValue: 'Device could not act on this request',
       });
+  }
+}
+
+/** #8971: one-line reason under the badge for a request the device user withdrew. */
+function withdrawReasonLabel(t: TFunction, reason: string | null | undefined): string | null {
+  switch (reason) {
+    case 'user_denied':
+      return t('pamWithdrawReason.user_denied', { defaultValue: 'Declined by the user' });
+    case 'user_timeout':
+      return t('pamWithdrawReason.user_timeout', { defaultValue: 'No answer on the device' });
+    case 'dialog_error':
+      return t('pamWithdrawReason.dialog_error', { defaultValue: 'Prompt failed on the device' });
+    default:
+      return null;
+  }
+}
+
+/**
+ * #8971: the agent refused an approved/auto_approved request because of the
+ * device user's own decision. Only those three codes are shown here; any other
+ * enforcement reason is not a user decision and stays hidden.
+ */
+function userDecisionEnforcementLabel(
+  t: TFunction,
+  status: string,
+  reason: string | null | undefined,
+): string | null {
+  if (status !== 'approved' && status !== 'auto_approved') return null;
+  switch (reason) {
+    case 'user_declined':
+      return t('pamEnforcement.userDeclined', { defaultValue: 'Declined on the device' });
+    case 'user_decision_pending':
+      return t('pamEnforcement.userDecisionPending', { defaultValue: 'No answer on the device' });
+    case 'user_decline_record_untrusted':
+      return t('pamEnforcement.declineRecordUntrusted', {
+        defaultValue: 'Refused: device decision record unavailable',
+      });
+    default:
+      return null;
   }
 }
 
@@ -312,6 +352,22 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                       {showDenialReason && r.denialReason && (
                         <div className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground" title={r.denialReason}>
                           {r.denialReason}
+                        </div>
+                      )}
+                      {r.status === 'withdrawn' && withdrawReasonLabel(t, r.withdrawnReason) && (
+                        <div
+                          className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
+                          data-testid={`pam-withdraw-reason-${r.id}`}
+                        >
+                          {withdrawReasonLabel(t, r.withdrawnReason)}
+                        </div>
+                      )}
+                      {userDecisionEnforcementLabel(t, r.status, r.enforcementReason) && (
+                        <div
+                          className="mt-0.5 max-w-[180px] truncate text-xs text-destructive"
+                          data-testid={`pam-enforcement-reason-${r.id}`}
+                        >
+                          {userDecisionEnforcementLabel(t, r.status, r.enforcementReason)}
                         </div>
                       )}
                       {r.deviceUnableAt && (
