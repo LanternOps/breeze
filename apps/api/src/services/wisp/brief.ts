@@ -115,9 +115,9 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 const rank = (c: Concern) => SEVERITY_DESC.indexOf(c.severity);
 const usd = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
 
-/** A live readiness concern (assessmentFinalizer `applyReadiness`): org subject, `evidence.readiness`. */
+/** A live readiness concern (assessmentFinalizer `applyReadiness`): readiness subject (#10386), `evidence.readiness`. */
 function isReadinessGap(c: Concern): boolean {
-  return c.subject.kind === 'org' && typeof c.evidence?.readiness === 'object' && c.evidence.readiness !== null;
+  return c.subject.kind === 'readiness' && typeof c.evidence?.readiness === 'object' && c.evidence.readiness !== null;
 }
 
 /**

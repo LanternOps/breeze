@@ -881,7 +881,8 @@
       "quote": "Quote",
       "invoice": "Invoice",
       "contract": "Contract",
-      "site": "Site"
+      "site": "Site",
+      "readiness": "Readiness"
     },
     "reviewApproval": "Review approval",
     "openLink": "Open",

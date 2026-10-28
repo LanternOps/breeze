@@ -881,7 +881,8 @@
       "quote": "Soumission",
       "invoice": "Facture",
       "contract": "Contrat",
-      "site": "Emplacement"
+      "site": "Emplacement",
+      "readiness": "Préparation"
     },
     "reviewApproval": "Examiner l'approbation",
     "openLink": "Ouvrir",

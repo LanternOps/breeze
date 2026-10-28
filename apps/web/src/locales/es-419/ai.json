@@ -881,7 +881,8 @@
       "quote": "Cotización",
       "invoice": "Factura",
       "contract": "Contrato",
-      "site": "Sitio"
+      "site": "Sitio",
+      "readiness": "Preparación"
     },
     "reviewApproval": "Revisar aprobación",
     "openLink": "Abrir",

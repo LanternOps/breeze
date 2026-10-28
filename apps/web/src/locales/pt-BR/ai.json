@@ -881,7 +881,8 @@
       "quote": "Orçamento",
       "invoice": "Fatura",
       "contract": "Contrato",
-      "site": "Local"
+      "site": "Local",
+      "readiness": "Prontidão"
     },
     "reviewApproval": "Revisar aprovação",
     "openLink": "Abrir",

@@ -86,6 +86,7 @@ vi.mock('../sentry', () => ({ captureException: h.captureException }));
 import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './grantAuthority';
 import {
   ConcernNotFoundError,
+  ConcernSubjectHeldError,
   isDigestOnly,
   listConcernsForCeiling,
   nextBackoff,
@@ -169,13 +170,33 @@ describe('upsertConcern', () => {
     expect(h.updates).toEqual([]);
   });
 
-  it('a unique violation on the other live index returns created:false instead of throwing', async () => {
+  // #10386: a signature-keyed insert that collides on the SUBJECT index with a
+  // different concern is not "the same concern" — returning that row's id let
+  // the readiness note overwrite a model-raised HIGH concern.
+  it('a signature insert blocked by a different live concern on the subject throws ConcernSubjectHeldError', async () => {
     const err = Object.assign(new Error('duplicate key'), { code: '23505', constraint_name: 'wisp_concerns_live_subject_uq' });
     h.insertReturning.push(err);
     h.selectRows.push([]); // no live row by signature
     h.selectRows.push([{ id: 'by-subject' }]);
-    await expect(upsertConcern({ ...baseInput, signature: 'readiness:x' })).resolves.toEqual({ id: 'by-subject', created: false });
+    const thrown = await upsertConcern({ ...baseInput, signature: 'readiness:x' }).catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(ConcernSubjectHeldError);
+    expect(thrown).toMatchObject({ code: 'concern_subject_held', heldByConcernId: 'by-subject', signature: 'readiness:x' });
     expect(h.updates).toEqual([]);
+  });
+
+  it('a subject-index violation whose signature row turned up meanwhile is that row (created:false)', async () => {
+    const err = Object.assign(new Error('duplicate key'), { code: '23505', constraint_name: 'wisp_concerns_live_subject_uq' });
+    h.insertReturning.push(err);
+    h.selectRows.push([{ id: 'by-signature' }]);
+    await expect(upsertConcern({ ...baseInput, signature: 'readiness:x' })).resolves.toEqual({ id: 'by-signature', created: false });
+  });
+
+  it('a subject-index violation whose holder vanished before the read retries the insert', async () => {
+    const err = Object.assign(new Error('duplicate key'), { code: '23505', constraint_name: 'wisp_concerns_live_subject_uq' });
+    h.insertReturning.push(err, [{ id: C1 }]);
+    h.selectRows.push([], []); // neither by signature nor by subject
+    await expect(upsertConcern({ ...baseInput, signature: 'readiness:x' })).resolves.toEqual({ id: C1, created: true });
+    expect(h.inserts).toHaveLength(2);
   });
 
   it('a non-unique error escapes', async () => {

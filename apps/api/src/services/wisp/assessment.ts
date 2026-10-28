@@ -45,7 +45,7 @@ import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
-import { listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
+import { ConcernSubjectHeldError, listConcernsForCeiling, resolveConcernBySignature, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import {
   CeilingViolationError,
@@ -262,19 +262,31 @@ const NO_AGENT_SUMMARY =
   "Wisp can't check this organization yet — no AI agent is configured. Create one under Settings → AI Agents.";
 const NO_AGENT_HREF = '/settings/ai-agents';
 
-/** Upsert (keyed by signature, so once per org however many ticks skip). Best effort: never changes the skip. */
+/**
+ * Upsert (keyed by signature, so once per org however many ticks skip). Best
+ * effort: never changes the skip. Subject `readiness`, not `org` (#10386).
+ * The slot can only be held by the onboarding readiness note (system-only
+ * kind); with no agent that inventory is moot, so it yields once.
+ */
 async function raiseNoAgentReadiness(grantId: string, partnerId: string, orgId: string): Promise<void> {
+  const raise = () => upsertConcern({
+    partnerId,
+    orgId,
+    subject: { kind: 'readiness', id: orgId },
+    summary: NO_AGENT_SUMMARY,
+    severity: 'info',
+    evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
+    signature: noAgentSignature(orgId),
+    raisedByGrantId: grantId,
+  });
   try {
-    await upsertConcern({
-      partnerId,
-      orgId,
-      subject: { kind: 'org', id: orgId },
-      summary: NO_AGENT_SUMMARY,
-      severity: 'info',
-      evidence: { href: NO_AGENT_HREF, reason: 'no_effective_agent' },
-      signature: noAgentSignature(orgId),
-      raisedByGrantId: grantId,
-    });
+    try {
+      await raise();
+    } catch (err) {
+      if (!(err instanceof ConcernSubjectHeldError)) throw err;
+      await resolveConcernBySignature(partnerId, `readiness:${orgId}`, 'superseded_no_effective_agent');
+      await raise();
+    }
   } catch (err) {
     captureException(err, undefined, { wisp_op: 'raise_no_agent_readiness' }, { fingerprint: ['wisp-readiness', 'raise'] });
   }

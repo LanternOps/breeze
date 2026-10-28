@@ -881,7 +881,8 @@
       "quote": "Preventivo",
       "invoice": "Fattura",
       "contract": "Contratto",
-      "site": "Sede"
+      "site": "Sede",
+      "readiness": "Prontezza"
     },
     "reviewApproval": "Rivedi approvazione",
     "openLink": "Apri",
