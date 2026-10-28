@@ -239,6 +239,8 @@
       "hintPlaceholder": "ör. Dana Yılmaz veya dana@example.com",
       "contactChosen": "Kişi: {{name}}",
       "useHint": "Bunun yerine ad veya e-posta kullan",
+      "requesterSuggestion": "Talep sahibi: {{name}}. Bu genellikle başka birinin ayrılışını bildiren bir yöneticidir.",
+      "useRequester": "Ayrılan kişi olarak kullan",
       "readOnly": "Bu kişiden başlatıldı."
     },
     "inheritor": {

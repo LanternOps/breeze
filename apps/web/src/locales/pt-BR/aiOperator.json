@@ -239,6 +239,8 @@
       "hintPlaceholder": "ex.: Dana Silva ou dana@example.com",
       "contactChosen": "Contato: {{name}}",
       "useHint": "Usar um nome ou e-mail",
+      "requesterSuggestion": "Solicitante do chamado: {{name}}. Muitas vezes é um gestor informando a saída de outra pessoa.",
+      "useRequester": "Usar como a pessoa que está saindo",
       "readOnly": "Iniciado a partir deste contato."
     },
     "inheritor": {

@@ -239,6 +239,8 @@
       "hintPlaceholder": "e.g. Dana Smith or dana@example.com",
       "contactChosen": "Contact: {{name}}",
       "useHint": "Use a name or email instead",
+      "requesterSuggestion": "Ticket requester: {{name}}. This is often a manager reporting someone else leaving.",
+      "useRequester": "Use as the person leaving",
       "readOnly": "Started from this contact."
     },
     "inheritor": {

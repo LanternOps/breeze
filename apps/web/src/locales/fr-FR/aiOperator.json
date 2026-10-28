@@ -239,6 +239,8 @@
       "hintPlaceholder": "p. ex. Dana Smith ou dana@example.com",
       "contactChosen": "Contact : {{name}}",
       "useHint": "Utiliser plutôt un nom ou une adresse e-mail",
+      "requesterSuggestion": "Demandeur du ticket : {{name}}. C'est souvent un responsable qui signale le départ d'une autre personne.",
+      "useRequester": "Utiliser comme personne qui part",
       "readOnly": "Lancé depuis ce contact."
     },
     "inheritor": {

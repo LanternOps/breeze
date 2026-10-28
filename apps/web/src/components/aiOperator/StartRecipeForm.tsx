@@ -89,11 +89,28 @@ type Inheritor = { mode: 'none' } | { mode: 'contact'; contactId: string } | { m
 
 function initialPerson(launch: StartRecipeLaunch): Person {
   if (launch.kind === 'contact') return { mode: 'contact', contactId: launch.contactId, label: launch.label };
-  if (launch.kind === 'ticket' && launch.contactId) {
-    return { mode: 'contact', contactId: launch.contactId, label: launch.label ?? launch.personHint ?? '' };
-  }
-  if (launch.kind === 'ticket') return { mode: 'hint', text: launch.personHint ?? '' };
+  // A ticket's requester is often the manager reporting SOMEONE ELSE's
+  // departure (#10075): from a ticket the person starts empty and the
+  // requester is only offered, by `ticketRequester`, for the technician to choose.
   return { mode: 'hint', text: '' };
+}
+
+/**
+ * The ticket's requester as the person leaving, offered as a one-click
+ * suggestion (never pre-filled). Null when the ticket names no one.
+ */
+function ticketRequester(launch: StartRecipeLaunch): Person | null {
+  if (launch.kind !== 'ticket') return null;
+  const name = launch.label?.trim() || launch.personHint?.trim() || '';
+  if (launch.contactId && name) return { mode: 'contact', contactId: launch.contactId, label: name };
+  const hint = launch.personHint?.trim();
+  return hint ? { mode: 'hint', text: hint } : null;
+}
+
+function samePerson(a: Person, b: Person): boolean {
+  if (a.mode === 'contact' && b.mode === 'contact') return a.contactId === b.contactId;
+  if (a.mode === 'hint' && b.mode === 'hint') return a.text.trim().toLowerCase() === b.text.trim().toLowerCase();
+  return false;
 }
 
 function toggleLabel(t: T, k: Toggle): { label: string; help: string } {
@@ -220,6 +237,8 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
   const defaults = useMemo(() => identityOffboardingEffectsSchema.parse({}) as Effects, []);
 
   const [person, setPerson] = useState<Person>(() => initialPerson(launch));
+  const requester = ticketRequester(launch);
+  const offerRequester = requester !== null && !samePerson(person, requester);
   const [inheritor, setInheritor] = useState<Inheritor>({ mode: 'none' });
   const [inheritorLabel, setInheritorLabel] = useState('');
   const [autoReply, setAutoReply] = useState<string | null>(null); // null = the generated default
@@ -381,7 +400,7 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
                 type="button"
                 data-testid="start-recipe-person-use-hint"
                 className="text-xs underline"
-                onClick={() => setPerson({ mode: 'hint', text: launch.kind === 'ticket' ? launch.personHint ?? '' : '' })}
+                onClick={() => setPerson({ mode: 'hint', text: '' })}
               >
                 {t('startRecipe.person.useHint')}
               </button>
@@ -400,6 +419,19 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
               onChange={(e) => setPerson({ mode: 'hint', text: e.target.value })}
             />
           </label>
+        )}
+        {offerRequester && (
+          <p data-testid="start-recipe-person-requester" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>{t('startRecipe.person.requesterSuggestion', { name: requester.mode === 'contact' ? requester.label : requester.text })}</span>
+            <button
+              type="button"
+              data-testid="start-recipe-person-use-requester"
+              className="underline"
+              onClick={() => setPerson(requester)}
+            >
+              {t('startRecipe.person.useRequester')}
+            </button>
+          </p>
         )}
       </fieldset>
 

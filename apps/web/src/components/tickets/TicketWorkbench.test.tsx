@@ -3487,8 +3487,9 @@ describe('TicketWorkbench — survivor timeline (#8972)', () => {
 });
 
 // Operator Recipe Library W06 R1b (#6171) — MOUNT proof for the ticket launch
-// point. The launcher carries the requester into the form and NO source
-// citation: identity_offboarding refuses one and opens its own checklist ticket.
+// point. The launcher only SUGGESTS the requester as the person leaving (#10075)
+// and sends NO source citation: identity_offboarding refuses one and opens its
+// own checklist ticket.
 describe('TicketWorkbench — Offboard a person launcher', () => {
   const OP_ORG = '11111111-1111-4111-8111-111111111111';
   const REQUESTER = '33333333-3333-4333-8333-333333333333';
@@ -3526,14 +3527,17 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
 
   beforeEach(async () => { await resetFeatures(); });
 
-  it('renders on the real workbench and opens the form with the requester contact, editable', async () => {
+  it('renders on the real workbench and opens the form with the person empty and the requester only suggested', async () => {
     mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat' }), { flag: true });
     render(<TicketWorkbench ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
     expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
-    expect(screen.getByTestId('start-recipe-person')).toHaveTextContent('Pat');
-    expect(screen.getByTestId('start-recipe-person-use-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('start-recipe-person-contact')).toBeNull();
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('Pat');
 
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    expect(screen.getByTestId('start-recipe-person-contact')).toHaveTextContent('Pat');
     fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
     expect(await screen.findByTestId('start-recipe-preview')).toHaveTextContent('the task opens its own checklist ticket');
     const draftCall = fetchMock.mock.calls.find(([u]) => String(u) === '/ai/operator/task-drafts');
@@ -3544,11 +3548,12 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
     expect(body).not.toHaveProperty('sourceId');
   });
 
-  it('pre-fills the submitter email as a hint when the ticket has no requester contact', async () => {
+  it('suggests, but does not pre-fill, the submitter email when the ticket has no requester contact', async () => {
     mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: null, submitterEmail: 'pat@example.com' }), { flag: true });
     render(<TicketWorkbench ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
-    expect((await screen.findByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('pat@example.com');
+    expect((await screen.findByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
   });
 
   it.each([

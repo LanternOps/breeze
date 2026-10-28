@@ -132,6 +132,65 @@ describe('StartRecipeForm — person', () => {
   });
 });
 
+// #10075: a ticket's requester is often the manager reporting SOMEONE ELSE's
+// departure. From a ticket the person starts empty; the requester is only a
+// one-click suggestion the technician must choose.
+describe('StartRecipeForm — person, from a ticket', () => {
+  const REQUESTER = { kind: 'ticket', contactId: CONTACT, personHint: 'pat@example.com', label: 'Pat Manager' } as const;
+
+  it('does not pre-fill the requester contact; the person starts empty', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={REQUESTER} />);
+    expect(screen.queryByTestId('start-recipe-person-contact')).toBeNull();
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+  });
+
+  it('does not pre-fill the submitter email when the ticket has no requester contact', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: null, personHint: 'pat@example.com', label: 'pat@example.com' }} />);
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+  });
+
+  it('a person typed without taking the suggestion is what the draft is asked about', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={REQUESTER} />);
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'Dana Smith' } });
+    await preview();
+    expect(bodies('/ai/operator/task-drafts')[0]!.inputs).toMatchObject({ contactId: null, personHint: 'Dana Smith' });
+  });
+
+  it('offers the requester contact as a suggestion; choosing it makes them the person', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={REQUESTER} />);
+    const suggestion = screen.getByTestId('start-recipe-person-requester');
+    expect(suggestion).toHaveTextContent('Pat Manager');
+    fireEvent.click(within(suggestion).getByTestId('start-recipe-person-use-requester'));
+    expect(screen.getByTestId('start-recipe-person-contact')).toHaveTextContent('Pat Manager');
+    // Once chosen, the suggestion is spent.
+    expect(screen.queryByTestId('start-recipe-person-requester')).toBeNull();
+    await preview();
+    expect(bodies('/ai/operator/task-drafts')[0]!.inputs).toMatchObject({ contactId: CONTACT, personHint: null });
+  });
+
+  it('with only a submitter email, choosing the suggestion fills the hint with it', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: null, personHint: 'pat@example.com', label: null }} />);
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('pat@example.com');
+    expect(screen.queryByTestId('start-recipe-person-requester')).toBeNull();
+  });
+
+  it('switching from the chosen requester to a typed name starts empty, not with the requester email', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={REQUESTER} />);
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-hint'));
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
+    // The requester is offered again.
+    expect(screen.getByTestId('start-recipe-person-requester')).toBeInTheDocument();
+  });
+
+  it('offers no suggestion when the ticket names no requester', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: null, personHint: null, label: null }} />);
+    expect(screen.queryByTestId('start-recipe-person-requester')).toBeNull();
+  });
+});
+
 describe('StartRecipeForm — inheritor', () => {
   it('contact and address are mutually exclusive in the UI and on the wire', async () => {
     render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
@@ -225,6 +284,7 @@ describe('StartRecipeForm — preview and submit', () => {
   it('submits mode live with the Library version and ONE key across retries, never a source citation', async () => {
     startResponse = () => json({ error: 'temporarily unavailable' }, 503);
     render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: CONTACT, personHint: null, label: 'Dana Smith' }} />);
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
     await preview();
     fireEvent.click(screen.getByTestId('start-recipe-submit'));
     await waitFor(() => expect(bodies('/ai/operator/tasks')).toHaveLength(1));

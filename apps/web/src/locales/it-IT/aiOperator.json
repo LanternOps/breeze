@@ -239,6 +239,8 @@
       "hintPlaceholder": "es. Dana Rossi o dana@example.com",
       "contactChosen": "Contatto: {{name}}",
       "useHint": "Usa invece un nome o un indirizzo email",
+      "requesterSuggestion": "Richiedente del ticket: {{name}}. Spesso è un responsabile che segnala l'uscita di un'altra persona.",
+      "useRequester": "Usa come persona in uscita",
       "readOnly": "Avviato da questo contatto."
     },
     "inheritor": {
