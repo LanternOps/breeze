@@ -192,6 +192,35 @@ describe('TicketFeed', () => {
     expect(screen.queryByTestId('ticket-comment-edit-ctrl-3')).toBeNull();
     expect(screen.queryByTestId('ticket-comment-delete-ctrl-3')).toBeNull();
   });
+
+  // #9960: the deliverable notes Breeze posts are commentType 'internal', so they
+  // render as a comment card — but nobody wrote them, so no Edit/Delete, even
+  // for a caller whose canManageComment says yes (tickets:manage).
+  it('never offers edit or delete on a system-authored note', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({
+            id: 'sys-note', userId: null, authorName: 'Breeze', authorType: 'system',
+            originPrincipalKind: 'system', commentType: 'internal', isPublic: false,
+            content: 'Internal instructions for this deliverable:',
+          }),
+          makeComment({ id: 'sys-origin', userId: null, authorType: 'internal', originPrincipalKind: 'system', commentType: 'internal' }),
+          makeComment({ id: 'human', content: 'mine' }),
+        ]}
+        onEditComment={vi.fn()}
+        onDeleteComment={vi.fn()}
+        canManageComment={() => true}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-sys-note')).toHaveTextContent('Internal instructions');
+    expect(screen.queryByTestId('ticket-comment-edit-sys-note')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-sys-note')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-edit-sys-origin')).toBeNull();
+    expect(screen.queryByTestId('ticket-comment-delete-sys-origin')).toBeNull();
+    expect(screen.getByTestId('ticket-comment-edit-human')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-delete-human')).toBeInTheDocument();
+  });
 });
 
 // ─── Inline comment editor ────────────────────────────────────────────────────

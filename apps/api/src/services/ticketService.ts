@@ -99,7 +99,9 @@ export type TicketServiceErrorCode =
   // #8313 import mode (spec §4.2, §4.4): a historic time in the future or
   // before the ticket was created, or a write outside the window's orgs.
   | 'IMPORT_TIME_INVALID'
-  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED';
+  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED'
+  // #9960: an edit/delete aimed at a system-generated or system-authored row.
+  | 'SYSTEM_COMMENT_READ_ONLY';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -3623,6 +3625,23 @@ export async function createTicketFromAlert(
  */
 export const SYSTEM_COMMENT_TYPES = new Set(['status_change', 'assignment', 'time_entry', 'system']);
 
+/**
+ * #9960: true for any row Breeze wrote rather than a person — a system comment
+ * TYPE, or a system-authored note that uses an ordinary type (the deliverable
+ * instructions / awaiting-evidence / auto-evidence notes are commentType
+ * 'internal' with authorType 'system' and originPrincipalKind 'system').
+ * Such rows have no author to own them, so `canManageAny` must not unlock them.
+ */
+export function isSystemAuthoredComment(comment: {
+  commentType: string;
+  authorType?: string | null;
+  originPrincipalKind?: string | null;
+}): boolean {
+  return SYSTEM_COMMENT_TYPES.has(comment.commentType)
+    || comment.authorType === 'system'
+    || comment.originPrincipalKind === 'system';
+}
+
 async function loadCommentWithTicket(commentId: string) {
   const rows = await db
     .select()
@@ -3640,8 +3659,8 @@ function assertCommentEditable(
   actor: TicketActor,
   canManageAny: boolean
 ) {
-  if (SYSTEM_COMMENT_TYPES.has(comment.commentType)) {
-    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 400);
+  if (isSystemAuthoredComment(comment)) {
+    throw new TicketServiceError('System-generated entries cannot be edited or deleted', 409, 'SYSTEM_COMMENT_READ_ONLY');
   }
   if (comment.deletedAt) {
     throw new TicketServiceError('Comment already deleted', 409);

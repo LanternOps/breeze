@@ -231,7 +231,13 @@
       "submit": "Uygula",
       "created_one": "{{count}} çıktı oluşturuldu",
       "created_other": "{{count}} çıktı oluşturuldu",
-      "skipped": "Atlandı (zaten mevcut): {{names}}"
+      "skipped": "Atlandı (zaten mevcut): {{names}}",
+      "items": "Bu setteki çıktılar",
+      "noItems": "Bu sette henüz çıktı yok."
+    },
+    "portal": {
+      "shown": "Portalda gösterilir",
+      "hidden": "Portalda gizli"
     },
     "errors": {
       "collision": "Bu çıktılar hedefte zaten mevcut: {{names}}",
