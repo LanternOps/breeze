@@ -30,6 +30,8 @@ const h = vi.hoisted(() => ({
   updateVar: vi.fn(),
   deleteVar: vi.fn(),
   endSession: vi.fn(),
+  /** When set, stands in for the service's `toApiTenantVariable` (a regressed service that leaks a secret). */
+  toApiOverride: null as null | ((row: unknown) => unknown),
 }));
 
 vi.mock('../db', () => ({
@@ -40,13 +42,18 @@ vi.mock('../db', () => ({
 vi.mock('./aiTools', () => ({ verifyDeviceAccess: h.verify }));
 vi.mock('./aiDispatch', () => ({ aiExecuteCommand: h.exec }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: h.auditAsync }));
-vi.mock('./tenantVariables', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  listTenantVariables: h.listVars,
-  createTenantVariable: h.createVar,
-  updateTenantVariable: h.updateVar,
-  deleteTenantVariable: h.deleteVar,
-}));
+vi.mock('./tenantVariables', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./tenantVariables')>();
+  return {
+    ...actual,
+    toApiTenantVariable: (row: Parameters<typeof actual.toApiTenantVariable>[0]) =>
+      (h.toApiOverride ?? actual.toApiTenantVariable)(row),
+    listTenantVariables: h.listVars,
+    createTenantVariable: h.createVar,
+    updateTenantVariable: h.updateVar,
+    deleteTenantVariable: h.deleteVar,
+  };
+});
 vi.mock('./quickSupportEnd', () => ({ endSupportSession: h.endSession }));
 
 import type { AuthContext } from '../middleware/auth';
@@ -92,6 +99,7 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   h.verify.mockResolvedValue({ device });
   h.select.mockImplementation(() => chain([]));
+  h.toApiOverride = null;
 });
 
 describe('browse_device_event_log', () => {
@@ -148,6 +156,24 @@ describe('manage_tenant_variables (W13-D7: never a secret value)', () => {
       { id: VAR, key: 'api_base', isSecret: false, value: SECRET, ownerScope: 'organization', orgId: ORG },
     ]);
     expect(await raw('manage_tenant_variables', { action: 'list' })).toContain(SECRET);
+  });
+
+  it('create and update output never shows a secret value, even if the service shape leaked one', async () => {
+    h.toApiOverride = (row) => ({ ...(row as object), ownerScope: 'organization' });
+    h.select.mockImplementation(() => chain([varRow()]));
+    h.updateVar.mockResolvedValue(varRow({ isSecret: true, value: SECRET }));
+    h.createVar.mockResolvedValue(varRow({ isSecret: true, value: SECRET }));
+    for (const input of [
+      { action: 'update', variableId: VAR, value: 'x' },
+      { action: 'create', key: 'api_base', value: 'x' },
+    ]) {
+      const text = await raw('manage_tenant_variables', input);
+      expect(text).not.toContain(SECRET);
+      expect(JSON.parse(text).variable).toMatchObject({ id: VAR, isSecret: true, value: null });
+    }
+    // Control: a plain row's value is shown.
+    h.updateVar.mockResolvedValue(varRow({ value: SECRET }));
+    expect(await raw('manage_tenant_variables', { action: 'update', variableId: VAR, value: 'x' })).toContain(SECRET);
   });
 
   it('the update/delete row lookup selects only id, owner and the secret flag — never the stored value', async () => {
