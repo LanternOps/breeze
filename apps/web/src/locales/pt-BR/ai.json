@@ -694,13 +694,13 @@
       "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar.",
       "partnerDisabled": "O Wisp está desativado para o seu parceiro. Um administrador pode reativá-lo.",
       "system": {
-        "budgetExhausted": "Pausado: o orçamento de hoje acabou. O Wisp retoma quando o orçamento reiniciar em {{hours}} h.",
-        "budgetExhaustedNoTime": "Pausado: o orçamento de hoje acabou. O Wisp retoma quando o orçamento reiniciar.",
+        "budgetExhausted": "Pausado pelo Breeze: o orçamento de hoje acabou. O orçamento reinicia em {{hours}} h.",
+        "budgetExhaustedNoTime": "Pausado pelo Breeze: o orçamento de hoje acabou.",
         "grantorAccessLost": "Pausado pelo Breeze: seu acesso não cobre mais esta permissão. O Wisp retoma sozinho quando seu acesso voltar.",
         "grantorSuspended": "Pausado pelo Breeze: sua conta está suspensa. O Wisp retoma sozinho quando a suspensão for removida.",
         "factorExpired": "Pausado pelo Breeze: sua verificação de login para esta permissão expirou.",
         "entitlementLost": "Pausado pelo Breeze: seu plano não inclui mais o Wisp. O Wisp retoma sozinho quando seu plano voltar a incluí-lo.",
-        "unknown": "Pausado pelo Breeze. Você não pode retomá-lo aqui; ele retoma sozinho quando a causa for resolvida."
+        "unknown": "Pausado pelo Breeze. Você não pode retomá-lo aqui."
       }
     },
     "live": {

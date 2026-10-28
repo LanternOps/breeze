@@ -694,13 +694,13 @@
       "byYou": "Hai messo Wisp in pausa. Non farà controlli né ti invierà promemoria finché non lo riprendi.",
       "partnerDisabled": "Wisp è disattivato per il tuo partner. Un amministratore può riattivarlo.",
       "system": {
-        "budgetExhausted": "In pausa: il budget di oggi è esaurito. Wisp riprende quando il budget si azzera tra {{hours}} h.",
-        "budgetExhaustedNoTime": "In pausa: il budget di oggi è esaurito. Wisp riprende quando il budget si azzera.",
+        "budgetExhausted": "Messo in pausa da Breeze: il budget di oggi è esaurito. Il budget si azzera tra {{hours}} h.",
+        "budgetExhaustedNoTime": "Messo in pausa da Breeze: il budget di oggi è esaurito.",
         "grantorAccessLost": "Messo in pausa da Breeze: il tuo accesso non copre più questa autorizzazione. Wisp riprende da solo quando il tuo accesso viene ripristinato.",
         "grantorSuspended": "Messo in pausa da Breeze: il tuo account è sospeso. Wisp riprende da solo quando la sospensione viene revocata.",
         "factorExpired": "Messo in pausa da Breeze: la verifica di accesso per questa autorizzazione è scaduta.",
         "entitlementLost": "Messo in pausa da Breeze: il tuo piano non include più Wisp. Wisp riprende da solo quando il tuo piano lo include di nuovo.",
-        "unknown": "Messo in pausa da Breeze. Non puoi riprenderlo da qui; riprende da solo quando la causa viene risolta."
+        "unknown": "Messo in pausa da Breeze. Non puoi riprenderlo da qui."
       }
     },
     "live": {

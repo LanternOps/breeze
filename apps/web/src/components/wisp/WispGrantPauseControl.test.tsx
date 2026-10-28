@@ -63,6 +63,8 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
     expect(reason).toHaveAttribute('data-reason', 'budget_exhausted');
     expect(reason).toHaveTextContent("today's budget is used up");
     expect(reason).toHaveTextContent('20 h');
+    // No server path resumes a budget_exhausted grant, so the line must not promise one.
+    expect(reason).not.toHaveTextContent(/resume/i);
     const resume = screen.getByTestId('wisp-resume') as HTMLButtonElement;
     expect(resume.disabled).toBe(true);
     expect(reason.id).not.toBe('');

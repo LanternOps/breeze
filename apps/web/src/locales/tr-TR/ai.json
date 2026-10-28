@@ -694,13 +694,13 @@
       "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez.",
       "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir.",
       "system": {
-        "budgetExhausted": "Duraklatıldı: bugünün bütçesi tükendi. Wisp, bütçe {{hours}} saat içinde sıfırlandığında devam eder.",
-        "budgetExhaustedNoTime": "Duraklatıldı: bugünün bütçesi tükendi. Wisp, bütçe sıfırlandığında devam eder.",
+        "budgetExhausted": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi. Bütçe {{hours}} saat içinde sıfırlanır.",
+        "budgetExhaustedNoTime": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi.",
         "grantorAccessLost": "Breeze tarafından duraklatıldı: erişiminiz artık bu yetkiyi kapsamıyor. Erişiminiz geri geldiğinde Wisp kendiliğinden devam eder.",
         "grantorSuspended": "Breeze tarafından duraklatıldı: hesabınız askıya alındı. Askıya alma kaldırıldığında Wisp kendiliğinden devam eder.",
         "factorExpired": "Breeze tarafından duraklatıldı: bu yetki için oturum açma doğrulamanızın süresi doldu.",
         "entitlementLost": "Breeze tarafından duraklatıldı: planınız artık Wisp içermiyor. Planınız yeniden içerdiğinde Wisp kendiliğinden devam eder.",
-        "unknown": "Breeze tarafından duraklatıldı. Buradan devam ettiremezsiniz; neden ortadan kalktığında kendiliğinden devam eder."
+        "unknown": "Breeze tarafından duraklatıldı. Buradan devam ettiremezsiniz."
       }
     },
     "live": {

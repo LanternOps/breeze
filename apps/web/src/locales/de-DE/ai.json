@@ -694,13 +694,13 @@
       "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
       "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten.",
       "system": {
-        "budgetExhausted": "Pausiert: Das heutige Budget ist aufgebraucht. Wisp läuft weiter, wenn das Budget in {{hours}} Std. zurückgesetzt wird.",
-        "budgetExhaustedNoTime": "Pausiert: Das heutige Budget ist aufgebraucht. Wisp läuft weiter, wenn das Budget zurückgesetzt wird.",
+        "budgetExhausted": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht. Das Budget wird in {{hours}} Std. zurückgesetzt.",
+        "budgetExhaustedNoTime": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht.",
         "grantorAccessLost": "Von Breeze pausiert: Ihr Zugriff deckt diese Berechtigung nicht mehr ab. Wisp läuft automatisch weiter, sobald Ihr Zugriff wiederhergestellt ist.",
         "grantorSuspended": "Von Breeze pausiert: Ihr Konto ist gesperrt. Wisp läuft automatisch weiter, sobald die Sperre aufgehoben ist.",
         "factorExpired": "Von Breeze pausiert: Ihre Anmeldeprüfung für diese Berechtigung ist abgelaufen.",
         "entitlementLost": "Von Breeze pausiert: Ihr Tarif enthält Wisp nicht mehr. Wisp läuft automatisch weiter, sobald Ihr Tarif es wieder enthält.",
-        "unknown": "Von Breeze pausiert. Sie können es hier nicht fortsetzen; es läuft automatisch weiter, sobald die Ursache behoben ist."
+        "unknown": "Von Breeze pausiert. Sie können es hier nicht fortsetzen."
       }
     },
     "live": {

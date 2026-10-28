@@ -694,13 +694,13 @@
       "byYou": "Vous avez mis Wisp en pause. Il ne fera aucune vérification et ne vous enverra aucun rappel tant que vous n'aurez pas repris.",
       "partnerDisabled": "Wisp est désactivé pour votre partenaire. Un administrateur peut le réactiver.",
       "system": {
-        "budgetExhausted": "En pause : le budget du jour est épuisé. Wisp reprendra à la réinitialisation du budget, dans {{hours}} h.",
-        "budgetExhaustedNoTime": "En pause : le budget du jour est épuisé. Wisp reprendra à la réinitialisation du budget.",
+        "budgetExhausted": "Mis en pause par Breeze : le budget du jour est épuisé. Le budget sera réinitialisé dans {{hours}} h.",
+        "budgetExhaustedNoTime": "Mis en pause par Breeze : le budget du jour est épuisé.",
         "grantorAccessLost": "Mis en pause par Breeze : votre accès ne couvre plus cette autorisation. Wisp reprendra de lui-même lorsque votre accès sera rétabli.",
         "grantorSuspended": "Mis en pause par Breeze : votre compte est suspendu. Wisp reprendra de lui-même lorsque la suspension sera levée.",
         "factorExpired": "Mis en pause par Breeze : votre vérification de connexion pour cette autorisation a expiré.",
         "entitlementLost": "Mis en pause par Breeze : votre forfait n’inclut plus Wisp. Wisp reprendra de lui-même lorsque votre forfait l’inclura de nouveau.",
-        "unknown": "Mis en pause par Breeze. Vous ne pouvez pas le reprendre ici; il reprendra de lui-même lorsque la cause sera réglée."
+        "unknown": "Mis en pause par Breeze. Vous ne pouvez pas le reprendre ici."
       }
     },
     "live": {
