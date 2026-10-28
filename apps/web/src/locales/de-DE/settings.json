@@ -6431,6 +6431,7 @@
     "title": "Benutzer",
     "description": "Verwalten Sie Benutzerzugriff, Rollen und Berechtigungen.",
     "sessionTimeoutPointer": "Das Sitzungs-Leerlauf-Timeout wird unter Sicherheit konfiguriert",
+    "linkedUserMissing": "Der verlinkte Benutzer ist nicht in dieser Liste. Er wurde möglicherweise entfernt oder gehört nicht zu den Benutzern, die Sie sehen können.",
     "never": "Niemals",
     "actions": {
       "tryAgain": "Versuchen Sie es erneut",

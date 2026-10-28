@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -55,6 +55,11 @@ type UserListProps = {
   onRemove?: (user: User) => void;
   onResendInvite?: (user: User) => void;
   onResetMfa?: (user: User) => void;
+  /**
+   * #10111 — the user selected by the page's `#<userId>` hash (Wisp links a
+   * user as `/settings/users#<id>`). The row is marked and scrolled into view.
+   */
+  highlightedUserId?: string | null;
 };
 
 const statusStyles: Record<string, string> = {
@@ -83,9 +88,33 @@ const mfaStatusLabelKeys: Record<MfaStatus, string> = {
   not_required: 'userList.mfaStatus.notRequired',
 };
 
-export default function UserList({ users, currentUserId, onInvite, onEdit, onRemove, onResendInvite, onResetMfa }: UserListProps) {
+export default function UserList({
+  users,
+  currentUserId,
+  onInvite,
+  onEdit,
+  onRemove,
+  onResendInvite,
+  onResetMfa,
+  highlightedUserId,
+}: UserListProps) {
   const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
+  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
+  const highlightedVisible = Boolean(highlightedUserId && users.some(u => u.id === highlightedUserId));
+
+  // A newly linked user must not stay hidden behind an earlier search. Reset
+  // during render (not in an effect) so the row is mounted before the scroll
+  // effect below runs.
+  const [prevHighlightedUserId, setPrevHighlightedUserId] = useState(highlightedUserId);
+  if (highlightedUserId !== prevHighlightedUserId) {
+    setPrevHighlightedUserId(highlightedUserId);
+    if (highlightedUserId) setQuery('');
+  }
+
+  useEffect(() => {
+    if (highlightedVisible) highlightedRowRef.current?.scrollIntoView({ block: 'center' });
+  }, [highlightedUserId, highlightedVisible]);
 
   const filteredUsers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -151,8 +180,16 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
             </tr>
           </thead>
           <tbody>
-            {filteredUsers.map(user => (
-              <tr key={user.id} className="border-t">
+            {filteredUsers.map(user => {
+              const highlighted = user.id === highlightedUserId;
+              return (
+              <tr
+                key={user.id}
+                ref={highlighted ? highlightedRowRef : undefined}
+                data-testid={`user-row-${user.id}`}
+                aria-current={highlighted ? 'true' : undefined}
+                className={cn('border-t', highlighted && 'bg-primary/5 outline outline-2 -outline-offset-2 outline-primary/60')}
+              >
                 <td className="px-4 py-3 font-medium">{user.name}</td>
                 <td className="px-4 py-3 text-muted-foreground">{user.email}</td>
                 <td className="px-4 py-3">{user.role}</td>
@@ -239,7 +276,8 @@ export default function UserList({ users, currentUserId, onInvite, onEdit, onRem
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {filteredUsers.length === 0 && (
               <tr className="border-t">
                 <td className="px-4 py-8 text-center text-sm text-muted-foreground" colSpan={7}>

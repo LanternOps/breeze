@@ -6431,6 +6431,7 @@
     "title": "Utilisateurs",
     "description": "Gérer l’accès des utilisateurs, les rôles et les permissions.",
     "sessionTimeoutPointer": "Le délai d’inactivité de la session se configure sous Sécurité",
+    "linkedUserMissing": "L’utilisateur lié ne figure pas dans cette liste. Il a peut-être été supprimé, ou il ne fait pas partie des utilisateurs que vous pouvez voir.",
     "never": "Jamais",
     "actions": {
       "tryAgain": "Réessayer",

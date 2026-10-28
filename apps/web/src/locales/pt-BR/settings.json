@@ -6484,6 +6484,7 @@
     "title": "Usuários",
     "description": "Gerencie o acesso, as funções e as permissões do usuário.",
     "sessionTimeoutPointer": "O tempo limite de inatividade da sessão é configurado em Segurança",
+    "linkedUserMissing": "O usuário vinculado não está nesta lista. Ele pode ter sido removido ou não estar entre os usuários que você pode ver.",
     "never": "Nunca",
     "actions": {
       "tryAgain": "Tente novamente",

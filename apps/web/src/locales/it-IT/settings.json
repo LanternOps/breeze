@@ -6479,6 +6479,7 @@
     "title": "Utenti",
     "description": "Gestisci accessi, ruoli e autorizzazioni degli utenti.",
     "sessionTimeoutPointer": "Il timeout di inattività della sessione si configura in Sicurezza",
+    "linkedUserMissing": "L’utente collegato non è in questo elenco. Potrebbe essere stato rimosso oppure non rientra tra gli utenti che puoi vedere.",
     "never": "Mai",
     "actions": {
       "tryAgain": "Riprova",

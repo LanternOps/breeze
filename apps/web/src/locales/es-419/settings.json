@@ -6431,6 +6431,7 @@
     "title": "Usuarios",
     "description": "Administre el acceso, los roles y los permisos de los usuarios.",
     "sessionTimeoutPointer": "El tiempo de inactividad de la sesión se configura en Seguridad",
+    "linkedUserMissing": "El usuario vinculado no está en esta lista. Es posible que se haya eliminado o que no esté entre los usuarios que puede ver.",
     "never": "Nunca",
     "actions": {
       "tryAgain": "Intentar otra vez",

@@ -6479,6 +6479,7 @@
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
     "sessionTimeoutPointer": "Session idle timeout is configured under Security",
+    "linkedUserMissing": "The linked user isn't in this list. They may have been removed, or they're outside the users you can see.",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",

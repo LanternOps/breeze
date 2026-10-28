@@ -14,6 +14,21 @@ import { showToast } from '../shared/Toast';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove' | 'resetMfa';
 
+/**
+ * #10111 — the user id in `#<userId>`. Wisp links a user as
+ * `/settings/users#<encodeURIComponent(id)>` (`wispEntityHref`), and that href
+ * is persisted on Wisp link rows, so this page owns resolving it.
+ */
+function userIdFromHash(hash: string): string | null {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 type InviteFormValues = {
   email: string;
   name: string;
@@ -47,6 +62,15 @@ export default function UsersPage() {
   const [editOrgAccess, setEditOrgAccess] = useState<OrgAccessLevel>('none');
   const [editOrgIds, setEditOrgIds] = useState<string[]>([]);
   const [editOrgIdsError, setEditOrgIdsError] = useState<string>();
+  // #10111 — user selected by the URL hash (Wisp entity links).
+  const [linkedUserId, setLinkedUserId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const applyHash = () => setLinkedUserId(userIdFromHash(window.location.hash));
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
   // Shared toast helper (auto-dismisses). Only the manual-invite-link toast is
   // sticky (duration 0) so the admin can still copy the link (#9603).
   const addToast = useCallback((type: 'success' | 'warning' | 'error', message: string, inviteUrl?: string) => {
@@ -419,8 +443,21 @@ export default function UsersPage() {
         </div>
       )}
 
+      {/* #10111 — a linked user outside this viewer's list: say so rather
+          than land silently on the unfiltered list. */}
+      {linkedUserId && !users.some(u => u.id === linkedUserId) && (
+        <div
+          role="status"
+          data-testid="users-linked-user-missing"
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-300"
+        >
+          {t('usersPage.linkedUserMissing')}
+        </div>
+      )}
+
       <UserList
         users={users}
+        highlightedUserId={linkedUserId}
         currentUserId={currentUser?.id}
         onInvite={handleInvite}
         onEdit={handleEdit}
