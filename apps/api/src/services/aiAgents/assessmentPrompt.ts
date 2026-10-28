@@ -31,6 +31,11 @@ import { AGENT_PROMPT_AUTHORITY_DISCLAIMER, sanitizeSweepText, type AgentRunProm
  * `watchPromptLines` so this module stays free of the DB-bound watches module.
  */
 export interface AgentRunAssessmentPromptContext {
+  /**
+   * The run's org (#10387): `id` is `run.orgId`, the only id an `org` subject
+   * may carry; `name` is tenant-authored, so it is rendered fenced.
+   */
+  org: { id: string; name: string | null };
   reason: AssessmentReason;
   threadSummary: string;
   openConcerns: Concern[];
@@ -45,6 +50,7 @@ export interface AgentRunAssessmentPromptContext {
 export const ASSESSMENT_NO_CHANGES_LINE = 'No changes since the last assessment.';
 
 const SUMMARY_MAX = 300;
+const ORG_NAME_MAX = 200;
 const TITLE_MAX = 160;
 
 function reasonLine(reason: AssessmentReason): string {
@@ -116,6 +122,16 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'fits what changed: stay quiet | update a concern | nudge | propose an action | request a specialist — '
     + 'call the matching tool; call nothing when nothing changed.',
   );
+  // #10387: without this the model sent org-level concerns with the nil UUID
+  // and the finalizer dropped them. The id is server-generated (trusted); the
+  // name is tenant-authored and goes in its own fence.
+  if (a) {
+    lines.push(
+      `Organization id: ${a.org.id}. A concern about the organization as a whole uses `
+      + `subject { kind: 'org', id: '${a.org.id}' } — never another id.`,
+    );
+    lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
+  }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
   lines.push('- Known concern changed or is fixed → update_concern (resolve it with an outcome when it is fixed).');
   lines.push('- The person should act now → nudge (one concern, one next step).');

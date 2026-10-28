@@ -353,6 +353,29 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     expect(finalTransition()?.to).toBe('completed');
   });
 
+  // #10387: the prompt names the run's org, and the record_concern tool the
+  // run actually registers refuses an org subject that is not that org.
+  it('names the run org in the prompt and wires record_concern to refuse another org id', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    dbMockState.rowQueues.organizations = [[{ id: ORG_ID, partnerId: PARTNER_ID, name: 'Berthoud Vet Care' }]];
+    await executeAgentRun(RUN_ID);
+    const prompt = String(lastQuery?.prompt);
+    expect(prompt).toContain(`Organization id: ${ORG_ID}.`);
+    expect(prompt).toContain('Berthoud Vet Care');
+
+    const extraTools = (createBreezeMcpServer.mock.calls[0]?.[4] ?? []) as unknown as Array<{
+      name: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown>;
+    }>;
+    const record = extraTools.find((t) => t.name === 'record_concern');
+    expect(record).toBeDefined();
+    const nil = '00000000-0000-0000-0000-000000000000';
+    const refused = await record!.handler({ subject: { kind: 'org', id: nil }, summary: 'CVEs', severity: 'high' }, {});
+    expect(refused).toMatchObject({ isError: true });
+    expect(JSON.stringify(refused)).toContain(ORG_ID);
+    const ok = await record!.handler({ subject: { kind: 'org', id: ORG_ID }, summary: 'CVEs', severity: 'high' }, {});
+    expect(JSON.stringify(ok)).toContain('recorded');
+  });
+
   it('an assessment whose grant is inactive (null context) is skipped grant_inactive with no model call', async () => {
     seedRows({ profile: 'assessment', grant: true });
     loadAssessmentContext.mockResolvedValue(null);
