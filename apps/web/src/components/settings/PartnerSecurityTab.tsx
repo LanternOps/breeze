@@ -2,7 +2,6 @@ import type { InheritableSecuritySettings, IpAllowlistStatus, SecurityLimitKey }
 import { SECURITY_LIMIT_BOUNDS, SECURITY_LIMIT_KEYS, isValidSecurityLimit } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
 import InheritanceLine from './partnerSettings/InheritanceLine';
@@ -152,8 +151,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             onChange={e => set({ expirationDays: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
             {...limitInputProps('expirationDays')}
-            min={30}
-            max={365}
+            min={SECURITY_LIMIT_BOUNDS.expirationDays.min}
           />
           {limitErrorText('expirationDays')}
         </div>
@@ -167,8 +165,8 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             onChange={e => set({ sessionTimeout: e.target.value ? Number(e.target.value) : undefined })}
             placeholder={t('partnerSecurity.notSet')}
             {...limitInputProps('sessionTimeout')}
-            min={15}
-            max={SESSION_TIMEOUT_MAX_MINUTES}
+            min={SECURITY_LIMIT_BOUNDS.sessionTimeout.min}
+            max={SECURITY_LIMIT_BOUNDS.sessionTimeout.max}
           />
           {limitErrorText('sessionTimeout')}
           <InheritanceLine fieldId="security.sessionTimeout" />
@@ -184,7 +182,6 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             placeholder={t('partnerSecurity.notSet')}
             {...limitInputProps('maxSessions')}
             min={SECURITY_LIMIT_BOUNDS.maxSessions.min}
-            max={10}
           />
           {limitErrorText('maxSessions')}
         </div>

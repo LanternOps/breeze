@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allValidationErrorsShownOnFields,
   buildPartnersMePayload,
   partnersMeValidity,
   securityServerErrorsFrom,
@@ -80,5 +81,19 @@ describe('partners/me unit', () => {
     expect(partnersMeValidity(edited, errors).security?.isValid).toBe(true);
     expect(securityServerErrorsFrom({ error: 'boom' }, sent.security)).toEqual({});
     expect(securityServerErrorsFrom(null, sent.security)).toEqual({});
+  });
+
+  it('drops the toast details only when every 400 problem is shown on a field (#10081)', () => {
+    const sent = { minLength: 4 };
+    const body = (fieldErrors: Record<string, string[]>, formErrors: string[] = []) => ({ error: 'x', details: { formErrors, fieldErrors } });
+    expect(allValidationErrorsShownOnFields(body({ 'settings.security.minLength': ['Too small'] }), sent, sent)).toBe(true);
+    // A problem with no field to show it on keeps the full toast.
+    expect(allValidationErrorsShownOnFields(body({ 'settings.security.minLength': ['Too small'], 'settings.contact.email': ['Invalid email'] }), sent, sent)).toBe(false);
+    expect(allValidationErrorsShownOnFields(body({ 'settings.security.minLength': ['Too small'] }, ['Unrecognized key']), sent, sent)).toBe(false);
+    expect(allValidationErrorsShownOnFields(body({}), sent, sent)).toBe(false);
+    expect(allValidationErrorsShownOnFields({ error: 'boom' }, sent, sent)).toBe(false);
+    expect(allValidationErrorsShownOnFields({ error: 'x', details: 'nope' }, sent, sent)).toBe(false);
+    // Edited while the request was in flight: the field no longer shows the verdict.
+    expect(allValidationErrorsShownOnFields(body({ 'settings.security.minLength': ['Too small'] }), sent, { minLength: 9 })).toBe(false);
   });
 });

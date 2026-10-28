@@ -34,7 +34,7 @@ describe('currentIpCovered', () => {
 describe('PartnerSecurityTab session timeout (#6111)', () => {
   it('allows up to 720 minutes (12 hours)', () => {
     const { container } = render(<PartnerSecurityTab data={{ sessionTimeout: 60 }} onChange={vi.fn()} />);
-    const input = container.querySelector('input[type="number"][min="15"]')!;
+    const input = container.querySelector('#partner-security-session-timeout')!;
     expect(input.getAttribute('max')).toBe('720');
   });
 });
@@ -45,6 +45,20 @@ describe('PartnerSecurityTab limit errors (#10081)', () => {
     expect(getByTestId('partner-security-max-sessions-error').textContent).toBe('Enter a whole number of 1 or more.');
     expect(queryByTestId('partner-security-min-length-error')).toBeNull();
     expect(queryByTestId('partner-security-expiration-error')).toBeNull();
+  });
+
+  it('native min/max hints match the shared bounds, so the browser never contradicts the inline message', () => {
+    const { container, queryByTestId } = render(<PartnerSecurityTab data={{ expirationDays: 0, maxSessions: 50 }} onChange={vi.fn()} />);
+    const attrs = (id: string) => {
+      const el = container.querySelector(`#${id}`)!;
+      return [el.getAttribute('min'), el.getAttribute('max')];
+    };
+    expect(attrs('partner-security-min-length')).toEqual(['6', '128']);
+    expect(attrs('partner-security-expiration')).toEqual(['0', null]);
+    expect(attrs('partner-security-session-timeout')).toEqual(['1', '720']);
+    expect(attrs('partner-security-max-sessions')).toEqual(['1', null]);
+    expect(queryByTestId('partner-security-expiration-error')).toBeNull();
+    expect(queryByTestId('partner-security-max-sessions-error')).toBeNull();
   });
 
   it('a server message wins over the local range message', () => {

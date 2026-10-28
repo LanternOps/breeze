@@ -216,11 +216,17 @@ export function securityServerErrorsFrom(body: unknown, sent: InheritableSecurit
 }
 
 /**
- * True when every problem in a validation 400 is a security limit the form
- * shows on its field. Only then does the toast drop the details: a problem
+ * True when every problem in a validation 400 is a security limit that the
+ * form will show on its field: the path is mapped and the field still holds
+ * the value that was sent (an edit made during the request drops the
+ * server's verdict). Only then does the toast drop the details: a problem
  * with no field to show it on must still reach the user.
  */
-function allValidationErrorsOnFields(body: unknown): boolean {
+export function allValidationErrorsShownOnFields(
+  body: unknown,
+  sent: InheritableSecuritySettings,
+  current: InheritableSecuritySettings,
+): boolean {
   const details = validationDetails(body);
   if (!details) return false;
   const { formErrors, fieldErrors } = details;
@@ -228,7 +234,10 @@ function allValidationErrorsOnFields(body: unknown): boolean {
   if (!fieldErrors || typeof fieldErrors !== 'object' || Array.isArray(fieldErrors)) return false;
   const paths = Object.keys(fieldErrors);
   const mapped = new Set(SECURITY_LIMIT_KEYS.map(securityLimitPath));
-  return paths.length > 0 && paths.every(path => mapped.has(path));
+  if (paths.length === 0 || !paths.every(path => mapped.has(path))) return false;
+  const rejected = securityServerErrorsFrom(body, sent);
+  const shown = activeSecurityServerErrors(current, rejected);
+  return Object.keys(rejected).length === paths.length && Object.keys(shown).length === paths.length;
 }
 
 /** The server messages still standing: the field holds the value that was rejected. */
@@ -296,6 +305,8 @@ export async function runPartnerSave(
     onUnauthorized: () => void;
     /** The header Save shows one aggregate toast for every unit, so it omits the per-request one. */
     silentSuccess?: boolean;
+    /** True when the form shows every problem of this validation 400 on its field (plain toast then). */
+    shownOnFields?: (body: unknown) => boolean;
   }
 ): Promise<Partner> {
   return runAction<Partner>({
@@ -304,7 +315,7 @@ export async function runPartnerSave(
     errorFallback: i18n.t('settings:partnerSettingsPage.saveFailed'),
     // A 400 whose every problem is shown on its field gets a plain toast; the
     // field and the status line say what to fix (#10081).
-    friendly: (_code, _message, body) => (allValidationErrorsOnFields(body) ? i18n.t('settings:partnerSettingsPage.fieldRejected') : undefined),
+    friendly: (_code, _message, body) => (deps.shownOnFields?.(body) ? i18n.t('settings:partnerSettingsPage.fieldRejected') : undefined),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -457,7 +468,11 @@ export function usePartnersMeUnit() {
     if (!preflight(sent, ipRef.current.ipStatus, ipRef.current.ipStatusUnavailable)) return { status: 'cancelled' };
     setError(undefined);
     try {
-      const updated = await runPartnerSave(buildPartnersMePayload(sent), { onUnauthorized: toLogin, silentSuccess: true });
+      const updated = await runPartnerSave(buildPartnersMePayload(sent), {
+        onUnauthorized: toLogin,
+        silentSuccess: true,
+        shownOnFields: body => allValidationErrorsShownOnFields(body, sent.security, (stateRef.current ?? sent).security),
+      });
       if (generation.current !== gen) return { status: 'cancelled' };
       setPartner(updated);
       // Lets layout islands that read partner settings (MfaPolicyOffBanner)
