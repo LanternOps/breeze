@@ -566,7 +566,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_elevation_history: z.object({
     deviceId: uuid.optional(),
-    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
   }),

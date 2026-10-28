@@ -3044,3 +3044,122 @@ describe('PAM routes require dedicated pam:approve / pam:manage_policy permissio
     expect(resActive.status).not.toBe(403);
   });
 });
+
+describe('withdrawn status surfaces (#8971)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
+  });
+
+  /**
+   * A respond transaction whose first read sees `firstStatus` and whose CAS
+   * matches nothing; a status-only re-read returns `rereadStatus`.
+   */
+  function rigLostCas(firstStatus: string, rereadStatus: string) {
+    const rereads: unknown[] = [];
+    // The approve path's pre-transaction grant read.
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: async () => [{ orgId: ORG_ID, siteId: null, flowType: 'uac_intercept' }] }) }),
+    } as any);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: vi.fn((fields: Record<string, unknown>) => {
+          const statusOnly = Object.keys(fields).length === 1 && 'status' in fields;
+          if (statusOnly) rereads.push(fields);
+          const result = statusOnly
+            ? [{ status: rereadStatus }]
+            : fields.id
+              ? [{ ...activeRow, status: firstStatus }]
+              : [{ orgId: ORG_ID, siteId: null }];
+          return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(result) })) })) };
+        }),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })),
+        })),
+        insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
+        execute: vi.fn().mockResolvedValue({ rows: [] }),
+      };
+      return fn(tx);
+    });
+    return { rereads };
+  }
+
+  it('GET /pam/elevation-requests?status=withdrawn is accepted', async () => {
+    mockListSelect([], 0);
+
+    const res = await app().request('/pam/elevation-requests?status=withdrawn');
+
+    expect(res.status).toBe(200);
+  });
+
+  it('list rows carry withdrawnAt and withdrawnReason', async () => {
+    const withdrawnAt = new Date('2027-01-10T10:00:01.000Z');
+    mockListSelect([{
+      request: {
+        id: REQ_ID, orgId: ORG_ID, deviceId: 'dev-1', flowType: 'uac_intercept', status: 'withdrawn',
+        withdrawnAt, withdrawnReason: 'user_timeout',
+      },
+      deviceHostname: 'WS-ALPHA', siteName: 'HQ', approvedByName: null, deniedByName: null, revokedByName: null,
+      enforcementStatus: null, enforcementGeneration: null, enforcementReason: null, endpointObservedAt: null, cleanupReceivedAt: null,
+    }], 1);
+
+    const res = await app().request('/pam/elevation-requests?status=withdrawn');
+
+    const body = await res.json();
+    expect(body.requests[0]).toMatchObject({ status: 'withdrawn', withdrawnAt: withdrawnAt.toISOString(), withdrawnReason: 'user_timeout' });
+  });
+
+  it('rule preview statusBreakdown seeds withdrawn at 0', async () => {
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve([]);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'acme corp', windowDays: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.statusBreakdown.withdrawn).toBe(0);
+  });
+
+  it('respond on a withdrawn row answers 409 with currentStatus withdrawn', async () => {
+    rigLostCas('withdrawn', 'withdrawn');
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ success: false, currentStatus: 'withdrawn' });
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('respond losing its CAS to a concurrent withdraw reports the re-read status, not the stale pending one', async () => {
+    const { rereads } = rigLostCas('pending', 'withdrawn');
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.currentStatus).toBe('withdrawn');
+    expect(body.error).toContain('withdrawn');
+    expect(rereads).toHaveLength(1);
+    expect(lifecycleMocks.createPamDecisionIntent).not.toHaveBeenCalled();
+  });
+});
