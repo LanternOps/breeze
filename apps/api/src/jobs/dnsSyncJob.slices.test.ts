@@ -395,6 +395,34 @@ describe('dnsSyncJob — per-slice persistence and checkpointing (#7207)', () =>
       expect(message).toMatch(/, and 2 more$/);
     });
 
+    it('names the truncation in the recorded error when a later slice fails the run', async () => {
+      selectResults = [[integrationRow()], []];
+      async function* syncEventSlices() {
+        yield {
+          events: [],
+          until: BURST_TO,
+          truncated: { from: BURST_FROM, to: BURST_TO, reachableRecords: 11_000 },
+        };
+        throw new Error('HTTP 503 Service Unavailable');
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await expect(
+        processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' }),
+      ).rejects.toThrow('HTTP 503');
+
+      // The truncated slice was checkpointed, so the next run starts past it:
+      // the error this run records is the only place the loss can be named.
+      expect(truncatedWrites()).toEqual([]);
+      const errorWrite = lastStatusWrite();
+      expect(errorWrite.payload.lastSyncStatus).toBe('error');
+      expect(errorWrite.payload.lastSyncError).toBe(
+        'HTTP 503 Service Unavailable. Earlier in this run: 1 window held more records than the provider ' +
+        'lets a sync page through; records past that limit were not fetched and will not be retried: ' +
+        `${BURST_FROM.toISOString()}..${BURST_TO.toISOString()} (11000 fetched)`
+      );
+    });
+
     it('leaves a run with no truncated slice as a plain success', async () => {
       selectResults = [[integrationRow()], []];
       async function* syncEventSlices() {

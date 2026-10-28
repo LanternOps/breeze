@@ -584,7 +584,9 @@ export class UmbrellaProvider implements DnsProvider {
         // is the window's last (the same rule that skips the probe above), so
         // only a page as large as any seen means records were dropped. Without
         // this, a window of 10,001..10,999 records would be reported as a loss
-        // it never had — and that report is now tenant-visible (#10047).
+        // it never had — and that report is now tenant-visible (#10047). Like
+        // the probe rule, this assumes the server's page size is steady within
+        // a run; a full page that happens to end the window still reports.
         const truncated = records.length >= run.largestPage;
         return { kind: 'complete', events, recordCount: nextOffset, truncated };
       }

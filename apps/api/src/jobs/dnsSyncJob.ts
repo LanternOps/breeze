@@ -762,6 +762,10 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
   }
 
   const config = parseIntegrationConfig(integration.config);
+  // Windows the provider could only partly fetch (#10047), recorded on the
+  // integration once the walk ends — after every slice's `success` write — or,
+  // if the run fails after one, in the error it records instead.
+  const truncations: DnsEventSliceTruncation[] = [];
 
   try {
     const provider = createDnsProvider({
@@ -790,9 +794,6 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
     let fetched = 0;
     let inserted = 0;
     let walkEnd: DnsEventSliceWalkEnd | undefined;
-    // Windows the provider could only partly fetch (#10047), recorded on the
-    // integration once the walk ends — after every slice's `success` write.
-    const truncations: DnsEventSliceTruncation[] = [];
     try {
       for (;;) {
         // Phase 2 — fetch the next slice with NO DB context held
@@ -878,7 +879,13 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
             .update(dnsFilterIntegrations)
             .set({
               lastSyncStatus: 'error',
-              lastSyncError: tenantVisibleSyncError(error),
+              // A truncated slice is already checkpointed, so the next run
+              // starts past it: if the loss is not named here, it is never
+              // recorded at all (#10047).
+              lastSyncError:
+                truncations.length > 0
+                  ? `${tenantVisibleSyncError(error)}. Earlier in this run: ${describeTruncations(truncations)}`
+                  : tenantVisibleSyncError(error),
               updatedAt: new Date()
             })
             .where(and(eq(dnsFilterIntegrations.id, integration.id), eq(dnsFilterIntegrations.isActive, true)))
