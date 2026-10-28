@@ -47,7 +47,11 @@ type sensitivePattern struct {
 }
 
 type sensitiveScopeConfig struct {
-	includePaths          []string
+	includePaths []string
+	// defaultScope is set when the request named no includePaths and the
+	// scope was resolved from profileRoots.
+	defaultScope          bool
+	profileRoots          []string
 	excludePaths          []string
 	suppressPaths         []string
 	suppressPatternIDs    map[string]struct{}
@@ -110,8 +114,14 @@ func sensitivePatternCatalog() []sensitivePattern {
 }
 
 func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
+	return parseSensitiveScopeWithProfileRoots(payload, nil)
+}
+
+// parseSensitiveScopeWithProfileRoots parses the scope; profileRoots overrides
+// where the default scope looks for user profiles (nil = this device's).
+func parseSensitiveScopeWithProfileRoots(payload map[string]any, profileRoots []string) sensitiveScopeConfig {
 	scope := sensitiveScopeConfig{
-		includePaths:          resolveDefaultSensitiveIncludePaths(),
+		includePaths:          nil,
 		excludePaths:          defaultSensitiveExcludePaths(),
 		suppressPaths:         nil,
 		suppressPatternIDs:    map[string]struct{}{},
@@ -168,6 +178,15 @@ func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
 		scope.workers = v
 	}
 
+	if len(scope.includePaths) == 0 {
+		if profileRoots == nil {
+			profileRoots = sensitiveProfileRoots()
+		}
+		scope.defaultScope = true
+		scope.profileRoots = profileRoots
+		scope.includePaths = defaultSensitiveIncludePathsUnder(profileRoots)
+	}
+
 	scope.maxFileSizeBytes = clampInt64(scope.maxFileSizeBytes, 1024, maxSensitiveMaxFileSizeBytes)
 	scope.timeoutSeconds = clampInt(scope.timeoutSeconds, 5, 1800)
 	scope.workers = clampInt(scope.workers, 1, maxSensitiveWorkers)
@@ -175,15 +194,12 @@ func parseSensitiveScope(payload map[string]any) sensitiveScopeConfig {
 	return scope
 }
 
-// resolveDefaultSensitiveIncludePaths is the scan scope when the request names
-// no includePaths (#10380). The agent runs as root/SYSTEM, so its own home
+// The default scan scope, used when the request names no includePaths
+// (#10380). The agent runs as root/SYSTEM, so its own home
 // (C:\Windows\system32\config\systemprofile, /var/root, /root) holds no user
 // data — and on Windows it sits under the excluded C:\Windows, which made every
 // default scan walk nothing and report "completed" with 0 files. Scan the
 // common document folders of every user profile on the device instead.
-func resolveDefaultSensitiveIncludePaths() []string {
-	return defaultSensitiveIncludePathsUnder(sensitiveProfileRoots())
-}
 
 // sensitiveDefaultProfileFolders are the per-profile folders a default scan
 // covers. AppData / Library are deliberately left out: walking them first
@@ -202,15 +218,21 @@ var sensitiveSkippedProfileNames = map[string]struct{}{
 
 // sensitiveProfileRoots returns the directories that hold user profiles.
 func sensitiveProfileRoots() []string {
-	switch runtime.GOOS {
+	return sensitiveProfileRootsFor(runtime.GOOS, os.Getenv)
+}
+
+func sensitiveProfileRootsFor(goos string, getenv func(string) string) []string {
+	switch goos {
 	case "windows":
-		// %PUBLIC% is C:\Users\Public on every supported Windows and is set in
-		// the SYSTEM environment; its parent is the profiles directory even
-		// when that is not on C:.
-		if public := strings.TrimSpace(os.Getenv("PUBLIC")); public != "" {
-			return []string{filepath.Dir(filepath.Clean(public))}
+		// %PUBLIC% is <profiles>\Public on every supported Windows and is set
+		// in the SYSTEM environment, so its parent is the profiles directory
+		// even when that is not C:\Users. Parsed by hand so the logic is the
+		// same (and testable) on every build host.
+		public := strings.TrimRight(strings.TrimSpace(getenv("PUBLIC")), `\/`)
+		if idx := strings.LastIndexAny(public, `\/`); idx > 2 {
+			return []string{public[:idx]}
 		}
-		drive := strings.TrimSpace(os.Getenv("SystemDrive"))
+		drive := strings.TrimSpace(getenv("SystemDrive"))
 		if drive == "" {
 			drive = "C:"
 		}
@@ -222,10 +244,30 @@ func sensitiveProfileRoots() []string {
 	}
 }
 
+// isSensitiveScanLink reports whether info names a symlink, a junction / mount
+// point, or another reparse point (OneDrive placeholders included). The scan
+// runs as SYSTEM/root and walks folders that unprivileged users own, so it
+// never follows one: a user could otherwise point a link in their own profile
+// at a file only SYSTEM can read and have the scan read it for them.
+func isSensitiveScanLink(info fs.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	return info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 || isReparsePoint(info)
+}
+
+// isSensitiveScanLinkType is the DirEntry form, from the type bits alone.
+// Since Go 1.23 a Windows junction or other reparse point reports
+// ModeIrregular here, so this catches them without an extra stat.
+func isSensitiveScanLinkType(mode fs.FileMode) bool {
+	return mode&(fs.ModeSymlink|fs.ModeIrregular) != 0
+}
+
 // defaultSensitiveIncludePathsUnder lists <root>/<profile>/<folder> for every
 // existing common document folder of every profile under the given roots.
-// Missing roots and folders are skipped: an empty result is reported by the
-// scan as "nothing to scan", never as a clean scan.
+// Links and junctions are skipped at both levels (Lstat, never Stat). Missing
+// roots and folders are skipped: an empty result makes the scan fail with a
+// reason, never report a clean scan.
 func defaultSensitiveIncludePathsUnder(roots []string) []string {
 	var out []string
 	for _, root := range roots {
@@ -234,9 +276,10 @@ func defaultSensitiveIncludePathsUnder(roots []string) []string {
 			continue
 		}
 		for _, entry := range entries {
-			// DirEntry.IsDir does not follow links, so junctions such as
-			// "All Users" and symlinked profiles are not walked twice.
-			if !entry.IsDir() {
+			if isSensitiveScanLinkType(entry.Type()) || !entry.IsDir() {
+				continue
+			}
+			if info, err := entry.Info(); err != nil || isSensitiveScanLink(info) {
 				continue
 			}
 			if _, skip := sensitiveSkippedProfileNames[strings.ToLower(entry.Name())]; skip {
@@ -244,9 +287,11 @@ func defaultSensitiveIncludePathsUnder(roots []string) []string {
 			}
 			for _, folder := range sensitiveDefaultProfileFolders {
 				candidate := filepath.Join(root, entry.Name(), folder)
-				if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-					out = append(out, candidate)
+				info, err := os.Lstat(candidate)
+				if err != nil || !info.IsDir() || isSensitiveScanLink(info) {
+					continue
 				}
+				out = append(out, candidate)
 			}
 		}
 	}
@@ -716,11 +761,14 @@ func computeSensitiveConfidence(patternID, dataType string, matchCount int, path
 }
 
 func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitiveScopeConfig) (int, int, int64, []SensitiveDataFinding, []SensitiveDataScanError) {
-	info, err := os.Stat(path)
+	// Lstat, never Stat: a link is skipped, not followed (#10380 security
+	// review). The walk already filters links; this is the last gate before
+	// the file is opened as SYSTEM/root.
+	info, err := os.Lstat(path)
 	if err != nil {
 		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || isSensitiveScanLink(info) {
 		return 0, 1, 0, nil, nil
 	}
 	if info.Size() <= 0 {
@@ -738,6 +786,15 @@ func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitive
 		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
 	}
 	defer file.Close()
+	// The path could have been swapped for a link between Lstat and Open.
+	// Read only if the opened handle is the file that was checked.
+	opened, err := file.Stat()
+	if err != nil {
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: err.Error()}}
+	}
+	if !os.SameFile(info, opened) {
+		return 0, 1, 0, nil, []SensitiveDataScanError{{Path: path, Error: "file changed while it was being scanned; skipped"}}
+	}
 
 	probe := make([]byte, 1024)
 	n, readErr := file.Read(probe)
@@ -820,9 +877,15 @@ func scanSensitiveFile(path string, patterns []sensitivePattern, scope sensitive
 // ScanSensitiveData scans bounded file scope for sensitive data patterns and
 // returns metadata-only findings (never raw matched values).
 func ScanSensitiveData(payload map[string]any) CommandResult {
+	return scanSensitiveDataWithProfileRoots(payload, nil)
+}
+
+// scanSensitiveDataWithProfileRoots is ScanSensitiveData with an injectable
+// profile root list for the default scope (nil = this device's).
+func scanSensitiveDataWithProfileRoots(payload map[string]any, profileRoots []string) CommandResult {
 	start := time.Now()
 
-	scope := parseSensitiveScope(payload)
+	scope := parseSensitiveScopeWithProfileRoots(payload, profileRoots)
 	classes := parseDetectionClasses(payload)
 	patterns := buildActiveSensitivePatterns(classes, scope)
 
@@ -920,9 +983,15 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 		}()
 	}
 
-	walkErr := func(root string) error {
+	// walkErr walks one include root. rootUnreadable is set when the root
+	// itself could not be listed (permission denied, macOS TCC), so the caller
+	// does not count a root it never read as scanned.
+	walkErr := func(root string, rootUnreadable *bool) error {
 		return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
+				if path == root {
+					*rootUnreadable = true
+				}
 				mu.Lock()
 				recordErrors([]SensitiveDataScanError{{Path: path, Error: err.Error()}})
 				mu.Unlock()
@@ -938,6 +1007,18 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 				markTimedOut()
 				return ctx.Err()
 			default:
+			}
+
+			// Never follow a link, junction or other reparse point: the scan runs
+			// as SYSTEM/root inside folders unprivileged users own, so a planted
+			// link would read a file its owner cannot (#10380 security review).
+			// WalkDir already declines to descend into one; this keeps a linked
+			// FILE from reaching scanSensitiveFile, which opens and reads it.
+			if isSensitiveScanLinkType(d.Type()) {
+				mu.Lock()
+				filesSkipped++
+				mu.Unlock()
+				return nil
 			}
 
 			// Containment (#3397): unlike AnalyzeFilesystem (metadata only), this
@@ -989,9 +1070,9 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 		})
 	}
 
-	// rootsWalked counts include paths the scan actually descended into. Every
-	// other outcome below records an error, so a scan that walked nothing can
-	// say why instead of reading as a clean scan (#10380).
+	// rootsWalked counts include paths the scan actually listed. Every other
+	// outcome below records an error, so a scan that read nothing can say why
+	// instead of reading as a clean scan (#10380).
 	rootsWalked := 0
 	for _, include := range scope.includePaths {
 		if shouldExcludeSensitivePath(include, scope.excludePaths) {
@@ -1008,10 +1089,18 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 			mu.Unlock()
 			continue
 		}
-		info, err := os.Stat(include)
+		// Lstat, not Stat: a root that is itself a link or junction is
+		// refused rather than followed (see isSensitiveScanLink).
+		info, err := os.Lstat(include)
 		if err != nil {
 			mu.Lock()
 			recordErrors([]SensitiveDataScanError{{Path: include, Error: err.Error()}})
+			mu.Unlock()
+			continue
+		}
+		if isSensitiveScanLink(info) {
+			mu.Lock()
+			recordErrors([]SensitiveDataScanError{{Path: include, Error: "include path is a link or junction; the scan does not follow links"}})
 			mu.Unlock()
 			continue
 		}
@@ -1021,9 +1110,28 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 			mu.Unlock()
 			continue
 		}
-		rootsWalked++
-		if err := walkErr(include); err != nil {
+		rootUnreadable := false
+		walkFailure := walkErr(include, &rootUnreadable)
+		if !rootUnreadable {
+			rootsWalked++
+		}
+		if walkFailure != nil {
 			break
+		}
+	}
+
+	if rootsWalked == 0 && scope.defaultScope && len(scope.includePaths) == 0 {
+		// Say why the default scope came up empty, per profile root, so the
+		// reason reaches the scan record (the server keeps summary.errors,
+		// not the command error string).
+		for _, root := range scope.profileRoots {
+			reason := "no Desktop, Documents or Downloads folder was found under any user profile; set includePaths in the scan scope"
+			if _, err := os.ReadDir(root); err != nil {
+				reason = err.Error()
+			}
+			mu.Lock()
+			recordErrors([]SensitiveDataScanError{{Path: root, Error: reason}})
+			mu.Unlock()
 		}
 	}
 
@@ -1060,9 +1168,9 @@ func ScanSensitiveData(payload map[string]any) CommandResult {
 		response.Status = "failed"
 		message := "no folder in the scan scope could be scanned"
 		if len(scope.includePaths) == 0 {
-			message += ": no user profile document folders (Desktop, Documents, Downloads) were found; set includePaths in the scan scope"
+			message += ": no Desktop, Documents or Downloads folder was found under any user profile; set includePaths in the scan scope"
 		} else {
-			message += ": every include path was missing, excluded, refused, or not a folder"
+			message += ": every include path was missing, excluded, refused, unreadable, a link, or not a folder"
 		}
 		durationMs := time.Since(start).Milliseconds()
 		result := NewSuccessResult(response, durationMs)

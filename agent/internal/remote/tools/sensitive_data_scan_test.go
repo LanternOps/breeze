@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -236,18 +237,191 @@ func TestDefaultSensitiveIncludePathsEnumeratesUserProfileFolders(t *testing.T) 
 	}
 }
 
-func TestSensitiveProfileRootsNeverUseServiceAccountHome(t *testing.T) {
+func TestSensitiveProfileRootsFor(t *testing.T) {
 	t.Parallel()
 
-	roots := sensitiveProfileRoots()
-	if len(roots) == 0 {
-		t.Fatalf("expected at least one profile root")
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
 	}
-	for _, r := range roots {
-		lower := strings.ToLower(r)
-		if strings.Contains(lower, "systemprofile") || r == "/var/root" || r == "/root" {
-			t.Fatalf("profile root %q is a service-account home", r)
+	cases := []struct {
+		name string
+		goos string
+		vars map[string]string
+		want string
+	}{
+		{"windows public", "windows", map[string]string{"PUBLIC": `C:\Users\Public`, "SystemDrive": "C:"}, `C:\Users`},
+		{"windows profiles on D", "windows", map[string]string{"PUBLIC": `D:\Profiles\Public\`}, `D:\Profiles`},
+		{"windows no public", "windows", map[string]string{"SystemDrive": "E:"}, `E:\Users`},
+		{"windows nothing set", "windows", map[string]string{}, `C:\Users`},
+		{"darwin", "darwin", map[string]string{"HOME": "/var/root"}, "/Users"},
+		{"linux", "linux", map[string]string{"HOME": "/root"}, "/home"},
+	}
+	for _, tc := range cases {
+		got := sensitiveProfileRootsFor(tc.goos, env(tc.vars))
+		if len(got) != 1 || got[0] != tc.want {
+			t.Fatalf("%s: roots = %v, want [%s]", tc.name, got, tc.want)
 		}
+	}
+}
+
+// Security review of #10380: the agent runs as SYSTEM/root, so following a
+// link a user planted in their own profile would read files that user cannot.
+func TestDefaultSensitiveIncludePathsSkipLinkedProfilesAndFolders(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is unreliable without privilege on Windows CI")
+	}
+	t.Parallel()
+
+	root := t.TempDir()
+	privileged := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(privileged, "Documents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "mallory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Profile folder that is a link to a privileged directory.
+	if err := os.Symlink(privileged, filepath.Join(root, "mallory", "Documents")); err != nil {
+		t.Fatal(err)
+	}
+	// Profile entry that is itself a link.
+	if err := os.Symlink(privileged, filepath.Join(root, "linkedprofile")); err != nil {
+		t.Fatal(err)
+	}
+	realDesktop := filepath.Join(root, "mallory", "Desktop")
+	if err := os.MkdirAll(realDesktop, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := defaultSensitiveIncludePathsUnder([]string{root})
+	if strings.Join(got, "|") != realDesktop {
+		t.Fatalf("default include paths = %v, want only %s", got, realDesktop)
+	}
+}
+
+func TestScanSensitiveDataDoesNotFollowLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is unreliable without privilege on Windows CI")
+	}
+	t.Parallel()
+
+	privileged := t.TempDir()
+	secret := filepath.Join(privileged, "secret.txt")
+	if err := os.WriteFile(secret, []byte("AKIA1234567890ABCDEF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Symlink(secret, filepath.Join(root, "innocent.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(privileged, filepath.Join(root, "subdir")); err != nil {
+		t.Fatal(err)
+	}
+
+	result := ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{root},
+			"excludePaths": []any{},
+			"fileTypes":    []any{".txt"},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	response := decodeSensitiveScanResult(t, result)
+	if len(response.Findings) != 0 || response.Summary.FilesScanned != 0 {
+		t.Fatalf("scan followed a link: filesScanned=%d findings=%+v", response.Summary.FilesScanned, response.Findings)
+	}
+	if response.Summary.FilesSkipped == 0 {
+		t.Fatalf("expected the links to be counted as skipped")
+	}
+
+	// A root that is itself a link is refused and reported, not walked.
+	linkRoot := filepath.Join(t.TempDir(), "linkroot")
+	if err := os.Symlink(privileged, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	result = ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{linkRoot},
+			"excludePaths": []any{},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	if result.Status != "failed" || !strings.Contains(result.Stdout, "link") {
+		t.Fatalf("expected a failed scan reporting the linked root, got %s: %s", result.Status, result.Stdout)
+	}
+}
+
+func TestScanSensitiveDataUnreadableRootIsNotACleanScan(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a non-root user")
+	}
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "locked")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+
+	result := ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{root},
+			"excludePaths": []any{},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed when the only root cannot be read, got %s", result.Status)
+	}
+}
+
+func TestScanSensitiveDataMixedRootsStillComplete(t *testing.T) {
+	t.Parallel()
+
+	good := t.TempDir()
+	if err := os.WriteFile(filepath.Join(good, "a.txt"), []byte("AKIA1234567890ABCDEF\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	result := ScanSensitiveData(map[string]any{
+		"scope": map[string]any{
+			"includePaths": []any{good, missing},
+			"excludePaths": []any{},
+			"fileTypes":    []any{".txt"},
+			"workers":      1,
+		},
+		"detectionClasses": []any{"credential"},
+	})
+	response := decodeSensitiveScanResult(t, result)
+	if response.Summary.FilesScanned != 1 || len(response.Findings) == 0 {
+		t.Fatalf("expected the readable root to be scanned, got %+v", response.Summary)
+	}
+	if len(response.Summary.Errors) == 0 {
+		t.Fatalf("expected the missing root to be reported")
+	}
+}
+
+func TestScanSensitiveDataNoProfileFoldersRecordsReason(t *testing.T) {
+	t.Parallel()
+
+	result := scanSensitiveDataWithProfileRoots(map[string]any{
+		"detectionClasses": []any{"credential"},
+	}, []string{t.TempDir()})
+	if result.Status != "failed" {
+		t.Fatalf("expected failed, got %s", result.Status)
+	}
+	var response SensitiveDataScanResponse
+	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Summary.Errors) == 0 || !strings.Contains(response.Summary.Errors[0].Error, "Desktop, Documents or Downloads") {
+		t.Fatalf("expected the reason in summary.errors so the server records it, got %+v", response.Summary.Errors)
 	}
 }
 
