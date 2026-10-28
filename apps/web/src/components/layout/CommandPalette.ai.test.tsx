@@ -199,3 +199,74 @@ describe('CommandPalette — the AI doors as commands (#10135)', () => {
     expect(titlesIn('quick-actions')).not.toContain('Open Wisp');
   });
 });
+
+// #10196: the quick actions used to render only with an empty query, so typing
+// what a user would type ("breeze ai", "open wisp") found nothing.
+describe('CommandPalette — quick actions are searchable (#10196)', () => {
+  it.each([
+    ['breeze ai', 'Ask Breeze AI'],
+    ['ASK', 'Ask Breeze AI'],
+    ['open wisp', 'Open Wisp'],
+    ['wisp home', 'Open Wisp'],
+  ])('typing "%s" offers "%s"', async (q, title) => {
+    mockPartner({ wispEnabled: true });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(titlesIn('quick-actions')).toContain('Open Wisp'));
+    search(q);
+    expect(titlesIn('quick-actions')).toEqual([title]);
+  });
+
+  it('lists matching actions first, so Enter runs the action', async () => {
+    mockPartner({ wispEnabled: false });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(titlesIn('quick-actions')).toContain('Ask Breeze AI'));
+    search('breeze ai');
+    const sections = screen.getAllByTestId(/^palette-section-/);
+    expect(sections[0].getAttribute('data-testid')).toBe('palette-section-quick-actions');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(useAiStore.getState().isOpen).toBe(true);
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+  });
+
+  it('also matches the static quick actions', async () => {
+    mockPartner({ wispEnabled: false });
+    render(<CommandPalette />);
+    openPalette();
+    search('keyboard');
+    expect(titlesIn('quick-actions')).toEqual(['Keyboard shortcuts']);
+  });
+
+  it('does not offer "Open Wisp" for a query when the server has Wisp off', async () => {
+    mockPartner({ wispEnabled: false });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(partnersMeCalls()).toBe(1));
+    await act(async () => { await Promise.resolve(); });
+    search('open wisp');
+    expect(titlesIn('quick-actions')).not.toContain('Open Wisp');
+  });
+
+  it('offers neither AI door for a query without ai_sessions:use', async () => {
+    setPermissions([{ resource: 'devices', action: 'read' }]);
+    mockPartner({ wispEnabled: true });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(partnersMeCalls()).toBe(1));
+    await act(async () => { await Promise.resolve(); });
+    search('breeze ai');
+    expect(titlesIn('quick-actions')).not.toContain('Ask Breeze AI');
+    search('open wisp');
+    expect(titlesIn('quick-actions')).not.toContain('Open Wisp');
+  });
+
+  it('shows no quick-actions section when nothing matches', async () => {
+    mockPartner({ wispEnabled: true });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(titlesIn('quick-actions')).toContain('Open Wisp'));
+    search('zzqqxx');
+    expect(screen.queryByTestId('palette-section-quick-actions')).toBeNull();
+  });
+});
