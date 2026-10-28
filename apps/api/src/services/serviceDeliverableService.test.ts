@@ -738,15 +738,33 @@ describe('serviceDeliverableService', () => {
       expect(updateWhereParams()).toContain('scheduled');
     });
 
-    it('a missed occurrence moved inside grace becomes open', async () => {
+    it('a missed occurrence WITH a ticket moved inside grace becomes open (its ticket is the work item)', async () => {
       const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
-      queueResult([occ({ status: 'missed', graceDays: 14 })]);
+      queueResult([occ({ status: 'missed', graceDays: 14, ticketId: 't1' })]);
       queueResult([{ id: 'o1' }]);
-      queueResult([occ({ status: 'open', dueAt: future })]);
+      queueResult([]); // ticket due-date update
+      queueResult([occ({ status: 'open', ticketId: 't1', dueAt: future })]);
       queueResult([]);
       await rescheduleOccurrence('org1', 'o1', { dueAt: future }, actor);
-      expect(lastSet()).toMatchObject({ dueAt: future, status: 'open' });
+      const occSet = chain.set.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(occSet).toMatchObject({ dueAt: future, status: 'open' });
+      expect(lastSet()).toMatchObject({ dueDate: new Date(`${future}T00:00:00.000Z`) });
+    });
+
+    // #9959: `open` with no ticket is a state the sweep never produces for a
+    // ticketed partner, and nothing ever gives it a ticket afterwards — the work
+    // has no queue item. Back to `scheduled`, the nightly sweep opens it inside
+    // its lead window through the normal path (ticket, checklist, instructions).
+    it('a missed occurrence with NO ticket moved inside grace goes back to scheduled, not open (#9959)', async () => {
+      const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+      queueResult([occ({ status: 'missed', graceDays: 14, ticketId: null })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ status: 'scheduled', dueAt: future })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: future }, actor);
+      expect(lastSet()).toMatchObject({ dueAt: future, status: 'scheduled' });
       expect(updateWhereParams()).toContain('missed'); // guard is the status LOADED, not the one being written
+      expect(chain.update.mock.calls).toHaveLength(1);  // no ticket to touch
     });
 
     it('a missed occurrence moved to a date still past grace stays missed', async () => {
@@ -803,6 +821,9 @@ describe('serviceDeliverableService', () => {
       // only a and d were written, and originalDueAt never is
       expect(chain.set.mock.calls.every((c) => !('originalDueAt' in (c[0] as object)))).toBe(true);
       expect(chain.set.mock.calls.filter((c) => 'dueAt' in (c[0] as object))).toHaveLength(2);
+      // #9959: the bulk path applies the single path's rule — ticketless missed d
+      // goes back to scheduled (the sweep opens it with a ticket), never open.
+      expect(chain.set.mock.calls.map((c) => (c[0] as Record<string, unknown>).status)).toEqual(['open', 'scheduled']);
     });
 
     it('moves the ticket due_date on the bulk path too', async () => {
