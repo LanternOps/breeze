@@ -6,7 +6,7 @@ import {
   PAGE_RESUME_KEY,
   pageResumeRowCount,
   readPageResume,
-  resumeCursorAfter,
+  resumePointAfter,
   type PageResume,
 } from './aiToolPageResume';
 
@@ -966,10 +966,11 @@ function extractPagingEnvelope(value: unknown): Record<string, unknown> {
  * result. It is ALWAYS removed — it is compaction input, never model output —
  * and returned only when well-formed.
  */
-function takePageResume(value: unknown): { payload: unknown; resume: PageResume | null } {
-  if (!isRecord(value) || !(PAGE_RESUME_KEY in value)) return { payload: value, resume: null };
+function takePageResume(value: unknown): { payload: unknown; resume: PageResume | null; malformed: boolean } {
+  if (!isRecord(value) || !(PAGE_RESUME_KEY in value)) return { payload: value, resume: null, malformed: false };
   const { [PAGE_RESUME_KEY]: descriptor, ...payload } = value;
-  return { payload, resume: readPageResume(descriptor) };
+  const resume = readPageResume(descriptor);
+  return { payload, resume, malformed: resume === null };
 }
 
 /** Row count of the page the tool built, or null if it no longer matches the descriptor. */
@@ -988,15 +989,26 @@ function pagedRowCount(source: unknown, resume: PageResume): number | null {
  * resumes right after the last kept row. `total` is the size of the whole
  * result set and stays as the tool reported it.
  */
-function applyPageResume(compacted: unknown, source: unknown, resume: PageResume): unknown {
-  const original = pagedRowCount(source, resume);
-  if (original === null || !isRecord(compacted)) return compacted;
+function applyPageResume(compacted: unknown, original: number, resume: PageResume): unknown {
+  if (!isRecord(compacted)) return compacted;
   const rows = compacted[resume.key];
   if (!Array.isArray(rows)) return compacted;
   const hasSentinel = rows.length > 0 && priorArrayOmitted(rows[rows.length - 1]) !== null;
   const kept = rows.length - (hasSentinel ? 1 : 0);
   if (kept >= original) return compacted;
-  return { ...compacted, showing: kept, hasMore: true, nextCursor: resumeCursorAfter(resume, kept) };
+  const counts = { showing: kept, ...(compacted.count === original ? { count: kept } : {}) };
+  const next = resumePointAfter(resume, kept);
+  // Past the tool's offset ceiling no cursor can reach the dropped rows (the
+  // tool would clamp it back onto rows already shown). Correct the counts and
+  // leave the tool's own continuation as it wrote it.
+  if (next.kind === 'unreachable') return { ...compacted, ...counts };
+  return { ...compacted, ...counts, hasMore: true, nextCursor: next.kind === 'cursor' ? next.cursor : null };
+}
+
+function warnUnusablePageResume(toolName: string, reason: 'malformed' | 'row_count_mismatch'): void {
+  // Tool name and reason only. A tool that reshapes its rows after building
+  // the envelope loses the cursor fix; this is how that gets noticed.
+  console.warn('[AI] page-resume descriptor unusable; envelope left as the tool wrote it:', reason, 'tool:', toolName);
 }
 
 // #10385: a digest carries no rows, so the only lossless continuation is this
@@ -1376,7 +1388,9 @@ export function compactToolResultForChat(
 
   // #10385: the page-resume descriptor is compaction input — strip it before
   // anything else sees the payload, and keep it to fix the envelope below.
-  const { payload, resume } = takePageResume(parsed);
+  const taken = takePageResume(parsed);
+  const { payload } = taken;
+  if (taken.malformed) warnUnusablePageResume(toolName, 'malformed');
 
   const stats = emptyStats();
   // A-W05 (D12): resolved once per call — every tier's stats copy carries it
@@ -1400,6 +1414,12 @@ export function compactToolResultForChat(
   const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 
+  // #10385: the descriptor is only usable while its row count still matches
+  // the page — row N must be position N for a re-minted cursor to be right.
+  const pagedRows = taken.resume ? pagedRowCount(sanitized, taken.resume) : null;
+  if (taken.resume && pagedRows === null) warnUnusablePageResume(toolName, 'row_count_mismatch');
+  const resume = pagedRows !== null && pagedRows > 0 ? taken.resume : null;
+
   // Try each tier from `sanitized`, not from the previous tier's output: a
   // tighter tier that re-compacted already-compacted data would report drop
   // counts relative to the prior tier (e.g. "30 dropped" when 180 of 200 are
@@ -1411,7 +1431,7 @@ export function compactToolResultForChat(
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);
-    const resumed = resume ? applyPageResume(compacted, sanitized, resume) : compacted;
+    const resumed = resume && pagedRows !== null ? applyPageResume(compacted, pagedRows, resume) : compacted;
     const withMeta = appendChatMeta(resumed, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
     if (serialized.length <= maxChars) {
@@ -1424,10 +1444,16 @@ export function compactToolResultForChat(
   // page instead, and ask for a smaller one.
   const pagingEnvelope = extractPagingEnvelope(sanitized);
   let nextStep = SENTINEL_HINTS[resolvePaginationHint(toolName)];
-  const pagedRows = resume ? pagedRowCount(sanitized, resume) : null;
-  if (resume && pagedRows !== null && pagedRows > 0) {
-    const cursor = resumeCursorAfter(resume, 0);
-    Object.assign(pagingEnvelope, { showing: 0, hasMore: true, nextCursor: cursor });
+  if (resume && pagedRows !== null) {
+    // The start of this page is always reachable — the tool just served it.
+    const start = resumePointAfter(resume, 0);
+    const cursor = start.kind === 'cursor' ? start.cursor : null;
+    Object.assign(pagingEnvelope, {
+      showing: 0,
+      ...(pagingEnvelope.count === pagedRows ? { count: 0 } : {}),
+      hasMore: true,
+      nextCursor: cursor,
+    });
     nextStep = cursor ? DIGEST_RESUME_HINT : DIGEST_RESTART_HINT;
   }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compactToolResultForChat, setToolPaginationHintResolver } from './aiToolOutput';
 import { PAGE_RESUME_KEY } from './aiToolPageResume';
 import { keysetEnvelope, pageEnvelope, readKeysetArgs, readPageArgs } from './aiToolPagination';
@@ -95,7 +95,10 @@ function pageThrough(
 }
 
 describe('compaction keeps paging lossless (#10385)', () => {
-  afterEach(() => setToolPaginationHintResolver(() => 'none'));
+  afterEach(() => {
+    setToolPaginationHintResolver(() => 'none');
+    vi.restoreAllMocks();
+  });
 
   it('keyset: limit 100 over 118 rows that do not fit — every row is visited exactly once', () => {
     setToolPaginationHintResolver(() => 'cursor');
@@ -186,9 +189,68 @@ describe('compaction keeps paging lossless (#10385)', () => {
       showing: 200, hasMore: false, nextCursor: null,
       [PAGE_RESUME_KEY]: { v: 1, key: 'rows', mode: 'keyset', f: 'x', after: null, keys: [['bad']] },
     });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const out = JSON.parse(compactToolResultForChat('list_things', raw)) as Page;
     expect(out).not.toHaveProperty(PAGE_RESUME_KEY);
     expect(out.showing).toBe(200);
     expect(out.nextCursor).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('page-resume descriptor unusable'), 'malformed', 'tool:', 'list_things');
+  });
+
+  it('a descriptor whose row count no longer matches the page is not used (and is reported)', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const tool = offsetTool(makeRows(300, 250), 'list_things');
+    const env = JSON.parse(tool({ limit: 100 })) as Record<string, unknown>;
+    // The tool reshaped its rows after building the envelope: row N is no longer position N.
+    const raw = JSON.stringify({ ...env, rows: (env.rows as unknown[]).filter((_, i) => i % 2 === 0) });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = JSON.parse(compactToolResultForChat('list_things', raw)) as Page;
+    expect(out).not.toHaveProperty(PAGE_RESUME_KEY);
+    expect(out.showing).toBe(100);
+    expect(out.nextCursor).toBe(env.nextCursor);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), 'row_count_mismatch', 'tool:', 'list_things');
+  });
+
+  it('offset digest: resumes at this page\'s offset (never the first-page restart hint)', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const data = makeRows(60, 2_000);
+    const out = JSON.parse(compactToolResultForChat('list_things', offsetTool(data, 'list_things')({ limit: 20, offset: 0 }), 1_200)) as Page;
+    expect(out.summarized).toBe(true);
+    expect(out).toMatchObject({ showing: 0, hasMore: true, offset: 0 });
+    expect(out._chat?.nextStep).toBe('Call again with the nextCursor value and a smaller limit');
+    expect(readPageArgs('list_things', { limit: 5, cursor: out.nextCursor }, { defaultLimit: 25, maxLimit: 500 }))
+      .toMatchObject({ ok: true, offset: 0, limit: 5 });
+    const { seen } = pageThrough(offsetTool(data, 'list_things'), 'list_things', 'rows', { limit: 20 }, 1_200);
+    expect(seen).toEqual(data.map((r) => r.id));
+  });
+
+  it('offset ceiling: past the tool\'s maxOffset it corrects the counts but mints no cursor the tool would clamp back', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const data = makeRows(2_100, 250);
+    // A posture-style list: it can only ever serve offsets up to 2000 - limit.
+    const tool = (input: Record<string, unknown>) => {
+      const page = readPageArgs('capped_list', input, { defaultLimit: 50, maxLimit: 100 });
+      if (!page.ok) throw new Error(page.error);
+      const maxOffset = Math.max(0, 2_000 - page.limit);
+      const offset = Math.min(page.offset, maxOffset);
+      const items = data.slice(offset, offset + page.limit).map((r) => ({ id: r.id, message: r.message }));
+      const env = pageEnvelope({ key: 'rows', items, limit: page.limit, offset, fingerprint: page.fingerprint, total: data.length, maxOffset });
+      if (offset + page.limit >= 2_000) { env.hasMore = false; env.nextCursor = null; }
+      return JSON.stringify({ ...env, count: items.length });
+    };
+    const out = JSON.parse(compactToolResultForChat('capped_list', tool({ limit: 100, offset: 1_900 }))) as Page;
+    const kept = (out.rows as unknown[]).filter((x) => typeof x !== 'string').length;
+    expect(kept).toBeLessThan(100);
+    expect(out).toMatchObject({ showing: kept, count: kept, hasMore: false, nextCursor: null });
+  });
+
+  it('rewrites a `count` that mirrored the page size, and leaves an unrelated one alone', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const env = JSON.parse(offsetTool(makeRows(150, 250), 'list_things')({ limit: 100 })) as Record<string, unknown>;
+    const mirrored = JSON.parse(compactToolResultForChat('list_things', JSON.stringify({ ...env, count: 100 }))) as Page;
+    expect(mirrored.count).toBe(mirrored.showing);
+    expect(mirrored.showing).toBeLessThan(100);
+    const unrelated = JSON.parse(compactToolResultForChat('list_things', JSON.stringify({ ...env, count: 7 }))) as Page;
+    expect(unrelated.count).toBe(7);
   });
 });

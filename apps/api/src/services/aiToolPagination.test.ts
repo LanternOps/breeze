@@ -14,7 +14,13 @@ import {
   readKeysetArgs,
   readPageArgs,
 } from './aiToolPagination';
-import { PAGE_RESUME_KEY, readPageResume, resumeCursorAfter } from './aiToolPageResume';
+import { PAGE_RESUME_KEY, readPageResume, resumePointAfter, stripPageResumeJson, type PageResume } from './aiToolPageResume';
+
+/** The cursor a resume point carries, or null for "start of list" / unreachable. */
+const resumeCursorAfter = (resume: PageResume, kept: number): string | null => {
+  const point = resumePointAfter(resume, kept);
+  return point.kind === 'cursor' ? point.cursor : null;
+};
 
 describe('readPageArgs', () => {
   const opts = { defaultLimit: 25, maxLimit: 100 };
@@ -223,7 +229,7 @@ describe('page-resume descriptor', () => {
     if (!args.ok) throw new Error('unexpected');
     const env = pageEnvelope({ key: 'rows', items: Array.from({ length: 20 }, (_, i) => ({ i })), limit: 20, offset: 40, fingerprint: args.fingerprint, total: 60 });
     const resume = readPageResume(env[PAGE_RESUME_KEY]);
-    expect(resume).toMatchObject({ mode: 'offset', key: 'rows', offset: 40, rows: 20 });
+    expect(resume).toMatchObject({ mode: 'offset', key: 'rows', offset: 40, rows: 20, maxOffset: MAX_OFFSET });
     const at = (kept: number) => readPageArgs('list_things', { status: 'open', cursor: resumeCursorAfter(resume!, kept) }, opts);
     expect(at(7)).toMatchObject({ ok: true, offset: 47 });
     expect(at(0)).toMatchObject({ ok: true, offset: 40 });
@@ -245,7 +251,33 @@ describe('page-resume descriptor', () => {
     expect(readKeysetArgs('alerts', { cursor: resumeCursorAfter(resume!, 0) }, opts)).toMatchObject({ ok: true, after });
 
     const first = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
-    expect(resumeCursorAfter(readPageResume(first[PAGE_RESUME_KEY])!, 0)).toBeNull();
+    expect(resumePointAfter(readPageResume(first[PAGE_RESUME_KEY])!, 0)).toEqual({ kind: 'start' });
+  });
+
+  it('offset: a position past the tool ceiling is unreachable, never a cursor the tool would clamp back', () => {
+    const env = pageEnvelope({ key: 'rows', items: Array.from({ length: 50 }, (_, i) => ({ i })), limit: 50, offset: 1950, fingerprint: 'f', maxOffset: 1950 });
+    const resume = readPageResume(env[PAGE_RESUME_KEY])!;
+    expect(resumePointAfter(resume, 0)).toMatchObject({ kind: 'cursor' });
+    expect(resumePointAfter(resume, 20)).toEqual({ kind: 'unreachable' });
+    // Never above the global cap readPageArgs enforces.
+    const capped = pageEnvelope({ key: 'rows', items: [{ i: 0 }], limit: 1, offset: 0, fingerprint: 'f', maxOffset: MAX_OFFSET * 2 });
+    expect(readPageResume(capped[PAGE_RESUME_KEY])).toMatchObject({ maxOffset: MAX_OFFSET });
+  });
+
+  it('an empty page carries no descriptor', () => {
+    expect(pageEnvelope({ key: 'rows', items: [], limit: 5, offset: 0, fingerprint: 'f' })).not.toHaveProperty(PAGE_RESUME_KEY);
+    expect(keysetEnvelope({ key: 'rows', items: [] as Array<{ t: string; id: string }>, limit: 5, fingerprint: 'f', after: null, keyOf: (r) => ({ t: r.t, i: r.id }) }))
+      .not.toHaveProperty(PAGE_RESUME_KEY);
+  });
+
+  it('stripPageResumeJson removes the descriptor for raw consumers and leaves everything else byte-identical', () => {
+    const env = pageEnvelope({ key: 'rows', items: [{ i: 1 }], limit: 5, offset: 0, fingerprint: 'f' });
+    const stripped = JSON.parse(stripPageResumeJson(JSON.stringify(env))) as Record<string, unknown>;
+    expect(stripped).not.toHaveProperty(PAGE_RESUME_KEY);
+    expect(stripped).toMatchObject({ rows: [{ i: 1 }], showing: 1, hasMore: false });
+    for (const untouched of ['plain text', '{"rows":[1]}', '[1,2]', `{"note":"${PAGE_RESUME_KEY} in a string"}`]) {
+      expect(stripPageResumeJson(untouched)).toBe(untouched);
+    }
   });
 
   it('keyset: keys cover only the rows on the page, not the over-fetched one', () => {
@@ -255,11 +287,12 @@ describe('page-resume descriptor', () => {
   });
 
   it('rejects malformed descriptors', () => {
-    for (const bad of [null, [], 'x', { v: 2, key: 'r', f: 'f', mode: 'offset', offset: 0, rows: 1 },
-      { v: 1, key: 'r', f: 'f', mode: 'offset', offset: -1, rows: 1 },
+    for (const bad of [null, [], 'x', { v: 2, key: 'r', f: 'f', mode: 'offset', offset: 0, rows: 1, maxOffset: 10 },
+      { v: 1, key: 'r', f: 'f', mode: 'offset', offset: -1, rows: 1, maxOffset: 10 },
+      { v: 1, key: 'r', f: 'f', mode: 'offset', offset: 0, rows: 1 },
       { v: 1, key: 'r', f: 'f', mode: 'keyset', after: 'x', keys: [] },
       { v: 1, key: 'r', f: 'f', mode: 'keyset', after: null, keys: [['a']] },
-      { v: 1, key: '', f: 'f', mode: 'offset', offset: 0, rows: 1 }]) {
+      { v: 1, key: '', f: 'f', mode: 'offset', offset: 0, rows: 1, maxOffset: 10 }]) {
       expect(readPageResume(bad)).toBeNull();
     }
   });

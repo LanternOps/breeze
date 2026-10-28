@@ -136,6 +136,11 @@ export function pageEnvelope<T>(p: {
   fingerprint: string;
   total?: number;
   totalMode?: 'exact' | 'estimated';
+  /**
+   * The furthest offset this tool honours for this page size, when it clamps
+   * below MAX_OFFSET (e.g. a list that can only ever see its first N rows).
+   */
+  maxOffset?: number;
 }): Record<string, unknown> {
   const overFetched = p.total === undefined && p.items.length > p.limit;
   const items = overFetched ? p.items.slice(0, p.limit) : p.items;
@@ -153,7 +158,17 @@ export function pageEnvelope<T>(p: {
     // by compactToolResultForChat before the model sees the result; omitted on
     // an empty page, which has no rows to drop.
     ...(items.length > 0
-      ? { [PAGE_RESUME_KEY]: { v: 1, key: p.key, f: p.fingerprint, mode: 'offset', offset: p.offset, rows: items.length } satisfies PageResume }
+      ? {
+        [PAGE_RESUME_KEY]: {
+          v: 1,
+          key: p.key,
+          f: p.fingerprint,
+          mode: 'offset',
+          offset: p.offset,
+          rows: items.length,
+          maxOffset: Math.min(p.maxOffset ?? MAX_OFFSET, MAX_OFFSET),
+        } satisfies PageResume,
+      }
       : {}),
   };
 }

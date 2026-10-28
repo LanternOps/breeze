@@ -40,6 +40,12 @@ export type PageResume =
     offset: number;
     /** How many rows the tool put on the page. */
     rows: number;
+    /**
+     * The furthest offset the tool will honour for this page size (it clamps
+     * anything beyond). A resume point past it would be clamped back onto
+     * rows already shown — re-delivering them forever — so none is minted.
+     */
+    maxOffset: number;
   }
   | {
     v: 1;
@@ -72,8 +78,8 @@ export function readPageResume(value: unknown): PageResume | null {
     return null;
   }
   if (d.mode === 'offset') {
-    if (!isCount(d.offset) || !isCount(d.rows)) return null;
-    return { v: 1, key: d.key, f: d.f, mode: 'offset', offset: d.offset, rows: d.rows };
+    if (!isCount(d.offset) || !isCount(d.rows) || !isCount(d.maxOffset)) return null;
+    return { v: 1, key: d.key, f: d.f, mode: 'offset', offset: d.offset, rows: d.rows, maxOffset: d.maxOffset };
   }
   if (d.mode === 'keyset') {
     if (d.after !== null && !isKeyPair(d.after)) return null;
@@ -92,16 +98,28 @@ export function pageResumeRowCount(resume: PageResume): number {
   return resume.mode === 'keyset' ? resume.keys.length : resume.rows;
 }
 
+export type ResumePoint =
+  /** Continue with this cursor. */
+  | { kind: 'cursor'; cursor: string }
+  /** The position is the very start of the list: call again without a cursor. */
+  | { kind: 'start' }
+  /** The tool cannot page to this position (offset ceiling). */
+  | { kind: 'unreachable' };
+
 /**
- * The cursor that continues right after the first `kept` rows of the page.
- * `kept === 0` resumes at the start of this page. Returns null only when that
- * position is "no cursor" (the first page of a keyset list).
+ * Where to continue right after the first `kept` rows of the page. `kept === 0`
+ * is the start of this page.
  */
-export function resumeCursorAfter(resume: PageResume, kept: number): string | null {
-  if (resume.mode === 'offset') return encodePageCursor({ f: resume.f, o: resume.offset + kept });
+export function resumePointAfter(resume: PageResume, kept: number): ResumePoint {
+  if (resume.mode === 'offset') {
+    const o = resume.offset + kept;
+    if (o > resume.maxOffset) return { kind: 'unreachable' };
+    return { kind: 'cursor', cursor: encodePageCursor({ f: resume.f, o }) };
+  }
   const at = kept > 0 ? resume.keys[kept - 1] : resume.after;
-  if (!at) return null;
-  return encodePageCursor({ f: resume.f, t: at[0], i: at[1] });
+  if (kept > resume.keys.length) return { kind: 'unreachable' };
+  if (!at) return { kind: 'start' };
+  return { kind: 'cursor', cursor: encodePageCursor({ f: resume.f, t: at[0], i: at[1] }) };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -124,6 +142,17 @@ export function splitPageResumeJson(raw: string): { rest: string; descriptor: un
   if (!isPlainObject(parsed) || !(PAGE_RESUME_KEY in parsed)) return null;
   const { [PAGE_RESUME_KEY]: descriptor, ...rest } = parsed;
   return { rest: JSON.stringify(rest), descriptor };
+}
+
+/**
+ * A tool result with the descriptor removed, for a consumer that uses the raw
+ * `executeTool` string WITHOUT chat compaction (flow steps, the intent
+ * ledger). Those never cut rows, so they have no use for it, and it must not
+ * reach a model or a stored record as if it were tool output.
+ */
+export function stripPageResumeJson(raw: string): string {
+  const split = splitPageResumeJson(raw);
+  return split ? split.rest : raw;
 }
 
 /** Put a descriptor split off by `splitPageResumeJson` back on a JSON object string. */
