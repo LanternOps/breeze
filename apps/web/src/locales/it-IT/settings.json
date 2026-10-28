@@ -1614,7 +1614,18 @@
       "ticket_approval_requested_approver": "Richiesta di approvazione dei lavori (approvatore)",
       "ticket_approval_requested_notify": "Richiesta di approvazione dei lavori (per informazione)",
       "ticket_approval_decided": "Decisione sull’approvazione dei lavori",
-      "ticket_merged": "Ticket unito"
+      "ticket_merged": "Ticket unito",
+      "ticket_comment_notification": "Avviso di risposta pubblica",
+      "ticket_autoresponse": "Conferma di ricezione del ticket",
+      "ticket_resolved": "Ticket risolto",
+      "quote_send": "Preventivo / proposta",
+      "agreement_request_send": "Richiesta di accordo",
+      "invoice_send": "Fattura",
+      "portal_invite": "Invito al portale",
+      "staff_invite": "Invito al personale",
+      "invoice_autopay": "Fattura con avviso di pagamento automatico",
+      "payment_reminder": "Promemoria di pagamento",
+      "payment_overdue": "Promemoria di pagamento scaduto"
     }
   },
   "inboundEmail": {

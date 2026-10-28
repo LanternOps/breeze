@@ -2814,7 +2814,6 @@
       "delivery_failed": "Bildirim iletilemedi",
       "consent_required": "Ödeme yetkilendirmesi eksik. Güncel bir yetkilendirme isteyin."
     },
-    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
     "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
@@ -2954,10 +2953,6 @@
     "saveFailed": "Hatırlatma ayarları kaydedilemedi",
     "loadFailed": "Hatırlatma ayarları yüklenemedi",
     "retry": "Yeniden dene",
-    "loading": "Ödeme ayarları yükleniyor…",
-    "templates": {
-      "paymentReminder": "Ödeme hatırlatması",
-      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
-    }
+    "loading": "Ödeme ayarları yükleniyor…"
   }
 }

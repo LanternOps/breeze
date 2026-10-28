@@ -2814,7 +2814,6 @@
       "delivery_failed": "Invio dell’avviso non riuscito",
       "consent_required": "L’autorizzazione al pagamento è mancante. Richiedi una nuova autorizzazione."
     },
-    "noticeTemplate": "Fattura con avviso di pagamento automatico",
     "chargeFailed": "Impossibile avviare il pagamento. Riprova.",
     "chargeResultUnknown": "Non è stato possibile confermare l’esito di questo pagamento. Aggiornamento della fattura per mostrarne lo stato attuale.",
     "chargeStarted": "Tentativo di pagamento avviato",
@@ -2954,10 +2953,6 @@
     "saveFailed": "Impossibile salvare le impostazioni dei promemoria",
     "loadFailed": "Impossibile caricare le impostazioni dei promemoria",
     "retry": "Riprova",
-    "loading": "Caricamento delle impostazioni di pagamento…",
-    "templates": {
-      "paymentReminder": "Promemoria di pagamento",
-      "paymentOverdue": "Promemoria di pagamento scaduto"
-    }
+    "loading": "Caricamento delle impostazioni di pagamento…"
   }
 }

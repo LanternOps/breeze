@@ -1614,7 +1614,18 @@
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
       "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
-      "ticket_merged": "Ticket zusammengeführt"
+      "ticket_merged": "Ticket zusammengeführt",
+      "ticket_comment_notification": "Benachrichtigung über öffentliche Antwort",
+      "ticket_autoresponse": "Eingangsbestätigung für Ticket",
+      "ticket_resolved": "Ticket gelöst",
+      "quote_send": "Angebot",
+      "agreement_request_send": "Anfrage zur Vereinbarung",
+      "invoice_send": "Rechnung",
+      "portal_invite": "Portaleinladung",
+      "staff_invite": "Mitarbeitereinladung",
+      "invoice_autopay": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
+      "payment_reminder": "Zahlungserinnerung",
+      "payment_overdue": "Erinnerung an überfällige Zahlung"
     }
   },
   "inboundEmail": {

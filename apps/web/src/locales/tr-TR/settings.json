@@ -1614,7 +1614,18 @@
       "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
       "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
       "ticket_approval_decided": "İş onayı kararı",
-      "ticket_merged": "Bilet birleştirildi"
+      "ticket_merged": "Bilet birleştirildi",
+      "ticket_comment_notification": "Herkese açık yanıt bildirimi",
+      "ticket_autoresponse": "Bilet alındı onayı",
+      "ticket_resolved": "Bilet çözüldü",
+      "quote_send": "Teklif",
+      "agreement_request_send": "Anlaşma talebi",
+      "invoice_send": "Fatura",
+      "portal_invite": "Portal daveti",
+      "staff_invite": "Personel daveti",
+      "invoice_autopay": "Otomatik ödeme bildirimi içeren fatura",
+      "payment_reminder": "Ödeme hatırlatması",
+      "payment_overdue": "Gecikmiş ödeme hatırlatması"
     }
   },
   "inboundEmail": {

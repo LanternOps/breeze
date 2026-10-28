@@ -1614,7 +1614,18 @@
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
       "ticket_approval_decided": "Work approval decision",
-      "ticket_merged": "Ticket merged"
+      "ticket_merged": "Ticket merged",
+      "ticket_comment_notification": "Public reply notice",
+      "ticket_autoresponse": "Ticket received acknowledgement",
+      "ticket_resolved": "Ticket resolved",
+      "quote_send": "Quote / proposal",
+      "agreement_request_send": "Agreement request",
+      "invoice_send": "Invoice",
+      "portal_invite": "Portal invite",
+      "staff_invite": "Staff invite",
+      "invoice_autopay": "Invoice with automatic payment notice",
+      "payment_reminder": "Payment reminder",
+      "payment_overdue": "Overdue payment reminder"
     }
   },
   "inboundEmail": {

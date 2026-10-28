@@ -2814,7 +2814,6 @@
       "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
       "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
     "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
@@ -2954,10 +2953,6 @@
     "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
     "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
     "retry": "Erneut versuchen",
-    "loading": "Zahlungseinstellungen werden geladen…",
-    "templates": {
-      "paymentReminder": "Zahlungserinnerung",
-      "paymentOverdue": "Erinnerung an überfällige Zahlung"
-    }
+    "loading": "Zahlungseinstellungen werden geladen…"
   }
 }

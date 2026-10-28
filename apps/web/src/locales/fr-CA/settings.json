@@ -1614,7 +1614,18 @@
       "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
       "ticket_approval_requested_notify": "Demande d’approbation de travaux (à titre informatif)",
       "ticket_approval_decided": "Décision d’approbation de travaux",
-      "ticket_merged": "Ticket fusionné"
+      "ticket_merged": "Ticket fusionné",
+      "ticket_comment_notification": "Avis de réponse publique",
+      "ticket_autoresponse": "Accusé de réception du billet",
+      "ticket_resolved": "Billet résolu",
+      "quote_send": "Soumission / proposition",
+      "agreement_request_send": "Demande d’entente",
+      "invoice_send": "Facture",
+      "portal_invite": "Invitation au portail",
+      "staff_invite": "Invitation du personnel",
+      "invoice_autopay": "Facture avec avis de paiement automatique",
+      "payment_reminder": "Rappel de paiement",
+      "payment_overdue": "Rappel de paiement en retard"
     }
   },
   "inboundEmail": {
