@@ -19,6 +19,9 @@
  *   5. the current token: an organization-scoped token resolves only its own
  *      org and never a partner-level entity → `outside_token_scope`.
  *
+ * Plain chat uses `resolveEntityForCaller`: the same checks in the caller's
+ * own partner, without step 4. A caller without a partner resolves nothing.
+ *
  * Refusals carry no data. Callers decide what a refusal does to a stored row
  * (threadLinks: `not_found` deletes, the rest are kept and hidden — the grant
  * or the role may widen again).
@@ -84,6 +87,23 @@ export function capLabel(raw: string, fallback: string): string {
  * read once and reused across every ref (a home render resolves up to 50).
  */
 export function createEntityResolver(ctx: EntityResolveContext) {
+  return createResolver(ctx.auth, ctx.ceiling.partnerId, ctx.ceiling);
+}
+
+/** One-off plain-chat resolve, using only the caller's own authority. */
+export function resolveEntityForCaller(
+  auth: AuthContext,
+  ref: { kind: WispEntityKind; id: string },
+): Promise<ResolvedEntity | ResolveFailure> {
+  return createResolver(auth, auth.partnerId)(ref);
+}
+
+/** Shared ordered checks; a grant-bound resolver also applies step 4. */
+function createResolver(
+  auth: AuthContext | null | undefined,
+  partnerId: string | null,
+  ceiling?: GrantCeiling,
+) {
   let perms: ReturnType<typeof getUserPermissions> | null = null;
   const permissionsOnce = (auth: AuthContext) => {
     perms ??= getUserPermissions(auth.user.id, {
@@ -95,11 +115,10 @@ export function createEntityResolver(ctx: EntityResolveContext) {
   };
 
   return async function resolve(ref: { kind: WispEntityKind; id: string }): Promise<ResolvedEntity | ResolveFailure> {
-    const { auth, ceiling } = ctx;
-    if (!GUID_RE.test(ref.id)) return { reason: 'not_found' };
+    if (partnerId === null || !GUID_RE.test(ref.id)) return { reason: 'not_found' };
 
-    // (1) existence inside the grant's partner; (2) the org is the entity's.
-    const entity = await loadEntityForPartner(ref.kind, ref.id, ceiling.partnerId);
+    // (1) existence inside the selected partner; (2) the org is the entity's.
+    const entity = await loadEntityForPartner(ref.kind, ref.id, partnerId);
     if (!entity) return { reason: 'not_found' };
     const orgId = entity.orgId;
     const permission = ENTITY_READ_PERMISSION[ref.kind];
@@ -121,11 +140,13 @@ export function createEntityResolver(ctx: EntityResolveContext) {
     }
 
     // (4) the grant's live ceiling, against the entity's own org and site.
-    try {
-      assertWithinCeiling(ceiling, { orgId, siteId: entity.siteId, permission });
-    } catch (err) {
-      if (err instanceof CeilingViolationError) return { reason: 'outside_ceiling' };
-      throw err;
+    if (ceiling) {
+      try {
+        assertWithinCeiling(ceiling, { orgId, siteId: entity.siteId, permission });
+      } catch (err) {
+        if (err instanceof CeilingViolationError) return { reason: 'outside_ceiling' };
+        throw err;
+      }
     }
 
     // (5) the current token's reach.
