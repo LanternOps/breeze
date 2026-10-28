@@ -144,6 +144,13 @@ vi.mock('./wisp/coordinator', () => ({
   precheckSpecialistRequest: (...args: unknown[]) => mockPrecheckSpecialistRequest(...args),
 }));
 
+// #10392: the own-concern lookup behind card-less snooze/resolve (its SQL is
+// pinned in wisp/concerns.test.ts); mocked here as a collaborator of the gate.
+const mockIsLiveConcernRaisedByGrant = vi.fn();
+vi.mock('./wisp/concerns', () => ({
+  isLiveConcernRaisedByGrant: (...args: unknown[]) => mockIsLiveConcernRaisedByGrant(...args),
+}));
+
 // Real guardrailCheckForTenantTool/tenantToolPermissionRequirement (pure,
 // no side effects) — only checkTenantToolRateLimit (redis) is mocked.
 vi.mock('./toolSources/guardrails', async (importOriginal) => ({
@@ -808,21 +815,79 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 2, requiresApproval: false, description: 'x' } as any);
   });
 
-  it.each(['remember', 'raise_concern', 'snooze_concern', 'resolve_concern', 'link_entity'])(
-    '%s under per_step and a live grant executes with an audit row and no approval card',
-    async (toolName) => {
-      const values = mockInsertValues();
-      const session = wispSession({ approvalMode: 'per_step' });
+  const CONCERN_ID = '00000000-0000-4000-8000-0000000000c1';
+  const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 
-      const result = await createSessionPreToolUse(session)(toolName, REMEMBER);
+  async function expectNoCard(toolName: string, input: Record<string, unknown>) {
+    const values = mockInsertValues();
+    const session = wispSession({ approvalMode: 'per_step' });
 
-      expect(result).toMatchObject({ allowed: true, toolAuth: { narrowedFor: 'session-1' } });
-      expect(values).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', toolName, status: 'executing' }));
-      expect(approvalCards(session)).toHaveLength(0);
-      expect(waitForApproval).not.toHaveBeenCalled();
-      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    const result = await createSessionPreToolUse(session)(toolName, input);
+
+    expect(result).toMatchObject({ allowed: true, toolAuth: { narrowedFor: 'session-1' } });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', toolName, status: 'executing' }));
+    expect(approvalCards(session)).toHaveLength(0);
+    expect(waitForApproval).not.toHaveBeenCalled();
+    expect(mockCreateActionIntent).not.toHaveBeenCalled();
+  }
+
+  async function expectCard(toolName: string, input: Record<string, unknown>) {
+    mockInsertReturning({ id: `exec-${toolName}` });
+    const session = wispSession({ approvalMode: 'per_step' });
+
+    const result = await createSessionPreToolUse(session)(toolName, input);
+
+    expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected or timed out' });
+    expect(waitForApproval).toHaveBeenCalled();
+    expect(approvalCards(session)).toHaveLength(1);
+  }
+
+  it('remember of the grantor\'s OWN memory (ownerKind user) runs with an audit row and no card', async () => {
+    await expectNoCard('remember', REMEMBER);
+  });
+
+  it.each(['org', 'partner'])(
+    'remember of %s-owned memory (shared standing context) keeps the per_step card',
+    async (ownerKind) => {
+      await expectCard('remember', { ...REMEMBER, ownerKind, orgId: ORG_ID });
     },
   );
+
+  it.each([
+    ['raise_concern', { orgId: ORG_ID, subject: { kind: 'org', id: ORG_ID }, summary: 'waiting on the vendor', severity: 'low' }],
+    ['link_entity', { kind: 'ticket', id: CONCERN_ID }],
+  ] as const)('%s (adds a row, never overwrites or hides anyone\'s state) runs with no card', async (toolName, input) => {
+    await expectNoCard(toolName, input as Record<string, unknown>);
+    expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
+  });
+
+  it.each(['snooze_concern', 'resolve_concern'])(
+    '%s of a concern THIS grant raised runs with no card (lookup bound to the call\'s ceiling)',
+    async (toolName) => {
+      mockIsLiveConcernRaisedByGrant.mockResolvedValue(true);
+      await expectNoCard(toolName, { concernId: CONCERN_ID, outcome: 'vendor replied', until: '2026-11-01T00:00:00Z' });
+      expect(mockIsLiveConcernRaisedByGrant).toHaveBeenCalledWith(CEILING, CONCERN_ID);
+    },
+  );
+
+  it.each(['snooze_concern', 'resolve_concern'])(
+    '%s of a concern raised by someone else (or another grant) keeps the per_step card',
+    async (toolName) => {
+      mockIsLiveConcernRaisedByGrant.mockResolvedValue(false);
+      await expectCard(toolName, { concernId: CONCERN_ID, outcome: 'done', until: '2026-11-01T00:00:00Z' });
+    },
+  );
+
+  it('an own-concern lookup that fails keeps the card (fails toward asking) and is reported', async () => {
+    mockIsLiveConcernRaisedByGrant.mockRejectedValue(new Error('connection refused'));
+    await expectCard('resolve_concern', { concernId: CONCERN_ID, outcome: 'done' });
+    expect(mockCaptureException).toHaveBeenCalled();
+  });
+
+  it('a snooze/resolve with no string concernId keeps the card and never queries', async () => {
+    await expectCard('resolve_concern', { outcome: 'done' });
+    expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
+  });
 
   it('audits the call as approved:false with its own method, never as a human decision or a read', async () => {
     mockInsertValues();
@@ -834,6 +899,34 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.remember');
     expect(auditCall).toBeDefined();
     expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'wisp_self_state_auto' });
+  });
+
+  it('under auto_approve the call keeps the auto_approve_mode audit label', async () => {
+    mockInsertValues();
+    const session = wispSession({ approvalMode: 'auto_approve' });
+
+    expect(await createSessionPreToolUse(session)('remember', REMEMBER)).toMatchObject({ allowed: true });
+    await createSessionPostToolUse(session)('remember', REMEMBER, 'Remembered as unconfirmed (ID: m-1).', false, 3);
+
+    const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.remember');
+    expect((auditCall![1] as any).details).toMatchObject({ approved: false, approvalMethod: 'auto_approve_mode' });
+  });
+
+  it('a plan-MATCHED bookkeeping call takes the plan branch (index advances), not the fast path', async () => {
+    const values = mockInsertValues();
+    const session = wispSession({
+      approvalMode: 'action_plan',
+      activePlanId: 'plan-1',
+      approvedPlanSteps: new Map([[0, { toolName: 'remember', input: REMEMBER }]]),
+    });
+
+    const result = await createSessionPreToolUse(session)('remember', REMEMBER);
+
+    expect(result).toMatchObject({ allowed: true });
+    expect(session.currentPlanStepIndex).toBe(1);
+    expect(session.eventBus.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'plan_step_start', stepIndex: 0 }));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+    expect(waitForApproval).not.toHaveBeenCalled();
   });
 
   it('a session WITHOUT a Wisp grant still gets the per_step card for remember', async () => {

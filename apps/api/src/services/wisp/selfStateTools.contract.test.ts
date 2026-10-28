@@ -27,11 +27,17 @@ import { aiTools, getToolTier } from '../aiTools';
 import { HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import { WISP_SELF_STATE_TOOLS } from './selfStateTools';
 
-const MEMBERS = [...WISP_SELF_STATE_TOOLS];
+const MEMBERS = [...WISP_SELF_STATE_TOOLS.keys()];
 
 describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
-  it('is exactly the reviewed bookkeeping set (a new member is a deliberate, reviewed change)', () => {
-    expect(MEMBERS.sort()).toEqual(['link_entity', 'raise_concern', 'remember', 'resolve_concern', 'snooze_concern']);
+  it('is exactly the reviewed bookkeeping set and scopes (a change is a deliberate, reviewed change)', () => {
+    expect(Object.fromEntries(WISP_SELF_STATE_TOOLS)).toEqual({
+      remember: 'own_memory',
+      raise_concern: 'adds_row',
+      link_entity: 'adds_row',
+      snooze_concern: 'own_concern',
+      resolve_concern: 'own_concern',
+    });
   });
 
   it.each(MEMBERS)('%s is a registered Tier-2 ai-domain tool with no device arguments', (tool) => {

@@ -1028,6 +1028,39 @@ async function specialistPreApprovalGate(
 }
 
 /**
+ * #10392 — may this Wisp bookkeeping call run without the per_step card? The
+ * per-tool scopes live in wisp/selfStateTools.ts. Any doubt keeps the card:
+ * a tool outside the map, a memory owner other than the grantor, a missing
+ * concernId, a concern this grant did not raise, or a lookup that fails.
+ */
+async function wispSelfStateSkipsCard(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  wispState: WispCallState,
+): Promise<boolean> {
+  switch (WISP_SELF_STATE_TOOLS.get(toolName)) {
+    case 'adds_row':
+      return true;
+    case 'own_memory':
+      return input.ownerKind === 'user';
+    case 'own_concern': {
+      if (typeof input.concernId !== 'string') return false;
+      try {
+        const { isLiveConcernRaisedByGrant } = await import('./wisp/concerns');
+        return await isLiveConcernRaisedByGrant(wispState.ceiling, input.concernId);
+      } catch (err) {
+        console.error(`[AI-SDK] Wisp own-concern lookup failed for '${toolName}' (session ${session.breezeSessionId}); asking for approval`, err);
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiAgentSdk', orgId: session.orgId });
+        return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/**
  * The chat pre-tool gate. For a Wisp session (`session.wispGrant` set — always
  * resolved by streamingSessionManager.getOrCreate from the ai_sessions row),
  * every allowed exit carries `toolAuth`: the session's current tool auth cut
@@ -1476,16 +1509,20 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // #10392: Wisp's own bookkeeping writes (wisp/selfStateTools.ts —
       // memory, concerns, thread links; never a device) skip the card the
       // same way, with the same two carve-outs, but only for a call that
-      // passed the live Wisp ceiling gate this turn (`wispCall.current`): the
-      // tools are inert without a grant, and an ordinary session keeps its
-      // card. Still Tier 2 (the `tier === 2` check below), so a Tier-3
-      // resolution never takes this path.
-      const wispSelfStateAutoExec = wispCall.current !== null
+      // passed the live Wisp ceiling gate this turn (`wispCall.current`) and
+      // only within the tool's scope (the grantor's own memory, a concern
+      // this grant raised, or a pure add). Tier 2 only, so a Tier-3
+      // resolution never takes this path. Evaluated last so the own-concern
+      // lookup runs only when nothing else already decided the call.
+      const wispSelfStateAutoExec = guardrailCheck.tier === 2
+        && effectiveMode !== 'auto_approve'
+        && !readOnlyAutoExec
+        && wispCall.current !== null
         && !tenant
         && !flowTool
-        && WISP_SELF_STATE_TOOLS.has(toolName)
         && !session.isPaused
-        && !planInFlight;
+        && !planInFlight
+        && await wispSelfStateSkipsCard(session, toolName, input, wispCall.current);
       if (guardrailCheck.tier === 2 && (effectiveMode === 'auto_approve' || readOnlyAutoExec || wispSelfStateAutoExec)) {
         const liveDenial = await refreshTier2Authority(
           'Authorization changed before execution; the action was not executed.',
