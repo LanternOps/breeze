@@ -2749,6 +2749,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} dispositivi ora si trovano in {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} dispositivi su {{total}} spostati in {{site}}. Non spostati: {{devices}}",
       "bulkMoveSiteAllFailed": "Nessun dispositivo è stato spostato in {{site}}. Non spostati: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (la sede è cambiata dopo il caricamento dell'elenco; l'elenco è stato aggiornato, riprova)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (non hai accesso alla sua sede o alla sede di destinazione)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (non più trovato; potrebbe essere stato eliminato)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (si è verificato un errore imprevisto; riprova)",
       "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito"
     },
     "tryAgain": "Prova di nuovo",

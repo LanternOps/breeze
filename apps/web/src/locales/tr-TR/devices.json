@@ -2749,6 +2749,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
       "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
       "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (liste yüklendikten sonra sitesi değişti; liste yenilendi, yeniden deneyin)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
     },
     "tryAgain": "Tekrar deneyin",
