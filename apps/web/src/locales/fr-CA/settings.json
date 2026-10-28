@@ -6407,7 +6407,7 @@
     },
     "empty": "Aucun invité connu pour l’instant.",
     "removeConfirm": {
-      "title": "Retirer l'invité connu?",
+      "title": "Retirer l’invité connu?",
       "message": "Retirer {{label}} ({{mac}})? Les appareils ayant cette adresse MAC ne seront plus approuvés automatiquement dans vos organisations gérées."
     }
   },
