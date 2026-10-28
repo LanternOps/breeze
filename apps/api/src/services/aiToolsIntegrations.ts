@@ -317,6 +317,8 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
           eventType,
           eventId,
           payload,
+          payloadVersion: webhook.payloadVersion,
+          eventTimestamp: now,
           status: 'pending',
           attempts: 0,
         })
@@ -342,7 +344,9 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       };
 
       try {
-        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
+        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
+          payloadVersion: webhook.payloadVersion as 1 | 2,
+        });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
         await db

@@ -190,6 +190,7 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
     name: webhook.name,
     url: redactUrlForLogs(decryptedUrl),
     events: webhook.events ?? [],
+    payloadVersion: webhook.payloadVersion,
     // Normalise BEFORE redacting: the legacy record shape filters out
     // non-string values, so redacting first turned every legacy header into a
     // marker object and dropped it — the edit form then saved `headers: []`
@@ -364,10 +365,14 @@ function rejectUnsupportedAuthFields(
   }
 }
 
-// Every event type the bus can publish. The webhook-delivery subscriber
-// listens on `*` (services/eventSubscribers.ts), so any of these reaches a
-// matching webhook; a name outside this set can never fire.
+// Registered event names. The webhook-delivery subscriber listens on `*`
+// (services/eventSubscribers.ts); the explicit deny-list below excludes names
+// that are registered but have no publisher.
 const PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(EVENT_TYPES));
+
+// In EVENT_TYPES but no code publishes it (#10500). A follow-up implements it;
+// remove it from this set in the same PR that adds a publisher.
+export const NEVER_PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set(['alert.escalated']);
 
 // Names that were offered for subscription but are not what the bus publishes.
 // The web form offered `alert.created` while alerts publish `alert.triggered`
@@ -383,6 +388,12 @@ const webhookEventsSchema = z
   .min(1)
   .transform((events) => [...new Set(events.map((event) => LEGACY_EVENT_ALIASES[event] ?? event))])
   .superRefine((events, ctx) => {
+    for (const event of events.filter((event) => NEVER_PUBLISHED_EVENT_TYPES.has(event))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${event} is never sent by Breeze; a webhook subscribed to it would never fire`,
+      });
+    }
     const unknown = events.filter((event) => event !== '*' && !PUBLISHED_EVENT_TYPES.has(event));
     if (unknown.length > 0) {
       ctx.addIssue({
@@ -400,6 +411,7 @@ const createWebhookSchema = z.object({
   // handler requires one or the other.
   secret: z.string().min(1).max(255).optional(),
   events: webhookEventsSchema,
+  payloadVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   headers: customHeadersSchema.optional().default([]),
   status: z.enum(['active', 'paused']).optional(),
   ...unsupportedAuthFields
@@ -411,6 +423,7 @@ const updateWebhookSchema = z.object({
   // `null` removes the signing secret (switching to bearer auth).
   secret: z.string().min(1).max(255).nullable().optional(),
   events: webhookEventsSchema.optional(),
+  payloadVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   headers: customHeadersSchema.optional(),
   status: z.enum(['active', 'paused', 'failed']).optional(),
   ...unsupportedAuthFields
@@ -572,6 +585,7 @@ webhookRoutes.post(
         url: encryptSecret(data.url) ?? data.url,
         secret: data.secret ? encryptSecret(data.secret) : null,
         events: data.events,
+        ...(data.payloadVersion !== undefined ? { payloadVersion: data.payloadVersion } : {}),
         headers: encryptWebhookHeaders(data.headers ?? []),
         status: mapApiStatusToDb(data.status ?? 'active'),
         createdBy: auth.user.id,
@@ -702,6 +716,7 @@ webhookRoutes.patch(
       updatePayload.secret = encryptSecret(data.secret);
     }
     if (data.events !== undefined) updatePayload.events = data.events;
+    if (data.payloadVersion !== undefined) updatePayload.payloadVersion = data.payloadVersion;
     if (data.headers !== undefined) updatePayload.headers = encryptWebhookHeaders(data.headers, webhook.headers);
     if (data.status !== undefined) updatePayload.status = mapApiStatusToDb(data.status);
 
@@ -889,6 +904,8 @@ webhookRoutes.post(
         eventType,
         eventId,
         payload,
+        payloadVersion: webhook.payloadVersion,
+        eventTimestamp: now,
         status: 'pending',
         attempts: 0,
         createdAt: now
@@ -913,7 +930,9 @@ webhookRoutes.post(
     };
 
     try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
+        payloadVersion: webhook.payloadVersion as 1 | 2,
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedDelivery] = await db
@@ -999,6 +1018,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
 
     const retryEventId = randomUUID();
     const now = new Date();
+    const replayRootEventId = delivery.replayRootEventId ?? delivery.eventId;
 
     const [retryDelivery] = await db
       .insert(webhookDeliveries)
@@ -1007,6 +1027,9 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
         eventType: delivery.eventType,
         eventId: retryEventId,
         payload: delivery.payload,
+        payloadVersion: delivery.payloadVersion,
+        eventTimestamp: now,
+        replayRootEventId,
         status: 'pending',
         attempts: 0,
         createdAt: now
@@ -1031,7 +1054,10 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
     };
 
     try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id, {
+        payloadVersion: delivery.payloadVersion as 1 | 2,
+        replayOf: replayRootEventId,
+      });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
       const [failedRetry] = await db

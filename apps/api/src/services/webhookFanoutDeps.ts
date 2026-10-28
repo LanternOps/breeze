@@ -34,6 +34,7 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
             orgId: webhooksTable.orgId,
             approvalGeneration: webhooksTable.approvalGeneration,
             events: webhooksTable.events,
+            payloadVersion: webhooksTable.payloadVersion,
           })
           .from(webhooksTable)
           .where(
@@ -46,8 +47,8 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
         // Site-ceiling gate contract §7E: no decryption here. `events` is a
         // plain (non-encrypted) column, and the fan-out/dedupe path never
         // needed url/secret/headers — only `queueDelivery` and
-        // `recordWebhookDelivery` consume this, and both only ever read
-        // `.id`/`.orgId`/`.approvalGeneration`. Decryption now happens
+        // `recordWebhookDelivery` consume this, and use only the
+        // identity, approval generation and payload version. Decryption now happens
         // exactly once, inside the delivery worker at send time
         // (resolveDeliveryWebhookConfig), which is what closes the window
         // where a decrypted secret used to sit in the Redis queue payload.
@@ -60,6 +61,7 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
             id: row.id,
             orgId: row.orgId,
             approvalGeneration: row.approvalGeneration,
+            payloadVersion: row.payloadVersion === 2 ? 2 as const : 1 as const,
           }));
       });
     },

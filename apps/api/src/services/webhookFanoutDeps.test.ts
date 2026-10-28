@@ -94,7 +94,7 @@ describe('buildWebhookFanoutDeps', () => {
       // UNDECRYPTED WebhookFanoutTarget — id/orgId/approvalGeneration only.
       // `events` is consumed to FILTER but never appears in the output; no
       // decryption happens on this path at all any more.
-      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1 }]);
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 }]);
     });
 
     it('includes wildcard-subscribed webhooks for any event type', async () => {
@@ -135,7 +135,7 @@ describe('buildWebhookFanoutDeps', () => {
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
 
-      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3 }]);
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3, payloadVersion: 1 }]);
       expect(captureExceptionMock).not.toHaveBeenCalled();
     });
 
@@ -148,4 +148,9 @@ describe('buildWebhookFanoutDeps', () => {
       expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
     });
   });
+});
+
+it('returns only supported payload versions, falling back to v1', async () => {
+  mockRows([1, 2, 3, undefined].map((payloadVersion, i) => ({ id: String(i), orgId: 'org-1', approvalGeneration: 1, events: ['*'], payloadVersion })));
+  expect((await buildWebhookFanoutDeps().getWebhooksForEvent('org-1', 'alert.triggered')).map(w => w.payloadVersion)).toEqual([1, 2, 1, 1]);
 });

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useForm, useFieldArray } from 'react-hook-form';
+import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles, X } from 'lucide-react';
@@ -13,6 +13,7 @@ const createWebhookSchema = (t: (key: string) => string) => z
     // At-least-one is enforced on submit against checked boxes + preserved
     // unlisted events together (#9693), so the schema can't require it.
     events: z.array(z.string()),
+    payloadVersion: z.union([z.literal(1), z.literal(2)]),
     authType: z.enum(['hmac', 'bearer']),
     secret: z.string().optional(),
     bearerToken: z.string().optional(),
@@ -60,6 +61,8 @@ export const webhookEventOptions = [
   { value: 'device.reinstalled', label: 'Device Reinstalled', labelKey: 'longTail.webhooks.WebhookForm.events.deviceReinstalled.label', description: 'Triggered when a reinstalled machine is reattached to its existing device record.', descriptionKey: 'longTail.webhooks.WebhookForm.events.deviceReinstalled.description' },
   { value: 'alert.triggered', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
   { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
+  { value: 'alert.acknowledged', label: 'Alert Acknowledged', labelKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.label', description: 'Triggered when an alert is acknowledged.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertAcknowledged.description' },
+  { value: 'alert.suppressed', label: 'Alert Suppressed', labelKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.label', description: 'Triggered when Breeze AI suppresses an alert. Suppressing from the dashboard does not send it yet.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertSuppressed.description' },
   { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
   { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' },
   { value: 'ticket.commented', label: 'Ticket Commented', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.label', description: 'Triggered when a comment or note is added to a ticket.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.description' },
@@ -70,6 +73,8 @@ export const webhookEventOptions = [
   { value: 'integration.health_opened', label: 'Connection health incident opened', labelKey: 'longTail.webhooks.WebhookForm.events.integrationHealthOpened.label', description: "Triggered when a health incident is opened for an organization's connection.", descriptionKey: 'longTail.webhooks.WebhookForm.events.integrationHealthOpened.description' },
   { value: 'integration.health_resolved', label: 'Connection health incident resolved', labelKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.label', description: 'Triggered when a connection health incident is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.description' }
 ];
+
+export const NEVER_DELIVERED_EVENTS: readonly string[] = ['alert.escalated'];
 
 const catalogEventValues = new Set<string>(webhookEventOptions.map(option => option.value));
 const ALL_EVENTS = '*';
@@ -112,6 +117,7 @@ export default function WebhookForm({
       name: '',
       url: '',
       events: [],
+      payloadVersion: 2,
       authType: 'hmac',
       secret: '',
       bearerToken: '',
@@ -129,6 +135,9 @@ export default function WebhookForm({
     Array.from(new Set((defaultValues?.events ?? []).filter(event => !catalogEventValues.has(event))))
   );
   const hasAllEvents = unlistedEvents.includes(ALL_EVENTS);
+  const storedEvents = defaultValues?.events ?? [];
+  const onlyNeverDelivered = storedEvents.length > 0
+    && storedEvents.every(event => NEVER_DELIVERED_EVENTS.includes(event));
 
   const { fields, append, remove } = useFieldArray({
     control,
@@ -161,7 +170,8 @@ export default function WebhookForm({
         // react-hook-form can echo untouched default values (incl. unlisted ones
         // the user just removed), so only trust its value for catalog events.
         const checked = (values.events ?? []).filter(event => catalogEventValues.has(event));
-        const events = Array.from(new Set([...checked, ...unlistedEvents]));
+        const events = Array.from(new Set([...checked, ...unlistedEvents]))
+          .filter(event => !NEVER_DELIVERED_EVENTS.includes(event));
         if (events.length === 0) {
           setError('events', { type: 'custom', message: t('longTail.webhooks.WebhookForm.validation.eventRequired') });
           return;
@@ -221,6 +231,11 @@ export default function WebhookForm({
 
       <div className="space-y-2">
         <label className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.fields.events')}</label>
+        {onlyNeverDelivered && (
+          <p role="alert" data-testid="webhook-never-delivered-banner" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-foreground">
+            {t('longTail.webhooks.WebhookForm.neverDelivered.banner')}
+          </p>
+        )}
         {unlistedEvents.length > 0 && (
           <div className="space-y-2 rounded-md border bg-muted/20 p-3">
             <p className="text-xs font-medium text-muted-foreground">
@@ -228,13 +243,17 @@ export default function WebhookForm({
             </p>
             <div className="flex flex-wrap gap-2">
               {unlistedEvents.map(event => {
+                const neverDelivered = NEVER_DELIVERED_EVENTS.includes(event);
                 const label = event === ALL_EVENTS ? t('longTail.webhooks.WebhookForm.otherEvents.allEvents') : event;
                 return (
                   <span
                     key={event}
+                    data-testid={neverDelivered ? 'webhook-never-delivered-chip' : undefined}
+                    title={neverDelivered ? t('longTail.webhooks.WebhookForm.neverDelivered.explanation') : undefined}
                     className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-xs font-medium"
                   >
                     {label}
+                    {neverDelivered && <span className="font-semibold">{t('longTail.webhooks.WebhookForm.neverDelivered.marker')}</span>}
                     <button
                       type="button"
                       aria-label={t('longTail.webhooks.WebhookForm.otherEvents.remove', { event: label })}
@@ -281,6 +300,37 @@ export default function WebhookForm({
         </fieldset>
         {errors.events && <p className="text-sm text-destructive">{errors.events.message}</p>}
       </div>
+
+      <fieldset className="space-y-3">
+        <legend className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.payloadVersion.title')}</legend>
+        <Controller
+          control={control}
+          name="payloadVersion"
+          render={({ field }) => (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {([2, 1] as const).map(version => (
+                <label key={version} className="flex items-start gap-3 rounded-md border p-3 hover:bg-muted/40">
+                  <input
+                    type="radio"
+                    data-testid={`webhook-payload-version-${version}`}
+                    name={field.name}
+                    value={version}
+                    checked={field.value === version}
+                    onChange={() => field.onChange(version)}
+                    onBlur={field.onBlur}
+                    ref={version === 2 ? field.ref : undefined}
+                    className="mt-1 h-4 w-4"
+                  />
+                  <div>
+                    <p className="text-sm font-medium">{t(/* i18n-dynamic */ `longTail.webhooks.WebhookForm.payloadVersion.v${version}.label`)}</p>
+                    <p className="text-xs text-muted-foreground">{t(/* i18n-dynamic */ `longTail.webhooks.WebhookForm.payloadVersion.v${version}.description`)}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        />
+      </fieldset>
 
       <div className="space-y-3 rounded-md border bg-muted/20 p-4">
         <div>

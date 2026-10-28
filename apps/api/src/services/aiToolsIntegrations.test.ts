@@ -285,7 +285,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
 
     // First select: fetch the webhook row.
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
-      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: credentialUrl, approvalGeneration: 1 },
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Test Hook', url: credentialUrl, approvalGeneration: 1, payloadVersion: 2 },
     ]));
 
     // Insert: create delivery record.
@@ -319,7 +319,11 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
       1,
       expect.objectContaining({ orgId: ORG_ID }),
       DELIVERY_ID,
+      { payloadVersion: 2 },
     );
+    const values = mocks.dbInsert.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(values).toMatchObject({ payloadVersion: 2, eventTimestamp: expect.any(Date) });
+    expect(values.eventTimestamp.toISOString()).toBe(mocks.queueDelivery.mock.calls[0]![2].metadata.timestamp);
   });
 
   it('masks encrypted URL in test_webhook — ciphertext not echoed', async () => {

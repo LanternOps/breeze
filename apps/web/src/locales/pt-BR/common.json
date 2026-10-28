@@ -1388,6 +1388,14 @@
           "integrationHealthResolved": {
             "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
             "label": "Incidente de integridade da conexão resolvido"
+          },
+          "alertAcknowledged": {
+            "label": "Alerta reconhecido",
+            "description": "Disparado quando um alerta é reconhecido."
+          },
+          "alertSuppressed": {
+            "label": "Alerta suprimido",
+            "description": "Disparado quando o Breeze AI suprime um alerta. Suprimir pelo painel ainda não envia este evento."
           }
         },
         "fields": {
@@ -1439,6 +1447,22 @@
           "secretRequired": "Segredo é obrigatório para autenticação HMAC",
           "tokenRequired": "Token é obrigatório para autenticação bearer",
           "urlRequired": "URL é obrigatória"
+        },
+        "neverDelivered": {
+          "marker": "Nunca entregue",
+          "explanation": "O Breeze nunca envia este evento. Ele será removido quando você salvar este webhook.",
+          "banner": "O Breeze nunca envia este evento, portanto este webhook nunca realizou uma entrega. Escolha outro evento antes de salvar."
+        },
+        "payloadVersion": {
+          "title": "Versão dos dados",
+          "v2": {
+            "label": "v2 (recomendada)",
+            "description": "Os eventos de alerta incluem nome do host, local, organização, status e um link para o alerta."
+          },
+          "v1": {
+            "label": "v1 (versão original)",
+            "description": "Os dados de alerta originais, mantidos para as integrações existentes."
+          }
         }
       },
       "WebhookList": {

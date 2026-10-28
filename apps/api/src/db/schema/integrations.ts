@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, smallint, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
@@ -66,6 +66,7 @@ export const webhooks = pgTable('webhooks', {
   url: text('url').notNull(),
   secret: text('secret'),
   events: text('events').array().notNull().default([]),
+  payloadVersion: smallint('payload_version').notNull().default(2),
   headers: jsonb('headers'),
   status: webhookStatusEnum('status').notNull().default('active'),
   retryPolicy: jsonb('retry_policy'),
@@ -84,7 +85,9 @@ export const webhooks = pgTable('webhooks', {
    * config that was edited (or disabled) after it was queued.
    */
   approvalGeneration: integer('approval_generation').notNull().default(1)
-});
+}, (table) => ({
+  payloadVersionCheck: check('webhooks_payload_version_chk', sql`${table.payloadVersion} IN (1, 2)`)
+}));
 
 export const webhookDeliveries = pgTable('webhook_deliveries', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -92,6 +95,12 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   eventType: varchar('event_type', { length: 100 }).notNull(),
   eventId: varchar('event_id', { length: 100 }).notNull(),
   payload: jsonb('payload').notNull(),
+  // Pinned wire version; legacy deliveries retain version 1.
+  payloadVersion: smallint('payload_version').notNull().default(1),
+  // Original envelope timestamp, preserved when recovery requeues a delivery.
+  eventTimestamp: timestamp('event_timestamp', { withTimezone: true }),
+  // Original event ID shared by every manual replay in a chain.
+  replayRootEventId: varchar('replay_root_event_id', { length: 100 }),
   status: webhookDeliveryStatusEnum('status').notNull().default('pending'),
   /** HTTP delivery attempts. Written by the delivery callback, shown in the UI. */
   attempts: integer('attempts').notNull().default(0),

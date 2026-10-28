@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 interface UpdateCall { table: string; set: Record<string, unknown>; where: unknown }
 
 const state = vi.hoisted(() => ({
+  insert: vi.fn(),
   updateCalls: [] as UpdateCall[],
   updateResults: [] as Record<string, unknown>[][]
 }));
@@ -36,13 +37,13 @@ vi.mock('../db', () => {
     })
   });
   return {
-    db: { update: makeUpdate },
+    db: { update: makeUpdate, insert: state.insert },
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     runOutsideDbContext: (fn: () => unknown) => fn()
   };
 });
 
-import { recordDeliveryOutcome } from './webhookDeliveryRecord';
+import { recordDeliveryOutcome, recordWebhookDelivery } from './webhookDeliveryRecord';
 
 const RESULT = {
   deliveryId: 'delivery-1',
@@ -132,5 +133,15 @@ describe('recordDeliveryOutcome', () => {
 
     expect(state.updateCalls).toHaveLength(1);
     expect(Object.keys(state.updateCalls[0]!.set)).toContain('successCount');
+  });
+});
+
+describe('recordWebhookDelivery wire identity', () => {
+  it.each(['2026-10-28T12:00:00.000Z', 'invalid', undefined])('stores version, payload and event timestamp %s', async timestamp => {
+    const values = vi.fn(() => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }));
+    state.insert.mockReturnValue({ values });
+    const payload = { alertId: 'alert-1', status: 'active' };
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 2 }, { id: 'event-1', type: 'alert.triggered', payload, metadata: { timestamp } } as never);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ payloadVersion: 2, payload, eventTimestamp: timestamp?.startsWith('2026') ? new Date(timestamp) : null, replayRootEventId: null }));
   });
 });

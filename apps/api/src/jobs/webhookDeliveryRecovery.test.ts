@@ -94,6 +94,7 @@ function orphan(overrides: Record<string, unknown> = {}) {
     eventType: 'alert.triggered',
     payload: { alertId: 'a-1' },
     status: 'pending',
+    payloadVersion: 1, eventTimestamp: null, replayRootEventId: null,
     recoveryAttempts: 0,
     createdAt: new Date(NOW.getTime() - STALE_PENDING_MS - 60_000),
     webhookOrgId: 'org-1',
@@ -164,6 +165,16 @@ describe('webhook delivery recovery sweep', () => {
     expect((event as { payload: unknown }).payload).toEqual({ alertId: 'a-1' });
     expect(webhookId).toBe('webhook-1');
     expect(generation).toBe(1);
+  });
+
+  it.each([new Date('2026-09-11T11:00:00.000Z'), null])('restores stored wire identity with timestamp %s', async eventTimestamp => {
+    const candidate = orphan({ eventTimestamp, payloadVersion: 2, replayRootEventId: 'root-event' });
+    state.candidates = [candidate];
+    state.updateResults = [claimWon(1)];
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect(queueDeliveryMock).toHaveBeenCalledWith('webhook-1', 1, expect.objectContaining({
+      payload: candidate.payload, metadata: { timestamp: (eventTimestamp ?? candidate.createdAt).toISOString() }
+    }), 'delivery-1', { payloadVersion: 2, replayOf: 'root-event' });
   });
 
   it('leases the row it claimed so a concurrent sweep cannot re-queue it', async () => {

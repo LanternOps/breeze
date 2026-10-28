@@ -258,6 +258,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
       name: values.name,
       url: values.url,
       events: values.events,
+      payloadVersion: values.payloadVersion,
       ...(status ? { status } : {}),
       ...secret,
       headers
@@ -281,6 +282,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
       secret: webhook.hasSecret ? MASKED_SECRET : '',
       bearerToken: bearerHeader ? formSecretValue(bearerHeader.value) : '',
       events: webhook.events ?? [],
+      payloadVersion: webhook.payloadVersion ?? 1,
       // The bearer Authorization header is edited through the Bearer option,
       // not as a custom header row.
       headers: headers

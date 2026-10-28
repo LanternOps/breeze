@@ -1388,6 +1388,14 @@
           "integrationHealthResolved": {
             "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
             "label": "Bağlantı sağlık olayı çözüldü"
+          },
+          "alertAcknowledged": {
+            "label": "Uyarı onaylandı",
+            "description": "Bir uyarı onaylandığında tetiklenir."
+          },
+          "alertSuppressed": {
+            "label": "Uyarı susturuldu",
+            "description": "Breeze AI bir uyarıyı susturduğunda tetiklenir. Panodan susturmak bu olayı henüz göndermez."
           }
         },
         "fields": {
@@ -1439,6 +1447,22 @@
           "secretRequired": "HMAC kimlik doğrulaması için gizli bilgi gereklidir",
           "tokenRequired": "Taşıyıcı kimlik doğrulaması için jeton gereklidir",
           "urlRequired": "URL'si gerekli"
+        },
+        "neverDelivered": {
+          "marker": "Hiç iletilmez",
+          "explanation": "Breeze bu olayı hiçbir zaman göndermez. Bu webhook kaydedildiğinde olay kaldırılır.",
+          "banner": "Breeze bu olayı hiçbir zaman göndermez; bu nedenle bu webhook hiç teslimat yapmamıştır. Kaydetmeden önce başka bir olay seçin."
+        },
+        "payloadVersion": {
+          "title": "Veri sürümü",
+          "v2": {
+            "label": "v2 (önerilen)",
+            "description": "Uyarı olayları ana makine adını, konumu, kuruluşu, durumu ve uyarıya bağlantıyı içerir."
+          },
+          "v1": {
+            "label": "v1 (özgün)",
+            "description": "Mevcut entegrasyonlar için korunan özgün uyarı verileri."
+          }
         }
       },
       "WebhookList": {

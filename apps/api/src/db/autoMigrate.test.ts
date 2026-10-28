@@ -1546,3 +1546,29 @@ it('keeps the retirement migration scoped to legacy source columns', () => {
   const sql = readFileSync(new URL('../../migrations/2026-10-23-120000-legacy-source-retirement-columns.sql', import.meta.url), 'utf8');
   expect(sql).not.toMatch(/ALTER\s+TABLE\s+(?:public\.)?monitor_definitions\b/i);
 });
+
+describe('webhook payload version migration', () => {
+  it('preserves legacy versions before changing the new-webhook default, without row writes', () => {
+    const migration = readFileSync(new URL('../../migrations/2027-01-12-100000-webhook-payload-version.sql', import.meta.url), 'utf8');
+    expect(migration).toContain('ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS payload_version smallint NOT NULL DEFAULT 1;');
+    expect(migration).toContain("conrelid = 'public.webhooks'::regclass");
+    expect(migration).toContain("conname = 'webhooks_payload_version_chk'");
+    expect(migration).toContain('CHECK (payload_version IN (1, 2))');
+    expect(migration.indexOf('DEFAULT 1')).toBeLessThan(migration.indexOf('SET DEFAULT 2'));
+    expect(migration).toContain('ALTER TABLE public.webhook_deliveries ADD COLUMN IF NOT EXISTS payload_version smallint NOT NULL DEFAULT 1;');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS event_timestamp timestamptz NULL;');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS replay_root_event_id varchar(100) NULL;');
+    const statements = migration.replace(/--[^\n]*/g, '');
+    expect(statements).not.toMatch(/\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
+    expect(statements).not.toMatch(/ALTER TABLE public.webhook_deliveries[^;]*CHECK/i);
+  });
+  it('models defaults, the webhook check, and nullable persisted wire identity in Drizzle', async () => {
+    const { webhooks, webhookDeliveries } = await import('./schema/integrations');
+    expect(webhooks.payloadVersion.default).toBe(2);
+    expect(webhooks.payloadVersion.notNull).toBe(true);
+    expect(getTableConfig(webhooks).checks.map(check => check.name)).toContain('webhooks_payload_version_chk');
+    expect(webhookDeliveries.payloadVersion.default).toBe(1);
+    expect(webhookDeliveries.eventTimestamp.notNull).toBe(false);
+    expect(webhookDeliveries.replayRootEventId.notNull).toBe(false);
+  });
+});

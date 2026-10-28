@@ -49,11 +49,33 @@ async function save() {
   fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
   await waitFor(() => expect(patched()).toBe(true));
   const [, init] = fetchWithAuth.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')!;
-  return JSON.parse((init as RequestInit).body as string) as { events: string[] };
+  return JSON.parse((init as RequestInit).body as string) as { events: string[]; payloadVersion: number };
 }
 
 describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
   beforeEach(() => fetchWithAuth.mockReset());
+
+  it('edits a legacy webhook as v1 and includes the chosen version in PATCH', async () => {
+    await openEdit(['alert.triggered']);
+    expect((screen.getByTestId('webhook-payload-version-1') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId('webhook-payload-version-2'));
+    expect((await save()).payloadVersion).toBe(2);
+  });
+
+  it('marks never-delivered stored events and removes them on save', async () => {
+    await openEdit(['alert.escalated', 'alert.triggered']);
+    expect(screen.getByTestId('webhook-never-delivered-chip').textContent).toContain('Never delivered');
+    expect(screen.queryByTestId('webhook-never-delivered-banner')).toBeNull();
+    expect((await save()).events).toEqual(['alert.triggered']);
+  });
+
+  it('warns when only never-delivered events are stored and requires another event', async () => {
+    await openEdit(['alert.escalated']);
+    expect(screen.getByTestId('webhook-never-delivered-banner').getAttribute('role')).toBe('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/at least one event/i));
+    expect(patched()).toBe(false);
+  });
 
   it('keeps "*" in the PATCH when only the URL changes, and shows it as a chip', async () => {
     await openEdit(['*']);
@@ -112,6 +134,9 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: /New Webhook/ }))[0]!);
     const form = (await screen.findByRole('button', { name: 'Create Webhook' })).closest('form')!;
     expect(form.querySelector('fieldset')!.disabled).toBe(false);
+    expect((screen.getByTestId('webhook-payload-version-2') as HTMLInputElement).checked).toBe(true);
+    expect(form.querySelector('input[value="alert.acknowledged"]')).toBeTruthy();
+    expect(form.querySelector('input[value="alert.suppressed"]')).toBeTruthy();
     fireEvent.change(document.getElementById('webhook-name')!, { target: { value: 'N' } });
     fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/n' } });
     fireEvent.change(document.getElementById('webhook-secret')!, { target: { value: 'sekret' } });
@@ -123,7 +148,7 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Webhook' }));
     await waitFor(() => expect(posted()).toBe(true));
     const [, init] = fetchWithAuth.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'POST')!;
-    expect(JSON.parse((init as RequestInit).body as string).events).toEqual(['device.online']);
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ events: ['device.online'], payloadVersion: 2 });
   });
 
   it('still requires at least one event after the last chip is removed', async () => {

@@ -274,6 +274,9 @@ export async function runWebhookDeliveryRecoverySweep(
         status: webhookDeliveries.status,
         recoveryAttempts: webhookDeliveries.recoveryAttempts,
         createdAt: webhookDeliveries.createdAt,
+        payloadVersion: webhookDeliveries.payloadVersion,
+        eventTimestamp: webhookDeliveries.eventTimestamp,
+        replayRootEventId: webhookDeliveries.replayRootEventId,
         webhookOrgId: webhooks.orgId,
         webhookStatus: webhooks.status,
         webhookApprovalGeneration: webhooks.approvalGeneration
@@ -417,9 +420,8 @@ export async function runWebhookDeliveryRecoverySweep(
       // The original event, reconstructed from the row. `id` MUST stay the
       // original `event_id`: it goes out as `X-Breeze-Event-Id`, which is the
       // customer's own idempotency key, and it is what the unique index dedupes
-      // on. `metadata.timestamp` is NOT stored per delivery, so the row's
-      // `created_at` — the instant the delivery was recorded — stands in for it;
-      // it is the closest recorded approximation of the original event time.
+      // on. Restore the stored event timestamp; only legacy rows with NULL
+      // event_timestamp use created_at as the closest recorded approximation.
       const event: BreezeEvent = {
         id: candidate.eventId,
         type: candidate.eventType as EventType,
@@ -427,13 +429,16 @@ export async function runWebhookDeliveryRecoverySweep(
         source: 'webhook.recovery',
         priority: 'normal',
         payload: (candidate.payload ?? {}) as Record<string, unknown>,
-        metadata: { timestamp: candidate.createdAt.toISOString() }
+        metadata: { timestamp: (candidate.eventTimestamp ?? candidate.createdAt).toISOString() }
       };
 
       try {
         // Outside any DB context: this is a Redis LPUSH, and holding a pooled
         // Postgres connection across it is the pattern that exhausts the pool.
-        await getWebhookWorker().queueDelivery(candidate.webhookId, candidate.webhookApprovalGeneration, event, candidate.id);
+        await getWebhookWorker().queueDelivery(candidate.webhookId, candidate.webhookApprovalGeneration, event, candidate.id, {
+          payloadVersion: candidate.payloadVersion === 2 ? 2 : 1,
+          replayOf: candidate.replayRootEventId ?? null
+        });
       } catch (enqueueError) {
         // Still no job. Hand the attempt BACK: the claim charged one before the
         // enqueue, but this enqueue never used it. Without the refund a Redis

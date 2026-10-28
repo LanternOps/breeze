@@ -31,6 +31,7 @@ export type Webhook = {
   name: string;
   url: string;
   events: string[];
+  payloadVersion?: 1 | 2;
   status?: WebhookStatus;
   enabled?: boolean;
   lastDeliveryAt?: string | null;

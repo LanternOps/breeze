@@ -17,6 +17,9 @@ import { toWebhookConfig } from '../services/webhookConfig';
 import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 import { scrubUrlsInText } from '../utils/endpointDisplay';
 import { isSelfDeliveryOfHealthEvent } from '../services/connectionHealth/eventPayload';
+import { buildWebhookEnvelope } from '../services/webhookPayload/envelope';
+import { isAlertV2EventType } from '../services/webhookPayload/alertV2';
+import { buildAlertWebhookProjections } from '../services/webhookPayload/alertEnrichment';
 
 const { db } = dbModule;
 
@@ -53,6 +56,9 @@ export interface WebhookConfig {
 }
 
 export interface WebhookDeliveryJob {
+  /** Absent on jobs queued before payload versioning: those stay v1. */
+  payloadVersion?: 1 | 2;
+  replayOf?: string | null;
   id: string;
   webhookId: string;
   /**
@@ -100,6 +106,7 @@ export interface WebhookDeliveryJob {
  * right before the actual HTTP POST.
  */
 export interface WebhookFanoutTarget {
+  payloadVersion: 1 | 2;
   id: string;
   orgId: string;
   approvalGeneration: number;
@@ -265,12 +272,14 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
   // "Unsafe webhook URL" message in the catch below.
 
   // Prepare payload
-  const payload = JSON.stringify({
+  const payload = buildWebhookEnvelope({
+    version: job.payloadVersion ?? 1,
     id: event.id,
     type: event.type,
     timestamp: event.metadata.timestamp,
     orgId: event.orgId,
-    data: event.payload
+    data: event.payload,
+    replayOf: job.replayOf ?? null
   });
 
   // Prepare headers
@@ -283,6 +292,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     'X-Breeze-Event-Type': event.type,
     'X-Breeze-Timestamp': timestamp.toString()
   };
+
+  if (job.replayOf) headers['X-Breeze-Replay-Of'] = job.replayOf;
 
   // Add HMAC signature if secret is configured
   if (webhook.secret) {
@@ -482,7 +493,7 @@ class WebhookDeliveryWorker extends EventEmitter {
    * in plaintext on this path. `generation` is `undefined` for callers that
    * don't have a fresh row to hand (rare; the comparison is then skipped).
    */
-  async queueDelivery(webhookId: string, generation: number | undefined, event: BreezeEvent, deliveryId?: string): Promise<string> {
+  async queueDelivery(webhookId: string, generation: number | undefined, event: BreezeEvent, deliveryId?: string, wire?: { payloadVersion?: 1 | 2; replayOf?: string | null }): Promise<string> {
     const redis = getRedisConnection();
     const nextDeliveryId = deliveryId ?? randomUUID();
 
@@ -490,6 +501,8 @@ class WebhookDeliveryWorker extends EventEmitter {
       id: nextDeliveryId,
       webhookId,
       generation,
+      payloadVersion: wire?.payloadVersion,
+      replayOf: wire?.replayOf,
       event,
       attempts: 0,
       createdAt: new Date().toISOString()
@@ -678,6 +691,8 @@ class WebhookDeliveryWorker extends EventEmitter {
         id: job.id,
         webhookId: job.webhookId,
         generation: job.generation,
+        payloadVersion: job.payloadVersion,
+        replayOf: job.replayOf,
         event: job.event,
         attempts: job.attempts + 1,
         nextRetryAt,
@@ -734,6 +749,8 @@ class WebhookDeliveryWorker extends EventEmitter {
       id: randomUUID(), // New delivery ID
       webhookId: job.webhookId,
       generation: job.generation,
+      payloadVersion: job.payloadVersion,
+      replayOf: job.replayOf,
       event: job.event,
       attempts: 0,
       nextRetryAt: undefined,
@@ -917,6 +934,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
   // dropping the FAILING webhook. Failures are collected and raised together
   // AFTER the loop (#4085) so a retry re-attempts only the failed ones — the
   // (webhook_id, event_id) unique insert makes that safe.
+  let projections: ReturnType<typeof buildAlertWebhookProjections> | undefined;
   const failures: Array<{ webhookId: string; error: unknown }> = [];
   for (const webhook of webhooks) {
     // Spec 2026-10-15 §9 W5: a connection health event about this very webhook
@@ -925,10 +943,18 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
     // neither a retry nor the recovery sweep can revive it.
     if (isSelfDeliveryOfHealthEvent(event, webhook.id)) continue;
     try {
+      const version = webhook.payloadVersion === 2 ? 2 : 1;
+      let data = event.payload;
+      if (version === 2 && isAlertV2EventType(event.type)) {
+        projections ??= buildAlertWebhookProjections(event);
+        // Partner-owned webhooks arrive in a later wave and take .partner.
+        data = (await projections).org;
+      }
+      const deliveryEvent = data === event.payload ? event : { ...event, payload: data };
       let deliveryId: string | undefined;
 
       if (createDeliveryRecord) {
-        const outcome = await runWithSystemDbAccess(() => createDeliveryRecord(webhook, event));
+        const outcome = await runWithSystemDbAccess(() => createDeliveryRecord({ ...webhook, payloadVersion: version }, deliveryEvent));
         // `created: false` means the (webhook, event) pair is already
         // recorded, so the ORIGINAL delivery owns this event's outcome.
         // Queueing again would POST to the customer's endpoint twice for one
@@ -944,7 +970,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
       // blind rather than skipping — a skip there would drop the delivery
       // outright rather than de-duplicate it.
 
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event, deliveryId);
+      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, deliveryEvent, deliveryId, { payloadVersion: version, replayOf: null });
     } catch (err) {
       // Recorded-but-not-enqueued is exactly the orphan the recovery sweep
       // reclaims, so this is loud but not fatal to the rest of the fan-out.
