@@ -35,16 +35,46 @@
  *
  * Flag off ⇒ the tick does nothing (the worker still runs, so flipping
  * FLOWS_ENABLED back on resumes without a restart).
+ *
+ * Converted-flow mode (#5221 B5, plan Decision 6) — ONLY for a flow converted
+ * from a legacy Job (it has a `flow_automation_conversions` row); every other
+ * flow is exactly the W04 tick above:
+ *  - a generation that is not `switched` (reverted; shadow cannot be enabled)
+ *    attempts nothing: skipped before any evaluation, fan-out or report —
+ *    legacy owns its occurrences again (Decision 7);
+ *  - the occurrence key is the UTC minute (`occurrenceKey.schedule` without
+ *    its prefix, e.g. `2027-01-09T03:00Z`), as legacy keys it, so a DST
+ *    repeated hour fires twice like the legacy Job did. The cursor holds that
+ *    key and children dedupe on `schedule:<key>` (the W04 namespace; it is the
+ *    claim key verbatim). Enable stamps a LOCAL key, which never equals a UTC
+ *    one, so the stamp can never consume an occurrence here; the `enabled_at`
+ *    skip covers what it was for;
+ *  - an occurrence legacy prefers (`legacyPrefers`: before `switch_at`) is
+ *    left alone — not claimed, not run, not stamped — so the engines are
+ *    complementary on the same instant by construction;
+ *  - otherwise the tick claims the PARENT occurrence (`claimOccurrence`,
+ *    engine `flow`, no flow run, the automation's owner axis) before any
+ *    child. A conflict with anything but its own parent claim (legacy won, or
+ *    pre-claim legacy history) consumes the occurrence without a run: the key
+ *    is stamped. Its own parent claim (engine `flow`, `flow_run_id` and
+ *    `legacy_run_id` NULL — the only claim with no run; children never claim)
+ *    is a retried tick: the fan-out continues and W04's dedupe fills only the
+ *    orgs that missed;
+ *  - a revert landing mid-fan-out (`flow_conversion_reverted` from a child)
+ *    ends the fan-out quietly, unstamped: the reverted flow attempts nothing
+ *    more and its parent claim keeps legacy off that occurrence.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, sql } from 'drizzle-orm';
 import { flowsEnabled } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { flowAutomationConversions } from '../db/schema/flowConversions';
 import { flowVersions } from '../db/schema/flowRuns';
 import { flows } from '../db/schema/flows';
 import { organizations } from '../db/schema/orgs';
 import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
-import { isFlowAdmissionRefusal } from '@breeze/shared';
+import { isFlowAdmissionRefusal, occurrenceKey, type FlowConversionState } from '@breeze/shared';
+import { claimOccurrence, legacyPrefers } from '../services/flows/conversion/claims';
 import { recordFlowScheduleAdmissionRefused } from '../services/flows/flowTriggerMetrics';
 import { nullFlowInputs } from '../services/flows/inputDefaults';
 import { createFlowRun } from '../services/flows/runService';
@@ -75,6 +105,42 @@ interface ScheduleFlowRow {
   scheduleLastOccurrenceKey: string | null;
   trigger: unknown;
   inputs: unknown;
+  /** #5221 B5: the flow's conversion (one per flow, `flow_automation_conversions_flow_uq`); all null for a plain flow. */
+  conversionId: string | null;
+  conversionState: FlowConversionState | null;
+  conversionSwitchAt: Date | null;
+  conversionAutomationId: string | null;
+  conversionOrgId: string | null;
+  conversionPartnerId: string | null;
+}
+
+/** The generation a converted flow came from: what the parent claim and the switch_at gate need. */
+interface FlowConversion {
+  id: string;
+  state: FlowConversionState;
+  switchAt: Date | null;
+  automationId: string;
+  orgId: string | null;
+  partnerId: string | null;
+}
+
+function conversionOf(flow: ScheduleFlowRow): FlowConversion | null {
+  if (!flow.conversionId || !flow.conversionState || !flow.conversionAutomationId) return null;
+  return {
+    id: flow.conversionId,
+    state: flow.conversionState,
+    switchAt: flow.conversionSwitchAt ? new Date(flow.conversionSwitchAt) : null,
+    automationId: flow.conversionAutomationId,
+    orgId: flow.conversionOrgId ?? null,
+    partnerId: flow.conversionPartnerId ?? null,
+  };
+}
+
+const CLAIM_KEY_PREFIX = 'schedule:';
+
+/** A converted flow's occurrence key: the UTC minute (`2027-01-09T03:00Z`); `schedule:<key>` is its claim key. */
+function utcOccurrenceKey(at: Date): string {
+  return occurrenceKey.schedule(at).slice(CLAIM_KEY_PREFIX.length);
 }
 
 function system<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -103,9 +169,16 @@ function loadScheduleFlows(): Promise<ScheduleFlowRow[]> {
         scheduleLastOccurrenceKey: flows.scheduleLastOccurrenceKey,
         trigger: sql<unknown>`${flowVersions.definition}->'trigger'`,
         inputs: sql<unknown>`${flowVersions.definition}->'inputs'`,
+        conversionId: flowAutomationConversions.id,
+        conversionState: flowAutomationConversions.state,
+        conversionSwitchAt: flowAutomationConversions.switchAt,
+        conversionAutomationId: flowAutomationConversions.automationId,
+        conversionOrgId: flowAutomationConversions.orgId,
+        conversionPartnerId: flowAutomationConversions.partnerId,
       })
       .from(flows)
       .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.publicationSeq, flows.enabledPublicationSeq)))
+      .leftJoin(flowAutomationConversions, eq(flowAutomationConversions.flowId, flows.id))
       .where(and(eq(flows.status, 'enabled'), sql`${flowVersions.definition}->'trigger'->>'type' = 'schedule'`)),
     'flowScheduleTick.flows',
   );
@@ -144,8 +217,52 @@ async function targetOrgs(flow: ScheduleFlowRow): Promise<string[]> {
   return orgIds;
 }
 
+/**
+ * #5221 B5 — the parent claim of a converted flow's occurrence, before any
+ * child. True when the flow owns it (just claimed, or its own parent claim
+ * from an earlier, unfinished tick); false when another admission won.
+ */
+async function claimParentOccurrence(flow: ScheduleFlowRow, conversion: FlowConversion, occurrence: { at: Date; key: string }): Promise<boolean> {
+  const claim = await system(
+    () => claimOccurrence(db, {
+      automationId: conversion.automationId,
+      owner: { orgId: conversion.orgId, partnerId: conversion.partnerId },
+      keys: [occurrenceKey.schedule(occurrence.at)],
+      engine: 'flow',
+      conversionId: conversion.id,
+      occurrenceAt: occurrence.at,
+    }),
+    'flowScheduleTick.parentClaim',
+  );
+  if (claim.ok) return true;
+  const { engine, flowRunId, legacyRunId } = claim.existing;
+  // Only this tick writes a flow claim without a run (children never claim).
+  if (engine === 'flow' && flowRunId === null && legacyRunId === null) return true;
+  console.log(
+    `${LOG} converted flow ${flow.id}: occurrence ${occurrence.key} was already admitted by the ${engine} engine `
+    + `(legacy run ${legacyRunId ?? '-'}, flow run ${flowRunId ?? '-'}); consumed without a run`,
+  );
+  return false;
+}
+
+/** CAS the cursor from the key that was read (`IS NOT DISTINCT FROM`): a concurrent stamp wins. */
+async function stampOccurrence(flow: ScheduleFlowRow, key: string): Promise<void> {
+  const previous = flow.scheduleLastOccurrenceKey;
+  await system(
+    async () => db
+      .update(flows)
+      .set({ scheduleLastOccurrenceKey: key })
+      .where(and(eq(flows.id, flow.id), sql`${flows.scheduleLastOccurrenceKey} IS NOT DISTINCT FROM ${previous}`)),
+    'flowScheduleTick.stamp',
+  );
+}
+
 /** Fire one flow's latest occurrence across its orgs. Returns runs created and whether the key was advanced. */
-async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: string }): Promise<number> {
+async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: string }, conversion: FlowConversion | null): Promise<number> {
+  if (conversion && !(await claimParentOccurrence(flow, conversion, occurrence))) {
+    await stampOccurrence(flow, occurrence.key);
+    return 0;
+  }
   const orgIds = await targetOrgs(flow);
   const inputs = nullFlowInputs(flow.inputs);
   let created = 0;
@@ -178,6 +295,15 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
         );
         report(new Error('flow schedule fan-out stopped: flow not enabled'), 'schedule_tick.not_enabled_mid_fanout', flow, orgId);
         return created;
+      } else if (result.reason === 'flow_conversion_reverted') {
+        // #5221 B5: the conversion was reverted after the parent claim. The
+        // flow attempts nothing more (Decision 7); not an error, so no capture.
+        const remaining = orgIds.length - orgIds.indexOf(orgId);
+        console.warn(
+          `${LOG} converted flow ${flow.id} was reverted mid-fan-out (occurrence ${occurrence.key}); `
+          + `${remaining} org(s) not started, key not advanced`,
+        );
+        return created;
       }
     } catch (err) {
       allHandled = false;
@@ -187,14 +313,7 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
   }
   if (!allHandled) return created;
 
-  const previous = flow.scheduleLastOccurrenceKey;
-  await system(
-    async () => db
-      .update(flows)
-      .set({ scheduleLastOccurrenceKey: occurrence.key })
-      .where(and(eq(flows.id, flow.id), sql`${flows.scheduleLastOccurrenceKey} IS NOT DISTINCT FROM ${previous}`)),
-    'flowScheduleTick.stamp',
-  );
+  await stampOccurrence(flow, occurrence.key);
   return created;
 }
 
@@ -203,6 +322,12 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
   if (!flowsEnabled()) return result;
 
   for (const flow of await loadScheduleFlows()) {
+    const conversion = conversionOf(flow);
+    if (conversion && conversion.state !== 'switched') {
+      // #5221 B5: a reverted generation's flow attempts nothing new.
+      result.skipped += 1;
+      continue;
+    }
     const schedule = scheduleOf(flow.trigger);
     let occurrence: { at: Date; key: string } | null = null;
     let unevaluable: unknown = schedule ? null : new Error('malformed schedule trigger');
@@ -225,16 +350,21 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
         report(unevaluable, 'schedule_tick.cron_unevaluable', flow);
       }
     }
+    // #5221 B5: a converted flow keys the UTC minute.
+    if (occurrence && conversion) occurrence = { at: occurrence.at, key: utcOccurrenceKey(occurrence.at) };
     if (
       !occurrence
       || occurrence.key === flow.scheduleLastOccurrenceKey
       || (flow.enabledAt && occurrence.at.getTime() < new Date(flow.enabledAt).getTime())
+      // #5221 B5: an occurrence legacy prefers (before switch_at) is legacy's
+      // alone — not claimed, not run, not stamped.
+      || (conversion && legacyPrefers(conversion, occurrence.at, false))
     ) {
       result.skipped += 1;
       continue;
     }
     try {
-      result.fired += await fireFlow(flow, occurrence);
+      result.fired += await fireFlow(flow, occurrence, conversion);
     } catch (err) {
       // One flow's org enumeration or stamp failing never starves the others.
       console.error(`${LOG} flow ${flow.id} occurrence ${occurrence.key} failed; retried next tick`, err);

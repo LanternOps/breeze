@@ -45,7 +45,13 @@ vi.mock('../services/flows/runService', () => ({ createFlowRun: vi.fn() }));
 vi.mock('./aiAgentSweepScheduler', () => ({ loadPartnerOrgIds: vi.fn() }));
 vi.mock('../services/flows/flowTriggerMetrics', () => ({ recordFlowScheduleAdmissionRefused: vi.fn(), recordFlowChainDepthRefused: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+// #5221 B5: the parent claim is mocked; the preference functions stay real.
+vi.mock('../services/flows/conversion/claims', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/flows/conversion/claims')>()),
+  claimOccurrence: vi.fn(),
+}));
 
+import { legacyPrefers, claimOccurrence } from '../services/flows/conversion/claims';
 import { flowsEnabled } from '../config/env';
 import { createFlowRun } from '../services/flows/runService';
 import { loadPartnerOrgIds } from './aiAgentSweepScheduler';
@@ -84,6 +90,7 @@ beforeEach(() => {
   vi.mocked(loadPartnerOrgIds).mockReset().mockResolvedValue({ orgIds: [ORG_A, ORG_B, ORG_C], capped: 0 });
   vi.mocked(recordFlowScheduleAdmissionRefused).mockReset();
   vi.mocked(captureException).mockReset();
+  vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
 });
 
 describe('processFlowScheduleTick', () => {
@@ -322,5 +329,231 @@ describe('processFlowScheduleTick', () => {
     vi.mocked(flowsEnabled).mockReturnValue(false);
     expect(await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'))).toEqual({ fired: 0, skipped: 0 });
     expect(calls).toHaveLength(0);
+  });
+});
+
+/**
+ * #5221 B5 (plan Decision 6) — converted-flow schedule mode. A flow converted
+ * from a Job (its generation switched or reverted) keys occurrences by the UTC
+ * minute, claims the PARENT occurrence before fanning out, leaves occurrences
+ * before switch_at to legacy, and a reverted generation's flow attempts
+ * nothing. Every other flow is the W04 tick above, unchanged.
+ */
+describe('processFlowScheduleTick — converted flows (#5221 B5)', () => {
+  const AUTOMATION = '44444444-4444-4444-8444-444444444444';
+  const CONVERSION = '55555555-5555-4555-8555-555555555555';
+  const LEGACY_RUN = '66666666-6666-4666-8666-666666666666';
+
+  /** A flow whose generation is switched (switch_at 60 s after the enable). */
+  function convertedFlow(over: Record<string, unknown> = {}): ReturnType<typeof flow> & { conversionSwitchAt: Date } {
+    const enabledAt = (over.enabledAt as Date | undefined) ?? new Date('2026-10-01T00:00:00Z');
+    const partnerWide = over.orgId === null;
+    const conversionSwitchAt = new Date(enabledAt.getTime() + 60_000);
+    return {
+      ...flow({
+        conversionId: CONVERSION,
+        conversionState: 'switched',
+        conversionAutomationId: AUTOMATION,
+        conversionOrgId: partnerWide ? null : ORG_A,
+        conversionPartnerId: partnerWide ? PARTNER : null,
+        ...over,
+      }),
+      conversionSwitchAt,
+    };
+  }
+  const claimKeys = () => vi.mocked(claimOccurrence).mock.calls.map(([, i]) => i.keys.join(','));
+
+  it('a plain flow keeps the local wall-clock key and never claims', async () => {
+    selects.push([flow({ trigger: { type: 'schedule', cron: '0 * * * *', timezone: 'Europe/Berlin' } })], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-10-25T11:00@Europe/Berlin`]);
+    expect(vi.mocked(createFlowRun).mock.calls[0]![0]).not.toHaveProperty('occurrence');
+    expect(setOf(cas()[0]!)).toEqual({ scheduleLastOccurrenceKey: '2026-10-25T11:00@Europe/Berlin' });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('DST repeated hour fires twice for a converted flow and once for a plain flow', async () => {
+    const tz = 'America/New_York';
+    const daily = { type: 'schedule', cron: '30 1 * * *', timezone: tz };
+    // Converted: 01:30 EDT (05:30Z) and 01:30 EST (06:30Z) are two UTC minutes.
+    selects.push([convertedFlow({ trigger: daily })], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-11-01T05:30:10Z'));
+    const stamped = setOf(cas()[0]!).scheduleLastOccurrenceKey as string;
+    expect(stamped).toBe('2026-11-01T05:30Z');
+    selects.push([convertedFlow({ trigger: daily, scheduleLastOccurrenceKey: stamped })], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-11-01T06:30:10Z'));
+    expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-11-01T05:30Z`, `${ORG_A}|schedule:2026-11-01T06:30Z`]);
+    expect(claimKeys()).toEqual(['schedule:2026-11-01T05:30Z', 'schedule:2026-11-01T06:30Z']);
+
+    // Plain: the same two instants are ONE local occurrence.
+    vi.mocked(createFlowRun).mockClear();
+    vi.mocked(claimOccurrence).mockClear();
+    calls.length = 0;
+    selects.push([flow({ trigger: daily })], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-11-01T05:30:10Z'));
+    const local = setOf(cas()[0]!).scheduleLastOccurrenceKey as string;
+    selects.push([flow({ trigger: daily, scheduleLastOccurrenceKey: local })]);
+    await processFlowScheduleTick(new Date('2026-11-01T06:30:10Z'));
+    expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-11-01T01:30@${tz}`]);
+    expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  it('occurrence claimed by legacy is consumed without a run', async () => {
+    vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing: { engine: 'legacy', legacyRunId: LEGACY_RUN, flowRunId: null } });
+    selects.push([convertedFlow()]);
+    updates.push([{ id: FLOW }]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(r).toEqual({ fired: 0, skipped: 0 });
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(1);
+    expect(setOf(cas()[0]!)).toEqual({ scheduleLastOccurrenceKey: '2026-10-25T10:00Z' });
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('partner-wide parent claim lets every org\'s child run', async () => {
+    selects.push([convertedFlow({ orgId: null, partnerId: PARTNER })]);
+    updates.push([{ id: FLOW }]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    // ONE parent claim: engine flow, no flow run, the automation's owner axis, the UTC minute.
+    expect(claimOccurrence).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(claimOccurrence).mock.calls[0]![1]).toEqual({
+      automationId: AUTOMATION,
+      owner: { orgId: null, partnerId: PARTNER },
+      keys: ['schedule:2026-10-25T10:00Z'],
+      engine: 'flow',
+      conversionId: CONVERSION,
+      occurrenceAt: new Date('2026-10-25T10:00:00Z'),
+    });
+    // Before any child, and every child runs under W04's per-org dedupe without re-claiming.
+    expect(vi.mocked(claimOccurrence).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(createFlowRun).mock.invocationCallOrder[0]!);
+    expect(runKeys()).toEqual([ORG_A, ORG_B, ORG_C].map((o) => `${o}|schedule:2026-10-25T10:00Z`));
+    for (const [i] of vi.mocked(createFlowRun).mock.calls) {
+      expect(i).not.toHaveProperty('occurrence');
+      expect(i.scope).toEqual({ firedAt: '2026-10-25T10:00:00.000Z' });
+    }
+    expect(r.fired).toBe(3);
+    expect(setOf(cas()[0]!)).toEqual({ scheduleLastOccurrenceKey: '2026-10-25T10:00Z' });
+  });
+
+  it('a failed child org retries without a second parent claim', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    selects.push([convertedFlow({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(createFlowRun).mockImplementation(async (i) =>
+      i.orgId === ORG_B ? Promise.reject(new Error('deadlock')) : { created: true, runId: RUN, preApprovalsHonored: true });
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(cas()).toHaveLength(0);
+
+    // Retry: the parent claim is already this tick's own (engine flow, no run) — the fan-out continues.
+    vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing: { engine: 'flow', legacyRunId: null, flowRunId: null } });
+    vi.mocked(createFlowRun).mockReset().mockImplementation(async (i) =>
+      i.orgId === ORG_B ? { created: true, runId: RUN, preApprovalsHonored: true } : { created: false, reason: 'duplicate', runId: RUN, preApprovalsHonored: true });
+    selects.push([convertedFlow({ orgId: null, partnerId: PARTNER })]);
+    updates.push([{ id: FLOW }]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:01:20Z'));
+    expect(runKeys()).toEqual([ORG_A, ORG_B, ORG_C].map((o) => `${o}|schedule:2026-10-25T10:00Z`));
+    expect(r.fired).toBe(1);
+    expect(cas()).toHaveLength(1);
+    expect(claimKeys()).toEqual(['schedule:2026-10-25T10:00Z', 'schedule:2026-10-25T10:00Z']);
+    err.mockRestore();
+  });
+
+  it('a flow-engine claim that names a run is not this tick\'s parent: consumed without a run', async () => {
+    vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing: { engine: 'flow', legacyRunId: null, flowRunId: RUN } });
+    // LIVE is queued so a tick that wrongly fanned out would reach createFlowRun.
+    selects.push([convertedFlow()], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(claimOccurrence).toHaveBeenCalledTimes(1);
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(1);
+  });
+
+  it('enable stamping never consumes an occurrence at or after switch_at', async () => {
+    const tz = 'America/New_York';
+    const daily = { type: 'schedule', cron: '30 1 * * *', timezone: tz };
+    // Switched at 01:30:20 EDT: enable stamped the LOCAL key of 05:30Z; switch_at is 05:31:20Z.
+    const enabledAt = new Date('2026-11-01T05:30:20Z');
+    const switched = convertedFlow({ trigger: daily, enabledAt, scheduleLastOccurrenceKey: `2026-11-01T01:30@${tz}` });
+    expect(switched.conversionSwitchAt).toEqual(new Date('2026-11-01T05:31:20Z'));
+
+    // The stamped occurrence (05:30Z) is before switch_at: legacy's, never attempted here.
+    selects.push([switched]);
+    expect(await processFlowScheduleTick(new Date('2026-11-01T05:31:30Z'))).toEqual({ fired: 0, skipped: 1 });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+
+    // 01:30 EST (06:30Z) has the same LOCAL key the enable stamped, but it is
+    // after switch_at, and legacy does not prefer it: the flow must run it.
+    expect(legacyPrefers({ state: 'switched', switchAt: switched.conversionSwitchAt }, new Date('2026-11-01T06:30:00Z'), false)).toBe(false);
+    selects.push([switched], LIVE);
+    updates.push([{ id: FLOW }]);
+    const r = await processFlowScheduleTick(new Date('2026-11-01T06:30:10Z'));
+    expect(r.fired).toBe(1);
+    expect(claimKeys()).toEqual(['schedule:2026-11-01T06:30Z']);
+    expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-11-01T06:30Z`]);
+  });
+
+  it('an occurrence 30 s before switch_at is left to legacy: no claim, no run, no stamp', async () => {
+    // Hourly; switch_at 10:00:30Z; the tick runs after switch_at, its latest occurrence is 10:00Z.
+    const switched = convertedFlow({ enabledAt: new Date('2026-10-25T09:59:30Z') });
+    expect(switched.conversionSwitchAt).toEqual(new Date('2026-10-25T10:00:30Z'));
+    // The two engines agree: legacy attempts it (it is before switch_at)…
+    expect(legacyPrefers({ state: 'switched', switchAt: switched.conversionSwitchAt }, new Date('2026-10-25T10:00:00Z'), false)).toBe(true);
+    selects.push([switched]);
+    // …and the flow does not, not even to claim it.
+    expect(await processFlowScheduleTick(new Date('2026-10-25T10:00:50Z'))).toEqual({ fired: 0, skipped: 1 });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(0);
+
+    // The next occurrence (11:00Z) is the flow's.
+    selects.push([switched], LIVE);
+    updates.push([{ id: FLOW }]);
+    await processFlowScheduleTick(new Date('2026-10-25T11:00:10Z'));
+    expect(claimKeys()).toEqual(['schedule:2026-10-25T11:00Z']);
+    expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-10-25T11:00Z`]);
+  });
+
+  it('a reverted generation\'s flow attempts nothing and reports nothing', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    selects.push([convertedFlow({ conversionState: 'reverted', orgId: null, partnerId: PARTNER })]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(r).toEqual({ fired: 0, skipped: 1 });
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(loadPartnerOrgIds).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(0);
+    expect(captureException).not.toHaveBeenCalled();
+    expect(err).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('a revert landing mid-fan-out stops the fan-out without a false error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selects.push([convertedFlow({ orgId: null, partnerId: PARTNER })]);
+    vi.mocked(createFlowRun).mockImplementation(async (i) =>
+      i.orgId === ORG_A ? { created: true, runId: RUN, preApprovalsHonored: true } : { created: false, reason: 'flow_conversion_reverted' });
+    const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(r.fired).toBe(1);
+    expect(runKeys()).toHaveLength(2);
+    expect(cas()).toHaveLength(0);
+    expect(captureException).not.toHaveBeenCalled();
+    expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(FLOW);
+    warn.mockRestore();
+  });
+
+  it('a claim that cannot be written leaves the occurrence unconsumed for the next tick', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(claimOccurrence).mockRejectedValue(new Error('connection reset'));
+    selects.push([convertedFlow()]);
+    await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(0);
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ flow_id: FLOW, flow_site: 'schedule_tick.fire_flow' });
+    err.mockRestore();
   });
 });
