@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -225,13 +227,19 @@ func envelopeFor(t *testing.T, typ string, payload any) *ipc.Envelope {
 }
 
 // The native user-helper advertises the kinds whose wave has shipped (plan
-// P2): W04 notice.info@1, W05 restart.prompt@1 and restart.final@1. The
-// SYSTEM helper still advertises nothing.
+// P2): W04 notice.info@1, W05 restart.prompt@1 and restart.final@1 on every
+// OS, then W06's remote kinds where this machine can draw them
+// (TestNativeAdvertisesTheRemoteKinds pins the per-OS rule). The SYSTEM
+// helper still advertises nothing.
 func TestNativeRendererAdvertisesTheShippedKinds(t *testing.T) {
-	// W04 notice.info, W05 restart.prompt + restart.final (append-only).
-	want := []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}
-	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("native helper advertises %v; want exactly %v", got, want)
+	got := advertisedNativePromptKinds(ipc.HelperRoleUser)
+	if want := nativePromptKindsFor(ipc.HelperRoleUser, runtime.GOOS, consentUISupported()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("native helper advertises %v; want %v", got, want)
+	}
+	// W04 notice.info, W05 restart.prompt + restart.final lead (append-only).
+	head := []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}
+	if len(got) < len(head) || strings.Join(got[:len(head)], ",") != strings.Join(head, ",") {
+		t.Fatalf("native helper advertises %v; want it to start with %v", got, head)
 	}
 	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
 		if got := advertisedNativePromptKinds(role); len(got) != 0 {

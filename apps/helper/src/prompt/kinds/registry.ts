@@ -2,7 +2,9 @@ import type { ComponentType } from 'react';
 
 import { PromptCard, type PromptCardProps } from '../PromptCard';
 import { NoticeCard } from './notice';
+import { ConsentCard } from './consent';
 import { RestartFinalCard, RestartPromptCard } from './restart';
+import { SessionCard } from './session';
 
 /*
  * The card component for each prompt kind (#10190). Each wave adds its kind
@@ -13,6 +15,8 @@ const CARDS: Record<string, ComponentType<PromptCardProps>> = {
   'notice.info': NoticeCard,
   'restart.prompt': RestartPromptCard,
   'restart.final': RestartFinalCard,
+  'remote.consent': ConsentCard,
+  'remote.session': SessionCard,
 };
 
 export function cardForKind(kind: string): ComponentType<PromptCardProps> {

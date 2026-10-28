@@ -61,6 +61,13 @@ export interface PromptCardProps {
    * and is a plain dialog, not an alertdialog.
    */
   activation?: 'focus' | 'none';
+  /**
+   * The remote-session pill (kinds/session.tsx, W06) expanded or collapsed:
+   * the window grows or shrinks to fit. Renderer-local, never a wire action.
+   * A rejected promise means the window did not change size. Other kinds
+   * ignore it.
+   */
+  onExpandedChange?: (expanded: boolean) => Promise<void> | void;
 }
 
 export function PromptCard({

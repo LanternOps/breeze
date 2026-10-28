@@ -1,5 +1,6 @@
 import common from './catalog/common.json';
 import notice from './catalog/notice.json';
+import remote from './catalog/remote.json';
 import restart from './catalog/restart.json';
 import { negotiatePromptLocale, type PromptLocale } from './negotiate';
 
@@ -11,6 +12,7 @@ export const PROMPT_CATALOG = {
   common,
   notice,
   restart,
+  remote,
 } as const;
 
 export type PromptNamespace = keyof typeof PROMPT_CATALOG;

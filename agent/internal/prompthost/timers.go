@@ -18,6 +18,11 @@ func (h *Host) Tick() {
 	h.mu.Lock()
 	now := h.clock.Now()
 	h.tombs.prune(now)
+	for id, f := range h.revFloor {
+		if now.Sub(f.at) >= promptTombstoneTTL {
+			delete(h.revFloor, id)
+		}
+	}
 
 	connected := make([]RendererSession, 0, len(h.connected))
 	for key, r := range h.connected {
@@ -51,6 +56,9 @@ func (h *Host) Tick() {
 		}
 		for _, pl := range rec.placements {
 			h.tickPlacement(rec, pl, now, ob)
+			if h.prompts[rec.show.PromptID] != rec {
+				break // lost and withdrawn (NeverReask)
+			}
 		}
 	}
 	h.unlockAndFlush(ob)

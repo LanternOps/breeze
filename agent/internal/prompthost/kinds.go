@@ -121,6 +121,39 @@ func (h *Host) localize(rec *record, s ipc.PromptShow, loc promptcatalog.Locale)
 		actions[i] = a
 	}
 	s.Actions = actions
+	if l.ExpiryText != "" && s.Timing.Expiry != nil {
+		e := *s.Timing.Expiry // never write through the record's pointer
+		e.Text = l.ExpiryText
+		s.Timing.Expiry = &e
+	}
 	s.Locale = string(loc)
 	return s
+}
+
+// relocalizeUpdate renders a Relocalize patch's copy, facts, action labels
+// and expiry text in the placement's locale, from the merged show.
+func (h *Host) relocalizeUpdate(rec *record, pl *placement, u *ipc.PromptUpdate) {
+	if rec.p.Localize == nil || pl.locale == "" {
+		return
+	}
+	s := h.localize(rec, rec.show, pl.locale)
+	if u.Copy != nil {
+		c := s.Copy
+		u.Copy = &c
+	}
+	if u.Facts != nil {
+		f := append([]ipc.PromptFact(nil), s.Facts...)
+		u.Facts = &f
+	}
+	if u.Actions != nil {
+		a := append([]ipc.PromptAction{}, s.Actions...)
+		u.Actions = &a
+	}
+	if u.Timing != nil && u.Timing.Expiry != nil && s.Timing.Expiry != nil {
+		t := *u.Timing
+		e := *t.Expiry
+		e.Text = s.Timing.Expiry.Text
+		t.Expiry = &e
+		u.Timing = &t
+	}
 }

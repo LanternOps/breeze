@@ -72,6 +72,16 @@ type Host struct {
 	limiter   *cardLimiter
 	locked    map[uint32]bool
 	connected map[string]RendererSession // renderers awaiting replay at the next tick
+	// revFloor is the last rev of each closed prompt, kept for the
+	// tombstone TTL: a renderer drops any rev not greater than the last it
+	// applied for an id, also across a close, so a Reshowable prompt shown
+	// again continues its revs instead of restarting at 1.
+	revFloor map[string]revMark
+}
+
+type revMark struct {
+	rev uint64
+	at  time.Time
 }
 
 type deferReason int
@@ -127,6 +137,10 @@ func (pl *placement) lease() ipc.PromptLease {
 	return ipc.PromptLease{RendererSession: pl.renderer, Epoch: pl.epoch}
 }
 
+func (pl *placement) info() PlacementInfo {
+	return PlacementInfo{Path: pl.path, RendererKey: pl.renderer, Role: pl.role, Presented: pl.presented}
+}
+
 // New builds a host with an empty kind registry and nothing enabled.
 func New(deps Deps) *Host {
 	h := &Host{
@@ -142,6 +156,7 @@ func New(deps Deps) *Host {
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
 		connected: map[string]RendererSession{},
+		revFloor:  map[string]revMark{},
 	}
 	if h.clock == nil {
 		h.clock = systemClock{}
@@ -248,6 +263,10 @@ func (h *Host) Show(p Prompt) error {
 	}
 	rec := &record{p: p, show: p.Show, createdAt: now, results: map[actionKey]ipc.PromptActionResult{}}
 	rec.show.Rev = 1
+	if f, ok := h.revFloor[p.ID]; ok {
+		rec.show.Rev = f.rev + 1 // continue past the closed copy's last rev
+		delete(h.revFloor, p.ID)
+	}
 	h.prompts[p.ID] = rec
 	h.addMissingOwners(rec, now, ob)
 	h.persist(rec, now, ob)
@@ -325,16 +344,22 @@ func (h *Host) RendererConnected(r RendererSession) {
 }
 
 // RendererDisconnected starts the grace period for open decisions on that
-// renderer; non-decision prompts wait for a replay.
+// renderer; non-decision prompts wait for a replay. A NeverReask prompt on
+// it is lost at once: there is nothing to wait for, since it is never moved.
 func (h *Host) RendererDisconnected(sessionKey string) {
+	ob := &outbox{}
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	defer h.unlockAndFlush(ob)
 	now := h.clock.Now()
 	delete(h.connected, sessionKey)
-	for _, rec := range h.prompts {
+	for _, rec := range h.sortedRecords() {
 		for _, pl := range rec.placements {
 			if pl.path != PathPrompt || pl.renderer != sessionKey {
 				continue
+			}
+			if rec.p.Kind.NeverReask {
+				h.lose(rec, pl, now, ob, "renderer_gone")
+				break
 			}
 			if ipc.IsPromptDecision(rec.show.State, rec.show.Presentation) && !pl.listOnly {
 				pl.graceUntil = now.Add(assistDisconnectGrace)
@@ -507,6 +532,10 @@ func (h *Host) fence(rec *record, pl *placement, ob *outbox) {
 // fallback moves a placement off a renderer that failed it (render_failed,
 // a missed present budget, a failed send, or a renderer gone past its grace).
 func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
+	if rec.p.Kind.NeverReask {
+		h.lose(rec, pl, now, ob, why)
+		return
+	}
 	if pl.renderer != "" {
 		pl.tried[pl.renderer] = true
 	}
@@ -514,6 +543,59 @@ func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, w
 	h.fence(rec, pl, ob)
 	pl.graceUntil = time.Time{}
 	h.assign(rec, pl, h.choose(rec, pl), now, ob, true)
+}
+
+// lose ends a NeverReask prompt whose renderer failed it: the renderer is
+// fenced, the prompt withdrawn everywhere, and the domain told where it was
+// and whether it had been on screen. It is never moved or re-shown.
+func (h *Host) lose(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
+	info := pl.info()
+	h.log.Info("prompt renderer lost; the prompt is not asked again", "promptId", rec.show.PromptID, "kind", rec.show.Kind,
+		"owner", pl.owner.Key(), "renderer", pl.renderer, "presented", pl.presented, "reason", why)
+	h.fence(rec, pl, ob)
+	pl.path = PathNone
+	pl.graceUntil = time.Time{}
+	h.closeLocked(rec, ipc.PromptCloseWithdrawn, now, ob)
+	if cb := rec.p.OnRendererLost; cb != nil {
+		ob.call(func() { cb(info, why) })
+	}
+}
+
+// PlacementOf reports where o's copy of the open prompt id is (false when
+// the prompt is not open or o has no placement). A domain callback uses it
+// to learn which renderer answered.
+func (h *Host) PlacementOf(id string, o Owner) (PlacementInfo, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.prompts[id]
+	if rec == nil {
+		return PlacementInfo{}, false
+	}
+	for _, pl := range rec.placements {
+		if pl.owner.Key() == o.Key() {
+			return pl.info(), true
+		}
+	}
+	return PlacementInfo{}, false
+}
+
+// WithdrawUnplaced closes an open prompt as withdrawn if, and only if, no
+// renderer was ever assigned to it (it was held, or nothing could draw it),
+// and reports whether it did. It decides under the state lock, so a renderer
+// assigned and lost in between can never read as "never drawn": a caller may
+// then ask another way without asking twice. Unknown or closed prompts
+// (decided, or lost — their callbacks answer) return false.
+func (h *Host) WithdrawUnplaced(id string) bool {
+	ob := &outbox{}
+	h.mu.Lock()
+	rec := h.prompts[id]
+	if rec == nil || rec.everPrompt {
+		h.mu.Unlock()
+		return false
+	}
+	h.closeLocked(rec, ipc.PromptCloseWithdrawn, h.clock.Now(), ob)
+	h.unlockAndFlush(ob)
+	return true
 }
 
 func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) error {
@@ -544,6 +626,9 @@ func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) e
 			t := rec.wireTiming()
 			wu.Timing = &t
 		}
+		if patch.Relocalize {
+			h.relocalizeUpdate(rec, pl, &wu)
+		}
 		ob.send(pl.renderer, ipc.TypePromptUpdate, rec.show.Kind, rec.show.PromptID, nil, wu)
 	}
 	if merged.State.Terminal() {
@@ -565,6 +650,7 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
+	h.revFloor[rec.show.PromptID] = revMark{rev: rec.show.Rev, at: now}
 	if !rec.p.Reshowable || reason == ipc.PromptCloseResolved {
 		h.tombs.add(rec.show.PromptID, now, ob, h)
 	}

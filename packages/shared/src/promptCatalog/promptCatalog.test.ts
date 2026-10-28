@@ -219,6 +219,23 @@ describe('renderPromptMessage', () => {
     expect(catalogError(() => renderPromptMessage('common', 'constructor', 'en')).code).toBe('unknown_key');
   });
 
+  // #10190 W06: Assist pre-fills Request Support with this, in the session
+  // prompt's locale, after "Report a problem" on the remote-session pill.
+  it('renders the Report-a-problem draft with the session id in every locale', () => {
+    expect(renderPromptMessage('common', 'chrome.remoteReportDraft', 'en', { sessionId: 's-1' })).toBe(
+      'Problem with remote session s-1:',
+    );
+    expect(renderPromptMessage('common', 'chrome.remoteReportDraft', 'de-DE', { sessionId: 's-1' })).toBe(
+      'Problem mit der Remotesitzung s-1:',
+    );
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-FR', 'fr-CA', 'it-IT', 'pt-BR', 'tr-TR'] as const) {
+      expect(renderPromptMessage('common', 'chrome.remoteReportDraft', locale, { sessionId: 's-1' })).toContain('s-1');
+    }
+    expect(catalogError(() => renderPromptMessage('common', 'chrome.remoteReportDraft', 'en', {})).code).toBe(
+      'missing_param',
+    );
+  });
+
   it('renders fr-CA distinctly from fr-FR', () => {
     expect(renderPromptMessage('common', 'identity.generic', 'fr-CA')).toBe('Votre équipe de soutien informatique');
     expect(renderPromptMessage('common', 'identity.generic', 'fr-FR')).toBe("Votre équipe d'assistance informatique");
@@ -285,5 +302,60 @@ describe('notice namespace', () => {
 
   it('needs the technician parameter', () => {
     expect(() => renderPromptMessage('notice', 'sessionEnded.body', 'en', {})).toThrow(/needs parameter "technician"/);
+  });
+});
+
+// W06 (#10190): the remote.consent and remote.session copy the agent renders
+// (agent/internal/promptkinds/remote.go).
+describe('remote namespace', () => {
+  const REMOTE_KEYS = [
+    'action.allow',
+    'action.deny',
+    'action.endSession',
+    'action.keepSession',
+    'action.reportProblem',
+    'consent.title',
+    'consent.body',
+    'consent.bodyFrom',
+    'consent.bodyOrganization',
+    'consent.bodyGeneric',
+    'consent.expiryProceed',
+    'consent.expiryBlock',
+    'fact.technician',
+    'fact.email',
+    'fact.organization',
+    'fact.started',
+    'session.title',
+    'session.titleFrom',
+    'session.titleOrganization',
+    'session.titleGeneric',
+    'session.body',
+    'session.confirmEnd',
+    'session.endFailed',
+  ];
+
+  it('is registered and carries exactly the keys the agent renders', () => {
+    expect(Object.keys(PROMPT_CATALOG)).toContain('remote');
+    const ns = (PROMPT_CATALOG as Record<string, { messages: Record<string, unknown> }>).remote;
+    expect(Object.keys(ns?.messages ?? {}).sort()).toEqual([...REMOTE_KEYS].sort());
+  });
+
+  it('leaves the consent countdown to the renderer and states the policy consequence', () => {
+    expect(renderPromptMessage('remote', 'consent.expiryProceed', 'en')).toBe('If no one answers, the session starts in {remaining}.');
+    expect(renderPromptMessage('remote', 'consent.expiryBlock', 'en')).toBe('If no one answers, the session is declined in {remaining}.');
+    for (const locale of PROMPT_LOCALES) {
+      expect(renderPromptMessage('remote', 'consent.expiryProceed', locale)).toContain('{remaining}');
+      expect(renderPromptMessage('remote', 'consent.expiryBlock', locale)).toContain('{remaining}');
+    }
+  });
+
+  it('renders the decision labels in the session locale', () => {
+    expect(renderPromptMessage('remote', 'action.deny', 'de-DE')).toBe('Ablehnen');
+    expect(renderPromptMessage('remote', 'action.allow', 'fr-CA')).toBe('Autoriser');
+    expect(renderPromptMessage('remote', 'session.titleFrom', 'pt-BR', { technician: 'Dana', organization: 'Northwind IT' })).toContain('Northwind IT');
+  });
+
+  it('needs its parameters', () => {
+    expect(() => renderPromptMessage('remote', 'session.titleFrom', 'en', { technician: 'Dana' })).toThrow(/needs parameter "organization"/);
   });
 });
