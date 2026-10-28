@@ -11,6 +11,10 @@ import { EMAIL_TEMPLATE_IDS, emailTemplateLabel } from '@breeze/shared';
 
 const localesDir = join(dirname(fileURLToPath(import.meta.url)), '../../locales');
 const LOCALES = ['en', 'de-DE', 'es-419', 'fr-FR', 'fr-CA', 'it-IT', 'pt-BR', 'tr-TR'] as const;
+// Labels that are legitimately spelled the same as English in a locale (a
+// cognate such as "Portal"). Add an id here only after a translator confirms
+// the English spelling is the correct translation; it is empty today.
+const SAME_AS_ENGLISH: Partial<Record<(typeof LOCALES)[number], ReadonlySet<string>>> = {};
 
 function labels(locale: string): Record<string, unknown> {
   const catalog = JSON.parse(readFileSync(join(localesDir, locale, 'settings.json'), 'utf8')) as {
@@ -44,7 +48,8 @@ describe('email template label keys (#9953)', () => {
 
   it.each(LOCALES.filter((locale) => locale !== 'en'))('%s labels are translated, not English copies', (locale) => {
     const catalog = labels(locale);
-    const english = EMAIL_TEMPLATE_IDS.filter((id) => catalog[id] === en[id]);
+    const allowed = SAME_AS_ENGLISH[locale] ?? new Set<string>();
+    const english = EMAIL_TEMPLATE_IDS.filter((id) => catalog[id] === en[id] && !allowed.has(id));
     expect(english, `${locale} labels identical to en`).toEqual([]);
   });
 });
