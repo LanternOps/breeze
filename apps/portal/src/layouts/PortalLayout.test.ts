@@ -159,6 +159,11 @@ describe('PortalLayout welcome message (#9675)', () => {
   it('derives it from branding through the landing-page helper', () => {
     expect(SOURCE).toContain("import { landingWelcomeMessage } from '../lib/welcomeMessage'");
     expect(SOURCE).toContain('landingWelcomeMessage(branding, pathname)');
+    // The landing match compares app-relative paths: a raw Astro.url.pathname
+    // would carry the base (/c/quotes) and never match under a base path.
+    const stripIdx = SOURCE.indexOf('const pathname = stripBase(Astro.url.pathname)');
+    expect(stripIdx).toBeGreaterThan(-1);
+    expect(stripIdx).toBeLessThan(SOURCE.indexOf('landingWelcomeMessage(branding, pathname)'));
   });
 
   it("renders it as escaped plain text that keeps the MSP's line breaks, never as HTML", () => {

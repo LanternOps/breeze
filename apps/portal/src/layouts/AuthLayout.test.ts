@@ -34,7 +34,15 @@ describe('AuthLayout welcome message (#9675)', () => {
     expect(SOURCE).toMatch(/showWelcome\?: boolean/);
     expect(SOURCE).toContain("import { portalWelcomeMessage } from '../lib/welcomeMessage'");
     expect(SOURCE).toContain('showWelcome ? portalWelcomeMessage(branding) : null');
-    expect(LOGIN).toMatch(/<AuthLayout[^>]*showWelcome/);
+    expect(LOGIN).toMatch(/<AuthLayout[^>]*\sshowWelcome[\s/>]/);
+  });
+
+  it('keeps the forgot, reset and invite screens on their task', () => {
+    for (const page of ['forgot-password.astro', 'reset-password.astro', 'accept-invite.astro']) {
+      const src = readFileSync(fileURLToPath(new URL(`../pages/${page}`, import.meta.url)), 'utf8');
+      expect(src, page).toContain('<AuthLayout');
+      expect(src, page).not.toContain('showWelcome');
+    }
   });
 
   it("renders it as escaped plain text that keeps the MSP's line breaks, never as HTML", () => {
