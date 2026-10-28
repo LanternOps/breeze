@@ -20,6 +20,7 @@ vi.mock('./aiDispatch', () => ({
 import { registerAgentLogTools } from './aiToolsAgentLogs';
 import { db } from '../db';
 import { aiQueueCommandForExecution, aiExecuteCommand } from './aiDispatch';
+import { narrowAuthToCeiling, unreachableWispAuth } from './wisp/chatCeiling';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
@@ -684,6 +685,72 @@ describe('aiToolsAgentLogs — org scope for a partner caller (#10396)', () => {
   it('search_agent_logs fails closed for an unrestricted caller that names no org', async () => {
     const result = JSON.parse(await tools.get('search_agent_logs')!.handler({}, makePartnerAuth(null)));
     expect(result.error).toMatch(/orgId is required/);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('search_agent_logs keeps the exact-device axis across orgs for a device-LESS run', async () => {
+    const where = mockLogSearch();
+    const auth = { ...makePartnerAuth(), allowedDeviceIds: ['dev-a'] } as AuthContext;
+    await tools.get('search_agent_logs')!.handler({}, auth);
+    const { sql: text, params } = rendered(where.mock.calls[0]![0]);
+    expect(text).toMatch(/"agent_logs"\."org_id" in \(\$\d+, \$\d+\)/);
+    expect(text).toMatch(/"agent_logs"\."device_id" in \(\$\d+\)/);
+    expect(params).toContain('dev-a');
+  });
+
+  it('device commands stay refused for an unrestricted (system) caller, as before', async () => {
+    const pprof = JSON.parse(await tools.get('capture_agent_pprof')!.handler({ deviceId: 'dev-1' }, makePartnerAuth(null)));
+    const level = JSON.parse(await tools.get('set_agent_log_level')!.handler({ deviceId: 'dev-1', level: 'debug' }, makePartnerAuth(null)));
+    expect(pprof.error).toBe('No organization context available');
+    expect(level.error).toBe('No organization context available');
+    expect(db.select).not.toHaveBeenCalled();
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('buildAgentLogConditions keeps a single org as `=` (export_dataset passes one org)', async () => {
+    const { buildAgentLogConditions } = await import('./aiToolsAgentLogs');
+    for (const orgArg of ['org-1', ['org-1']] as const) {
+      const conds = await buildAgentLogConditions(orgArg, makeAuth('org-1'), {});
+      const { sql: text, params } = rendered(conds![0]);
+      expect(text).toBe('"agent_logs"."org_id" = $1');
+      expect(params).toEqual(['org-1']);
+    }
+  });
+
+  it('the input schemas keep orgId instead of stripping it', async () => {
+    const { toolInputSchemas } = await import('./aiToolSchemas');
+    const org = '11111111-1111-4111-8111-111111111111';
+    expect(toolInputSchemas.search_agent_logs!.parse({ orgId: org })).toMatchObject({ orgId: org });
+    expect(() => toolInputSchemas.search_agent_logs!.parse({ orgId: 'not-a-uuid' })).toThrow();
+    expect(toolInputSchemas.manage_patches!.parse({ action: 'compliance', orgId: org })).toMatchObject({ orgId: org });
+  });
+
+  // Security review on the PR: Wisp's ceiling narrowing keeps `auth.orgId`
+  // while cutting the reach. The real `unreachableWispAuth` /
+  // `narrowAuthToCeiling` shapes must not let a read land in that org.
+  it('search_agent_logs reads nothing under unreachableWispAuth, even with auth.orgId set', async () => {
+    const closed = unreachableWispAuth({ ...makeAuth('org-1'), partnerOrgAccess: null } as AuthContext);
+    expect(closed.orgId).toBe('org-1');
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({}, closed));
+    expect(result.error).toBe('Access denied to this organization');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('search_agent_logs refuses a carried auth.orgId the grant ceiling excludes', async () => {
+    const ceiling = {
+      grantId: 'g1', revisionId: 'r1', partnerId: 'partner-1', grantorUserId: 'user-1',
+      scopeOrgId: null, partnerWide: false, status: 'active',
+      orgIds: new Set(['org-first']), siteIds: null,
+      permissionKeys: new Set<string>(), toolAllowlist: null, deniedTools: new Set<string>(),
+      orgTerms: new Map(),
+    } as any;
+    const login = { ...makePartnerAuth(['org-first', 'org-device']), orgId: 'org-device' } as AuthContext;
+    const narrowed = narrowAuthToCeiling(login, ceiling, 's1', []);
+    expect(narrowed.accessibleOrgIds).toEqual(['org-first']);
+    expect(narrowed.orgId).toBe('org-device');
+    expect(narrowed.canAccessOrg('org-device')).toBe(false);
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({}, narrowed));
+    expect(result.error).toBe('Access denied to this organization');
     expect(db.select).not.toHaveBeenCalled();
   });
 

@@ -637,7 +637,8 @@ describe('SR5-20 manage_patches — compliance site scoping', () => {
       const rows = keys.includes('approved') ? [{ total: 3 }]
         : keys.includes('devicesNeedingPatches') ? [{ pending: 4, installed: 2, failed: 0, missing: 0, devicesNeedingPatches: 3 }]
           : [{ deviceCount: 10 }];
-      return { from: () => ({ where: () => Promise.resolve(rows) }) };
+      const where = () => Promise.resolve(rows);
+      return { from: () => ({ where, innerJoin: () => ({ where }) }) };
     });
     const parsed = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, makeAuthWithPartner(undefined, 'p1')));
     expect(parsed.snapshot.totalDevices).toBe(10);

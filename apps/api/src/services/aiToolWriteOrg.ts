@@ -76,6 +76,8 @@ export function resolveWritableToolOrgId(
  * Error returned when a read names no org and the caller's reach is unbounded
  * (system scope): reading every tenant on the platform is never a default.
  */
+const READ_ORG_DENIED_ERROR = 'Access denied to this organization';
+
 export const READ_ORG_UNBOUNDED_ERROR =
   'orgId is required: you have access to every organization, so name the one to read';
 
@@ -95,9 +97,9 @@ export type ToolReadOrgScope =
  * `auth.orgId`) that is whichever customer org sorts first, so a partner-wide
  * session got one org's rows and presented them as the fleet. The order is:
  *
- * 1. Org-scoped token, or an explicit `inputOrgId`: one org, resolved and
- *    access-checked exactly as `resolveWritableToolOrgId` does.
- * 2. `auth.orgId`, when a non-org token carries one.
+ * 1. Org-scoped token, or an explicit `inputOrgId`: one org, resolved as
+ *    `resolveWritableToolOrgId` does, then re-checked with `canAccessOrg`.
+ * 2. `auth.orgId`, when a non-org token carries one, re-checked the same way.
  * 3. Every org in `accessibleOrgIds`. This is the caller's own reach (the same
  *    list `auth.orgCondition` filters by, already cut to the Wisp grant
  *    ceiling), so it never widens access. The HTTP fleet routes read the same
@@ -111,14 +113,20 @@ export function resolveReadableToolOrgScope(
   auth: AuthContext,
   inputOrgId?: string,
 ): ToolReadOrgScope {
+  // A bound org (org-scoped token, explicit input, or a carried `auth.orgId`)
+  // is always re-checked against the CURRENT reach and refused when outside
+  // it. Wisp's `narrowAuthToCeiling` / `unreachableWispAuth` spread `...auth`:
+  // they cut `accessibleOrgIds` and rebuild `canAccessOrg`, but keep the
+  // login's `orgId`, so trusting `auth.orgId` alone would read past the grant.
   if (auth.scope === 'organization' || inputOrgId) {
     const single = resolveWritableToolOrgId(auth, inputOrgId, { useWriteDefault: false });
-    return single.orgId
-      ? { ok: true, orgIds: [single.orgId], allAccessibleOrgs: false }
-      : { ok: false, error: single.error ?? 'Organization context required' };
+    if (!single.orgId) return { ok: false, error: single.error ?? 'Organization context required' };
+    if (!auth.canAccessOrg(single.orgId)) return { ok: false, error: READ_ORG_DENIED_ERROR };
+    return { ok: true, orgIds: [single.orgId], allAccessibleOrgs: false };
   }
 
   if (auth.orgId) {
+    if (!auth.canAccessOrg(auth.orgId)) return { ok: false, error: READ_ORG_DENIED_ERROR };
     return { ok: true, orgIds: [auth.orgId], allAccessibleOrgs: false };
   }
 

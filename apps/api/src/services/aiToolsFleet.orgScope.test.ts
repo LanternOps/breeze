@@ -98,6 +98,33 @@ describe('manage_patches list — org scope without a device (#10396)', () => {
     expect(mockDb.select).not.toHaveBeenCalled();
   });
 
+  it('keeps the exact-device axis across orgs for a device-LESS run', async () => {
+    const listWhere = vi.fn((_cond: SQL) => ({
+      groupBy: () => ({ orderBy: () => ({ limit: () => ({ offset: () => Promise.resolve([]) }) }) }),
+    }));
+    const scanWhere = vi.fn((_cond: SQL) => Promise.resolve([
+      { id: 'dev-a', siteId: 'site-1' }, { id: 'dev-b', siteId: 'site-2' },
+    ]));
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => (
+      cols && Object.keys(cols).length === 2 && 'siteId' in cols
+        ? { from: () => ({ where: scanWhere }) }
+        : { from: () => ({ innerJoin: () => ({ where: listWhere }) }) }
+    ));
+    await handler()({ action: 'list' }, partnerAuth(['org-first', 'org-second'], { allowedDeviceIds: ['dev-a'] }));
+    expect(render(scanWhere.mock.calls[0]![0]).params).toEqual(expect.arrayContaining(['org-first', 'org-second']));
+    const { params } = render(listWhere.mock.calls[0]![0]);
+    expect(params).toContain('dev-a');
+    expect(params).not.toContain('dev-b');
+  });
+
+  it('refuses an orgId that disagrees with the device it names', async () => {
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'dev-1', siteId: null, orgId: 'org-first' }]) }) }),
+    }));
+    const body = JSON.parse(await handler()({ action: 'list', deviceId: 'dev-1', orgId: 'org-second' }, partnerAuth()));
+    expect(body.error).toMatch(/does not belong to organization/);
+  });
+
   it('fails closed for an unrestricted caller that names no org', async () => {
     const body = JSON.parse(await handler()({ action: 'list' }, partnerAuth(null)));
     expect(body.error).toMatch(/orgId is required/);
@@ -119,7 +146,9 @@ describe('manage_patches compliance — org scope (#10396)', () => {
         : kind === 'stats' ? [{ pending: 5, installed: 7, failed: 1, missing: 0, devicesNeedingPatches: 2 }]
           : kind === 'count' ? [{ deviceCount: opts.deviceCount ?? 6 }]
             : opts.orgDevices ?? [];
-      return { from: () => ({ where: (cond: SQL) => { wheres[kind] = cond; return Promise.resolve(rows); } }) };
+      const where = (cond: SQL) => { wheres[kind] = cond; return Promise.resolve(rows); };
+      // The patch stats join `devices` for the tech-facing population (#9611).
+      return { from: () => (kind === 'stats' ? { innerJoin: () => ({ where }) } : { where }) };
     });
     return wheres;
   }
@@ -143,6 +172,12 @@ describe('manage_patches compliance — org scope (#10396)', () => {
       expect(params, kind).toEqual(expect.arrayContaining(['org-first', 'org-second']));
     }
     expect(render(wheres.approvals!).params).toContain('partner-1');
+    // Same tech-facing population as GET /patches/compliance (#9611).
+    for (const kind of ['stats', 'count']) {
+      const { sql: text } = render(wheres[kind]);
+      expect(text, kind).toContain('"devices"."is_ephemeral"');
+      expect(text, kind).toContain("!= 'decommissioned'");
+    }
   });
 
   it('narrows to an explicit accessible orgId', async () => {
@@ -165,13 +200,36 @@ describe('manage_patches compliance — org scope (#10396)', () => {
       canAccessSite: (id: string | null) => id === 'site-ok',
     });
     const body = JSON.parse(await handler()({ action: 'compliance' }, auth));
-    expect(body.snapshot.totalDevices).toBe(1);
     expect(body.snapshot.siteScoped).toBe(true);
     const deviceScan = render(wheres.devices!);
     expect(deviceScan.params).toEqual(expect.arrayContaining(['org-first', 'org-second']));
-    const stats = render(wheres.stats!);
-    expect(stats.params).toContain('dev-a');
-    expect(stats.params).not.toContain('dev-b');
+    for (const kind of ['stats', 'count']) {
+      const { params } = render(wheres[kind]);
+      expect(params, kind).toContain('dev-a');
+      expect(params, kind).not.toContain('dev-b');
+    }
+  });
+
+  it('keeps the exact-device axis across orgs: a device-LESS run counts only its frozen devices', async () => {
+    const wheres = mockCompliance({
+      orgDevices: [{ id: 'dev-a', siteId: 'site-1' }, { id: 'dev-b', siteId: 'site-2' }],
+    });
+    const auth = partnerAuth(['org-first', 'org-second'], { allowedDeviceIds: ['dev-a'] });
+    const body = JSON.parse(await handler()({ action: 'compliance' }, auth));
+    expect(body.snapshot.siteScoped).toBe(true);
+    for (const kind of ['stats', 'count']) {
+      const { params } = render(wheres[kind]);
+      expect(params, kind).toContain('dev-a');
+      expect(params, kind).not.toContain('dev-b');
+    }
+  });
+
+  it('a device-LESS run with no frozen devices gets zeroed figures, not the fleet', async () => {
+    const wheres = mockCompliance({ orgDevices: [{ id: 'dev-a', siteId: 'site-1' }] });
+    const auth = partnerAuth(['org-first', 'org-second'], { allowedDeviceIds: [] });
+    const body = JSON.parse(await handler()({ action: 'compliance' }, auth));
+    expect(body.snapshot).toMatchObject({ totalDevices: 0, siteScoped: true });
+    expect(wheres.stats).toBeUndefined();
     expect(wheres.count).toBeUndefined();
   });
 

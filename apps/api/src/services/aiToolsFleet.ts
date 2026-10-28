@@ -128,6 +128,7 @@ import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } 
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveReadableToolOrgScope, resolveWritableToolOrgId, type ToolReadOrgScope } from './aiToolWriteOrg';
 import { listFleetFindings } from './fleetFindings/query';
+import { techFacingDeviceConditions } from './deviceStats';
 import {
   AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
   MANAGED_AUTOMATION_ERROR_CODE,
@@ -1225,6 +1226,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (deviceId) {
           const listDevice = await resolveDeviceOrg(auth, deviceId);
           if (!listDevice) return JSON.stringify({ error: 'Device not found or access denied' });
+          const namedOrgId = inputOrgIdOf(input);
+          if (namedOrgId && namedOrgId !== listDevice.orgId) {
+            return JSON.stringify({ error: `Device ${deviceId} does not belong to organization ${namedOrgId}` });
+          }
           listOrgIds = [listDevice.orgId];
           listScope = { deviceId };
         } else {
@@ -1368,6 +1373,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             scope: complianceScope,
           });
         }
+        // The counted population is the tech-facing one GET /patches/compliance
+        // and the device KPIs use (#9611): decommissioned, ephemeral Quick
+        // Support and parked devices are excluded from the total AND from the
+        // patch counts, so the figures match the Patches page.
+        const populationConds: SQL[] = [
+          orgIdIn(devices.orgId, complianceOrgIds),
+          ...techFacingDeviceConditions(),
+          ...(allowed ? [inArray(devices.id, allowed)] : []),
+        ];
         const [patchStats] = await db.select({
           pending: sql<number>`count(*) filter (where ${devicePatches.status} = 'pending')`,
           installed: sql<number>`count(*) filter (where ${devicePatches.status} = 'installed')`,
@@ -1375,20 +1389,13 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           missing: sql<number>`count(*) filter (where ${devicePatches.status} = 'missing')`,
           devicesNeedingPatches: sql<number>`count(distinct ${devicePatches.deviceId}) filter (where ${devicePatches.status} in ('pending','missing','failed'))`,
         }).from(devicePatches)
-          .where(and(
-            orgIdIn(devicePatches.orgId, complianceOrgIds),
-            ...(allowed ? [inArray(devicePatches.deviceId, allowed)] : []),
-          ));
+          .innerJoin(devices, eq(devices.id, devicePatches.deviceId))
+          .where(and(orgIdIn(devicePatches.orgId, complianceOrgIds), ...populationConds));
 
-        let totalDevices: number;
-        if (allowed) {
-          totalDevices = allowed.length;
-        } else {
-          const [deviceTotals] = await db.select({ deviceCount: sql<number>`count(*)` })
-            .from(devices)
-            .where(orgIdIn(devices.orgId, complianceOrgIds));
-          totalDevices = Number(deviceTotals?.deviceCount ?? 0);
-        }
+        const [deviceTotals] = await db.select({ deviceCount: sql<number>`count(*)` })
+          .from(devices)
+          .where(and(...populationConds));
+        const totalDevices = Number(deviceTotals?.deviceCount ?? 0);
         const nonCompliant = Number(patchStats?.devicesNeedingPatches ?? 0);
         return JSON.stringify({
           snapshot: {

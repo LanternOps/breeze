@@ -25,10 +25,14 @@ type AiToolTier = 1 | 2 | 3 | 4;
 
 const NO_ORG_CONTEXT_ERROR = 'No organization context available';
 
-/** True when the caller reaches at least one org (`null` = every org). */
+/**
+ * True when the caller's reach is a non-empty org list. An unrestricted
+ * (system, `null`) reach is refused, as it was when these commands resolved
+ * `auth.orgId ?? accessibleOrgIds[0]`: a device-by-id command against any
+ * tenant on the platform is never a default.
+ */
 function hasOrgReach(auth: AuthContext): boolean {
-  return auth.accessibleOrgIds === null
-    || (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length > 0);
+  return Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length > 0;
 }
 
 /**

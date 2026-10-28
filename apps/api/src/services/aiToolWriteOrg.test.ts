@@ -151,6 +151,19 @@ describe('resolveReadableToolOrgScope (#10396)', () => {
     expect(resolveReadableToolOrgScope(partner)).toEqual({ ok: true, orgIds: [ORG_B], allAccessibleOrgs: false });
   });
 
+  // Wisp's narrowAuthToCeiling / unreachableWispAuth spread `...auth`: they cut
+  // `accessibleOrgIds` and rebuild the closures but keep the login's `orgId`.
+  it('fails closed on a carried auth.orgId outside the (ceiling-narrowed) reach', () => {
+    const narrowed = auth({ orgId: ORG_C, accessibleOrgIds: [ORG_A, ORG_B] });
+    expect(resolveReadableToolOrgScope(narrowed)).toEqual({ ok: false, error: 'Access denied to this organization' });
+  });
+
+  it('fails closed for an org-scoped auth whose own org was cut from the reach', () => {
+    const cut = auth({ scope: 'organization', orgId: ORG_A, accessibleOrgIds: [] });
+    expect(resolveReadableToolOrgScope(cut)).toEqual({ ok: false, error: 'Access denied to this organization' });
+    expect(resolveReadableToolOrgScope(cut, ORG_A)).toEqual({ ok: false, error: 'Access denied to this organization' });
+  });
+
   it('a single-org reach is not reported as all-accessible', () => {
     expect(resolveReadableToolOrgScope(auth({ accessibleOrgIds: [ORG_A] }))).toEqual({
       ok: true,
