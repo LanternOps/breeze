@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AI_RECORD_KINDS } from '../types/ai';
 import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';
 import { offeringOptionsSchema } from './aiModelOptions';
 import { aiModelChoiceSchema } from './aiModelChoice';
@@ -52,7 +53,16 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
   // from. Only IDs — never evidence bodies, labels, org ids or credentials. The
   // server authorizes `siteId` at session creation and PINS the session to it
   // (ai_sessions.topology_site_id, M4-D2); a later page context never moves it.
-  aiTopologyPageContextSchema
+  aiTopologyPageContextSchema,
+  z.object({
+    type: z.literal('record'),
+    kind: z.enum(AI_RECORD_KINDS),
+    id: z.string().uuid(),
+    // Client hint only; the server resolves the record's organization.
+    orgId: z.string().uuid().optional(),
+    // Web badge only; the server reads record details itself.
+    label: z.string().max(200).optional()
+  }).strict()
 ]);
 
 // ============================================

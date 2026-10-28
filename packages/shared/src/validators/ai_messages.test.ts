@@ -17,6 +17,51 @@ const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
 // ============================================
 
 describe('aiPageContextSchema', () => {
+  it('accepts a ticket record', () => {
+    const context = {
+      type: 'record', kind: 'ticket', id: VALID_UUID,
+      orgId: VALID_UUID, label: 'Ticket 123',
+    };
+    expect(aiPageContextSchema.parse(context)).toEqual(context);
+  });
+
+  it.each(['ticket', 'quote', 'invoice', 'contract', 'organization', 'site'])(
+    'accepts a %s record without orgId/label', (kind) => {
+      const context = { type: 'record', kind, id: VALID_UUID };
+      expect(aiPageContextSchema.parse(context)).toEqual(context);
+    },
+  );
+
+  it('rejects an unknown record kind', () => {
+    expect(aiPageContextSchema.safeParse({
+      type: 'record', kind: 'unknown', id: VALID_UUID,
+    }).success).toBe(false);
+  });
+
+  it('rejects extra keys on a record', () => {
+    expect(aiPageContextSchema.safeParse({
+      type: 'record', kind: 'ticket', id: VALID_UUID, data: { subject: 'Untrusted' },
+    }).success).toBe(false);
+  });
+
+  it('rejects a label over 200', () => {
+    expect(aiPageContextSchema.safeParse({
+      type: 'record', kind: 'ticket', id: VALID_UUID, label: 'x'.repeat(201),
+    }).success).toBe(false);
+  });
+
+  it('accepts a label at 200 code points', () => {
+    expect(aiPageContextSchema.safeParse({
+      type: 'record', kind: 'ticket', id: VALID_UUID, label: '😀'.repeat(200),
+    }).success).toBe(true);
+  });
+
+  it.each(['id', 'orgId'])('rejects a non-uuid %s on a record', (field) => {
+    expect(aiPageContextSchema.safeParse({
+      type: 'record', kind: 'ticket', id: VALID_UUID, [field]: 'not-a-uuid',
+    }).success).toBe(false);
+  });
+
   it('should accept device context', () => {
     const result = aiPageContextSchema.safeParse({
       type: 'device',
