@@ -4268,7 +4268,9 @@
     "active": "Aktif",
     "revoked": "İptal edildi",
     "expired": "Süresi dolmuş",
-    "statusFilterLabel": "Anahtar durumu"
+    "statusFilterLabel": "Anahtar durumu",
+    "expires": "Son geçerlilik",
+    "neverExpires": "Hiçbir zaman"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -4309,7 +4311,8 @@
     "rotating": "Dönüyor...",
     "rotateKey": "Döndürme Tuşu",
     "revoking": "İptal ediliyor...",
-    "revokeKey": "Anahtarı İptal Et"
+    "revokeKey": "Anahtarı İptal Et",
+    "revokedToast": "\"{{name}}\" API anahtarı iptal edildi"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Bu cihaz artık istekleri onaylayabilir",
@@ -6407,7 +6410,11 @@
       "label": "Etiket",
       "notes": "Notlar"
     },
-    "empty": "Henüz bilinen misafir yok."
+    "empty": "Henüz bilinen misafir yok.",
+    "removeConfirm": {
+      "title": "Bilinen misafir kaldırılsın mı?",
+      "message": "{{label}} ({{mac}}) kaldırılsın mı? Bu MAC adresine sahip cihazlar yönetilen kuruluşlarınızda artık otomatik olarak onaylanmayacak."
+    }
   },
   "userInviteForm": {
     "title": "Kullanıcıyı davet et",
@@ -6528,7 +6535,8 @@
       "copyLink": "Bağlantıyı kopyala",
       "mfaReset": "{{email}} için MFA sıfırlandı",
       "roleUpdated": "Rol güncellendi",
-      "orgAccessUpdated": "Kuruluş erişimi güncellendi"
+      "orgAccessUpdated": "Kuruluş erişimi güncellendi",
+      "userRemoved": "{{name}} kaldırıldı"
     },
     "resetMfa": {
       "title": "MFA sıfırlansın mı?",

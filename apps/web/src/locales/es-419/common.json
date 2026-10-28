@@ -1520,7 +1520,8 @@
           "enabled": "Webhook habilitado",
           "retryQueued": "Reintento de entrega en cola",
           "testQueued": "Entrega de prueba en cola",
-          "updated": "Webhook actualizado"
+          "updated": "Webhook actualizado",
+          "deleted": "Se eliminó el webhook \"{{name}}\""
         },
         "title": "Webhooks"
       }

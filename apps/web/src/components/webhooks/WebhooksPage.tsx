@@ -346,6 +346,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
           fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
             method: 'DELETE'
           }),
+        successMessage: t('longTail.webhooks.WebhooksPage.success.deleted', { name: selectedWebhook.name }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'),
         onUnauthorized: handleSessionExpired,
       });

@@ -1520,7 +1520,8 @@
           "enabled": "Webhook ativado",
           "retryQueued": "Nova tentativa de entrega enfileirada",
           "testQueued": "Entrega de teste enfileirada",
-          "updated": "Webhook atualizado"
+          "updated": "Webhook atualizado",
+          "deleted": "Webhook \"{{name}}\" excluído"
         },
         "title": "Webhooks"
       }

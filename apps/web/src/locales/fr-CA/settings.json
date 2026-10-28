@@ -4268,7 +4268,9 @@
     "active": "Active",
     "revoked": "Révoquée",
     "expired": "Expirée",
-    "statusFilterLabel": "État de la clé"
+    "statusFilterLabel": "État de la clé",
+    "expires": "Expiration",
+    "neverExpires": "Jamais"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Chargement des clés API...",
@@ -4309,7 +4311,8 @@
     "rotating": "Tournant...",
     "rotateKey": "Renouveler la clé",
     "revoking": "Révoque...",
-    "revokeKey": "Révoquer la clé"
+    "revokeKey": "Révoquer la clé",
+    "revokedToast": "Clé API \"{{name}}\" révoquée"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Cet appareil peut désormais approuver les requêtes",
@@ -6402,7 +6405,11 @@
       "label": "Libellé",
       "notes": "Notes"
     },
-    "empty": "Aucun invité connu pour l’instant."
+    "empty": "Aucun invité connu pour l’instant.",
+    "removeConfirm": {
+      "title": "Retirer l'invité connu?",
+      "message": "Retirer {{label}} ({{mac}})? Les appareils ayant cette adresse MAC ne seront plus approuvés automatiquement dans vos organisations gérées."
+    }
   },
   "userInviteForm": {
     "title": "Inviter l’utilisateur",
@@ -6523,7 +6530,8 @@
       "copyLink": "Copier le lien",
       "mfaReset": "MFA réinitialisé pour {{email}}",
       "roleUpdated": "Rôle mis à jour",
-      "orgAccessUpdated": "Accès aux organisations mis à jour"
+      "orgAccessUpdated": "Accès aux organisations mis à jour",
+      "userRemoved": "Utilisateur {{name}} retiré"
     },
     "resetMfa": {
       "title": "Réinitialiser MFA ?",

@@ -1520,7 +1520,8 @@
           "enabled": "Webhook enabled",
           "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
-          "updated": "Webhook updated"
+          "updated": "Webhook updated",
+          "deleted": "Webhook \"{{name}}\" deleted"
         },
         "title": "Webhooks"
       }

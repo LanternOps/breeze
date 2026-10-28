@@ -4268,7 +4268,9 @@
     "active": "Aktiv",
     "revoked": "Widerrufen",
     "expired": "Abgelaufen",
-    "statusFilterLabel": "API-Schlüsselstatus"
+    "statusFilterLabel": "API-Schlüsselstatus",
+    "expires": "Läuft ab",
+    "neverExpires": "Niemals"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API-Schlüssel werden geladen...",
@@ -4309,7 +4311,8 @@
     "rotating": "Rotierend...",
     "rotateKey": "Schlüssel rotieren",
     "revoking": "Widerrufen...",
-    "revokeKey": "Schlüssel widerrufen"
+    "revokeKey": "Schlüssel widerrufen",
+    "revokedToast": "API-Schlüssel \"{{name}}\" widerrufen"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Dieses Gerät kann jetzt Anfragen genehmigen",
@@ -6354,7 +6357,11 @@
       "label": "Etikett",
       "notes": "Notizen"
     },
-    "empty": "Noch keine bekannten Gäste."
+    "empty": "Noch keine bekannten Gäste.",
+    "removeConfirm": {
+      "title": "Bekanntes Gastgerät entfernen?",
+      "message": "{{label}} ({{mac}}) entfernen? Geräte mit dieser MAC-Adresse werden in Ihren verwalteten Organisationen nicht mehr automatisch genehmigt."
+    }
   },
   "userInviteForm": {
     "title": "Benutzer einladen",
@@ -6475,7 +6482,8 @@
       "copyLink": "Link kopieren",
       "mfaReset": "MFA für {{email}} zurückgesetzt",
       "roleUpdated": "Rolle aktualisiert",
-      "orgAccessUpdated": "Organisationszugriff aktualisiert"
+      "orgAccessUpdated": "Organisationszugriff aktualisiert",
+      "userRemoved": "{{name}} entfernt"
     },
     "resetMfa": {
       "title": "MFA zurücksetzen?",

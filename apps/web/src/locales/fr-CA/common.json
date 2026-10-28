@@ -1520,7 +1520,8 @@
           "enabled": "Webhook activé",
           "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
-          "updated": "Webhook mis à jour"
+          "updated": "Webhook mis à jour",
+          "deleted": "Webhook \"{{name}}\" supprimé"
         },
         "title": "Webhooks"
       }

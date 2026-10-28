@@ -4268,7 +4268,9 @@
     "active": "Active",
     "revoked": "Revoked",
     "expired": "Expired",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "expires": "Expires",
+    "neverExpires": "Never"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4309,7 +4311,8 @@
     "rotating": "Rotating...",
     "rotateKey": "Rotate Key",
     "revoking": "Revoking...",
-    "revokeKey": "Revoke Key"
+    "revokeKey": "Revoke Key",
+    "revokedToast": "API key \"{{name}}\" revoked"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "This device can now approve requests",
@@ -6402,7 +6405,11 @@
       "label": "Label",
       "notes": "Notes"
     },
-    "empty": "No known guests yet."
+    "empty": "No known guests yet.",
+    "removeConfirm": {
+      "title": "Remove known guest?",
+      "message": "Remove {{label}} ({{mac}})? Devices with this MAC address will no longer be approved automatically across your managed organizations."
+    }
   },
   "userInviteForm": {
     "title": "Invite user",
@@ -6523,7 +6530,8 @@
       "copyLink": "Copy link",
       "mfaReset": "MFA reset for {{email}}",
       "roleUpdated": "Role updated",
-      "orgAccessUpdated": "Organization access updated"
+      "orgAccessUpdated": "Organization access updated",
+      "userRemoved": "{{name}} removed"
     },
     "resetMfa": {
       "title": "Reset MFA?",
