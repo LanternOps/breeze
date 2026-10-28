@@ -378,6 +378,8 @@ added and verified the rows marked †.
 
 ## 6. Open Decisions
 
+> **Gate A ruling, 2026-10-28:** the owner chose (A) for OD1 and accepted the recommendation on every other decision below (OD2–OD8). Each **Recommend** line is now the ruling.
+
 1. **Approach.** Options: (A) partner-owned groups, as this spec proposes; (B) partner templates
    materialized as managed org groups; (C) partner-level assignment predicates (#8957 extended).
    §3.7 has the detail. (A) is the largest tenancy change but the only one that gives a named,
