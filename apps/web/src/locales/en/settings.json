@@ -2073,6 +2073,46 @@
         "backups_no_data": "Backups is on, but there is no backup data to show yet.",
         "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
         "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      },
+      "tiles": {
+        "awaitingYou": "Awaiting your customer",
+        "devicesProtected": "Endpoint protection",
+        "securityScore": "Security score",
+        "actionItems": "Action items",
+        "patchesApplied": "Patches applied this month",
+        "backup": "Last backup verified",
+        "service": "Service delivered (90 days)",
+        "support": "Support"
+      },
+      "tileStatus": {
+        "noData": "Not yet available",
+        "notConfigured": "Not set up",
+        "stale": "May be out of date"
+      },
+      "bands": {
+        "strong": "Strong",
+        "good": "Good",
+        "fair": "Fair",
+        "at_risk": "At risk"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} of {{total}} protected",
+        "awaitingCounts": "Proposals: {{proposals}} · Invoices: {{invoices}}",
+        "serviceCounts": "On time: {{onTime}} · Late: {{late}} · Missed: {{missed}}",
+        "nextDue": "Next due: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} open request",
+        "openRequests_other": "{{count}} open requests",
+        "threatCounts": "Detected: {{detected}} · Resolved: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Open vulnerabilities",
+        "knownExploited": "Known exploited (KEV)",
+        "threatEvents": "Endpoint threat events"
+      },
+      "backupRows": {
+        "devices": "Devices backed up",
+        "breaches": "Open RPO / RTO breaches",
+        "providers": "Third-party backup"
       }
     },
     "loading": "Loading portal settings…",

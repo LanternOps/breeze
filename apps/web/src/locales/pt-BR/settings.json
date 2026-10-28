@@ -2073,6 +2073,46 @@
         "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
         "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
         "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Aguardando seu cliente",
+        "devicesProtected": "Proteção de endpoints",
+        "securityScore": "Pontuação de segurança",
+        "actionItems": "Itens de ação",
+        "patchesApplied": "Patches aplicados neste mês",
+        "backup": "Último backup verificado",
+        "service": "Serviço entregue (90 dias)",
+        "support": "Suporte"
+      },
+      "tileStatus": {
+        "noData": "Ainda não disponível",
+        "notConfigured": "Não configurado",
+        "stale": "Pode estar desatualizado"
+      },
+      "bands": {
+        "strong": "Forte",
+        "good": "Boa",
+        "fair": "Regular",
+        "at_risk": "Em risco"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propostas: {{proposals}} · Faturas: {{invoices}}",
+        "serviceCounts": "No prazo: {{onTime}} · Atrasados: {{late}} · Perdidos: {{missed}}",
+        "nextDue": "Próximo vencimento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitação aberta",
+        "openRequests_other": "{{count}} solicitações abertas",
+        "threatCounts": "Detectados: {{detected}} · Resolvidos: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abertas",
+        "knownExploited": "Exploradas conhecidas (KEV)",
+        "threatEvents": "Eventos de ameaça em endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos com backup",
+        "breaches": "Violações de RPO / RTO abertas",
+        "providers": "Backup de terceiros"
       }
     },
     "loading": "Carregando configurações do portal…",

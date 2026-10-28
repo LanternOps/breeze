@@ -108,6 +108,11 @@ export interface DashboardDto {
   service?: ServiceTileDto;
 }
 
+/** A dashboard tile: every DashboardDto key except the page-level asOf/timezone.
+ *  The staff Customer view keys its tile labels by this, so a new tile fails
+ *  typecheck until it has a label (#9952). */
+export type DashboardTileKey = Exclude<keyof DashboardDto, 'asOf' | 'timezone'>;
+
 export interface SecurityTrendPoint {
   capturedAt: string;
   score: number;

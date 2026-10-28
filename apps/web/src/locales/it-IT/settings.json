@@ -2073,6 +2073,46 @@
         "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
         "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
         "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      },
+      "tiles": {
+        "awaitingYou": "In attesa del cliente",
+        "devicesProtected": "Protezione degli endpoint",
+        "securityScore": "Punteggio di sicurezza",
+        "actionItems": "Azioni da svolgere",
+        "patchesApplied": "Patch applicate questo mese",
+        "backup": "Ultimo backup verificato",
+        "service": "Servizi erogati (90 giorni)",
+        "support": "Supporto"
+      },
+      "tileStatus": {
+        "noData": "Non ancora disponibile",
+        "notConfigured": "Non configurato",
+        "stale": "Potrebbe non essere aggiornato"
+      },
+      "bands": {
+        "strong": "Solido",
+        "good": "Buono",
+        "fair": "Discreto",
+        "at_risk": "A rischio"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} su {{total}} protetti",
+        "awaitingCounts": "Proposte: {{proposals}} · Fatture: {{invoices}}",
+        "serviceCounts": "In orario: {{onTime}} · In ritardo: {{late}} · Mancati: {{missed}}",
+        "nextDue": "Prossima scadenza: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} richiesta aperta",
+        "openRequests_other": "{{count}} richieste aperte",
+        "threatCounts": "Rilevati: {{detected}} · Risolti: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilità aperte",
+        "knownExploited": "Sfruttate note (KEV)",
+        "threatEvents": "Eventi di minaccia sugli endpoint"
+      },
+      "backupRows": {
+        "devices": "Dispositivi con backup",
+        "breaches": "Violazioni RPO / RTO aperte",
+        "providers": "Backup di terze parti"
       }
     },
     "loading": "Caricamento impostazioni portale…",

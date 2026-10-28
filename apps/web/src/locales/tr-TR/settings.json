@@ -2073,6 +2073,46 @@
         "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
         "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
         "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      },
+      "tiles": {
+        "awaitingYou": "Müşterinizi bekleyenler",
+        "devicesProtected": "Uç nokta koruması",
+        "securityScore": "Güvenlik puanı",
+        "actionItems": "Yapılacak işlemler",
+        "patchesApplied": "Bu ay uygulanan yamalar",
+        "backup": "Son doğrulanan yedek",
+        "service": "Sunulan hizmet (90 gün)",
+        "support": "Destek"
+      },
+      "tileStatus": {
+        "noData": "Henüz mevcut değil",
+        "notConfigured": "Ayarlanmadı",
+        "stale": "Güncel olmayabilir"
+      },
+      "bands": {
+        "strong": "Güçlü",
+        "good": "İyi",
+        "fair": "Orta",
+        "at_risk": "Risk altında"
+      },
+      "values": {
+        "protectedOfTotal": "{{total}} cihazdan {{protected}} korumalı",
+        "awaitingCounts": "Teklifler: {{proposals}} · Faturalar: {{invoices}}",
+        "serviceCounts": "Zamanında: {{onTime}} · Geç: {{late}} · Kaçırılan: {{missed}}",
+        "nextDue": "Sonraki son tarih: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} açık talep",
+        "openRequests_other": "{{count}} açık talep",
+        "threatCounts": "Algılanan: {{detected}} · Çözülen: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Açık güvenlik açıkları",
+        "knownExploited": "Bilinen istismar edilenler (KEV)",
+        "threatEvents": "Uç nokta tehdit olayları"
+      },
+      "backupRows": {
+        "devices": "Yedeklenen cihazlar",
+        "breaches": "Açık RPO / RTO ihlalleri",
+        "providers": "Üçüncü taraf yedekleme"
       }
     },
     "loading": "Portal ayarları yükleniyor…",

@@ -2073,6 +2073,46 @@
         "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
         "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
         "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      },
+      "tiles": {
+        "awaitingYou": "Wartet auf Ihren Kunden",
+        "devicesProtected": "Endpunktschutz",
+        "securityScore": "Sicherheitsbewertung",
+        "actionItems": "Offene Aufgaben",
+        "patchesApplied": "In diesem Monat installierte Patches",
+        "backup": "Letzte verifizierte Sicherung",
+        "service": "Erbrachte Leistungen (90 Tage)",
+        "support": "Kundensupport"
+      },
+      "tileStatus": {
+        "noData": "Noch nicht verfügbar",
+        "notConfigured": "Nicht eingerichtet",
+        "stale": "Möglicherweise veraltet"
+      },
+      "bands": {
+        "strong": "Stark",
+        "good": "Gut",
+        "fair": "Mittel",
+        "at_risk": "Gefährdet"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} von {{total}} geschützt",
+        "awaitingCounts": "Angebote: {{proposals}} · Rechnungen: {{invoices}}",
+        "serviceCounts": "Pünktlich: {{onTime}} · Verspätet: {{late}} · Versäumt: {{missed}}",
+        "nextDue": "Nächste Fälligkeit: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} offene Anfrage",
+        "openRequests_other": "{{count}} offene Anfragen",
+        "threatCounts": "Erkannt: {{detected}} · Behoben: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Offene Schwachstellen",
+        "knownExploited": "Bekannt ausgenutzt (KEV)",
+        "threatEvents": "Bedrohungsereignisse auf Endpunkten"
+      },
+      "backupRows": {
+        "devices": "Gesicherte Geräte",
+        "breaches": "Offene RPO-/RTO-Verstöße",
+        "providers": "Sicherung von Drittanbietern"
       }
     },
     "loading": "Portaleinstellungen werden geladen…",

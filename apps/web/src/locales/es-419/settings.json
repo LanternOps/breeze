@@ -2073,6 +2073,46 @@
         "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
         "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
         "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Pendiente de su cliente",
+        "devicesProtected": "Protección de endpoints",
+        "securityScore": "Puntuación de seguridad",
+        "actionItems": "Acciones pendientes",
+        "patchesApplied": "Parches aplicados este mes",
+        "backup": "Último respaldo verificado",
+        "service": "Servicio entregado (90 días)",
+        "support": "Soporte"
+      },
+      "tileStatus": {
+        "noData": "Aún no disponible",
+        "notConfigured": "Sin configurar",
+        "stale": "Puede estar desactualizado"
+      },
+      "bands": {
+        "strong": "Sólida",
+        "good": "Buena",
+        "fair": "Regular",
+        "at_risk": "En riesgo"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propuestas: {{proposals}} · Facturas: {{invoices}}",
+        "serviceCounts": "A tiempo: {{onTime}} · Con retraso: {{late}} · Omitidos: {{missed}}",
+        "nextDue": "Próximo vencimiento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitud abierta",
+        "openRequests_other": "{{count}} solicitudes abiertas",
+        "threatCounts": "Detectados: {{detected}} · Resueltos: {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abiertas",
+        "knownExploited": "Explotadas conocidas (KEV)",
+        "threatEvents": "Eventos de amenazas en endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos respaldados",
+        "breaches": "Incumplimientos de RPO / RTO abiertos",
+        "providers": "Respaldo de terceros"
       }
     },
     "loading": "Cargando configuración del portal...",

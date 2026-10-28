@@ -2073,6 +2073,46 @@
         "backups_no_data": "Sauvegardes est activé, mais il n’y a pas encore de données de sauvegarde à afficher.",
         "dashboard_security_no_data": "Tableau de bord est activé, mais le score de sécurité n’a pas encore de données : cette tuile est vide pour votre client.",
         "branding_unset": "L’image de marque du portail n’a jamais été définie (logo, couleurs, message d’accueil ou contact du soutien)."
+      },
+      "tiles": {
+        "awaitingYou": "En attente de votre client",
+        "devicesProtected": "Protection des points de terminaison",
+        "securityScore": "Score de sécurité",
+        "actionItems": "Actions à mener",
+        "patchesApplied": "Correctifs appliqués ce mois-ci",
+        "backup": "Dernière sauvegarde vérifiée",
+        "service": "Services rendus (90 jours)",
+        "support": "Soutien"
+      },
+      "tileStatus": {
+        "noData": "Pas encore disponible",
+        "notConfigured": "Non configuré",
+        "stale": "Peut-être périmé"
+      },
+      "bands": {
+        "strong": "Solide",
+        "good": "Bon",
+        "fair": "Moyen",
+        "at_risk": "À risque"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} sur {{total}} protégés",
+        "awaitingCounts": "Propositions : {{proposals}} · Factures : {{invoices}}",
+        "serviceCounts": "À temps : {{onTime}} · En retard : {{late}} · Manqués : {{missed}}",
+        "nextDue": "Prochaine échéance : {{name}}, {{date}}",
+        "openRequests_one": "{{count}} demande ouverte",
+        "openRequests_other": "{{count}} demandes ouvertes",
+        "threatCounts": "Détectés : {{detected}} · Résolus : {{resolved}}"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnérabilités ouvertes",
+        "knownExploited": "Exploitées connues (KEV)",
+        "threatEvents": "Événements de menace sur les points de terminaison"
+      },
+      "backupRows": {
+        "devices": "Appareils sauvegardés",
+        "breaches": "Dépassements RPO / RTO ouverts",
+        "providers": "Sauvegarde tierce"
       }
     },
     "loading": "Chargement des paramètres du portail...",
