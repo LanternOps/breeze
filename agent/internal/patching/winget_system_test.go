@@ -193,6 +193,8 @@ func TestSystemInstallSuccess(t *testing.T) {
 // 2316632107 unsigned) when the package is already at the newest available
 // version. That is "nothing to do", not an install failure — it must come back
 // as a skipped InstallResult (visible, with winget's message), never an error.
+// The runner here answers every call the same way, so the 0x8A15002B cases
+// also cover #10248's unscoped upgrade retry agreeing that nothing is newer.
 func TestSystemInstallExitCodeClassification(t *testing.T) {
 	const notApplicableOut = "Found an existing package already installed. Trying to upgrade the installed package...\nNo available upgrade found.\nNo newer package versions are available from the configured sources."
 	cases := []struct {
@@ -242,6 +244,186 @@ func TestSystemInstallExitCodeClassification(t *testing.T) {
 				if res.PatchID != "Mozilla.Firefox" || res.Provider != "winget" {
 					t.Fatalf("got %+v", res)
 				}
+			}
+		})
+	}
+}
+
+// scriptedWingetCall is one canned winget invocation for scriptedWingetRunner.
+type scriptedWingetCall struct {
+	stdout string
+	stderr string
+	code   int
+	err    error
+}
+
+// scriptedWingetRunner returns a cmdRunner that answers the i-th invocation
+// with calls[i] and records every argv it saw. A call beyond the script fails
+// the test so an unexpected extra winget run cannot pass silently.
+func scriptedWingetRunner(t *testing.T, calls []scriptedWingetCall, seen *[][]string) cmdRunner {
+	t.Helper()
+	return func(_ string, args []string, _ time.Duration) (string, string, int, error) {
+		i := len(*seen)
+		*seen = append(*seen, append([]string(nil), args...))
+		if i >= len(calls) {
+			t.Fatalf("unexpected winget call #%d: %v", i+1, args)
+		}
+		c := calls[i]
+		return c.stdout, c.stderr, c.code, c.err
+	}
+}
+
+func argsContain(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// #10248: `winget install --scope machine` on an already-installed package
+// runs winget's upgrade flow with a MACHINE scope filter applied to the
+// manifest's installers. Many inherently machine-wide manifests in winget-pkgs
+// (.NET runtimes, VC++ redists, burn/MSI bundles) never declare
+// `Scope: machine`, so every installer is filtered out and winget exits
+// 0x8A15002B even though a newer version exists. That exit must trigger one
+// unscoped `winget upgrade --include-unknown` retry, and only a second
+// 0x8A15002B means the package is really current.
+func TestSystemInstallNotApplicableRetriesUnscopedUpgrade(t *testing.T) {
+	const notApplicableOut = "Found an existing package already installed. Trying to upgrade the installed package...\nNo available upgrade found.\nNo newer package versions are available from the configured sources."
+	const pkg = "Microsoft.DotNet.Runtime.6"
+	notApplicable := scriptedWingetCall{stdout: notApplicableOut, code: 2316632107}
+
+	cases := []struct {
+		name        string
+		retry       scriptedWingetCall
+		wantErr     string // substring; empty means no error
+		wantSkipped bool
+		wantMessage string
+		wantReboot  bool
+	}{
+		{
+			name:        "unscoped upgrade succeeds",
+			retry:       scriptedWingetCall{stdout: "Successfully installed"},
+			wantMessage: "Successfully installed",
+		},
+		{
+			name:        "unscoped upgrade succeeds and asks for a restart",
+			retry:       scriptedWingetCall{stdout: "Successfully installed. Restart your PC to finish installation."},
+			wantMessage: "Restart your PC",
+			wantReboot:  true,
+		},
+		{
+			name:        "unscoped upgrade also not applicable (unsigned) is already current",
+			retry:       scriptedWingetCall{stdout: "No available upgrade found.", code: 2316632107},
+			wantSkipped: true,
+			wantMessage: "No available upgrade found",
+		},
+		{
+			name:        "unscoped upgrade also not applicable (signed) is already current",
+			retry:       scriptedWingetCall{stdout: "No available upgrade found.", code: -1978335189},
+			wantSkipped: true,
+			wantMessage: "No available upgrade found",
+		},
+		{
+			// 0x8A150014 APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND.
+			name:    "unscoped upgrade fails with another code",
+			retry:   scriptedWingetCall{stdout: "No installed package found matching input criteria.", code: 2316632084},
+			wantErr: "exit 2316632084",
+		},
+		{
+			name:    "unscoped upgrade cannot be launched",
+			retry:   scriptedWingetCall{err: errors.New("context deadline exceeded")},
+			wantErr: "context deadline exceeded",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen [][]string
+			p := NewSystemWingetProvider(`C:\wg\winget.exe`,
+				scriptedWingetRunner(t, []scriptedWingetCall{notApplicable, tc.retry}, &seen))
+
+			res, err := p.Install(pkg)
+
+			if len(seen) != 2 {
+				t.Fatalf("winget calls = %d (%v), want the scoped install plus one unscoped upgrade retry", len(seen), seen)
+			}
+			if !argsContain(seen[0], "install") || !argsContain(seen[0], "--scope") {
+				t.Fatalf("first call should be the machine-scope install, got %v", seen[0])
+			}
+			retry := seen[1]
+			if retry[0] != "upgrade" {
+				t.Fatalf("retry must be `winget upgrade`, got %v", retry)
+			}
+			for _, want := range []string{"--exact", "--id", pkg, "--include-unknown", "--silent",
+				"--accept-package-agreements", "--accept-source-agreements", "--source", "winget", "--disable-interactivity"} {
+				if !argsContain(retry, want) {
+					t.Fatalf("retry args missing %q: %v", want, retry)
+				}
+			}
+			if argsContain(retry, "--scope") {
+				t.Fatalf("retry must not pass --scope (the scope filter is what rejected every installer): %v", retry)
+			}
+
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("want error containing %q, got %+v", tc.wantErr, res)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.PatchID != pkg || res.Provider != "winget" {
+				t.Fatalf("got %+v", res)
+			}
+			if res.Skipped != tc.wantSkipped {
+				t.Fatalf("Skipped = %v, want %v (%+v)", res.Skipped, tc.wantSkipped, res)
+			}
+			if tc.wantSkipped && res.SkipReason != SkipReasonAlreadyCurrent {
+				t.Fatalf("SkipReason = %q, want %q", res.SkipReason, SkipReasonAlreadyCurrent)
+			}
+			if !tc.wantSkipped && res.SkipReason != "" {
+				t.Fatalf("SkipReason = %q on a real upgrade", res.SkipReason)
+			}
+			if !strings.Contains(res.Message, tc.wantMessage) {
+				t.Fatalf("message %q does not contain %q", res.Message, tc.wantMessage)
+			}
+			if res.RebootRequired != tc.wantReboot {
+				t.Fatalf("RebootRequired = %v, want %v", res.RebootRequired, tc.wantReboot)
+			}
+		})
+	}
+}
+
+// The retry is reserved for 0x8A15002B. A successful scoped install and any
+// other failure must not spend a second winget run.
+func TestSystemInstallNoRetryOutsideNotApplicable(t *testing.T) {
+	cases := []struct {
+		name    string
+		first   scriptedWingetCall
+		wantErr bool
+	}{
+		{name: "scoped install succeeds", first: scriptedWingetCall{stdout: "Successfully installed"}},
+		{name: "scoped install fails with another code", first: scriptedWingetCall{stdout: "Installer failed", code: 1}, wantErr: true},
+		{name: "scoped install cannot be launched", first: scriptedWingetCall{err: errors.New("boom")}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen [][]string
+			p := NewSystemWingetProvider(`C:\wg\winget.exe`,
+				scriptedWingetRunner(t, []scriptedWingetCall{tc.first}, &seen))
+			_, err := p.Install("Mozilla.Firefox")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if len(seen) != 1 {
+				t.Fatalf("winget calls = %d (%v), want exactly 1", len(seen), seen)
 			}
 		})
 	}
