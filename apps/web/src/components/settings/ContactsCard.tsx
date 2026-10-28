@@ -132,8 +132,9 @@ const verificationContactFromHash = (raw: string): string | null => VERIFICATION
 
 export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardProps) {
   const { t } = useTranslation('settings');
-  // The write already succeeded and was toasted; a host's refresh failing must
-  // not reach the save/delete catch and report the write itself as failed.
+  // The write already succeeded and was toasted; a host callback that throws
+  // synchronously must not reach the save/delete catch and report the write
+  // itself as failed. (An async host owns its own rejections.)
   const notifyContactsChanged = () => {
     try {
       onContactsChanged?.();

@@ -177,12 +177,14 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
     const nextSummary = await fetchSummary();
     if (nextSummary === undefined) return;
     if (nextSummary === null) {
-      console.warn('[OrganizationRecordPage] summary refresh after a contact change failed; keeping the last summary');
+      console.error(
+        `[OrganizationRecordPage] summary refresh after a contact change failed for org ${orgId}; the header keeps the last summary until reload`,
+      );
       return;
     }
     setSummary(nextSummary);
     setSummaryFailed(false);
-  }, [fetchSummary]);
+  }, [fetchSummary, orgId]);
 
   useEffect(() => {
     if (isOrgScoped) return;

@@ -475,6 +475,7 @@ describe('ContactsCard — tells its host when contacts changed (#9954)', () => 
     await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
     expect(onContactsChanged).toHaveBeenCalledTimes(1);
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(consoleSpy).toHaveBeenCalledWith('[ContactsCard] onContactsChanged threw', expect.any(Error));
     consoleSpy.mockRestore();
   });
 });

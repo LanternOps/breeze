@@ -297,6 +297,37 @@ describe('OrganizationRecordPage — happy path', () => {
     expect(requestedUrls.filter(isRecordRead)).toHaveLength(1);
   });
 
+  it('keeps the last good header, and says so in the console, when the refresh after a contact change fails', async () => {
+    let contactAdded = false;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes('/summary')) return contactAdded ? json({ error: 'boom' }, 500) : json(SUMMARY_BODY);
+      if (url.includes(`/orgs/organizations/${RECORD_ORG}/contacts`) && init?.method === 'POST') {
+        contactAdded = true;
+        return json({ id: 'c9' }, 201);
+      }
+      if (new URL(url, 'http://localhost').pathname.endsWith(`/orgs/organizations/${RECORD_ORG}`)) return json(ORG_BODY);
+      return json({ data: [] });
+    });
+    window.location.hash = '#contacts';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-primary-contact').textContent).toContain('Dana Reed'));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-add-button')).toBeTruthy());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('org-contacts-add-button'));
+    await user.type(screen.getByTestId('contact-form-name-input'), 'Olga Orglevel');
+    await user.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() =>
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(`summary refresh after a contact change failed for org ${RECORD_ORG}`)),
+    );
+    expect(screen.getByTestId('org-record-primary-contact').textContent).toContain('Dana Reed');
+    errorSpy.mockRestore();
+  });
+
   it('#sites renders OrgSitesTab, pinned to the record org via orgIdOverride', async () => {
     window.location.hash = '#sites';
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);

@@ -264,7 +264,36 @@ describe('applyOrgSwitch — a page can keep its tab hash across the switch (#99
     expect(navigateToMock).toHaveBeenCalledWith('/integrations', { replace: true });
     expect(replaceStateSpy).not.toHaveBeenCalled();
     expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Switched to B' });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('kept-hash provider threw'), expect.any(Error));
     warnSpy.mockRestore();
+  });
+
+  it('keeps nothing when the swap landed on another path (e.g. a server redirect)', async () => {
+    stubLocation('/integrations', '', '#m365');
+    navigateToMock.mockImplementation(async () => {
+      stubLocation('/login');
+      document.dispatchEvent(new Event('astro:after-swap'));
+      return 'soft';
+    });
+    release = keepHashAcrossOrgSwitch(() => 'm365');
+    const onHashChange = vi.fn();
+    window.addEventListener('hashchange', onHashChange);
+    try {
+      await applyOrgSwitch('org-b', 'x');
+    } finally {
+      window.removeEventListener('hashchange', onHashChange);
+    }
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+    expect(onHashChange).not.toHaveBeenCalled();
+  });
+
+  it('removes its swap listener when the navigation throws', async () => {
+    stubLocation('/integrations', '', '#m365');
+    navigateToMock.mockRejectedValue(new Error('router exploded'));
+    release = keepHashAcrossOrgSwitch(() => 'm365');
+    await expect(applyOrgSwitch('org-b', 'x')).rejects.toThrow('router exploded');
+    document.dispatchEvent(new Event('astro:after-swap'));
+    expect(replaceStateSpy).not.toHaveBeenCalled();
   });
 
   it('keeps nothing once the page has released its claim', async () => {

@@ -155,11 +155,13 @@ export async function applyOrgSwitch(
   const target = redirect ?? `${window.location.pathname}${window.location.search}`;
   // Only an in-place switch keeps a hash: a redirect or destination is another page.
   const keptHash = redirect === null ? orgSwitchKeptHash() : null;
-  let hashRestored = false;
+  // Written by the swap listener; the cast keeps TS from narrowing it to null.
+  let restoredFrom = null as string | null;
   const restoreHash = () => {
+    // The router landed somewhere else (e.g. a server redirect): not our page's tab.
     if (window.location.pathname !== target.split('?')[0]) return;
+    restoredFrom = window.location.href;
     window.history.replaceState(window.history.state, '', `${target}#${keptHash}`);
-    hashRestored = true;
   };
   if (keptHash) document.addEventListener('astro:after-swap', restoreHash, { once: true });
   let mode: Awaited<ReturnType<typeof navigateTo>>;
@@ -169,7 +171,9 @@ export async function applyOrgSwitch(
     document.removeEventListener('astro:after-swap', restoreHash);
   }
   if (mode !== 'soft') return; // a full load is under way; the next mount pops the stash
-  if (hashRestored) window.dispatchEvent(new HashChangeEvent('hashchange'));
+  if (restoredFrom !== null) {
+    window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL: restoredFrom, newURL: window.location.href }));
+  }
   // The persisted switcher never remounts on a soft navigation, so its
   // mount-time consume would never fire — surface the confirmation here.
   const message = consumeSwitchToast();
