@@ -2,7 +2,7 @@
  * Wisp W08 (feature #9906; w00 A35, Review Focus 1–2) — the objects linked to
  * a Wisp thread (`wisp_thread_links`).
  *
- * Every read goes through `listLinks`, which re-resolves EVERY row with
+ * Stored reads share `readStoredLinks`, which re-resolves EVERY row with
  * `resolveEntityRef` (entity read, caller permission, live ceiling, token
  * scope) — the stored `label` and `org_id` are caches, never an authority:
  *   - `not_found` (the object is gone) → the row is deleted;
@@ -22,9 +22,11 @@
  */
 import { and, asc, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import {
+  CONCERN_KIND_TO_ENTITY_KIND,
   WISP_THREAD_AUTO_LINK_LIMIT,
   WISP_THREAD_LINK_LIMIT,
   type BreezeEntityRef,
+  type Concern,
   type WispEntityKind,
   type WispLinkRefusal,
   type WispLinkSource,
@@ -203,18 +205,21 @@ export async function removeLink(partnerId: string, threadId: string, linkId: st
 }
 
 /**
- * The thread's links this caller may see right now, newest first. Rows whose
+ * The thread's stored links this caller may see, most recently touched first. Rows whose
  * object is gone are deleted; rows the caller or grant cannot see are kept
  * and omitted. Entities resolve one at a time (each is a short system read).
  */
-export async function listLinks(ctx: EntityResolveContext, threadId: string): Promise<WispThreadLink[]> {
+async function readStoredLinks(
+  ctx: EntityResolveContext,
+  threadId: string,
+  resolve: ReturnType<typeof createEntityResolver>,
+): Promise<WispThreadLink[]> {
   const partnerId = ctx.ceiling.partnerId;
   const rows = await inPartner(partnerId, () => db.select().from(wispThreadLinks)
     .where(and(eq(wispThreadLinks.threadId, threadId), eq(wispThreadLinks.partnerId, partnerId)))
-    .orderBy(desc(wispThreadLinks.createdAt), desc(wispThreadLinks.id))
+    .orderBy(desc(wispThreadLinks.lastTouchedAt), desc(wispThreadLinks.id))
     .limit(WISP_THREAD_LINK_LIMIT * 2));
 
-  const resolve = createEntityResolver(ctx);
   const out: WispThreadLink[] = [];
   const gone: string[] = [];
   const stale: Array<{ id: string; label: string; orgId: string | null }> = [];
@@ -243,5 +248,52 @@ export async function listLinks(ctx: EntityResolveContext, threadId: string): Pr
       }
     });
   }
-  return out.slice(0, WISP_THREAD_LINK_LIMIT);
+  return out;
+}
+
+/** Stored-only read for list_links; preserve its existing output cap. */
+export async function listLinks(ctx: EntityResolveContext, threadId: string): Promise<WispThreadLink[]> {
+  const links = await readStoredLinks(ctx, threadId, createEntityResolver(ctx));
+  return links.slice(0, WISP_THREAD_LINK_LIMIT);
+}
+
+/** Pins, live concern subjects, then autos; concern rows are never persisted. */
+export async function listWorkingSet(
+  ctx: EntityResolveContext,
+  threadId: string,
+  opts?: { concerns?: Concern[] },
+): Promise<WispThreadLink[]> {
+  const resolve = createEntityResolver(ctx);
+  const stored = await readStoredLinks(ctx, threadId, resolve);
+  const key = (ref: { kind: WispEntityKind; id: string }) => `${ref.kind}:${ref.id}`;
+  const seen = new Set(stored.map((link) => key(link.ref)));
+  const subjects: WispThreadLink[] = [];
+  await inSystemContext(async () => {
+    for (const concern of opts?.concerns ?? []) {
+      if (concern.status !== 'open' && concern.status !== 'snoozed') continue;
+      const kind = CONCERN_KIND_TO_ENTITY_KIND[concern.subject.kind];
+      if (!kind) continue;
+      const ref = { kind, id: concern.subject.id };
+      if (seen.has(key(ref))) continue;
+      seen.add(key(ref));
+      const resolved = await resolve(ref);
+      if (isResolveFailure(resolved)) continue;
+      subjects.push({
+        id: null,
+        ref: resolved.ref,
+        label: resolved.label,
+        status: resolved.status,
+        href: resolved.href,
+        source: 'concern',
+        // Concern.updatedAt is its latest change, including snooze/status changes.
+        lastTouchedAt: concern.updatedAt,
+        createdAt: concern.createdAt,
+      });
+    }
+  });
+  return [
+    ...stored.filter((link) => link.source !== 'auto'),
+    ...subjects,
+    ...stored.filter((link) => link.source === 'auto'),
+  ];
 }

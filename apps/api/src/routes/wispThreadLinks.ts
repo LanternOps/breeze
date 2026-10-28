@@ -23,11 +23,12 @@ import type { AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
   addLink,
-  listLinks,
+  listWorkingSet,
   removeLink,
   ThreadLinkError,
   THREAD_LINK_REFUSAL_STATUS,
 } from '../services/wisp/threadLinks';
+import { listConcernsForCeiling } from '../services/wisp/concerns';
 import { ceilingOf, ceilingRefusal, loadOwnThread } from './wispThreads';
 
 const NOT_FOUND = { error: 'Wisp thread not found', code: 'not_found' } as const;
@@ -49,7 +50,8 @@ wispThreadLinkRoutes.get('/:id/links', async (c) => {
   if (!own) return c.json(NOT_FOUND, 404);
   const outcome = await ceilingOf(own);
   if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
-  const links = await listLinks({ auth: authOf(c), ceiling: outcome.ceiling }, own.thread.id);
+  const concerns = await listConcernsForCeiling(outcome.ceiling, { status: ['open', 'snoozed'] });
+  const links = await listWorkingSet({ auth: authOf(c), ceiling: outcome.ceiling }, own.thread.id, { concerns });
   return c.json({ data: { links } });
 });
 

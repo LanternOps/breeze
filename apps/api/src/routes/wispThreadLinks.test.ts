@@ -16,7 +16,8 @@ const h = vi.hoisted(() => {
     ceilingOf: vi.fn(),
     addLink: vi.fn(),
     removeLink: vi.fn(),
-    listLinks: vi.fn(),
+    listWorkingSet: vi.fn(),
+    listConcernsForCeiling: vi.fn(),
     writeRouteAudit: vi.fn(),
   };
 });
@@ -32,8 +33,9 @@ vi.mock('../services/wisp/threadLinks', () => ({
   THREAD_LINK_REFUSAL_STATUS: { not_found: 404, forbidden: 403, outside_ceiling: 403, outside_token_scope: 403, link_limit: 409 },
   addLink: h.addLink,
   removeLink: h.removeLink,
-  listLinks: h.listLinks,
+  listWorkingSet: h.listWorkingSet,
 }));
+vi.mock('../services/wisp/concerns', () => ({ listConcernsForCeiling: h.listConcernsForCeiling }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 
 const { wispThreadLinkRoutes } = await import('./wispThreadLinks');
@@ -62,29 +64,35 @@ const req = (method: string, path: string, body?: unknown) => app().request(path
 beforeEach(() => {
   vi.clearAllMocks();
   h.loadOwnThread.mockResolvedValue(own);
+  h.listConcernsForCeiling.mockResolvedValue([]);
   h.ceilingOf.mockResolvedValue({ ok: true, ceiling });
 });
 
 describe('GET /thread/:id/links', () => {
   it('returns the re-resolved links of the caller\'s own thread', async () => {
-    h.listLinks.mockResolvedValue([link]);
+    const concerns = [{ id: 'c1', status: 'open' }];
+    h.listConcernsForCeiling.mockResolvedValue(concerns);
+    h.listWorkingSet.mockResolvedValue([link]);
     const res = await req('GET', `/thread/${THREAD}/links`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { links: [link] } });
-    expect(h.listLinks).toHaveBeenCalledWith({ auth, ceiling }, THREAD);
+    expect(h.listConcernsForCeiling).toHaveBeenCalledWith(ceiling, { status: ['open', 'snoozed'] });
+    expect(h.listWorkingSet).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { concerns });
   });
 
   it('another user\'s thread (or a bad id) is the same existence-neutral 404', async () => {
     h.loadOwnThread.mockResolvedValue(null);
     const res = await req('GET', `/thread/${THREAD}/links`);
     expect(res.status).toBe(404);
-    expect(h.listLinks).not.toHaveBeenCalled();
+    expect(h.listWorkingSet).not.toHaveBeenCalled();
+    expect(h.listConcernsForCeiling).not.toHaveBeenCalled();
   });
 
   it('an inactive grant is 409 and lists nothing', async () => {
     h.ceilingOf.mockResolvedValue({ ok: false, reason: 'inactive' });
     expect((await req('GET', `/thread/${THREAD}/links`)).status).toBe(409);
-    expect(h.listLinks).not.toHaveBeenCalled();
+    expect(h.listWorkingSet).not.toHaveBeenCalled();
+    expect(h.listConcernsForCeiling).not.toHaveBeenCalled();
   });
 });
 
