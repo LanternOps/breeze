@@ -194,6 +194,20 @@ describe('legacy agent coverage query (DB-less SQL, #10394)', () => {
   it('rejects an org outside an organization caller', () => {
     expect(() => buildLegacyAgentCoverageQuery(unrestricted(), { orgId: OTHER_ORG }, 'huntress')).toThrow(EdrReadError);
   });
+
+  it('partner scope counts only agents of an ACTIVE integration (a disabled one is not coverage)', () => {
+    const partnerAuth = {
+      scope: 'partner', canAccessOrg: () => true, orgCondition: () => undefined,
+    } as unknown as AuthContext;
+    const h = buildLegacyAgentCoverageQuery(unrestricted(partnerAuth), {}, 'huntress').toSQL();
+    expect(h.sql).toMatch(/exists \(select 1 from "huntress_integrations" i where i\.id = "huntress_agents"\."integration_id" and i\.is_active\)/);
+    const s1 = buildLegacyAgentCoverageQuery(unrestricted(partnerAuth), {}, 'sentinelone').toSQL();
+    expect(s1.sql).toMatch(/exists \(select 1 from "s1_integrations" i where i\.id = "s1_agents"\."integration_id" and i\.is_active\)/);
+  });
+
+  it('organization scope skips the integration-state filter (org tokens cannot read the partner-axis integration row under RLS)', () => {
+    expect(buildLegacyAgentCoverageQuery(unrestricted(), {}, 'huntress').toSQL().sql).not.toContain('huntress_integrations');
+  });
 });
 
 describe('detection query (DB-less SQL)', () => {

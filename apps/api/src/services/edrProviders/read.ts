@@ -38,7 +38,9 @@ import {
   edrEndpoints,
   edrTenants,
   huntressAgents,
+  huntressIntegrations,
   s1Agents,
+  s1Integrations,
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { UserPermissions } from '../permissions';
@@ -455,8 +457,11 @@ function toLegacyCoverage(rows: ReadonlyArray<{ orgId: string; agents: number }>
 /**
  * Legacy integration agents in the caller's scope, one row per org (#10394).
  * Same org and site rules as `edr_endpoints`: a site-restricted caller counts
- * agents linked to an allowed device, plus never-linked ones. Exported for the
- * DB-less SQL tests.
+ * agents linked to an allowed device, plus never-linked ones. Partner/system
+ * callers count only agents of an active integration (agent rows outlive a
+ * disabled integration). Org tokens cannot read the partner-axis integration
+ * row under RLS, so they count agent rows only, like the rest of the org-scope
+ * read. Exported for the DB-less SQL tests.
  */
 export function buildLegacyAgentCoverageQuery(
   scope: EdrReadScope,
@@ -472,6 +477,10 @@ export function buildLegacyAgentCoverageQuery(
     conds.push(ids.length > 0
       ? (or(isNull(table.deviceId), inArray(table.deviceId, ids)) as SQL)
       : isNull(table.deviceId));
+  }
+  if (scope.auth.scope === 'partner' || scope.auth.scope === 'system') {
+    const integrations = integration === 'huntress' ? huntressIntegrations : s1Integrations;
+    conds.push(sql`exists (select 1 from ${integrations} i where i.id = ${table.integrationId} and i.is_active)`);
   }
   return db
     .select({ orgId: table.orgId, agents: sql<number>`count(*)::int` })
