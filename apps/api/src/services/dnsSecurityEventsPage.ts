@@ -60,6 +60,11 @@ export function decodeDnsEventsCursor(raw: string): DnsEventsCursor | null {
   if (!parsed || typeof parsed !== 'object') return null;
   const { ts, id } = parsed as Record<string, unknown>;
   if (typeof ts !== 'string' || !CURSOR_TS_RE.test(ts)) return null;
+  // Shape is not enough: '2026-02-30...' would reach Postgres' ::timestamp
+  // cast and fail the request with a 500 instead of a 400. Round-trip the
+  // seconds part through Date to reject impossible calendar values.
+  const ms = Date.parse(`${ts.slice(0, 19)}Z`);
+  if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 19) !== ts.slice(0, 19)) return null;
   if (typeof id !== 'string' || !UUID_RE.test(id)) return null;
   return { ts, id };
 }

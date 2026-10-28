@@ -66,6 +66,10 @@ export default function DnsSecurityEventsTab() {
   // The window start the first page was read with; "Load more" reuses it so
   // every page and the count describe the same window.
   const windowStartRef = useRef<string | null>(null);
+  // Bumped by every first-page fetch; a response from an older generation (a
+  // superseded refresh, or a Load more that was in flight when the range or
+  // filter changed) is dropped instead of mixing two windows' rows.
+  const generationRef = useRef(0);
 
   /**
    * Default to blocked-only — per the decision surface (Q5: "Blocked
@@ -93,12 +97,14 @@ export default function DnsSecurityEventsTab() {
   }, [showAll, t]);
 
   const fetchEvents = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++generationRef.current;
     setLoading(true);
     setError(null);
+    setNextCursor(null);
     try {
       const start = new Date(Date.now() - WINDOWS[windowKey]).toISOString();
       const body = await requestPage(start, null, signal);
-      if (!body) return;
+      if (!body || generation !== generationRef.current) return;
       windowStartRef.current = body.window?.start ?? start;
       setEvents(body.data ?? []);
       setTotal(Number(body.pagination?.total ?? 0));
@@ -108,21 +114,23 @@ export default function DnsSecurityEventsTab() {
       if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityEventsTab.messages.loadFailed'));
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted && generation === generationRef.current) setLoading(false);
     }
   }, [requestPage, windowKey, t]);
 
   const loadMore = useCallback(async () => {
     const start = windowStartRef.current;
     if (!nextCursor || !start) return;
+    const generation = generationRef.current;
     setLoadingMore(true);
     setError(null);
     try {
       const body = await requestPage(start, nextCursor);
-      if (!body) return;
+      if (!body || generation !== generationRef.current) return;
       setEvents((prev) => [...prev, ...(body.data ?? [])]);
       setNextCursor(body.pagination?.nextCursor ?? null);
     } catch (err) {
+      if (generation !== generationRef.current) return;
       setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityEventsTab.messages.loadFailed'));
     } finally {
       setLoadingMore(false);

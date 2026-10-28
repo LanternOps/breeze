@@ -100,6 +100,24 @@ describe('dns security events keyset paging (#10054)', () => {
     expect(totals.slice(1).every((t) => t === null)).toBe(true);
   });
 
+  it('each action literal selects exactly its own rows', async () => {
+    const { orgId, integrationId } = await seedOrgWithIntegration();
+    await asSystem(() => db.execute(sql`
+      INSERT INTO dns_security_events (org_id, integration_id, timestamp, domain, action, provider_event_id)
+      VALUES
+        (${orgId}::uuid, ${integrationId}::uuid, now()::timestamp, 'a.example', 'allowed', 'lit-a'),
+        (${orgId}::uuid, ${integrationId}::uuid, now()::timestamp, 'b.example', 'blocked', 'lit-b'),
+        (${orgId}::uuid, ${integrationId}::uuid, now()::timestamp, 'r.example', 'redirected', 'lit-r')
+    `));
+    for (const action of ['allowed', 'blocked', 'redirected'] as const) {
+      const page = await asSystem(() => listDnsSecurityEventsPage({
+        where: and(eq(dnsSecurityEvents.orgId, orgId), dnsEventsActionCondition(action)),
+        limit: 10,
+      }));
+      expect(page.rows.map((r) => r.action)).toEqual([action]);
+    }
+  });
+
   it('caps the count and says so', async () => {
     const { orgId, integrationId } = await seedOrgWithIntegration();
     await asSystem(() => db.execute(sql`

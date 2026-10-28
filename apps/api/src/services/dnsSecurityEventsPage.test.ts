@@ -28,6 +28,9 @@ describe('dns events cursor', () => {
     ['id is not a uuid', Buffer.from(JSON.stringify({ ts: '2026-10-27T23:59:59.123456', id: 'x' })).toString('base64url')],
     ['ts carries a timezone', Buffer.from(JSON.stringify({ ts: '2026-10-27T23:59:59.123456Z', id: ID })).toString('base64url')],
     ['ts is sql', Buffer.from(JSON.stringify({ ts: "2026-10-27'); --", id: ID })).toString('base64url')],
+    // Shape-valid but not a date: Postgres would throw on ::timestamp (a 500).
+    ['ts is not a calendar date', Buffer.from(JSON.stringify({ ts: '2026-13-45T25:61:61.000000', id: ID })).toString('base64url')],
+    ['ts is Feb 30', Buffer.from(JSON.stringify({ ts: '2026-02-30T10:00:00.000000', id: ID })).toString('base64url')],
   ])('rejects %s', (_label, raw) => {
     expect(decodeDnsEventsCursor(raw)).toBeNull();
   });
