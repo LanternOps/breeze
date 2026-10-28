@@ -673,6 +673,27 @@ function warnUnparseableDetectionRules(policyId: string, versions: ServiceBridge
 }
 
 /**
+ * The device's service names per catalog id, narrowed to the rules that apply
+ * to it (#10126). A generated (security agents) policy's rule that is not
+ * applicable to the device — org not mapped, tenant variable missing, platform
+ * unsupported, … — derives no watch for it and takes no part in the bridge, so
+ * the heartbeat never asks that device to monitor the vendor's service. An
+ * authored policy (no applicability) keeps every reachable, OS-matched name.
+ */
+function applicableServiceNamesByCatalog(
+  namesByCatalog: Map<string, string[]>,
+  deviceId: string,
+  applicability: ManagedRuleApplicability | null,
+): Map<string, string[]> {
+  if (!applicability || namesByCatalog.size === 0) return namesByCatalog;
+  const applicable = new Map<string, string[]>();
+  for (const [catalogId, names] of namesByCatalog) {
+    if (applicability.isRuleApplicable(deviceId, catalogId)) applicable.set(catalogId, names);
+  }
+  return applicable;
+}
+
+/**
  * The watch list stored for one (policy, device): every derived name, deduped
  * case-insensitively, sorted case-insensitively, then capped. Null when the
  * policy derives nothing for this device, which clears a stale list.
@@ -911,7 +932,8 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // device's derived service watches, and their fresh check results stand in
   // for (or qualify) inventory evidence in applyServiceRules. Two reads per
   // pass at most (versions, then observations), and none for a policy that
-  // cannot derive a name.
+  // cannot derive a name. #10126: on a generated policy only the rules
+  // applicable to the device derive names (applicableServiceNamesByCatalog).
   //
   // A failed bridge read must not fail the pass: inventory compliance and the
   // uninstall verb predate the bridge and still run. The pass then says
@@ -922,6 +944,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // than waiting one cycle.
   let bridgeVersions: ServiceBridgeVersion[] | null = null;
   const namesByOrgOsMemo = new Map<string, Map<string, string[]>>();
+  const serviceNamesByDevice = new Map<string, Map<string, string[]>>();
   const serviceWatchesByDevice = new Map<string, Array<{ name: string }> | null>();
   let observationsByDevice = new Map<string, Map<string, ServiceObservation>>();
   let bridgeUnavailable = false;
@@ -935,12 +958,16 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     const derivedLowerNames = new Set<string>();
     const devicesWithWatches: string[] = [];
     for (const deviceId of deviceIds) {
-      const watches = bridgeVersions
-        ? derivedServiceWatches(
-          normalizedRules.software ?? [],
+      let watches: Array<{ name: string }> | null = null;
+      if (bridgeVersions) {
+        const names = applicableServiceNamesByCatalog(
           serviceNamesByCatalogFor(bridgeVersions, orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
-        )
-        : null;
+          deviceId,
+          managedApplicability,
+        );
+        serviceNamesByDevice.set(deviceId, names);
+        watches = derivedServiceWatches(normalizedRules.software ?? [], names);
+      }
       serviceWatchesByDevice.set(deviceId, watches);
       if (watches) {
         devicesWithWatches.push(deviceId);
@@ -956,6 +983,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   } catch (error) {
     bridgeUnavailable = true;
     serviceWatchesByDevice.clear();
+    serviceNamesByDevice.clear();
     console.error('[SoftwareComplianceWorker] service_running bridge inputs failed; evaluating inventory only and holding installs this pass (#6958)', {
       policyId: policy.id,
       error,
@@ -980,6 +1008,26 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       const inventory = inventoryByDevice.get(deviceId) ?? [];
       const evaluated = evaluateSoftwareInventoryDetailed(policy.mode, normalizedRules, inventory);
       let evaluatedViolations = evaluated.violations;
+      // #6958 PR E: the bridge sees only the names of rules applicable to this
+      // device (#10126), so a not-applicable rule's `missing` passes through it
+      // untouched — never converted to `service_unverified` — and is dropped
+      // by the filter below.
+      const serviceWatches = serviceWatchesByDevice.get(deviceId) ?? null;
+      if (serviceWatches) {
+        evaluatedViolations = applyServiceRules({
+          mode: policy.mode,
+          violations: evaluatedViolations,
+          rules: normalizedRules.software ?? [],
+          inventoryMatchedRuleNames: evaluated.matchedRuleNames,
+          serviceNamesByCatalogId: serviceNamesByDevice.get(deviceId) ?? new Map(),
+          observations: observationsByDevice.get(deviceId) ?? new Map(),
+          now,
+        });
+      }
+      // #6960 / #10126: the managed-applicability filter runs AFTER the bridge,
+      // over everything the pass will store. The bridge ADDS a not_running /
+      // service_unverified for an inventory-matched rule (no `missing` to
+      // drop); filtering before it let those through unfiltered.
       if (managedApplicability) {
         const filtered = managedApplicability.filterViolations(deviceId, evaluatedViolations);
         evaluatedViolations = filtered.violations;
@@ -992,20 +1040,6 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
             notApplicableByReason[entry.reason] = (notApplicableByReason[entry.reason] ?? 0) + 1;
           }
         }
-      }
-      // #6958 PR E: AFTER the managed-applicability filter, so a `missing`
-      // that filter dropped is never resurrected as `service_unverified`.
-      const serviceWatches = serviceWatchesByDevice.get(deviceId) ?? null;
-      if (serviceWatches) {
-        evaluatedViolations = applyServiceRules({
-          mode: policy.mode,
-          violations: evaluatedViolations,
-          rules: normalizedRules.software ?? [],
-          inventoryMatchedRuleNames: evaluated.matchedRuleNames,
-          serviceNamesByCatalogId: serviceNamesByCatalogFor(bridgeVersions ?? [], orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
-          observations: observationsByDevice.get(deviceId) ?? new Map(),
-          now,
-        });
       }
       const violationsWithStableTimestamps = withStableViolationTimestamps(
         evaluatedViolations,
