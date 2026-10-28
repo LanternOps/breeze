@@ -145,10 +145,12 @@ function excerpt(text: string, keywords: string[], budget: number): string {
   let length = sizeOf(best);
   if (length + ELLIPSIS_CHARS > budget) {
     // One paragraph (a long table or code block) is bigger than the budget:
-    // window it so the first keyword hit sits near the top.
+    // window it so the first keyword hit sits near the top, or start at the
+    // head when the section was chosen by its heading or page title alone.
     const paragraph = paragraphs[best] ?? '';
     const lower = paragraph.toLowerCase();
-    const hitAt = Math.min(...keywords.map((keyword) => lower.indexOf(keyword)).filter((at) => at >= 0), paragraph.length);
+    const hits = keywords.map((keyword) => lower.indexOf(keyword)).filter((at) => at >= 0);
+    const hitAt = hits.length > 0 ? Math.min(...hits) : 0;
     const width = Math.max(0, budget - ELLIPSIS_CHARS);
     const from = Math.max(0, Math.min(hitAt - Math.floor(width / 4), paragraph.length - width));
     const to = from + width;

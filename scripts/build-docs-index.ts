@@ -172,27 +172,62 @@ function attrValue(attrs: string, name: string): string | undefined {
   return match ? (match[1] ?? match[2]) : undefined;
 }
 
-/** Strips MDX-only syntax from prose (never from code fences) so the model reads plain markdown. */
-function cleanProse(prose: string): string {
-  return prose
+/**
+ * Names the page imports (`import { Aside, Tabs } from '...'`, `import Foo from '...'`).
+ * Only these are MDX components; any other `<Capitalized>` token is prose, e.g. the
+ * `<PUBLIC_APP_URL>` placeholder in a documented redirect URI.
+ */
+function importedComponentNames(body: string): string[] {
+  const names = new Set<string>();
+  for (const match of body.matchAll(/^import\s+([^'"]+?)\s+from\s+['"][^'"]+['"]/gm)) {
+    const clause = match[1] ?? '';
+    const named = clause.match(/\{([^}]*)\}/);
+    for (const part of named?.[1]?.split(',') ?? []) {
+      const local = part.split(/\s+as\s+/).pop()?.trim();
+      if (local && /^[A-Z]\w*$/.test(local)) names.add(local);
+    }
+    const defaultName = clause.replace(/\{[^}]*\}/, '').replace(/,/g, ' ').trim().split(/\s+/)[0];
+    if (defaultName && /^[A-Z]\w*$/.test(defaultName)) names.add(defaultName);
+  }
+  return [...names];
+}
+
+const INLINE_CODE_RE = /`[^`\n]+`/g;
+
+/** Strips MDX-only syntax from prose (never from code fences or inline code) so the model reads plain markdown. */
+function cleanProse(prose: string, components: string[]): string {
+  // Inline code is literal text: mask it so neither the component nor the ESM
+  // patterns below can touch it.
+  const codeSpans: string[] = [];
+  let text = prose.replace(INLINE_CODE_RE, (span) => `\u0000${codeSpans.push(span) - 1}\u0000`);
+
+  text = text
     .replace(/^import\s+(?:[^'"\n]+\s+from\s+)?['"][^'"\n]+['"];?\s*$/gm, '')
     .replace(/^export\s+(?:const|let|var|function|default)\b.*$/gm, '')
-    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
-    .replace(/<([A-Z][\w.]*)\b([^>]*?)\/>/g, (_m, _tag: string, attrs: string) => {
-      const label = attrValue(attrs, 'title') ?? attrValue(attrs, 'label');
-      return label ? `**${label}**` : '';
-    })
-    .replace(/<([A-Z][\w.]*)\b([^>]*)>/g, (_m, _tag: string, attrs: string) => {
-      const label = attrValue(attrs, 'label') ?? attrValue(attrs, 'title');
-      return label ? `**${label}:**` : '';
-    })
-    .replace(/<\/[A-Z][\w.]*\s*>/g, '')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+
+  if (components.length > 0) {
+    const names = components.join('|');
+    text = text
+      .replace(new RegExp(`<(${names})\\b([^>]*?)\\/>`, 'g'), (_m, _tag: string, attrs: string) => {
+        const label = attrValue(attrs, 'title') ?? attrValue(attrs, 'label');
+        return label ? `**${label}**` : '';
+      })
+      .replace(new RegExp(`<(${names})\\b([^>]*)>`, 'g'), (_m, _tag: string, attrs: string) => {
+        const label = attrValue(attrs, 'label') ?? attrValue(attrs, 'title');
+        return label ? `**${label}:**` : '';
+      })
+      .replace(new RegExp(`<\\/(${names})\\s*>`, 'g'), '');
+  }
+
+  return text
+    .replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codeSpans[Number(index)] ?? '')
     .split('\n')
     .map((line) => line.replace(/\s+$/, ''))
     .join('\n');
 }
 
-function cleanSectionText(lines: string[]): string {
+function cleanSectionText(lines: string[], components: string[]): string {
   const parts: string[] = [];
   let prose: string[] = [];
   let fence: string[] | null = null;
@@ -204,7 +239,7 @@ function cleanSectionText(lines: string[]): string {
         parts.push(fence.join('\n'));
         fence = null;
       } else {
-        parts.push(cleanProse(prose.join('\n')));
+        parts.push(cleanProse(prose.join('\n'), components));
         prose = [];
         fence = [line.trim()];
       }
@@ -214,7 +249,7 @@ function cleanSectionText(lines: string[]): string {
     else prose.push(line);
   }
   if (fence) parts.push(fence.join('\n'));
-  parts.push(cleanProse(prose.join('\n')));
+  parts.push(cleanProse(prose.join('\n'), components));
 
   return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -222,12 +257,13 @@ function cleanSectionText(lines: string[]): string {
 /** Splits the body at `##`/`###` headings (the same ones `headings` lists) into searchable sections. */
 function extractSections(body: string): DocsIndexSection[] {
   const slug = createSlugger();
+  const components = importedComponentNames(body);
   const sections: DocsIndexSection[] = [];
   let current = { heading: '', anchor: '', lines: [] as string[] };
   let inCodeFence = false;
 
   const flush = () => {
-    const text = cleanSectionText(current.lines);
+    const text = cleanSectionText(current.lines, components);
     if (current.heading || text) {
       sections.push({ heading: current.heading, anchor: current.anchor, text });
     }
