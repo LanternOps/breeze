@@ -197,16 +197,11 @@ need nothing beyond §3.4. (verified)
   policies, where a partner-level assignment (priority 1) would lose. This is the same rule as for org
   groups, and the docs must say so.
 - **Gating tiering is unchanged.** Software-keyed groups are refused for execution-gated features and
-  allowed for protective ones. Two fixes ride in W1:
-  - **Invisible group fails open.** `resolveExecutionSafeGroupIds` (`executionTargetGating.ts:60-67`)
-    classifies only the rows it can see. `configurationPolicy.ts:2788-2943` drops execution-gated
-    rows only for ids in `refusedGroups`. A group invisible to the caller's RLS context is therefore
-    treated as safe. (verified) Fix: an id with no row comes back as refused, with
-    `refusedFields: ['unresolvable']`. `featureConfigResolver.ts:1417` already fails closed.
-  - **Pre-existing, not partner-specific: `groupId` hides provenance.** Group B with `groupId
-    equals A` stores `filter_fields_used = ['groupId']`, and `groupId` is server-controlled
-    (`filterEngine.ts:232-237`). B therefore passes gating even when A is software-keyed. (verified by
-    reading.) This should be filed as its own bug. §3.1 keeps partner groups out of it.
+  allowed for protective ones. W1 also hardens `resolveExecutionSafeGroupIds`
+  (`executionTargetGating.ts:60-67`) so that an id with no visible row comes back as refused, with
+  `refusedFields: ['unresolvable']`; the SELECT-only partner branch must never widen an execution
+  target. `featureConfigResolver.ts:1417` already fails closed. Partner groups refuse `groupId` rules
+  (§3.1), so field provenance never crosses a group boundary for them.
 
 ### 3.5 Other target surfaces
 
@@ -380,7 +375,6 @@ added and verified the rows marked †.
 - Partner-owned saved filters (`db/schema/filters.ts:7`).
 - `config_assignments_unique` changes (#8957).
 - Converting owner kinds.
-- The pre-existing `groupId` provenance gap in §3.4. It should be filed as its own bug.
 
 ## 6. Open Decisions
 
@@ -462,8 +456,7 @@ numbers below use this document's numbering.
     upgrade; verified)
   - a pre-lock when deleting a partner group
 - **Org merge:** parent ordering and `orgId` filter literals. Resolved by giving partner groups no
-  parent and refusing `orgId` and `groupId` filters. The `groupId` provenance bypass is pre-existing
-  and should be filed separately.
+  parent and refusing `orgId` and `groupId` filters.
 - **Evaluation:**
   - one evaluation core, since `resolveEffectiveGroupMembers` is not billing-only
   - a fresh DB context per org, because nested contexts become savepoints
