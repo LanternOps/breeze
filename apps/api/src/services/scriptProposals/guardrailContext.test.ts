@@ -6,7 +6,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
-import { loadProposalGuardrailContext } from './guardrailContext';
+import { loadProposalGuardrailContext, loadProposalGuardrailContextInReach } from './guardrailContext';
 
 describe('loadProposalGuardrailContext', () => {
   it('returns undefined when the input names no proposal — every other tool is unaffected', async () => {
@@ -63,5 +63,44 @@ describe('loadProposalGuardrailContext', () => {
     await expect(loadProposalGuardrailContext({ proposalId: 'p1' }, 'org-1')).resolves.toEqual({
       proposalDenyReason: 'proposal_not_found',
     });
+  });
+});
+
+// #10384: a partner-scope chat (a Wisp session under a partner-wide grant, or a
+// partner tech's ordinary chat) is bound to ONE org, but propose_script files a
+// proposal under the TARGET DEVICE's org. The chat gate resolves the proposal
+// within the caller's reach and keys everything after on the proposal's org.
+describe('loadProposalGuardrailContextInReach', () => {
+  const reach = (...orgIds: string[]) => (orgId: string) => orgIds.includes(orgId);
+
+  it('returns no context and no org when the input names no proposal', async () => {
+    await expect(loadProposalGuardrailContextInReach({ scriptId: 's1' }, reach('org-1'))).resolves.toEqual({
+      context: undefined, proposalOrgId: null,
+    });
+  });
+
+  it('resolves a reviewed proposal in ANOTHER org the caller can reach, and names that org', async () => {
+    stored = { id: 'p1', orgId: 'org-2', status: 'reviewed', riskTier: 'medium', strictHits: ['hit'] };
+    await expect(loadProposalGuardrailContextInReach({ proposalId: 'p1' }, reach('org-1', 'org-2'))).resolves.toEqual({
+      context: { proposal: { riskTier: 'medium', strictHits: ['hit'] } },
+      proposalOrgId: 'org-2',
+    });
+  });
+
+  it('keeps the review-state diagnoses for an in-reach proposal', async () => {
+    stored = { id: 'p1', orgId: 'org-2', status: 'proposed', riskTier: null, strictHits: [] };
+    await expect(loadProposalGuardrailContextInReach({ proposalId: 'p1' }, reach('org-2'))).resolves.toEqual({
+      context: { proposalDenyReason: 'proposal_review_pending' },
+      proposalOrgId: 'org-2',
+    });
+  });
+
+  it('answers an out-of-reach proposal exactly like a missing one — no org, proposal_not_found', async () => {
+    stored = { id: 'p1', orgId: 'org-3', status: 'reviewed', riskTier: 'low', strictHits: [] };
+    const outOfReach = await loadProposalGuardrailContextInReach({ proposalId: 'p1' }, reach('org-1', 'org-2'));
+    stored = null;
+    const missing = await loadProposalGuardrailContextInReach({ proposalId: 'p1' }, reach('org-1', 'org-2'));
+    expect(outOfReach).toEqual({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
+    expect(outOfReach).toEqual(missing);
   });
 });

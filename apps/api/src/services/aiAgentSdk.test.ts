@@ -219,6 +219,22 @@ vi.mock('./actionIntents/laneCheckpoint', () => ({
   ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
 }));
 
+// #10384: the chat gate resolves a run_script proposal within the caller's
+// reach and keys the intent, card and terminal outbox on the proposal's org.
+// Spread the real module; only the reach lookup and the card summary are
+// controllable. Default: no proposal (every other test is unaffected).
+const mockProposalInReach = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
+  context: undefined as unknown, proposalOrgId: null as string | null,
+})));
+vi.mock('./scriptProposals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./scriptProposals')>()),
+  loadProposalGuardrailContextInReach: (...args: unknown[]) => mockProposalInReach(...args),
+}));
+const mockProposalApprovalSummary = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
+vi.mock('./scriptProposals/approvalSummary', () => ({
+  loadProposalApprovalSummary: (...args: unknown[]) => mockProposalApprovalSummary(...args),
+}));
+
 vi.mock('./actionIntents/revalidateRelease', () => ({
   revalidateApprovedIntentForRelease: (...args: unknown[]) =>
     mockRevalidateApprovedIntentForRelease(...args),
@@ -2090,6 +2106,84 @@ describe('createSessionPreToolUse', () => {
         { id: 'intent-6', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
         'intent_completed',
       );
+    });
+
+    // #10384: a partner-scope session bound to org-1 runs a reviewed proposal
+    // that propose_script filed under org-2 (its target device's org). The
+    // proposal is resolved within the call's reach, and the intent, the
+    // approval card and the terminal outbox all follow the PROPOSAL's org,
+    // which is the org consumeProposalForIntent / loadProposalForRelease and
+    // the release ceiling key on.
+    describe('run_script on a proposal outside the session org (#10384)', () => {
+      const reachOf = (...orgIds: string[]) => makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: orgIds,
+        canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+      });
+      const reviewed = { proposal: { riskTier: 'medium', strictHits: [] } };
+
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Run reviewed proposal',
+        } as any);
+        mockResolveScriptRunContext.mockResolvedValue(null);
+        mockInsertReturning({ id: 'exec-x' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-x', approvalRequestIds: ['appr-x'] }));
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+      });
+
+      it('looks the proposal up within the session tool reach and files the intent + card in the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(mockProposalInReach).toHaveBeenCalledWith({ proposalId: 'p-x', deviceIds: ['d-2'] }, expect.any(Function));
+        const canAccessOrg = mockProposalInReach.mock.calls[0]![1] as (orgId: string) => boolean;
+        expect(canAccessOrg('org-2')).toBe(true);
+        expect(canAccessOrg('org-9')).toBe(false);
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-2' });
+        expect(mockProposalApprovalSummary).toHaveBeenCalledWith(expect.objectContaining({ proposalId: 'p-x' }), 'org-2');
+      });
+
+      it('publishes the inline completion under the proposal org, not the session org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const pre = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+        expect(pre).toMatchObject({ allowed: true, intentId: 'intent-x' });
+        await createSessionPostToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+      });
+
+      it('keeps the session org for a proposal outside the reach (the guardrail refuses it as proposal_not_found)', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
+        vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, reason: 'proposal_not_found' } as any);
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-far', deviceIds: ['d-9'] });
+
+        expect(res).toEqual({ allowed: false, error: 'proposal_not_found' });
+        expect(checkGuardrails).toHaveBeenCalledWith(
+          'run_script', expect.anything(), expect.objectContaining({ proposalDenyReason: 'proposal_not_found' }),
+        );
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
     });
 
     it('terminalizes a handler-thrown caller refusal as caller_verification_required with the typed result', async () => {
