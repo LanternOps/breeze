@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
@@ -49,7 +50,8 @@ const baseAuth = {
   accessibleOrgIds: ['org-first', 'org-device'],
   partnerOrgAccess: 'all',
   canAccessOrg: () => true,
-  orgCondition: () => undefined,
+  // A marker the device lookup must carry, proving it is org-bounded.
+  orgCondition: () => sql`${'org-scope-marker'}`,
   aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
 } as any;
 
@@ -90,7 +92,7 @@ describe('manage_patches:scan dispatches a patch_scan command (#10383)', () => {
         'manage_patches',
         deviceId,
         'patch_scan',
-        expect.any(Object),
+        {},
         expect.objectContaining({ userId: 'u1', expectedOrgId: 'org-device' }),
       );
     }
@@ -102,13 +104,14 @@ describe('manage_patches:scan dispatches a patch_scan command (#10383)', () => {
     expect(result.failed).toEqual([]);
   });
 
-  it("binds each command to the device's own org, not accessibleOrgIds[0] (#7827)", async () => {
+  it("bounds the lookup by the caller's org condition and binds each command to the device's own org, not accessibleOrgIds[0] (#7827)", async () => {
     const where = deviceRows([{ id: DEV_A, siteId: null, orgId: 'org-device' }]);
     mockAiQueue.mockResolvedValueOnce(queued('cmd-a'));
 
     await tool.handler({ action: 'scan', deviceIds: [DEV_A] }, baseAuth);
 
     const params = new PgDialect().sqlToQuery(where.mock.calls[0]![0]).params;
+    expect(params).toContain('org-scope-marker');
     expect(params).not.toContain('org-first');
     expect(mockAiQueue.mock.calls[0]![5]).toEqual(expect.objectContaining({ expectedOrgId: 'org-device' }));
   });
@@ -125,8 +128,43 @@ describe('manage_patches:scan dispatches a patch_scan command (#10383)', () => {
     const result = JSON.parse(await tool.handler({ action: 'scan', deviceIds: [DEV_A, DEV_B] }, baseAuth));
 
     expect(result.success).toBe(false);
+    expect(result.message).toMatch(/1 of 2 device\(s\); 1 refused/);
     expect(result.queued).toEqual([{ deviceId: DEV_A, commandId: 'cmd-a', delivery: 'delivered' }]);
     expect(result.failed).toEqual([{ deviceId: DEV_B, error: 'Device is decommissioned, cannot execute command' }]);
+  });
+
+  it('returns a top-level error when no device queued the scan', async () => {
+    deviceRows([
+      { id: DEV_A, siteId: null, orgId: 'org-device' },
+      { id: DEV_B, siteId: null, orgId: 'org-device' },
+    ]);
+    mockAiQueue
+      .mockResolvedValueOnce({ error: 'Remote tools disabled by policy' })
+      .mockResolvedValueOnce({ error: 'Remote tools disabled by policy' });
+
+    const result = JSON.parse(await tool.handler({ action: 'scan', deviceIds: [DEV_A, DEV_B] }, baseAuth));
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No patch scan was queued/);
+    expect(result.queued).toEqual([]);
+    expect(result.failed).toHaveLength(2);
+  });
+
+  it('fails the call when the AI surface minted no aiOrigin (unattributed dispatch is refused)', async () => {
+    // Real aiDispatch behaviour: requireAiOrigin throws MissingAiOriginError.
+    const { aiQueueCommandForExecution: real } = await vi.importActual<typeof import('./aiDispatch')>('./aiDispatch');
+    mockAiQueue.mockImplementationOnce(real);
+    deviceRows([{ id: DEV_A, siteId: null, orgId: 'org-device' }]);
+    const { aiOrigin: _omit, ...noOrigin } = baseAuth;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = JSON.parse(await tool.handler({ action: 'scan', deviceIds: [DEV_A] }, noOrigin));
+
+    expect(logged.mock.calls.flat().join(' ')).toMatch(/no AuthContext\.aiOrigin/);
+    logged.mockRestore();
+    expect(result.error).toBeDefined();
+    expect(result.success).toBeUndefined();
+    expect(result.queued).toBeUndefined();
   });
 
   it('treats a cancelled command (row exists but will never run) as a failure', async () => {
@@ -144,20 +182,22 @@ describe('manage_patches:scan dispatches a patch_scan command (#10383)', () => {
     expect(result.failed).toEqual([{ deviceId: DEV_A, error: 'Command cancelled: device not eligible' }]);
   });
 
-  it('keeps going after a device throws and reports it as failed', async () => {
+  it('fails the whole call when dispatch throws, never reporting earlier devices as queued', async () => {
+    // A thrown error aborts the per-call transaction, so a command "queued"
+    // earlier in the loop is rolled back — it must not appear in the output.
     deviceRows([
       { id: DEV_A, siteId: null, orgId: 'org-device' },
       { id: DEV_B, siteId: null, orgId: 'org-device' },
     ]);
     mockAiQueue
-      .mockRejectedValueOnce(new Error('redis down'))
-      .mockResolvedValueOnce(queued('cmd-b'));
+      .mockResolvedValueOnce(queued('cmd-a'))
+      .mockRejectedValueOnce(new Error('connection terminated'));
 
     const result = JSON.parse(await tool.handler({ action: 'scan', deviceIds: [DEV_A, DEV_B] }, baseAuth));
 
-    expect(result.success).toBe(false);
-    expect(result.queued).toEqual([{ deviceId: DEV_B, commandId: 'cmd-b', delivery: 'delivered' }]);
-    expect(result.failed).toEqual([{ deviceId: DEV_A, error: 'Failed to queue patch scan' }]);
+    expect(result.error).toBeDefined();
+    expect(result.success).toBeUndefined();
+    expect(result.queued).toBeUndefined();
   });
 
   it('refuses the whole request and dispatches nothing when a device is outside the caller scope', async () => {

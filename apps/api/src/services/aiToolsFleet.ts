@@ -1406,36 +1406,44 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const queued: Array<{ deviceId: string; commandId: string; delivery: string }> = [];
         const failed: Array<{ deviceId: string; error: string }> = [];
-        // Sequential: the handler runs inside one per-call transaction.
+        // Sequential, and deliberately NOT wrapped per device in try/catch:
+        // the handler runs inside one per-call transaction, so a thrown DB
+        // error aborts it and rolls back every row queued earlier in this
+        // loop. Catching it would report those rolled-back commands as
+        // queued. A throw fails the whole call through safeHandler instead;
+        // per-device refusals come back as `error` results, not throws.
         for (const deviceId of scanDeviceIds) {
           const device = accessibleScanDevices.get(deviceId)!;
-          try {
-            const result = await aiQueueCommandForExecution(
-              auth,
-              'manage_patches',
-              deviceId,
-              CommandTypes.PATCH_SCAN,
-              {},
-              { userId: auth.user?.id, expectedOrgId: device.orgId },
-            );
-            // A `cancelled` result carries both a command row and an error:
-            // the row exists but will never run, so it is a failure.
-            if (result.error || !result.command) {
-              failed.push({ deviceId, error: result.error ?? 'Patch scan was not queued' });
-              continue;
-            }
-            queued.push({ deviceId, commandId: result.command.id, delivery: result.delivery ?? result.command.status });
-          } catch (err) {
-            console.error(`[fleet:manage_patches] scan dispatch failed for device ${deviceId}:`, err);
-            failed.push({ deviceId, error: 'Failed to queue patch scan' });
+          const result = await aiQueueCommandForExecution(
+            auth,
+            'manage_patches',
+            deviceId,
+            CommandTypes.PATCH_SCAN,
+            {},
+            { userId: auth.user?.id, expectedOrgId: device.orgId },
+          );
+          // A `cancelled` result carries both a command row and an error:
+          // the row exists but will never run, so it is a failure.
+          if (result.error || !result.command) {
+            failed.push({ deviceId, error: result.error ?? 'Patch scan was not queued' });
+            continue;
           }
+          queued.push({ deviceId, commandId: result.command.id, delivery: result.delivery ?? result.command.status });
         }
 
+        if (queued.length === 0) {
+          return JSON.stringify({
+            success: false,
+            error: `No patch scan was queued — all ${failed.length} device(s) refused it (see failed[]).`,
+            queued,
+            failed,
+          });
+        }
         return JSON.stringify({
-          success: failed.length === 0 && queued.length > 0,
-          message: queued.length > 0
-            ? `Patch scan queued for ${queued.length} of ${scanDeviceIds.length} device(s). An online device runs it now; an offline one runs it when it next checks in. The scan updates the device's patch inventory when it finishes (usually a few minutes) — check with manage_patches action "list" and that deviceId.`
-            : 'No patch scan was queued.',
+          success: failed.length === 0,
+          message: `Patch scan queued for ${queued.length} of ${scanDeviceIds.length} device(s)`
+            + (failed.length > 0 ? `; ${failed.length} refused it (see failed[])` : '')
+            + '. An online device runs it now; an offline one runs it when it next checks in. The scan updates the device\'s patch inventory when it finishes (usually a few minutes) — check with manage_patches action "list" and that deviceId.',
           queued,
           failed,
         });
