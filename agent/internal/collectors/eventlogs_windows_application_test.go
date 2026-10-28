@@ -1,9 +1,35 @@
 package collectors
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestWinEventFilterStdout(t *testing.T) {
+	jsonOutput := []byte(`[{"ProviderName":"MsiInstaller","Id":1033}]`)
+	exitErr := errors.New("exit status 1")
+	for _, tc := range []struct {
+		name   string
+		output []byte
+		runErr error
+		want   []byte
+	}{
+		{name: "JSON with error", output: jsonOutput, runErr: exitErr, want: jsonOutput},
+		{name: "nil with error", runErr: exitErr},
+		{name: "whitespace with error", output: []byte(" \t\r\n"), runErr: exitErr},
+		{name: "JSON without error", output: jsonOutput, want: jsonOutput},
+		{name: "nil without error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := winEventFilterStdout(tc.output, tc.runErr)
+			if !bytes.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Errorf("winEventFilterStdout(%q, %v) = %q, want %q", tc.output, tc.runErr, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestApplicationInfoProviderAllowlistIsSmallAndStartsWithMsiInstaller(t *testing.T) {
 	if len(applicationInfoProviderAllowlist) == 0 || applicationInfoProviderAllowlist[0] != "MsiInstaller" {

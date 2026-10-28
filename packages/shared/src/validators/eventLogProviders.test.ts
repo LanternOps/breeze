@@ -8,7 +8,7 @@ import { monitorConditionSchemas } from './monitors';
 import { alertRuleConditionSchema } from './alertRuleConditions';
 
 describe('Application-log info provider allowlist (#8174)', () => {
-  it('starts with MsiInstaller and stays small', () => {
+  it('starts with MsiInstaller, includes APCPBEAgent, and stays small', () => {
     expect(APPLICATION_INFO_EVENT_PROVIDERS[0]).toBe('MsiInstaller');
     expect(APPLICATION_INFO_EVENT_PROVIDERS.length).toBeLessThanOrEqual(10);
     expect(APPLICATION_INFO_EVENT_PROVIDERS).toContain('APCPBEAgent');
