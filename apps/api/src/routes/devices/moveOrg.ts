@@ -30,6 +30,7 @@ import {
 import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
 import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { expireDiagnosticApprovalsForMovedDevice } from '../../services/diagnosticAccess/deviceMove';
 import {
   PAM_MOVE_GUARD_CONSTRAINT,
@@ -358,6 +359,15 @@ moveOrgRoutes.post(
     // an entry a racing beat writes for the source org is never served to the
     // target org either.
     runAfterDbContextCommit('devices.moveOrg.policyCacheInvalidate', () => invalidateDevicePolicyCaches(deviceId));
+
+    // The move trigger deleted every membership; device.created evaluates all
+    // target-org dynamic groups (device.updated without changed fields is a no-op).
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId,
+      orgId: targetOrgId,
+      eventType: 'device.created',
+      reason: 'device_org_moved',
+    });
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);
