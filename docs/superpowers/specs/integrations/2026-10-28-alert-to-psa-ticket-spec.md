@@ -260,6 +260,8 @@ The docs tell consumers to dedupe transport on the root event id. Ticket dedupe 
 
 ## 6. Open Decisions
 
+> **Gate A ruling, 2026-10-28:** the owner accepted the recommendation on every decision below (OD1–OD9). Each **Recommend** line is now the ruling. W2's ConnectWise Manage developer-instance lab remains a precondition for that wave.
+
 **OD1 — Can org sessions see partner webhooks?**
 - (a) No partner-wide SELECT branch; the table is excluded with a rationale, following the `reports` precedent.
 - (b) Add the branch and split `url`, `secret` and `headers` into a child table, following `notification_channel_configs` (#6379). Even then, delivery history stays exposed.
