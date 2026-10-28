@@ -2,6 +2,7 @@ import type { InheritableEventLogSettings } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SavedSecretInput from './SavedSecretInput';
+import SettingBadge from './partnerSettings/SettingBadge';
 
 type Props = {
   data: InheritableEventLogSettings;
@@ -24,6 +25,7 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
         />
         <span className="text-sm font-medium">{t('partnerEventLogs.enable')}</span>
       </label>
+      <SettingBadge fieldId="eventLogs" />
 
       {data.enabled && (
         <div className="grid gap-6 sm:grid-cols-2">

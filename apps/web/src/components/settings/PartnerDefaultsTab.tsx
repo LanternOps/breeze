@@ -8,6 +8,8 @@ import {
   isValidMaintenanceWindow,
 } from '@breeze/shared';
 import AgentVersionPinSelectors, { type PinnableVersions } from './AgentVersionPinSelectors';
+import FieldLabel from './partnerSettings/FieldLabel';
+import SettingBadge from './partnerSettings/SettingBadge';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -59,7 +61,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label htmlFor="partner-defaults-update-policy" className="text-sm font-medium">{t('partnerDefaults.updatePolicy')}</label>
+          <FieldLabel htmlFor="partner-defaults-update-policy" fieldId="defaults.agentUpdatePolicy">{t('partnerDefaults.updatePolicy')}</FieldLabel>
           <select
             id="partner-defaults-update-policy"
             // Fold the legacy 'staged' value into 'auto' for display — they are
@@ -77,7 +79,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="partner-defaults-maintenance-window" className="text-sm font-medium">{t('partnerDefaults.maintenanceWindow')}</label>
+          <FieldLabel htmlFor="partner-defaults-maintenance-window" fieldId="defaults.maintenanceWindow">{t('partnerDefaults.maintenanceWindow')}</FieldLabel>
           <input
             id="partner-defaults-maintenance-window"
             aria-describedby="partner-defaults-maintenance-window-hint"
@@ -107,6 +109,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
             value={data.agentVersionPins ?? {}}
             onChange={(agentVersionPins) => set({ agentVersionPins })}
             pinnable={pinnableVersions ?? null}
+            labelAddon={key => <SettingBadge fieldId={`defaults.agentVersionPins.${key}`} />}
           />
         </div>
 
@@ -146,9 +149,9 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
         <h3 className="text-sm font-semibold">{t('partnerDefaults.enrollment.title')}</h3>
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
-            <label htmlFor="partner-enrollment-ttl" className="text-sm font-medium">
+            <FieldLabel htmlFor="partner-enrollment-ttl" fieldId="defaults.defaultEnrollmentTtlMinutes">
               {t('partnerDefaults.enrollment.ttl')}
-            </label>
+            </FieldLabel>
             <select
               id="partner-enrollment-ttl"
               data-testid="partner-enrollment-ttl"
@@ -169,9 +172,9 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="partner-enrollment-device-count" className="text-sm font-medium">
+            <FieldLabel htmlFor="partner-enrollment-device-count" fieldId="defaults.defaultEnrollmentDeviceCount">
               {t('partnerDefaults.enrollment.deviceCount')}
-            </label>
+            </FieldLabel>
             <input
               id="partner-enrollment-device-count"
               data-testid="partner-enrollment-device-count"
@@ -191,9 +194,9 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
           </div>
 
           <div className="space-y-2 sm:col-span-2">
-            <label htmlFor="partner-max-enrollment-ttl" className="text-sm font-medium">
+            <FieldLabel htmlFor="partner-max-enrollment-ttl" fieldId="defaults.maxEnrollmentLinkTtlMinutes">
               {t('partnerDefaults.enrollment.maxTtl')}
-            </label>
+            </FieldLabel>
             <select
               id="partner-max-enrollment-ttl"
               data-testid="partner-max-enrollment-ttl"

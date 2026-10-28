@@ -9,6 +9,7 @@ import type {
 } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import SettingBadge from './partnerSettings/SettingBadge';
 
 const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 
@@ -101,6 +102,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
           <div className="flex items-center gap-2">
             <MonitorPlay className="h-5 w-5 text-muted-foreground" />
             <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.title')}</h3>
+            <SettingBadge fieldId="remoteAccessProviders.providers" />
           </div>
           <p className="mt-1 max-w-prose text-sm text-muted-foreground">
             <Trans i18nKey="partnerRemoteAccess.description" t={t} components={{ connect: <span className="font-medium" /> }} />
@@ -271,6 +273,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
         <div className="flex items-center gap-2">
           <Globe className="h-4 w-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.networkProxy.title')}</h3>
+          <SettingBadge fieldId="networkProxy.dedicatedTunnelOrigin" />
         </div>
         {/* A header-saved boolean is a checkbox; the switch look is reserved for
             autosave controls (spec §3.1). A partner-wide infrastructure choice

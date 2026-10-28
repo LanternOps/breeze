@@ -278,8 +278,7 @@
       "actionPlan": "Plano de ação",
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
-    },
-    "overridesOrgTab": "Os campos definidos aqui substituem e bloqueiam o mesmo campo na aba de IA de cada organização."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Registro de dispositivos",
       "ttl": "Validade padrão do link",
-      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos. As organizações podem escolher um padrão diferente.",
+      "ttlHint": "Pré-seleciona por quanto tempo novos links de registro e instaladores continuam válidos.",
       "deviceCount": "Dispositivos padrão por link",
-      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão. As organizações podem escolher um padrão diferente.",
+      "deviceCountHint": "Quantas máquinas um link de registro pode registrar por padrão.",
       "maxTtl": "Validade máxima do link",
       "maxTtlHint": "É um teto para o tempo de vida das chaves, não apenas para o que um administrador pode solicitar: nada emitido sob este parceiro continua utilizável por mais tempo — links de registro, convites de implantação do MCP e as credenciais filhas emitidas quando um instalador é resgatado.",
       "maxTtlWarning": "As organizações não podem aumentá-lo. Um teto curto também encurta o tempo que uma máquina tem para concluir o registro depois de resgatar um link, não apenas o tempo para baixá-lo."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Destinos de versão da atualização",
     "description": "Fixe o agente e o watchdog em uma versão registrada específica ou deixe em <strong>Última promovida</strong> para acompanhar a versão promovida globalmente. Agente e watchdog são independentes.",
-    "partnerDescription": " Uma fixação aqui é o padrão para todas as suas organizações; uma organização pode substituí-la.",
     "organizationDescription": " Uma fixação da organização substitui o padrão do parceiro.",
     "components": {
       "agent": "Destino do agente",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Proxy de rede",
       "label": "Servir o proxy de rede a partir de uma origem dedicada",
-      "help": "Aplica-se a todas as organizações; as organizações não podem substituí-lo. Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
+      "help": "Só tem efeito onde sua região oferece uma origem dedicada e melhora a compatibilidade com as interfaces web dos dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -1173,6 +1171,39 @@
     "knownGuests": {
       "added": "Convidado conhecido adicionado",
       "removed": "Convidado conhecido removido"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Bloqueia organizações",
+        "locksConditional": "Bloqueia organizações quando ativado",
+        "overridable": "A organização pode alterar",
+        "overridableCap": "A organização pode alterar, até {{limit}}",
+        "partnerOnly": "Para todo o parceiro"
+      },
+      "badgeHelp": {
+        "locks": "Enquanto estiver definido, todas as organizações usam o seu valor. O valor próprio da organização é ignorado.",
+        "locksConditional": "Quando ativado, todas as organizações usam o seu valor em vez do próprio. Quando desativado, usam o próprio.",
+        "overridable": "O seu valor é o padrão. Uma organização que define o próprio valor usa esse no lugar.",
+        "overridableCap": "O seu valor é o padrão. Uma organização pode definir o próprio valor, até {{limit}}.",
+        "partnerOnly": "As organizações não têm uma configuração própria. O seu valor se aplica a todas."
+      },
+      "badgeHelpLabel": "Sobre “{{badge}}”",
+      "legend": {
+        "title": "Como as configurações se aplicam:",
+        "locks": "todas as organizações usam o seu valor",
+        "overridable": "o seu valor é o padrão; uma organização pode definir o próprio",
+        "partnerOnly": "aplica-se a todas as organizações; não há configuração por organização"
+      },
+      "value": {
+        "on": "Ativado",
+        "off": "Desativado",
+        "minutes_one": "{{count}} minuto",
+        "minutes_other": "{{count}} minutos",
+        "hours_one": "{{count}} hora",
+        "hours_other": "{{count}} horas",
+        "days_one": "{{count}} dia",
+        "days_other": "{{count}} dias"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +6936,6 @@
     "productDefault": "Padrão do produto ({{minutes}} minutos)",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "description": "Por quanto tempo uma conversa em andamento com o Breeze AI aguarda que alguém aprove uma ação restrita (Tier 2/3) antes de desistir.",
-    "orgOverrideNote": "As organizações podem substituir esse valor em suas próprias configurações de IA; o valor da organização prevalece quando definido.",
     "notForUnattendedNote": "Isso não é para trabalho noturno ou não supervisionado — o trabalho de longa duração passa pela fila de aprovações, que tem seu próprio vencimento."
   },
   "orgAiApprovalTimeout": {

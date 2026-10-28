@@ -39,10 +39,11 @@ describe('PartnerAiApprovalsTab', () => {
     expect(Array.from(select.options).some((o) => o.value === '37')).toBe(true);
   });
 
-  it('shows the not-for-unattended-work note and the org-override note', () => {
+  it('shows the not-for-unattended-work note; the org-override model is the badge (#9790)', () => {
     render(<PartnerAiApprovalsTab data={{}} onChange={vi.fn()} />);
 
-    expect(screen.getByTestId('partner-ai-approvals-org-override-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('partner-ai-approvals-org-override-note')).toBeNull();
+    expect(screen.getByTestId('partner-settings-badge-aiApprovals.interactiveTimeoutMinutes')).toHaveTextContent('Org can override');
     expect(screen.getByTestId('partner-ai-approvals-not-unattended-note')).toBeInTheDocument();
   });
 });

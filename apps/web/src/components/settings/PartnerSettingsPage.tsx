@@ -43,6 +43,8 @@ import PartnerSettingsStatus, { deriveStatus, type AutosaveReport } from './part
 import FormCard from './partnerSettings/FormCard';
 import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
 import { useUnsavedGuard } from './partnerSettings/useUnsavedGuard';
+import BadgeLegend from './partnerSettings/BadgeLegend';
+import { PartnerInheritanceContext, readPath, type PartnerInheritanceUi } from './partnerSettings/inheritanceContext';
 
 // Kept on this module's surface: existing callers and tests import it from here.
 export { runPartnerSave } from './partnerSettings/usePartnersMeUnit';
@@ -193,6 +195,16 @@ export default function PartnerSettingsPage() {
     // Enter on a form that cannot save: take the user to what blocks it.
     if (s.kind === 'invalid') open(s.tab, s.fieldId);
   }, []);
+  // Per-field inheritance widgets read the SAVED partner record, never the draft.
+  const savedSettings = partner?.settings;
+  const inheritanceUi = useMemo<PartnerInheritanceUi>(() => ({
+    tabState: null,
+    savedSetting: path => readPath(savedSettings, path),
+    isFieldDirty: () => false,
+    openDrill: () => {},
+    selectedFieldId: null,
+  }), [savedSettings]);
+
   const saveApi = useMemo(() => ({
     submit: handleSave,
     reportAutosave: (tab: TabKey, outcome: AutosaveReport['outcome']) => setAutosave({ tab, outcome }),
@@ -249,6 +261,7 @@ export default function PartnerSettingsPage() {
 
   return (
     <PartnerSettingsSaveContext.Provider value={saveApi}>
+    <PartnerInheritanceContext.Provider value={inheritanceUi}>
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -320,6 +333,7 @@ export default function PartnerSettingsPage() {
                 </h2>
                 <p className="max-w-prose text-sm text-muted-foreground">{t(/* i18n-dynamic */ activeDef.description)}</p>
               </div>
+              <BadgeLegend tab={activeTab} />
             {activeTab === 'company' && bare(
                 <PartnerCompanyTab
                   name={state.companyName}
@@ -423,6 +437,7 @@ export default function PartnerSettingsPage() {
         </div>
       </div>
     </div>
+    </PartnerInheritanceContext.Provider>
     </PartnerSettingsSaveContext.Provider>
   );
 }

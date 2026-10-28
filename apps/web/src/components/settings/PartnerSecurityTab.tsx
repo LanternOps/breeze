@@ -2,6 +2,8 @@ import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/sha
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
+import FieldLabel from './partnerSettings/FieldLabel';
+import SettingBadge from './partnerSettings/SettingBadge';
 
 type Props = {
   data: InheritableSecuritySettings;
@@ -105,7 +107,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="partner-security-session-timeout" className="text-sm font-medium">{t('partnerSecurity.sessionTimeout')}</label>
+          <FieldLabel htmlFor="partner-security-session-timeout" fieldId="security.sessionTimeout">{t('partnerSecurity.sessionTimeout')}</FieldLabel>
           <input
             id="partner-security-session-timeout"
             type="number"
@@ -132,15 +134,18 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
           />
         </div>
 
-        <label className="flex items-center gap-3 self-end pb-2">
-          <input
-            type="checkbox"
-            checked={data.requireMfa ?? false}
-            onChange={e => set({ requireMfa: e.target.checked })}
-            className="h-4 w-4 rounded border"
-          />
-          <span className="text-sm font-medium">{t('partnerSecurity.requireMfa')}</span>
-        </label>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 self-end pb-2">
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={data.requireMfa ?? false}
+              onChange={e => set({ requireMfa: e.target.checked })}
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">{t('partnerSecurity.requireMfa')}</span>
+          </label>
+          <SettingBadge fieldId="security.requireMfa" />
+        </div>
       </div>
 
       <div className="space-y-2">

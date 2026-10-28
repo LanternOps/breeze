@@ -2,6 +2,8 @@ import type { InheritableNotificationSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SavedSecretInput from './SavedSecretInput';
+import FieldLabel from './partnerSettings/FieldLabel';
+import SettingBadge from './partnerSettings/SettingBadge';
 
 type Props = {
   data: InheritableNotificationSettings;
@@ -144,6 +146,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             value={data.pushoverAppToken}
             onChange={pushoverAppToken => set({ pushoverAppToken })}
             label={t('partnerNotifications.applicationToken')}
+            labelAddon={<SettingBadge fieldId="notifications.pushoverAppToken" />}
             testId="partner-notifications-pushover-token"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
@@ -152,6 +155,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             value={data.pushoverDefaultUser}
             onChange={pushoverDefaultUser => set({ pushoverDefaultUser })}
             label={t('partnerNotifications.defaultUserKey')}
+            labelAddon={<SettingBadge fieldId="notifications.pushoverDefaultUser" />}
             testId="partner-notifications-pushover-user"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
@@ -159,7 +163,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
-            <label htmlFor="partner-notifications-pushover-sound" className="text-sm font-medium">{t('partnerNotifications.defaultSound')}</label>
+            <FieldLabel htmlFor="partner-notifications-pushover-sound" fieldId="notifications.pushoverDefaultSound">{t('partnerNotifications.defaultSound')}</FieldLabel>
             <input
               id="partner-notifications-pushover-sound"
               type="text"
@@ -170,7 +174,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <label htmlFor="partner-notifications-pushover-priority" className="text-sm font-medium">{t('partnerNotifications.defaultPriority')}</label>
+            <FieldLabel htmlFor="partner-notifications-pushover-priority" fieldId="notifications.pushoverDefaultPriority">{t('partnerNotifications.defaultPriority')}</FieldLabel>
             <select
               id="partner-notifications-pushover-priority"
               value={data.pushoverDefaultPriority ?? ''}

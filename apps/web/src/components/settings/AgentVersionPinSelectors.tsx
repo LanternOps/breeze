@@ -1,3 +1,4 @@
+import { useId, type ReactNode } from 'react';
 import { RefreshCcw } from 'lucide-react';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
@@ -35,6 +36,10 @@ type Props = {
   context: 'partner' | 'organization';
   /** Org view only: the partner's pins, shown as the inherited default. */
   inheritedPins?: AgentVersionPinsValue;
+  /** Partner view: the inheritance badge beside each component's label. */
+  labelAddon?: (key: (typeof COMPONENTS)[number]) => ReactNode;
+  /** Partner view: the inheritance line under each component's select. */
+  footer?: (key: (typeof COMPONENTS)[number]) => ReactNode;
 };
 
 const COMPONENTS = ['agent', 'watchdog'] as const;
@@ -53,8 +58,11 @@ export default function AgentVersionPinSelectors({
   pinnable,
   context,
   inheritedPins,
+  labelAddon,
+  footer,
 }: Props) {
   const { t } = useTranslation('settings');
+  const idPrefix = useId();
   const setPin = (key: 'agent' | 'watchdog', raw: string) => {
     // Empty select → 'latest' sentinel so the saved object is explicit (and, for
     // an org, deliberately overrides an inherited partner pin back to latest).
@@ -69,9 +77,8 @@ export default function AgentVersionPinSelectors({
       </h3>
       <p className="text-xs text-muted-foreground">
         <Trans i18nKey="agentVersionPins.description" t={t} components={{ strong: <strong /> }} />
-        {context === 'partner'
-          ? t('agentVersionPins.partnerDescription')
-          : t('agentVersionPins.organizationDescription')}
+        {/* The partner view states inheritance with a per-pin badge (spec §5.3). */}
+        {context === 'organization' && t('agentVersionPins.organizationDescription')}
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -106,10 +113,15 @@ export default function AgentVersionPinSelectors({
             caption = promoted ? t('agentVersionPins.globalLatestVersion', { version: promoted }) : t('agentVersionPins.globalLatest');
           }
 
+          const selectId = `${idPrefix}-${key}`;
           return (
-            <label key={key} className="space-y-1 text-sm">
-              <span className="font-medium">{t(/* i18n-dynamic */ `agentVersionPins.components.${key}`)}</span>
+            <div key={key} className="space-y-1 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor={selectId} className="font-medium">{t(/* i18n-dynamic */ `agentVersionPins.components.${key}`)}</label>
+                {labelAddon?.(key)}
+              </div>
               <select
+                id={selectId}
                 value={selectValue}
                 onChange={(e) => setPin(key, e.target.value)}
                 data-testid={`agent-pin-${context}-${key}`}
@@ -133,7 +145,8 @@ export default function AgentVersionPinSelectors({
               >
                 {caption}
               </span>
-            </label>
+              {footer?.(key)}
+            </div>
           );
         })}
       </div>

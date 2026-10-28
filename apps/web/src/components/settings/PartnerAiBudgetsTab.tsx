@@ -2,6 +2,8 @@ import type { InheritableAiBudgetSettings } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+import FieldLabel from './partnerSettings/FieldLabel';
+import SettingBadge from './partnerSettings/SettingBadge';
 import { TOOL_RATE_LIMIT_MULTIPLIER_MAX, TOOL_RATE_LIMIT_MULTIPLIER_MIN } from '@/lib/aiBudget';
 
 type Props = {
@@ -32,21 +34,24 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
 
   return (
     <div className="space-y-6">
-      <label className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          checked={data.enabled ?? false}
-          onChange={e => set({ enabled: e.target.checked })}
-          className="h-4 w-4 rounded border"
-        />
-        <span className="text-sm font-medium">{t('partnerAiBudgets.enable')}</span>
-      </label>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <label className="flex items-center gap-3">
+          <input
+            type="checkbox"
+            checked={data.enabled ?? false}
+            onChange={e => set({ enabled: e.target.checked })}
+            className="h-4 w-4 rounded border"
+          />
+          <span className="text-sm font-medium">{t('partnerAiBudgets.enable')}</span>
+        </label>
+        <SettingBadge fieldId="aiBudgets.enabled" />
+      </div>
 
       {data.enabled && (
         <>
           <div className="grid gap-6 sm:grid-cols-2">
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-monthly-budget" className="text-sm font-medium">{t('partnerAiBudgets.monthlyBudget')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-monthly-budget" fieldId="aiBudgets.monthlyBudgetCents">{t('partnerAiBudgets.monthlyBudget')}</FieldLabel>
               <input
                 id="partner-ai-budget-monthly-budget"
                 type="number"
@@ -60,7 +65,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-daily-budget" className="text-sm font-medium">{t('partnerAiBudgets.dailyBudget')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-daily-budget" fieldId="aiBudgets.dailyBudgetCents">{t('partnerAiBudgets.dailyBudget')}</FieldLabel>
               <input
                 id="partner-ai-budget-daily-budget"
                 type="number"
@@ -74,7 +79,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-approval-mode" className="text-sm font-medium">{t('partnerAiBudgets.approvalMode')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-approval-mode" fieldId="aiBudgets.approvalMode">{t('partnerAiBudgets.approvalMode')}</FieldLabel>
               <select
                 id="partner-ai-budget-approval-mode"
                 value={data.approvalMode ?? ''}
@@ -90,7 +95,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-max-turns" className="text-sm font-medium">{t('partnerAiBudgets.maxTurns')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-max-turns" fieldId="aiBudgets.maxTurnsPerSession">{t('partnerAiBudgets.maxTurns')}</FieldLabel>
               <input
                 id="partner-ai-budget-max-turns"
                 type="number"
@@ -104,7 +109,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-messages-per-minute" className="text-sm font-medium">{t('partnerAiBudgets.messagesPerMinute')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-messages-per-minute" fieldId="aiBudgets.messagesPerMinutePerUser">{t('partnerAiBudgets.messagesPerMinute')}</FieldLabel>
               <input
                 id="partner-ai-budget-messages-per-minute"
                 type="number"
@@ -118,7 +123,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-messages-per-hour" className="text-sm font-medium">{t('partnerAiBudgets.messagesPerHour')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-messages-per-hour" fieldId="aiBudgets.messagesPerHourPerOrg">{t('partnerAiBudgets.messagesPerHour')}</FieldLabel>
               <input
                 id="partner-ai-budget-messages-per-hour"
                 type="number"
@@ -132,7 +137,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="partner-ai-budget-tool-rate-limit-multiplier" className="text-sm font-medium">{t('aiUsagePage.toolRateLimitMultiplier')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-tool-rate-limit-multiplier" fieldId="aiBudgets.toolRateLimitMultiplier">{t('aiUsagePage.toolRateLimitMultiplier')}</FieldLabel>
               <input
                 id="partner-ai-budget-tool-rate-limit-multiplier"
                 type="number"
@@ -149,7 +154,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
             </div>
 
             <div className="space-y-2 sm:col-span-2">
-              <label htmlFor="partner-ai-budget-thresholds" className="text-sm font-medium">{t('partnerAiBudgets.alertThresholds')}</label>
+              <FieldLabel htmlFor="partner-ai-budget-thresholds" fieldId="aiBudgets.alertThresholdPercents">{t('partnerAiBudgets.alertThresholds')}</FieldLabel>
               <AiBudgetThresholdsInput
                 id="partner-ai-budget-thresholds"
                 value={data.alertThresholdPercents}
@@ -165,11 +170,6 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
 
           <p className="text-xs text-muted-foreground">
             {t('partnerAiBudgets.description')}
-          </p>
-          {/* #6004: the org-side editor is now a tab of its own, so say plainly
-              what setting a field here does to it. */}
-          <p className="text-xs text-muted-foreground" data-testid="partner-ai-budgets-override-note">
-            {t('partnerAiBudgets.overridesOrgTab')}
           </p>
         </>
       )}
