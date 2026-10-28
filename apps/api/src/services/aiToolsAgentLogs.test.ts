@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SQL } from 'drizzle-orm';
+import { eq, inArray, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Mock dependencies before imports
@@ -23,13 +23,64 @@ import { aiQueueCommandForExecution, aiExecuteCommand } from './aiDispatch';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 
+/** The org-axis closures of a real AuthContext (`buildOrgAccessClosures`). */
+function orgClosures(accessibleOrgIds: string[] | null) {
+  return {
+    orgCondition: (col: any) => {
+      if (accessibleOrgIds === null) return undefined;
+      return accessibleOrgIds.length === 1 ? eq(col, accessibleOrgIds[0]!) : inArray(col, accessibleOrgIds);
+    },
+    canAccessOrg: (id: string) => accessibleOrgIds === null || accessibleOrgIds.includes(id),
+  };
+}
+
 function makeAuth(orgId: string): AuthContext {
   return {
     user: { id: 'user-1' },
+    scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
+    ...orgClosures([orgId]),
     aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
+}
+
+/**
+ * #10396: a partner login has no `auth.orgId`. `accessibleOrgIds[0]` is just
+ * whichever customer org sorts first — here `org-first`, while the device the
+ * operator asks about lives in `org-device`.
+ */
+function makePartnerAuth(accessibleOrgIds: string[] | null = ['org-first', 'org-device']): AuthContext {
+  return {
+    user: { id: 'user-1' },
+    scope: accessibleOrgIds === null ? 'system' : 'partner',
+    partnerId: 'partner-1',
+    orgId: null,
+    accessibleOrgIds,
+    ...orgClosures(accessibleOrgIds),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
+  } as any;
+}
+
+const dialect = new PgDialect();
+function rendered(cond: unknown): { sql: string; params: unknown[] } {
+  return dialect.sqlToQuery(cond as SQL);
+}
+
+/** Capture the WHERE of a log search and return the given rows. */
+function mockLogSearch(rows: unknown[] = []) {
+  const where = vi.fn().mockReturnValue({
+    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+  });
+  vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as any);
+  return where;
+}
+
+/** Capture the WHERE of a device lookup and return the given device. */
+function mockDeviceLookup(device: Record<string, unknown> | null = { id: 'dev-1', siteId: null, orgId: 'org-device' }) {
+  const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(device ? [device] : []) });
+  vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as any);
+  return where;
 }
 
 /** Mock db.select chain to return a device for org-scoped lookups */
@@ -589,6 +640,75 @@ describe('aiToolsAgentLogs', () => {
       expect(parsed.error).toContain('no profile data');
       expect(parsed.commandId).toBe('cmd-pprof-5');
     });
+  });
+});
+
+// #10396: a partner-wide session (no `auth.orgId`) used to be pinned to
+// `accessibleOrgIds[0]`, so logs of every device outside that one org were
+// silently filtered out ("no agent logs at all, even unfiltered").
+describe('aiToolsAgentLogs — org scope for a partner caller (#10396)', () => {
+  let tools: Map<string, AiTool>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tools = new Map();
+    registerAgentLogTools(tools);
+  });
+
+  it('search_agent_logs without orgId reads every org the caller reaches, not accessibleOrgIds[0]', async () => {
+    const where = mockLogSearch();
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({ deviceIds: ['dev-1'] }, makePartnerAuth()));
+    expect(result.error).toBeUndefined();
+    const { sql: text, params } = rendered(where.mock.calls[0]![0]);
+    expect(text).toMatch(/"agent_logs"\."org_id" in \(\$\d+, \$\d+\)/);
+    expect(params).toEqual(expect.arrayContaining(['org-first', 'org-device', 'dev-1']));
+    expect(result.scope).toEqual({ allAccessibleOrgs: true, orgCount: 2 });
+  });
+
+  it('search_agent_logs with an accessible orgId reads only that org', async () => {
+    const where = mockLogSearch();
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({ orgId: 'org-device' }, makePartnerAuth()));
+    const { sql: text, params } = rendered(where.mock.calls[0]![0]);
+    expect(text).toMatch(/"agent_logs"\."org_id" = \$\d+/);
+    expect(params).toContain('org-device');
+    expect(params).not.toContain('org-first');
+    expect(result.scope).toEqual({ orgId: 'org-device' });
+  });
+
+  it('search_agent_logs refuses an orgId outside the caller reach without querying', async () => {
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({ orgId: 'org-elsewhere' }, makePartnerAuth()));
+    expect(result.error).toBe('Access denied to this organization');
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('search_agent_logs fails closed for an unrestricted caller that names no org', async () => {
+    const result = JSON.parse(await tools.get('search_agent_logs')!.handler({}, makePartnerAuth(null)));
+    expect(result.error).toMatch(/orgId is required/);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('set_agent_log_level finds a device in any reachable org, bounded by the caller reach', async () => {
+    const where = mockDeviceLookup({ id: 'dev-1', siteId: null, orgId: 'org-device' });
+    vi.mocked(aiExecuteCommand).mockResolvedValue({
+      status: 'completed', commandId: 'cmd-1', stdout: JSON.stringify({ appliedLevel: 'debug', persisted: true }),
+    } as any);
+    const result = JSON.parse(await tools.get('set_agent_log_level')!.handler({ deviceId: 'dev-1', level: 'debug' }, makePartnerAuth()));
+    expect(result.status).toBe('applied');
+    const { sql: text, params } = rendered(where.mock.calls[0]![0]);
+    expect(text).toMatch(/"devices"\."org_id" in \(\$\d+, \$\d+\)/);
+    expect(params).toEqual(expect.arrayContaining(['dev-1', 'org-first', 'org-device']));
+  });
+
+  it('capture_agent_pprof finds a device in any reachable org, bounded by the caller reach', async () => {
+    const where = mockDeviceLookup({ id: 'dev-1', siteId: null, orgId: 'org-device' });
+    vi.mocked(aiExecuteCommand).mockResolvedValue({
+      status: 'completed', commandId: 'cmd-2', stdout: JSON.stringify({ heapProfileBytes: 10 }),
+    } as any);
+    const result = JSON.parse(await tools.get('capture_agent_pprof')!.handler({ deviceId: 'dev-1' }, makePartnerAuth()));
+    expect(result.status).toBe('completed');
+    const { sql: text, params } = rendered(where.mock.calls[0]![0]);
+    expect(text).toMatch(/"devices"\."org_id" in \(\$\d+, \$\d+\)/);
+    expect(params).toEqual(expect.arrayContaining(['dev-1', 'org-first', 'org-device']));
   });
 });
 

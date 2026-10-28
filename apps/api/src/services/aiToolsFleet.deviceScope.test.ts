@@ -723,8 +723,10 @@ describe('manage_patches compliance — the org-wide snapshot is not for narrowe
       if (keys.includes('total')) {
         return { from: () => ({ where: () => Promise.resolve([{ total: 3 }]) }) };
       }
-      // precomputed org-wide snapshot
-      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'snap-1', totalDevices: 999 }]) }) }) }) };
+      if (keys.includes('deviceCount')) {
+        return { from: () => ({ where: () => Promise.resolve([{ deviceCount: 5 }]) }) };
+      }
+      throw new Error(`unexpected select: ${keys.join(',')}`);
     });
   }
 
@@ -736,10 +738,15 @@ describe('manage_patches compliance — the org-wide snapshot is not for narrowe
     expect(body.snapshot.totalDevices).toBe(1);
   });
 
-  it('an unrestricted caller still gets the precomputed snapshot (no regression)', async () => {
+  // #10396: `patch_compliance_snapshots` has no writer, so the unrestricted
+  // caller is computed live too — over every device in the org, unnarrowed.
+  it('an unrestricted caller gets live org-wide figures, not narrowed ones', async () => {
     mockCompliance([]);
     const body = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, unrestrictedAuth()));
-    expect(body.snapshot.id).toBe('snap-1');
+    expect(body.snapshot.totalDevices).toBe(5);
+    expect(body.snapshot.nonCompliantDevices).toBe(1);
+    expect(body.snapshot.siteScoped).toBeUndefined();
+    expect(body.scope).toEqual({ orgId: 'org-1' });
   });
 });
 

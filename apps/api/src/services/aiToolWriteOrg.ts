@@ -71,3 +71,63 @@ export function resolveWritableToolOrgId(
 
   return { error: 'orgId is required for this operation' };
 }
+
+/**
+ * Error returned when a read names no org and the caller's reach is unbounded
+ * (system scope): reading every tenant on the platform is never a default.
+ */
+export const READ_ORG_UNBOUNDED_ERROR =
+  'orgId is required: you have access to every organization, so name the one to read';
+
+/**
+ * The orgs a READ-ONLY AI tool queries. `allAccessibleOrgs` is true when the
+ * caller named no org and reaches more than one, so the tool can say its answer
+ * covers all of them rather than one.
+ */
+export type ToolReadOrgScope =
+  | { ok: true; orgIds: string[]; allAccessibleOrgs: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Resolve the orgs a read-only AI/MCP tool queries (#10396).
+ *
+ * Reads must never use `accessibleOrgIds[0]` either. For a partner login (no
+ * `auth.orgId`) that is whichever customer org sorts first, so a partner-wide
+ * session got one org's rows and presented them as the fleet. The order is:
+ *
+ * 1. Org-scoped token, or an explicit `inputOrgId`: one org, resolved and
+ *    access-checked exactly as `resolveWritableToolOrgId` does.
+ * 2. `auth.orgId`, when a non-org token carries one.
+ * 3. Every org in `accessibleOrgIds`. This is the caller's own reach (the same
+ *    list `auth.orgCondition` filters by, already cut to the Wisp grant
+ *    ceiling), so it never widens access. The HTTP fleet routes read the same
+ *    way when no org is given (GET /patches/compliance).
+ * 4. Unrestricted reach (`null`, system scope): an error asking for `orgId`.
+ *
+ * `auth.aiWriteDefaultOrgId` is deliberately not consulted: the device-page
+ * anchor picks where a write lands, and never narrows a read (#6675).
+ */
+export function resolveReadableToolOrgScope(
+  auth: AuthContext,
+  inputOrgId?: string,
+): ToolReadOrgScope {
+  if (auth.scope === 'organization' || inputOrgId) {
+    const single = resolveWritableToolOrgId(auth, inputOrgId, { useWriteDefault: false });
+    return single.orgId
+      ? { ok: true, orgIds: [single.orgId], allAccessibleOrgs: false }
+      : { ok: false, error: single.error ?? 'Organization context required' };
+  }
+
+  if (auth.orgId) {
+    return { ok: true, orgIds: [auth.orgId], allAccessibleOrgs: false };
+  }
+
+  const reach = auth.accessibleOrgIds;
+  if (reach === null) {
+    return { ok: false, error: READ_ORG_UNBOUNDED_ERROR };
+  }
+  if (!Array.isArray(reach) || reach.length === 0) {
+    return { ok: false, error: 'No organization context available' };
+  }
+  return { ok: true, orgIds: [...reach], allAccessibleOrgs: reach.length > 1 };
+}

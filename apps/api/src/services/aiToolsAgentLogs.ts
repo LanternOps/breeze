@@ -15,15 +15,39 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
-import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceScopeCondition, deviceSiteDenied, orgIdIn, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { resolveReadableToolOrgScope } from './aiToolWriteOrg';
 import { aiExecuteCommand } from './aiDispatch';
 import type { CommandResult } from './commandQueue';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
-function getOrgId(auth: AuthContext): string | null {
-  return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+const NO_ORG_CONTEXT_ERROR = 'No organization context available';
+
+/** True when the caller reaches at least one org (`null` = every org). */
+function hasOrgReach(auth: AuthContext): boolean {
+  return auth.accessibleOrgIds === null
+    || (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length > 0);
+}
+
+/**
+ * The device a device-keyed command targets, looked up under the caller's
+ * whole org reach (`auth.orgCondition`) plus the site axis. It used to be
+ * pinned to `auth.orgId ?? accessibleOrgIds[0]`, which for a partner login is
+ * whichever customer org sorts first, so a device in any other org was
+ * "not found" (#10396). Bounded by the caller's reach, so this never widens it.
+ */
+async function findReachableDevice(auth: AuthContext, deviceId: string): Promise<{ id: string } | null> {
+  const [device] = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(and(eq(devices.id, deviceId), auth.orgCondition(devices.orgId)))
+    .limit(1);
+  if (!device) return null;
+  // Site axis (app-layer only; RLS does NOT enforce it).
+  if (deviceSiteDenied(auth, device.siteId, device.id)) return null;
+  return device;
 }
 
 /**
@@ -109,13 +133,16 @@ export interface AgentLogQueryFilters {
  *
  * Returns `null` when a site-restricted caller has zero in-scope devices —
  * distinct from `[]` (an unrestricted caller with no filters).
+ *
+ * `orgId` is one org, or the caller's whole reach from
+ * `resolveReadableToolOrgScope` (#10396) — never an arbitrary pick from it.
  */
 export async function buildAgentLogConditions(
-  orgId: string,
+  orgId: string | readonly string[],
   auth: AuthContext,
   filters: AgentLogQueryFilters,
 ): Promise<SQL[] | null> {
-  const conditions: SQL[] = [eq(agentLogs.orgId, orgId)];
+  const conditions: SQL[] = [orgIdIn(agentLogs.orgId, orgId)];
 
   if (filters.deviceIds && filters.deviceIds.length > 0) {
     conditions.push(inArray(agentLogs.deviceId, filters.deviceIds));
@@ -165,6 +192,10 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
       input_schema: {
         type: 'object' as const,
         properties: {
+          orgId: {
+            type: 'string',
+            description: 'Organization UUID to search. Omit to search every organization you can access.',
+          },
           deviceIds: {
             type: 'array',
             items: { type: 'string' },
@@ -212,12 +243,20 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         const { limit, after, fingerprint } = page;
         const includeFields = input.includeFields === true;
 
-        const orgId = getOrgId(auth);
-        if (!orgId) {
-          return JSON.stringify({ error: 'No organization context available' });
+        // #10396: never `accessibleOrgIds[0]`. No orgId = every org the caller
+        // reaches; an explicit one is access-checked.
+        const orgScope = resolveReadableToolOrgScope(
+          auth,
+          typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined,
+        );
+        if (!orgScope.ok) {
+          return JSON.stringify({ error: orgScope.error });
         }
+        const scope = orgScope.allAccessibleOrgs
+          ? { allAccessibleOrgs: true, orgCount: orgScope.orgIds.length }
+          : { orgId: orgScope.orgIds[0] };
 
-        const conditions = await buildAgentLogConditions(orgId, auth, {
+        const conditions = await buildAgentLogConditions(orgScope.orgIds, auth, {
           deviceIds: Array.isArray(input.deviceIds) ? input.deviceIds as string[] : undefined,
           level: typeof input.level === 'string' ? input.level : undefined,
           component: typeof input.component === 'string' ? input.component : undefined,
@@ -233,6 +272,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
               keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
             }),
             count: 0,
+            scope,
           });
         }
 
@@ -290,7 +330,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         );
         // `count` mirrors legacy semantics: the number of rows on THIS page
         // (never a real total — no COUNT query has ever backed this field).
-        return JSON.stringify({ ...envelope, logs: outLogs, count: outLogs.length });
+        return JSON.stringify({ ...envelope, logs: outLogs, count: outLogs.length, scope });
       } catch (err) {
         const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:search_agent_logs]', message, err);
@@ -334,9 +374,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext) => {
       try {
-        const orgId = getOrgId(auth);
-        if (!orgId) {
-          return JSON.stringify({ error: 'No organization context available' });
+        if (!hasOrgReach(auth)) {
+          return JSON.stringify({ error: NO_ORG_CONTEXT_ERROR });
         }
 
         const deviceId = input.deviceId as string;
@@ -347,18 +386,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'deviceId and level are required' });
         }
 
-        // Verify device belongs to the caller's organization
-        const [device] = await db
-          .select({ id: devices.id, siteId: devices.siteId })
-          .from(devices)
-          .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
-          .limit(1);
-
-        if (!device) {
-          return JSON.stringify({ error: 'Device not found or access denied' });
-        }
-        // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId, device.id)) {
+        if (!(await findReachableDevice(auth, deviceId))) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
@@ -413,9 +441,8 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext) => {
       try {
-        const orgId = getOrgId(auth);
-        if (!orgId) {
-          return JSON.stringify({ error: 'No organization context available' });
+        if (!hasOrgReach(auth)) {
+          return JSON.stringify({ error: NO_ORG_CONTEXT_ERROR });
         }
 
         const deviceId = input.deviceId as string;
@@ -430,18 +457,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
-        // Verify device belongs to the caller's organization
-        const [device] = await db
-          .select({ id: devices.id, siteId: devices.siteId })
-          .from(devices)
-          .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)))
-          .limit(1);
-
-        if (!device) {
-          return JSON.stringify({ error: 'Device not found or access denied' });
-        }
-        // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId, device.id)) {
+        if (!(await findReachableDevice(auth, deviceId))) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
