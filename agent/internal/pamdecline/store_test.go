@@ -331,6 +331,9 @@ func TestPersistFailureStillRefusesInProcess(t *testing.T) {
 func TestUnackedNeverPruned(t *testing.T) {
 	clock := newClock()
 	s, _ := newFileStore(t, clock)
+	if _, err := s.BeginAwaiting(reqA, "pending"); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Decline(reqA, ReasonUserDenied); err != nil {
 		t.Fatal(err)
 	}
@@ -377,10 +380,19 @@ func uuidN(n int) string {
 func TestMaxEntriesEvictsAckedFirst(t *testing.T) {
 	clock := newClock()
 	s := NewStore("", clock.Now)
-	for i := 0; i < MaxEntries; i++ {
-		if err := s.Decline(uuidN(i), ReasonUserDenied); err != nil {
+	// Pending declines: an undeliverable one is settled at once (and so
+	// acked), which would change which entry the cap evicts.
+	declinePending := func(id string) {
+		t.Helper()
+		if _, err := s.BeginAwaiting(id, "pending"); err != nil {
 			t.Fatal(err)
 		}
+		if err := s.Decline(id, ReasonUserDenied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < MaxEntries; i++ {
+		declinePending(uuidN(i))
 		clock.Advance(time.Second)
 	}
 	// The newest-but-one entry is acked; the oldest is not.
@@ -388,9 +400,7 @@ func TestMaxEntriesEvictsAckedFirst(t *testing.T) {
 	if err := s.MarkAcked(acked, "withdrawn"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Decline(uuidN(MaxEntries), ReasonUserDenied); err != nil {
-		t.Fatal(err)
-	}
+	declinePending(uuidN(MaxEntries))
 	if n := s.Len(); n != MaxEntries {
 		t.Fatalf("Len = %d, want %d", n, MaxEntries)
 	}
@@ -399,9 +409,7 @@ func TestMaxEntriesEvictsAckedFirst(t *testing.T) {
 	mustRefuse(t, s, uuidN(MaxEntries), CodeUserDeclined)
 
 	// With nothing acked left, the oldest overall goes.
-	if err := s.Decline(uuidN(MaxEntries+1), ReasonUserDenied); err != nil {
-		t.Fatal(err)
-	}
+	declinePending(uuidN(MaxEntries + 1))
 	mustAllow(t, s, uuidN(0))
 	mustRefuse(t, s, uuidN(1), CodeUserDeclined)
 }
@@ -598,4 +606,177 @@ func TestConcurrentUseIsRaceFree(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// writeGarbage puts an undecodable decline file at a fresh path.
+func writeGarbage(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pam-declined-requests.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Review fix (#10420): the fence written after a quarantine is the only thing
+// that keeps a restart within the window refusing. When that write fails, the
+// corrupt file goes back in place so the next Load fences again, and the
+// in-memory fence still holds in this process.
+func TestCorruptFenceWriteFailureRestoresCorruptFile(t *testing.T) {
+	clock := newClock()
+	path := writeGarbage(t)
+	s := NewStore(path, clock.Now)
+	s.writeFault = func() error { return errors.New("disk full") }
+
+	err := s.Load()
+	if !errors.Is(err, ErrCorrupt) || !errors.Is(err, ErrPersist) {
+		t.Fatalf("Load = %v, want ErrCorrupt and ErrPersist", err)
+	}
+	mustRefuse(t, s, reqC, CodeDeclineRecordUntrusted)
+	if _, err := os.Stat(path + ".corrupt"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the .corrupt file was not restored (stat err %v)", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{not json" {
+		t.Fatalf("restored file = %q, %v; want the original corrupt bytes", data, err)
+	}
+
+	// A restart within the window fences again.
+	clock.Advance(time.Hour)
+	restarted := NewStore(path, clock.Now)
+	if err := restarted.Load(); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Load after a failed fence write = %v, want ErrCorrupt again", err)
+	}
+	mustRefuse(t, restarted, reqB, CodeDeclineRecordUntrusted)
+}
+
+// A quarantine rename that fails must not let the fence write overwrite the
+// original file: it stays in place, and the next Load fences again.
+func TestCorruptQuarantineRenameFailureKeepsOriginal(t *testing.T) {
+	clock := newClock()
+	path := writeGarbage(t)
+	s := NewStore(path, clock.Now)
+	s.renameFn = func(string, string) error { return errors.New("sharing violation") }
+
+	err := s.Load()
+	if !errors.Is(err, ErrCorrupt) || !errors.Is(err, ErrPersist) {
+		t.Fatalf("Load = %v, want ErrCorrupt and ErrPersist", err)
+	}
+	mustRefuse(t, s, reqC, CodeDeclineRecordUntrusted)
+	if _, err := s.BeginAwaiting(reqA, "pending"); !errors.Is(err, ErrPersist) {
+		t.Fatalf("BeginAwaiting after a failed quarantine = %v, want ErrPersist (no write over the original)", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{not json" {
+		t.Fatalf("file = %q, %v; want the original corrupt bytes", data, err)
+	}
+}
+
+// Review fix (#10420): a read error (access denied, EIO, an AV sharing
+// violation at boot) is not corruption. The file and its un-acked declines
+// stay on disk and are not rewritten; this process fences every apply in
+// memory instead.
+func TestReadErrorFencesInMemoryAndKeepsFile(t *testing.T) {
+	clock := newClock()
+	first, path := newFileStore(t, clock)
+	if _, err := first.BeginAwaiting(reqA, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Decline(reqA, ReasonUserDenied); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(path, clock.Now)
+	s.readFileFn = func(string) ([]byte, error) { return nil, errors.New("access is denied") }
+	err = s.Load()
+	if !errors.Is(err, ErrUnreadable) || errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Load = %v, want ErrUnreadable and not ErrCorrupt", err)
+	}
+	if _, err := os.Stat(path + ".corrupt"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an unreadable file was quarantined (stat err %v)", err)
+	}
+	mustRefuse(t, s, reqA, CodeDeclineRecordUntrusted)
+	mustRefuse(t, s, reqC, CodeDeclineRecordUntrusted)
+
+	// New answers are enforced in memory but never written over the file.
+	if _, err := s.BeginAwaiting(reqB, "pending"); !errors.Is(err, ErrPersist) {
+		t.Fatalf("BeginAwaiting = %v, want ErrPersist", err)
+	}
+	if err := s.Decline(reqB, ReasonUserDenied); !errors.Is(err, ErrPersist) {
+		t.Fatalf("Decline = %v, want ErrPersist", err)
+	}
+	if now, err := os.ReadFile(path); err != nil || string(now) != string(original) {
+		t.Fatalf("file changed after a read error: %q, %v", now, err)
+	}
+
+	// A restart that can read the file gets the unsent decline back.
+	restarted := NewStore(path, clock.Now)
+	if err := restarted.Load(); err != nil {
+		t.Fatal(err)
+	}
+	mustRefuse(t, restarted, reqA, CodeUserDeclined)
+	if due := restarted.Due(); len(due) != 1 || due[0].RequestID != reqA {
+		t.Fatalf("Due after restart = %+v, want the unsent decline", due)
+	}
+}
+
+// Review fix (#10420): a decline the server can never be told about (an
+// auto_approved request, or one with no recorded ingest status) is settled
+// locally at decline time, so the 7-day prune applies instead of the cap.
+func TestUndeliverableDeclineSettledAndPruned(t *testing.T) {
+	clock := newClock()
+	s, path := newFileStore(t, clock)
+	if _, err := s.BeginAwaiting(reqA, "auto_approved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Decline(reqA, ReasonUserDenied); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BeginAwaiting(reqB, "auto_approved"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeclineIfAwaiting(reqB, ReasonDialogError); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Decline(reqC, ReasonUserTimeout); err != nil { // no entry, no status
+		t.Fatal(err)
+	}
+	for _, id := range []string{reqA, reqB, reqC} {
+		e, ok := s.entry(id)
+		if !ok || e.AckedAt.IsZero() || !e.AckedAt.Equal(e.DeclinedAt) || e.AckOutcome != AckOutcomeNotDelivered {
+			t.Fatalf("entry %s = %+v, want settled at its decline time as %q", id, e, AckOutcomeNotDelivered)
+		}
+		mustRefuse(t, s, id, CodeUserDeclined)
+	}
+	if due := s.Due(); len(due) != 0 {
+		t.Fatalf("Due = %+v, want nothing to deliver", due)
+	}
+
+	// An auto_approved dialog that died with the process is settled at load.
+	if _, err := s.BeginAwaiting(uuidN(7), "auto_approved"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := NewStore(path, clock.Now)
+	if err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := reloaded.entry(uuidN(7)); e.AckOutcome != AckOutcomeNotDelivered || e.AckedAt.IsZero() {
+		t.Fatalf("converted auto_approved entry = %+v, want settled", e)
+	}
+
+	clock.Advance(AckedRetention - time.Minute)
+	if err := reloaded.Prune(); err != nil {
+		t.Fatal(err)
+	}
+	mustRefuse(t, reloaded, reqA, CodeUserDeclined)
+	clock.Advance(2 * time.Minute)
+	if err := reloaded.Prune(); err != nil {
+		t.Fatal(err)
+	}
+	if n := reloaded.Len(); n != 0 {
+		t.Fatalf("Len after the prune = %d, want every settled entry pruned", n)
+	}
+	mustAllow(t, reloaded, reqA)
 }

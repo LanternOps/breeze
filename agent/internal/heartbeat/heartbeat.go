@@ -640,6 +640,9 @@ type Heartbeat struct {
 	// pamDeclineStore().
 	pamDeclinesMu sync.Mutex
 	pamDeclines   *pamdecline.Store
+	// pamDeclineCheckerInstalled is true once the lifetime manager took the
+	// decline re-check. pam_apply_v2 refuses every apply until it is.
+	pamDeclineCheckerInstalled atomic.Bool
 	// pamWithdrawKick wakes the withdraw drain right after a decline.
 	pamWithdrawKick chan struct{}
 	// pamDeclineWait bounds how long an apply waits for an open dialog's

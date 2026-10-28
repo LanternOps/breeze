@@ -14,6 +14,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
@@ -91,6 +92,13 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	manager, ok := h.pamLifetimeManager.(pamReceivedObservationManager)
 	if !ok {
 		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
+	// #8971: the manager's re-check below is what refuses a declined request.
+	// A manager that never took the checker must not apply anything.
+	if !h.pamDeclineCheckerInstalled.Load() {
+		log.Error("pam: refusing pam_apply_v2: the lifetime manager has no decline checker",
+			"elevationRequestId", payload.RequestID, "actuationId", payload.ActuationID)
+		return tools.NewErrorResult(errors.New("PAM decline check unavailable"), time.Since(start).Milliseconds())
 	}
 	// #8971: an approval can land while the user still has the PAM dialog
 	// open. Wait (bounded, outside every lock) for their answer before the
@@ -412,15 +420,31 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 func refuseDeclinedActuation(payload actuatePayload, code string, start time.Time) tools.CommandResult {
 	target := pamTarget{Path: payload.TargetPath, TargetHash: payload.TargetHash,
 		CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername}
-	log.Warn("pam: actuation REFUSED — the user declined this request on the device or has not answered",
+	message := declinedActuationMessage(code)
+	log.Warn("pam: actuation REFUSED — "+message,
 		"elevationRequestId", payload.ElevationRequestID, "reason", code)
 	writePAMActuationRefused(target.eventLogFields(payload.ElevationRequestID, code))
 	return tools.NewSuccessResult(actuateResult{
 		ElevationRequestID: payload.ElevationRequestID,
 		Success:            false,
 		Reason:             code,
-		Message:            "the user declined this elevation on the device",
+		Message:            message,
 	}, time.Since(start).Milliseconds())
+}
+
+// declinedActuationMessage is the legacy refusal's message for a decline
+// failure code.
+func declinedActuationMessage(code string) string {
+	switch code {
+	case pamdecline.CodeUserDecisionPending:
+		return "the user has not answered this elevation on the device yet"
+	case pamdecline.CodeDeclineRecordUntrusted:
+		return "the device's record of the user's answers could not be loaded; every remote elevation is refused for now"
+	case pamdecline.CodeUserDeclined:
+		return "the user declined this elevation on the device"
+	default:
+		return "refused because of the user's answer on the device"
+	}
 }
 
 // refusePamActuation builds the fail-closed refusal and logs it at the block

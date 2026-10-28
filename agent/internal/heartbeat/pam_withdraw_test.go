@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/pamdecline"
 )
 
@@ -311,5 +313,120 @@ func TestRunPamWithdrawDrainWakesOnKickAndStops(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("drain did not stop with the heartbeat")
+	}
+}
+
+// capturePamLog sends the agent log to a buffer at debug level for one test.
+func capturePamLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	logging.Init("text", "debug", buf)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+	return buf
+}
+
+// logLines returns the captured lines that contain every one of parts.
+func logLines(buf *syncBuffer, parts ...string) []string {
+	var out []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		ok := line != ""
+		for _, p := range parts {
+			ok = ok && strings.Contains(line, p)
+		}
+		if ok {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// Review fix (#10420): one panicking pass must not end the drain. The panic is
+// logged at Error and the next kick delivers.
+func TestRunPamWithdrawDrainSurvivesAPanickingPass(t *testing.T) {
+	buf := capturePamLog(t)
+	srv := newWithdrawServer(t, http.StatusServiceUnavailable, http.StatusOK)
+	h, store, clock := newWithdrawHeartbeat(t, srv.ts.URL)
+	var panicked sync.Once
+	h.pamWithdrawNow = func() time.Time {
+		panicked.Do(func() { panic("withdraw clock exploded") })
+		return clock.now()
+	}
+	declinePending(t, store, withdrawReq)
+	done := make(chan struct{})
+	go func() {
+		h.runPamWithdrawDrain()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		close(h.pamUnableStop)
+		<-done
+	})
+
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitFor("the panicking pass", func() bool { return len(logLines(buf, "level=ERROR", "withdraw clock exploded")) > 0 })
+	h.kickPamWithdrawDrain()
+	waitFor("the next pass to deliver", func() bool { return entryOf(t, store, withdrawReq).AckOutcome == "withdrawn" })
+	if n := srv.count(); n != 2 {
+		t.Fatalf("server saw %d requests, want 2", n)
+	}
+}
+
+// Review fix (#10420): a 403 (drain_restricted, an agent-id mismatch) can never
+// succeed on retry, so it is logged at Warn with the server's body.
+func TestWithdraw403LogsWarnWithBody(t *testing.T) {
+	buf := capturePamLog(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":"drain_restricted"}`)
+	}))
+	t.Cleanup(ts.Close)
+	h, store, _ := newWithdrawHeartbeat(t, ts.URL)
+	declinePending(t, store, withdrawReq)
+
+	h.drainPamWithdrawals(context.Background())
+
+	if got := logLines(buf, "level=WARN", withdrawReq, "drain_restricted"); len(got) != 1 {
+		t.Fatalf("want one Warn line with the 403 body, got %q\nlog:\n%s", got, buf.String())
+	}
+	if e := entryOf(t, store, withdrawReq); !e.AckedAt.IsZero() || e.Attempts != 1 {
+		t.Fatalf("entry = %+v, want a retry", e)
+	}
+}
+
+// Review fix (#10420): a withdraw that keeps failing escalates from Debug to
+// Warn at 5 attempts and then every 20.
+func TestWithdrawRetryEscalatesToWarn(t *testing.T) {
+	buf := capturePamLog(t)
+	srv := newWithdrawServer(t, http.StatusServiceUnavailable)
+	h, store, clock := newWithdrawHeartbeat(t, srv.ts.URL)
+	declinePending(t, store, withdrawReq)
+
+	warnedAt := []int{}
+	for attempt := 1; attempt <= 45; attempt++ {
+		before := len(logLines(buf, "level=WARN", "still not delivered", withdrawReq))
+		h.drainPamWithdrawals(context.Background())
+		if e := entryOf(t, store, withdrawReq); e.Attempts != attempt {
+			t.Fatalf("attempts = %d after pass %d", e.Attempts, attempt)
+		}
+		if len(logLines(buf, "level=WARN", "still not delivered", withdrawReq)) > before {
+			warnedAt = append(warnedAt, attempt)
+		}
+		clock.advance(pamWithdrawMaxBackoff)
+	}
+	if want := []int{5, 25, 45}; len(warnedAt) != len(want) || warnedAt[0] != 5 || warnedAt[1] != 25 || warnedAt[2] != 45 {
+		t.Fatalf("Warn at attempts %v, want %v", warnedAt, want)
+	}
+	if got := logLines(buf, "level=WARN", "still not delivered", "Service Unavailable"); len(got) != 3 {
+		t.Fatalf("escalated lines carry no status: %q\nlog:\n%s", got, buf.String())
 	}
 }

@@ -319,3 +319,35 @@ func TestPamWithdrawReasonTable(t *testing.T) {
 		})
 	}
 }
+
+// Review fix (#10420): finish() logs a persist failure of the unanswered
+// decision's decline at Error, like every other decline writer.
+func TestFinishLogsPersistFailureAtError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits do not block writes on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permission bits")
+	}
+	buf := capturePamLog(t)
+	dir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	store := pamdecline.NewStore(filepath.Join(dir, pamDeclineFileName), nil)
+	if err := store.Load(); err != nil {
+		t.Fatal(err)
+	}
+	h := &Heartbeat{pamDeclines: store}
+
+	d, _ := h.beginPamDecision(declineFlowReq, "pending")
+	d.finish()
+
+	if got := entryState(store, declineFlowReq); got != "declined/dialog_error" {
+		t.Fatalf("entry = %s, want declined/dialog_error held in memory", got)
+	}
+	if got := logLines(buf, "level=ERROR", declineFlowReq, "unanswered"); len(got) != 1 {
+		t.Fatalf("want one Error line for the unpersisted decline, got %q\nlog:\n%s", got, buf.String())
+	}
+}

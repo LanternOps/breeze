@@ -27,16 +27,23 @@ func (h *Heartbeat) pamDeclineStore() *pamdecline.Store {
 	return h.pamDeclines
 }
 
-// loadPamDeclineStore swaps in the file-backed store. A corrupt file has been
-// moved aside and fences every remote apply for pamdecline.UntrustedLoadFence;
-// that is loud on purpose.
+// loadPamDeclineStore swaps in the file-backed store. A file that could not
+// be loaded fences every remote apply for pamdecline.UntrustedLoadFence; that
+// is loud on purpose, and each message says where the fence lives.
 func (h *Heartbeat) loadPamDeclineStore(path string) {
 	store := pamdecline.NewStore(path, nil)
+	fence := pamdecline.UntrustedLoadFence.String()
 	switch err := store.Load(); {
 	case err == nil:
+	case errors.Is(err, pamdecline.ErrCorrupt) && errors.Is(err, pamdecline.ErrPersist):
+		log.Error("pam: decline record was corrupt and the fence could not be persisted; refusing every remote elevation apply in this process",
+			"path", path, "fence", fence, "error", err.Error())
 	case errors.Is(err, pamdecline.ErrCorrupt):
-		log.Error("pam: decline record was corrupt and has been moved aside; refusing every remote elevation apply for 24h",
-			"path", path, "fence", pamdecline.UntrustedLoadFence.String(), "error", err.Error())
+		log.Error("pam: decline record was corrupt and has been moved aside; refusing every remote elevation apply",
+			"path", path, "fence", fence, "error", err.Error())
+	case errors.Is(err, pamdecline.ErrUnreadable):
+		log.Error("pam: decline record could not be read; left in place and not rewritten until restart; refusing every remote elevation apply in this process",
+			"path", path, "fence", fence, "error", err.Error())
 	default:
 		log.Error("pam: decline record loaded but could not be rewritten; declines are enforced in memory",
 			"path", path, "error", err.Error())
@@ -81,20 +88,21 @@ func (c pamDeclineChecker) Check(requestID string) (bool, string) {
 }
 
 // installPamDeclineChecker hands the lifetime manager its non-blocking
-// re-check. Every manager this package builds supports it; one that does not
-// would leave the wait in the handler as the only guard, so say so loudly.
+// re-check and records whether it took it. Every manager NewManager builds
+// does (pamlifetime asserts it at compile time); pam_apply_v2 refuses every
+// apply while it has not.
 func (h *Heartbeat) installPamDeclineChecker() {
+	h.pamDeclineCheckerInstalled.Store(false)
 	if h.pamLifetimeManager == nil {
 		return
 	}
-	setter, ok := h.pamLifetimeManager.(interface {
-		SetDeclineChecker(pamlifetime.DeclineChecker)
-	})
+	setter, ok := h.pamLifetimeManager.(pamlifetime.DeclineCheckerSetter)
 	if !ok {
-		log.Error("pam: lifetime manager cannot check the user's declines; a declined request is refused only by the apply wait")
+		log.Error("pam: lifetime manager cannot check the user's declines; refusing every pam_apply_v2 apply")
 		return
 	}
 	setter.SetDeclineChecker(pamDeclineChecker{h})
+	h.pamDeclineCheckerInstalled.Store(true)
 }
 
 // pamWithdrawReason maps the dialog round trip to the reason sent to the
@@ -189,7 +197,12 @@ func (d *pamDecision) finish() {
 		return
 	}
 	declined, err := d.h.pamDeclineStore().DeclineIfAwaiting(d.requestID, pamdecline.ReasonDialogError)
-	if err != nil && !errors.Is(err, pamdecline.ErrPersist) {
+	switch {
+	case err == nil:
+	case errors.Is(err, pamdecline.ErrPersist):
+		log.Error("pam: could not persist the decline of the unanswered decision; enforced in memory until restart",
+			"elevationRequestId", d.requestID, "error", err.Error())
+	default:
 		log.Error("pam: could not close the unanswered decision", "elevationRequestId", d.requestID, "error", err.Error())
 		return
 	}

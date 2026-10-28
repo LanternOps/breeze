@@ -80,7 +80,9 @@ const (
 
 const (
 	// AckedRetention keeps an entry the server has answered for this long
-	// after the ack. Un-acked declined entries never age out.
+	// after the ack. A decline with no withdraw to send (not pending at
+	// ingest) is settled at its decline time and ages out the same way.
+	// Un-acked pending declines never age out.
 	AckedRetention = 7 * 24 * time.Hour
 	// MaxEntries bounds the file. Above it the oldest acked entries go
 	// first, then the oldest overall (logged by the caller via Evicted).
@@ -95,12 +97,35 @@ const (
 // withdrawn on the server.
 const serverStatusPending = "pending"
 
+// AckOutcomeNotDelivered settles a decline the server is never told about:
+// the request was not pending at ingest (auto_approved, or no status
+// recorded), so there is no withdraw to send. Settling it lets the
+// AckedRetention prune apply; the local refusal holds until then.
+const AckOutcomeNotDelivered = "not_delivered"
+
+// settleIfUndeliverable marks a declined, unsettled entry whose request was
+// not pending at ingest as settled at its decline time. It reports whether it
+// changed e.
+func settleIfUndeliverable(e *Entry) bool {
+	if e.State != StateDeclined || e.ServerStatus == serverStatusPending || !e.AckedAt.IsZero() {
+		return false
+	}
+	e.AckedAt = e.DeclinedAt
+	e.AckOutcome = AckOutcomeNotDelivered
+	return true
+}
+
 const schemaVersion = 1
 
 var (
-	// ErrCorrupt: the file could not be read or decoded. It was moved to
-	// <path>.corrupt and every apply is refused for UntrustedLoadFence.
+	// ErrCorrupt: the file could not be decoded. It was moved to
+	// <path>.corrupt and every apply is refused for UntrustedLoadFence. Also
+	// wrapping ErrPersist means the fence is held in memory only (see Load).
 	ErrCorrupt = errors.New("pam decline record is corrupt")
+	// ErrUnreadable: the file exists but could not be read. It was left in
+	// place, every apply is refused for UntrustedLoadFence in this process,
+	// and the store does not write until restart.
+	ErrUnreadable = errors.New("pam decline record could not be read")
 	// ErrPersist: the change is in memory (and enforced) but not on disk.
 	ErrPersist = errors.New("pam decline record could not be persisted")
 )
@@ -145,6 +170,14 @@ type Store struct {
 	waiters        map[string]chan struct{}
 	untrustedUntil time.Time
 	evicted        int
+	// writeBlocked, once set by Load, refuses every write: the file on disk
+	// holds state this process could not load and must not be overwritten.
+	writeBlocked error
+
+	// Test seams; nil in production.
+	readFileFn func(string) ([]byte, error)
+	renameFn   func(oldpath, newpath string) error
+	writeFault func() error
 }
 
 // NewStore returns an empty store. path "" keeps it in memory only.
@@ -159,10 +192,24 @@ func NewStore(path string, now func() time.Time) *Store {
 func (s *Store) Path() string { return s.path }
 
 // Load replaces the in-memory state with the file's. A missing file is an
-// empty store. An unreadable or undecodable file is moved to <path>.corrupt,
-// the fence is armed, and ErrCorrupt is returned. Entries still "awaiting"
-// belong to a dialog that died with the previous process: they become
-// declined/user_timeout (and due for delivery when pending).
+// empty store. Entries still "awaiting" belong to a dialog that died with the
+// previous process: they become declined/user_timeout (and due for delivery
+// when pending).
+//
+// Load fails closed in three ways, each arming the UntrustedLoadFence:
+//   - an undecodable file is moved to <path>.corrupt and the fence is written
+//     to a fresh file so a restart within the window keeps refusing
+//     (ErrCorrupt). If that write fails, the corrupt file is put back so the
+//     next Load fences again (ErrCorrupt and ErrPersist).
+//   - a corrupt file that cannot be moved aside stays where it is and this
+//     store never writes over it (ErrCorrupt and ErrPersist).
+//   - a file that cannot be read (access denied, EIO, a sharing violation) is
+//     not corruption: it stays in place with its un-acked declines, the fence
+//     holds in memory only, and this store never writes over it
+//     (ErrUnreadable).
+//
+// A store that may not write still mutates memory and returns ErrPersist from
+// every mutation, so new declines are still refused in this process.
 func (s *Store) Load() error {
 	if s.path == "" {
 		return nil
@@ -170,27 +217,22 @@ func (s *Store) Load() error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 
-	data, err := os.ReadFile(s.path)
+	readFile := os.ReadFile
+	if s.readFileFn != nil {
+		readFile = s.readFileFn
+	}
+	data, err := readFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	var wire wireFile
-	if err == nil {
-		err = decode(data, &wire)
-	}
 	now := s.now()
 	if err != nil {
-		_ = os.Remove(s.path + ".corrupt")
-		_ = os.Rename(s.path, s.path+".corrupt")
-		s.mu.Lock()
-		s.entries = make(map[string]*Entry)
-		s.untrustedUntil = now.Add(UntrustedLoadFence)
-		snap := s.snapshotLocked()
-		s.mu.Unlock()
-		// Best effort: carry the fence into a fresh file so a restart within
-		// the window keeps refusing.
-		_ = s.write(snap)
-		return fmt.Errorf("%w: %v", ErrCorrupt, err)
+		s.fenceLocked(now, fmt.Errorf("the decline record at %s could not be read at load; not rewriting it until restart", s.path))
+		return fmt.Errorf("%w: %v", ErrUnreadable, err)
+	}
+	var wire wireFile
+	if err := decode(data, &wire); err != nil {
+		return s.quarantineLocked(now, err)
 	}
 
 	converted := false
@@ -201,6 +243,9 @@ func (s *Store) Load() error {
 			e.State = StateDeclined
 			e.Reason = ReasonUserTimeout
 			e.DeclinedAt = now
+			converted = true
+		}
+		if settleIfUndeliverable(&e) {
 			converted = true
 		}
 		entries[id] = &e
@@ -216,6 +261,47 @@ func (s *Store) Load() error {
 		}
 	}
 	return nil
+}
+
+// fenceLocked empties the store and arms the fence in memory. A non-nil
+// blockWrites stops every later write. Caller holds persistMu.
+func (s *Store) fenceLocked(now time.Time, blockWrites error) wireFile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = make(map[string]*Entry)
+	s.untrustedUntil = now.Add(UntrustedLoadFence)
+	if blockWrites != nil {
+		s.writeBlocked = blockWrites
+	}
+	return s.snapshotLocked()
+}
+
+// quarantineLocked moves an undecodable file to <path>.corrupt and persists
+// the fence in its place. Caller holds persistMu.
+func (s *Store) quarantineLocked(now time.Time, decodeErr error) error {
+	rename := os.Rename
+	if s.renameFn != nil {
+		rename = s.renameFn
+	}
+	corrupt := s.path + ".corrupt"
+	if err := rename(s.path, corrupt); err != nil {
+		// The original stays where it is, so the next Load fences again; never
+		// write the fence over it.
+		s.fenceLocked(now, fmt.Errorf("the corrupt decline record at %s could not be moved aside; not rewriting it until restart", s.path))
+		return fmt.Errorf("%w: %v; %w: could not move it aside: %v", ErrCorrupt, decodeErr, ErrPersist, err)
+	}
+	snap := s.fenceLocked(now, nil)
+	if err := s.write(snap); err != nil {
+		// Without this file a restart would load a clean store with no fence.
+		// Put the corrupt file back so the next Load fences again.
+		if rerr := rename(corrupt, s.path); rerr != nil {
+			return fmt.Errorf("%w: %v; %w: fence not written (%v) and the corrupt file could not be restored (%v); a restart will not fence",
+				ErrCorrupt, decodeErr, ErrPersist, err, rerr)
+		}
+		return fmt.Errorf("%w: %v; %w: fence not written (%v); the corrupt file was restored so a restart fences again",
+			ErrCorrupt, decodeErr, ErrPersist, err)
+	}
+	return fmt.Errorf("%w: %v", ErrCorrupt, decodeErr)
 }
 
 func decode(data []byte, wire *wireFile) error {
@@ -324,9 +410,12 @@ func (s *Store) Decline(requestID string, reason Reason) error {
 		e.State = StateDeclined
 		e.Reason = reason
 		e.DeclinedAt = now
+		settleIfUndeliverable(e)
 	default:
 		s.makeRoomLocked()
-		s.entries[requestID] = &Entry{RequestID: requestID, State: StateDeclined, Reason: reason, CreatedAt: now, DeclinedAt: now}
+		e = &Entry{RequestID: requestID, State: StateDeclined, Reason: reason, CreatedAt: now, DeclinedAt: now}
+		settleIfUndeliverable(e)
+		s.entries[requestID] = e
 	}
 	s.wakeLocked(requestID)
 	snap := s.snapshotLocked()
@@ -356,6 +445,7 @@ func (s *Store) DeclineIfAwaiting(requestID string, reason Reason) (bool, error)
 	e.State = StateDeclined
 	e.Reason = reason
 	e.DeclinedAt = s.now()
+	settleIfUndeliverable(e)
 	s.wakeLocked(requestID)
 	snap := s.snapshotLocked()
 	s.mu.Unlock()
@@ -463,7 +553,8 @@ func (s *Store) mutate(requestID string, fn func(*Entry)) error {
 	return s.persist(snap)
 }
 
-// Prune drops entries acked more than AckedRetention ago.
+// Prune drops entries acked (or settled as AckOutcomeNotDelivered) more than
+// AckedRetention ago.
 func (s *Store) Prune() error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
@@ -584,6 +675,14 @@ func (s *Store) persist(snap wireFile) error {
 func (s *Store) write(snap wireFile) error {
 	if s.path == "" {
 		return nil
+	}
+	if s.writeBlocked != nil {
+		return s.writeBlocked
+	}
+	if s.writeFault != nil {
+		if err := s.writeFault(); err != nil {
+			return err
+		}
 	}
 	payload, err := json.Marshal(snap)
 	if err != nil {

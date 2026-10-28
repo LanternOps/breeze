@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -318,5 +319,76 @@ func TestSetStatePathInstallsDeclineChecker(t *testing.T) {
 
 	if res.State != pamlifetime.ResultFailed || res.FailureCode != pamdecline.CodeUserDeclined {
 		t.Fatalf("result = %+v, want failed/user_declined", res)
+	}
+	if !h.pamDeclineCheckerInstalled.Load() {
+		t.Fatal("SetStatePath installed the checker but the handler guard does not know it")
+	}
+}
+
+// uncheckedPamManager supports every pam_apply_v2 capability except the
+// decline check: a future manager or wrapper that forgot SetDeclineChecker.
+type uncheckedPamManager struct{ inner *fakePamLifetimeManager }
+
+func (m *uncheckedPamManager) Apply(ctx context.Context, cmd pamlifetime.ApplyCommand) pamlifetime.Result {
+	return m.inner.Apply(ctx, cmd)
+}
+func (m *uncheckedPamManager) Cleanup(ctx context.Context, cmd pamlifetime.CleanupCommand) pamlifetime.Result {
+	return m.inner.Cleanup(ctx, cmd)
+}
+func (m *uncheckedPamManager) Reconcile(ctx context.Context) []pamlifetime.Result {
+	return m.inner.Reconcile(ctx)
+}
+func (m *uncheckedPamManager) SetEnabled(ctx context.Context, enabled bool) error {
+	return m.inner.SetEnabled(ctx, enabled)
+}
+func (m *uncheckedPamManager) ApplyWithReceivedObservation(ctx context.Context, cmd pamlifetime.ApplyCommand, handoff func(pamlifetime.Result) error) pamlifetime.Result {
+	return m.inner.ApplyWithReceivedObservation(ctx, cmd, handoff)
+}
+func (m *uncheckedPamManager) ProtocolVersion() int { return m.inner.ProtocolVersion() }
+func (m *uncheckedPamManager) Available() bool      { return m.inner.Available() }
+
+// Review fix (#10420): a manager that cannot take the decline check must not
+// apply anything, declined or not. The handler refuses on its own.
+func TestPamApplyV2FailsClosedWithoutDeclineChecker(t *testing.T) {
+	for _, declined := range []bool{false, true} {
+		t.Run(fmt.Sprintf("declined=%v", declined), func(t *testing.T) {
+			inner := &fakePamLifetimeManager{available: true, applyResult: pamlifetime.Result{State: pamlifetime.ResultVerifiedActive}}
+			h := readyPamApplyTestHeartbeat(&uncheckedPamManager{inner: inner}, newPamReconciliationOutbox(t.TempDir()))
+			h.pamDeclines = pamdecline.NewStore("", nil)
+			if declined {
+				if err := h.pamDeclines.Decline(declineApplyReq, pamdecline.ReasonUserDenied); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			res := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000008971"))
+
+			if res.Status != "failed" {
+				t.Fatalf("result = %+v, want a failed command without a decline checker", res)
+			}
+			if inner.receivedCalls != 0 || inner.applyCalls != 0 {
+				t.Fatalf("manager applied (%d received, %d apply) without a decline checker", inner.receivedCalls, inner.applyCalls)
+			}
+		})
+	}
+}
+
+// Review fix (#10420): the legacy refusal says what actually happened.
+func TestLegacyDeclineRefusalMessageFollowsCode(t *testing.T) {
+	swapPAMEventLogWritersForTest(t)
+	want := map[string]string{
+		pamdecline.CodeUserDeclined:           "the user declined this elevation on the device",
+		pamdecline.CodeUserDecisionPending:    "the user has not answered this elevation on the device yet",
+		pamdecline.CodeDeclineRecordUntrusted: "the device's record of the user's answers could not be loaded; every remote elevation is refused for now",
+	}
+	for code, msg := range want {
+		res := refuseDeclinedActuation(actuatePayload{ElevationRequestID: declineApplyReq}, code, time.Now())
+		var out actuateResult
+		if err := json.Unmarshal([]byte(res.Stdout), &out); err != nil {
+			t.Fatalf("%s: result = %+v: %v", code, res, err)
+		}
+		if out.Success || out.Reason != code || out.Message != msg {
+			t.Errorf("%s: actuate result = %+v, want reason %q and message %q", code, out, code, msg)
+		}
 	}
 }

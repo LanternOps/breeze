@@ -93,6 +93,19 @@ type DeclineChecker interface {
 	Check(requestID string) (refuse bool, code string)
 }
 
+// DeclineCheckerSetter is how the heartbeat hands a manager its
+// DeclineChecker. It sits beside the frozen Manager interface rather than in
+// it.
+type DeclineCheckerSetter interface {
+	SetDeclineChecker(DeclineChecker)
+}
+
+// Every platform's NewManager must take the decline check (#8971): without
+// it, pam_apply_v2 refuses every apply. This file has no build tag, so the
+// build fails on any GOOS whose manager lacks SetDeclineChecker. The function
+// is never called.
+var _ = func() DeclineCheckerSetter { return NewManager(nil) }
+
 type Manager interface {
 	Apply(context.Context, ApplyCommand) Result
 	Cleanup(context.Context, CleanupCommand) Result
