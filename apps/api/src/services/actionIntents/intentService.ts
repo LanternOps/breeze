@@ -354,9 +354,11 @@ export interface CreateActionIntentInput {
    * would answer tier 4 "unknown tool" for a qualified name. The external
    * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
    * auto-execute in-session and never mint an intent; the caller passes
-   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
-   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
-   * calling tenant tools is W5 work (flows-as-tools).
+   * only Tier-3 descriptors). Chat/MCP principals, and a flow principal
+   * parking its own Tier-3 external step (#10288 — the step row must be that
+   * tool, pinned Tier 3); an ai_agent principal is refused
+   * (`external_tool_not_allowed_for_agent`) — agents calling tenant tools is
+   * W5 work (flows-as-tools).
    */
   externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
@@ -1767,6 +1769,11 @@ export async function createActionIntent(
       // W05 (#5220): a built-in intent is for exactly this step row's built-in at its pinned tier.
       || (builtinIntent && (
         facts.step.tool !== input.toolName || facts.step.toolSource !== 'builtin' || facts.step.tier !== guardrail.tier
+      ))
+      // #10288: likewise an external intent is for exactly this step row's
+      // tool-source tool, pinned Tier 3 (the binding's fixed verdict).
+      || (externalTool && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'tenant' || facts.step.tier !== 3
       ))
     ) {
       throw new ActionIntentError(

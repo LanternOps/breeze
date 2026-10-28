@@ -21,6 +21,8 @@
  *      the binding comparison and the `verifiedRunScript` pin — content edited
  *      between check and pin can never run. Anything else parks on a
  *      `source: 'flow'` action intent; the existing inbox/release path owns it.
+ *      An external (tool-source) step's intent carries its pinned tool row +
+ *      revision as the `externalTool` binding (#10288).
  *   6. tier 1/2: `executeTool` (core) or `executeTenantToolDetailed` (tenant,
  *      attributed to the RUN on the 'flow' surface).
  *
@@ -57,7 +59,7 @@ import { buildRunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
 import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin } from '../flowValidator';
 import type { VerifiedRunScript } from '../toolExecutionContext';
 import { executeTenantToolDetailed } from '../toolSources/execute';
-import { loadTenantToolForExecution, type ToolOwnerRef } from '../toolSources/resolver';
+import { loadTenantToolForExecution, type TenantToolDescriptor, type ToolOwnerRef } from '../toolSources/resolver';
 import { captureException } from '../sentry';
 import { literalOriginOf } from './builtins/httpPolicy';
 import { preflightHttpRequest, type HttpRequestInput } from './builtins/httpRequest';
@@ -413,10 +415,13 @@ async function executePreApproved(
   }, sleep);
 }
 
+/** The binding an external (tool-source) step's intent carries; see `CreateActionIntentInput.externalTool`. */
+type ExternalToolBinding = NonNullable<Parameters<typeof createActionIntent>[1]['externalTool']>;
+
 async function parkForApproval(
   i: StepExecutionInput,
   rendered: Record<string, FlowValue>,
-  opts: { builtin?: true } = {},
+  opts: { builtin?: true; externalTool?: ExternalToolBinding } = {},
 ): Promise<StepOutcome> {
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   let intent: Awaited<ReturnType<typeof createActionIntent>>;
@@ -426,6 +431,12 @@ async function parkForApproval(
       orgId: i.run.orgId,
       toolName: i.pin.tool,
       input: rendered,
+      // #10288: an external step's intent is BOUND to its pinned tool row and
+      // revision. Without it createActionIntent classifies the qualified
+      // `<slug>__<name>` with the core classifier (tier 4, `tool_blocked`);
+      // with it, the dispatch claim and release revalidation re-check exactly
+      // the row the approver was shown and fail closed on drift.
+      ...(opts.externalTool ? { externalTool: opts.externalTool } : {}),
       flowRun: {
         runId: i.run.id,
         stepRowId: i.stepRowId,
@@ -612,18 +623,29 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
       }
       return executePreApproved(i, rendered, lookup.binding, check.approvalScope, sleep);
     }
+    if (i.pin.source === 'tenant') {
+      // #10288: an external step parks bound to its pinned row + revision —
+      // loaded under the flow principal exactly as a Tier 1/2 call would be,
+      // so a tool the owner can no longer reach never asks for an approval.
+      const pinned = await loadPinnedTenantTool(i, { renderedInput: rendered });
+      if (pinned.kind === 'refused') return pinned.outcome;
+      return parkForApproval(i, rendered, {
+        externalTool: {
+          toolSourceToolId: i.pin.tenantToolId,
+          revision: i.pin.tenantRevision,
+          sourceName: pinned.descriptor.sourceName,
+        },
+      });
+    }
     return parkForApproval(i, rendered);
   }
 
   // 6. tier 1 / 2
   const meta: StepOutcomeMeta = { renderedInput: rendered };
   if (i.pin.source === 'tenant') {
-    const loaded = await loadTenantToolForExecution(i.pin.tenantToolId, i.auth, i.run.orgId);
-    if (!loaded) return failedPolicy('tool_unavailable', 'This step\'s tool is no longer available to the flow\'s owner.', meta);
-    if (loaded.descriptor.id !== i.pin.tenantToolId || loaded.descriptor.revision !== i.pin.tenantRevision) {
-      return failedPolicy('drift', 'This step\'s external tool changed since the flow was enabled.', meta);
-    }
-    const descriptor = loaded.descriptor;
+    const pinned = await loadPinnedTenantTool(i, meta);
+    if (pinned.kind === 'refused') return pinned.outcome;
+    const descriptor = pinned.descriptor;
     return runToolCall(i, {
       tier: check.tier,
       meta,
@@ -648,6 +670,29 @@ export async function executeFlowStep(i: StepExecutionInput, deps: StepExecutorD
       return callResultOf(tool, parseToolText(await inToolDbContext(tool, rendered, i.auth, () => executeTool(tool, rendered, i.auth))));
     },
   }, sleep);
+}
+
+/**
+ * A tenant step's tool, reloaded under the flow principal (owner predicate +
+ * `TOOL_SOURCES_ENABLED` kill switch) and held to the publication's pin: the
+ * same row at the same revision, or the step refuses (policy) before it either
+ * executes or parks.
+ */
+async function loadPinnedTenantTool(
+  i: StepExecutionInput,
+  meta: StepOutcomeMeta,
+): Promise<{ kind: 'loaded'; descriptor: TenantToolDescriptor } | { kind: 'refused'; outcome: StepOutcome }> {
+  if (i.pin.source !== 'tenant') {
+    return { kind: 'refused', outcome: failedPolicy('drift', 'This step no longer matches what was published.', meta) };
+  }
+  const loaded = await loadTenantToolForExecution(i.pin.tenantToolId, i.auth, i.run.orgId);
+  if (!loaded) {
+    return { kind: 'refused', outcome: failedPolicy('tool_unavailable', 'This step\'s tool is no longer available to the flow\'s owner.', meta) };
+  }
+  if (loaded.descriptor.id !== i.pin.tenantToolId || loaded.descriptor.revision !== i.pin.tenantRevision) {
+    return { kind: 'refused', outcome: failedPolicy('drift', 'This step\'s external tool changed since the flow was enabled.', meta) };
+  }
+  return { kind: 'loaded', descriptor: loaded.descriptor };
 }
 
 /**
