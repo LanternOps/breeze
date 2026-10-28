@@ -657,7 +657,14 @@ export async function linkContractDocument(
     .where(and(eq(contractDocuments.id, id), isNull(contractDocuments.contractId)))
     .returning();
   if (!updated) {
-    throw new ContractDocumentServiceError('Contract document is already linked to a contract', 409, 'ALREADY_LINKED');
+    // Zero rows: either a concurrent link won (409) or the row went away (404).
+    const [now] = await db.select({ contractId: contractDocuments.contractId })
+      .from(contractDocuments).where(eq(contractDocuments.id, id)).limit(1);
+    if (!now) throw new ContractDocumentServiceError('Contract document not found', 404, 'DOCUMENT_NOT_FOUND');
+    if (now.contractId !== null) {
+      throw new ContractDocumentServiceError('Contract document is already linked to a contract', 409, 'ALREADY_LINKED');
+    }
+    throw new ContractDocumentServiceError('Failed to link contract document', 500, 'DOCUMENT_LINK_FAILED');
   }
   return updated;
 }

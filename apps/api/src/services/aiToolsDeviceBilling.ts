@@ -47,6 +47,7 @@ export function registerDeviceBillingTools(aiTools: Map<string, AiTool>): void {
         return bounded({ billing });
       } catch (error) {
         if (error instanceof DeviceCoverageError) {
+          if (error.status >= 500) console.error('[get_device_billing]', error.code, error.message);
           return JSON.stringify({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) });
         }
         return thrown('get_device_billing', error);

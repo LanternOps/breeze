@@ -50,8 +50,11 @@ function scopeRefusal(auth: AuthContext, what: string): string | null {
 }
 
 function serviceError(err: unknown): string | null {
-  if (err instanceof ContractTemplateServiceError) return jsonError(err.message, err.code);
-  if (err instanceof ContractDocumentServiceError) return jsonError(err.message, err.code);
+  if (err instanceof ContractTemplateServiceError || err instanceof ContractDocumentServiceError) {
+    // A coded 5xx is still a server failure: log it, then answer with its code.
+    if (err.status >= 500) console.error('[manage_contract_templates]', err.code, err.message);
+    return jsonError(err.message, err.code);
+  }
   if (err instanceof PartnerWideWriteDeniedError) return jsonError(err.message, 'ACCESS_DENIED');
   return null;
 }

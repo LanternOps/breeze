@@ -43,6 +43,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
 import { ContractDocumentServiceError } from './contractDocumentService';
+import { ContractTemplateServiceError, PartnerWideWriteDeniedError } from './contractTemplateService';
 
 const tools = new Map<string, AiTool>();
 registerContractTemplateTools(tools);
@@ -147,6 +148,71 @@ describe('manage_contract_templates', () => {
   });
 });
 
+describe('manage_contract_templates (review round)', () => {
+  it('a partner-wide create: refused without full partner access (service gate), lands with it and audits on the partner', async () => {
+    h.createTemplate.mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+    const sel = await run('manage_contract_templates', { action: 'create', ownerScope: 'partner', name: 'MSA' }, makeAuth({ partnerOrgAccess: 'selected' }));
+    expect(sel.code).toBe('ACCESS_DENIED');
+    h.createTemplate.mockResolvedValue(template({ orgId: null, partnerId: PARTNER }));
+    const ok = await run('manage_contract_templates', { action: 'create', ownerScope: 'partner', name: 'MSA' });
+    expect(h.createTemplate).toHaveBeenLastCalledWith(expect.anything(), { ownerScope: 'partner', name: 'MSA' });
+    expect(ok.template.ownerScope).toBe('partner');
+    expect(h.auditAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'contract_template.create', orgId: null, partnerId: PARTNER }));
+  });
+
+  it('a partner-wide create with an orgId is a validation error (XOR ownership)', async () => {
+    const out = await run('manage_contract_templates', { action: 'create', ownerScope: 'partner', orgId: ORG, name: 'MSA' });
+    expect(out.code).toBe('VALIDATION_ERROR');
+    expect(h.createTemplate).not.toHaveBeenCalled();
+  });
+
+  it.each(['list', 'get', 'get_version', 'usage'])('%s refuses a device-bound session', async (action) => {
+    const out = await run('manage_contract_templates', { action, templateId: TEMPLATE, versionId: VERSION }, makeAuth({ allowedDeviceIds: ['d1'] }));
+    expect(out.code).toBe('ACCESS_DENIED');
+    expect(h.listTemplates).not.toHaveBeenCalled();
+    expect(h.getTemplate).not.toHaveBeenCalled();
+    expect(h.getTemplateVersion).not.toHaveBeenCalled();
+    expect(h.getTemplateUsage).not.toHaveBeenCalled();
+  });
+
+  it('a partner session without a partnerId is refused before any read', async () => {
+    const out = await run('manage_contract_templates', { action: 'list' }, makeAuth({ partnerId: null }));
+    expect(out.code).toBe('ACCESS_DENIED');
+    expect(h.listTemplates).not.toHaveBeenCalled();
+  });
+
+  it('update returns and audits the previous name / description; an empty update is a validation error', async () => {
+    h.updateTemplate.mockResolvedValue(template({ name: 'MSA v2' }));
+    const out = await run('manage_contract_templates', { action: 'update', templateId: TEMPLATE, name: 'MSA v2' });
+    expect(out.before).toEqual({ name: 'MSA', description: null });
+    expect(h.auditAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'contract_template.update', details: expect.objectContaining({ changedFields: ['name'], before: { name: 'MSA', description: null } }),
+    }));
+    expect((await run('manage_contract_templates', { action: 'update', templateId: TEMPLATE })).code).toBe('VALIDATION_ERROR');
+    expect(h.updateTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('service errors keep their code; an unexpected error never reaches the model', async () => {
+    h.publishVersion.mockRejectedValueOnce(new ContractTemplateServiceError('Published versions are immutable', 409, 'VERSION_IMMUTABLE'));
+    expect((await run('manage_contract_templates', { action: 'publish', templateId: TEMPLATE, versionId: VERSION })).code).toBe('VERSION_IMMUTABLE');
+    h.publishVersion.mockRejectedValueOnce(new Error('connection reset by db-internal-host'));
+    const raw = await tools.get('manage_contract_templates')!.handler({ action: 'publish', templateId: TEMPLATE, versionId: VERSION }, makeAuth());
+    expect(raw).not.toContain('db-internal-host');
+    expect(JSON.parse(raw).error).toBeTruthy();
+  });
+
+  it('create_version returns the strip warnings and no body; get_version flags a clipped body', async () => {
+    h.createDraftVersion.mockResolvedValue({ ...version(), warnings: [{ field: 'bodyHtml', removedTags: ['script'] }] });
+    const v = await run('manage_contract_templates', { action: 'create_version', templateId: TEMPLATE, bodyHtml: BODY });
+    expect(v.warnings).toHaveLength(1);
+    expect(JSON.stringify(v)).not.toContain('Master services agreement');
+    h.getTemplateVersion.mockResolvedValue(version({ bodyHtml: 'x'.repeat(20_001) }));
+    const long = await run('manage_contract_templates', { action: 'get_version', templateId: TEMPLATE, versionId: VERSION });
+    expect(long.version.bodyHtml).toHaveLength(20_000);
+    expect(long.version.bodyTruncated).toBe(true);
+  });
+});
+
 describe('manage_contract_documents', () => {
   const docRow = {
     id: DOC, orgId: ORG, contractId: null, quoteId: null, templateId: TEMPLATE, templateVersionId: VERSION,
@@ -169,6 +235,16 @@ describe('manage_contract_documents', () => {
     expect(out).toEqual({ linked: true, documentId: DOC, contractId: CONTRACT });
     h.linkDoc.mockRejectedValueOnce(new ContractDocumentServiceError('Contract document is already linked to a contract', 409, 'ALREADY_LINKED'));
     expect((await run('manage_contract_documents', { action: 'link', documentId: DOC, contractId: CONTRACT })).code).toBe('ALREADY_LINKED');
+  });
+
+  it('list refuses a device-bound session', async () => {
+    expect((await run('manage_contract_documents', { action: 'list' }, makeAuth({ allowedDeviceIds: ['d1'] }))).code).toBe('ACCESS_DENIED');
+    expect(h.listDocs).not.toHaveBeenCalled();
+  });
+
+  it('link: a contract in another org keeps the service\'s not-found code', async () => {
+    h.linkDoc.mockRejectedValueOnce(new ContractDocumentServiceError('Contract not found or belongs to a different organization', 404, 'CONTRACT_NOT_FOUND'));
+    expect((await run('manage_contract_documents', { action: 'link', documentId: DOC, contractId: CONTRACT })).code).toBe('CONTRACT_NOT_FOUND');
   });
 
   it('link refuses a site-restricted session', async () => {

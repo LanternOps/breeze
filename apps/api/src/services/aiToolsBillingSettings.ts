@@ -21,7 +21,7 @@
  * (assignment is `manage_billing_profiles:set_org_profile`).
  */
 import { eq } from 'drizzle-orm';
-import { orgBillingSettingsSchema, partnerBillingSettingsSchema } from '@breeze/shared';
+import { AGREEMENT_DEFAULTS_SETTINGS_KEYS, orgBillingSettingsSchema, partnerBillingSettingsSchema } from '@breeze/shared';
 import { db } from '../db';
 import { organizations, partners } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -78,10 +78,13 @@ const orgProjection = () => ({
 });
 
 function serviceError(err: unknown): string | null {
-  if (err instanceof InvoiceServiceError || err instanceof BillingProfileServiceError) return jsonError(err.message, err.code);
-  if (err instanceof OrgCurrencyServiceError) return jsonError(err.message, err.code);
-  if (err instanceof ExchangeRateServiceError) return jsonError(err.message, err.code);
-  return null;
+  if (!(err instanceof InvoiceServiceError || err instanceof BillingProfileServiceError
+    || err instanceof OrgCurrencyServiceError || err instanceof ExchangeRateServiceError)) return null;
+  // A coded 5xx is still a server failure: log it, then answer with its code.
+  if (err.status >= 500) console.error(`[${TOOL}]`, err.code, err.message);
+  const details = (err as { details?: unknown }).details;
+  // #3205 W03: structured recovery data rides along, as on the REST door.
+  return JSON.stringify({ error: err.message, code: err.code, ...(details ? { details } : {}) });
 }
 
 function invalid(issues: { message: string; path: PropertyKey[] }[] | undefined): string {
@@ -104,6 +107,10 @@ async function updatePartner(input: Record<string, unknown>, auth: AuthContext):
   if (!canManagePartnerWidePolicies(auth)) return jsonError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 'ACCESS_DENIED');
   const patch = patchObject(input.partnerPatch);
   if (!patch || Object.keys(patch).length === 0) return jsonError('partnerPatch with at least one field is required', 'VALIDATION_ERROR');
+  // W14-D4: agreement-reminder defaults need agreements:send at REST and are edited on Billing → Agreements.
+  if (AGREEMENT_DEFAULTS_SETTINGS_KEYS.some((key) => patch[key] !== undefined)) {
+    return jsonError('Agreement reminder defaults are changed on Billing → Agreements in the web app', 'VALIDATION_ERROR');
+  }
   const [current] = await db.select(partnerProjection()).from(partners).where(eq(partners.id, auth.partnerId)).limit(1);
   if (!current) return notFound('Partner');
   // The service always writes these three; carry the current values for any the patch omits.
@@ -112,7 +119,8 @@ async function updatePartner(input: Record<string, unknown>, auth: AuthContext):
   };
   const parsed = partnerBillingSettingsSchema.safeParse({ ...required, ...patch });
   if (!parsed.success) return invalid(parsed.error.issues);
-  const changedFields = Object.keys(patch);
+  // Only what the validated patch carries counts as changed (never the three carried-forward keys it omits).
+  const changedFields = Object.keys(patch).filter((key) => key in parsed.data);
   // Quorum QW3: the previous values ride in the result and the audit row, so an approved change can be put back.
   const before = pickFields(current as Record<string, unknown>, changedFields);
   const settings = await updatePartnerBillingSettings(parsed.data, actorFrom(auth));
@@ -215,6 +223,8 @@ export function registerBillingSettingsTools(aiTools: Map<string, AiTool>): void
           case 'currency_impact': {
             const orgId = reachableOrgId(auth, input.orgId);
             if (!orgId) return notFound('Organization');
+            const bound = deviceBoundDenied(auth, 'Organization billing settings');
+            if (bound) return bound;
             if (typeof input.currencyCode !== 'string') return jsonError('currencyCode is required', 'VALIDATION_ERROR');
             return bounded({ impact: await getOrgCurrencyImpact(orgId, input.currencyCode, actorFrom(auth)) });
           }

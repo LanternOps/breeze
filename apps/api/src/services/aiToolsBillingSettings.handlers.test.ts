@@ -115,6 +115,12 @@ describe('manage_billing_settings', () => {
     }));
   });
 
+  it('update_partner refuses the agreement-reminder keys (agreements:send at REST; W14-D4)', async () => {
+    const out = await run({ action: 'update_partner', partnerPatch: { agreementMaxReminders: 3 } });
+    expect(out.code).toBe('VALIDATION_ERROR');
+    expect(h.updatePartner).not.toHaveBeenCalled();
+  });
+
   it('update_partner refuses an empty patch', async () => {
     expect((await run({ action: 'update_partner', partnerPatch: {} })).code).toBe('VALIDATION_ERROR');
     expect(h.updatePartner).not.toHaveBeenCalled();
@@ -139,6 +145,11 @@ describe('manage_billing_settings', () => {
     expect(audit).toMatchObject({ action: 'organization.billing_settings.update', orgId: ORG });
     expect(JSON.stringify(h.auditAsync.mock.calls)).not.toMatch(/(old|ap|new)@example\.test/);
     expect(audit.details.before).toEqual({ taxExempt: false });
+  });
+
+  it('currency_impact refuses a device-bound session (org-wide preview)', async () => {
+    expect((await run({ action: 'currency_impact', orgId: ORG, currencyCode: 'EUR' }, makeAuth({ allowedDeviceIds: ['d1'] }))).code).toBe('ACCESS_DENIED');
+    expect(h.impact).not.toHaveBeenCalled();
   });
 
   it('currency_impact requires an accessible org and a currency', async () => {

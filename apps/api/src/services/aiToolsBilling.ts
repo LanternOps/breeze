@@ -59,6 +59,7 @@ import { computeContractEstimate, getContract, materializeContractLineOntoInvoic
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 import { INVOICE_LINE_DEVICES_DEFAULT_LIMIT, INVOICE_LINE_DEVICES_MAX_LIMIT, listInvoiceLineDevices } from './billingEvidence';
+import { bounded } from './aiToolsSoftwareShared';
 
 function actorFromAuth(auth: AuthContext): InvoiceActor {
   return {
@@ -236,7 +237,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           const page = await listInvoiceLineDevices(
             invoiceId, lineId, { limit, ...(input.cursor ? { cursor: String(input.cursor) } : {}) }, actorFromAuth(auth),
           );
-          return JSON.stringify({ invoiceId, lineId, ...page });
+          return bounded({ invoiceId, lineId, ...page });
         }
         const result = await getInvoice(String(input.invoiceId), actorFromAuth(auth));
         return JSON.stringify({ ...result, invoice: withDepositPaid(result.invoice) });

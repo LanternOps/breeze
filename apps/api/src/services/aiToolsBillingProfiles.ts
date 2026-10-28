@@ -76,6 +76,8 @@ function presentProfile(p: ProfileHead | Card) {
 
 function serviceError(err: unknown): string | null {
   if (err instanceof BillingProfileServiceError || err instanceof WorkTypeServiceError) {
+    // A coded 5xx is still a server failure: log it, then answer with its code.
+    if (err.status >= 500) console.error(`[${TOOL}]`, err.code, err.message);
     return jsonError(err.message, err.code);
   }
   if (err instanceof PartnerWideWriteDeniedError) return jsonError(err.message, 'ACCESS_DENIED');

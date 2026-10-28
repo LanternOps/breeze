@@ -141,13 +141,15 @@ describe('manage_billing_profiles', () => {
 
   it('partner-wide rate writes need full partner org access (canManagePartnerWidePolicies)', async () => {
     const selected = makeAuth({ partnerOrgAccess: 'selected' });
-    for (const action of ['create', 'update', 'set_rows', 'create_work_type']) {
+    for (const action of ['create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type']) {
       const out = await run('manage_billing_profiles', { action, profileId: PROFILE, workTypeId: WORK_TYPE, name: 'n', currencyCode: 'USD', baseCoverage: 'billable', rows: [] }, selected);
       expect(out.code, action).toBe('ACCESS_DENIED');
     }
     expect(h.createProfile).not.toHaveBeenCalled();
     expect(h.updateProfile).not.toHaveBeenCalled();
     expect(h.createWorkType).not.toHaveBeenCalled();
+    expect(h.updateWorkType).not.toHaveBeenCalled();
+    expect(h.cloneProfile).not.toHaveBeenCalled();
   });
 
   it('update writes only the supplied fields and audits before / after', async () => {
@@ -180,6 +182,26 @@ describe('manage_billing_profiles', () => {
     h.getProfile.mockResolvedValue(card());
     h.updateProfile.mockResolvedValue(card({ aiCoverage: 'included' }));
     expect((await run('manage_billing_profiles', { action: 'update', profileId: PROFILE, aiCoverage: 'included' })).profile.aiCoverage).toBe('included');
+  });
+
+  it('update_work_type: another partner\'s work type is not found; a found one returns its previous values', async () => {
+    h.listWorkTypes.mockResolvedValue([]);
+    expect((await run('manage_billing_profiles', { action: 'update_work_type', workTypeId: WORK_TYPE, name: 'x' })).code).toBe('NOT_FOUND');
+    expect(h.updateWorkType).not.toHaveBeenCalled();
+    h.listWorkTypes.mockResolvedValue([{ id: WORK_TYPE, name: 'Remote', isActive: true }]);
+    h.updateWorkType.mockResolvedValue({ id: WORK_TYPE, name: 'Remote support', isActive: true });
+    const out = await run('manage_billing_profiles', { action: 'update_work_type', workTypeId: WORK_TYPE, name: 'Remote support' });
+    expect(out.before).toMatchObject({ name: 'Remote' });
+  });
+
+  it('set_rows and clear_org_profile return the previous values', async () => {
+    h.replaceProfileRows.mockResolvedValue(card({ rules: [] }));
+    const rows = await run('manage_billing_profiles', { action: 'set_rows', profileId: PROFILE, rows: [] });
+    expect(rows.before.rows).toHaveLength(1);
+    h.getOrgAssignment.mockResolvedValue({ orgId: ORG, partnerId: PARTNER, billingProfileId: PROFILE });
+    const cleared = await run('manage_billing_profiles', { action: 'clear_org_profile', orgId: ORG });
+    expect(cleared.before).toMatchObject({ billingProfileId: PROFILE });
+    expect(h.clearOrgAssignment).toHaveBeenCalledWith(ORG, PARTNER);
   });
 
   it('set_rows validates the full row list before replacing', async () => {

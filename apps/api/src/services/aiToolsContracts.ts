@@ -49,6 +49,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 // and GET /contracts/currency-mismatches (contracts:read).
 import { getPeriodOutcome } from './billingEvidence';
 import { listContractCurrencyMismatches } from './contractCurrencyReportService';
+import { bounded } from './aiToolsSoftwareShared';
 
 /**
  * Params each manage_contracts action requires, presence-checked BEFORE any
@@ -210,7 +211,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
             },
             actorFromAuth(auth)
           );
-          return JSON.stringify({ currencyMismatches });
+          return bounded({ currencyMismatches });
         }
         const rows = await listContracts(
           {
@@ -263,7 +264,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
         if (input.periodId) {
           const periodId = String(input.periodId);
           const { recorded, outcome } = await getPeriodOutcome(contractId, periodId, actor);
-          return JSON.stringify({ contractId, periodId, recorded, outcome });
+          return bounded({ contractId, periodId, recorded, outcome });
         }
         const result = await getContract(contractId, actor);
         // #4547 W03: same reader as GET /contracts/:id/hour-periods (routes/contracts/hourPeriods.ts).
