@@ -19,7 +19,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { addEvidence } from '../../services/serviceDeliverableService';
+import { addEvidence, getOccurrenceOr404 } from '../../services/serviceDeliverableService';
 import {
   insertRequest, insertRequestDocument, rows, seedPublishedTemplate, seedTwoOrgs, sqlstate, sys,
 } from './agreementRequestsFixtures';
@@ -80,6 +80,23 @@ describe('signed agreement as deliverable evidence (#9312, live DB)', () => {
     // No copy: the library is untouched.
     const docs = await sys(async () => rows(await db.execute(sql`SELECT count(*)::int AS n FROM org_documents`)));
     expect(docs[0]!.n).toBe(0);
+  });
+
+  // #9961: the chip names the agreement — through the real join chain
+  // (contract_documents → template + version) as the app role — but only for
+  // a caller that may read agreements.
+  runDb('names the linked agreement for an agreements:read caller; ids only without it (#9961)', async () => {
+    const s = await seed();
+    const labelled = await withDbAccessContext(s.partnerCtx, () =>
+      addEvidence(s.orgA.id, s.occA, { kind: 'contract_document', contractDocumentId: s.agreementA },
+        { ...s.actor, evidenceLabelAccess: { documents: false, reports: false, agreements: true } }));
+    expect(labelled.evidence).toEqual([
+      expect.objectContaining({ contractDocumentId: s.agreementA, label: 'Fixture MSA v1' }),
+    ]);
+    const plain = await withDbAccessContext(s.partnerCtx, () => getOccurrenceOr404(s.orgA.id, s.occA, s.actor));
+    expect(plain.evidence).toEqual([
+      expect.objectContaining({ contractDocumentId: s.agreementA, label: null }),
+    ]);
   });
 
   runDb('another org\'s signed agreement is 404 even when RLS can see both orgs; nothing is inserted', async () => {
