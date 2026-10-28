@@ -614,7 +614,12 @@
       "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
       "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
       "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin.",
-      "turningOn": "Wisp açılıyor…"
+      "turningOn": "Wisp açılıyor…",
+      "alreadyOnOrg": "Wisp bu kuruluş için zaten açık.",
+      "alreadyOnPartner": "Wisp tüm kuruluşlar için zaten açık.",
+      "open": "Aç",
+      "opening": "Açılıyor…",
+      "grantEnded": "Wisp bu kapsam için artık açık değil. Yeniden açmak için kimliğinizi doğrulayın."
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",

@@ -614,7 +614,12 @@
       "stepUpUnavailable": "Impossibile verificare il tuo fattore. Riprova.",
       "reverify": "Il tuo accesso è cambiato durante la conferma. Inserisci un nuovo codice per continuare.",
       "invalidCode": "Il codice non è stato accettato. Riprova.",
-      "turningOn": "Attivazione di Wisp…"
+      "turningOn": "Attivazione di Wisp…",
+      "alreadyOnOrg": "Wisp è già attivo per questa organizzazione.",
+      "alreadyOnPartner": "Wisp è già attivo per tutte le organizzazioni.",
+      "open": "Apri",
+      "opening": "Apertura…",
+      "grantEnded": "Wisp non è più attivo per questo ambito. Conferma la tua identità per riattivarlo."
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
