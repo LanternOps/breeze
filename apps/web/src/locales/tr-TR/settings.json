@@ -4963,6 +4963,11 @@
     "eGOktaProduction": "örneğin Okta Üretimi",
     "providerPreset": "Sağlayıcı ön ayarı",
     "selectAPresetToAutoFillRecommendedSettings": "Önerilen ayarları otomatik olarak doldurmak için bir ön ayar seçin",
+    "replacePresetFields": {
+      "title": "{{preset}} varsayılanlarıyla değiştirilsin mi?",
+      "message": "{{preset}} ön ayarını uygulamak, değişiklikleriniz dahil mevcut kapsamları ve özellik eşlemesini değiştirir ve ön ayarın belirlemediği her talebi (ör. gruplar özelliği) temizler. Sağlayıcıyı kaydedene kadar hiçbir şey kaydedilmez.",
+      "confirm": "Değiştir"
+    },
     "connectionSettings": "Bağlantı Ayarları",
     "issuerURL": "Veren URL'si",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",

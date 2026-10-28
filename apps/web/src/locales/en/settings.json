@@ -4963,6 +4963,11 @@
     "eGOktaProduction": "e.g., Okta Production",
     "providerPreset": "Provider preset",
     "selectAPresetToAutoFillRecommendedSettings": "Select a preset to auto-fill recommended settings",
+    "replacePresetFields": {
+      "title": "Replace with the {{preset}} defaults?",
+      "message": "Applying the {{preset}} preset replaces the current scopes and attribute mapping, including your changes, and clears any claim the preset does not set, such as the groups attribute. Nothing is saved until you save the provider.",
+      "confirm": "Replace"
+    },
     "connectionSettings": "Connection Settings",
     "issuerURL": "Issuer URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",

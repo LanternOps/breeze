@@ -4963,6 +4963,11 @@
     "eGOktaProduction": "par exemple, Okta Production",
     "providerPreset": "Préréglage fournisseur",
     "selectAPresetToAutoFillRecommendedSettings": "Sélectionnez un préréglage pour remplir automatiquement les réglages recommandés",
+    "replacePresetFields": {
+      "title": "Remplacer par les valeurs par défaut de {{preset}} ?",
+      "message": "L’application du préréglage {{preset}} remplace les champs d’action et la cartographie des attributs actuels, y compris vos modifications, et efface toute revendication que le préréglage ne définit pas, comme l’attribut des groupes. Rien n’est enregistré tant que vous n’enregistrez pas le fournisseur.",
+      "confirm": "Remplacer"
+    },
     "connectionSettings": "Paramètres de connexion",
     "issuerURL": "Émetteur URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",

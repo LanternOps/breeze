@@ -4963,6 +4963,11 @@
     "eGOktaProduction": "z. B. Okta Production",
     "providerPreset": "Anbietervoreinstellung",
     "selectAPresetToAutoFillRecommendedSettings": "Wählen Sie eine Voreinstellung aus, um die empfohlenen Einstellungen automatisch auszufüllen",
+    "replacePresetFields": {
+      "title": "Durch die Standardwerte von {{preset}} ersetzen?",
+      "message": "Wenn Sie die Voreinstellung {{preset}} anwenden, werden die aktuellen Bereiche und die Attributzuordnung einschließlich Ihrer Änderungen ersetzt, und jeder Claim, den die Voreinstellung nicht festlegt (z. B. das Gruppenattribut), wird geleert. Gespeichert wird erst, wenn Sie den Anbieter speichern.",
+      "confirm": "Ersetzen"
+    },
     "connectionSettings": "Verbindungseinstellungen",
     "issuerURL": "Emittent URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",

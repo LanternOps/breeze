@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SSO_OIDC_PRESET_IDS } from '@breeze/shared';
 import SsoProviderForm, { type ProviderPreset, type Role } from './SsoProviderForm';
 
@@ -217,5 +217,111 @@ describe('SsoProviderForm preset autofill (#9601)', () => {
     expect(
       (document.getElementById('attr-last-name') as HTMLInputElement | null)?.value
     ).toBe(`${id}-family`);
+  });
+});
+
+// #9948: switching preset must replace every preset-derived field. Okta sets a
+// groups claim and Azure AD does not, so Okta -> Azure used to leave
+// `groups=groups` behind (a partial setValue merge). The groups claim feeds
+// group-based role mapping, so a stale one must never ride along silently.
+describe('SsoProviderForm preset switch resets preset-derived fields (#9948)', () => {
+  const OKTA: ProviderPreset = {
+    id: 'okta',
+    name: 'Okta',
+    scopes: 'openid profile email groups',
+    attributeMapping: { email: 'email', name: 'name', firstName: 'given_name', lastName: 'family_name', groups: 'groups' }
+  };
+  const AZURE: ProviderPreset = {
+    id: 'azure-ad',
+    name: 'Azure AD',
+    scopes: 'openid profile email',
+    attributeMapping: { email: 'email', name: 'name', firstName: 'given_name', lastName: 'family_name' }
+  };
+  const PRESETS = [OKTA, AZURE];
+
+  const field = (id: string) => document.getElementById(id) as HTMLInputElement;
+  const presetSelect = () => screen.getByLabelText(/Provider preset/i) as HTMLSelectElement;
+  const pick = (value: string) => fireEvent.change(presetSelect(), { target: { value } });
+
+  it('Okta -> Azure AD clears the groups claim Okta set', async () => {
+    const onSubmit = vi.fn();
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} onSubmit={onSubmit} />);
+
+    pick('okta');
+    await waitFor(() => expect(field('attr-groups').value).toBe('groups'));
+    pick('azure-ad');
+
+    await waitFor(() => expect(field('provider-scopes').value).toBe('openid profile email'));
+    expect(field('attr-groups').value).toBe('');
+    expect(screen.queryByTestId('sso-preset-replace-confirm')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText(/Provider name/i), { target: { value: 'Contoso Entra' } });
+    fireEvent.click(screen.getByRole('button', { name: /save provider/i }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const submitted = onSubmit.mock.calls[0][0];
+    expect(submitted.preset).toBe('azure-ad');
+    expect(submitted.attributeMapping.groups ?? '').toBe('');
+  });
+
+  it('asks before replacing a mapping the admin edited; Cancel keeps the edits and the old preset', async () => {
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} />);
+
+    pick('okta');
+    await waitFor(() => expect(field('attr-groups').value).toBe('groups'));
+    fireEvent.change(field('attr-groups'), { target: { value: 'roles' } });
+
+    pick('azure-ad');
+    expect(await screen.findByTestId('sso-preset-replace-confirm')).toBeTruthy();
+    // Nothing is replaced until the admin answers.
+    expect(field('attr-groups').value).toBe('roles');
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByTestId('sso-preset-replace-confirm')).toBeNull());
+    expect(presetSelect().value).toBe('okta');
+    expect(field('attr-groups').value).toBe('roles');
+    expect(field('provider-scopes').value).toBe('openid profile email groups');
+  });
+
+  it('asks before replacing an edited mapping; Confirm applies the new preset in full', async () => {
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} />);
+
+    pick('okta');
+    await waitFor(() => expect(field('attr-groups').value).toBe('groups'));
+    fireEvent.change(field('attr-groups'), { target: { value: 'roles' } });
+
+    pick('azure-ad');
+    fireEvent.click(await screen.findByTestId('sso-preset-replace-confirm'));
+
+    await waitFor(() => expect(field('attr-groups').value).toBe(''));
+    expect(presetSelect().value).toBe('azure-ad');
+    expect(field('provider-scopes').value).toBe('openid profile email');
+  });
+
+  it('on edit, picking a preset never silently overwrites the stored mapping', async () => {
+    render(
+      <SsoProviderForm
+        isEditing
+        presets={PRESETS}
+        roles={ROLES}
+        defaultValues={{
+          name: 'Live Okta',
+          scopes: 'openid profile email groups',
+          attributeMapping: { email: 'email', name: 'name', groups: 'custom_groups' }
+        }}
+      />
+    );
+
+    pick('azure-ad');
+    expect(await screen.findByTestId('sso-preset-replace-confirm')).toBeTruthy();
+    expect(field('attr-groups').value).toBe('custom_groups');
+  });
+
+  it('switching to Custom configuration keeps the current values', async () => {
+    render(<SsoProviderForm presets={PRESETS} roles={ROLES} />);
+    pick('okta');
+    await waitFor(() => expect(field('attr-groups').value).toBe('groups'));
+    pick('');
+    expect(screen.queryByTestId('sso-preset-replace-confirm')).toBeNull();
+    expect(field('attr-groups').value).toBe('groups');
   });
 });

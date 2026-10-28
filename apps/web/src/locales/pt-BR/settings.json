@@ -4963,6 +4963,11 @@
     "eGOktaProduction": "por exemplo, produção Okta",
     "providerPreset": "Predefinição de provedor",
     "selectAPresetToAutoFillRecommendedSettings": "Selecione uma predefinição para preencher automaticamente as configurações recomendadas",
+    "replacePresetFields": {
+      "title": "Substituir pelos padrões de {{preset}}?",
+      "message": "Aplicar a predefinição {{preset}} substitui os escopos e o mapeamento de atributos atuais, incluindo suas alterações, e limpa qualquer declaração que a predefinição não defina, como o atributo de grupos. Nada é salvo até você salvar o provedor.",
+      "confirm": "Substituir"
+    },
     "connectionSettings": "Configurações de conexão",
     "issuerURL": "URL do emissor",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",

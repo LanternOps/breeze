@@ -4958,6 +4958,11 @@
     "eGOktaProduction": "es. Okta Production",
     "providerPreset": "Preset provider",
     "selectAPresetToAutoFillRecommendedSettings": "Seleziona un preset per compilare automaticamente le impostazioni consigliate",
+    "replacePresetFields": {
+      "title": "Sostituire con i valori predefiniti di {{preset}}?",
+      "message": "Applicando il preset {{preset}} vengono sostituiti gli ambiti e la mappatura attributi attuali, comprese le tue modifiche, e viene cancellata ogni claim che il preset non imposta, come l’attributo gruppi. Nulla viene salvato finché non salvi il provider.",
+      "confirm": "Sostituisci"
+    },
     "connectionSettings": "Impostazioni connessione",
     "issuerURL": "URL issuer",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
