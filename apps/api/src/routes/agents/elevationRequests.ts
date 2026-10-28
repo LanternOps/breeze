@@ -147,19 +147,6 @@ async function safePublish(
   }
 }
 
-/**
- * #1254 — mobile approval bridge. For a freshly-inserted PENDING uac_intercept
- * elevation, fan out one mobile approval_request per eligible technician
- * approver and push each to their phone. Whichever approver decides first on
- * mobile mirrors that decision back onto the elevation (see decideHandler in
- * routes/approvals.ts) and expires the siblings.
- *
- * BEST-EFFORT: the elevation row is already committed and the agent's 201 must
- * not depend on this. The whole body is wrapped in try/catch by the caller, and
- * each per-approver push is additionally swallowed so one bad token can't drop
- * the rest. No actuate command is enqueued (parity with pam.ts respond — that's
- * deferred to #1150).
- */
 /** Longest support name sent to the agent, in code points (`NAME_MAX` in brandingSnapshot). */
 const PAM_SUPPORT_NAME_MAX = 120;
 
@@ -180,11 +167,24 @@ async function resolvePamSupportName(orgId: string): Promise<string | null> {
     if (!name) return null;
     return Array.from(name).slice(0, PAM_SUPPORT_NAME_MAX).join('');
   } catch (err) {
-    console.debug(`[ElevationRequests] support-name lookup failed for org=${orgId}:`, err);
+    console.warn(`[ElevationRequests] support-name lookup failed for org=${orgId}; the notices will say "IT":`, err);
     return null;
   }
 }
 
+/**
+ * #1254 — mobile approval bridge. For a freshly-inserted PENDING uac_intercept
+ * elevation, fan out one mobile approval_request per eligible technician
+ * approver and push each to their phone. Whichever approver decides first on
+ * mobile mirrors that decision back onto the elevation (see decideHandler in
+ * routes/approvals.ts) and expires the siblings.
+ *
+ * BEST-EFFORT: the elevation row is already committed and the agent's 201 must
+ * not depend on this. The whole body is wrapped in try/catch by the caller, and
+ * each per-approver push is additionally swallowed so one bad token can't drop
+ * the rest. No actuate command is enqueued (parity with pam.ts respond — that's
+ * deferred to #1150).
+ */
 async function fanOutMobileApprovals(args: {
   elevationRequestId: string;
   device: { id: string; orgId: string; hostname: string };

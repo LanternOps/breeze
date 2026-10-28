@@ -2,11 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   insertQueuedCommandInTransaction: vi.fn(),
+  captureException: vi.fn(),
 }));
 
 vi.mock('./commandQueueInsert', () => ({
   insertQueuedCommandInTransaction: mocks.insertQueuedCommandInTransaction,
 }));
+
+vi.mock('./sentry', () => ({ captureException: mocks.captureException }));
 
 import { ParkedDeviceCommandRefusedError } from './unassignedPool/deliveryEligibility';
 import {
@@ -71,6 +74,7 @@ describe('sanitizePamUserReason (#8928)', () => {
 
 describe('enqueuePamRequestNotify (#8928)', () => {
   beforeEach(() => {
+    mocks.captureException.mockReset();
     mocks.insertQueuedCommandInTransaction.mockReset();
     mocks.insertQueuedCommandInTransaction.mockResolvedValue({ id: 'cmd-1' });
   });
@@ -82,11 +86,25 @@ describe('enqueuePamRequestNotify (#8928)', () => {
     expect(mocks.insertQueuedCommandInTransaction).not.toHaveBeenCalled();
   });
 
-  it('returns unsupported when the device row is not visible', async () => {
+  it('returns unsupported when the device row is not visible, and logs it apart from an old agent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { tx } = makeTx(undefined);
     await expect(enqueuePamRequestNotify(tx as never, { id: REQUEST_ID, deviceId: DEVICE_ID }, 'expired'))
       .resolves.toBe('unsupported');
     expect(mocks.insertQueuedCommandInTransaction).not.toHaveBeenCalled();
+    // Zero rows under the caller's context is a context bug, not an old agent.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('device row not visible');
+    expect(String(warn.mock.calls[0]![0])).toContain(DEVICE_ID);
+    warn.mockRestore();
+  });
+
+  it('logs nothing for a device that simply lacks the capability', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { tx } = makeTx({ orgId: ORG_ID, pamUserNotifyProtocolVersion: 0 });
+    await enqueuePamRequestNotify(tx as never, { id: REQUEST_ID, deviceId: DEVICE_ID }, 'denied');
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('queues a denied notice with exactly requestId, outcome and the sanitized reason, inside a savepoint', async () => {
@@ -133,22 +151,50 @@ describe('enqueuePamRequestNotify (#8928)', () => {
     expect('reason' in payload).toBe(false);
   });
 
-  it('parked device: deny commits, no command — a refused insert is swallowed as skipped', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('parked device: deny commits, no command — the expected refusal is logged at info, not reported', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { tx } = makeTx({ orgId: ORG_ID, pamUserNotifyProtocolVersion: 1 });
     mocks.insertQueuedCommandInTransaction.mockRejectedValueOnce(new ParkedDeviceCommandRefusedError(DEVICE_ID, 'pam_request_notify'));
     await expect(enqueuePamRequestNotify(tx as never, { id: REQUEST_ID, deviceId: DEVICE_ID }, 'denied', 'x'))
       .resolves.toBe('skipped');
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    info.mockRestore();
+    error.mockRestore();
   });
 
-  it('any other enqueue failure is also skipped, never thrown to the deciding transaction', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('any other enqueue failure is skipped (never thrown to the deciding transaction) but logged as an error and sent to Sentry', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { tx } = makeTx({ orgId: ORG_ID, pamUserNotifyProtocolVersion: 1 });
-    mocks.insertQueuedCommandInTransaction.mockRejectedValueOnce(new Error('deadlock detected'));
+    const failure = Object.assign(new Error('column "pam_user_notify_protocol_version" does not exist'), { code: '42703' });
+    mocks.insertQueuedCommandInTransaction.mockRejectedValueOnce(failure);
     await expect(enqueuePamRequestNotify(tx as never, { id: REQUEST_ID, deviceId: DEVICE_ID }, 'expired'))
       .resolves.toBe('skipped');
-    warn.mockRestore();
+    expect(error).toHaveBeenCalledTimes(1);
+    const logged = error.mock.calls[0]!.map(String).join(' ');
+    expect(logged).toContain(REQUEST_ID);
+    expect(logged).toContain(DEVICE_ID);
+    expect(logged).toContain('42703');
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+    expect(mocks.captureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({
+      errorId: 'pam_request_notify_enqueue_failed',
+      requestId: REQUEST_ID,
+      deviceId: DEVICE_ID,
+      outcome: 'expired',
+      pg_code: '42703',
+    }));
+    error.mockRestore();
+  });
+
+  it('a failure that is not an Error is still reported as one', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { tx } = makeTx({ orgId: ORG_ID, pamUserNotifyProtocolVersion: 1 });
+    mocks.insertQueuedCommandInTransaction.mockRejectedValueOnce('boom');
+    await expect(enqueuePamRequestNotify(tx as never, { id: REQUEST_ID, deviceId: DEVICE_ID }, 'denied'))
+      .resolves.toBe('skipped');
+    expect(mocks.captureException.mock.calls[0]![0]).toBeInstanceOf(Error);
+    error.mockRestore();
   });
 });

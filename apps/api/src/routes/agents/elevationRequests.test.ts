@@ -312,14 +312,20 @@ describe('agent elevation-requests ingestion route', () => {
       expect(Array.from(body.supportName)).toHaveLength(120);
     });
 
-    it('submit succeeds when branding throws', async () => {
+    it('submit succeeds when branding throws, and the failed lookup is logged at warn', async () => {
       happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
-      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       brandingMocks.resolveMessageBranding.mockRejectedValueOnce(new Error('partner lookup failed'));
       const res = await submit();
       expect(res.status).toBe(201);
       expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
-      debug.mockRestore();
+      // A lookup broken fleet-wide would make every toast say "IT": it must be
+      // visible at warn, not hidden at debug.
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('support-name lookup failed for org=org-1'),
+        expect.any(Error),
+      );
+      warn.mockRestore();
     });
 
     it('branding resolves outside the org transaction, in a system context', async () => {

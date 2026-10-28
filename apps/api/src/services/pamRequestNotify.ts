@@ -9,10 +9,13 @@
  * silently.
  *
  * The enqueue must NEVER roll back the deny or expiry that triggered it. It
- * runs inside a savepoint on the caller's transaction, and every failure
- * (a parked device refused by `insertQueuedCommandInTransaction`, or any SQL
- * error) is logged and reported as `'skipped'`. Without the savepoint a failed
- * statement would poison the caller's transaction and the deny would be lost.
+ * runs inside a savepoint on the caller's transaction, and every failure is
+ * reported as `'skipped'`. Without the savepoint a failed statement would
+ * poison the caller's transaction and the deny would be lost. The expected
+ * refusal (a parked device, from `insertQueuedCommandInTransaction`) is logged
+ * at info; anything else (a missing column after a failed migration, an RLS
+ * refusal, a timeout) is a real fault and goes to console.error and Sentry,
+ * because no caller looks at the return value.
  *
  * Import rule: this module is imported by `jobs/pamJobs.ts` (a worker), so it
  * may reach only leaf modules — `commandQueueInsert`, never `commandQueue`
@@ -24,6 +27,9 @@ import { devices } from '../db/schema';
 import { insertQueuedCommandInTransaction } from './commandQueueInsert';
 import type { CommandQueueTx } from './commandQueue';
 import { CommandTypes } from './commandTypes';
+import { captureException } from './sentry';
+import { ParkedDeviceCommandRefusedError } from './unassignedPool/deliveryEligibility';
+import { pgErrorCode } from '../utils/pgErrors';
 
 export type PamRequestNotifyOutcome = 'denied' | 'expired';
 
@@ -79,7 +85,16 @@ export async function enqueuePamRequestNotify(
         .from(devices)
         .where(eq(devices.id, req.deviceId))
         .limit(1);
-      if (!device || device.pamUserNotifyProtocolVersion !== 1) return 'unsupported' as const;
+      if (!device) {
+        // The caller decided this request under a context that should see its
+        // device. Zero rows is a context bug (or a device deleted mid-decision),
+        // not an old agent, so it is logged apart from the capability check.
+        console.warn(
+          `[pamRequestNotify] device row not visible for ${outcome} notice (elevation ${req.id}, device ${req.deviceId}); not queued`,
+        );
+        return 'unsupported' as const;
+      }
+      if (device.pamUserNotifyProtocolVersion !== 1) return 'unsupported' as const;
 
       const userReason = outcome === 'denied' ? sanitizePamUserReason(reason) : undefined;
       await insertQueuedCommandInTransaction(sp, {
@@ -98,10 +113,25 @@ export async function enqueuePamRequestNotify(
       return 'queued' as const;
     });
   } catch (err) {
-    console.warn(
-      `[pamRequestNotify] ${outcome} notice for elevation ${req.id} not queued; the decision still commits:`,
-      err instanceof Error ? `${err.name}: ${err.message}` : err,
+    if (err instanceof ParkedDeviceCommandRefusedError) {
+      console.info(
+        `[pamRequestNotify] ${outcome} notice for elevation ${req.id} not queued: device ${req.deviceId} is parked; the decision still commits`,
+      );
+      return 'skipped';
+    }
+    const code = pgErrorCode(err) ?? undefined;
+    console.error(
+      `[pamRequestNotify] ${outcome} notice for elevation ${req.id} (device ${req.deviceId}) failed to enqueue` +
+        `${code ? ` [pg ${code}]` : ''}; the decision still commits:`,
+      err,
     );
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      errorId: 'pam_request_notify_enqueue_failed',
+      requestId: req.id,
+      deviceId: req.deviceId,
+      outcome,
+      ...(code ? { pg_code: code } : {}),
+    });
     return 'skipped';
   }
 }
