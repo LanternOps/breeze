@@ -162,6 +162,69 @@ describe('StartRecipeForm — inheritor', () => {
   });
 });
 
+describe('StartRecipeForm — the person leaving is never their own inheritor (#10076)', () => {
+  const everyone = (url: string) => (url.startsWith(`/orgs/organizations/${ORG}/contacts`)
+    ? json({ data: [
+      { id: HEIR, name: 'Lee Inheritor', email: 'lee@example.com', phone: null, siteId: null },
+      { id: CONTACT, name: 'Dana Smith', email: 'dana@example.com', phone: null, siteId: null },
+      { id: CAND_A, name: 'Dana Smythe', email: 'dana.y@example.com', phone: null, siteId: null },
+    ], pagination: { total: 3 } })
+    : undefined);
+
+  it('leaves the chosen person out of the inheritor picker, which has an accessible name', async () => {
+    extra = everyone;
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
+    fireEvent.click(screen.getByTestId('start-recipe-inheritor-mode-contact'));
+    const select = await screen.findByRole('combobox', { name: 'Who inherits their mail' });
+    await waitFor(() => expect(within(select).getByText(/Lee Inheritor/)).toBeInTheDocument());
+    expect(within(select).getByText(/Dana Smythe/)).toBeInTheDocument();
+    expect(within(select).queryByText(/^Dana Smith/)).toBeNull();
+  });
+
+  it('a person chosen AFTER the inheritor who is that inheritor shows an inline error and blocks preview and submit', async () => {
+    extra = everyone;
+    draftResponse = () => json({ data: draft({ person: { resolved: null, candidates: [
+      { id: CAND_A, name: 'Dana Smythe', email: 'dana.y@example.com' },
+      { id: CAND_B, name: 'Dana Smith', email: 'dana.s@example.com' },
+    ] } }) });
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'Dana' } });
+    fireEvent.click(screen.getByTestId('start-recipe-inheritor-mode-contact'));
+    const select = await screen.findByTestId('start-recipe-inheritor-contact');
+    await waitFor(() => expect(within(select).getByText(/Dana Smythe/)).toBeInTheDocument());
+    fireEvent.change(select, { target: { value: CAND_A } });
+    expect(screen.queryByTestId('start-recipe-inheritor-self')).toBeNull();
+    await preview();
+    fireEvent.click(screen.getByTestId(`start-recipe-candidate-${CAND_A}`));
+
+    expect(screen.getByTestId('start-recipe-inheritor-self')).toHaveTextContent("The person leaving can't inherit their own mail");
+    // The current choice stays visible so the error names something on screen.
+    expect((screen.getByTestId('start-recipe-inheritor-contact') as HTMLSelectElement).value).toBe(CAND_A);
+    expect(screen.getByTestId('start-recipe-inheritor-contact')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('start-recipe-preview-button')).toBeDisabled();
+    expect(screen.getByTestId('start-recipe-submit')).toBeDisabled();
+    expect(bodies('/ai/operator/task-drafts')).toHaveLength(1);
+  });
+
+  it("an address equal to the person's own address (as typed, or as the preview resolved it) is refused inline", async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'Dana Smith' } });
+    await preview(); // resolves to Dana Smith <dana@example.com>
+    fireEvent.click(screen.getByTestId('start-recipe-inheritor-mode-address'));
+    fireEvent.change(screen.getByTestId('start-recipe-inheritor-address'), { target: { value: 'DANA@example.com' } });
+    expect(screen.getByTestId('start-recipe-inheritor-self')).toBeInTheDocument();
+    expect(screen.getByTestId('start-recipe-preview-button')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('start-recipe-inheritor-address'), { target: { value: 'lee@example.com' } });
+    expect(screen.queryByTestId('start-recipe-inheritor-self')).toBeNull();
+    expect(screen.getByTestId('start-recipe-preview-button')).toBeEnabled();
+
+    // A hint that IS an address needs no preview to be compared.
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'lee@example.com' } });
+    expect(screen.getByTestId('start-recipe-inheritor-self')).toBeInTheDocument();
+  });
+});
+
 describe('StartRecipeForm — options', () => {
   it('renders the eight toggles with the schema defaults (not restated here)', () => {
     const defaults = identityOffboardingEffectsSchema.parse({});

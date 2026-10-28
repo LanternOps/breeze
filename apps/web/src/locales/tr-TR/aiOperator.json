@@ -249,7 +249,8 @@
       "pickContact": "Bir kişi seçin",
       "addressPlaceholder": "ad@example.com",
       "contactsFailed": "Kişiler yüklenemedi.",
-      "loadMore": "Daha fazla kişi yükle"
+      "loadMore": "Daha fazla kişi yükle",
+      "self": "Ayrılan kişi kendi e-postalarını devralamaz. Başka birini seçin ya da hiç kimseyi seçmeyin."
     },
     "autoReply": {
       "label": "Otomatik yanıt iletisi",

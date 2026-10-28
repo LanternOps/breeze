@@ -249,7 +249,8 @@
       "pickContact": "Kontakt auswählen",
       "addressPlaceholder": "vorname.nachname@example.com",
       "contactsFailed": "Kontakte konnten nicht geladen werden.",
-      "loadMore": "Weitere Kontakte laden"
+      "loadMore": "Weitere Kontakte laden",
+      "self": "Die ausscheidende Person kann ihre eigenen E-Mails nicht übernehmen. Wählen Sie eine andere Person oder niemanden."
     },
     "autoReply": {
       "label": "Text der automatischen Antwort",

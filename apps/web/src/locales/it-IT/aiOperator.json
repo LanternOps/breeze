@@ -249,7 +249,8 @@
       "pickContact": "Scegli un contatto",
       "addressPlaceholder": "nome@example.com",
       "contactsFailed": "Impossibile caricare i contatti.",
-      "loadMore": "Carica altri contatti"
+      "loadMore": "Carica altri contatti",
+      "self": "La persona che lascia non può subentrare nella propria posta. Scegli un'altra persona o nessuno."
     },
     "autoReply": {
       "label": "Messaggio di risposta automatica",

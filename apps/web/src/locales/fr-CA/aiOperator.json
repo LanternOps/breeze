@@ -249,7 +249,8 @@
       "pickContact": "Choisir un contact",
       "addressPlaceholder": "nom@example.com",
       "contactsFailed": "Échec du chargement des contacts.",
-      "loadMore": "Charger plus de contacts"
+      "loadMore": "Charger plus de contacts",
+      "self": "La personne qui part ne peut pas hériter de son propre courrier. Choisissez quelqu'un d'autre, ou personne."
     },
     "autoReply": {
       "label": "Message de réponse automatique",

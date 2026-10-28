@@ -403,6 +403,21 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(h.calls).not.toContain('tx');
   });
 
+  it('#10076: a hint that resolves to the inheritor contact refuses invalid_input before any provider read', async () => {
+    const r = await taskService.admitTask({ ...base, recipeInput: { personHint: 'Dana Ruiz', inheritorContactId: CONTACT } });
+    expect(r).toMatchObject({ ok: false, refusal: 'invalid_input' });
+    expect((r as { detail: string }).detail).toContain('cannot inherit their own mail');
+    expect(h.calls).toEqual(['identifyTaskPerson']);
+    expect(h.inserts).toHaveLength(0);
+  });
+
+  it("#10076: a forward address equal to the resolved person's own address refuses invalid_input", async () => {
+    const r = await taskService.admitTask({ ...base, recipeInput: { contactId: CONTACT, forwardTo: 'DANA@customer.example' } });
+    expect(r).toMatchObject({ ok: false, refusal: 'invalid_input' });
+    expect(h.calls).not.toContain('resolveProviderAccounts');
+    expect(h.calls).not.toContain('tx');
+  });
+
   it('a contact deleted between identification and the insert refuses contact_not_in_org, no row', async () => {
     h.selectQueue = [[helpdesk]];
     h.pinContact.mockResolvedValue(false);

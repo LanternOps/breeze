@@ -37,6 +37,8 @@ import {
   identityOffboardingInputSchema,
   identityOnboardingCheckpointSchema,
   identityOnboardingInputSchema,
+  selfInheritanceField,
+  SELF_INHERITANCE_MESSAGE,
   serviceRecoveryCheckpointSchema,
   taskCheckpointSchema,
   TASK_CHECKPOINT_VERSION,
@@ -705,6 +707,14 @@ async function prepareContactTargets(
   if (!person.ok) {
     return refuse(person.reason === 'contact_not_in_org' ? 'contact_not_in_org' : 'contact_ambiguous', person.detail);
   }
+  // #10076: the resolved person is never their own inheritor. Every admission
+  // path (the route, Wisp's launchers) reaches here; the input validator could
+  // only compare ids as named, not the contact a hint resolves to.
+  const selfInheritance = selfInheritanceField(recipeInput, {
+    contactId: person.kind === 'existing' ? person.contactId : null,
+    email: person.email,
+  });
+  if (selfInheritance) return refuse('invalid_input', `${selfInheritance}: ${SELF_INHERITANCE_MESSAGE}`);
   const { accounts, problems } = await resolveProviderAccounts(input.orgId, {
     contactId: person.kind === 'existing' ? person.contactId : null,
     email: person.email,

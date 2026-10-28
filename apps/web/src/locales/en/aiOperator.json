@@ -249,7 +249,8 @@
       "pickContact": "Choose a contact",
       "addressPlaceholder": "name@example.com",
       "contactsFailed": "Contacts failed to load.",
-      "loadMore": "Load more contacts"
+      "loadMore": "Load more contacts",
+      "self": "The person leaving can't inherit their own mail. Choose someone else, or no one."
     },
     "autoReply": {
       "label": "Auto-reply message",
