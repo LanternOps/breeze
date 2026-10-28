@@ -168,12 +168,28 @@ describe('StartRecipeForm — person, from a ticket', () => {
     expect(bodies('/ai/operator/task-drafts')[0]!.inputs).toMatchObject({ contactId: CONTACT, personHint: null });
   });
 
-  it('with only a submitter email, choosing the suggestion fills the hint with it', () => {
+  it('with only a submitter email, choosing the suggestion fills the hint with it and sends it as the hint', async () => {
     render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: null, personHint: 'pat@example.com', label: null }} />);
     expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
     fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
     expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('pat@example.com');
     expect(screen.queryByTestId('start-recipe-person-requester')).toBeNull();
+    await preview();
+    expect(bodies('/ai/operator/task-drafts')[0]!.inputs).toMatchObject({ contactId: null, personHint: 'pat@example.com' });
+  });
+
+  it('a requester contact with no display name is named by the submitter email, and choosing it sends the contact', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: CONTACT, personHint: 'pat@example.com', label: null }} />);
+    expect(screen.getByTestId('start-recipe-person-requester')).toHaveTextContent('pat@example.com');
+    fireEvent.click(screen.getByTestId('start-recipe-person-use-requester'));
+    await preview();
+    expect(bodies('/ai/operator/task-drafts')[0]!.inputs).toMatchObject({ contactId: CONTACT, personHint: null });
+  });
+
+  it('a requester contact the ticket cannot name is not offered: an unnamed suggestion cannot be checked', () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'ticket', contactId: CONTACT, personHint: null, label: null }} />);
+    expect(screen.queryByTestId('start-recipe-person-requester')).toBeNull();
+    expect((screen.getByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('');
   });
 
   it('switching from the chosen requester to a typed name starts empty, not with the requester email', () => {

@@ -422,10 +422,11 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
         )}
         {offerRequester && (
           <p data-testid="start-recipe-person-requester" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span>{t('startRecipe.person.requesterSuggestion', { name: requester.mode === 'contact' ? requester.label : requester.text })}</span>
+            <span id="start-recipe-person-requester-name">{t('startRecipe.person.requesterSuggestion', { name: requester.mode === 'contact' ? requester.label : requester.text })}</span>
             <button
               type="button"
               data-testid="start-recipe-person-use-requester"
+              aria-describedby="start-recipe-person-requester-name"
               className="underline"
               onClick={() => setPerson(requester)}
             >
