@@ -211,5 +211,12 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   ['manage_tenant_variables:create', 'Tenant-variable values are substituted into every script dispatched to the org\'s devices; an agent that runs scripts must not also choose their inputs.'],
   ['manage_tenant_variables:update', 'Tenant-variable values are substituted into every script dispatched to the org\'s devices; an agent that runs scripts must not also choose their inputs.'],
   ['manage_tenant_variables:delete', 'Deleting a tenant variable changes what every script referencing it receives on the org\'s devices; a person decides it.'],
+  // Full-control W14 (#6784, W14 plan agent exposure): the legal documents customers sign, and their executed records.
+  ['manage_contract_templates:create', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:update', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:create_version', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:publish', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:archive', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_documents:link', 'Filing a signed agreement under a contract is an irreversible change to an executed legal record; a person decides it.'],
   ['manage_audit_baselines:request_apply', 'An apply request is the input to a second person\'s approval that pushes audit policy to up to 500 devices; its requester must be a person, who then cannot approve it.'],
 ]);

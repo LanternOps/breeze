@@ -647,11 +647,17 @@ export async function linkContractDocument(
     );
   }
 
+  // `contract_id IS NULL` in the predicate makes the unattached check above
+  // atomic: of two concurrent links only one matches, and the loser gets the
+  // same 409 as a sequential second link (W14 quorum QW5) — an executed record
+  // is never silently re-filed.
   const [updated] = await db
     .update(contractDocuments)
     .set({ contractId })
-    .where(eq(contractDocuments.id, id))
+    .where(and(eq(contractDocuments.id, id), isNull(contractDocuments.contractId)))
     .returning();
-  if (!updated) throw new ContractDocumentServiceError('Failed to link contract document', 500, 'DOCUMENT_LINK_FAILED');
+  if (!updated) {
+    throw new ContractDocumentServiceError('Contract document is already linked to a contract', 409, 'ALREADY_LINKED');
+  }
   return updated;
 }

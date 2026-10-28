@@ -1087,6 +1087,13 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   browse_device_event_log: new Set(['name', 'displayName', 'message', 'source', 'category', 'user', 'computer', 'logName', 'hostname']),
   manage_tenant_variables: new Set(['key', 'value', 'description', 'orgName']),
   manage_support_sessions: new Set(['attributionLabel', 'endedReason']),
+  // W14 (#6784, W14-D6): staff-authored rate-card / work-type / template text, customer-facing invoice text, signer
+  // names and device-reported hostnames. Data for the model, never instructions.
+  manage_billing_profiles: new Set(['name', 'notes', 'modelId']),
+  manage_billing_settings: new Set(['invoiceFooter', 'billingTermsAndConditions', 'billingCompanyName', 'billingContact', 'billingContactName', 'name', 'invoiceNumberPrefix', 'billingWebsite', 'taxId']),
+  manage_contract_templates: new Set(['name', 'description', 'bodyHtml', 'warnings']),
+  manage_contract_documents: new Set(['templateName', 'signerName', 'acceptanceMethod', 'quoteNumber']),
+  get_device_billing: new Set(['description', 'contractName', 'name']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

@@ -58,6 +58,7 @@ import type { DeviceSnapshotRow } from './contractQuantities';
 import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
+import { INVOICE_LINE_DEVICES_DEFAULT_LIMIT, INVOICE_LINE_DEVICES_MAX_LIMIT, listInvoiceLineDevices } from './billingEvidence';
 
 function actorFromAuth(auth: AuthContext): InvoiceActor {
   return {
@@ -211,11 +212,14 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_invoice',
       description:
-        "Get an invoice header and all lines, including depositDue and depositPaid when configured. All amounts use its currencyCode; never sum across currencies; group by currencyCode for totals.",
+        "Get an invoice header and all lines, with depositDue and depositPaid when configured; with lineId, the devices that line billed. Amounts use its currencyCode; never sum across currencies.",
       input_schema: {
         type: 'object' as const,
         properties: {
-          invoiceId: { type: 'string', description: 'Invoice UUID' }
+          invoiceId: { type: 'string', description: 'Invoice UUID' },
+          lineId: { type: 'string', description: 'Invoice line UUID: return the devices that line billed (paged)' },
+          limit: { type: 'number', description: 'Max billed devices per page with lineId (default 100, max 500)' },
+          cursor: { type: 'string', description: 'lineId: nextCursor from the previous page' }
         },
         required: ['invoiceId']
       }
@@ -224,6 +228,16 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       const refusal = partnerScopeRefusal(auth);
       if (refusal) return refusal;
       try {
+        // Full-control W14 (#6784): GET /invoices/:id/lines/:lineId/devices (invoices:read), same service.
+        if (input.lineId) {
+          const invoiceId = String(input.invoiceId);
+          const lineId = String(input.lineId);
+          const limit = Math.min(Math.max(1, Number(input.limit) || INVOICE_LINE_DEVICES_DEFAULT_LIMIT), INVOICE_LINE_DEVICES_MAX_LIMIT);
+          const page = await listInvoiceLineDevices(
+            invoiceId, lineId, { limit, ...(input.cursor ? { cursor: String(input.cursor) } : {}) }, actorFromAuth(auth),
+          );
+          return JSON.stringify({ invoiceId, lineId, ...page });
+        }
         const result = await getInvoice(String(input.invoiceId), actorFromAuth(auth));
         return JSON.stringify({ ...result, invoice: withDepositPaid(result.invoice) });
       } catch (err) {
