@@ -39,6 +39,7 @@
 import { createHash } from 'node:crypto';
 import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
+import { encodePageCursor, PAGE_RESUME_KEY, type PageResume } from './aiToolPageResume';
 
 export const PAGE_CONTROL_KEYS = ['limit', 'offset', 'cursor'] as const;
 const CURSOR_MAX_CHARS = 256;
@@ -75,12 +76,7 @@ export function pageFingerprint(toolName: string, input: Record<string, unknown>
   return createHash('sha256').update(`${toolName}\n${JSON.stringify(canonical(filters))}`).digest('hex').slice(0, 16);
 }
 
-type OffsetCursorBody = { f: string; o: number };
-type KeysetCursorBody = { f: string; t: string; i: string };
-
-function encodeCursor(body: OffsetCursorBody | KeysetCursorBody): string {
-  return Buffer.from(JSON.stringify(body), 'utf8').toString('base64url');
-}
+const encodeCursor = encodePageCursor;
 
 type DecodeResult = { ok: true; body: Record<string, unknown> } | { ok: false; code: 'CURSOR_MISMATCH' | 'CURSOR_INVALID'; error: string };
 
@@ -154,6 +150,12 @@ export function pageEnvelope<T>(p: {
     ...(p.total !== undefined ? { total: p.total, totalMode: p.totalMode ?? 'exact' } : {}),
     hasMore,
     nextCursor: hasMore ? encodeCursor({ f: p.fingerprint, o: nextOffset }) : null,
+    // #10385: lets chat compaction resume after the last row it kept. Stripped
+    // by compactToolResultForChat before the model sees the result; omitted on
+    // an empty page, which has no rows to drop.
+    ...(items.length > 0
+      ? { [PAGE_RESUME_KEY]: { v: 1, key: p.key, f: p.fingerprint, mode: 'offset', offset: p.offset, rows: items.length } satisfies PageResume }
+      : {}),
   };
 }
 
@@ -191,6 +193,8 @@ export function keysetEnvelope<T>(p: {
    * `.toISOString()` string. See the Q1 module doc above.
    */
   keyOf: (item: T) => { t: string; i: string };
+  /** The decoded cursor this page started after (`readKeysetArgs().after`); null on the first page. */
+  after: { t: string; i: string } | null;
   total?: number;
   totalMode?: 'exact' | 'estimated';
 }): Record<string, unknown> {
@@ -204,6 +208,24 @@ export function keysetEnvelope<T>(p: {
     ...(p.total !== undefined ? { total: p.total, totalMode: p.totalMode ?? 'exact' } : {}),
     hasMore,
     nextCursor: hasMore && last !== undefined ? encodeCursor({ f: p.fingerprint, ...p.keyOf(last) }) : null,
+    // #10385: every row's sort key, so chat compaction can resume after the
+    // last row it kept. Stripped by compactToolResultForChat before the model
+    // sees the result; omitted on an empty page, which has no rows to drop.
+    ...(items.length > 0
+      ? {
+        [PAGE_RESUME_KEY]: {
+          v: 1,
+          key: p.key,
+          f: p.fingerprint,
+          mode: 'keyset',
+          after: p.after ? [p.after.t, p.after.i] : null,
+          keys: items.map((item) => {
+            const k = p.keyOf(item);
+            return [k.t, k.i];
+          }),
+        } satisfies PageResume,
+      }
+      : {}),
   };
 }
 

@@ -252,7 +252,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       });
 
       const envelope = keysetEnvelope({
-        key: 'entries', items, limit, fingerprint,
+        key: 'entries', items, limit, fingerprint, after,
         keyOf: (r) => ({ t: r.timestampText, i: r.id }),
       });
       const outEntries = (envelope.entries as Array<Record<string, unknown>>).map(
@@ -407,7 +407,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       });
 
       const envelope = keysetEnvelope({
-        key: 'changes', items, limit, fingerprint, total,
+        key: 'changes', items, limit, fingerprint, after, total,
         keyOf: (r) => ({ t: r.timestampText, i: r.id }),
       });
       const outChanges = (envelope.changes as Array<Record<string, unknown>>).map(

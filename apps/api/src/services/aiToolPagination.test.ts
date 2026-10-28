@@ -14,6 +14,7 @@ import {
   readKeysetArgs,
   readPageArgs,
 } from './aiToolPagination';
+import { PAGE_RESUME_KEY, readPageResume, resumeCursorAfter } from './aiToolPageResume';
 
 describe('readPageArgs', () => {
   const opts = { defaultLimit: 25, maxLimit: 100 };
@@ -82,7 +83,7 @@ describe('keyset mode', () => {
       id: `00000000-0000-0000-0000-0000000000${String(20 - i).padStart(2, '0')}`,
       triggeredAtText: `2026-09-20 10:00:${String(59 - i).padStart(2, '0')}.000000`,
     }));
-    const env = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
+    const env = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
     expect(env).toMatchObject({ showing: 20, limit: 20, hasMore: true });
     expect(env).not.toHaveProperty('offset');
     const next = readKeysetArgs('alerts', { severity: 'high', cursor: env.nextCursor }, opts);
@@ -98,7 +99,7 @@ describe('keyset mode', () => {
       { id: '11111111-1111-1111-1111-111111111111', triggeredAtText: '2026-09-20 10:00:40.123456' },
       { id: '22222222-2222-2222-2222-222222222222', triggeredAtText: '2026-09-20 10:00:40.123001' },
     ];
-    const env = keysetEnvelope({ key: 'alerts', items, limit: 1, fingerprint: args.fingerprint, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
+    const env = keysetEnvelope({ key: 'alerts', items, limit: 1, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
     expect(env.hasMore).toBe(true);
     const next = readKeysetArgs('alerts', { cursor: env.nextCursor }, opts);
     // Exact string match, not just "close" — a JS Date round-trip would collapse
@@ -118,7 +119,7 @@ describe('keyset mode', () => {
       { id: '33333333-3333-3333-3333-333333333333', triggeredAtText: '2026-09-20 10:00:40.5' },
       { id: '44444444-4444-4444-4444-444444444444', triggeredAtText: '2026-09-20 10:00:39.999999' },
     ];
-    const env = keysetEnvelope({ key: 'alerts', items, limit: 1, fingerprint: args.fingerprint, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
+    const env = keysetEnvelope({ key: 'alerts', items, limit: 1, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
     expect(env.hasMore).toBe(true);
     const next = readKeysetArgs('alerts', { cursor: env.nextCursor }, opts);
     expect(next).toMatchObject({ ok: true, after: { t: '2026-09-20 10:00:40.5', i: '33333333-3333-3333-3333-333333333333' } });
@@ -208,5 +209,58 @@ describe('schema text', () => {
   it('states BOTH default and max in the Zod .describe() text, matching the registry wording (D12b/D14)', () => {
     expect(pageZodShape(25, 100).limit.description).toBe('Max results (default 25, max 100)');
     expect(keysetZodShape(20, 100).limit.description).toBe('Max results (default 20, max 100)');
+  });
+});
+
+// #10385: the envelope carries the material chat compaction needs to resume
+// after the last row it kept; the minted cursor must decode with the tool's
+// own readers to exactly that position.
+describe('page-resume descriptor', () => {
+  const opts = { defaultLimit: 20, maxLimit: 100 };
+
+  it('offset: resumes at offset + kept, and at the page start when nothing was kept', () => {
+    const args = readPageArgs('list_things', { status: 'open', offset: 40 }, opts);
+    if (!args.ok) throw new Error('unexpected');
+    const env = pageEnvelope({ key: 'rows', items: Array.from({ length: 20 }, (_, i) => ({ i })), limit: 20, offset: 40, fingerprint: args.fingerprint, total: 60 });
+    const resume = readPageResume(env[PAGE_RESUME_KEY]);
+    expect(resume).toMatchObject({ mode: 'offset', key: 'rows', offset: 40, rows: 20 });
+    const at = (kept: number) => readPageArgs('list_things', { status: 'open', cursor: resumeCursorAfter(resume!, kept) }, opts);
+    expect(at(7)).toMatchObject({ ok: true, offset: 47 });
+    expect(at(0)).toMatchObject({ ok: true, offset: 40 });
+  });
+
+  it('keyset: resumes after the kept row, at `after` when nothing was kept, and has no cursor before page 1', () => {
+    const items = Array.from({ length: 3 }, (_, i) => ({
+      id: `00000000-0000-0000-0000-00000000000${i}`,
+      triggeredAtText: `2026-09-20 10:00:4${5 - i}.123456`,
+    }));
+    const after = { t: '2026-09-20 10:00:50.000001', i: '00000000-0000-0000-0000-000000000009' };
+    const args = readKeysetArgs('alerts', {}, opts);
+    if (!args.ok) throw new Error('unexpected');
+    const env = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, after, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
+    const resume = readPageResume(env[PAGE_RESUME_KEY]);
+    expect(resume).toMatchObject({ mode: 'keyset', key: 'alerts', after: [after.t, after.i] });
+    expect(readKeysetArgs('alerts', { cursor: resumeCursorAfter(resume!, 2) }, opts))
+      .toMatchObject({ ok: true, after: { t: items[1].triggeredAtText, i: items[1].id } });
+    expect(readKeysetArgs('alerts', { cursor: resumeCursorAfter(resume!, 0) }, opts)).toMatchObject({ ok: true, after });
+
+    const first = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });
+    expect(resumeCursorAfter(readPageResume(first[PAGE_RESUME_KEY])!, 0)).toBeNull();
+  });
+
+  it('keyset: keys cover only the rows on the page, not the over-fetched one', () => {
+    const items = Array.from({ length: 3 }, (_, i) => ({ id: `00000000-0000-0000-0000-00000000000${i}`, t: `2026-09-20 10:00:0${9 - i}` }));
+    const env = keysetEnvelope({ key: 'alerts', items, limit: 2, fingerprint: 'f', after: null, keyOf: (r) => ({ t: r.t, i: r.id }) });
+    expect((readPageResume(env[PAGE_RESUME_KEY]) as { keys: unknown[] }).keys).toHaveLength(2);
+  });
+
+  it('rejects malformed descriptors', () => {
+    for (const bad of [null, [], 'x', { v: 2, key: 'r', f: 'f', mode: 'offset', offset: 0, rows: 1 },
+      { v: 1, key: 'r', f: 'f', mode: 'offset', offset: -1, rows: 1 },
+      { v: 1, key: 'r', f: 'f', mode: 'keyset', after: 'x', keys: [] },
+      { v: 1, key: 'r', f: 'f', mode: 'keyset', after: null, keys: [['a']] },
+      { v: 1, key: '', f: 'f', mode: 'offset', offset: 0, rows: 1 }]) {
+      expect(readPageResume(bad)).toBeNull();
+    }
   });
 });

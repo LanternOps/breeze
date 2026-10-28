@@ -2,6 +2,13 @@ import { redactLogFields, redactLogMessage, redactToolOutputFields } from './log
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText, sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+import {
+  PAGE_RESUME_KEY,
+  pageResumeRowCount,
+  readPageResume,
+  resumeCursorAfter,
+  type PageResume,
+} from './aiToolPageResume';
 
 // Re-exported for existing importers; the rule set lives in ./redactionPatterns.
 export { BARE_SECRET_PATTERNS };
@@ -954,6 +961,49 @@ function extractPagingEnvelope(value: unknown): Record<string, unknown> {
   return out;
 }
 
+/**
+ * #10385: split the page-resume descriptor (aiToolPageResume.ts) off a tool
+ * result. It is ALWAYS removed — it is compaction input, never model output —
+ * and returned only when well-formed.
+ */
+function takePageResume(value: unknown): { payload: unknown; resume: PageResume | null } {
+  if (!isRecord(value) || !(PAGE_RESUME_KEY in value)) return { payload: value, resume: null };
+  const { [PAGE_RESUME_KEY]: descriptor, ...payload } = value;
+  return { payload, resume: readPageResume(descriptor) };
+}
+
+/** Row count of the page the tool built, or null if it no longer matches the descriptor. */
+function pagedRowCount(source: unknown, resume: PageResume): number | null {
+  if (!isRecord(source)) return null;
+  const rows = source[resume.key];
+  if (!Array.isArray(rows) || rows.length !== pageResumeRowCount(resume)) return null;
+  return rows.length;
+}
+
+/**
+ * #10385: compaction cut the paged row array, so the tool's `nextCursor` /
+ * `showing` / `hasMore` describe rows the model never received — following the
+ * cursor would skip them, and a `hasMore: false` page offered no cursor at all.
+ * Rewrite the envelope to describe what was actually kept: `nextCursor`
+ * resumes right after the last kept row. `total` is the size of the whole
+ * result set and stays as the tool reported it.
+ */
+function applyPageResume(compacted: unknown, source: unknown, resume: PageResume): unknown {
+  const original = pagedRowCount(source, resume);
+  if (original === null || !isRecord(compacted)) return compacted;
+  const rows = compacted[resume.key];
+  if (!Array.isArray(rows)) return compacted;
+  const hasSentinel = rows.length > 0 && priorArrayOmitted(rows[rows.length - 1]) !== null;
+  const kept = rows.length - (hasSentinel ? 1 : 0);
+  if (kept >= original) return compacted;
+  return { ...compacted, showing: kept, hasMore: true, nextCursor: resumeCursorAfter(resume, kept) };
+}
+
+// #10385: a digest carries no rows, so the only lossless continuation is this
+// same page position again, with fewer rows per call.
+const DIGEST_RESUME_HINT = 'Call again with the nextCursor value and a smaller limit';
+const DIGEST_RESTART_HINT = 'Call again with a smaller limit';
+
 function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
   if (!isRecord(value)) return null;
   const { artifact, compacted } = value as Record<string, unknown>;
@@ -1324,6 +1374,10 @@ export function compactToolResultForChat(
     });
   }
 
+  // #10385: the page-resume descriptor is compaction input — strip it before
+  // anything else sees the payload, and keep it to fix the envelope below.
+  const { payload, resume } = takePageResume(parsed);
+
   const stats = emptyStats();
   // A-W05 (D12): resolved once per call — every tier's stats copy carries it
   // (object spread), so the sentinel and _chat.nextStep always agree.
@@ -1333,7 +1387,7 @@ export function compactToolResultForChat(
   // cannot survive into a truncated `preview` further down (#2603). This is the
   // single chokepoint every aiTools*.ts result passes through, which is why the
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
-  const errorScrubbed = scrubErrorFieldsDeep(parsed, 0, false, { toolName });
+  const errorScrubbed = scrubErrorFieldsDeep(payload, 0, false, { toolName });
 
   // Neutralize injection-shaped text in fields that carry raw, endpoint- or
   // vendor-sourced content before it is measured/compacted. Same chokepoint
@@ -1357,25 +1411,38 @@ export function compactToolResultForChat(
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);
-    const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
+    const resumed = resume ? applyPageResume(compacted, sanitized, resume) : compacted;
+    const withMeta = appendChatMeta(resumed, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
     if (serialized.length <= maxChars) {
       return serialized;
     }
   }
 
+  // #10385: the digest drops EVERY row, so the tool's nextCursor (which points
+  // past this page) would skip all of them. Point back at the start of this
+  // page instead, and ask for a smaller one.
+  const pagingEnvelope = extractPagingEnvelope(sanitized);
+  let nextStep = SENTINEL_HINTS[resolvePaginationHint(toolName)];
+  const pagedRows = resume ? pagedRowCount(sanitized, resume) : null;
+  if (resume && pagedRows !== null && pagedRows > 0) {
+    const cursor = resumeCursorAfter(resume, 0);
+    Object.assign(pagingEnvelope, { showing: 0, hasMore: true, nextCursor: cursor });
+    nextStep = cursor ? DIGEST_RESUME_HINT : DIGEST_RESTART_HINT;
+  }
+
   return JSON.stringify({
-    ...extractPagingEnvelope(sanitized),
+    ...pagingEnvelope,
     summarized: true,
     _chat: {
       outputCompacted: true,
       originalChars: rawResult.length,
       reason: 'max_output_chars_exceeded',
-      nextStep: SENTINEL_HINTS[resolvePaginationHint(toolName)],
+      nextStep,
     },
     summary: {
       toolName,
-      keys: isRecord(parsed) ? Object.keys(parsed).slice(0, 20) : [],
+      keys: isRecord(payload) ? Object.keys(payload).slice(0, 20) : [],
     },
     preview: serialized.slice(0, RAW_PREVIEW_CHARS),
   });
