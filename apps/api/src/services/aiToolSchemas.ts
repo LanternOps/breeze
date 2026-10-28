@@ -60,6 +60,8 @@ import { topologyOpsToolSchemas } from './aiToolSchemasTopologyOps';
 import { networkMonitoringToolSchemas } from './aiToolSchemasNetworkMonitoring';
 import { aiReadToolSchemas } from './aiToolSchemasAiReads';
 import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
+import { softwareToolSchemas } from './aiToolSchemasSoftware';
+import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -596,6 +598,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...aiReadToolSchemas,
   // Full-control W11 (#6781): security policy tools.
   ...securityPolicyToolSchemas,
+  // Full-control W12 (#6782): software, fleet-finding and custom-field tools.
+  ...softwareToolSchemas,
+  // Full-control W13 (#6783): device inventory and ops tools (PR A).
+  ...deviceOpsToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -1919,6 +1925,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     startTime: z.string().datetime({ offset: true }).optional(),
     endTime: z.string().datetime({ offset: true }).optional(),
     message: z.string().max(500).optional(),
+    // Full-control W13 (#6783): watchdog logs (component `watchdog.*`) only, or excluding them.
+    source: z.enum(['agent', 'watchdog']).optional(),
     ...keysetZodShape(18, 500),
     includeFields: z.boolean().optional(),
   }),

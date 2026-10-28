@@ -160,7 +160,7 @@ describe('tier-3 approval scope classification', () => {
       'edr_endpoint_action', 'manage_ai_agents',
       // W03 (#6757): whole-tool supervised backstop; all six power actions classified.
       // W04 (#6758): whole-tool supervised backstops; every action classified.
-      'manage_browser_policy', 'manage_hyperv_vm', 'manage_peripheral_policy',
+      'manage_browser_policy', 'manage_device_software', 'manage_hyperv_vm', 'manage_peripheral_policy',
       'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',
@@ -869,6 +869,47 @@ describe('W04 class rows (#6758)', () => {
   it.each(W04_COLLECT_EVIDENCE)('collect_evidence evidenceTypes %j is %s', (evidenceTypes, cls) => {
     expect(toolActionEnum('collect_evidence') ?? []).toEqual([]);
     expect(classOf('collect_evidence', { evidenceTypes: [...evidenceTypes] })).toBe(cls);
+  });
+});
+
+// ── W13 class rows (#6783, PR A; W13 plan class review) ───────────────────
+const W13_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_device_function: { get: 't1', set: 'supervised' },
+  manage_device_links: { list: 't1', get: 't1', for_device: 't1', create: 't2', update: 't2', dissolve: 't2' },
+  manage_manual_assets: { list: 't1', create: 't2', update: 't2', link: 't2', unlink: 't2', delete: 'supervised' },
+  manage_device_warranty: { get: 't1', expiring: 't1', refresh: 'supervised' },
+  // W13 PR B (#6783).
+  browse_device_event_log: { list_logs: 't2', query: 'supervised', get_event: 'supervised' },
+  manage_tenant_variables: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_support_sessions: { list: 't1', get: 't1', end: 'supervised' },
+};
+const W13_WHOLE_TOOL: Record<string, W02Class> = {
+  get_device_events: 't1',
+  get_device_health: 't1',
+  get_process_samples: 't1',
+  get_management_posture: 't1',
+};
+
+describe('W13 class rows (#6783)', () => {
+  it.each(Object.keys(W13_EXPECTED))('%s: W13_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W13_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W13_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W13_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe(cls);
+  });
+
+  it('search_agent_logs stays tier 1 with the W13 source filter', () => {
+    expect(classOf('search_agent_logs', { source: 'watchdog' })).toBe('t1');
   });
 });
 

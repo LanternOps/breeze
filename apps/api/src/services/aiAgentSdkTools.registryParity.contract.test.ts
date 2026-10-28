@@ -441,6 +441,76 @@ describe('W11 security policy wiring (#6781)', () => {
   });
 });
 
+/** Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Pinned so a later wave cannot silently un-wire one. */
+const W12_TOOLS = [
+  'manage_software_catalog', 'search_packages', 'manage_software_deployments', 'get_device_software', 'manage_device_software',
+  'manage_software_inventory', 'bootstrap_homebrew', 'manage_fleet_findings', 'manage_custom_fields',
+] as const;
+
+describe('W12 software tool wiring (#6782)', () => {
+  it.each(W12_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('the device-reaching single-purpose tools are registry tier 3', () => {
+    expect(TOOL_TIERS.manage_device_software).toBe(3);
+    expect(TOOL_TIERS.bootstrap_homebrew).toBe(3);
+  });
+
+  it('none of the W12 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W12_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+});
+
+/** Spec 2026-09-23 W13 (#6783, PR A): device inventory and record tools. Pinned so a later wave cannot silently un-wire one. */
+const W13_TOOLS = [
+  'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
+  'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  // PR B.
+  'browse_device_event_log', 'manage_tenant_variables', 'manage_support_sessions',
+] as const;
+
+describe('W13 device inventory and ops wiring (#6783)', () => {
+  it.each(W13_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('every W13 tool is registry tier 1 (writes are classed per action)', () => {
+    for (const name of W13_TOOLS) expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS], name).toBe(1);
+  });
+
+  it('none of the W13 tools is alwaysLoad (they stay behind tool search)', () => {
+    for (const name of W13_TOOLS) expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+  });
+
+  it('search_agent_logs carries the additive source filter on all three input surfaces', () => {
+    const props = (aiTools.get('search_agent_logs')!.definition.input_schema as { properties: Record<string, { enum?: string[] }> }).properties;
+    expect(props.source?.enum).toEqual(['agent', 'watchdog']);
+    expect(Object.keys((toolInputSchemas.search_agent_logs as unknown as { shape: Record<string, unknown> }).shape)).toContain('source');
+    expect(Object.keys(declaredToolsByName().get('search_agent_logs')!.inputSchema)).toContain('source');
+  });
+});
+
 describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
   const configurations = [
     { M365_ENABLED: 'false', GOOGLE_WORKSPACE_ENABLED: 'false', BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'false', DELEGANT_BASE_URL: '' },

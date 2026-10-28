@@ -1154,6 +1154,69 @@ function extractScriptIdFromAction(action: unknown): string | null {
   return null;
 }
 
+/** The script ids a Job's actions run — the rule both remediation consumers match on. */
+export function remediationScriptIdsOf(actions: unknown): string[] {
+  if (!Array.isArray(actions)) return [];
+  const out: string[] = [];
+  for (const action of actions) {
+    const id = extractScriptIdFromAction(action);
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Tool Catalog W06 (#5221), plan Decision 16 — whether a standalone Job is a
+ * compliance-remediation target ("S+R"), and so never converts in W06:
+ *
+ *  - an automation policy rule names it (`remediationAutomationId` /
+ *    `remediation.automationId`, as `extractRemediationAutomationId` reads), or
+ *  - it runs a script that is the remediation script of an automation policy
+ *    (consumer 1, `resolvePolicyRemediationAutomationIdForOrg`) or of a
+ *    config-policy compliance rule (consumer 2, `triggerConfigPolicyRemediation`)
+ *    anywhere in the Job's partner — both pick ANY enabled Job that runs the
+ *    script, so script match is the rule (`remediationScriptIdsOf`, the same
+ *    extraction they use).
+ *
+ * Conservative by construction: scoped to the partner, not to the exact
+ * device org a consumer would resolve for, so a false positive only keeps a
+ * Job on the legacy engine. System context; `database` is the caller's.
+ */
+export async function isComplianceRemediationTarget(
+  database: Pick<typeof db, 'execute'>,
+  automation: { id: string; orgId: string | null; partnerId: string | null; actions: unknown },
+  partnerId: string,
+): Promise<boolean> {
+  const hit = (rows: unknown) => Array.isArray(rows) && rows.length > 0;
+  const explicit = await database.execute(sql`
+    SELECT 1 AS hit FROM automation_policies p
+    WHERE (p.rules @> ${JSON.stringify([{ remediationAutomationId: automation.id }])}::jsonb
+        OR p.rules @> ${JSON.stringify([{ remediation: { automationId: automation.id } }])}::jsonb)
+    LIMIT 1`);
+  if (hit(explicit)) return true;
+
+  const scriptIds = remediationScriptIdsOf(automation.actions);
+  if (scriptIds.length === 0) return false;
+
+  const byPolicy = await database.execute(sql`
+    SELECT 1 AS hit FROM automation_policies p
+    LEFT JOIN organizations o ON o.id = p.org_id
+    WHERE p.remediation_script_id::text = ANY(${sqlTextArray(scriptIds)})
+      AND (p.partner_id = ${partnerId}::uuid OR o.partner_id = ${partnerId}::uuid)
+    LIMIT 1`);
+  if (hit(byPolicy)) return true;
+
+  const byConfigRule = await database.execute(sql`
+    SELECT 1 AS hit FROM config_policy_compliance_rules r
+    JOIN config_policy_feature_links l ON l.id = r.feature_link_id
+    JOIN configuration_policies cp ON cp.id = l.config_policy_id
+    LEFT JOIN organizations o ON o.id = cp.org_id
+    WHERE r.remediation_script_id::text = ANY(${sqlTextArray(scriptIds)})
+      AND (cp.partner_id = ${partnerId}::uuid OR o.partner_id = ${partnerId}::uuid)
+    LIMIT 1`);
+  return hit(byConfigRule);
+}
+
 export async function resolvePolicyRemediationAutomationId(
   policy: PolicyRow,
   auth?: PartnerWideReadAuth | null

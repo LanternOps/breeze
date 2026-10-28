@@ -30,7 +30,8 @@
     "./validators/topologyPresence": "./src/validators/topologyPresence.ts",
     "./entitlements": "./src/entitlements/index.ts",
     "./promptHost": "./src/promptHost/index.ts",
-    "./promptCatalog": "./src/promptCatalog/index.ts"
+    "./promptCatalog": "./src/promptCatalog/index.ts",
+    "./utils/brandContrast": "./src/utils/brandContrast.ts"
   },
   "scripts": {
     "test": "vitest",

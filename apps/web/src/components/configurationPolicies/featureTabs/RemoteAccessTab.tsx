@@ -30,6 +30,9 @@ type RemoteAccessSettings = {
   consentUnavailableBehavior: "proceed" | "block";
   notifyOnSessionEnd: boolean;
   showActiveIndicator: boolean;
+  // The person at the device can end the session from the on-screen
+  // indicator (after a confirmation). Server default true.
+  allowUserEndSession: boolean;
   technicianIdentityLevel: "name_email" | "name" | "generic";
 };
 const defaults: RemoteAccessSettings = {
@@ -48,6 +51,7 @@ const defaults: RemoteAccessSettings = {
   consentUnavailableBehavior: "proceed",
   notifyOnSessionEnd: true,
   showActiveIndicator: true,
+  allowUserEndSession: true,
   technicianIdentityLevel: "name_email",
 };
 const idleTimeoutOptions = [1, 2, 5, 10, 15, 30];
@@ -82,11 +86,13 @@ function ToggleRow({
   description,
   checked,
   onChange,
+  disabled = false,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-md border bg-background px-4 py-3">
@@ -97,7 +103,9 @@ function ToggleRow({
       <button
         type="button"
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${checked ? "bg-emerald-500/80" : "bg-muted"}`}
+        disabled={disabled}
+        aria-pressed={checked}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${disabled ? "opacity-50 cursor-not-allowed " : ""}${checked ? "bg-emerald-500/80" : "bg-muted"}`}
       >
         <span
           className={`inline-block h-5 w-5 rounded-full bg-white transition ${checked ? "translate-x-5" : "translate-x-1"}`}
@@ -547,6 +555,17 @@ export default function RemoteAccessTab({
             description={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.showIndicatorHelp")}
             checked={settings.showActiveIndicator}
             onChange={(v) => update("showActiveIndicator", v)}
+          />
+          <ToggleRow
+            label={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.allowUserEnd")}
+            description={
+              settings.showActiveIndicator
+                ? i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.allowUserEndHelp")
+                : i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.allowUserEndNeedsIndicator")
+            }
+            checked={settings.allowUserEndSession && settings.showActiveIndicator}
+            disabled={!settings.showActiveIndicator}
+            onChange={(v) => update("allowUserEndSession", v)}
           />
           <ToggleRow
             label={i18n.t("policies:configurationPolicies.featureTabs.remoteAccessTab.notifyOnEnd")}

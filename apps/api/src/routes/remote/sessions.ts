@@ -502,6 +502,7 @@ sessionRoutes.get(
         type: remoteSessions.type,
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
+        endReason: remoteSessions.endReason,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -528,6 +529,8 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
+        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        endReason: s.endReason ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -662,6 +665,7 @@ sessionRoutes.get(
         type: remoteSessions.type,
         status: remoteSessions.status,
         terminationPhase: remoteSessions.terminationPhase,
+        endReason: remoteSessions.endReason,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -689,6 +693,8 @@ sessionRoutes.get(
         type: s.type,
         status: s.status,
         terminationPhase: s.terminationPhase ?? 'none',
+        // #10190 W06: why it ended, when known ('ended_by_user'); else null.
+        endReason: s.endReason ?? null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -767,6 +773,8 @@ sessionRoutes.get(
       // the agent has not yet acknowledged the stop. The web UI must not
       // render such a session as connected.
       terminationPhase: session.terminationPhase ?? 'none',
+      // #10190 W06: 'ended_by_user' when the person at the keyboard ended it.
+      endReason: session.endReason ?? null,
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
       iceCandidates: session.iceCandidates,

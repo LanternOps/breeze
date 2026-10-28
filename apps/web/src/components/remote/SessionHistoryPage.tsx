@@ -161,6 +161,11 @@ export default function SessionHistoryPage({ limit }: SessionHistoryPageProps) {
                     <dt className="text-sm text-muted-foreground">{t('common:labels.status')}</dt>
                     <dd className="text-sm capitalize">
                       {selectedSession.status}
+                      {selectedSession.endReason === 'ended_by_user' && (
+                        <span className="ml-2 normal-case text-xs text-muted-foreground">
+                          {t('sessionHistoryPage.endedByUser')}
+                        </span>
+                      )}
                       {selectedSession.terminationPhase === 'pending' && (
                         <span className="ml-2 normal-case text-xs text-warning">
                           {t('sessionHistoryPage.teardownPending')}

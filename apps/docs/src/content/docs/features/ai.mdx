@@ -35,9 +35,11 @@ The workers are the built-in AI every Breeze deployment has.
 
 ## Wisp
 
-**[Wisp](/features/wisp/)** is one per person and sits above the workers. It keeps an eye on the estate that person can see, nudges them when something needs a human, and hands focused jobs to the workers. What it hands off shows up as a run or an AI task.
+**[Wisp](/features/wisp/)** is one per person and sits above the workers. It keeps an eye on the estate that person can see, nudges them when something needs a human, and hands focused jobs to the workers. What it hands off shows up as a run or an AI task. Wisp runs on Breeze Cloud only: on a self-hosted server its sidebar entry and page show a lock, and there is nothing to configure.
 
 ## Governance
+
+AI settings have one home, **Settings → AI** (`/settings/ai`, v0.125.0+). It gathers the AI cards you are allowed to open, including AI Usage, Script authoring and Tool Sources; their pages keep their addresses.
 
 The same controls apply to every worker: the [AI risk engine](#ai-risk-engine) and its tiers, [Approvals](#approval-workflow), [rate limits](#rate-limits), [cost tracking](#ai-cost-tracking), [bring your own LLM key](/features/bring-your-own-llm-key/), [tool sources](/features/tool-sources/) and the audit trail.
 
@@ -330,7 +332,7 @@ Every AI session tracks token usage and estimated cost. The `aiCostTracker` serv
 
 ### Viewing costs
 
-Navigate to **Settings → AI Usage** to view:
+Navigate to **Settings → AI → AI Usage** (`/settings/ai-usage`) to view:
 
 | Metric | Description |
 |---|---|
@@ -603,6 +605,63 @@ These tools read security status and compliance, and manage security recommendat
 Three actions are never available to the assistant or to MCP, by design: completing an access review (it removes members and ends their sessions), approving an audit-baseline apply request, and revealing a recovery key. Do these in the web app. Writes to access reviews, compliance policies and PAM rules need a session that has completed MFA.
 
 Access reviews and PAM rules are available in chat and over MCP only; AI agents are never offered them. AI agents can read the rest. Their recommendation, security-policy, compliance-policy and recovery-key writes become proposals that a person approves, and they cannot create audit baselines or apply requests. A session limited to some sites or devices cannot change organization-wide records (security policies, recommendation status, compliance policies, audit baselines) or use access reviews.
+
+### Software tools
+
+These tools manage the software catalog, search winget and Homebrew, deploy catalog packages, read and change the software installed on a device, review the software inventory, and handle fleet findings and custom fields. They are available in AI chat and over MCP. Package, vendor and version names, finding titles and custom-field values are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_software_catalog` (list/get) | 1 | View catalog packages with their versions and winget/Homebrew install methods. Download links show the host only |
+| `manage_software_catalog` (create/update/import_package) | 2 | Add a package (or import one with its install methods) or edit its name, vendor and description. A partner-wide package (`ownerScope: partner`) needs approval |
+| `manage_software_catalog` (add_version/update_version/promote_version/add_install_method/update_install_method/delete_install_method/archive) | 3 | Change which installer a package uses, or archive it. Armed auto-install policies and automations pick up the new installer without another approval, so each change is approved. Versions with install scripts, and partner-wide packages, are changed in the web app |
+| `search_packages` | 1 | Search winget (Windows) or Homebrew (macOS) for a package id to add as an install method |
+| `manage_software_deployments` (list/get/summary/results) | 1 | View software deployments and each device's result |
+| `manage_software_deployments` (cancel) | 2 | Cancel a deployment's pending installs |
+| `manage_software_deployments` (create/retry) | 3 | Install a catalog package on up to 100 named devices, or retry failed installs. If the package's installer changes after you approve, the deployment is refused |
+| `get_device_software` | 1 | Installed software on one device |
+| `manage_device_software` (update/uninstall) | 3 | Update or uninstall an application on one device |
+| `bootstrap_homebrew` | 3 | Install Homebrew on one Mac (needs a signed-in admin user) |
+| `manage_software_inventory` (list/names/devices) | 1 | Software seen across the fleet, its allow/block status, and the devices that have it |
+| `manage_software_inventory` (approve/deny/clear) | 3 | Add software to the organization's default allowlist or blocklist, or remove it. If that policy removes unapproved software automatically, this changes what is uninstalled |
+| `manage_fleet_findings` (acknowledge/dismiss/reopen) | 2 | Acknowledge, dismiss or reopen a fleet finding (read them with `get_fleet_findings`) |
+| `manage_custom_fields` (create_definition/update_definition) | 2 | Create or edit a custom field definition. A partner-wide definition needs approval to create and is edited in the web app |
+| `manage_custom_fields` (delete_definition/set_values) | 3 | Delete a definition (every device's value for it is removed), or set values on one device (the previous values are returned) |
+
+Not available to the assistant or over MCP: uploading an installer, the installer download link, pre- and post-install scripts, deploying to groups or a whole organization, fleet-finding remediation, and the managed-software download-origin policy. Every software, fleet-finding and custom-field write needs a session that has completed MFA.
+
+AI agents can read the software tools. Their catalog, deployment, inventory, fleet-finding and update writes become proposals that a person approves. They are never offered uninstall, `bootstrap_homebrew` or `manage_custom_fields` (custom-field values decide dynamic-group membership, which can widen what an agent may act on). A session limited to some sites or devices cannot change the catalog or the inventory allow/blocklists.
+
+### Device inventory and ops tools
+
+These tools read a device's activity timeline, agent health and recorded process snapshots, report which other management products are on the fleet, and manage per-device records: a device's function, linked device profiles, hand-entered (manual) assets and warranties. They are available in AI chat and over MCP. Event messages, process names, product names, asset notes and warranty text are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `get_device_events` | 1 | Activity timeline for one device: what ran, changed or failed, and who or what did it. Actor emails, IP addresses and raw event details are not returned |
+| `get_device_health` | 1 | The Breeze agent's latest health report for one device: overall state and each component's state and reason |
+| `get_process_samples` | 1 | The recorded top-process snapshot for one device at or before a time (default now). History, not a live process list |
+| `get_management_posture` | 1 | Other management products (RMM, endpoint security, backup, MDM, ...) detected across the fleet, per organization; pass `product` for the devices running one |
+| `search_agent_logs` | 1 | `source: watchdog` returns only the Breeze watchdog's health journal; `source: agent` leaves it out. Without `source` both are returned, as before |
+| `manage_device_function` (get) | 1 | One device's function (domain controller, file server, ...) |
+| `manage_device_function` (set) | 3 | Set or clear a device's function. Dynamic groups can target devices by function, so the change is approved |
+| `manage_device_links` (list/get/for_device) | 1 | Linked device profiles: multi-boot records of one machine, or a VM host and its guests |
+| `manage_device_links` (create/update/dissolve) | 2 | Link 2-10 device records, add or remove members, rename, or unlink them all. Each device keeps its own data |
+| `manage_manual_assets` (list) | 1 | Hand-entered inventory without an agent (spare laptops, phones, printers) |
+| `manage_manual_assets` (create/update/link/unlink) | 2 | Add or edit a hand-entered asset, retire it (`retiredAt`), or link it to an agent device or discovered asset |
+| `manage_manual_assets` (delete) | 3 | Permanently delete a hand-entered asset. Retire it instead to keep the record |
+| `manage_device_warranty` (get/expiring) | 1 | One device's warranty, or devices whose warranty ends within a number of days |
+| `manage_device_warranty` (refresh) | 3 | Re-check one device's warranty with its manufacturer now. The device's serial number is sent to the manufacturer, so the refresh is approved. Devices whose warranty the agent collects (HP) are refused |
+| `browse_device_event_log` (list_logs) | 2 | List a Windows device's event logs, read live from its agent (runs without a prompt, with an audit row) |
+| `browse_device_event_log` (query/get_event) | 3 | Read event text from a device's live event logs. Security and Application logs can hold credentials and personal data, so every read is approved. `search_logs` reads the ingested copy without reaching the device |
+| `manage_tenant_variables` (list) | 1 | Tenant variables that scripts receive as `{{var.key}}`. Secret values are never shown |
+| `manage_tenant_variables` (create/update/delete) | 3 | Change a value that every script on the organization's devices receives. Secret variables and partner-wide variables are changed in the web app; a partner-wide variable can be created here |
+| `manage_support_sessions` (list/get) | 1 | Quick Support sessions and whether their temporary client is online |
+| `manage_support_sessions` (end) | 3 | End a Quick Support session: the temporary client removes itself from the person's machine. Sessions are started in the web app |
+
+Every write, and every live event-log read, needs a session that has completed MFA. A session limited to some sites or devices cannot change tenant variables or use Quick Support sessions.
+
+AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_tenant_variables` writes (an agent that runs scripts must not also choose their inputs) or `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
 
 ---
 

@@ -301,6 +301,12 @@ type AuthRequest struct {
 	// RendererVersion is the renderer build's version, recorded on the
 	// session for the technician-side observation (W02 promptHost telemetry).
 	RendererVersion string `json:"rendererVersion,omitempty"`
+
+	// UILocale is the signed-in user's UI language as the helper probed it
+	// (BCP 47 or POSIX, e.g. "de-DE", "fr_CA.UTF-8"; empty = unknown). The
+	// prompt host negotiates it to a catalog locale (promptcatalog.Negotiate)
+	// for the strings it renders for this session. Additive (#10190 W03).
+	UILocale string `json:"uiLocale,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -322,6 +328,14 @@ type AuthResponse struct {
 	// — in on-demand mode this is the NORMAL answer for a logon-task helper
 	// and the helper should exit 0), "duplicate_key".
 	Code string `json:"code,omitempty"`
+
+	// AgentHandlesTCCNotice tells a macOS helper that the agent shows the
+	// permission notice itself, from this helper's tcc_status reports, so the
+	// helper must not show its own reminder (#10190 W04 skew rule). Additive:
+	// an older agent omits it (false) and the helper keeps reminding, and an
+	// older helper ignores it while the agent never sets it for a helper whose
+	// live advertisement lacks notice.info@1.
+	AgentHandlesTCCNotice bool `json:"agentHandlesTCCNotice,omitempty"`
 }
 
 // Capabilities is sent by the user helper after successful auth.
@@ -779,6 +793,11 @@ type DesktopPrompt struct {
 	NotifyOnEnd bool `json:"notifyOnEnd"`
 	// ShowIndicator controls whether the on-screen session banner is displayed.
 	ShowIndicator bool `json:"showIndicator"`
+	// AllowUserEndSession lets the person at the keyboard end the session
+	// from the session indicator (remote access policy
+	// allow_user_end_session, #10190 W06 OD-5). Absent, as from an older
+	// server, means false: no End session action is offered anywhere.
+	AllowUserEndSession bool `json:"allowUserEndSession,omitempty"`
 }
 
 // ConsentRequest is sent from the service (via the helper) to the desktop

@@ -286,6 +286,33 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_security_policies: 'config_policies',
   manage_compliance_policies: 'config_policies',
   manage_audit_baselines: 'config_policies',
+  // Full-control W12 (#6782): software reads and installs sit with patching_software beside the patch and
+  // software-policy tools; fleet findings beside get_fleet_findings, custom fields beside query_custom_fields.
+  // bootstrap_homebrew is AGENT_HUMAN_ONLY_TOOLS (kept here so the capability map stays total).
+  manage_software_catalog: 'patching_software',
+  search_packages: 'patching_software',
+  manage_software_deployments: 'patching_software',
+  get_device_software: 'patching_software',
+  manage_device_software: 'patching_software',
+  manage_software_inventory: 'patching_software',
+  bootstrap_homebrew: 'patching_software',
+  manage_fleet_findings: 'alerts_monitoring',
+  manage_custom_fields: 'automations_reports',
+  // Full-control W13 (#6783): device inventory reads and records sit beside get_device_details
+  // (automations_reports).
+  get_device_events: 'automations_reports',
+  get_device_health: 'automations_reports',
+  get_process_samples: 'automations_reports',
+  get_management_posture: 'automations_reports',
+  manage_device_function: 'automations_reports',
+  manage_device_links: 'automations_reports',
+  manage_manual_assets: 'automations_reports',
+  manage_device_warranty: 'automations_reports',
+  // W13 PR B (#6783): the live event-log read beside manage_processes; tenant variables beside the script tools;
+  // support sessions beside the remote-access tools.
+  browse_device_event_log: 'scripts_commands',
+  manage_tenant_variables: 'scripts_commands',
+  manage_support_sessions: 'remote_access',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',

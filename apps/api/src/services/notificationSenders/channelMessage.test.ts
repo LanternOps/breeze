@@ -11,6 +11,7 @@ const m = vi.hoisted(() => ({
   sms: vi.fn(),
   pushover: vi.fn(),
   webhook: vi.fn(),
+  pagerduty: vi.fn(),
   partnerRows: vi.fn(),
   order: [] as string[],
 }));
@@ -31,6 +32,7 @@ vi.mock('./emailSender', async (orig) => ({ ...(await orig<object>()), sendEmail
 vi.mock('./smsSender', async (orig) => ({ ...(await orig<object>()), sendSmsNotification: m.sms }));
 vi.mock('./pushoverSender', async (orig) => ({ ...(await orig<object>()), sendPushoverNotification: m.pushover }));
 vi.mock('./webhookSender', async (orig) => ({ ...(await orig<object>()), sendWebhookNotification: m.webhook }));
+vi.mock('./pagerDutySender', async (orig) => ({ ...(await orig<object>()), sendPagerDutyNotification: m.pagerduty }));
 vi.mock('../partnerPushoverDefaults', () => ({
   readPartnerPushoverDefaults: () => ({}),
   applyPartnerPushoverDefaults: (c: unknown) => c,
@@ -51,7 +53,8 @@ function setChannel(type: string, over: Record<string, unknown> = {}, config: un
 }
 
 beforeEach(() => {
-  for (const k of ['findOwned', 'getChannel', 'decrypt', 'throttle', 'email', 'sms', 'pushover', 'webhook', 'partnerRows'] as const) m[k].mockReset();
+  for (const k of ['findOwned', 'getChannel', 'decrypt', 'throttle', 'email', 'sms', 'pushover', 'webhook', 'pagerduty', 'partnerRows'] as const) m[k].mockReset();
+  m.pagerduty.mockResolvedValue({ success: true });
   m.order.length = 0;
   m.throttle.mockResolvedValue({ allowed: true, currentCount: 0, windowExpiresAt: 0 });
   m.email.mockResolvedValue({ success: true });
@@ -63,7 +66,7 @@ beforeEach(() => {
 
 describe('sendChannelMessage', () => {
   it('exports the supported type list', () => {
-    expect([...CHANNEL_MESSAGE_TYPES]).toEqual(['email', 'slack', 'teams', 'sms', 'pushover']);
+    expect([...CHANNEL_MESSAGE_TYPES]).toEqual(['email', 'slack', 'teams', 'sms', 'pushover', 'webhook', 'pagerduty']);
   });
 
   it('email channel: title/body/severity mapped, no device or alert', async () => {
@@ -106,18 +109,37 @@ describe('sendChannelMessage', () => {
     expect(m.pushover.mock.calls[0]![1]).toMatchObject({ alertName: 'Flow paused', summary: 'Nightly sync was paused.', severity: 'medium' });
   });
 
-  it('webhook channel is refused', async () => {
-    setChannel('webhook');
+  // W6 (#5221, Decision 15): webhook and PagerDuty channels receive flow notices.
+  it("webhook send uses the channel's signing", async () => {
+    const cfg = {
+      url: 'https://hooks.example.com/in', method: 'POST', authType: 'bearer', authToken: 'tok',
+      headers: { 'X-Custom': '1' }, payloadTemplate: '{"t":"{{alertName}}"}',
+    };
+    setChannel('webhook', {}, cfg);
     const r = await sendChannelMessage(CH, msg, owner);
-    expect(r).toMatchObject({ ok: false, code: 'channel_type_not_supported' });
-    expect(m.webhook).not.toHaveBeenCalled();
-    expect(m.getChannel).not.toHaveBeenCalled();
+    expect(r).toEqual({ ok: true, channelId: CH, channelType: 'webhook' });
+    const [sentCfg, payload] = m.webhook.mock.calls[0]!;
+    // The channel's own config (URL, auth, headers, template) — the alert dispatcher's path.
+    expect(sentCfg).toEqual(cfg);
+    expect(payload).toMatchObject({ alertName: 'Flow paused', summary: 'Nightly sync was paused.', severity: 'medium', orgId: ORG });
   });
 
-  it('pagerduty channel is refused', async () => {
-    setChannel('pagerduty');
-    const r = await sendChannelMessage(CH, msg, owner);
-    expect(r).toMatchObject({ ok: false, code: 'channel_type_not_supported' });
+  it('pagerduty dedup key is flow:<runId>:<stepId>:<item>', async () => {
+    setChannel('pagerduty', {}, { routingKey: 'rk', severity: 'warning' });
+    const dedupKey = 'flow:run-1:a1_send_notification:3';
+    const r = await sendChannelMessage(CH, { ...msg, dedupKey }, owner);
+    expect(r).toEqual({ ok: true, channelId: CH, channelType: 'pagerduty' });
+    const [sentCfg, payload] = m.pagerduty.mock.calls[0]!;
+    expect(sentCfg).toMatchObject({ routingKey: 'rk', dedupKey });
+    expect(payload).toMatchObject({ alertName: 'Flow paused', summary: 'Nightly sync was paused.', severity: 'medium' });
+  });
+
+  it('pagerduty without a dedup key falls back to a fresh per-send key, never the channel default', async () => {
+    setChannel('pagerduty', {}, { routingKey: 'rk', dedupKey: 'channel-static' });
+    await sendChannelMessage(CH, msg, owner);
+    const [sentCfg] = m.pagerduty.mock.calls[0]!;
+    expect(sentCfg.dedupKey).not.toBe('channel-static');
+    expect(sentCfg.dedupKey).toMatch(/^flow-notice:/);
   });
 
   it('channel of another org is refused', async () => {

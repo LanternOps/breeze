@@ -1057,6 +1057,36 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
     'name', 'description', 'matchSigner', 'matchPathGlob', 'matchParentImage', 'matchCommandLine', 'matchUser',
     'matchAdGroup', 'matchToolName', 'subjectCn', 'signers',
   ]),
+  // Full-control W12 (#6782, W12-D8): package, vendor and version strings are device- or vendor-reported; catalog,
+  // deployment, finding and custom-field names, notes and values are staff-authored or device-written. Data for the
+  // model, never instructions.
+  manage_software_catalog: new Set([
+    'name', 'vendor', 'category', 'description', 'version', 'releaseNotes', 'packageId', 'downloadHost',
+    'silentInstallArgs', 'silentUninstallArgs', 'architecture', 'originalFileName',
+  ]),
+  search_packages: new Set(['id', 'name', 'publisher', 'description', 'version', 'packageId', 'title', 'homepage']),
+  manage_software_deployments: new Set(['name', 'hostname', 'errorMessage', 'output', 'softwareName', 'version', 'error']),
+  get_device_software: new Set(['name', 'version', 'vendor', 'hostname']),
+  manage_device_software: new Set(['name', 'version']),
+  manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
+  manage_fleet_findings: new Set(['title']),
+  manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
+  // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
+  // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
+  // warranty strings are device-reported, vendor-reported or staff-authored. Data for the model, never instructions.
+  get_device_events: new Set(['message', 'action', 'name', 'errorMessage', 'hostname']),
+  get_device_health: new Set(['reason', 'agentVersion', 'hostname']),
+  get_process_samples: new Set(['name', 'user', 'hostname']),
+  get_management_posture: new Set(['name', 'version', 'product', 'hostname', 'displayName', 'orgName']),
+  manage_device_function: new Set(['label', 'evidence']),
+  manage_device_links: new Set(['name', 'hostname', 'displayName']),
+  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
+  manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
+  // W13 PR B (#6783): agent-read event text, staff-authored variable keys / values / descriptions, and the
+  // support-session attribution label. Data for the model, never instructions.
+  browse_device_event_log: new Set(['name', 'displayName', 'message', 'source', 'category', 'user', 'computer', 'logName', 'hostname']),
+  manage_tenant_variables: new Set(['key', 'value', 'description', 'orgName']),
+  manage_support_sessions: new Set(['attributionLabel', 'endedReason']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

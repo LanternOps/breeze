@@ -35,6 +35,8 @@ const EXPECTED: Record<string, Classification> = {
   // guards (role checks, body limits) — not endpoints.
   'ALL /:id/*': 'middleware',
   'ALL /*': 'middleware',
+  // #10190 W03: requireAgentRole on the prompt-identity sub-paths.
+  'ALL /:id/prompt-identity/*': 'middleware',
 
   // --- allowed for a parked device ----------------------------------------
   'POST /:id/heartbeat': 'allow',
@@ -76,6 +78,8 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/workloads': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
+  // #10190 W03: a parked device draws no prompts under an MSP identity.
+  'GET /:id/prompt-identity/logo': 'deny',
   'POST /:id/reliability': 'deny',
   'PUT /:id/changes': 'deny',
   'PUT /:id/peripherals/events': 'deny',

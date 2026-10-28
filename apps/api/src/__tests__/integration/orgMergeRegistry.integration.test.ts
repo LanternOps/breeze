@@ -316,6 +316,7 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
   ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
   contract_documents: 'signed agreements, append-only (2027-01-06-150000, #9075 W4b); column-level UPDATE (contract_id, org_id): the filing link and the merge re-point, all evidence immutable',
+  automation_occurrence_claims: 'append-only cross-engine occurrence claims (2027-01-09-100000, #5221 W06); a claim follows its merged automation so the occurrence is never re-admitted, everything but org_id is immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
@@ -325,6 +326,15 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // bindings, created_at, a non-NULL delegator retarget) but deliberately
   // leaves the owner columns out, so the plain flow_versions repoint passes.
   'flow_versions.flow_versions_immutable_trg': 'freezes publication content only; org_id/partner_id are excluded and may move, so an org_id repoint passes',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): both guards RAISE on every
+  // change except an org_id → org_id restamp (never to or from NULL, partner_id
+  // unchanged) plus the conversion lifecycle columns. Where the row may move is
+  // pinned by the DEFERRED owner-guard constraint triggers, which require the
+  // owner pair to equal the automation's (and the flow's) at commit — so the
+  // merge's repoint, made after automations/flows move, passes, and any other
+  // retarget fails.
+  'flow_automation_conversions.flow_automation_conversions_immutable_trg': 'admits an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation and flow',
+  'automation_occurrence_claims.automation_occurrence_claims_append_only_trg': 'append-only except an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation',
   // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
   // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
   // not name those columns, so the trigger never fires on it.

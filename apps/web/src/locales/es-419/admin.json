@@ -859,6 +859,7 @@
       "session_offer_submitted": "Oferta de sesión enviada",
       "session_consent_granted": "Consentimiento de sesión remota concedido",
       "session_consent_denied": "Sesión remota rechazada por el usuario",
+      "remote.session.ended_by_user": "Sesión remota finalizada por el usuario",
       "session_consent_blocked_unanswered": "Sesión remota bloqueada: la solicitud de consentimiento no se respondió",
       "session_consent_blocked_unavailable": "Sesión remota bloqueada: solicitud de consentimiento no disponible",
       "session_consent_bypassed": "Sesión remota iniciada sin respuesta a la solicitud de consentimiento",

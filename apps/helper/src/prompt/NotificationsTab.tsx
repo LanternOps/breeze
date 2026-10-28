@@ -2,29 +2,38 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+import { messageSender, type MessageView } from '../components/MessageCard';
+import { chromeString } from './chrome';
 import { orderActions, outcomeMessage } from './PromptCard';
 import { applyPlaceholders } from './placeholders';
-import type { PromptListView, PromptState, PromptView } from './types';
+import type { NotificationListView, PromptState, PromptView, VersionNotice } from './types';
 import './prompt.css';
 
 /*
- * The Notifications tab (#10190, spec section 3.2): the in-memory list of this
- * session's prompts that Rust keeps (persistent entries until they expire,
- * plus open prompts without a card). Assist stores nothing; the agent replays
- * the list after every reconnect. English chrome for W02 (catalog in W03).
+ * The Notifications tab (#10190, spec section 3.2): the one in-memory list of
+ * this session that Rust keeps: prompt entries (persistent entries until they
+ * expire, plus open prompts without a card) and, since W04, the endpoint
+ * message cards on screen. Assist stores nothing; the agent replays both
+ * after every reconnect, and a session end empties the list. Chrome strings
+ * come from the shared catalog: the heading in the last branding sync's
+ * locale, each prompt entry in its own.
+ *
+ * The list is pulled through `get_notification_list` (main window only);
+ * `prompt-list-updated` carries only a version (W04 event exposure fix).
  */
 
 /** The main-window commands and event behind the tab. */
-export interface PromptListApi {
-  getList(): Promise<PromptListView>;
+export interface NotificationListApi {
+  getList(): Promise<NotificationListView>;
   action(promptId: string, actionId: string): Promise<void>;
-  subscribe(onList: (list: PromptListView) => void): Promise<() => void>;
+  /** `prompt-list-updated`: a version notice only; the tab then pulls. */
+  subscribe(onNotice: (notice: VersionNotice) => void): Promise<() => void>;
 }
 
-const tauriListApi: PromptListApi = {
-  getList: () => invoke<PromptListView>('get_prompt_list'),
+const tauriListApi: NotificationListApi = {
+  getList: () => invoke<NotificationListView>('get_notification_list'),
   action: (promptId, actionId) => invoke<void>('prompt_list_action', { promptId, actionId }),
-  subscribe: (onList) => listen<PromptListView>('prompt-list-updated', (e) => onList(e.payload)),
+  subscribe: (onNotice) => listen<VersionNotice>('prompt-list-updated', (e) => onNotice(e.payload)),
 };
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -33,18 +42,19 @@ const LOAD_FAILED = 'Notifications could not be loaded. Reopen this tab to try a
 const STALE_NOTICE = 'Live updates are unavailable; this list may be out of date.';
 
 /**
- * The list, kept current from Rust: subscribes FIRST, then fetches, and keeps
- * whichever has the higher `version`, so nothing pushed during the fetch is
- * lost or overwritten. Failures are logged, retried once and reported. Outside
- * Tauri (browser dev mode, tests of other components) it stays empty and calls
- * nothing.
+ * The list, kept current from Rust: subscribes FIRST, then pulls; every newer
+ * notice pulls again, and the pull with the higher `version` wins, so nothing
+ * that changes during a pull is lost or overwritten. Each pull REPLACES the
+ * list (nothing is merged), so entries of an ended session never linger.
+ * Failures are logged, retried once and reported. Outside Tauri (browser dev
+ * mode, tests of other components) it stays empty and calls nothing.
  */
-export function usePromptList(
-  api: PromptListApi = tauriListApi,
+export function useNotificationList(
+  api: NotificationListApi = tauriListApi,
   enabled: boolean = inTauri(),
   retryDelayMs: number = 250,
 ) {
-  const [list, setList] = useState<PromptListView | null>(null);
+  const [list, setList] = useState<NotificationListView | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
@@ -55,8 +65,11 @@ export function usePromptList(
     let unlisten: (() => void) | undefined;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const later = (fn: () => void) => timers.push(setTimeout(fn, retryDelayMs));
-    const apply = (next: PromptListView) => {
+    // The highest version applied: a notice at or below it needs no pull.
+    let held = -1;
+    const apply = (next: NotificationListView) => {
       if (!live) return;
+      held = Math.max(held, next.version);
       setLoadError(null);
       setList((cur) => (cur && cur.version > next.version ? cur : next));
     };
@@ -71,8 +84,26 @@ export function usePromptList(
           else setLoadError(LOAD_FAILED);
         });
     };
+    // A pull after a notice (or when updates are unavailable): retried once
+    // like the initial pull, then the tab says it may be out of date, so a
+    // cleared session's entries never look current. The next good pull
+    // clears it (`apply`).
+    const repull = (attempt = 0) => {
+      api
+        .getList()
+        .then(apply)
+        .catch((e) => {
+          if (!live) return;
+          console.warn(`[prompt] could not refresh the notification list (attempt ${attempt + 1})`, e);
+          if (attempt === 0) later(() => repull(1));
+          else setLoadError(STALE_NOTICE);
+        });
+    };
+    const onNotice = (n: VersionNotice) => {
+      if (live && n.version > held) repull();
+    };
     api
-      .subscribe(apply)
+      .subscribe(onNotice)
       .then((fn) => {
         if (!live) {
           fn();
@@ -86,12 +117,7 @@ export function usePromptList(
         console.warn('[prompt] could not subscribe to notification list updates', err);
         setLiveError(STALE_NOTICE);
         fetchList(0);
-        later(() => {
-          api
-            .getList()
-            .then(apply)
-            .catch((e) => console.warn('[prompt] could not refresh the notification list', e));
-        });
+        later(() => repull());
       });
     return () => {
       live = false;
@@ -112,8 +138,9 @@ export function usePromptList(
     [api],
   );
 
-  const entries = useMemo(() => list?.entries ?? [], [list]);
-  return { entries, act, error: actionError ?? loadError ?? liveError };
+  const entries = useMemo(() => list?.prompts ?? [], [list]);
+  const messages = useMemo(() => list?.messages ?? [], [list]);
+  return { entries, messages, act, error: actionError ?? loadError ?? liveError };
 }
 
 const STATE_LABEL: Record<PromptState, string> = {
@@ -126,16 +153,38 @@ const STATE_LABEL: Record<PromptState, string> = {
   failed: 'Could not be completed',
 };
 
+/**
+ * One endpoint message in the list. Technician-authored text, so in the main
+ * window it is plain text only (no markdown, no links, no images) and has no
+ * action: the card itself, still on screen, is where it is acknowledged or
+ * closed. The sender comes from `branding` only, as on the card.
+ */
+function MessageEntry({ view }: { view: MessageView }) {
+  return (
+    <li className={`prompt-list-item prompt-list-message is-${view.severity}`} data-kind="message">
+      <div className="prompt-list-state">From {messageSender(view)}</div>
+      <div className="prompt-list-title">{view.title}</div>
+      {view.body && <div className="prompt-list-body">{view.body}</div>}
+    </li>
+  );
+}
+
 export function NotificationsTab({
   entries,
+  messages = [],
   onAction,
   error,
   clock = Date.now,
+  locale = null,
 }: {
   entries: PromptView[];
+  /** The endpoint message cards on screen in this session (W04). */
+  messages?: MessageView[];
   onAction: (promptId: string, actionId: string) => void | Promise<void>;
   error?: string | null;
   clock?: () => number;
+  /** The negotiated locale of the last `prompt_branding_sync` (heading, empty list). */
+  locale?: string | null;
 }) {
   const [nowMs, setNowMs] = useState(clock);
   useEffect(() => {
@@ -146,7 +195,7 @@ export function NotificationsTab({
   return (
     <div className="helper-history prompt-list" data-testid="notifications-tab">
       <div className="helper-history-header">
-        <span className="helper-history-title">Notifications</span>
+        <span className="helper-history-title">{chromeString('chrome.notifications', locale)}</span>
         <div className="helper-header-drag-spacer" />
       </div>
       {error && (
@@ -154,8 +203,8 @@ export function NotificationsTab({
           <span>{error}</span>
         </div>
       )}
-      {entries.length === 0 ? (
-        <div className="helper-history-empty">No notifications</div>
+      {entries.length === 0 && messages.length === 0 ? (
+        <div className="helper-history-empty">{chromeString('chrome.emptyList', locale)}</div>
       ) : (
         <ul className="prompt-list-items">
           {entries.map((v) => {
@@ -164,13 +213,19 @@ export function NotificationsTab({
             const notice = v.lastError ?? outcomeMessage(v.lastOutcome);
             const detail = v.copy.stateDetail ?? v.copy.consequence;
             return (
-              <li key={v.promptId} className={`prompt-list-item is-${v.state}`} dir={v.direction} lang={v.locale}>
+              <li
+                key={v.promptId}
+                className={`prompt-list-item is-${v.state}`}
+                data-kind={v.kind}
+                dir={v.direction}
+                lang={v.locale}
+              >
                 <div className="prompt-list-state">{STATE_LABEL[v.state]}</div>
                 <div className="prompt-list-title">{fill(v.copy.title)}</div>
                 {v.copy.body && <div className="prompt-list-body">{fill(v.copy.body)}</div>}
                 {detail && <div className="prompt-list-body">{fill(detail)}</div>}
                 {notice && <div className="prompt-notice">{notice}</div>}
-                {pending && <div className="prompt-working">Working…</div>}
+                {pending && <div className="prompt-working">{chromeString('chrome.working', v.locale)}</div>}
                 {!v.closed && v.actions.length > 0 && (
                   <div className="prompt-actions">
                     {orderActions(v.actions).map((a) => (
@@ -189,6 +244,9 @@ export function NotificationsTab({
               </li>
             );
           })}
+          {messages.map((m) => (
+            <MessageEntry key={`message:${m.messageId}`} view={m} />
+          ))}
         </ul>
       )}
     </div>

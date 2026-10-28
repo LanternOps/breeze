@@ -18,11 +18,19 @@ func (h *Host) Tick() {
 	h.mu.Lock()
 	now := h.clock.Now()
 	h.tombs.prune(now)
+	for id, f := range h.revFloor {
+		if now.Sub(f.at) >= promptTombstoneTTL {
+			delete(h.revFloor, id)
+		}
+	}
 
 	connected := make([]RendererSession, 0, len(h.connected))
 	for key, r := range h.connected {
 		delete(h.connected, key)
 		connected = append(connected, r)
+		// The identity header first, so a replayed prompt never draws
+		// without it.
+		h.queueBrandingSync(r, ob)
 		h.replay(r, now, ob)
 	}
 
@@ -34,7 +42,13 @@ func (h *Host) Tick() {
 			}
 			continue
 		}
-		if !rec.expiryFired && rec.everPrompt {
+		// A prompt that never reached a renderer through the contract is
+		// expired by the host only when its expiry has no domain
+		// consequence (no OnExpire: a notice). Then the deadline just reaps
+		// the record and settles its list entry; a legacy-only prompt whose
+		// domain acts at expiry (restart, consent, elevation) keeps W02
+		// semantics: its legacy surface owns its own timeout.
+		if !rec.expiryFired && (rec.everPrompt || rec.p.OnExpire == nil) {
 			if d := rec.deadline(); !d.IsZero() && !now.Before(d) {
 				expiring = append(expiring, rec.show.PromptID)
 				continue
@@ -42,6 +56,9 @@ func (h *Host) Tick() {
 		}
 		for _, pl := range rec.placements {
 			h.tickPlacement(rec, pl, now, ob)
+			if h.prompts[rec.show.PromptID] != rec {
+				break // lost and withdrawn (NeverReask)
+			}
 		}
 	}
 	h.unlockAndFlush(ob)

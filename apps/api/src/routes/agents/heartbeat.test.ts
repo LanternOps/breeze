@@ -287,6 +287,15 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// #10190 W05 — restart-decision audit. Its dedupe and freshness rules live in
+// services/rebootUserActionAudit.test.ts; here only the wiring is pinned.
+const recordRebootUserActionMock = vi.hoisted(() => vi.fn(async () => 'written'));
+const noteRebootUserActionDroppedMock = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../services/rebootUserActionAudit', () => ({
+  recordRebootUserAction: recordRebootUserActionMock,
+  noteRebootUserActionDropped: noteRebootUserActionDroppedMock,
+}));
+
 vi.mock('../../services/deviceIpHistory', () => ({
   processDeviceIPHistoryUpdate: vi.fn(),
 }));
@@ -8515,6 +8524,95 @@ describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
     expect(updateArg.rebootSource).toBeNull();
     expect(updateArg.rebootDeferralsUsed).toBeNull();
     expect(updateArg.rebootMaxDeferrals).toBeNull();
+  });
+
+  // #10190 W05 — the restart decision the person made on the device.
+  it('hands lastUserAction to the restart-decision audit with the snapshot counters', async () => {
+    arrange();
+    const lastUserAction = { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' };
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        deadline: DEADLINE,
+        source: 'patch_job',
+        deferralsUsed: 2,
+        maxDeferrals: 3,
+        lastUserAction,
+      },
+    });
+
+    expect(resp.status).toBe(200);
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    const [deviceId, orgId, action, context] = recordRebootUserActionMock.mock.calls[0]! as unknown as [
+      string, string, unknown, Record<string, unknown>,
+    ];
+    // The authenticated device and its org, never a body-supplied identity.
+    expect(deviceId).toBe('device-1');
+    expect(orgId).toBe('org-1');
+    expect(action).toEqual(lastUserAction);
+    expect(context).toMatchObject({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, agentId: 'device-1' });
+    expect(context.c).toBeDefined();
+    expect(noteRebootUserActionDroppedMock).not.toHaveBeenCalled();
+  });
+
+  it("attributes the restart-decision audit to the device row's org", async () => {
+    // The row's org (the org transaction's), never the token's cached org:
+    // after an org move the audit must land in the device's current tenant.
+    arrange({ orgId: 'org-2' });
+    await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    expect((recordRebootUserActionMock.mock.calls[0] as unknown[])[1]).toBe('org-2');
+  });
+
+  it('does not hold the heartbeat response on the restart-decision audit', async () => {
+    arrange();
+    recordRebootUserActionMock.mockReturnValueOnce(new Promise(() => {}));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(resp.status).toBe(200);
+  });
+
+  it('checks for a dropped lastUserAction when a schedule arrives without one', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 1, maxDeferrals: 3 } });
+    expect(noteRebootUserActionDroppedMock).toHaveBeenCalledTimes(1);
+    const [deviceId, raw, parsed] = noteRebootUserActionDroppedMock.mock.calls[0] as unknown as [string, any, unknown];
+    expect(deviceId).toBe('device-1');
+    expect(raw.rebootStatus.scheduledAt).toBe(SCHEDULED_AT);
+    expect(parsed).toBeUndefined();
+  });
+
+  it('does not call the restart-decision audit when there is no lastUserAction', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 0, maxDeferrals: 3 } });
+    await beat({ rebootStatus: null });
+    await beat({ pendingReboot: true });
+    expect(recordRebootUserActionMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing restart-decision audit does not fail the heartbeat', async () => {
+    const setSpy = arrange();
+    recordRebootUserActionMock.mockRejectedValueOnce(new Error('audit path exploded'));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'native' },
+      },
+    });
+    expect(resp.status).toBe(200);
+    // The schedule itself still landed.
+    expect(updateArgOf(setSpy).rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    // The lastUserAction member is an audit input, never a device column.
+    expect(Object.hasOwn(updateArgOf(setSpy), 'lastUserAction')).toBe(false);
   });
 
   // NOTE: the zod-level drops (malformed scheduledAt, out-of-range counters,

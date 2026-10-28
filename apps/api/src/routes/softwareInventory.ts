@@ -1,26 +1,20 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, sql, desc, asc, type SQL } from 'drizzle-orm';
-import type { PgColumn } from 'drizzle-orm/pg-core';
-import { db } from '../db';
-import {
-  configPolicyAssignments,
-  configPolicyFeatureLinks,
-  configurationPolicies,
-  devices,
-  softwareInventory,
-  softwarePolicies,
-} from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
-import { writeRouteAudit } from '../services/auditEvents';
-import { recordSoftwarePolicyAudit } from '../services/softwarePolicyService';
+import { writeRouteAudit, type RouteAuditInput } from '../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
-import { bumpApprovalGeneration } from '../services/approvalGeneration';
-import { escapeLike } from '../utils/sql';
+import {
+  approveInventorySoftware,
+  clearInventorySoftware,
+  denyInventorySoftware,
+  listInventory,
+  listInventoryDevices,
+  resolveOrgId,
+  searchInventoryNames,
+} from '../services/softwareInventoryPolicy';
 
-import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 export const softwareInventoryRoutes = new Hono();
@@ -70,179 +64,25 @@ const nameSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(50),
 });
 
-// Bound the distinct-name search like the filter engine does: the picker fires
-// one query per keystroke against a table that grows to millions of rows, so a
-// transaction-local statement_timeout keeps a pathological match from pinning a
-// worker. db.transaction inside the request's RLS context becomes a SAVEPOINT
-// that inherits the tenant GUCs, so org-scoping (RLS) is preserved.
-const NAME_SEARCH_TIMEOUT_MS = 1000;
-
-// ============================================
-// Helpers
-// ============================================
-
-type ResolveOrgIdResult =
-  | { orgId: string }
-  | { error: string; status: 400 | 403 };
-
-function resolveOrgId(auth: AuthContext, requestedOrgId?: string): ResolveOrgIdResult {
-  if (requestedOrgId) {
-    const accessibleOrgIds = auth.accessibleOrgIds ?? [];
-    if (auth.orgId) {
-      if (requestedOrgId !== auth.orgId) {
-        return { error: 'Access to this organization denied', status: 403 };
-      }
-      return { orgId: requestedOrgId };
-    }
-    if (!accessibleOrgIds.includes(requestedOrgId)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { orgId: requestedOrgId };
-  }
-
-  if (auth.orgId) return { orgId: auth.orgId };
-  if (Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length === 1) {
-    const single = auth.accessibleOrgIds[0];
-    if (single) return { orgId: single };
-  }
-  return { error: 'Organization context required', status: 400 };
+/** writeRouteAudit bound to this request, for the service-layer audit callback. */
+function routeAudit(c: Context) {
+  return (event: RouteAuditInput) => writeRouteAudit(c, event);
 }
 
-// Read endpoints support "All Orgs": when no orgId is requested, scope to every
-// org the caller can reach via auth.orgCondition() (returns undefined for system
-// scope — no filter, RLS governs). A requested orgId must be accessible. Unlike
-// resolveOrgId (used by the policy writes, which need a single target org), this
-// never demands a single org, so partner/system callers can aggregate.
-type OrgReadScope =
-  | { applyTo: (column: PgColumn) => SQL | undefined }
-  | { error: string; status: 403 };
-
-function resolveOrgReadScope(auth: AuthContext, requestedOrgId?: string): OrgReadScope {
-  if (requestedOrgId) {
-    if (!auth.canAccessOrg(requestedOrgId)) {
-      return { error: 'Access to this organization denied', status: 403 };
-    }
-    return { applyTo: (column) => eq(column, requestedOrgId) };
+/**
+ * The shared front half of the quick policy writes: the site-ceiling gate,
+ * single-org resolution and the holding-org refusal. Returns the org id, or
+ * the response to send.
+ */
+async function resolveInventoryWriteOrg(c: Context, auth: AuthContext): Promise<{ orgId: string } | Response> {
+  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
   }
-  return { applyTo: (column) => auth.orgCondition(column) };
-}
-
-type PolicyStatus = 'allowed' | 'blocked' | 'audit' | 'no_policy';
-
-async function getPolicyStatusMap(
-  auth: AuthContext,
-  orgFilter: SQL | undefined
-): Promise<Map<string, PolicyStatus>> {
-  const conditions: SQL[] = [eq(softwarePolicies.isActive, true)];
-  // Dual-axis (#2126): software policies can be partner-wide templates
-  // (org_id NULL). Those govern every org under the partner, so the badge
-  // must include them — otherwise titles blocked by a partner-wide blocklist
-  // render as no_policy. Partner-scope callers only; RLS hides partner rows
-  // from org-scope tokens regardless.
-  if (orgFilter) {
-    conditions.push(
-      auth.scope === 'partner' && auth.partnerId
-        ? (sql`(${orgFilter} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))` as SQL)
-        : orgFilter
-    );
-  }
-  const policies = await db
-    .select({
-      mode: softwarePolicies.mode,
-      rules: softwarePolicies.rules,
-      isActive: softwarePolicies.isActive,
-    })
-    .from(softwarePolicies)
-    .where(and(...conditions));
-
-  // Keyed by name|vendor with no org dimension. In an "All Orgs" aggregate this
-  // collapses policies from every accessible org onto one row; if two orgs hold
-  // conflicting policies for the same software the badge is last-write-wins. This
-  // is a display approximation on an org-collapsed row, never a cross-tenant read
-  // (RLS still scopes the policies query to accessible orgs).
-  const statusMap = new Map<string, PolicyStatus>();
-
-  for (const policy of policies) {
-    const rules = policy.rules as { software?: Array<{ name: string; vendor?: string }> } | null;
-    if (!rules?.software) continue;
-
-    for (const rule of rules.software) {
-      const key = `${rule.name.toLowerCase()}|${(rule.vendor ?? '').toLowerCase()}`;
-      const status: PolicyStatus =
-        policy.mode === 'allowlist' ? 'allowed' :
-        policy.mode === 'blocklist' ? 'blocked' : 'audit';
-      statusMap.set(key, status);
-    }
-  }
-
-  return statusMap;
-}
-
-// ============================================
-// Config Policy Auto-Link Helper
-// ============================================
-
-async function ensureDefaultConfigPolicyLink(
-  orgId: string,
-  softwarePolicyId: string,
-  configPolicyName: string,
-  userId: string | null
-): Promise<void> {
-  // Find or create the named config policy for this org
-  let [configPolicy] = await db
-    .select()
-    .from(configurationPolicies)
-    .where(
-      and(
-        eq(configurationPolicies.orgId, orgId),
-        eq(configurationPolicies.name, configPolicyName),
-        eq(configurationPolicies.status, 'active')
-      )
-    )
-    .limit(1);
-
-  if (!configPolicy) {
-    [configPolicy] = await db
-      .insert(configurationPolicies)
-      .values({
-        orgId,
-        name: configPolicyName,
-        description: 'Auto-created for default software policy',
-        status: 'active',
-        createdBy: userId,
-      })
-      .returning();
-  }
-
-  if (!configPolicy) return;
-
-  // Upsert the software_policy feature link
-  await db
-    .insert(configPolicyFeatureLinks)
-    .values({
-      configPolicyId: configPolicy.id,
-      featureType: 'software_policy',
-      featurePolicyId: softwarePolicyId,
-    })
-    .onConflictDoUpdate({
-      target: [configPolicyFeatureLinks.configPolicyId, configPolicyFeatureLinks.featureType],
-      set: {
-        featurePolicyId: softwarePolicyId,
-        updatedAt: new Date(),
-      },
-    });
-
-  // Ensure an org-level assignment exists
-  await db
-    .insert(configPolicyAssignments)
-    .values({
-      configPolicyId: configPolicy.id,
-      level: 'organization',
-      targetId: orgId,
-      priority: 0,
-      assignedBy: userId,
-    })
-    .onConflictDoNothing();
+  const { orgId } = orgResult;
+  // canAccessOrg is true for system scope: the holding org is never a target.
+  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+  return { orgId };
 }
 
 // ============================================
@@ -252,119 +92,11 @@ async function ensureDefaultConfigPolicyLink(
 softwareInventoryRoutes.get('/', requireSoftwareInventoryRead, zValidator('query', listQuerySchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const perms = c.get('permissions') as UserPermissions | undefined;
-  const { search, vendor, limit, offset, sortBy, sortOrder } = c.req.valid('query');
-
-  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
-  if ('error' in orgScope) {
-    return c.json({ error: orgScope.error }, orgScope.status);
+  const result = await listInventory({ auth, perms, orgId: c.req.query('orgId'), ...c.req.valid('query') });
+  if ('error' in result) {
+    return c.json({ error: result.error }, result.status);
   }
-
-  // Ephemeral Quick Support devices live in the hidden 'quick_support' org that
-  // deliberately stays inside accessibleOrgIds so RLS lets a tech reach their own
-  // session — nothing drops them for us. Both aggregates below are raw SQL, but
-  // each already INNER JOINs `devices` and interpolates this same `whereClause`,
-  // so pushing the predicate here covers the count and the row query alike.
-  const conditions: SQL[] = [eq(devices.isEphemeral, false), notParkedDeviceCondition()];
-  const deviceOrgFilter = orgScope.applyTo(devices.orgId);
-  if (deviceOrgFilter) conditions.push(deviceOrgFilter);
-  if (perms?.allowedSiteIds) {
-    if (perms.allowedSiteIds.length === 0) {
-      return c.json({ data: [], pagination: { total: 0, limit, offset } });
-    }
-    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
-  }
-
-  if (search) {
-    const escaped = search.replace(/[%_\\]/g, '\\$&');
-    conditions.push(sql`LOWER(${softwareInventory.name}) LIKE LOWER(${'%' + escaped + '%'})`);
-  }
-  if (vendor) {
-    const escaped = vendor.replace(/[%_\\]/g, '\\$&');
-    conditions.push(sql`LOWER(COALESCE(${softwareInventory.vendor}, '')) LIKE LOWER(${'%' + escaped + '%'})`);
-  }
-
-  // System-scope "All Orgs" with no search/site filter leaves conditions empty;
-  // fall back to TRUE so the raw-SQL WHERE clause stays valid (RLS still scopes).
-  const whereClause = conditions.length > 0 ? and(...conditions) : sql`TRUE`;
-
-  // Count total unique software entries
-  const countResult = await db.execute(sql`
-    SELECT COUNT(*) AS total FROM (
-      SELECT 1
-      FROM ${softwareInventory}
-      INNER JOIN ${devices} ON ${softwareInventory.deviceId} = ${devices.id}
-      WHERE ${whereClause}
-      GROUP BY LOWER(${softwareInventory.name}), LOWER(COALESCE(${softwareInventory.vendor}, ''))
-    ) sub
-  `);
-  const total = Number((countResult[0] as { total: string } | undefined)?.total ?? 0);
-
-  // Sort mapping
-  const sortColumn =
-    sortBy === 'name' ? sql`MIN(${softwareInventory.name})` :
-    sortBy === 'vendor' ? sql`MIN(${softwareInventory.vendor})` :
-    sortBy === 'lastSeen' ? sql`MAX(${softwareInventory.lastSeen})` :
-    sql`COUNT(DISTINCT ${softwareInventory.deviceId})`;
-
-  const orderDir = sortOrder === 'asc' ? sql`ASC` : sql`DESC`;
-
-  const rows = await db.execute(sql`
-    SELECT
-      MIN(${softwareInventory.name}) AS name,
-      MIN(${softwareInventory.vendor}) AS vendor,
-      COUNT(DISTINCT ${softwareInventory.deviceId}) AS device_count,
-      MIN(${softwareInventory.lastSeen}) AS first_seen,
-      MAX(${softwareInventory.lastSeen}) AS last_seen,
-      jsonb_agg(DISTINCT jsonb_build_object('version', ${softwareInventory.version}, 'device_id', ${softwareInventory.deviceId}))
-        FILTER (WHERE ${softwareInventory.version} IS NOT NULL) AS version_data
-    FROM ${softwareInventory}
-    INNER JOIN ${devices} ON ${softwareInventory.deviceId} = ${devices.id}
-    WHERE ${whereClause}
-    GROUP BY LOWER(${softwareInventory.name}), LOWER(COALESCE(${softwareInventory.vendor}, ''))
-    ORDER BY ${sortColumn} ${orderDir}
-    LIMIT ${limit} OFFSET ${offset}
-  `);
-
-  // Build policy status map
-  const policyStatusMap = await getPolicyStatusMap(auth, orgScope.applyTo(softwarePolicies.orgId));
-
-  // Process results
-  const data = (rows as unknown as Array<{
-    name: string;
-    vendor: string | null;
-    device_count: string;
-    first_seen: string | null;
-    last_seen: string | null;
-    version_data: Array<{ version: string; device_id: string }> | null;
-  }>).map((row) => {
-    // Collapse version_data into {version, count} pairs
-    const versionCounts: Record<string, number> = {};
-    if (row.version_data) {
-      for (const entry of row.version_data) {
-        const v = entry.version || 'Unknown';
-        versionCounts[v] = (versionCounts[v] ?? 0) + 1;
-      }
-    }
-    const versions = Object.entries(versionCounts)
-      .map(([version, count]) => ({ version, count }))
-      .sort((a, b) => b.count - a.count);
-
-    // Check policy status
-    const key = `${row.name.toLowerCase()}|${(row.vendor ?? '').toLowerCase()}`;
-    const policyStatus: PolicyStatus = policyStatusMap.get(key) ?? 'no_policy';
-
-    return {
-      name: row.name,
-      vendor: row.vendor,
-      deviceCount: Number(row.device_count),
-      versions,
-      firstSeen: row.first_seen,
-      lastSeen: row.last_seen,
-      policyStatus,
-    };
-  });
-
-  return c.json({ data, pagination: { total, limit, offset } });
+  return c.json(result);
 });
 
 // ============================================
@@ -375,51 +107,9 @@ softwareInventoryRoutes.get('/names', requireSoftwareInventoryRead, zValidator('
   const auth = c.get('auth') as AuthContext;
   const perms = c.get('permissions') as UserPermissions | undefined;
   const { q, limit } = c.req.valid('query');
-  const pattern = `%${escapeLike(q)}%`;
-
-  if (perms?.allowedSiteIds?.length === 0) {
-    return c.json({ data: [] });
-  }
-
-  // Same org-axis resolution as the sibling read routes (`GET /` and the
-  // observations route): honour an explicit `?orgId=` after an access check
-  // instead of silently ignoring it and aggregating every reachable org.
-  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
-  if ('error' in orgScope) return c.json({ error: orgScope.error }, orgScope.status);
-
-  const conditions: SQL[] = [
-    eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-    sql`${softwareInventory.name} ILIKE ${pattern}`,
-  ];
-  const orgCondition = orgScope.applyTo(devices.orgId);
-  if (orgCondition) conditions.push(orgCondition);
-  if (perms?.allowedSiteIds) {
-    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
-  }
-  const whereClause = and(...conditions);
-
-  // Keep the authorization predicate inside the DISTINCT statement and before
-  // ORDER/LIMIT. RLS protects the org axis on software_inventory, while the
-  // current-device join enforces the app-layer site axis and excludes ephemeral
-  // or stale/mismatched inventory rows from the picker.
-  const rows = await db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select set_config('statement_timeout', ${`${NAME_SEARCH_TIMEOUT_MS}ms`}, true)`
-    );
-    return tx.execute(sql`
-      SELECT DISTINCT ${softwareInventory.name} AS name
-      FROM ${softwareInventory}
-      INNER JOIN ${devices}
-        ON ${softwareInventory.deviceId} = ${devices.id}
-        AND ${softwareInventory.orgId} = ${devices.orgId}
-      WHERE ${whereClause}
-      ORDER BY ${softwareInventory.name}
-      LIMIT ${limit}
-    `);
-  });
-
-  const names = (rows as unknown as Array<{ name: string }>).map((row) => row.name);
-  return c.json({ data: names });
+  const result = await searchInventoryNames({ auth, perms, orgId: c.req.query('orgId'), q, limit });
+  if ('error' in result) return c.json({ error: result.error }, result.status);
+  return c.json(result);
 });
 
 // ============================================
@@ -433,128 +123,18 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
   }
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
-  }
-  const { orgId } = orgResult;
-  // canAccessOrg is true for system scope: the holding org is never a target.
-  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+  const org = await resolveInventoryWriteOrg(c, auth);
+  if (org instanceof Response) return org;
 
-  // Find or create "Default Allowlist" policy
-  const [existing] = await db
-    .select()
-    .from(softwarePolicies)
-    .where(
-      and(
-        eq(softwarePolicies.orgId, orgId),
-        eq(softwarePolicies.name, 'Default Allowlist'),
-        eq(softwarePolicies.mode, 'allowlist'),
-        // #6960: never adopt a policy generated from a config policy.
-        isNull(softwarePolicies.managedByLinkId)
-      )
-    )
-    .limit(1);
-
-  if (existing) {
-    const rules = existing.rules as { software: Array<{ name: string; vendor?: string }>; allowUnknown?: boolean };
-    // Check if already present
-    const alreadyExists = rules.software.some(
-      (r) => r.name.toLowerCase() === softwareName.toLowerCase() &&
-             (r.vendor ?? '').toLowerCase() === (vendor ?? '').toLowerCase()
-    );
-
-    if (!alreadyExists) {
-      rules.software.push({ name: softwareName, vendor: vendor || undefined });
-      await db
-        .update(softwarePolicies)
-        .set({
-          rules,
-          updatedAt: new Date(),
-          // Site-ceiling gate contract §3: editing the default allowlist/
-          // blocklist rules is a governing edit a queued compliance job
-          // needs to detect.
-          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
-        })
-        .where(eq(softwarePolicies.id, existing.id));
-    }
-
-    // Ensure config policy link exists
-    try {
-      await ensureDefaultConfigPolicyLink(orgId, existing.id, 'Default Allowlist Config', auth.user?.id ?? null);
-    } catch (err) {
-      console.warn('[softwareInventory] Failed to auto-link config policy for Default Allowlist:', err);
-    }
-
-    recordSoftwarePolicyAudit({
-      orgId,
-      policyId: existing.id,
-      action: 'inventory_approve',
-      actor: 'user',
-      actorId: auth.user?.id ?? null,
-      details: { softwareName, vendor: vendor || null, mode: 'allowlist' },
-    }).catch((err) => {
-      console.error('[softwareInventory] Audit write failed for inventory_approve:', err);
-    });
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'software_policy.inventory_approve',
-      resourceType: 'software_policy',
-      resourceId: existing.id,
-      resourceName: existing.name,
-      details: { softwareName, vendor: vendor || null, mode: 'allowlist' },
-    });
-
-    return c.json({ success: true, policyId: existing.id });
-  }
-
-  // Create new default allowlist policy
-  const [created] = await db
-    .insert(softwarePolicies)
-    .values({
-      orgId,
-      name: 'Default Allowlist',
-      description: 'Auto-created allowlist for approved software',
-      mode: 'allowlist',
-      rules: {
-        software: [{ name: softwareName, vendor: vendor || undefined }],
-        allowUnknown: false,
-      },
-      isActive: true,
-      enforceMode: false,
-      createdBy: auth.user?.id ?? null,
-    })
-    .returning();
-
-  // Auto-link to a config policy so devices can receive this policy
-  try {
-    await ensureDefaultConfigPolicyLink(orgId, created!.id, 'Default Allowlist Config', auth.user?.id ?? null);
-  } catch (err) {
-    console.warn('[softwareInventory] Failed to auto-link config policy for Default Allowlist:', err);
-  }
-
-  recordSoftwarePolicyAudit({
-    orgId,
-    policyId: created!.id,
-    action: 'inventory_approve',
-    actor: 'user',
-    actorId: auth.user?.id ?? null,
-    details: { softwareName, vendor: vendor || null, mode: 'allowlist', created: true },
-  }).catch((err) => {
-    console.error('[softwareInventory] Audit write failed for inventory_approve:', err);
+  const result = await approveInventorySoftware({
+    auth,
+    orgId: org.orgId,
+    softwareName,
+    vendor,
+    actorUserId: auth.user?.id ?? null,
+    audit: routeAudit(c),
   });
-
-  writeRouteAudit(c, {
-    orgId,
-    action: 'software_policy.inventory_approve',
-    resourceType: 'software_policy',
-    resourceId: created!.id,
-    resourceName: created!.name,
-    details: { softwareName, vendor: vendor || null, mode: 'allowlist', created: true },
-  });
-
-  return c.json({ success: true, policyId: created!.id }, 201);
+  return c.json(result.body, result.status);
 });
 
 // ============================================
@@ -568,125 +148,18 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
   }
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
-  }
-  const { orgId } = orgResult;
-  // canAccessOrg is true for system scope: the holding org is never a target.
-  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+  const org = await resolveInventoryWriteOrg(c, auth);
+  if (org instanceof Response) return org;
 
-  // Find or create "Default Blocklist" policy
-  const [existing] = await db
-    .select()
-    .from(softwarePolicies)
-    .where(
-      and(
-        eq(softwarePolicies.orgId, orgId),
-        eq(softwarePolicies.name, 'Default Blocklist'),
-        eq(softwarePolicies.mode, 'blocklist'),
-        // #6960: never adopt a policy generated from a config policy.
-        isNull(softwarePolicies.managedByLinkId)
-      )
-    )
-    .limit(1);
-
-  if (existing) {
-    const rules = existing.rules as { software: Array<{ name: string; vendor?: string }>; allowUnknown?: boolean };
-    const alreadyExists = rules.software.some(
-      (r) => r.name.toLowerCase() === softwareName.toLowerCase() &&
-             (r.vendor ?? '').toLowerCase() === (vendor ?? '').toLowerCase()
-    );
-
-    if (!alreadyExists) {
-      rules.software.push({ name: softwareName, vendor: vendor || undefined });
-      await db
-        .update(softwarePolicies)
-        .set({
-          rules,
-          updatedAt: new Date(),
-          // Site-ceiling gate contract §3: editing the default allowlist/
-          // blocklist rules is a governing edit a queued compliance job
-          // needs to detect.
-          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
-        })
-        .where(eq(softwarePolicies.id, existing.id));
-    }
-
-    // Ensure config policy link exists
-    try {
-      await ensureDefaultConfigPolicyLink(orgId, existing.id, 'Default Blocklist Config', auth.user?.id ?? null);
-    } catch (err) {
-      console.warn('[softwareInventory] Failed to auto-link config policy for Default Blocklist:', err);
-    }
-
-    recordSoftwarePolicyAudit({
-      orgId,
-      policyId: existing.id,
-      action: 'inventory_deny',
-      actor: 'user',
-      actorId: auth.user?.id ?? null,
-      details: { softwareName, vendor: vendor || null, mode: 'blocklist' },
-    }).catch((err) => {
-      console.error('[softwareInventory] Audit write failed for inventory_deny:', err);
-    });
-
-    writeRouteAudit(c, {
-      orgId,
-      action: 'software_policy.inventory_deny',
-      resourceType: 'software_policy',
-      resourceId: existing.id,
-      resourceName: existing.name,
-      details: { softwareName, vendor: vendor || null, mode: 'blocklist' },
-    });
-
-    return c.json({ success: true, policyId: existing.id });
-  }
-
-  const [created] = await db
-    .insert(softwarePolicies)
-    .values({
-      orgId,
-      name: 'Default Blocklist',
-      description: 'Auto-created blocklist for denied software',
-      mode: 'blocklist',
-      rules: {
-        software: [{ name: softwareName, vendor: vendor || undefined }],
-      },
-      isActive: true,
-      enforceMode: false,
-      createdBy: auth.user?.id ?? null,
-    })
-    .returning();
-
-  // Auto-link to a config policy so devices can receive this policy
-  try {
-    await ensureDefaultConfigPolicyLink(orgId, created!.id, 'Default Blocklist Config', auth.user?.id ?? null);
-  } catch (err) {
-    console.warn('[softwareInventory] Failed to auto-link config policy for Default Blocklist:', err);
-  }
-
-  recordSoftwarePolicyAudit({
-    orgId,
-    policyId: created!.id,
-    action: 'inventory_deny',
-    actor: 'user',
-    actorId: auth.user?.id ?? null,
-    details: { softwareName, vendor: vendor || null, mode: 'blocklist', created: true },
-  }).catch((err) => {
-    console.error('[softwareInventory] Audit write failed for inventory_deny:', err);
+  const result = await denyInventorySoftware({
+    auth,
+    orgId: org.orgId,
+    softwareName,
+    vendor,
+    actorUserId: auth.user?.id ?? null,
+    audit: routeAudit(c),
   });
-
-  writeRouteAudit(c, {
-    orgId,
-    action: 'software_policy.inventory_deny',
-    resourceType: 'software_policy',
-    resourceId: created!.id,
-    resourceName: created!.name,
-    details: { softwareName, vendor: vendor || null, mode: 'blocklist', created: true },
-  });
-
-  return c.json({ success: true, policyId: created!.id }, 201);
+  return c.json(result.body, result.status);
 });
 
 // ============================================
@@ -700,76 +173,18 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
   }
   const { softwareName, vendor } = c.req.valid('json');
 
-  const orgResult = resolveOrgId(auth, c.req.query('orgId'));
-  if ('error' in orgResult) {
-    return c.json({ error: orgResult.error }, orgResult.status);
-  }
-  const { orgId } = orgResult;
-  // canAccessOrg is true for system scope: the holding org is never a target.
-  if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+  const org = await resolveInventoryWriteOrg(c, auth);
+  if (org instanceof Response) return org;
 
-  // Remove from both Default Allowlist and Default Blocklist
-  const defaults = await db
-    .select()
-    .from(softwarePolicies)
-    .where(
-      and(
-        eq(softwarePolicies.orgId, orgId),
-        eq(softwarePolicies.isActive, true),
-        sql`${softwarePolicies.name} IN ('Default Allowlist', 'Default Blocklist')`,
-        isNull(softwarePolicies.managedByLinkId)
-      )
-    );
-
-  let cleared = false;
-  for (const policy of defaults) {
-    const rules = policy.rules as { software: Array<{ name: string; vendor?: string }>; allowUnknown?: boolean };
-    if (!rules?.software) continue;
-
-    const before = rules.software.length;
-    rules.software = rules.software.filter(
-      (r) =>
-        !(r.name.toLowerCase() === softwareName.toLowerCase() &&
-          (r.vendor ?? '').toLowerCase() === (vendor ?? '').toLowerCase())
-    );
-
-    if (rules.software.length < before) {
-      cleared = true;
-      await db
-        .update(softwarePolicies)
-        .set({
-          rules,
-          updatedAt: new Date(),
-          // Site-ceiling gate contract §3: editing the default allowlist/
-          // blocklist rules is a governing edit a queued compliance job
-          // needs to detect.
-          approvalGeneration: bumpApprovalGeneration(softwarePolicies.approvalGeneration),
-        })
-        .where(eq(softwarePolicies.id, policy.id));
-
-      recordSoftwarePolicyAudit({
-        orgId,
-        policyId: policy.id,
-        action: 'inventory_clear',
-        actor: 'user',
-        actorId: auth.user?.id ?? null,
-        details: { softwareName, vendor: vendor || null, mode: policy.mode },
-      }).catch((err) => {
-        console.error('[softwareInventory] Audit write failed for inventory_clear:', err);
-      });
-
-      writeRouteAudit(c, {
-        orgId,
-        action: 'software_policy.inventory_clear',
-        resourceType: 'software_policy',
-        resourceId: policy.id,
-        resourceName: policy.name,
-        details: { softwareName, vendor: vendor || null, mode: policy.mode },
-      });
-    }
-  }
-
-  return c.json({ success: true, cleared });
+  const result = await clearInventorySoftware({
+    auth,
+    orgId: org.orgId,
+    softwareName,
+    vendor,
+    actorUserId: auth.user?.id ?? null,
+    audit: routeAudit(c),
+  });
+  return c.json(result.body, result.status);
 });
 
 // ============================================
@@ -782,57 +197,17 @@ softwareInventoryRoutes.get('/:name/devices', requireSoftwareInventoryRead, zVal
   const softwareName = decodeURIComponent(c.req.param('name'));
   const { vendor, limit, offset } = c.req.valid('query');
 
-  const orgScope = resolveOrgReadScope(auth, c.req.query('orgId'));
-  if ('error' in orgScope) {
-    return c.json({ error: orgScope.error }, orgScope.status);
-  }
-
-  const conditions: SQL[] = [
-    sql`LOWER(${softwareInventory.name}) = LOWER(${softwareName})`,
-  ];
-  const deviceOrgFilter = orgScope.applyTo(devices.orgId);
-  if (deviceOrgFilter) conditions.push(deviceOrgFilter);
-  if (perms?.allowedSiteIds) {
-    if (perms.allowedSiteIds.length === 0) {
-      return c.json({
-        data: [],
-        pagination: { total: 0, limit, offset },
-      });
-    }
-    conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
-  }
-
-  if (vendor) {
-    conditions.push(sql`LOWER(COALESCE(${softwareInventory.vendor}, '')) = LOWER(${vendor})`);
-  }
-
-  const whereClause = and(...conditions);
-
-  const countResult = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(softwareInventory)
-    .innerJoin(devices, eq(softwareInventory.deviceId, devices.id))
-    .where(whereClause);
-  const total = Number(countResult[0]?.count ?? 0);
-
-  const rows = await db
-    .select({
-      deviceId: devices.id,
-      hostname: devices.hostname,
-      osType: devices.osType,
-      osVersion: devices.osVersion,
-      version: softwareInventory.version,
-      lastSeen: softwareInventory.lastSeen,
-    })
-    .from(softwareInventory)
-    .innerJoin(devices, eq(softwareInventory.deviceId, devices.id))
-    .where(whereClause)
-    .orderBy(desc(softwareInventory.lastSeen), desc(softwareInventory.id))
-    .limit(limit)
-    .offset(offset);
-
-  return c.json({
-    data: rows,
-    pagination: { total, limit, offset },
+  const result = await listInventoryDevices({
+    auth,
+    perms,
+    orgId: c.req.query('orgId'),
+    softwareName,
+    vendor,
+    limit,
+    offset,
   });
+  if ('error' in result) {
+    return c.json({ error: result.error }, result.status);
+  }
+  return c.json(result);
 });

@@ -190,7 +190,8 @@
     "wispChat": "Breeze AI",
     "aiTasks": "Tareas de IA",
     "aiTask": "Tarea de IA",
-    "settingsAi": "Configuración de IA"
+    "settingsAi": "Configuración de IA",
+    "settingsFlowLimits": "Límites de flujos"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -281,6 +282,10 @@
       "wispMemory": {
         "title": "Memoria de Wisp",
         "description": "Revisa, confirma y retira lo que Wisp recuerda."
+      },
+      "flowLimits": {
+        "title": "Límites de flujos",
+        "description": "Límites mensuales de ejecuciones y límite de tokens de IA para los flujos."
       }
     },
     "groups": {

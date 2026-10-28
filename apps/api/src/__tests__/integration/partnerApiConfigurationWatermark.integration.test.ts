@@ -554,6 +554,8 @@ describe('partner desired-configuration material watermarks', () => {
       sessionPromptMode: 'notify', consentUnavailableBehavior: 'proceed',
       notifyOnSessionEnd: true, showActiveIndicator: true,
       technicianIdentityLevel: 'name_email',
+      // #10190 W06: from the normalized column (default ON), not the mirror.
+      allowUserEndSession: true,
     });
     expect(settings.onedrive_helper).toEqual({
       silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: false,

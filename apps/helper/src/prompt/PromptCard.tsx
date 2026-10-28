@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { shouldAnnounce } from './a11y';
-import { formatRemaining, remainingSeconds } from './countdown';
+import { Card } from './Card';
+import { remainingSeconds } from './countdown';
+import { chromeString } from './chrome';
+import { IdentityHeader } from './IdentityHeader';
+import type { PromptIdentity } from './identity';
 import { applyPlaceholders } from './placeholders';
 import type { ActionOutcome, ActionRole, ActionVia, PromptActionSpec, PromptView } from './types';
 import './prompt.css';
@@ -9,11 +13,16 @@ import './prompt.css';
 /*
  * One prompt card (#10190). The copy is agent-rendered and shown as text only
  * (never markup); Assist fills `{remaining}` / `{time:}` and owns the chrome.
- * English chrome strings for W02; the shared catalog localizes them in W03.
+ * Chrome strings come from the shared catalog (`chrome.ts`) in the prompt's
+ * locale; the header is the synced MSP identity (`IdentityHeader`).
  *
  * Keyboard: the safe action comes first in the tab order and holds focus on
- * mount (focus inside a non-activating window does not take OS focus). Esc
- * chooses the safe action on a pending decision and hides the card otherwise.
+ * mount (focus inside a non-activating window does not take OS focus), except
+ * on a non-activating card (`activation="none"`, notices), which never moves
+ * focus. Esc chooses the safe action on a pending decision and hides the card
+ * otherwise.
+ *
+ * Drawn by the shared `Card` (W04), like the endpoint message card.
  */
 
 const ROLE_ORDER: Record<ActionRole, number> = { safe: 0, proceed: 1, neutral: 2 };
@@ -36,30 +45,52 @@ export function outcomeMessage(outcome: ActionOutcome | null): string | null {
   return outcome ? (OUTCOME_TEXT[outcome] ?? null) : null;
 }
 
-export function PromptCard({
-  view,
-  nowMs,
-  onAction,
-  onHide,
-  error,
-}: {
+export interface PromptCardProps {
   view: PromptView;
   nowMs: number;
   onAction: (actionId: string, via: ActionVia) => void;
   onHide: () => void;
   /** Why the last action could not be sent (no agent session, ...). */
   error?: string | null;
-}) {
+  /** The MSP identity from `prompt_branding_sync`; null shows the generic name. */
+  identity?: PromptIdentity | null;
+  logoUrl?: string | null;
+  /**
+   * `focus` (default): the safe action takes keyboard focus inside the card.
+   * `none`: an informational card (kinds/notice.tsx) that never moves focus
+   * and is a plain dialog, not an alertdialog.
+   */
+  activation?: 'focus' | 'none';
+  /**
+   * The remote-session pill (kinds/session.tsx, W06) expanded or collapsed:
+   * the window grows or shrinks to fit. Renderer-local, never a wire action.
+   * A rejected promise means the window did not change size. Other kinds
+   * ignore it.
+   */
+  onExpandedChange?: (expanded: boolean) => Promise<void> | void;
+}
+
+export function PromptCard({
+  view,
+  nowMs,
+  onAction,
+  onHide,
+  error,
+  identity = null,
+  logoUrl = null,
+  activation = 'focus',
+}: PromptCardProps) {
   const deadline = view.countdownDeadlineUnixMs;
   const fill = (text: string) => applyPlaceholders(text, nowMs, view.locale, deadline);
   const actions = view.closed ? [] : orderActions(view.actions);
   const pending = view.pendingActionId !== null;
   const firstAction = useRef<HTMLButtonElement | null>(null);
 
-  // The safe action (first in order) holds focus from the first paint.
+  // The safe action (first in order) holds focus from the first paint,
+  // unless the card is non-activating.
   useLayoutEffect(() => {
-    firstAction.current?.focus();
-  }, [view.promptId]);
+    if (activation === 'focus') firstAction.current?.focus();
+  }, [view.promptId, activation]);
 
   // Esc: the safe action on a pending decision, hide everywhere else. A layout
   // effect, so a key pressed the moment the card paints is not missed.
@@ -86,30 +117,32 @@ export function PromptCard({
   const [announcement, setAnnouncement] = useState('');
   useEffect(() => {
     if (seconds !== null && deadline != null && shouldAnnounce(prevSeconds.current, seconds)) {
-      setAnnouncement(`${formatRemaining(deadline, nowMs)} remaining`);
+      setAnnouncement(chromeString('chrome.remainingAnnounce', view.locale, { seconds }));
     }
     prevSeconds.current = seconds;
-  }, [seconds, deadline, nowMs]);
+  }, [seconds, deadline, nowMs, view.locale]);
 
   const notice = error || view.lastError || outcomeMessage(view.lastOutcome);
   const titleId = `prompt-title-${view.promptId}`;
 
   return (
-    <div
+    <Card
+      variant="prompt"
       className={`prompt-card is-${view.state}`}
-      role={view.decision ? 'alertdialog' : 'dialog'}
-      aria-labelledby={titleId}
+      role={view.decision && activation === 'focus' ? 'alertdialog' : 'dialog'}
+      labelledBy={titleId}
       dir={view.direction}
       lang={view.locale}
-      data-testid="prompt-card"
-    >
-      {/* W03 replaces this with the MSP identity header (prompt_branding_sync). */}
-      <div className="prompt-identity" data-testid="prompt-identity">
-        From your IT provider
-      </div>
-      <h1 className="prompt-title" id={titleId}>
-        {fill(view.copy.title)}
-      </h1>
+      testId="prompt-card"
+      kind={view.kind}
+      activation={activation}
+      header={<IdentityHeader identity={identity} logoUrl={logoUrl} locale={view.locale} />}
+      title={
+        <h1 className="prompt-title" id={titleId}>
+          {fill(view.copy.title)}
+        </h1>
+      }
+      body={
       <div className="prompt-body">
         {view.copy.body && <p>{fill(view.copy.body)}</p>}
         {view.copy.stateDetail && <p className="prompt-state-detail">{fill(view.copy.stateDetail)}</p>}
@@ -132,12 +165,14 @@ export function PromptCard({
         )}
         {view.expiryText && <p className="prompt-expiry">{fill(view.expiryText)}</p>}
       </div>
+      }
+    >
       {notice && (
         <div className="prompt-notice" role="alert">
           {notice}
         </div>
       )}
-      {pending && <div className="prompt-working">Working…</div>}
+      {pending && <div className="prompt-working">{chromeString('chrome.working', view.locale)}</div>}
       {actions.length > 0 && (
         <div className="prompt-actions">
           {actions.map((a, i) => (
@@ -158,6 +193,6 @@ export function PromptCard({
       <div className="prompt-sr-only" aria-live="polite" data-testid="prompt-announce">
         {announcement}
       </div>
-    </div>
+    </Card>
   );
 }
