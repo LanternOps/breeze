@@ -486,12 +486,16 @@ describe('a sync with nothing better never erases imported or agent data (#9862)
     providerMock.mockReturnValue(null);
     queueReads(IMPORTED);
     captureUpsert();
-    const { set } = captureUpdate();
+    const { set, where } = captureUpdate();
 
     await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Acme', serialNumber: 'SN1', subject: DEVICE });
 
     expect(insertMock).not.toHaveBeenCalled();
     expect(set).toHaveBeenCalledTimes(1);
+    // The bookkeeping UPDATE is scoped to this one device's row.
+    expect(where).toHaveBeenCalledTimes(1);
+    const target = compileWhere(where.mock.calls[0]![0]);
+    expect(target.params).toEqual(['deviceWarranty.deviceId', DEVICE_ID]);
     const patch = set.mock.calls[0]![0] as Record<string, unknown>;
     expect(patch).toMatchObject({ lastSyncError: null });
     expect(patch.nextSyncAt).toBeInstanceOf(Date);
@@ -526,6 +530,22 @@ describe('a sync with nothing better never erases imported or agent data (#9862)
     expect(patch.lastSyncAt).toBeInstanceOf(Date);
     expect(patch).not.toHaveProperty('warrantyEndDate');
     expect(patch).not.toHaveProperty('dataSource');
+  });
+
+  it('vendor miss on an agent-owned row: keeps it and stamps the check (was a silent no-op before)', async () => {
+    vendorAnswers({ found: false, entitlements: [], warrantyStartDate: null, warrantyEndDate: null });
+    queueReads([{ dataSource: 'agent_plist' }]);
+    captureUpsert();
+    const { set } = captureUpdate();
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: DEVICE });
+
+    expect(insertMock).not.toHaveBeenCalled();
+    const patch = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(patch.lastSyncAt).toBeInstanceOf(Date);
+    for (const key of ['warrantyStartDate', 'warrantyEndDate', 'status', 'dataSource', 'entitlements']) {
+      expect(patch).not.toHaveProperty(key);
+    }
   });
 
   it('vendor lookup error: keeps an imported row and records the error', async () => {

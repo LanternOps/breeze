@@ -311,9 +311,11 @@ describe('DeviceWarrantyCard — imported data and source labels (#9862)', () =>
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
     });
-    // One GET on mount, the POST, and no poll GETs afterwards.
+    // One GET on mount, the POST, and no poll GETs afterwards — waited past the
+    // 2s poll interval so a scheduled poll would have fired by now.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
-  });
+  }, 10000);
 
   it('explains an agent-collected refusal as a warning too', async () => {
     fetchWithAuthMock.mockImplementation(async (input, init) => {
