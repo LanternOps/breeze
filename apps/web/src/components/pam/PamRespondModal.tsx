@@ -118,6 +118,9 @@ export default function PamRespondModal({
   const dismiss = settledOtherwise ? onActioned : onClose;
   const reasonId = useId();
   const reasonHintId = `${reasonId}-hint`;
+  // The end user is told the deny reason only for a uac_intercept request (the
+  // server's pam_request_notify, #8928); for the other flows it is audit-only.
+  const reasonShownToUser = decision === 'deny' && request.flowType === 'uac_intercept';
   const durationId = useId();
   const titleId = useId();
   const reauthId = useId();
@@ -493,7 +496,7 @@ export default function PamRespondModal({
 
         <div>
           <label htmlFor={reasonId} className="mb-1 block text-sm font-medium">
-            {decision === 'deny'
+            {reasonShownToUser
               ? t('pamPamRespondModal.form.reasonShownToUser', {
                   defaultValue: 'Reason (shown to the user)',
                 })
@@ -501,7 +504,7 @@ export default function PamRespondModal({
           </label>
           <textarea
             id={reasonId}
-            aria-describedby={decision === 'deny' ? reasonHintId : undefined}
+            aria-describedby={reasonShownToUser ? reasonHintId : undefined}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             maxLength={2000}
@@ -512,7 +515,7 @@ export default function PamRespondModal({
               defaultValue: 'Recorded in the audit trail',
             })}
           />
-          {decision === 'deny' && (
+          {reasonShownToUser && (
             <p
               id={reasonHintId}
               data-testid="pam-respond-reason-hint"

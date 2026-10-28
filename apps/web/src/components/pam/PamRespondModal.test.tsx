@@ -689,6 +689,23 @@ describe('PamRespondModal deny reason disclosure (#8928)', () => {
     expect(textarea).toHaveAttribute('maxlength', '2000');
   });
 
+  // The server sends the end-user notice only for uac_intercept (pam.ts), so
+  // for the other flows the reason is audit-only and must not claim otherwise.
+  it.each(['tech_jit_admin', 'ai_tool_action'] as const)(
+    'keeps the optional label and no end-user hint when denying a %s request',
+    (flowType) => {
+      render(
+        <PamRespondModal request={requestFixture({ flowType })} onClose={() => {}} onActioned={() => {}} />,
+      );
+      fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+
+      expect(screen.getByLabelText('Reason (optional)')).toBe(screen.getByTestId('pam-respond-reason'));
+      expect(screen.queryByText('Reason (shown to the user)')).toBeNull();
+      expect(screen.queryByTestId('pam-respond-reason-hint')).toBeNull();
+      expect(screen.getByTestId('pam-respond-reason')).not.toHaveAttribute('aria-describedby');
+    },
+  );
+
   it('keeps the optional label and no end-user hint on approve', () => {
     render(
       <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />,
