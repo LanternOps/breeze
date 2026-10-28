@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: InheritableSecuritySettings;
@@ -118,6 +119,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             min={15}
             max={SESSION_TIMEOUT_MAX_MINUTES}
           />
+          <InheritanceLine fieldId="security.sessionTimeout" />
         </div>
 
         <div className="space-y-2">
@@ -134,17 +136,20 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 self-end pb-2">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={data.requireMfa ?? false}
-              onChange={e => set({ requireMfa: e.target.checked })}
-              className="h-4 w-4 rounded border"
-            />
-            <span className="text-sm font-medium">{t('partnerSecurity.requireMfa')}</span>
-          </label>
-          <SettingBadge fieldId="security.requireMfa" />
+        <div className="space-y-1 self-end pb-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={data.requireMfa ?? false}
+                onChange={e => set({ requireMfa: e.target.checked })}
+                className="h-4 w-4 rounded border"
+              />
+              <span className="text-sm font-medium">{t('partnerSecurity.requireMfa')}</span>
+            </label>
+            <SettingBadge fieldId="security.requireMfa" />
+          </div>
+          <InheritanceLine fieldId="security.requireMfa" />
         </div>
       </div>
 

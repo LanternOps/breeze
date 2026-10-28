@@ -10,6 +10,7 @@ import {
 import AgentVersionPinSelectors, { type PinnableVersions } from './AgentVersionPinSelectors';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -76,6 +77,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
             <option value="auto">{t('partnerDefaults.automatic')}</option>
             <option value="manual">{t('partnerDefaults.manual')}</option>
           </select>
+          <InheritanceLine fieldId="defaults.agentUpdatePolicy" />
         </div>
 
         <div className="space-y-2">
@@ -92,6 +94,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               maintenanceWindowInvalid ? 'border-destructive' : ''
             }`}
           />
+          <InheritanceLine fieldId="defaults.maintenanceWindow" />
           {maintenanceWindowInvalid ? (
             <p id="partner-defaults-maintenance-window-hint" className="text-xs text-destructive">
               <Trans i18nKey="partnerDefaults.maintenanceInvalid" t={t} components={{ first: <code />, second: <code />, always: <code /> }} />
@@ -110,6 +113,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
             onChange={(agentVersionPins) => set({ agentVersionPins })}
             pinnable={pinnableVersions ?? null}
             labelAddon={key => <SettingBadge fieldId={`defaults.agentVersionPins.${key}`} />}
+            footer={key => <InheritanceLine fieldId={`defaults.agentVersionPins.${key}`} />}
           />
         </div>
 
@@ -166,6 +170,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
                 enrollmentTtlOptionsIncluding(partnerCap, data.defaultEnrollmentTtlMinutes),
               )}
             </select>
+            <InheritanceLine fieldId="defaults.defaultEnrollmentTtlMinutes" />
             <p className="text-xs text-muted-foreground">
               {t('partnerDefaults.enrollment.ttlHint')}
             </p>
@@ -188,6 +193,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               placeholder={t('partnerDefaults.notSet')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
+            <InheritanceLine fieldId="defaults.defaultEnrollmentDeviceCount" />
             <p className="text-xs text-muted-foreground">
               {t('partnerDefaults.enrollment.deviceCountHint')}
             </p>
@@ -209,6 +215,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               <option value="">{t('partnerDefaults.notSet')}</option>
               {renderTtlOptions(ENROLLMENT_TTL_OPTIONS)}
             </select>
+            <InheritanceLine fieldId="defaults.maxEnrollmentLinkTtlMinutes" />
             <p className="text-xs text-muted-foreground">
               {t('partnerDefaults.enrollment.maxTtlHint')}
             </p>

@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import SavedSecretInput from './SavedSecretInput';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: InheritableNotificationSettings;
@@ -150,7 +151,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             testId="partner-notifications-pushover-token"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
-          />
+          >
+            <InheritanceLine fieldId="notifications.pushoverAppToken" />
+          </SavedSecretInput>
           <SavedSecretInput
             value={data.pushoverDefaultUser}
             onChange={pushoverDefaultUser => set({ pushoverDefaultUser })}
@@ -159,7 +162,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             testId="partner-notifications-pushover-user"
             notSetPlaceholder={t('partnerNotifications.notSet')}
             maxLength={30}
-          />
+          >
+            <InheritanceLine fieldId="notifications.pushoverDefaultUser" />
+          </SavedSecretInput>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
@@ -172,6 +177,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               placeholder={t('partnerNotifications.soundPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             />
+            <InheritanceLine fieldId="notifications.pushoverDefaultSound" />
           </div>
           <div className="space-y-2 sm:col-span-2">
             <FieldLabel htmlFor="partner-notifications-pushover-priority" fieldId="notifications.pushoverDefaultPriority">{t('partnerNotifications.defaultPriority')}</FieldLabel>
@@ -195,6 +201,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               <option value={1}>{t('partnerNotifications.priorities.high')}</option>
               <option value={2}>{t('partnerNotifications.priorities.emergency')}</option>
             </select>
+            <InheritanceLine fieldId="notifications.pushoverDefaultPriority" />
           </div>
         </div>
         <label className="flex items-start gap-2 text-sm">

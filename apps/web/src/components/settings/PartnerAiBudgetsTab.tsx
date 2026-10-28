@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
 import FieldLabel from './partnerSettings/FieldLabel';
 import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 import { TOOL_RATE_LIMIT_MULTIPLIER_MAX, TOOL_RATE_LIMIT_MULTIPLIER_MIN } from '@/lib/aiBudget';
 
 type Props = {
@@ -34,17 +35,20 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <label className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            checked={data.enabled ?? false}
-            onChange={e => set({ enabled: e.target.checked })}
-            className="h-4 w-4 rounded border"
-          />
-          <span className="text-sm font-medium">{t('partnerAiBudgets.enable')}</span>
-        </label>
-        <SettingBadge fieldId="aiBudgets.enabled" />
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={data.enabled ?? false}
+              onChange={e => set({ enabled: e.target.checked })}
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">{t('partnerAiBudgets.enable')}</span>
+          </label>
+          <SettingBadge fieldId="aiBudgets.enabled" />
+        </div>
+        <InheritanceLine fieldId="aiBudgets.enabled" />
       </div>
 
       {data.enabled && (
@@ -62,6 +66,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 placeholder={t('partnerAiBudgets.notSet')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
+              <InheritanceLine fieldId="aiBudgets.monthlyBudgetCents" />
             </div>
 
             <div className="space-y-2">
@@ -76,6 +81,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 placeholder={t('partnerAiBudgets.notSet')}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               />
+              <InheritanceLine fieldId="aiBudgets.dailyBudgetCents" />
             </div>
 
             <div className="space-y-2">
@@ -92,6 +98,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 <option value="auto_approve">{t('partnerAiBudgets.modes.autoApprove')}</option>
                 <option value="hybrid_plan">{t('partnerAiBudgets.modes.hybridPlan')}</option>
               </select>
+              <InheritanceLine fieldId="aiBudgets.approvalMode" />
             </div>
 
             <div className="space-y-2">
@@ -106,6 +113,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 min={1}
                 max={100}
               />
+              <InheritanceLine fieldId="aiBudgets.maxTurnsPerSession" />
             </div>
 
             <div className="space-y-2">
@@ -120,6 +128,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 min={1}
                 max={60}
               />
+              <InheritanceLine fieldId="aiBudgets.messagesPerMinutePerUser" />
             </div>
 
             <div className="space-y-2">
@@ -134,6 +143,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 min={1}
                 max={10000}
               />
+              <InheritanceLine fieldId="aiBudgets.messagesPerHourPerOrg" />
             </div>
 
             <div className="space-y-2">
@@ -150,6 +160,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 min={TOOL_RATE_LIMIT_MULTIPLIER_MIN}
                 max={TOOL_RATE_LIMIT_MULTIPLIER_MAX}
               />
+              <InheritanceLine fieldId="aiBudgets.toolRateLimitMultiplier" />
               <p className="text-xs text-muted-foreground">{t('aiUsagePage.toolRateLimitMultiplierHelp')}</p>
             </div>
 
@@ -164,6 +175,7 @@ export default function PartnerAiBudgetsTab({ data, onChange, thresholdsText, on
                 placeholder={t('partnerAiBudgets.notSet')}
                 testId="partner-ai-budget-thresholds"
               />
+              <InheritanceLine fieldId="aiBudgets.alertThresholdPercents" />
               <p className="text-xs text-muted-foreground">{t('partnerAiBudgets.alertThresholdsHelp')}</p>
             </div>
           </div>

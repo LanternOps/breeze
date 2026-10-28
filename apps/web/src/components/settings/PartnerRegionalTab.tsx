@@ -3,6 +3,7 @@ import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import type { DateFormat, TimeFormat, SupportedLocale } from '@breeze/shared';
 import '@/lib/i18n';
 import FieldLabel from './partnerSettings/FieldLabel';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 const DATE_FORMATS: { value: DateFormat; labelKey: string }[] = [
   { value: 'MM/DD/YYYY', labelKey: 'us' },
@@ -56,6 +57,7 @@ export default function PartnerRegionalTab({
               className="h-10 w-full rounded-md border bg-background px-3 text-sm">
               {DATE_FORMATS.map(fmt => <option key={fmt.value} value={fmt.value}>{fmt.value} ({t(/* i18n-dynamic */ `partner.regional.dateFormats.${fmt.labelKey}`)})</option>)}
             </select>
+            <InheritanceLine fieldId="regional.dateFormat" />
           </div>
           <div className="space-y-2">
             <FieldLabel fieldId="regional.timeFormat">{t('partner.regional.timeFormat')}</FieldLabel>
@@ -71,6 +73,7 @@ export default function PartnerRegionalTab({
                 <span className="text-sm">{t('partner.regional.twentyFourHour')}</span>
               </label>
             </div>
+            <InheritanceLine fieldId="regional.timeFormat" />
           </div>
           <div className="space-y-2">
             <label htmlFor="partner-language" className="text-sm font-medium">{t('partner.regional.language')}</label>

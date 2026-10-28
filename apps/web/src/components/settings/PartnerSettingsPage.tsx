@@ -45,6 +45,8 @@ import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSav
 import { useUnsavedGuard } from './partnerSettings/useUnsavedGuard';
 import BadgeLegend from './partnerSettings/BadgeLegend';
 import { PartnerInheritanceContext, readPath, type PartnerInheritanceUi } from './partnerSettings/inheritanceContext';
+import { inheritanceTabFor, useInheritanceStore, useTabInheritance } from './partnerSettings/useTabInheritance';
+import { isFieldDraftDirty } from './partnerSettings/fieldDraft';
 
 // Kept on this module's surface: existing callers and tests import it from here.
 export { runPartnerSave } from './partnerSettings/usePartnersMeUnit';
@@ -63,6 +65,10 @@ export default function PartnerSettingsPage() {
   const setDraftPartner = usePartnerSettingsDraftStore(s => s.setPartner);
   useEffect(() => { setDraftPartner(currentPartnerId ?? null); }, [currentPartnerId, setDraftPartner]);
   useEffect(() => () => usePartnerSettingsDraftStore.getState().reset(), []);
+  // Inheritance counts are cached for the page session, per partner.
+  const setInheritancePartner = useInheritanceStore(s => s.setPartner);
+  useEffect(() => { setInheritancePartner(currentPartnerId ?? null); }, [currentPartnerId, setInheritancePartner]);
+  useEffect(() => () => useInheritanceStore.getState().reset(), []);
 
   const callerVerificationUnit = useCallerVerificationUnit();
   const loginBrandingUnit = useLoginBrandingUnit();
@@ -196,14 +202,16 @@ export default function PartnerSettingsPage() {
     if (s.kind === 'invalid') open(s.tab, s.fieldId);
   }, []);
   // Per-field inheritance widgets read the SAVED partner record, never the draft.
+  const tabState = useTabInheritance(partner ? inheritanceTabFor(activeTab) : null);
   const savedSettings = partner?.settings;
+  const { baseline } = me;
   const inheritanceUi = useMemo<PartnerInheritanceUi>(() => ({
-    tabState: null,
+    tabState,
     savedSetting: path => readPath(savedSettings, path),
-    isFieldDirty: () => false,
+    isFieldDirty: fieldId => isFieldDraftDirty(fieldId, state, baseline),
     openDrill: () => {},
     selectedFieldId: null,
-  }), [savedSettings]);
+  }), [tabState, savedSettings, state, baseline]);
 
   const saveApi = useMemo(() => ({
     submit: handleSave,

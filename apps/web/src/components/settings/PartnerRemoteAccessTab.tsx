@@ -10,6 +10,7 @@ import type {
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import SettingBadge from './partnerSettings/SettingBadge';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 
@@ -107,6 +108,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
           <p className="mt-1 max-w-prose text-sm text-muted-foreground">
             <Trans i18nKey="partnerRemoteAccess.description" t={t} components={{ connect: <span className="font-medium" /> }} />
           </p>
+          <InheritanceLine fieldId="remoteAccessProviders.providers" />
         </div>
         <button
           type="button"
@@ -297,6 +299,9 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
             </span>
           </span>
         </label>
+        <div className="mt-1 pl-7">
+          <InheritanceLine fieldId="networkProxy.dedicatedTunnelOrigin" />
+        </div>
       </div>
     </div>
   );

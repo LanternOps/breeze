@@ -7,6 +7,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import FieldLabel from './partnerSettings/FieldLabel';
+import InheritanceLine from './partnerSettings/InheritanceLine';
 
 type Props = {
   data: AiApprovalSettings;
@@ -52,6 +53,7 @@ export default function PartnerAiApprovalsTab({ data, onChange }: Props) {
             </option>
           ))}
         </select>
+        <InheritanceLine fieldId="aiApprovals.interactiveTimeoutMinutes" />
         <p className="text-xs text-muted-foreground">
           {t('partnerAiApprovals.range', {
             min: AI_APPROVAL_TIMEOUT_MIN_MINUTES,
