@@ -4,6 +4,7 @@ import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTop
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { pageContextAnchorsOrg } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
@@ -779,13 +780,13 @@ export const useAiStore = create<AiState>()(
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
-        ?? (pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId());
+        ?? (pageContextAnchorsOrg(pageContext) || opts?.deviceId ? null : await readSelectedOrgId());
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          // #9529: with no device on the page, the session belongs to the org
-          // selected in the header. A device page / device task lets the
-          // server anchor to the device's org instead (#5593), and no
+          // #9529: without a page org anchor, the session belongs to the org
+          // selected in the header. A device/record page or device task lets
+          // the server resolve and anchor to the entity's org instead, and no
           // selection (All organizations) sends nothing.
           orgId: orgId ?? undefined,
           ...(wispGrantId ? { wispGrantId } : {}),

@@ -58,9 +58,9 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('record'),
     kind: z.enum(AI_RECORD_KINDS),
-    id: z.string().uuid(),
+    id: z.string().guid(),
     // Client hint only; the server resolves the record's organization.
-    orgId: z.string().uuid().optional(),
+    orgId: z.string().guid().optional(),
     // Web badge only; the server reads record details itself.
     label: z.string().max(200).optional()
   }).strict()

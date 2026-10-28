@@ -34,7 +34,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYSTEM_PROMPT_TAIL: 'tail' }));
-vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail', renderPageContextToolBlocks: () => '', resolveToolIndexMode: () => 'lazy' }));
+vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail', renderPageContextToolBlocks: vi.fn(() => '### Tools for this page'), resolveToolIndexMode: () => 'lazy' }));
 vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
@@ -52,18 +52,38 @@ vi.mock('./aiModels/sessionModel', () => ({
 
 import type { AiRecordPageContext } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
+import type { GrantCeiling } from './wisp/grantAuthority';
 import type { ResolvedEntity, ResolveFailure } from './wisp/entityRefs';
 
 vi.mock('./wisp/entityRefs', () => ({
   resolveEntityForCaller: vi.fn(),
+  resolveEntityRef: vi.fn(),
   isResolveFailure: (result: ResolvedEntity | ResolveFailure) => 'reason' in result,
 }));
 
 import { buildSystemPrompt, createSession } from './aiAgent';
-import { resolveEntityForCaller } from './wisp/entityRefs';
+import { resolveEntityForCaller, resolveEntityRef } from './wisp/entityRefs';
 import { wrapUntrustedData } from './aiInputSanitizer';
 import { pageContextWriteDefaultOrgId } from './aiSessionOrgAnchor';
 import { chooseSessionModel } from './aiModels/sessionModel';
+import { renderPageContextToolBlocks } from './aiToolIndex';
+import { resolveGrantCeiling } from './wisp/grantAuthority';
+
+vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./wisp/grantAuthority')>(),
+  resolveGrantCeiling: vi.fn(),
+}));
+vi.mock('./wisp/sessionGrant', () => ({
+  WispSessionError: class WispSessionError extends Error {},
+  validateWispGrantForSession: vi.fn(async () => ({ grantId: 'grant-1', revisionId: 'revision-1', orgId: null })),
+  assertGrantCoversSessionOrg: vi.fn(),
+}));
+vi.mock('./wisp/threads', () => ({
+  getOrCreateThread: vi.fn(async () => ({ id: 'thread-1', focusOrgId: null })),
+  seedContextForSession: vi.fn(async () => ''),
+  setThreadFocus: vi.fn(),
+  attachSession: vi.fn(),
+}));
 
 const ORG_A = 'aaaaaaaa-1111-4222-8333-444455556666';
 const ORG_B = 'bbbbbbbb-1111-4222-8333-444455556666';
@@ -85,6 +105,13 @@ const auth = {
   orgCondition: () => undefined,
 } as AuthContext;
 
+const ceiling: GrantCeiling = {
+  grantId: 'grant-1', revisionId: 'revision-1', partnerId: auth.partnerId!,
+  grantorUserId: auth.user.id, scopeOrgId: null, partnerWide: true,
+  orgIds: new Set([ORG_A, ORG_B]), siteIds: null, permissionKeys: new Set(['tickets:read']),
+  toolAllowlist: null, deniedTools: new Set(), orgTerms: new Map(), status: 'active',
+};
+
 function expectInsert() {
   const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
   insertMock.mockReturnValueOnce({ values });
@@ -94,6 +121,8 @@ function expectInsert() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(resolveEntityForCaller).mockResolvedValue(entity);
+  vi.mocked(resolveEntityRef).mockResolvedValue(entity);
+  vi.mocked(resolveGrantCeiling).mockResolvedValue(ceiling);
 });
 
 describe('record page context prompt', () => {
@@ -139,6 +168,8 @@ describe('record page context prompt', () => {
     try {
       const prompt = await buildSystemPrompt(auth, page);
       expect(prompt).toContain('## Current User');
+      expect(prompt).not.toContain('### Tools for this page');
+      expect(renderPageContextToolBlocks).not.toHaveBeenCalled();
       expect(prompt).not.toContain('## Current Page Context');
       expect(prompt).not.toContain('The user is viewing');
       expect(prompt).not.toContain(RECORD_ID);
@@ -149,10 +180,12 @@ describe('record page context prompt', () => {
     }
   });
 
-  it.each(['not_found', 'forbidden', 'outside_ceiling', 'outside_token_scope'] as const)(
+  it.each(['not_found', 'forbidden', 'outside_token_scope'] as const)(
     'renders nothing for a refused record (%s)', async (reason) => {
       vi.mocked(resolveEntityForCaller).mockResolvedValue({ reason });
       const prompt = await buildSystemPrompt(auth, page);
+      expect(prompt).not.toContain('### Tools for this page');
+      expect(renderPageContextToolBlocks).not.toHaveBeenCalled();
       expect(prompt).not.toContain('## Current Page Context');
       expect(prompt).not.toContain('The user is viewing');
       expect(prompt).not.toContain(RECORD_ID);
@@ -223,5 +256,39 @@ describe('record page context org anchoring', () => {
     expect(stored.orgId).toBe(ORG_A);
     expect(stored.contextSnapshot).not.toHaveProperty('orgAnchor');
     expect(pageContextWriteDefaultOrgId(stored)).toBeUndefined();
+  });
+});
+
+
+describe('Wisp record page context ceiling', () => {
+  it('a Wisp session with a record outside the ceiling renders no record line, heading, ID or tools', async () => {
+    vi.mocked(resolveEntityRef).mockResolvedValue({ reason: 'outside_ceiling' });
+    const values = expectInsert();
+    await createSession(auth, { pageContext: page, wispGrantId: 'grant-1' });
+    const stored = values.mock.calls[0]![0];
+    expect(resolveEntityRef).toHaveBeenCalledWith({ auth, ceiling }, { kind: 'ticket', id: RECORD_ID });
+    expect(resolveEntityRef).toHaveBeenCalledTimes(2); // org anchor and prompt
+    expect(stored.orgId).toBe(ORG_A);
+    expect(stored.contextSnapshot).not.toHaveProperty('orgAnchor');
+    expect(stored.systemPrompt).not.toContain('## Current Page Context');
+    expect(stored.systemPrompt).not.toContain('The user is viewing');
+    expect(stored.systemPrompt).not.toContain(RECORD_ID);
+    expect(stored.systemPrompt).not.toContain(entity.label);
+    expect(stored.systemPrompt).not.toContain('### Tools for this page');
+    expect(renderPageContextToolBlocks).not.toHaveBeenCalled();
+  });
+
+  it('a Wisp session with a record inside the ceiling renders it and anchors to its org', async () => {
+    const values = expectInsert();
+    await createSession(auth, { pageContext: page, wispGrantId: 'grant-1' });
+    const stored = values.mock.calls[0]![0];
+    expect(resolveEntityRef).toHaveBeenCalledWith({ auth, ceiling }, { kind: 'ticket', id: RECORD_ID });
+    expect(resolveEntityRef).toHaveBeenCalledTimes(2);
+    expect(stored.orgId).toBe(ORG_B);
+    expect(stored.contextSnapshot).toHaveProperty('orgAnchor', 'page_context');
+    expect(stored.systemPrompt).toContain(entity.label);
+    expect(stored.systemPrompt).toContain(RECORD_ID);
+    expect(stored.systemPrompt).toContain('### Tools for this page');
+    expect(stored.systemPrompt).not.toContain(page.label);
   });
 });

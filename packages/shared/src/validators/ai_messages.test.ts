@@ -56,9 +56,17 @@ describe('aiPageContextSchema', () => {
     }).success).toBe(true);
   });
 
-  it.each(['id', 'orgId'])('rejects a non-uuid %s on a record', (field) => {
+  it.each(['id', 'orgId'])('accepts a non-RFC GUID %s on a record', (field) => {
+    const context = {
+      type: 'record', kind: 'ticket', id: VALID_UUID,
+      [field]: '11111111-2222-3333-4444-555555555555',
+    };
+    expect(aiPageContextSchema.parse(context)).toEqual(context);
+  });
+
+  it.each(['id', 'orgId'])('rejects a non-GUID %s on a record', (field) => {
     expect(aiPageContextSchema.safeParse({
-      type: 'record', kind: 'ticket', id: VALID_UUID, [field]: 'not-a-uuid',
+      type: 'record', kind: 'ticket', id: VALID_UUID, [field]: 'not-a-guid',
     }).success).toBe(false);
   });
 

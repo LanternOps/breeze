@@ -615,23 +615,31 @@ export async function runPreFlightChecks(
       });
     }
   }
-  let systemPrompt = sanitizedPageContext
-    ? await buildSystemPrompt(auth, sanitizedPageContext)
-    : (session.systemPrompt ?? await buildSystemPrompt(auth));
-
-  // Wisp W04 (Review Focus 1): a pageContext turn rebuilds the prompt from
-  // scratch, which would drop the thread seed appended at create — re-seed it
-  // from the live ceiling. A pinned session that cannot be resolved is refused
-  // here, as getOrCreate would refuse it.
+  let systemPrompt: string;
+  // Resolve the live ceiling BEFORE rebuilding a Wisp prompt: record context
+  // and the thread seed must both respect the grant, not just the caller.
   if (sanitizedPageContext && session.wispGrantId) {
     const { lookupWispGrant, wispSeedForSession, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const { resolveGrantCeiling, GrantInactiveError } = await import('./wisp/grantAuthority');
     try {
       const grant = await lookupWispGrant(sessionId);
-      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(grant, auth)].filter(Boolean).join('\n');
+      if (!grant) throw new WispSessionUnavailableError('grant_unpinned', sessionId);
+      const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
+      systemPrompt = [
+        await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
+        await wispSeedForSession(grant, auth, ceiling),
+      ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
+      if (err instanceof GrantInactiveError && err.kind !== 'corrupt') {
+        return { ok: false, error: 'Your Wisp grant is no longer active. Start a new Wisp conversation to continue.', status: 409 };
+      }
       throw err;
     }
+  } else {
+    systemPrompt = sanitizedPageContext
+      ? await buildSystemPrompt(auth, sanitizedPageContext)
+      : (session.systemPrompt ?? await buildSystemPrompt(auth));
   }
 
   // A durable reservation is acquired immediately before provider dispatch by

@@ -11,7 +11,12 @@ const wisp = vi.hoisted(() => ({
   enforceWispCeiling: vi.fn(),
   narrowAuthToCeiling: vi.fn(),
   lookupWispGrant: vi.fn(),
+  resolveGrantCeiling: vi.fn(),
   wispSeedForSession: vi.fn(),
+}));
+vi.mock('./wisp/grantAuthority', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./wisp/grantAuthority')>(),
+  resolveGrantCeiling: (...args: unknown[]) => wisp.resolveGrantCeiling(...args),
 }));
 vi.mock('./wisp/chatCeiling', () => ({
   enforceWispCeiling: (...args: unknown[]) => wisp.enforceWispCeiling(...args),
@@ -34,6 +39,7 @@ import { db } from '../db';
 import { checkGuardrails, checkPermissionRequirements, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { tenantToolPermissionRequirement } from './toolSources/guardrails';
 import { WispSessionUnavailableError } from './wisp/chatCeiling';
+import { GrantInactiveError } from './wisp/grantAuthority';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
@@ -786,6 +792,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     mockBuildSystemPrompt.mockResolvedValue('rebuilt prompt');
     mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('platform'));
     wisp.lookupWispGrant.mockResolvedValue(GRANT);
+    wisp.resolveGrantCeiling.mockResolvedValue(CEILING);
     wisp.wispSeedForSession.mockResolvedValue('## Wisp thread\nsummary');
   });
 
@@ -795,7 +802,26 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }));
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING);
+  });
+
+  it('resolves and passes the ceiling before rebuilding record context, then reuses it for the seed', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    const page = { type: 'record', kind: 'ticket', id: 'dddddddd-1111-4222-8333-444455556666' } as const;
+    await runPreFlightChecks('session-1', 'hello', auth, page);
+    expect(wisp.resolveGrantCeiling).toHaveBeenCalledWith(GRANT.grantId, GRANT.revisionId);
+    expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
+    expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING);
+  });
+
+  it('refuses an inactive ceiling before building record context', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    wisp.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError('grant-1', 'paused'));
+    const page = { type: 'record', kind: 'ticket', id: 'dddddddd-1111-4222-8333-444455556666' } as const;
+    expect(await runPreFlightChecks('session-1', 'hello', auth, page)).toMatchObject({ ok: false, status: 409 });
+    expect(mockBuildSystemPrompt).not.toHaveBeenCalled();
+    expect(wisp.wispSeedForSession).not.toHaveBeenCalled();
   });
 
   it('a pinned session that cannot be resolved (WispSessionUnavailableError) refuses the turn with 409, no seed', async () => {

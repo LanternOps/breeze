@@ -21,6 +21,14 @@ describe('sanitizePageContext', () => {
     expect(sanitizePageContext(page)).toEqual(page);
   });
 
+  it.each(['record', 'custom'] as const)('truncates a %s label by code points without splitting emoji', (type) => {
+    const label = `A${'😀'.repeat(200)}`;
+    const page = type === 'record'
+      ? { type, kind: 'ticket' as const, id: 'dddddddd-1111-4222-8333-444455556666', label }
+      : { type, label, data: {} };
+    expect(sanitizePageContext(page)).toEqual({ ...page, label: `A${'😀'.repeat(199)}` });
+  });
+
   it('sanitizes custom context keys and strings nested inside arrays', () => {
     const sanitized = sanitizePageContext({
       type: 'custom',
