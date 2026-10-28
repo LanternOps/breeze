@@ -2549,21 +2549,30 @@ mod tests {
         // ...and the one other prompt path (#10190 W06, OD-6 (b)) is the
         // person's own "Report a problem" click on the session pill, opened
         // only on the agent's `accepted` answer to it: the tracker hands the
-        // session id out once (`take_request_support`, prompt.rs tests), and
-        // the action-result handler is the only caller of the lib.rs opener.
+        // session id out once (`take_request_support`, prompt.rs tests), the
+        // bridge's `action_result` is the only taker and returns it as
+        // `ResultEffect::OpenSupport`, and the action-result handler is the
+        // only caller of the lib.rs opener.
         assert_eq!(client.matches("crate::open_request_support(").count(), 1);
         let result = body_of(client, "fn handle_prompt_action_result(");
-        let apply = result.find("apply_prompt_action_result(").expect("gated on the tested helper");
+        let apply = result.find("prompts.action_result(").expect("gated on the tested bridge call");
         let open = result.find("crate::open_request_support(").expect("opened from the result handler");
         assert!(apply < open, "the result is applied before the opener runs");
-        assert!(!result.contains("take_request_support"), "only the tested helper takes the one-shot");
-        // The helper (behaviour-tested in client.rs) takes it only after the
-        // result released the person's own action.
-        let helper = body_of(client, "fn apply_prompt_action_result(");
-        let applied = helper.find(".on_action_result(").unwrap();
-        let take = helper.find(".take_request_support()").unwrap();
+        assert!(
+            result.contains("if let prompt::ResultEffect::OpenSupport(req) = &effect"),
+            "opened only for the one-shot the bridge handed out"
+        );
+        assert!(!client.contains("take_request_support"), "only the bridge takes the one-shot");
+        // The bridge (behaviour-tested in prompt.rs and client.rs) takes it
+        // only after the result released the person's own action, under the
+        // same lock.
+        let bridge_start = prompt.find("pub fn action_result(").expect("bridge action_result");
+        let bridge_end = prompt[bridge_start..].find("\n    }\n").map(|i| i + bridge_start).unwrap();
+        let bridge = &prompt[bridge_start..bridge_end];
+        let applied = bridge.find(".on_action_result(").unwrap();
+        let take = bridge.find(".take_request_support()").unwrap();
         assert!(applied < take);
-        assert_eq!(client.matches(".take_request_support()").count(), 1);
+        assert_eq!(prompt.matches(".take_request_support()").count(), 1);
         assert_eq!(lib.matches("open_request_support(").count(), 1, "lib.rs defines the opener and never calls it");
         for (name, src) in [
             ("prompt.rs", prompt),

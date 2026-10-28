@@ -3,6 +3,7 @@ import type { ComponentType } from 'react';
 import { PromptCard, type PromptCardProps } from '../PromptCard';
 import { NoticeCard } from './notice';
 import { ConsentCard } from './consent';
+import { RestartFinalCard, RestartPromptCard } from './restart';
 import { SessionCard } from './session';
 
 /*
@@ -12,6 +13,8 @@ import { SessionCard } from './session';
  */
 const CARDS: Record<string, ComponentType<PromptCardProps>> = {
   'notice.info': NoticeCard,
+  'restart.prompt': RestartPromptCard,
+  'restart.final': RestartFinalCard,
   'remote.consent': ConsentCard,
   'remote.session': SessionCard,
 };

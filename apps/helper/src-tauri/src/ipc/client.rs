@@ -1054,18 +1054,22 @@ fn handle_prompt_action_result(
 ) {
     match payload_str(payload).map(serde_json::from_str::<prompt::PromptActionResult>) {
         Some(Ok(result)) => {
-            let (changed, support) = apply_prompt_action_result(prompts, env_id, &result);
-            if changed {
+            let effect = prompts.action_result(env_id, &result);
+            if effect != prompt::ResultEffect::Ignored {
                 match ctx {
                     Some(ctx) => {
+                        // An accepted Postpone or OK collapses a restart card to its list entry.
+                        if effect == prompt::ResultEffect::Collapsed {
+                            desktop::close_prompt_window(&ctx.app, &result.prompt_id);
+                        }
                         desktop::publish_prompt_state(&ctx.app, Some(&result.prompt_id));
                         // W06 (OD-6 (b)): the agent accepted the person's own
                         // "Report a problem" on the session pill.
-                        if let Some(req) = support {
-                            crate::open_request_support(&ctx.app, &req);
+                        if let prompt::ResultEffect::OpenSupport(req) = &effect {
+                            crate::open_request_support(&ctx.app, req);
                         }
                     }
-                    None if support.is_some() => eprintln!(
+                    None if matches!(effect, prompt::ResultEffect::OpenSupport(_)) => eprintln!(
                         "[helper] Request Support not opened: no desktop on this session (promptId={})",
                         log_id(&result.prompt_id)
                     ),
@@ -1083,22 +1087,6 @@ fn handle_prompt_action_result(
         }
         _ => eprintln!("[helper] bad prompt_action_result payload; ignored (env={})", log_id(env_id)),
     }
-}
-
-/// Apply a `prompt_action_result` and say what it changed: whether it released
-/// an action in flight, and the Request Support to open (W06, OD-6 (b)). The
-/// one-shot is taken only after this result released the person's own
-/// action on its own envelope, so only an `accepted` answer to a "Report a
-/// problem" click can yield it (behaviour-tested below; each tracker call
-/// takes and releases the lock).
-fn apply_prompt_action_result(
-    prompts: &PromptBridge,
-    env_id: &str,
-    result: &prompt::PromptActionResult,
-) -> (bool, Option<prompt::RequestSupport>) {
-    let changed = prompts.tracker().on_action_result(env_id, result);
-    let support = if changed { prompts.tracker().take_request_support() } else { None };
-    (changed, support)
 }
 
 /// `prompt_branding_sync`: the MSP identity, kept in memory; the bridge tells
@@ -1861,16 +1849,17 @@ mod tests {
     const CLOSED_FAILED: &str =
         include_str!("../../../../../packages/shared/src/fixtures/prompt-host/closed.render_failed.json");
 
-    /// Rule 4: a kind this build does not advertise (W06: anything but
-    /// notice.info@1 and the remote kinds), arriving anyway, is answered
+    /// Rule 4: a kind this build does not advertise (anything but
+    /// notice.info@1 (W04), the restart kinds (W05) and the remote kinds (W06)),
+    /// arriving anyway, is answered
     /// `prompt_closed{render_failed, unadvertised_kind}` on the same envelope
     /// id -- never dropped silently.
     #[tokio::test]
     async fn test_prompt_show_without_advertisement_is_answered_render_failed() {
         let (session, mut broker, key, mut send, mut recv) = prompt_session().await;
-        let mut restart = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
-        restart["kind"] = serde_json::json!("restart.prompt");
-        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&restart.to_string())))
+        let mut elevation = serde_json::from_str::<serde_json::Value>(SHOW_NOTICE).unwrap();
+        elevation["kind"] = serde_json::json!("elevation.request");
+        write_frame(&mut broker, &key, &mut send, "show-1", "prompt_show", Some(raw(&elevation.to_string())))
             .await
             .expect("write prompt_show");
         let reply = read_reply(&mut broker, &key, &mut recv).await;
@@ -2053,15 +2042,9 @@ mod tests {
         assert!(matches!(b.await.expect("join"), Ok(())));
     }
 
-    /// W06 review: the result handler opens Request Support only for what
-    /// `apply_prompt_action_result` hands back, and that is only the agent's
-    /// `accepted` answer on the envelope of the person's own Report-a-problem
-    /// click. Pinned by behaviour, frame by frame (the lib.rs source scan only
-    /// pins that the handler goes through this function).
-    #[test]
-    fn apply_prompt_action_result_opens_support_only_after_accepted() {
-        let prompts = PromptBridge::with_tracker(prompt::PromptTracker::default());
-        let id = "session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+    /// A `remote.session` indicator pill with a "Report a problem" action, in
+    /// `fr-CA` so the Request Support locale is visible in the assertions.
+    fn session_pill_show(id: &str) -> prompt::PromptShow {
         let mut show: prompt::PromptShow = serde_json::from_str(SHOW_NOTICE).unwrap();
         show.prompt_id = id.into();
         show.kind = "remote.session".into();
@@ -2073,30 +2056,97 @@ mod tests {
             role: prompt::ActionRole::Neutral,
         }];
         show.default_action_id = None;
+        show
+    }
+
+    fn action_result_for(prompt_id: &str, action_id: &str, kind: &str) -> prompt::PromptActionResult {
+        serde_json::from_value(serde_json::json!({ "promptId": prompt_id, "actionId": action_id, "result": kind, "rev": 1 }))
+            .unwrap()
+    }
+
+    /// W06 review: the result handler opens Request Support only for the
+    /// `ResultEffect::OpenSupport` the bridge's `action_result` hands back, and
+    /// that is only the agent's `accepted` answer on the envelope of the
+    /// person's own Report-a-problem click. Pinned by behaviour, frame by frame
+    /// (the lib.rs source scan only pins that the handler goes through it).
+    #[test]
+    fn action_result_opens_support_only_after_accepted() {
+        let prompts = PromptBridge::with_tracker(prompt::PromptTracker::default());
+        let id = "session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        let show = session_pill_show(id);
         assert!(matches!(prompts.tracker().on_show(now_unix_ms(), &show), prompt::ShowOutcome::Render { .. }));
-        let result = |kind: &str| -> prompt::PromptActionResult {
-            serde_json::from_value(serde_json::json!({ "promptId": id, "actionId": "report_problem", "result": kind, "rev": 1 }))
-                .unwrap()
-        };
+        let result = |kind: &str| action_result_for(id, "report_problem", kind);
         let click = || prompts.tracker().action(now_unix_ms(), id, "report_problem", prompt::ActionVia::Click).unwrap().id;
 
         // Rejected (stale or invalid): released, nothing to open.
         for kind in ["rejected_stale", "rejected_invalid"] {
             let env = click();
-            assert_eq!(apply_prompt_action_result(&prompts, &env, &result(kind)), (true, None), "{kind}");
+            assert_eq!(prompts.action_result(&env, &result(kind)), prompt::ResultEffect::Applied, "{kind}");
         }
         // A result on another envelope (a late answer to an earlier click).
         let env = click();
-        assert_eq!(apply_prompt_action_result(&prompts, "prompt-earlier", &result("accepted")), (false, None));
+        assert_eq!(prompts.action_result("prompt-earlier", &result("accepted")), prompt::ResultEffect::Ignored);
         // Its own accepted answer: open, with the prompt's locale.
-        let (changed, support) = apply_prompt_action_result(&prompts, &env, &result("accepted"));
-        assert!(changed);
         assert_eq!(
-            support,
-            Some(prompt::RequestSupport { session_id: "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c".into(), locale: "fr-CA".into() })
+            prompts.action_result(&env, &result("accepted")),
+            prompt::ResultEffect::OpenSupport(prompt::RequestSupport {
+                session_id: "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c".into(),
+                locale: "fr-CA".into()
+            })
         );
         // The same answer delivered twice opens nothing the second time.
-        assert_eq!(apply_prompt_action_result(&prompts, &env, &result("accepted")), (false, None));
+        assert_eq!(prompts.action_result(&env, &result("accepted")), prompt::ResultEffect::Ignored);
+        // The pill stays up: Report a problem never collapses it.
+        assert!(prompts.tracker().view(id, now_unix_ms()).unwrap().card);
+    }
+
+    /// Merge of W05 (#10347) and W06 (#10348): with a restart card and a
+    /// session pill open at once on one bridge, an accepted Postpone still
+    /// collapses the restart card (and tells the agent `prompt_closed{hidden}`)
+    /// without handing out Request Support, and an accepted Report a problem
+    /// still opens Request Support once without collapsing anything.
+    #[tokio::test]
+    async fn restart_postpone_collapses_and_session_report_opens_support_on_one_bridge() {
+        let prompts = PromptBridge::with_tracker(prompt::PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        prompts.set_sender(tx);
+        let restart: prompt::PromptShow = serde_json::from_str(SHOW_RESTART).unwrap();
+        let session_id = "session:8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c";
+        assert!(matches!(prompts.tracker().on_show(now_unix_ms(), &restart), prompt::ShowOutcome::Render { .. }));
+        assert!(matches!(
+            prompts.tracker().on_show(now_unix_ms(), &session_pill_show(session_id)),
+            prompt::ShowOutcome::Render { .. }
+        ));
+
+        // Restart: Postpone accepted -> Collapsed, no Request Support.
+        let env = prompts.tracker().action(now_unix_ms(), "restart:42", "postpone", prompt::ActionVia::Click).unwrap().id;
+        assert_eq!(
+            prompts.action_result(&env, &action_result_for("restart:42", "postpone", "accepted")),
+            prompt::ResultEffect::Collapsed
+        );
+        let hidden = rx.try_recv().expect("prompt_closed{hidden} sent for the collapsed card");
+        assert_eq!(hidden.typ, "prompt_closed");
+        assert_eq!(hidden.payload["promptId"], "restart:42");
+        assert_eq!(hidden.payload["reason"], "hidden");
+        let v = prompts.tracker().view("restart:42", now_unix_ms()).unwrap();
+        assert!(!v.card, "the restart card is off screen");
+        assert_eq!(prompts.tracker().take_request_support(), None, "a Postpone opens no Request Support");
+        // The session pill is untouched by the restart collapse.
+        assert!(prompts.tracker().view(session_id, now_unix_ms()).unwrap().card);
+
+        // Session pill: Report a problem accepted -> OpenSupport, nothing collapses.
+        let env =
+            prompts.tracker().action(now_unix_ms(), session_id, "report_problem", prompt::ActionVia::Click).unwrap().id;
+        assert_eq!(
+            prompts.action_result(&env, &action_result_for(session_id, "report_problem", "accepted")),
+            prompt::ResultEffect::OpenSupport(prompt::RequestSupport {
+                session_id: "8d1f6c2e-0b5a-4f7e-9a3c-2e4b6d8f0a1c".into(),
+                locale: "fr-CA".into()
+            })
+        );
+        assert!(rx.try_recv().is_err(), "no prompt_closed for the session pill");
+        assert!(prompts.tracker().view(session_id, now_unix_ms()).unwrap().card, "the pill stays up");
+        assert!(!prompts.tracker().view("restart:42", now_unix_ms()).unwrap().card, "the restart card stays collapsed");
     }
 
     /// A `remote.session` prompt as a list-only prompt, so no window is needed
@@ -2165,7 +2215,8 @@ mod tests {
     }
 
     /// Auth on the wire: speaks prompt protocol 1, advertises `notice.info@1`
-    /// (W04) and the two remote kinds (W06) and nothing else, names its version.
+    /// (W04), the two restart kinds (W05) and the two remote kinds (W06) and
+    /// nothing else, names its version.
     #[tokio::test]
     async fn test_auth_request_carries_the_prompt_advertisement() {
         let (client_half, mut broker_half) = tokio::io::duplex(8192);
@@ -2178,8 +2229,14 @@ mod tests {
         assert_eq!(v["promptProtocolVersion"], 1);
         assert_eq!(
             v["promptKinds"],
-            serde_json::json!(["notice.info@1", "remote.consent@1", "remote.session@1"]),
-            "W06 advertises notice.info@1 and the two remote kinds"
+            serde_json::json!([
+                "notice.info@1",
+                "restart.prompt@1",
+                "restart.final@1",
+                "remote.consent@1",
+                "remote.session@1"
+            ]),
+            "W04 + W05 + W06 kinds only"
         );
         assert_eq!(v["rendererVersion"], env!("CARGO_PKG_VERSION"));
         drop(broker_half);
@@ -2331,20 +2388,21 @@ mod prompt_auth_tests {
         assert_eq!(req.renderer_version, env!("CARGO_PKG_VERSION"));
     }
 
-    // #10190 W04 (Task 4.2) + W06 (Task 6.4): this build draws notice cards,
-    // the remote consent card and the remote session pill, so the live
-    // authentication advertises exactly those three kinds at version 1.
+    // #10190 W04 (Task 4.2) + W05 (Task 5.2) + W06 (Task 6.4): this build
+    // draws notice cards, the restart cards, the remote consent card and the
+    // remote session pill, so the live authentication advertises exactly
+    // these five kinds at version 1.
     #[test]
-    fn advertises_remote_kinds_v1() {
+    fn advertises_shipped_kinds_v1() {
+        let want = ["notice.info@1", "restart.prompt@1", "restart.final@1", "remote.consent@1", "remote.session@1"];
         let id = PeerIdentity { uid: 501, sid: String::new(), username: "tester".into(), pid: 7 };
         let req = build_auth_request(&id);
-        let want = ["notice.info@1", "remote.consent@1", "remote.session@1"];
-        assert_eq!(req.prompt_kinds, want.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(req.prompt_kinds, want.map(String::from).to_vec());
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["promptKinds"], serde_json::json!(want));
         assert_eq!(json["promptProtocolVersion"], 1);
-        // Nothing from a later wave: restart (W05) and elevation (W07) stay legacy.
-        for later in ["restart.prompt", "restart.final", "elevation.request"] {
+        // Nothing from a later wave: elevation (W07) stays legacy.
+        for later in ["elevation.request"] {
             assert!(!req.prompt_kinds.iter().any(|k| k.starts_with(later)), "{later} is not advertised yet");
         }
     }

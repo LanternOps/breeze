@@ -899,7 +899,17 @@
         "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
         "ringDetailsNoHold": "Orden de lanzamiento {{order}} · sin espera antes de la aprobación",
         "ringDetailsWithHold_one": "Orden de lanzamiento {{order}} · {{count}} día de espera antes de la aprobación",
-        "ringDetailsWithHold_other": "Orden de lanzamiento {{order}} · {{count}} días de espera antes de la aprobación"
+        "ringDetailsWithHold_other": "Orden de lanzamiento {{order}} · {{count}} días de espera antes de la aprobación",
+        "rebootPreviewHeading": "Vista previa",
+        "rebootPreviewDescription": "Lo que ve la persona que usa la computadora si se programa un reinicio ahora. Las horas son ejemplos.",
+        "rebootPreviewDefaultMarker": "Predeterminado",
+        "rebootPreviewDefaultTitle": "Reinicie para terminar de instalar las actualizaciones",
+        "rebootPreviewDefaultBody": "Su equipo de soporte de TI necesita reiniciar esta computadora para terminar de instalar las actualizaciones.",
+        "rebootPreviewConsequence": "Si no hace nada, esta computadora se reiniciará a las {{time}}. Guarde su trabajo antes de esa hora.",
+        "rebootPreviewRestartNow": "Reiniciar ahora",
+        "rebootPreviewPostponeUntil": "Aplazar hasta las {{time}}",
+        "rebootPreviewDeadline": "Posponer nunca retrasa el reinicio más allá de las {{time}}.",
+        "rebootPreviewOk": "Aceptar"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",

@@ -899,7 +899,17 @@
         "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
         "ringDetailsNoHold": "Ordine di rollout {{order}} · nessuna attesa prima dell’approvazione",
         "ringDetailsWithHold_one": "Ordine di rollout {{order}} · {{count}} giorno di attesa prima dell’approvazione",
-        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione"
+        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione",
+        "rebootPreviewHeading": "Anteprima",
+        "rebootPreviewDescription": "Ciò che vede la persona al computer se un riavvio viene pianificato ora. Gli orari sono esempi.",
+        "rebootPreviewDefaultMarker": "Predefinito",
+        "rebootPreviewDefaultTitle": "Riavvio necessario per completare l'installazione degli aggiornamenti",
+        "rebootPreviewDefaultBody": "Il tuo team di assistenza IT deve riavviare questo computer per completare l'installazione degli aggiornamenti.",
+        "rebootPreviewConsequence": "Se non fai nulla, questo computer verrà riavviato alle {{time}}. Salva il tuo lavoro prima di allora.",
+        "rebootPreviewRestartNow": "Riavvia ora",
+        "rebootPreviewPostponeUntil": "Rinvia alle {{time}}",
+        "rebootPreviewDeadline": "Posticipare non sposta mai il riavvio oltre le {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",

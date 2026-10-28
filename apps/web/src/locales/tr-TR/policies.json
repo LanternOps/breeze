@@ -899,7 +899,17 @@
         "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
         "ringDetailsNoHold": "Kullanıma sunma sırası {{order}} · onay öncesi bekleme yok",
         "ringDetailsWithHold_one": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme",
-        "ringDetailsWithHold_other": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme"
+        "ringDetailsWithHold_other": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme",
+        "rebootPreviewHeading": "Önizleme",
+        "rebootPreviewDescription": "Şimdi bir yeniden başlatma planlanırsa bilgisayarın başındaki kişinin göreceği ekran. Saatler örnektir.",
+        "rebootPreviewDefaultMarker": "Varsayılan",
+        "rebootPreviewDefaultTitle": "Güncellemelerin yüklenmesini tamamlamak için yeniden başlatın",
+        "rebootPreviewDefaultBody": "BT destek ekibiniz, güncellemelerin yüklenmesini tamamlamak için bu bilgisayarı yeniden başlatmalı.",
+        "rebootPreviewConsequence": "Hiçbir şey yapmazsanız bu bilgisayar {{time}} saatinde yeniden başlatılır. Çalışmanızı bundan önce kaydedin.",
+        "rebootPreviewRestartNow": "Şimdi yeniden başlat",
+        "rebootPreviewPostponeUntil": "{{time}} saatine ertele",
+        "rebootPreviewDeadline": "Erteleme, yeniden başlatmayı hiçbir zaman {{time}} saatinden sonraya taşımaz.",
+        "rebootPreviewOk": "Tamam"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
