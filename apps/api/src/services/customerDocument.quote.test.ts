@@ -232,6 +232,7 @@ describe('draft resolution (staff only)', () => {
     setRows({ organizations: [{ name: 'Acme Dental Group' }] });
     const doc = await assembleCustomerQuoteDocument(quote({ ...DRAFT, billToName }), 'staff', { assets: ASSETS });
     expect(doc.quote.billToName).toBe('Acme Dental Group');
+    expect(doc.quote.sellerSnapshot?.name).toBeTruthy(); // the seller resolution survives the bill-to spread
     const s = selectOf('organizations');
     expect(s.ctx).toBe('caller');
     expect(renderSql(s.where).params).toEqual(expect.arrayContaining([PIN_QUOTE_ORG_ID]));
@@ -255,6 +256,13 @@ describe('draft resolution (staff only)', () => {
   it('an issued quote with no frozen billToName is NOT resolved from the org', async () => {
     setRows({ organizations: [{ name: 'Acme Dental Group' }] });
     const doc = await assembleCustomerQuoteDocument(quote({ billToName: null }), 'staff', { assets: ASSETS });
+    expect(doc.quote.billToName).toBeNull();
+    expect(state.db!.selects.filter((x) => x.table === 'organizations')).toHaveLength(0);
+  });
+
+  it.each(['public', 'portal'] as const)('%s mode never reads the org for an issued quote with no billToName', async (mode) => {
+    setRows({ organizations: [{ name: 'Acme Dental Group' }] });
+    const doc = await assembleCustomerQuoteDocument(quote({ billToName: null }), mode, { assets: ASSETS });
     expect(doc.quote.billToName).toBeNull();
     expect(state.db!.selects.filter((x) => x.table === 'organizations')).toHaveLength(0);
   });

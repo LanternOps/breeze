@@ -71,6 +71,15 @@ describe('DocumentCover — brand mark (PDF parity)', () => {
     expect(getByTestId('document-cover-brand').textContent).toBe('');
   });
 
+  it('an uploaded (asset) logo renders through the host Image component', () => {
+    const ref = { kind: 'logo', id: '00000000-0000-4000-8000-000000000060' } as const;
+    const { getByTestId } = renderCover(COVER, 'a4', { logo: { kind: 'asset', ref } as DocumentBranding['logo'] });
+    const img = getByTestId('document-cover-brand').querySelector('img')!;
+    expect(img.getAttribute('data-asset')).toBe(`logo:${ref.id}`);
+    expect(img.getAttribute('alt')).toBe('Example MSP');
+    expect(img.className).toContain('h-11');
+  });
+
   it('a cover without an image still leads with the brand mark, and no pill', () => {
     const { getByTestId } = renderCover({ ...COVER, image: null }, 'a4');
     const mark = getByTestId('document-cover-brand');
@@ -81,6 +90,8 @@ describe('DocumentCover — brand mark (PDF parity)', () => {
   it('no logo and no wordmark renders no brand slot', () => {
     const { queryByTestId } = renderCover(COVER, 'a4', { wordmark: null, logoAlt: '' });
     expect(queryByTestId('document-cover-brand')).toBeNull();
+    const empty = renderCover(COVER, 'letter', { wordmark: '', logoAlt: '' });
+    expect(empty.queryByTestId('document-cover-brand')).toBeNull();
   });
 });
 
