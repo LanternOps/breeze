@@ -507,6 +507,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     h.svc.getDecryptedApiKey.mockResolvedValue('secret-key');
     h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn().mockRejectedValue(new Error('upstream said: Authorization: Bearer secret-key')),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn().mockResolvedValue([]),
     });
     const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());
@@ -520,6 +521,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
     h.svc.getDecryptedApiKey.mockResolvedValue('k');
     const failing = (status: number) => h.svc.createUnifiClient.mockReturnValue({
       listHosts: vi.fn().mockRejectedValue(Object.assign(new UnifiApiError('body: secret-key', status), { status })),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn().mockResolvedValue([]),
     });
     failing(401);
@@ -547,6 +549,7 @@ describe('get_unifi_status / trigger_unifi_sync', () => {
         { id: 'h2', name: 'No sites', model: 'UDM', type: 'console' },
         { id: 'h3', name: 'Cloud key', model: 'CK', type: 'cloudkey' },
       ]),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn().mockResolvedValue([{ id: 's1', name: 'Main', hostId: 'h1' }, { id: 's3', name: 'x', hostId: 'h3' }]),
     });
     const out = await call('get_unifi_status', { action: 'hosts' }, partnerAuth());

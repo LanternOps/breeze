@@ -3,7 +3,7 @@ import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { unifiSiteMappings, unifiDevices, unifiSyncRuns, discoveredAssets } from '../../db/schema';
 import { buildClassificationWrite, type ClassificationWrite } from '../discoveredAssetClassification';
 import type { DbExecutor } from './unifiConnectionService';
-import type { UnifiClient, UnifiDeviceDto, UnifiIspMetrics } from './unifiClient';
+import { ispMetricsKey, type UnifiClient, type UnifiDeviceDto, type UnifiIspMetrics } from './unifiClient';
 import { canonicalMac, canonicalAssetMac } from './unifiMac';
 
 export interface SyncRunResult {
@@ -269,9 +269,9 @@ export async function collectSyncData(
   // One read of each account-wide payload per run instead of one per mapping
   // (#10491: rate-limit exposure once each read is paged). Host type does not
   // filter sync: a network-server host's devices sync just like a console's.
-  let sites: Awaited<ReturnType<UnifiClient['listSites']>>;
+  let siteRead: Awaited<ReturnType<UnifiClient['listSitesForSync']>>;
   try {
-    sites = await client.listSites();
+    siteRead = await client.listSitesForSync();
   } catch (err) {
     return { hostsSeen: hosts.length, fatalError: `UniFi /v1/sites read failed: ${(err as Error).message}`, byMapping };
   }
@@ -292,7 +292,7 @@ export async function collectSyncData(
   }
 
   const siteIdsByHost = new Map<string, Set<string>>();
-  for (const site of sites) {
+  for (const site of siteRead.sites) {
     if (!site.hostId) continue;
     const siteIds = siteIdsByHost.get(site.hostId) ?? new Set<string>();
     siteIds.add(site.id);
@@ -300,12 +300,32 @@ export async function collectSyncData(
   }
 
   for (const m of mappings) {
-    const metrics = metricsBySite ? (metricsBySite.get(m.unifiSiteId) ?? null) : undefined;
+    const metrics = metricsBySite
+      ? (metricsBySite.get(ispMetricsKey(m.unifiHostId, m.unifiSiteId)) ?? metricsBySite.get(m.unifiSiteId) ?? null)
+      : undefined;
+    // Dropped rows can conceal another customer's site. An unkeyed row makes
+    // every host's count uncertain; a keyed dropped row affects that host only.
+    if (siteRead.rowsWithoutHostId > 0) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: ${siteRead.rowsWithoutHostId} /v1/sites row(s) have no host id, so no host's site count can be trusted; its devices were not synced`,
+      });
+      continue;
+    }
+    if (siteRead.hostsWithDroppedRows.has(m.unifiHostId)) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: /v1/sites returned an unreadable site row for host ${m.unifiHostId}, so its site count is unknown; its devices were not synced`,
+      });
+      continue;
+    }
     const hostSites = siteIdsByHost.get(m.unifiHostId);
     if (!hostSites?.has(m.unifiSiteId)) {
       byMapping.set(m.id, {
         mappingId: m.id,
-        metrics,
+        metrics: undefined,
         error: `site ${m.unifiSiteId}: UniFi site ${m.unifiSiteId} is not listed on host ${m.unifiHostId} by /v1/sites; its devices were not synced`,
       });
       continue;

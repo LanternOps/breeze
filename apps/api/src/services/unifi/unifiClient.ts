@@ -36,11 +36,26 @@ export interface UnifiIspMetrics {
 export interface UnifiClient {
   listHosts(): Promise<UnifiHost[]>;
   listSites(): Promise<UnifiSite[]>;
+  /** One paged /v1/sites read for the sync's device-attribution check. sites is
+   * exactly what listSites returns. hostsWithDroppedRows identifies hosts with
+   * dropped site rows whose true site count is unknown. rowsWithoutHostId counts
+   * every row without a host ID (valid site ID or not), which could belong to any host. */
+  listSitesForSync(): Promise<{
+    sites: UnifiSite[];
+    hostsWithDroppedRows: Set<string>;
+    rowsWithoutHostId: number;
+  }>;
   /** A host absent from the map is not an empty host: it may be offline/non-reporting,
    * or the account is not owner/super-admin on it. Callers must treat absence as an
    * error, never as zero devices. */
   listDevicesByHost(): Promise<Map<string, UnifiDeviceDto[]>>;
+  /** Keys are ispMetricsKey(hostId, siteId) when a host ID is present, otherwise
+   * the bare site ID. The first entry for each key wins. */
   listIspMetricsBySite(): Promise<Map<string, UnifiIspMetrics>>;
+}
+
+export function ispMetricsKey(hostId: string, siteId: string): string {
+  return `${hostId}::${siteId}`;
 }
 
 interface UnifiClientConfig { baseUrl: string; apiKey: string; fetchImpl?: typeof safeFetch; sleepImpl?: (ms: number) => Promise<void> }
@@ -97,6 +112,36 @@ function mapDevices(rows: Array<Record<string, unknown>>): UnifiDeviceDto[] {
       raw: d,
     }];
   });
+}
+
+function parseSites(rows: Array<Record<string, unknown>>): Awaited<ReturnType<UnifiClient['listSitesForSync']>> {
+  const hostsWithDroppedRows = new Set<string>();
+  let rowsWithoutHostId = 0;
+  const mapped = rows
+    .map((s) => {
+      // /v1/sites identifies the site by `siteId` (no top-level id) and carries
+      // its name under `meta.name`. The old String(s.id) parse is what wrote
+      // unifi_site_id="undefined" and 404'd every downstream sync call.
+      const id = str(s.siteId) ?? str(s.id) ?? '';
+      const name = str(obj(s.meta).name) ?? str(s.name) ?? id;
+      const hostId = String(s.hostId ?? s.host_id ?? '');
+      if (!hostId) rowsWithoutHostId += 1;
+      return { id, hostId, name };
+    })
+    // Never persist a malformed site id — a missing siteId must drop the row,
+    // not become the literal "undefined"/"null" string.
+    .filter((s) => {
+      const valid = s.id.length > 0 && s.id !== 'undefined' && s.id !== 'null';
+      if (!valid && s.hostId) hostsWithDroppedRows.add(s.hostId);
+      return valid;
+    });
+  // Dropping every row (while the API returned some) almost certainly means the
+  // payload shape changed under us — surface it instead of silently reporting an
+  // empty account, which reads to the user as "no sites".
+  if (rows.length > 0 && mapped.length === 0) {
+    console.warn(`[unifi] listSites: dropped all ${rows.length} site row(s) as malformed — /v1/sites shape may have changed`);
+  }
+  return { sites: mapped, hostsWithDroppedRows, rowsWithoutHostId };
 }
 
 // 5-minute granularity (24h retention) — the freshest ISP samples for "latest WAN".
@@ -195,25 +240,11 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
     },
     async listSites() {
       const rows = await getAll<Record<string, unknown>>('/v1/sites', { pageSize: PAGE_SIZE });
-      const mapped = rows
-        .map((s) => {
-          // /v1/sites identifies the site by `siteId` (no top-level id) and carries
-          // its name under `meta.name`. The old String(s.id) parse is what wrote
-          // unifi_site_id="undefined" and 404'd every downstream sync call.
-          const id = str(s.siteId) ?? str(s.id) ?? '';
-          const name = str(obj(s.meta).name) ?? str(s.name) ?? id;
-          return { id, hostId: String(s.hostId ?? s.host_id ?? ''), name };
-        })
-        // Never persist a malformed site id — a missing siteId must drop the row,
-        // not become the literal "undefined"/"null" string.
-        .filter((s) => s.id.length > 0 && s.id !== 'undefined' && s.id !== 'null');
-      // Dropping every row (while the API returned some) almost certainly means the
-      // payload shape changed under us — surface it instead of silently reporting an
-      // empty account, which reads to the user as "no sites".
-      if (rows.length > 0 && mapped.length === 0) {
-        console.warn(`[unifi] listSites: dropped all ${rows.length} site row(s) as malformed — /v1/sites shape may have changed`);
-      }
-      return mapped;
+      return parseSites(rows).sites;
+    },
+    async listSitesForSync() {
+      const rows = await getAll<Record<string, unknown>>('/v1/sites', { pageSize: PAGE_SIZE });
+      return parseSites(rows);
     },
     async listDevicesByHost() {
       // The cloud API exposes devices only via /v1/devices grouped by host (there is
@@ -225,7 +256,12 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
       let malformedGroups = 0;
       for (const group of groups) {
         const hostId = String(group.hostId ?? '');
-        if (!hostId) continue;
+        if (!hostId) {
+          if (!Array.isArray(group.devices) || group.devices.length > 0) {
+            throw new UnifiApiError('UniFi /v1/devices returned a device group with no host id; refusing to sync a partial device list', 502);
+          }
+          continue;
+        }
         if (!Array.isArray(group.devices)) {
           invalidHosts.add(hostId);
           malformedGroups += 1;
@@ -250,12 +286,16 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
       const bySite = new Map<string, UnifiIspMetrics>();
       for (const entry of rows) {
         const siteId = String(entry.siteId ?? '');
-        // First entry per site wins, as the old per-site lookup (Array.find) did.
-        if (!siteId || bySite.has(siteId)) continue;
+        if (!siteId) continue;
+        const hostId = String(entry.hostId ?? '');
+        const key = hostId ? ispMetricsKey(hostId, siteId) : siteId;
+        // First entry per key wins, preserving the old Array.find behavior without
+        // conflating sites on different hosts that happen to share a site ID.
+        if (bySite.has(key)) continue;
         const periods = (entry.periods as Array<Record<string, unknown>> | undefined) ?? [];
         const wan = obj(obj(periods[periods.length - 1]).data).wan;
         const w = obj(wan);
-        bySite.set(siteId, {
+        bySite.set(key, {
           latencyMs: num(w.avgLatency ?? w.latencyAvg ?? w.latency),
           packetLoss: num(w.packetLoss ?? w.loss),
           uptimePercent: num(w.uptime ?? w.uptimePercent),

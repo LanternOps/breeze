@@ -113,6 +113,7 @@ vi.mock('../../services/unifi/unifiClient', async (importActual) => {
     ...actual,
     createUnifiClient: vi.fn(() => ({
       listHosts: vi.fn(async () => []),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => []),
     })),
   };
@@ -273,6 +274,7 @@ describe('unifi routes', () => {
     const { createUnifiClient, UnifiApiError } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new UnifiApiError('Invalid API key', 401); }),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => []),
       listDevicesByHost: vi.fn(async () => new Map()),
       listIspMetricsBySite: vi.fn(async () => new Map()),
@@ -290,6 +292,7 @@ describe('unifi routes', () => {
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => []),
       listDevicesByHost: vi.fn(async () => new Map()),
       listIspMetricsBySite: vi.fn(async () => new Map()),
@@ -671,6 +674,7 @@ describe('unifi routes', () => {
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => { throw new Error('connection refused'); }),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => []),
       listDevicesByHost: vi.fn(async () => new Map()),
       listIspMetricsBySite: vi.fn(async () => new Map()),
@@ -706,6 +710,7 @@ describe('unifi routes', () => {
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [{ id: 'host-1', name: 'My Host', type: 'console', model: 'UDM Pro' }]),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => [{ id: 'usite-1', name: 'My Site', hostId: 'host-1' }]),
       listDevicesByHost: vi.fn(async () => new Map()),
       listIspMetricsBySite: vi.fn(async () => new Map()),
@@ -739,6 +744,7 @@ describe('unifi routes', () => {
         { id: 'server-1', name: 'Cloud Key', type: 'network-server', model: null }, // self-hosted Network Application → keep
         { id: 'console-2', name: 'No-site UDM', type: 'console', model: 'UDM SE' },  // no sites → drop
       ]),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => [
         { id: 'usite-1', name: 'HQ', hostId: 'console-1' },
         { id: 'usite-2', name: 'Orphan', hostId: 'server-1' },
@@ -771,6 +777,7 @@ describe('unifi routes', () => {
     const { createUnifiClient } = await import('../../services/unifi/unifiClient');
     vi.mocked(createUnifiClient).mockReturnValueOnce({
       listHosts: vi.fn(async () => [{ id: 'console-1', name: 'Mappable UDM', type: 'console', model: 'UDM Pro' }]),
+      listSitesForSync: vi.fn(async () => ({ sites: [], hostsWithDroppedRows: new Set<string>(), rowsWithoutHostId: 0 })),
       listSites: vi.fn(async () => [
         { id: 'usite-1', name: 'HQ', hostId: 'console-1' },
         { id: 'usite-9', name: 'Lost', hostId: 'ghost-host' },

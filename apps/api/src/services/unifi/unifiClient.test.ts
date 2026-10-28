@@ -218,6 +218,26 @@ describe('unifiClient', () => {
   });
 
   describe('listSites', () => {
+    it('reports dropped rows and missing host ids for sync without changing listSites', async () => {
+      const fetchImpl = vi.fn(async () => jsonResponse({ data: [
+        { siteId: 's1', hostId: 'h1', meta: { name: 'Main' } },
+        { hostId: 'h1', meta: { name: 'Missing site id' } },
+        { siteId: 's2', meta: { name: 'Missing host' } },
+        { meta: { name: 'Missing both' } },
+      ] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const sites = [
+        { id: 's1', hostId: 'h1', name: 'Main' },
+        { id: 's2', hostId: '', name: 'Missing host' },
+      ];
+      await expect(client.listSitesForSync()).resolves.toEqual({
+        sites, hostsWithDroppedRows: new Set(['h1']), rowsWithoutHostId: 2,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await expect(client.listSites()).resolves.toEqual(sites);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
     it('parses siteId + meta.name from the real /v1/sites shape (the "undefined" blocker)', async () => {
       // Site Manager /v1/sites has NO top-level id/name — only siteId, hostId, and
       // meta.name. The old String(s.id) parse produced unifi_site_id="undefined".
@@ -252,6 +272,28 @@ describe('unifiClient', () => {
   });
 
   describe('listDevicesByHost', () => {
+    it.each([
+      { devices: [{ id: 'd1' }] },
+      { hostId: '', devices: [{ id: 'd1' }] },
+      { devices: null },
+      {},
+    ])('rejects a device group without a host id: %j', async (group) => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [group] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      await expect(client.listDevicesByHost()).rejects.toMatchObject({
+        name: 'UnifiApiError', status: 502,
+        message: 'UniFi /v1/devices returned a device group with no host id; refusing to sync a partial device list',
+      });
+    });
+
+    it('ignores an empty device group without a host id', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
+        { devices: [] }, { hostId: '', devices: [] }, { hostId: 'h1', devices: [] },
+      ] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      await expect(client.listDevicesByHost()).resolves.toEqual(new Map([['h1', []]]));
+    });
+
     it('merges groups for the same host across pages', async () => {
       const fetchImpl = vi.fn()
         .mockResolvedValueOnce(jsonResponse({ data: [{ hostId: 'h1', devices: [{ id: 'd1' }] }], nextToken: 'next' }))
@@ -364,6 +406,20 @@ describe('unifiClient', () => {
   });
 
   describe('listIspMetricsBySite', () => {
+    it('keys ISP samples by host and site when different hosts use the same site id', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
+        { hostId: 'h1', siteId: 's1', periods: [{ data: { wan: { avgLatency: 12 } } }] },
+        { hostId: 'h2', siteId: 's1', periods: [{ data: { wan: { avgLatency: 50 } } }] },
+      ] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const metrics = await client.listIspMetricsBySite();
+      expect([...metrics.keys()]).toEqual(['h1::s1', 'h2::s1']);
+      expect(metrics.get('h1::s1')!.latencyMs).toBe(12);
+      expect(metrics.get('h2::s1')!.latencyMs).toBe(50);
+      expect(metrics.get('h1::s1')!.raw).toMatchObject({ hostId: 'h1', siteId: 's1' });
+      expect(metrics.get('h2::s1')!.raw).toMatchObject({ hostId: 'h2', siteId: 's1' });
+    });
+
     it('hits /v1/isp-metrics/{type} without paging params and groups entries by site', async () => {
       const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
         { siteId: 'other', periods: [] },
