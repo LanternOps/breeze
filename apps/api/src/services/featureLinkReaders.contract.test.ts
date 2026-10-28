@@ -42,6 +42,12 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // services/monitors/monitorResolver.ts's job — so there is no call site here
   // that should switch to the view.
   'services/aiToolsMonitors.ts',
+  // Tool Catalog W06 (#5221, Decision 16): isComplianceRemediationTarget asks
+  // "does ANY compliance rule in this partner name this Job's script" to keep
+  // S+R Jobs from converting. It must see every AUTHORED rule link (a superset
+  // of any one policy's effective set — a false positive only keeps a Job on
+  // the legacy engine); it resolves nothing per device and writes nothing.
+  'services/policyEvaluationService.ts',
   // W05d boot-time system sweep: finds partners that still own an unretired
   // legacy source row. It must see AUTHORED links, including the retired
   // `alert_rule` / `monitoring` types the effective view no longer exposes.

@@ -18,6 +18,7 @@ import { canonicalizeArguments } from './canonicalize';
 import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { fleetEffectMaterial } from './fleetEffectDigest';
 import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 import type { VerifiedTopologyDiagnostic } from '../topology/aiDiagnosticEffect';
@@ -243,6 +244,36 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     return {
       kind: 'material',
       material: runScriptDigestMaterial(built.snapshot),
+      verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
+    };
+  },
+
+  // run_script_on_targets — Tool Catalog W06 (#5221, plan Decision 5): the
+  // flow fleet built-in, parked for approval with its device list FROZEN in
+  // the intent arguments. Pins the snapshot built for exactly those devices
+  // (the run_script material: content, run context, parameter definitions,
+  // device orgs, variable references) plus the canonical parameters, the
+  // EFFECTIVE run context, the offline policy and the sorted device ids
+  // (fleetEffectDigest.ts). MANDATORY (pinnedEffectPolicy.ts): creation
+  // refuses an unresolved digest and release refuses a missing one. The
+  // snapshot rides along as `verified`, which the release worker hands to the
+  // built-in so dispatch runs from the observation the digest compared.
+  run_script_on_targets: async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds.filter((d): d is string => typeof d === 'string') : [];
+    if (deviceIds.length === 0) return MISSING_ARG;
+    const built = await buildRunScriptSnapshot({ scriptId: args.scriptId, deviceIds }, database);
+    if (built.kind === 'missing_arg') return MISSING_ARG;
+    if (built.kind === 'target_absent') return TARGET_ABSENT;
+    const runAs = typeof args.runAs === 'string' ? args.runAs : built.snapshot.script.runAs;
+    return {
+      kind: 'material',
+      material: fleetEffectMaterial({
+        snapshot: built.snapshot,
+        parameters: args.parameters ?? {},
+        runAs,
+        offlinePolicy: args.whenOffline === 'skip' ? 'skip' : 'queue',
+        deviceIds,
+      }),
       verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
     };
   },

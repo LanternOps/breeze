@@ -41,7 +41,8 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
-import { findOwnedNotificationChannel } from './ownedReferences';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
+import { fleetApprovalScope } from './builtins/fleetApprovalScope';
 import { containsTemplate, escapePointerSegment, issue, utf8Bytes, zodInputIssues } from './validationIssues';
 
 type FlowStep = FlowDocumentV1['steps'][number];
@@ -49,6 +50,8 @@ type FlowStep = FlowDocumentV1['steps'][number];
 export interface BuiltinValidationContext {
   owner: ToolOwnerRef;
   catalog: FlowCatalog;
+  /** W6: the document's steps before this one (a fleet step's `fromStep` must name one). */
+  earlierSteps?: readonly FlowStep[];
 }
 
 /** A flow tool (`flow__<slug>`, W5 Decision 7) — never a step, never an `ai` tool. */
@@ -88,6 +91,15 @@ export function aiAllowlistedToolTier(name: string, catalog: FlowCatalog): 1 | 2
   return check.tier as 1 | 2 | 3;
 }
 
+/**
+ * The approval scope a Tier-3 built-in step pins: one supervised approver,
+ * except `run_script_on_targets`, whose scope follows its script (W6 #5221,
+ * Decision 5 — core run_script's classification of the same script).
+ */
+export function builtinApprovalScope(name: string, input: Record<string, unknown>): 'supervised' | 'four_eyes' {
+  return name === 'run_script_on_targets' ? fleetApprovalScope(input) : 'supervised';
+}
+
 /** The tier a built-in step pins (and is revalidated against at run time). */
 export function builtinStepTier(step: Pick<FlowStep, 'tool' | 'input'>, catalog: FlowCatalog): 1 | 2 | 3 {
   const name = step.tool as FlowBuiltinName;
@@ -117,7 +129,7 @@ async function channelIssues(channelId: unknown, owner: ToolOwnerRef, at: { step
       : 'A partner-wide flow can only use a partner-wide notification channel.', at)];
   }
   if (!isChannelMessageType(channel.type)) {
-    return [issue('channel_type_not_supported', `A flow cannot send notices to a ${channel.type} channel; use email, Slack, Teams, SMS or Pushover.`, at)];
+    return [issue('channel_type_not_supported', `A flow cannot send notices to a ${channel.type} channel; use email, Slack, Teams, SMS, Pushover, webhook or PagerDuty.`, at)];
   }
   return [];
 }
@@ -211,6 +223,118 @@ function aiIssues(input: Record<string, unknown>, stepId: string, base: string, 
   return out;
 }
 
+// ── W6 fleet built-ins (#5221) ──────────────────────────────────────────────
+
+/** Built-ins whose output is a fleet device set a later step may chain on (`fromStep`). */
+export const FLEET_SET_BUILTINS: ReadonlySet<string> = new Set(['resolve_targets', 'run_script_on_targets']);
+
+export interface FleetReference {
+  kind: 'script' | 'group' | 'device';
+  value: unknown;
+  /** JSON pointer below the step's `input`. */
+  path: string;
+}
+
+/**
+ * Every script, device group and device a fleet built-in's input names, with
+ * where it sits. The generic owned-reference checks (FLOW_OWNED_REFERENCE_FIELDS,
+ * `deviceArgs`) cover core tools only, so each W6 built-in lists its own: the
+ * `run_script_on_targets` script; a `target`'s groups and devices; a legacy
+ * `group` condition's value (the group id); literal `deviceIds`; the
+ * `create_alert` device. Shared by save (literals only) and run-time
+ * revalidation (rendered values).
+ */
+export function fleetBuiltinReferences(name: string, input: Record<string, unknown>): FleetReference[] {
+  const out: FleetReference[] = [];
+  const target = (t: unknown) => {
+    if (!isRecord(t)) return;
+    if (Array.isArray(t.groupIds)) t.groupIds.forEach((v, i) => out.push({ kind: 'group', value: v, path: `/target/groupIds/${i}` }));
+    if (Array.isArray(t.deviceIds)) t.deviceIds.forEach((v, i) => out.push({ kind: 'device', value: v, path: `/target/deviceIds/${i}` }));
+  };
+  const conditions = (c: unknown) => {
+    if (!Array.isArray(c)) return;
+    c.forEach((cond, i) => {
+      if (isRecord(cond) && cond.type === 'group') out.push({ kind: 'group', value: cond.value, path: `/conditions/${i}/value` });
+    });
+  };
+  switch (name) {
+    case 'run_script_on_targets':
+      out.push({ kind: 'script', value: input.scriptId, path: '/scriptId' });
+      target(input.target);
+      conditions(input.conditions);
+      if (Array.isArray(input.deviceIds)) input.deviceIds.forEach((v, i) => out.push({ kind: 'device', value: v, path: `/deviceIds/${i}` }));
+      break;
+    case 'resolve_targets':
+      target(input.target);
+      conditions(input.conditions);
+      break;
+    case 'create_alert':
+      out.push({ kind: 'device', value: input.deviceId, path: '/deviceId' });
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationContext): Promise<FlowIssue[]> {
+  const out: FlowIssue[] = [];
+  const at = (path: string) => ({ stepId: step.id, pointer: `${base}${path}` });
+  const refs = fleetBuiltinReferences(step.tool, step.input);
+  const scripts: FleetReference[] = [];
+  const groups: FleetReference[] = [];
+  const devices: FleetReference[] = [];
+  for (const r of refs) {
+    if (r.kind === 'script' && containsTemplate(r.value)) {
+      // The script is what the approver and any pre-approval bind: never a run-time value.
+      out.push(issue('reference_not_owned', 'The script must be chosen in the flow, not from a template.', at(r.path)));
+      continue;
+    }
+    // Templated groups/devices are run-time values, checked against the run org at execution.
+    if (typeof r.value !== 'string' || containsTemplate(r.value)) continue;
+    (r.kind === 'script' ? scripts : r.kind === 'group' ? groups : devices).push(r);
+  }
+  if (scripts.length > 0) {
+    const ok = await findOwnedScriptIds(ctx.owner, scripts.map((r) => r.value as string));
+    for (const r of scripts) {
+      if (!ok.has(r.value as string)) out.push(issue('reference_not_owned', 'This script is not available to the flow\'s owner.', at(r.path)));
+    }
+  }
+  if (groups.length > 0) {
+    if (!ctx.owner.orgId) {
+      for (const r of groups) out.push(issue('group_in_partner_flow', 'A partner-wide flow cannot name one organization\'s device group.', at(r.path)));
+    } else {
+      const ok = await findOwnedDeviceGroupIds(ctx.owner.orgId, groups.map((r) => r.value as string));
+      for (const r of groups) {
+        if (!ok.has(r.value as string)) out.push(issue('reference_not_owned', 'This device group is not available to the flow\'s owner.', at(r.path)));
+      }
+    }
+  }
+  if (devices.length > 0) {
+    if (!ctx.owner.orgId) {
+      for (const r of devices) out.push(issue('device_in_partner_flow', 'A partner-wide flow cannot name a specific device; use a template such as {{trigger.device.id}}.', at(r.path)));
+    } else {
+      const ok = await findOwnedDeviceIds(ctx.owner.orgId, devices.map((r) => r.value as string));
+      for (const r of devices) {
+        if (!ok.has(r.value as string)) out.push(issue('device_not_owned', 'This device is not in the flow\'s organization.', at(r.path)));
+      }
+    }
+  }
+  if (step.tool === 'run_script_on_targets' && step.forEach) {
+    // Its per-device claims are ledger rows keyed by device position; a for-each
+    // unit row uses the same key. Fan out with the step's own selector instead.
+    out.push(issue('input_invalid', 'run_script_on_targets cannot run inside a for-each; it already runs on every target device.', { stepId: step.id, pointer: base.replace(/\/input$/, '/forEach') }));
+  }
+  const from = step.input.fromStep;
+  if (isRecord(from) && typeof from.stepId === 'string') {
+    const earlier = (ctx.earlierSteps ?? []).find((s) => s.id === from.stepId);
+    if (!earlier || !FLEET_SET_BUILTINS.has(earlier.tool) || earlier.forEach) {
+      out.push(issue('input_invalid', 'fromStep must name an earlier resolve_targets or run_script_on_targets step (not one inside a for-each).', at('/fromStep/stepId')));
+    }
+  }
+  return out;
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────
 
 /** Every save/enable issue of one built-in step (`index` is its position in `steps`). */
@@ -220,6 +344,11 @@ export async function validateBuiltinStep(step: FlowStep, index: number, ctx: Bu
   const input = step.input;
   const issues: FlowIssue[] = [...zodInputIssues(FLOW_BUILTIN_STEPS[name].inputSchema, input, step.id, base)];
   switch (name) {
+    case 'resolve_targets':
+    case 'create_alert':
+    case 'run_script_on_targets':
+      issues.push(...await fleetIssues(step, base, ctx));
+      break;
     case 'notify':
       issues.push(...await channelIssues(input.channelId, ctx.owner, { stepId: step.id, pointer: `${base}/channelId` }));
       break;

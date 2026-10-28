@@ -441,6 +441,19 @@ describe('enableFlow — refusals', () => {
     expect(callsOf('insert')).toHaveLength(0);
   });
 
+  // W6 (#5221, Decision 5): a fleet binding binds the NEW publication's id
+  // and the user's maxTargets, and the publication row is inserted with that id.
+  it('fleet pre-approvals are assessed against the new publication with the requested maxTargets', async () => {
+    queueEnable();
+    await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['run'], fleetMaxTargets: { run: 40 } });
+    const [, , , requested, opts] = vi.mocked(assessPreApprovals).mock.calls[0]!;
+    expect([...(requested as Iterable<string>)]).toEqual(['run']);
+    expect(opts).toMatchObject({ fleetMaxTargets: { run: 40 } });
+    const publicationId = (opts as { publicationId: string }).publicationId;
+    expect(publicationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(valuesOf(callsOf('insert')[0]!).id).toBe(publicationId);
+  });
+
   it('a pre-approval for a step the flow does not have is invalid', async () => {
     queues.select.push([row()]);
     const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['nope'] });

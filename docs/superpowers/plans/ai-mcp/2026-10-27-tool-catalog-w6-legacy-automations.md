@@ -123,10 +123,10 @@ wave: W06 (#5221)
   - **The three new built-ins are not AI tools.** `MCP_TOOL_COUNT_APPROX`, `mcp-coverage` `FROZEN_GAPS` and the W19 tool-index budgets must not change. Task C5 asserts each one.
 - **Public repo:** no customer names, hostnames, IPs or real webhook URLs. Census output never enters the repo (Task A8).
 - **Branches and PRs:**
-  - PR A: `feature/5215-tool-catalog-flows/wave-5221`, branched off fresh `origin/main`.
-  - PR B: `…/wave-5221-cutover`, after A merges.
-  - PR C: `…/wave-5221-web`, after B merges.
-  - PR D: `…/wave-5221-freeze` (R2). PR E: `…/wave-5221-retire` (R3). Each is dispatched by the orchestrator when its release gate holds.
+  - PR A: `feature/5215-tool-catalog-flows/wave-5221-a`, branched off fresh `origin/main`. Its migration is `2027-01-09-100000-flow-automation-conversions.sql`.
+  - PR B: `feature/5215-tool-catalog-flows/wave-5221-b`, after A merges.
+  - PR C: `feature/5215-tool-catalog-flows/wave-5221-c`, after B merges. It carries `Closes #5221`.
+  - PRs D (R2) and E (R3) are out of this wave and move to roadmap #10336.
   - No stacked PRs. If the orchestrator stacks one anyway, run `gh workflow run CI --ref <branch>`.
   - Merge with a bare `gh pr merge <N>`. Never use `--admin`.
   - Feature-lifecycle: `start_wave` before A0; `complete_wave` per Decision 8.
@@ -294,12 +294,12 @@ Each decision lists the plan's default in **[brackets]**. The tasks are written 
    - Affects B4, E1.
 8. **Retirement sequence and table drops.**
    - **[R1 = PRs A–C.** Converter, built-ins, fleet lane, claims, shadow, switch/revert, forwarding and UI. `POST /automations` returns `410 automations_moved_to_flows` **only when flows are enabled on the installation**.
-   - **R2 = PR D, at least one release after R1:**
+   - **R2 = PR D (moved to #10336), at least one release after R1:**
      - Standalone writes return 410 except disable, delete, preview and convert: PUT, PATCH, `/:id/trigger`, `/:id/run`, and `manage_automations` enable/run. The exception is a row blocked by its environment (`flows_disabled`, `event_dispatch_not_durable`), which stays writable.
      - A boot sweep (W05d precedent; opt-out `FLOW_CONVERSION_SWEEP_DISABLED`) pre-creates shadow conversions.
      - A startup count check reports at error level and to Sentry.
      - The Jobs banner lists pending rows.
-   - **R3 = PR E, per installation.** At boot the census decides:
+   - **R3 = PR E (moved to #10336), per installation.** At boot the census decides:
      - When this installation has zero enabled unswitched S rows, **or** its operator set `LEGACY_JOBS_RETIREMENT_ACCEPTED=true`, standalone admission for **unswitched** rows stops.
      - With the flag, a sweep disables each listed row with `retired_reason = 'legacy_engine_retired'`, an audit event and one in-app notice per owner. S+R rows are kept.
      - With neither condition met, nothing changes and the startup error repeats.
@@ -312,7 +312,7 @@ Each decision lists the plan's default in **[brackets]**. The tasks are written 
      2. Drop `automation_occurrence_claims` after drainage.
      3. Drop the tables.
      4. Drop the `automation_*` enums.
-   - **When #5221 closes:** W06's "one engine" is met for user-authored automations when R3 holds on hosted. Todd decides whether #5221 closes at PR C (D and E tracked as `wave` sub-issues) or at PR E.
+   - **When #5221 closes:** W06's "one engine" is met for user-authored automations when R3 holds on hosted. **Gate B (2026-10-27) decided:** #5221 closes at PR C. PRs D and E are out of this wave and move to roadmap #10336 ("Managed responses on flows"), together with classes M, A, P and C and the R dependency.
    - **Alternative:** hosted-only gating with forced disable everywhere (rejected by quorum Q4). A hosted count cannot establish local facts.
    - Affects C5, D, E.
 9. **API, routes and AI tools.** **[R1:]**
@@ -348,8 +348,8 @@ Each decision lists the plan's default in **[brackets]**. The tasks are written 
     - **PR A** (A0–A8): spec, shared, migration + registries, built-ins, fleet lane, converter, shadow evaluator, census.
     - **PR B** (B1–B7): service/routes, claims on both engines, switch, revert, schedule UTC mode, webhook forwarding, frozen rows + integration + parity.
     - **PR C** (C1–C5): web, docs, default, R1 create refusal.
-    - **PR D:** R2.
-    - **PR E:** R3.
+    - **PR D:** R2 (moved to #10336; not part of #5221).
+    - **PR E:** R3 (moved to #10336; not part of #5221).
     - Each PR keeps CI green on its own: B and C only add callers of earlier seams.
 13. **Built-ins instead of new core tools.**
     - **[`resolve_targets` (Tier 1, `devices.read`), `create_alert` (Tier 2, `alerts.write`) and `run_script_on_targets` (Tier 3, the `run_script` permission set) are flow built-ins in `FLOW_BUILTIN_STEPS`, not `aiTools` entries.]**
@@ -1227,11 +1227,13 @@ Flow ingest for a converted flow adds both alias claims inside its `createFlowRu
   - Revert. The next delivery runs on legacy.
   - The PagerDuty Job converts. The S+R Job shows "Can't move yet". `POST /automations` returns 410.
   - Screenshots stay local. Tear the stack down and say so.
-- [ ] **Step 5: Open PR C** — `feat(web): Tool Catalog W06 PR C — move Jobs to Flows (#5221)`. Body `Closes #5221` or `Part of #5221` per Decision 8, regex-checked. One review round and a summary comment. Merge order A → B → C.
+- [ ] **Step 5: Open PR C** — `feat(web): Tool Catalog W06 PR C — move Jobs to Flows (#5221)`. Body carries `Closes #5221` (Gate B, Decision 8), regex-checked. One review round and a summary comment. Merge order A → B → C.
 
 ---
 
 ## PR D — R2 freeze (release-gated, ≥ 1 release after R1)
+
+> **Moved to roadmap #10336 ("Managed responses on flows"). Not part of #5221.** The text below is kept as the design record.
 
 ### Task D1: Standalone writes return 410
 
@@ -1271,6 +1273,8 @@ Flow ingest for a converted flow adds both alias claims inside its `createFlowRu
 ---
 
 ## PR E — R3 standalone admission retirement (release-gated per installation)
+
+> **Moved to roadmap #10336 ("Managed responses on flows"). Not part of #5221.** The text below is kept as the design record.
 
 ### Task E1: The gate
 
@@ -1341,8 +1345,8 @@ When the respective flag is closed, the S scan and fan-out branches and the manu
 - [ ] **Claims.** Atomic with admission on both engines. Pre-claim history is honoured. Webhook aliases. UTC keys, parent claims and the cursor rule for converted schedules. The 300-event suite and the parity suite are green.
 - [ ] **Switch and revert.** The switch is one transaction with affirmative acceptances. A switched row is frozen, including DELETE. Revert closes admission and keeps execution authority. The reconciler disables only drained, aged reverted flows.
 - [ ] **R1.** `POST /automations` returns 410 when flows are enabled. `FLOWS_ENABLED` defaults on. UI, docs and release notes are done. The C5 contracts are unchanged.
-- [ ] **R2 (PR D).** Writes are frozen (except rows blocked by their environment). The pre-create sweep and the startup check run. The banner shows.
-- [ ] **R3 (PR E).** The per-installation gate. The acceptance-only sweep keeps S+R rows. Revert is closed. Unswitched webhook URLs return 410. No code is deleted.
+- [ ] **R2 (PR D) — moved to #10336.** Writes are frozen (except rows blocked by their environment). The pre-create sweep and the startup check run. The banner shows.
+- [ ] **R3 (PR E) — moved to #10336.** The per-installation gate. The acceptance-only sweep keeps S+R rows. Revert is closed. Unswitched webhook URLs return 410. No code is deleted.
 - [ ] **Spec amended** (Task A0).
 
 ## CI traps
@@ -1370,8 +1374,8 @@ When the respective flag is closed, the S scan and fan-out branches and the manu
 
 ## Feature close-out list (#5215 ends with this wave)
 
-- [ ] Run `complete_wave` for #5221 when the PR carrying `Closes #5221` merges. If #5221 closes at PR C, track PRs D and E as `wave` sub-issues.
-- [ ] Run `close_feature` for #5215 once every wave sub-issue is closed and R3 has shipped. Post a summary listing the W01–W06 PRs, the spec amendments by wave, and the deferred list.
+- [ ] Run `complete_wave` for #5221 when PR C (which carries `Closes #5221`) merges. PRs D and E are tracked on #10336, not as wave sub-issues.
+- [ ] Run `close_feature` for #5215 once every wave sub-issue is closed. R2 and R3 follow under #10336. Post a summary listing the W01–W06 PRs, the spec amendments by wave, and the deferred list.
 - [ ] **Open the follow-up feature issue "Managed responses on flows"** (`feature` label; `register_feature` once planned). It covers:
   - classes M, A, P and C, and the R dependency;
   - deleting `automationWorker`, the `automations` queue, `scan-schedules` and the dead S branches;

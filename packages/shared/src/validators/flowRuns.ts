@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FLOW_STEP_ID_RE, FLOW_PAUSED_REASONS } from './flows';
+import { FLOW_LIMITS, FLOW_STEP_ID_RE, FLOW_PAUSED_REASONS } from './flows';
 import type { FlowDetailDto, FlowDocumentV1, FlowPausedReason, FlowToolSource } from './flows';
 
 /**
@@ -41,6 +41,8 @@ export const FLOW_STEP_ERROR_CODES = [
   'no_eligible_approvers', 'worker_lost', 'cancelled',
   // W5 built-ins (#5220)
   'egress_blocked', 'http_status', 'notify_failed', 'ai_budget_exhausted', 'ai_output_invalid', 'ai_token_cap_reached',
+  // W6 fleet built-ins (#5221)
+  'targets_over_cap', 'targets_unresolvable', 'alert_create_failed', 'script_dispatch_failed',
 ] as const;
 export type FlowStepErrorCode = (typeof FLOW_STEP_ERROR_CODES)[number];
 
@@ -85,6 +87,13 @@ export type FlowManualRunRequest = z.infer<typeof flowManualRunRequestSchema>;
 export const flowEnableRequestSchema = z.object({
   expectedVersion: z.number().int().min(1),
   preApprovedStepIds: z.array(z.string().regex(FLOW_STEP_ID_RE)).max(50).default([]),
+  /**
+   * W6 (#5221, Decision 5): the user-confirmed device cap of each pre-approved
+   * `run_script_on_targets` step (1..500, per step, per run, per execution org).
+   */
+  fleetMaxTargets: z.record(z.string().regex(FLOW_STEP_ID_RE), z.number().int().min(1).max(FLOW_LIMITS.maxForEachItems))
+    .refine((r) => Object.keys(r).length <= 50, { message: 'at most 50 fleet steps' })
+    .optional(),
 });
 export type FlowEnableRequest = z.infer<typeof flowEnableRequestSchema>;
 

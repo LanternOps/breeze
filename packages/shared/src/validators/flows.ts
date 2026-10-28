@@ -153,7 +153,9 @@ export type PreApprovalEligibility =
       eligible: false;
       reason:
         | 'not_tier3' | 'tool_not_supported' | 'script_not_literal' | 'run_context_not_literal' | 'group_target'
-        | 'variable_dependent' | 'script_not_found' | 'four_eyes' | 'tenant_tool';
+        | 'variable_dependent' | 'script_not_found' | 'four_eyes' | 'tenant_tool'
+        // W6 (#5221) fleet lane
+        | 'for_each' | 'run_as_elevated' | 'selector_not_literal' | 'max_targets_invalid';
     };
 
 export interface FlowIssue {

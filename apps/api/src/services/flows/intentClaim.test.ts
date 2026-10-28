@@ -358,6 +358,24 @@ describe('claimFlowLinkedIntentForDispatch', () => {
       }
     });
 
+    // W6 (#5221): the fleet built-in's scope is derived (it may be four_eyes);
+    // the claim accepts it when the intent's scope equals the pin's.
+    it('a run_script_on_targets intent matching its Tier-3 pin (same derived scope) is claimed', async () => {
+      const FLEET = { scriptId: 's', whenOffline: 'queue', deviceIds: ['d'] };
+      for (const scope of ['supervised', 'four_eyes'] as const) {
+        vi.clearAllMocks();
+        untouched();
+        h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [{ ...builtinPin, tool: 'run_script_on_targets', approvalScope: scope }] }));
+        h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'run_script_on_targets', arguments: FLEET, approvalScope: scope }));
+        await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toMatchObject({ claimed: true });
+      }
+      vi.clearAllMocks();
+      untouched();
+      h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [{ ...builtinPin, tool: 'run_script_on_targets', approvalScope: 'four_eyes' }] }));
+      h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'run_script_on_targets', arguments: FLEET, approvalScope: 'supervised' }));
+      await expect(claimFlowLinkedIntentForDispatch(INTENT_ID)).resolves.toEqual({ claimed: false, reason: 'approval_scope_changed' });
+    });
+
     it('an ai or notify intent (never Tier 3) is refused', async () => {
       h.store.loadPublicationBySeq.mockResolvedValue(publication({ stepPins: [{ ...builtinPin, tool: 'ai' }] }));
       h.store.loadIntentForClaim.mockResolvedValue(intent({ actionName: 'ai', arguments: { prompt: 'x', tools: [], output: { type: 'object' } } }));

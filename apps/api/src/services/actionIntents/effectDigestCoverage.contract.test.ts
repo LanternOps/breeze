@@ -244,4 +244,13 @@ describe('effect-digest coverage: every four_eyes surface is pinned or explicitl
     expect(requiresPinnedEffectDigest('diagnose_connectivity')).toBe(true);
     expect(requiresPinnedEffectDigest('run_script')).toBe(false);
   });
+
+  // Tool Catalog W06 (#5221, Decision 5): the fleet built-in is a flow
+  // built-in, not a registered tool, so neither four_eyes enumeration nor the
+  // supervised tool table visits it. Its parked approval's whole authority is
+  // the pinned script + frozen device list, so the pin is mandatory.
+  it('pins run_script_on_targets (the fleet built-in) and requires the pin', () => {
+    expect(effectDigestResolverKey('run_script_on_targets')).toBe('run_script_on_targets');
+    expect(requiresPinnedEffectDigest('run_script_on_targets')).toBe(true);
+  });
 });
