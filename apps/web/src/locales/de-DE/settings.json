@@ -4281,7 +4281,7 @@
           "create": "Eine Monitordefinition erstellen",
           "delete": "Eine Monitordefinition löschen",
           "describe": "Optionen der Monitordefinition beschreiben",
-          "detach": "Eine Monitordefinition entfernen",
+          "detach": "Eine Monitordefinition trennen",
           "disable": "Eine Monitordefinition deaktivieren",
           "enable": "Eine Monitordefinition aktivieren",
           "update": "Eine Monitordefinition aktualisieren"

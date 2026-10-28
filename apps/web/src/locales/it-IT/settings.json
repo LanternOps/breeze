@@ -4435,7 +4435,7 @@
         },
         "manage_software_inventory": {
           "approve": "Approvare un software",
-          "clear": "Annullare una decisione sul software",
+          "clear": "Azzerare una decisione sul software",
           "deny": "Bloccare un software",
           "devices": "Dispositivi con un software",
           "list": "Elencare l'inventario software",

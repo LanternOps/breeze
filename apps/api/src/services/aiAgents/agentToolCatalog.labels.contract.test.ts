@@ -8,8 +8,8 @@
  * and each capability group with `aiAgentsPage.catalog.capabilities.<id>.label`.
  * A missing key renders a humanized fallback AND fires the i18n missing-key
  * handler, which in production is one Sentry message per key per session.
- * Tool waves kept landing in `TOOL_CAPABILITY` without copy (93 keys behind by
- * 2026-10-25), so this test makes "a new agent-reachable tool" and "its label"
+ * Tool waves kept landing in `TOOL_CAPABILITY` without copy (200 tool and 337
+ * action labels behind by 2026-10-28), so this test makes "a new agent-reachable tool" and "its label"
  * land in the same commit.
  *
  * Only English is checked here; `apps/web/src/lib/i18n/localeParity.test.ts`
@@ -22,6 +22,7 @@ import { describe, expect, it } from 'vitest';
 import '../aiTools'; // populates the registry
 
 import { buildAgentToolCatalog, resetAgentToolCatalogMemo } from './agentToolCatalog';
+import { POLICY_DECIDABLE_TIER3 } from '../actionIntents/policyDecidableKeys';
 
 const enSettingsPath = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -86,5 +87,29 @@ describe('agent tool catalog picker labels (en settings.json)', () => {
       if (!isNonEmptyString(copy.capabilities[id]?.description)) missing.push(`${id}.description`);
     }
     expect(missing, 'add these to apps/web/src/locales/*/settings.json under aiAgentsPage.catalog.capabilities').toEqual([]);
+  });
+});
+
+/**
+ * The wizard's Safety step (`PolicyKeysCheckboxes.tsx`) labels each
+ * policy-decidable key from a sibling namespace,
+ * `aiAgentsPage.policyKeys.{tools,actions}`, so the same drift applies there.
+ */
+describe('policy-decidable key labels (en settings.json)', () => {
+  const settings = JSON.parse(readFileSync(enSettingsPath, 'utf8'));
+  const policyKeys = settings?.aiAgentsPage?.policyKeys ?? {};
+  const tools: Record<string, unknown> = policyKeys.tools ?? {};
+  const actions: Record<string, Record<string, unknown> | undefined> = policyKeys.actions ?? {};
+
+  it('every POLICY_DECIDABLE_TIER3 entry has a tool label and, when multiplexed, an action label', () => {
+    expect(POLICY_DECIDABLE_TIER3.length).toBeGreaterThan(0);
+    const missing: string[] = [];
+    for (const entry of POLICY_DECIDABLE_TIER3) {
+      if (!isNonEmptyString(tools[entry.toolName])) missing.push(`tools.${entry.toolName}`);
+      if (entry.action !== null && !isNonEmptyString(actions[entry.toolName]?.[entry.action])) {
+        missing.push(`actions.${entry.toolName}.${entry.action}`);
+      }
+    }
+    expect([...new Set(missing)], 'add these to apps/web/src/locales/*/settings.json under aiAgentsPage.policyKeys').toEqual([]);
   });
 });
