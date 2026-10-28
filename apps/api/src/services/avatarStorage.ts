@@ -1,14 +1,13 @@
 import { createHash } from 'crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { users } from '../db/schema';
+import { userAvatarDrafts, users } from '../db/schema';
 import { captureException } from './sentry';
 
 /**
  * Avatar storage service (database-backed).
  *
- * Avatars live as a `bytea` blob on the user's row (`users.avatar_data`),
- * alongside `avatar_mime` and `avatar_updated_at`. This replaced the previous
+ * This replaced the previous
  * filesystem implementation (`/data/avatars/<id>.<ext>`), which depended on a
  * writable `api_data` volume owned by the API's runtime uid — a root-owned
  * volume failed uploads with EACCES → 500 (#1059). Storing the bytes in
@@ -23,6 +22,7 @@ import { captureException } from './sentry';
  */
 
 export const MAX_AVATAR_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+export const AVATAR_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type AvatarMime = 'image/png' | 'image/jpeg' | 'image/webp';
 
@@ -261,4 +261,80 @@ export function weakEtagFor(size: number, mtimeMs: number): string {
   const hash = createHash('sha1');
   hash.update(`${size}:${Math.floor(mtimeMs)}`);
   return `W/"${hash.digest('hex').slice(0, 16)}"`;
+}
+
+export type AvatarDraftIntent = 'replace' | 'remove';
+export interface AvatarDraftSummary {
+  draftId: string;
+  intent: AvatarDraftIntent;
+  previewUrl: string | null;
+  expiresAt: Date;
+}
+
+export async function stageAvatarDraft(input: {
+  userId: string;
+  intent: AvatarDraftIntent;
+  mime?: AvatarMime;
+  bytes?: Buffer;
+}): Promise<AvatarDraftSummary> {
+  const expiresAt = new Date(Date.now() + AVATAR_DRAFT_TTL_MS);
+  const [draft] = await db.insert(userAvatarDrafts).values({
+    userId: input.userId,
+    intent: input.intent,
+    mime: input.mime ?? null,
+    bytes: input.bytes ?? null,
+    expiresAt,
+  }).onConflictDoUpdate({
+    target: userAvatarDrafts.userId,
+    set: {
+      draftId: sql`gen_random_uuid()`,
+      intent: input.intent,
+      mime: input.mime ?? null,
+      bytes: input.bytes ?? null,
+      expiresAt,
+      createdAt: new Date(),
+    },
+  }).returning({ draftId: userAvatarDrafts.draftId, expiresAt: userAvatarDrafts.expiresAt });
+  if (!draft) throw new Error('Failed to stage avatar draft');
+  return {
+    draftId: draft.draftId,
+    intent: input.intent,
+    previewUrl: input.intent === 'replace' ? `/api/v1/users/me/avatar-draft/${draft.draftId}/preview` : null,
+    expiresAt: draft.expiresAt,
+  };
+}
+
+export async function readAvatarDraftSummary(userId: string): Promise<AvatarDraftSummary | null> {
+  const [draft] = await db.select({ draftId: userAvatarDrafts.draftId, intent: userAvatarDrafts.intent, expiresAt: userAvatarDrafts.expiresAt })
+    .from(userAvatarDrafts).where(and(eq(userAvatarDrafts.userId, userId), gt(userAvatarDrafts.expiresAt, new Date()))).limit(1);
+  if (!draft || (draft.intent !== 'replace' && draft.intent !== 'remove')) return null;
+  return {
+    draftId: draft.draftId,
+    intent: draft.intent,
+    previewUrl: draft.intent === 'replace' ? `/api/v1/users/me/avatar-draft/${draft.draftId}/preview` : null,
+    expiresAt: draft.expiresAt,
+  };
+}
+
+export async function readAvatarDraft(userId: string, draftId: string) {
+  const [draft] = await db.select({ draftId: userAvatarDrafts.draftId, intent: userAvatarDrafts.intent, mime: userAvatarDrafts.mime, bytes: userAvatarDrafts.bytes, expiresAt: userAvatarDrafts.expiresAt })
+    .from(userAvatarDrafts).where(and(eq(userAvatarDrafts.userId, userId), eq(userAvatarDrafts.draftId, draftId), gt(userAvatarDrafts.expiresAt, new Date()))).limit(1);
+  if (!draft || (draft.intent !== 'replace' && draft.intent !== 'remove')) return null;
+  return draft;
+}
+
+export async function discardAvatarDraft(userId: string, draftId: string): Promise<boolean> {
+  const [deleted] = await db.delete(userAvatarDrafts).where(and(eq(userAvatarDrafts.userId, userId), eq(userAvatarDrafts.draftId, draftId))).returning({ draftId: userAvatarDrafts.draftId });
+  return Boolean(deleted);
+}
+
+export async function cleanupExpiredAvatarDrafts(batchSize = 500): Promise<number> {
+  const expired = await db.select({ userId: userAvatarDrafts.userId }).from(userAvatarDrafts)
+    .where(lte(userAvatarDrafts.expiresAt, new Date())).limit(batchSize);
+  if (!expired.length) return 0;
+  const deleted = await db.delete(userAvatarDrafts).where(and(
+    inArray(userAvatarDrafts.userId, expired.map((draft) => draft.userId)),
+    lte(userAvatarDrafts.expiresAt, new Date()),
+  )).returning({ draftId: userAvatarDrafts.draftId });
+  return deleted.length;
 }

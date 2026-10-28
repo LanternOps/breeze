@@ -202,6 +202,11 @@ describe('bodyLimitForPath', () => {
       maxSize: 5 * MB + 64 * KB,
       error: 'Avatar file too large (max 5 MB)',
     });
+    expect(bodyLimitForPath('/api/v1/users/me/avatar-draft')).toEqual({
+      rule: 'avatar',
+      maxSize: 5 * MB + 64 * KB,
+      error: 'Avatar file too large (max 5 MB)',
+    });
     expect(bodyLimitForPath('/api/v1/catalog/item-1').maxSize).toBe(1 * MB);
     expect(bodyLimitForPath('/api/v1/users/me').maxSize).toBe(1 * MB);
   });
@@ -339,9 +344,9 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     note: 'carved out — agent binaries',
   },
   'users.ts': {
-    paths: ['/api/v1/users/me/avatar'],
+    paths: ['/api/v1/users/me/avatar', '/api/v1/users/me/avatar-draft'],
     globalMaxSize: 5 * MB + 64 * KB,
-    note: 'carved out — 5MB avatar',
+    note: 'carved out — 5MB avatar and avatar draft',
   },
   'catalog/catalog.ts': {
     paths: ['/api/v1/catalog/item-1/image'],

@@ -1347,6 +1347,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // ticketPushPreferencesRls.integration.test.ts; this entry only pins that
   // the policy references breeze_current_user_id.
   'ticket_push_preferences',
+  'user_avatar_drafts',
   // ticket_comments: Shape 6 on the author axis, PLUS an extra permissive
   // SELECT policy (breeze_ticket_parent_select, 2026-06-10-a migration)
   // that ORs in visibility when the parent ticket is org-accessible —
@@ -1436,6 +1437,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'refresh_token_families', // the user's own refresh-token chain.
   'sessions', // the user's own login session.
   'ticket_push_preferences', // the user's own push preference row (user_id PK, no ticket reference).
+  'user_avatar_drafts',
   'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.

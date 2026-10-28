@@ -719,6 +719,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'userAvatarDraftCleanup',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/userAvatarDraftCleanup');
+      return { init: m.initializeUserAvatarDraftCleanupWorker, shutdown: m.shutdownUserAvatarDraftCleanupWorker };
+    },
+  },
+  {
     name: 'stripeAccountCacheRefresh',
     placement: 'global',
     load: async () => {

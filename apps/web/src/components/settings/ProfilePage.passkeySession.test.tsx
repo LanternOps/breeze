@@ -91,6 +91,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     vi.clearAllMocks();
     commitReissuedSessionIfCurrentMock.mockReturnValue(true);
     sessionStorage.clear();
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarDraft: null }));
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });

@@ -99,6 +99,14 @@ describe('useAvatarBlobUrl', () => {
     expect(result.current).toBeNull();
   });
 
+  it('reports a failed private preview to its caller', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeBlobResponse(false, 500));
+    const onError = vi.fn();
+    const { result } = renderHook(() => useAvatarBlobUrl('/api/v1/users/me/avatar-draft/draft-id/preview', onError));
+    await waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(result.current).toBeNull();
+  });
+
   it('reuses the cached object URL across multiple components for the same avatar', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeBlobResponse());
 

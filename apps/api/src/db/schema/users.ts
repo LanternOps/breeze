@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint } from 'drizzle-orm/pg-core';
+import { check, index, pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, customType, primaryKey, integer, bigint } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { partners, organizations } from './orgs';
 
 // Postgres `bytea` mapped to a Node Buffer. postgres.js returns bytea columns
@@ -97,6 +98,23 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
+
+export const userAvatarDrafts = pgTable('user_avatar_drafts', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  draftId: uuid('draft_id').notNull().unique().defaultRandom(),
+  intent: text('intent').notNull(),
+  mime: text('mime'),
+  bytes: bytea('bytes'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  expiresAtIndex: index('user_avatar_drafts_expires_at_idx').on(table.expiresAt),
+  shapeCheck: check('user_avatar_drafts_shape_check', sql`(
+    (${table.intent} = 'replace' AND ${table.mime} IS NOT NULL AND ${table.mime} IN ('image/png', 'image/jpeg', 'image/webp') AND ${table.bytes} IS NOT NULL
+      AND octet_length(${table.bytes}) BETWEEN 1 AND 5242880)
+    OR (${table.intent} = 'remove' AND ${table.mime} IS NULL AND ${table.bytes} IS NULL)
+  )`),
+}));
 
 export const roles = pgTable('roles', {
   id: uuid('id').primaryKey().defaultRandom(),

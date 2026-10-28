@@ -7,8 +7,9 @@ import { Hono } from 'hono';
 // tiny in-memory store that mimics the POST→GET round-trip. The pure helpers
 // (sniffImageMime, weakEtagFor, MAX_AVATAR_SIZE_BYTES, …) stay real so upload
 // validation is exercised for real.
-const { avatarStore } = vi.hoisted(() => ({
+const { avatarStore, avatarDraftStore } = vi.hoisted(() => ({
   avatarStore: new Map<string, { mime: 'image/png' | 'image/jpeg' | 'image/webp'; data: Buffer }>(),
+  avatarDraftStore: new Map<string, { draftId: string; intent: 'replace' | 'remove'; mime: string | null; bytes: Buffer | null; expiresAt: Date }>(),
 }));
 
 vi.mock('../services/avatarStorage', async (importOriginal) => {
@@ -30,6 +31,41 @@ vi.mock('../services/avatarStorage', async (importOriginal) => {
     }),
     deleteAvatar: vi.fn(async (userId: string) => {
       avatarStore.delete(userId);
+      return true;
+    }),
+    stageAvatarDraft: vi.fn(async ({ userId, intent, mime, bytes }: { userId: string; intent: 'replace' | 'remove'; mime?: string; bytes?: Buffer }) => {
+      const draft = {
+        draftId: '22222222-2222-4222-8222-222222222222',
+        intent,
+        mime: mime ?? null,
+        bytes: bytes ?? null,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      };
+      avatarDraftStore.set(userId, draft);
+      return {
+        draftId: draft.draftId,
+        intent: draft.intent,
+        previewUrl: draft.intent === 'replace' ? `/api/v1/users/me/avatar-draft/${draft.draftId}/preview` : null,
+        expiresAt: draft.expiresAt,
+      };
+    }),
+    readAvatarDraftSummary: vi.fn(async (userId: string) => {
+      const draft = avatarDraftStore.get(userId);
+      if (!draft || draft.expiresAt <= new Date()) return null;
+      return {
+        draftId: draft.draftId,
+        intent: draft.intent,
+        previewUrl: draft.intent === 'replace' ? `/api/v1/users/me/avatar-draft/${draft.draftId}/preview` : null,
+        expiresAt: draft.expiresAt,
+      };
+    }),
+    readAvatarDraft: vi.fn(async (userId: string, draftId: string) => {
+      const draft = avatarDraftStore.get(userId);
+      return draft?.draftId === draftId && draft.expiresAt > new Date() ? draft : null;
+    }),
+    discardAvatarDraft: vi.fn(async (userId: string, draftId: string) => {
+      if (avatarDraftStore.get(userId)?.draftId !== draftId) return false;
+      avatarDraftStore.delete(userId);
       return true;
     }),
   };
@@ -159,6 +195,7 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   users: {},
+  userAvatarDrafts: { userId: {}, draftId: {}, intent: {}, mime: {}, bytes: {}, expiresAt: {} },
   userPasskeys: {
     id: { __column: 'user_passkeys.id' },
     userId: { __column: 'user_passkeys.user_id' },
@@ -369,6 +406,7 @@ describe('user routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     avatarStore.clear();
+    avatarDraftStore.clear();
     // clearAllMocks only clears call history — it does NOT drain queued
     // mockReturnValueOnce implementations or reset mockReturnValue. Re-seed the
     // db builders to safe defaults so each test starts from a clean chain and is
@@ -393,6 +431,11 @@ describe('user routes', () => {
         }))
       }))
     } as any);
+    vi.mocked(db.transaction).mockReset().mockImplementation(async (callback: any) => callback({
+      select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: () => Promise.resolve([]) }) }) }) }),
+      update: db.update,
+      delete: db.delete,
+    } as any));
     // Re-establish the step-up defaults each test: SSO off, MFA satisfied,
     // password step-up passes, fresh-factor step-up passes, account not
     // MFA-protected, MFA policy not required, pending-email service succeeds.
@@ -1365,6 +1408,19 @@ describe('user routes', () => {
         })
       } as any);
     };
+
+    it('includes the caller-owned pending avatar draft summary', async () => {
+      const draftId = '22222222-2222-4222-8222-222222222222';
+      mockMeRow(meRow());
+      avatarDraftStore.set('user-123', {
+        draftId, intent: 'replace', mime: 'image/png', bytes: Buffer.from('image'), expiresAt: new Date(Date.now() + 60_000),
+      });
+      const res = await app.request('/users/me', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).avatarDraft).toMatchObject({
+        draftId, intent: 'replace', previewUrl: `/api/v1/users/me/avatar-draft/${draftId}/preview`,
+      });
+    });
 
     it('reports hasPassword false for an SSO-provisioned (passwordless) user', async () => {
       mockMeRow(meRow({ passwordHash: null }));
@@ -3722,6 +3778,121 @@ describe('user routes', () => {
         headers: {}
       };
     }
+
+    describe('avatar drafts', () => {
+      it('stages a valid image without publishing it to the user avatar', async () => {
+        const { body, headers } = makeMultipart('file', PNG_BYTES, 'image/png', 'a.png');
+        const res = await app.request('/users/me/avatar-draft', { method: 'POST', body, headers });
+        const draft = await res.json();
+        expect(res.status).toBe(200);
+        expect(draft).toMatchObject({ draftId: '22222222-2222-4222-8222-222222222222', intent: 'replace' });
+        expect(draft.previewUrl).toContain('/avatar-draft/');
+        expect(avatarStore.has(ME_ID)).toBe(false);
+        expect(writeAvatar).not.toHaveBeenCalled();
+      });
+
+      it('rejects invalid image bytes without creating a draft', async () => {
+        const { body, headers } = makeMultipart('file', SVG_BYTES, 'image/svg+xml', 'a.svg');
+        const res = await app.request('/users/me/avatar-draft', { method: 'POST', body, headers });
+        expect(res.status).toBe(415);
+        expect(avatarDraftStore.has(ME_ID)).toBe(false);
+      });
+
+      it('serves only the staged image with private no-store headers', async () => {
+        await app.request('/users/me/avatar-draft', { method: 'POST', ...makeMultipart('file', PNG_BYTES, 'image/png', 'a.png') });
+        const res = await app.request('/users/me/avatar-draft/22222222-2222-4222-8222-222222222222/preview');
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('private, no-store');
+        expect(res.headers.get('content-type')).toBe('image/png');
+        expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG_BYTES);
+        const missing = await app.request('/users/me/avatar-draft/33333333-3333-4333-8333-333333333333/preview');
+        expect(missing.status).toBe(404);
+        expect(missing.headers.get('cache-control')).toBe('private, no-store');
+      });
+
+      it('stages removal and discards only the exact draft id', async () => {
+        const staged = await app.request('/users/me/avatar-draft/remove', { method: 'POST' });
+        expect(staged.status).toBe(200);
+        expect((await staged.json()).intent).toBe('remove');
+        const discarded = await app.request('/users/me/avatar-draft/22222222-2222-4222-8222-222222222222', { method: 'DELETE' });
+        expect(discarded.status).toBe(200);
+        expect(avatarDraftStore.has(ME_ID)).toBe(false);
+        expect(deleteAvatar).not.toHaveBeenCalled();
+      });
+
+      it('rejects Undo of a superseded draft and permits retrying an already discarded draft', async () => {
+        await app.request('/users/me/avatar-draft/remove', { method: 'POST' });
+        const stale = await app.request('/users/me/avatar-draft/33333333-3333-4333-8333-333333333333', { method: 'DELETE' });
+        expect(stale.status).toBe(409);
+        expect(avatarDraftStore.has(ME_ID)).toBe(true);
+        const path = '/users/me/avatar-draft/22222222-2222-4222-8222-222222222222';
+        expect((await app.request(path, { method: 'DELETE' })).status).toBe(200);
+        expect((await app.request(path, { method: 'DELETE' })).status).toBe(200);
+      });
+
+      it('conflicts on a stale draft id before writing a profile name', async () => {
+        vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+          email: 'test@example.com', passwordHash: null, preferences: {}, partnerId: 'partner-123',
+        }]) }) }) } as any);
+        const txUpdate = vi.fn();
+        vi.mocked(db.transaction).mockImplementationOnce(async (callback: any) => callback({
+          select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: () => Promise.resolve([]) }) }) }) }),
+          update: txUpdate,
+          delete: vi.fn(),
+        } as any));
+        const res = await app.request('/users/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New name', avatarDraftId: '22222222-2222-4222-8222-222222222222' }) });
+        expect(res.status).toBe(409);
+        expect(txUpdate).not.toHaveBeenCalled();
+      });
+
+      it('conflicts when a name save omits the active draft id', async () => {
+        vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+          email: 'test@example.com', passwordHash: null, preferences: {}, partnerId: 'partner-123',
+        }]) }) }) } as any);
+        const txUpdate = vi.fn();
+        vi.mocked(db.transaction).mockImplementationOnce(async (callback: any) => callback({
+          select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [{
+            draftId: '22222222-2222-4222-8222-222222222222', intent: 'replace', mime: 'image/png', bytes: PNG_BYTES,
+            expiresAt: new Date(Date.now() + 10000),
+          }] }) }) }) }),
+          update: txUpdate,
+          delete: vi.fn(),
+        } as any));
+        const res = await app.request('/users/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New name' }) });
+        expect(res.status).toBe(409);
+        expect(txUpdate).not.toHaveBeenCalled();
+      });
+
+      it.each(['replace', 'remove'] as const)('promotes the exact %s draft and saves the name in one transaction', async (intent) => {
+        const draftId = '22222222-2222-4222-8222-222222222222';
+        const avatarUrl = intent === 'replace' ? `/api/v1/users/${ME_ID}/avatar?v=${draftId}` : null;
+        vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{
+          email: 'test@example.com', passwordHash: null, preferences: {}, partnerId: 'partner-123',
+        }]) }) }) } as any);
+        let setValues: Record<string, unknown> | undefined;
+        const txUpdate = vi.fn(() => ({
+          set: (values: Record<string, unknown>) => {
+            setValues = values;
+            return { where: () => ({ returning: async () => [{
+              id: ME_ID, email: 'test@example.com', name: 'New name', avatarUrl,
+              status: 'active', mfaEnabled: false, preferences: {},
+            }] }) };
+          },
+        }));
+        const txDelete = vi.fn(() => ({ where: () => Promise.resolve([]) }));
+        const pendingDraft = { draftId, intent, mime: intent === 'replace' ? 'image/png' : null, bytes: intent === 'replace' ? PNG_BYTES : null, expiresAt: new Date(Date.now() + 10000) };
+        vi.mocked(db.transaction).mockImplementationOnce(async (callback: any) => callback({
+          select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [pendingDraft] }) }) }) }),
+          update: txUpdate,
+          delete: txDelete,
+        } as any));
+        const res = await app.request('/users/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New name', avatarDraftId: draftId }) });
+        expect(res.status).toBe(200);
+        expect((await res.json()).avatarUrl).toBe(avatarUrl);
+        expect(setValues).toMatchObject({ name: 'New name', avatarData: pendingDraft.bytes, avatarMime: pendingDraft.mime, avatarUrl });
+        expect(txDelete).toHaveBeenCalledTimes(1);
+      });
+    });
 
     describe('POST /users/me/avatar', () => {
       it('accepts a PNG upload and writes /api/v1/users/<id>/avatar to users.avatar_url', async () => {

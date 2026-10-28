@@ -59,6 +59,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ avatarDraft: null }));
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
   });
@@ -109,14 +110,14 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
-    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
       '/auth/mfa/step-up',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ method: 'totp', code: '123456', operation: 'delete_passkey', passkeyId: 'credential-1' }),
       }),
     ]);
-    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
       '/auth/passkeys/credential-1',
       expect.objectContaining({
         method: 'DELETE',

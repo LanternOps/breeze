@@ -213,7 +213,7 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   if (/^\/api\/v1\/wisp\/thread\/[^/]+\/attachments$/.test(path)) {
     return { rule: 'wisp-thread-attachment', maxSize: 6 * 1024 * 1024, error: 'Attachment too large (max 5 MiB)' };
   }
-  if (path === '/api/v1/users/me/avatar') {
+  if (path === '/api/v1/users/me/avatar' || path === '/api/v1/users/me/avatar-draft') {
     return {
       rule: 'avatar',
       maxSize: 5 * 1024 * 1024 + 64 * 1024,

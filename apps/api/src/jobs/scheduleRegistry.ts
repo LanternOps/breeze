@@ -115,6 +115,7 @@ export const JOB_SCHEDULES = {
   // billing so the two billing producers never hold the pool together.
   'ai-chargeback-sweep': '28 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
+  'user-avatar-draft-cleanup': '48 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
   'invoice-reminder-sweep': '18 6 * * *',

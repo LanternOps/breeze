@@ -5,19 +5,23 @@ import { zValidator } from '../lib/validation';
 import { jsonError } from '../lib/jsonError';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
+import { users, userAvatarDrafts, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { PUSHOVER_USER_KEY_PATTERN, sealPushoverUserKey } from '../services/ticketPushover';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
   deleteAvatar,
+  discardAvatarDraft,
+  readAvatarDraft,
+  readAvatarDraftSummary,
   readAvatarBuffer,
   sniffImageMime,
+  stageAvatarDraft,
   statAvatar,
   weakEtagFor,
   writeAvatar,
@@ -89,6 +93,7 @@ userRoutes.use('*', async (c, next) => {
   const path = c.req.path;
   const isSelfServiceRoute =
     /\/me(\/avatar|\/ticket-push-preferences|\/ticket-pushover|\/email-preferences)?$/.test(path) ||
+    /\/me\/avatar-draft(?:\/remove|\/[0-9a-f-]+(?:\/preview)?)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();
@@ -609,6 +614,7 @@ userRoutes.get('/me', async (c) => {
     partnerId: auth.partnerId || undefined,
     orgId: auth.orgId || undefined
   });
+  const avatarDraft = await readAvatarDraftSummary(auth.user.id);
 
   return c.json({
     ...userWithoutSecrets,
@@ -621,6 +627,7 @@ userRoutes.get('/me', async (c) => {
     orgId: auth.orgId,
     scope: auth.scope,
     partnerDefaultLocale,
+    avatarDraft,
     permissions: userPerms?.permissions ?? [],
     // #3262: lets forms with an "All organizations" owner option (scripts,
     // policies) hide/disable it for partner users without org_access = 'all'.
@@ -632,13 +639,10 @@ userRoutes.get('/me', async (c) => {
 });
 
 // Update current user's profile.
-// NOTE: `avatarUrl` is intentionally NOT part of this schema. Avatars are
-// managed exclusively through POST/DELETE /users/me/avatar (file upload). The
-// strict() refinement causes any client still sending avatarUrl to get a 400,
-// which is what we want — silent drop would mask client bugs.
 const updateMeSchema = z
   .object({
     name: z.string().min(1).max(255).optional(),
+    avatarDraftId: z.string().uuid().optional(),
     email: z.string().email().max(255).optional(),
     preferences: z
       .union([
@@ -656,6 +660,8 @@ const updateMeSchema = z
     stepUpGrantId: z.string().uuid().optional(),
   })
   .strict();
+
+class AvatarDraftConflictError extends Error {}
 
 function isPreferenceRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -843,7 +849,16 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
     return jsonError(c, 404, ERROR_CODES.NOT_FOUND, 'User not found');
   }
 
-  const updates: { name?: string; email?: string; preferences?: Record<string, unknown>; updatedAt: Date } = {
+  const updates: {
+    name?: string;
+    email?: string;
+    preferences?: Record<string, unknown>;
+    avatarData?: Buffer | null;
+    avatarMime?: string | null;
+    avatarUpdatedAt?: Date | null;
+    avatarUrl?: string | null;
+    updatedAt: Date;
+  } = {
     updatedAt: new Date()
   };
 
@@ -993,7 +1008,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // A same-email PATCH (body.email provided but unchanged) stays a valid 200
   // no-op — the updatedAt-only write below is harmless. Only bail with "No
   // valid updates" when the caller supplied nothing actionable at all.
-  if (Object.keys(updates).length === 1 && body.email === undefined) {
+  if (Object.keys(updates).length === 1 && body.email === undefined && body.avatarDraftId === undefined) {
     return c.json({ error: 'No valid updates provided' }, 400);
   }
 
@@ -1015,11 +1030,44 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   // stays signed in so they can go prove the new address. The email_epoch bump
   // (which invalidates stale verification artifacts) happens inside
   // requestPendingEmailChange; auth_epoch + family revoke move to the commit.
-  const [updated] = await db
-    .update(users)
-    .set(updates)
-    .where(eq(users.id, auth.user.id))
-    .returning(returningColumns);
+  let updated;
+  if (body.name === undefined && body.avatarDraftId === undefined) {
+    [updated] = await db.update(users).set(updates).where(eq(users.id, auth.user.id)).returning(returningColumns);
+  } else try {
+    [updated] = await db.transaction(async (tx) => {
+      let draft: { draftId: string; intent: string; mime: string | null; bytes: Buffer | null } | null = null;
+      if (body.name !== undefined || body.avatarDraftId !== undefined) {
+        const [pending] = await tx.select({
+          draftId: userAvatarDrafts.draftId,
+          intent: userAvatarDrafts.intent,
+          mime: userAvatarDrafts.mime,
+          bytes: userAvatarDrafts.bytes,
+          expiresAt: userAvatarDrafts.expiresAt,
+        }).from(userAvatarDrafts)
+          .where(and(eq(userAvatarDrafts.userId, auth.user.id), gt(userAvatarDrafts.expiresAt, new Date())))
+          .limit(1).for('update');
+        if (pending && body.avatarDraftId === undefined && body.name !== undefined) throw new AvatarDraftConflictError();
+        if (body.avatarDraftId !== undefined && (!pending || pending.draftId !== body.avatarDraftId)) throw new AvatarDraftConflictError();
+        if (body.avatarDraftId !== undefined && pending) draft = pending;
+      }
+
+      const transactionUpdates = { ...updates };
+      if (draft) {
+        transactionUpdates.avatarData = draft.intent === 'replace' ? draft.bytes : null;
+        transactionUpdates.avatarMime = draft.intent === 'replace' ? draft.mime : null;
+        transactionUpdates.avatarUpdatedAt = draft.intent === 'replace' ? new Date() : null;
+        transactionUpdates.avatarUrl = draft.intent === 'replace' ? `/api/v1/users/${auth.user.id}/avatar?v=${draft.draftId}` : null;
+      }
+      const [saved] = await tx.update(users).set(transactionUpdates).where(eq(users.id, auth.user.id)).returning(returningColumns);
+      if (draft) await tx.delete(userAvatarDrafts).where(eq(userAvatarDrafts.userId, auth.user.id));
+      return [saved];
+    });
+  } catch (error) {
+    if (error instanceof AvatarDraftConflictError) {
+      return c.json({ error: 'Avatar draft is missing or expired. Choose a picture again.' }, 409);
+    }
+    throw error;
+  }
 
   if (!updated) {
     return c.json({ error: 'Failed to update profile' }, 500);
@@ -1076,7 +1124,7 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
       // Only fields actually written to the row. The pending email is NOT a
       // committed field change, so it is reported by the dedicated requested
       // audit below, never here.
-      changedFields: Object.keys(updates).filter((key) => key !== 'updatedAt')
+      changedFields: [...new Set(Object.keys(updates).filter((key) => key !== 'updatedAt' && !['avatarData', 'avatarMime', 'avatarUpdatedAt'].includes(key)).concat(body.avatarDraftId ? ['avatarUrl'] : []))]
     },
     ipAddress: getTrustedClientIpOrUndefined(c),
     userAgent: c.req.header('user-agent'),
@@ -1229,6 +1277,67 @@ userRoutes.post(
     });
   }
 );
+
+userRoutes.post(
+  '/me/avatar-draft',
+  bodyLimit({ maxSize: MAX_AVATAR_SIZE_BYTES + 64 * 1024, onError: (c) => c.json({ error: 'Avatar file too large (max 5 MB)' }, 413) }),
+  async (c) => {
+    let body: Record<string, unknown>;
+    try { body = await c.req.parseBody({ all: true }); } catch { return c.json({ error: 'Invalid multipart body' }, 400); }
+    const file = body.file;
+    if (!(file instanceof File)) return c.json({ error: 'file field is required' }, 400);
+    if (file.size === 0) return c.json({ error: 'file is empty' }, 400);
+    if (file.size > MAX_AVATAR_SIZE_BYTES) return c.json({ error: 'Avatar file too large (max 5 MB)' }, 413);
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const mime = sniffImageMime(bytes);
+    if (!mime) return c.json({ error: 'Unsupported image format. Allowed: PNG, JPEG, WebP.' }, 415);
+    const claimedMime = (file.type || '').toLowerCase();
+    if (claimedMime && claimedMime !== mime && ALLOWED_AVATAR_MIMES.has(claimedMime)) {
+      return c.json({ error: 'Content-Type does not match file contents' }, 400);
+    }
+    try {
+      return c.json(await stageAvatarDraft({ userId: c.get('auth').user.id, intent: 'replace', mime, bytes }));
+    } catch (error) {
+      captureException(error, c);
+      return c.json({ error: 'Failed to stage avatar' }, 500);
+    }
+  },
+);
+
+userRoutes.post('/me/avatar-draft/remove', async (c) => {
+  try {
+    return c.json(await stageAvatarDraft({ userId: c.get('auth').user.id, intent: 'remove' }));
+  } catch (error) {
+    captureException(error, c);
+    return c.json({ error: 'Failed to stage avatar removal' }, 500);
+  }
+});
+
+userRoutes.get('/me/avatar-draft/:draftId/preview', async (c) => {
+  c.header('Cache-Control', 'private, no-store');
+  c.header('X-Content-Type-Options', 'nosniff');
+  const draftId = c.req.param('draftId');
+  if (!z.string().uuid().safeParse(draftId).success) return c.json({ error: 'Avatar draft not found' }, 404);
+  const draft = await readAvatarDraft(c.get('auth').user.id, draftId);
+  if (!draft || draft.intent !== 'replace' || !draft.bytes || !ALLOWED_AVATAR_MIMES.has(draft.mime ?? '')) {
+    return c.json({ error: 'Avatar draft not found' }, 404);
+  }
+  return new Response(new Uint8Array(draft.bytes), { headers: {
+    'Content-Type': draft.mime!,
+    'Content-Length': String(draft.bytes.length),
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+  } });
+});
+
+userRoutes.delete('/me/avatar-draft/:draftId', async (c) => {
+  const draftId = c.req.param('draftId');
+  if (!z.string().uuid().safeParse(draftId).success) return c.json({ error: 'Avatar draft not found' }, 404);
+  const userId = c.get('auth').user.id;
+  const discarded = await discardAvatarDraft(userId, draftId);
+  if (!discarded && await readAvatarDraftSummary(userId)) return c.json({ error: 'Avatar draft changed. Choose a picture again.' }, 409);
+  return c.json({ discarded: true });
+});
 
 userRoutes.delete('/me/avatar', async (c) => {
   const auth = c.get('auth');

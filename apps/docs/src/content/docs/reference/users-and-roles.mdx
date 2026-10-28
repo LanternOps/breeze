@@ -106,7 +106,29 @@ Removing a user from a scope (`DELETE /users/:id`) deletes the association recor
 
 ### Self-Service Profile
 
-Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name`, `email`, and `preferences`. Avatars are managed separately via `POST /users/me/avatar` (upload) and `DELETE /users/me/avatar` (remove) -- `PATCH /users/me` rejects an `avatarUrl` field with `400` rather than silently dropping it.
+Authenticated users can view and update their own profile at `GET /users/me` and `PATCH /users/me` without any special permissions. Updatable fields are `name`, `email`, and `preferences`. `PATCH /users/me` rejects an `avatarUrl` field with `400` rather than silently dropping it. Avatar changes use a draft: stage or remove the picture, then include its `avatarDraftId` in the profile save. The committed avatar and header stay unchanged until that save succeeds.
+
+### 🖼️ Avatar Draft Endpoints
+
+`GET /users/me` includes `avatarDraft`, either `null` or the pending draft summary (`draftId`, `intent`, `previewUrl`, and `expiresAt`). To stage a replacement, send a multipart `file` field containing PNG, JPEG, or WebP bytes (up to 5 MiB). The preview response is private and is not cached.
+
+```http
+POST /api/v1/users/me/avatar-draft
+Content-Type: multipart/form-data
+
+file=<image>
+```
+
+To stage removal, send `POST /users/me/avatar-draft/remove`. To undo a draft, send `DELETE /users/me/avatar-draft/:draftId`. Undo returns `409` if another draft has replaced it; repeating an already completed Undo succeeds. Save it with the profile update:
+
+```json
+{
+  "name": "Casey Admin",
+  "avatarDraftId": "<draft-uuid>"
+}
+```
+
+The profile update promotes that exact draft and saves the name in one transaction. A missing, expired, or stale draft ID returns `409` without changing the name. The immediate `POST` and `DELETE /users/me/avatar` endpoints remain available for compatibility. They do not clear pending drafts. Discard the draft explicitly before using the immediate endpoints if the pending change should be abandoned.
 
 ---
 
@@ -614,6 +636,11 @@ All user endpoints are mounted under `/api/v1/users` and require JWT authenticat
 |---|---|---|---|
 | `GET` | `/users/me` | _(authenticated)_ | Get the current user's profile. |
 | `PATCH` | `/users/me` | _(authenticated)_ | Update the current user's name, email, or preferences. |
+| `POST` | `/users/me/avatar-draft` | _(authenticated)_ | Stage an avatar image for the next profile save. |
+| `GET` | `/users/me/avatar-draft/:draftId/preview` | _(authenticated)_ | Preview the current user's staged image. |
+| `POST` | `/users/me/avatar-draft/remove` | _(authenticated)_ | Stage removal of the current avatar. |
+| `DELETE` | `/users/me/avatar-draft/:draftId` | _(authenticated)_ | Discard the matching avatar draft. |
+| `POST` / `DELETE` | `/users/me/avatar` | _(authenticated)_ | Immediately upload or remove an avatar for compatibility. |
 | `GET` | `/users` | `users:read` | List all users in the current scope. |
 | `GET` | `/users/:id` | `users:read` | Get a specific user's details. |
 | `POST` | `/users/invite` | `users:invite` | Invite a new user to the current scope. |
