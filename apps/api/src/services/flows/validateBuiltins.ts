@@ -41,7 +41,13 @@ import {
   looksLikeCredential,
 } from './builtins/httpPolicy';
 import type { FlowCatalog } from './catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
+import {
+  findOwnedDeviceGroupIds,
+  findOwnedDeviceIds,
+  findOwnedNotificationChannel,
+  findOwnedScriptIds,
+  type ScriptReadExecutor,
+} from './ownedReferences';
 import { fleetApprovalScope } from './builtins/fleetApprovalScope';
 import { containsTemplate, escapePointerSegment, issue, utf8Bytes, zodInputIssues } from './validationIssues';
 
@@ -52,6 +58,8 @@ export interface BuiltinValidationContext {
   catalog: FlowCatalog;
   /** W6: the document's steps before this one (a fleet step's `fromStep` must name one). */
   earlierSteps?: readonly FlowStep[];
+  /** W6 B3: the conversion switch's transaction, for the script-ownership read only (ownedReferences.ts). */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 /** A flow tool (`flow__<slug>`, W5 Decision 7) — never a step, never an `ai` tool. */
@@ -295,7 +303,10 @@ async function fleetIssues(step: FlowStep, base: string, ctx: BuiltinValidationC
     (r.kind === 'script' ? scripts : r.kind === 'group' ? groups : devices).push(r);
   }
   if (scripts.length > 0) {
-    const ok = await findOwnedScriptIds(ctx.owner, scripts.map((r) => r.value as string));
+    const ids = scripts.map((r) => r.value as string);
+    const ok = ctx.scriptReadExecutor
+      ? await findOwnedScriptIds(ctx.owner, ids, { executor: ctx.scriptReadExecutor })
+      : await findOwnedScriptIds(ctx.owner, ids);
     for (const r of scripts) {
       if (!ok.has(r.value as string)) out.push(issue('reference_not_owned', 'This script is not available to the flow\'s owner.', at(r.path)));
     }

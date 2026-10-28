@@ -1,7 +1,7 @@
 /**
  * Tool Catalog W06 (#5221) Task B1 — converting a standalone legacy Job
  * ("automation") into a flow: preview, create (one or all of an owner's Jobs),
- * and the conversion ledger reads. Switch and revert are later tasks (B3, B4).
+ * and the conversion ledger reads. The switch is switch.ts (B3); revert is B4.
  *
  * Creating a conversion starts its shadow (plan Decision 3): the draft flow is
  * saved and the ledger row inserted; nothing executes and the Job keeps
@@ -89,7 +89,8 @@ async function withinSiteCeiling(auth: AuthContext, row: AutomationRow): Promise
   return check.ok;
 }
 
-async function readReachableAutomation(auth: AuthContext, automationId: string, lock: boolean): Promise<AutomationRow | null> {
+/** The Job if `auth` reaches it (owner rule, then the site ceiling); `lock` takes it FOR UPDATE. Shared with switch.ts. */
+export async function readReachableAutomation(auth: AuthContext, automationId: string, lock: boolean): Promise<AutomationRow | null> {
   const q = db.select().from(automations).where(eq(automations.id, automationId));
   const [row] = lock ? await q.for('update').limit(1) : await q.limit(1);
   if (!row || !canReachAutomation(auth, row)) return null;
@@ -98,7 +99,7 @@ async function readReachableAutomation(auth: AuthContext, automationId: string, 
 }
 
 /** An org-scope caller never sees a partner-wide generation (its Job is invisible to them). */
-function conversionReachCondition(auth: AuthContext): SQL | undefined {
+export function conversionReachCondition(auth: AuthContext): SQL | undefined {
   return auth.scope === 'organization' ? isNotNull(flowAutomationConversions.orgId) : undefined;
 }
 

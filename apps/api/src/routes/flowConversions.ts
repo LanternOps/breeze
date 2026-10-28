@@ -6,16 +6,17 @@
  *   POST /api/v1/flows/conversions/bulk                    automations.write + MFA + interactive session
  *   GET  /api/v1/flows/conversions[?state=&automationId=]  automations.read
  *   GET  /api/v1/flows/conversions/:id                     automations.read
+ *   POST /api/v1/flows/conversions/:id/switch              automations.write + MFA + interactive session
  *
  * Mounted by routes/flows.ts BEFORE its `/:id` routes, so it inherits that
  * router's auth, scope, FLOWS_ENABLED kill switch (404 when off) and the
  * automations.read floor. A partner-wide owner additionally needs
  * canManagePartnerWidePolicies (enforced in the service, partner_wide_forbidden).
- * Switch and revert (`/:id/switch`, `/:id/revert`) are added here by later tasks.
+ * The switch also runs everything enableFlow runs. Revert (`/:id/revert`) is B4.
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { FLOW_CONVERSION_STATES } from '@breeze/shared';
+import { conversionSwitchRequestSchema, FLOW_CONVERSION_STATES } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { isInteractiveUserSession, requireMfa, requirePermission } from '../middleware/auth';
 import {
@@ -25,6 +26,7 @@ import {
   listConversions,
   previewConversion,
 } from '../services/flows/conversion/service';
+import { switchConversion } from '../services/flows/conversion/switch';
 
 export const flowConversionRoutes = new Hono();
 
@@ -49,6 +51,23 @@ const CREATE_STATUS: Record<string, Status> = {
   draft_rejected: 422,
   partner_wide_forbidden: 403,
   interactive_session_required: 403,
+};
+const SWITCH_STATUS: Record<string, Status> = {
+  conversion_not_found: 404,
+  flow_not_found: 404,
+  not_shadow: 409,
+  source_changed: 409,
+  version_conflict: 409,
+  already_enabled: 409,
+  slug_unavailable: 409,
+  shadow_too_new: 409,
+  shadow_too_short: 409,
+  shadow_divergent: 409,
+  partner_wide_forbidden: 403,
+  interactive_session_required: 403,
+  delegation_scope_restricted: 403,
+  // Everything else (scope_widening_not_accepted, unconvertible, draft_rejected,
+  // generated_script_rejected and enable's 422s) is 422 via `failure`.
 };
 const BULK_STATUS: Record<string, Status> = {
   partner_wide_forbidden: 403,
@@ -115,3 +134,17 @@ flowConversionRoutes.get('/:id', zValidator('param', idParamSchema), async (c) =
   if (!conversion) return c.json({ error: 'conversion_not_found' }, 404);
   return c.json(conversion);
 });
+
+flowConversionRoutes.post(
+  '/:id/switch',
+  ...requireConversionWrite,
+  zValidator('param', idParamSchema),
+  zValidator('json', conversionSwitchRequestSchema),
+  async (c) => {
+    const { id } = c.req.valid('param');
+    const result = await switchConversion(c.get('auth'), id, c.req.valid('json'));
+    if (!result.ok) return failure(c, SWITCH_STATUS, result);
+    const { ok: _ok, ...body } = result;
+    return c.json(body);
+  },
+);

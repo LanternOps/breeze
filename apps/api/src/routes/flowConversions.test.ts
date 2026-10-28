@@ -42,6 +42,7 @@ vi.mock('../services/flows/conversion/service', () => ({
   getConversion: vi.fn(),
   listConversions: vi.fn(),
 }));
+vi.mock('../services/flows/conversion/switch', () => ({ switchConversion: vi.fn() }));
 
 import { authMiddleware } from '../middleware/auth';
 import { getFlow } from '../services/flows/service';
@@ -52,6 +53,7 @@ import {
   listConversions,
   previewConversion,
 } from '../services/flows/conversion/service';
+import { switchConversion } from '../services/flows/conversion/switch';
 import { flowsRoutes } from './flows';
 
 const AUTOMATION = '66666666-6666-4666-8666-666666666666';
@@ -77,7 +79,7 @@ describe('flow conversion routes', () => {
   beforeEach(() => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     setAuth(session());
-    for (const fn of [previewConversion, createConversion, createConversionsForOwner, getConversion, listConversions]) vi.mocked(fn).mockReset();
+    for (const fn of [previewConversion, createConversion, createConversionsForOwner, getConversion, listConversions, switchConversion]) vi.mocked(fn).mockReset();
     vi.mocked(getFlow).mockReset();
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -176,5 +178,76 @@ describe('flow conversion routes', () => {
     expect(one.status).toBe(200);
     expect(await one.json()).toEqual({ id: CONV });
     expect(getFlow).not.toHaveBeenCalled();
+  });
+
+  // W06 (#5221) Task B3 — POST /conversions/:id/switch.
+  describe('switch', () => {
+    const SWITCH = { expectedFlowVersion: 2, acceptDelegatorLifecycle: true };
+
+    it('switch needs automations.write, MFA and an interactive session', async () => {
+      setAuth(session({ deny: ['automations:write'] }));
+      const denied = await post(`/conversions/${CONV}/switch`, SWITCH);
+      expect(denied.status).toBe(403);
+      expect(denied.headers.get('X-Test-Permission-Checked')).toBe('automations:write');
+
+      setAuth(session({ mfaUnsatisfied: true }));
+      const noMfa = await post(`/conversions/${CONV}/switch`, SWITCH);
+      expect(noMfa.status).toBe(403);
+      expect(await noMfa.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+
+      setAuth(session({ principal: { kind: 'api_key' } } as TestAuth));
+      const apiKey = await post(`/conversions/${CONV}/switch`, SWITCH);
+      expect(apiKey.status).toBe(403);
+      expect(await apiKey.json()).toEqual({ error: 'interactive_session_required' });
+      expect(switchConversion).not.toHaveBeenCalled();
+    });
+
+    it('flag off is 404', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      expect((await post(`/conversions/${CONV}/switch`, SWITCH)).status).toBe(404);
+      expect(switchConversion).not.toHaveBeenCalled();
+    });
+
+    it('validates the switch body: the delegator lifecycle must be accepted, pre-approvals default to none', async () => {
+      expect((await post(`/conversions/${CONV}/switch`, { expectedFlowVersion: 2 })).status).toBe(400);
+      expect((await post(`/conversions/${CONV}/switch`, { ...SWITCH, acceptDelegatorLifecycle: false })).status).toBe(400);
+      expect((await post('/conversions/not-a-uuid/switch', SWITCH)).status).toBe(400);
+      expect((await post(`/conversions/${CONV}/switch`, { ...SWITCH, preApprovals: [{ stepId: 'a0_command', maxTargets: 501 }] })).status).toBe(400);
+      expect(switchConversion).not.toHaveBeenCalled();
+
+      vi.mocked(switchConversion).mockResolvedValueOnce({ ok: true, conversion: { id: CONV } } as never);
+      const ok = await post(`/conversions/${CONV}/switch`, SWITCH);
+      expect(ok.status).toBe(200);
+      expect(switchConversion).toHaveBeenCalledWith(expect.anything(), CONV, {
+        expectedFlowVersion: 2, preApprovals: [], acceptScopeWidening: false, acceptDelegatorLifecycle: true, acknowledgeDivergence: false,
+      });
+    });
+
+    it('maps switch outcomes to statuses', async () => {
+      const cases: Array<[unknown, number]> = [
+        [{ ok: false, error: 'conversion_not_found' }, 404],
+        [{ ok: false, error: 'not_shadow' }, 409],
+        [{ ok: false, error: 'source_changed' }, 409],
+        [{ ok: false, error: 'version_conflict' }, 409],
+        [{ ok: false, error: 'shadow_too_new' }, 409],
+        [{ ok: false, error: 'shadow_too_short' }, 409],
+        [{ ok: false, error: 'shadow_divergent' }, 409],
+        [{ ok: false, error: 'scope_widening_not_accepted' }, 422],
+        [{ ok: false, error: 'unconvertible', findings: [] }, 422],
+        [{ ok: false, error: 'partner_wide_forbidden' }, 403],
+        [{ ok: false, error: 'delegation_scope_restricted' }, 403],
+        [{ ok: false, error: 'permission_missing', missing: [] }, 422],
+        [{ ok: false, error: 'pre_approval_not_eligible', stepId: 'a0_command', reason: 'script_not_found' }, 422],
+        [{ ok: false, error: 'event_dispatch_not_durable' }, 422],
+      ];
+      for (const [result, status] of cases) {
+        vi.mocked(switchConversion).mockResolvedValueOnce(result as never);
+        const res = await post(`/conversions/${CONV}/switch`, SWITCH);
+        expect(res.status, JSON.stringify(result)).toBe(status);
+        const body = await res.json();
+        expect(body).not.toHaveProperty('ok');
+        expect(body.error).toBe((result as { error: string }).error);
+      }
+    });
   });
 });

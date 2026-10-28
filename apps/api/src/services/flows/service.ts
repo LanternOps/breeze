@@ -42,6 +42,7 @@ import type { ToolOwnerRef } from '../toolSources/resolver';
 import { resolveFlowOwnerForCaller } from './owner';
 import { assessPreApprovals } from './preApproval';
 import { resetShadowIfChanged } from './conversion/ledger';
+import type { ScriptReadExecutor } from './ownedReferences';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 
 const FLOW_SLUG_MAX = 48;
@@ -55,6 +56,12 @@ export interface SaveDraftFlowInput {
   ownerScope?: 'organization' | 'partner';
   orgId?: string;
   slug?: string;
+  /**
+   * W06 (#5221) B3, the conversion switch only (never from a request body):
+   * validate script ownership through the switch's own transaction, which
+   * holds the scripts it just generated (flowValidator `scriptReadExecutor`).
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 export type SaveDraftFlowResult =
@@ -303,7 +310,10 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
 
   const owner = await ownerForFlowRow(existing);
   if (!owner) return { saved: false, error: 'flow_not_found' };
-  const validation = await validateFlowDocument(input.document, { owner });
+  const validation = await validateFlowDocument(
+    input.document,
+    input.scriptReadExecutor ? { owner, scriptReadExecutor: input.scriptReadExecutor } : { owner },
+  );
   const document = validation.document;
   if (!validation.valid || !document) return { saved: false, validation: stripDocument(validation) };
 

@@ -107,6 +107,8 @@ const ENABLE_STATUS: Record<string, Status> = {
   webhook_secret_missing: 422,
   // W5 PR B (#5220, Decision 13): an org flow's ai step needs an AI budget that can be spent.
   ai_budget_unavailable: 422,
+  // W06 (#5221) B3: a shadow conversion's draft goes live only through POST /conversions/:id/switch.
+  flow_conversion_not_switched: 409,
 };
 const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
 const RUN_STATUS: Record<string, Status> = {
