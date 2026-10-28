@@ -1,4 +1,4 @@
-import { db } from '../db';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../db';
 import { deviceWarranty, deviceHardware, devices, manualAssets } from '../db/schema';
 import { eq, and, lt, isNull, or, sql, notInArray } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
@@ -528,21 +528,57 @@ export async function upsertAgentWarranty(
   }
 }
 
-export async function syncWarrantyBatch(subjects: WarrantySubject[]): Promise<void> {
+/**
+ * Sync a page of the fleet sweep, each subject in its OWN system-scope
+ * transaction (#10403).
+ *
+ * Every `device_warranty` (and `devices.purchase_date`) write fires the
+ * partner-export material triggers, which lock the row's org exclusively and
+ * its partner shared. Within one transaction those locks must follow the
+ * hierarchy — no new partner lock after any org lock, org locks in ascending
+ * UUID order — and a sweep page spans arbitrary orgs and partners. Run as one
+ * transaction, the first subject under a second partner (or a lower org UUID)
+ * raised P0001, aborted the transaction, failed every later statement and
+ * rolled back the whole page; on US prod the sweep wrote nothing. Do not
+ * "fix" that by sorting subjects: the hierarchy forbids a second partner
+ * outright, so only per-subject transactions satisfy it. Per-subject commits
+ * also mean one subject's failure rolls back only its own writes, and no org
+ * lock is held across another subject's vendor HTTP call.
+ *
+ * Must therefore be called OUTSIDE any DB context — inside one, the nested
+ * `withSystemDbAccessContext` would join the caller's transaction and silently
+ * restore the bug, so it throws instead.
+ */
+export async function syncWarrantyBatch(
+  subjects: WarrantySubject[],
+): Promise<{ synced: number; failed: number }> {
+  if (hasDbAccessContext()) {
+    throw new Error(
+      'syncWarrantyBatch must run outside a DB context: each subject needs its own transaction (#10403)',
+    );
+  }
+
+  let synced = 0;
+  let failed = 0;
   for (const subject of subjects) {
     try {
-      if (subject.kind === 'device') {
-        await syncWarrantyForDevice(subject.deviceId);
-      } else {
-        await syncWarrantyForManualAsset(subject.manualAssetId);
-      }
+      await withSystemDbAccessContext(async () => {
+        if (subject.kind === 'device') {
+          await syncWarrantyForDevice(subject.deviceId);
+        } else {
+          await syncWarrantyForManualAsset(subject.manualAssetId);
+        }
+      }, 'warrantySync.batchSubject');
+      synced += 1;
     } catch (err) {
+      failed += 1;
       const label = subject.kind === 'device'
         ? `device ${subject.deviceId}`
         : `manual asset ${subject.manualAssetId}`;
       console.error(`[WarrantySync] Batch sync error for ${label}:`, err instanceof Error ? err.message : err);
     }
   }
+  return { synced, failed };
 }
 
 /**
