@@ -398,11 +398,12 @@ added and verified the rows marked †.
    (C′) needs no ownership change on `device_groups`, no membership trigger and no 65-file sweep;
    its costs are the ~20 resolver call sites #8957 already counted and the lack of a materialized,
    browsable membership (no member list, no "what will this hit" page, per-evaluation filter cost
-   on the effective-config path). For the requesting prospect's case (monitors only) (C′) is
-   sufficient. **Recommendation now hinges on one question for the owner: is a browsable
-   materialized membership required? If yes, (A). If monitor/policy targeting is enough, (C′) and
-   this spec is replaced by the #8957 spec plus a partner-owned saved-views wave.** The quorum
-   asked for exactly this weighing.
+   on the effective-config path). For the requesting prospect's case (monitors only) (C′) would
+   be sufficient. **Owner ruling, 2026-10-28: (A).** The owner wants the materialized cross-org
+   membership for its resolver cost at scale (one indexed read per device instead of a filter
+   evaluation per policy per device), audit by membership row, one consistent answer for every
+   consumer, and the later options it enables (pinning, exclusions, join/leave hooks). (C′) stays
+   the complementary per-assignment mechanism under #8957 and is not replaced by this spec.
 2. **Who may reference a partner group.** Options: (a) partner-owned policies only, and no org-group
    rule may reference one; (b) org-owned policies too, clamped to the policy's org
    (`configPolicyAssignmentDevices.ts:129` already clamps), with `groupId` references allowed.
