@@ -419,7 +419,7 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
 // authored link (applicability) → compliance state → software_versions.
 // ---------------------------------------------------------------------------
 
-describe('processCheckPolicy — managed DNS rules: applicability before the bridge (#6960 W05)', () => {
+describe('processCheckPolicy — managed DNS rules: applicability and the bridge (#6960 W05, #10126)', () => {
   const NEXTDNS = 'catalog-nextdns-win';
   const CONTROLD = 'catalog-controld-win';
   const MANAGED = {
@@ -536,7 +536,7 @@ describe('processCheckPolicy — managed DNS rules: applicability before the bri
 
     expect(upserted('device-1').serviceWatches).toEqual([{ name: 'ctrld' }]);
     expect(upserted('device-2').serviceWatches).toBeNull();
-    // The observation read covers the applicable device and name only.
+    // One observation read, for the one device that still has a watch.
     expect(dbSelectDistinctOnMock).toHaveBeenCalledTimes(1);
   });
 

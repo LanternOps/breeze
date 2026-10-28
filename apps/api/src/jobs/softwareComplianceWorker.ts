@@ -1027,7 +1027,10 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       // #6960 / #10126: the managed-applicability filter runs AFTER the bridge,
       // over everything the pass will store. The bridge ADDS a not_running /
       // service_unverified for an inventory-matched rule (no `missing` to
-      // drop); filtering before it let those through unfiltered.
+      // drop); filtering before it let those through unfiltered. With the
+      // names narrowed above the bridge cannot produce one for a
+      // not-applicable rule any more; this ordering keeps that true if the
+      // narrowing ever regresses.
       if (managedApplicability) {
         const filtered = managedApplicability.filterViolations(deviceId, evaluatedViolations);
         evaluatedViolations = filtered.violations;
