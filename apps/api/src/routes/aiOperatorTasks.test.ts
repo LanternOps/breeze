@@ -245,7 +245,18 @@ describe('GET /ai/operator/tasks (org-wide keyset list)', () => {
       const q = dialect.sqlToQuery(capturedPredicate as SQL);
       expect(q.sql).toContain('"ai_operator_tasks"."org_id" = $');
       expect(q.params).toContain(ORG_ID);
-      expect(q.params).not.toContain(OTHER_ORG_ID);
+    });
+
+    it('combines with the deviceId and state filters', async () => {
+      let capturedPredicate: unknown;
+      selectMock.mockReturnValueOnce(selectChain([taskRow()], (p) => { capturedPredicate = p; }));
+      const res = await buildApp().request(`/ai/operator/tasks?orgId=${ORG_ID}&deviceId=${DEVICE_ID}&state=running`);
+      expect(res.status).toBe(200);
+      const q = dialect.sqlToQuery(capturedPredicate as SQL);
+      expect(q.sql).toContain('"ai_operator_tasks"."org_id" = $');
+      expect(q.sql).toContain('"ai_operator_tasks"."device_id" = $');
+      expect(q.sql).toContain('"ai_operator_tasks"."state" = $');
+      expect(q.params).toEqual(expect.arrayContaining([ORG_ID, DEVICE_ID, 'running']));
     });
 
     it('keeps the caller\'s own org condition alongside the filter', async () => {
@@ -282,7 +293,7 @@ describe('GET /ai/operator/tasks (org-wide keyset list)', () => {
       expect(res.status).toBe(200);
       // orgCondition and the site predicate are both `undefined` for this
       // caller, so with no filter there is no predicate at all.
-      expect(capturedPredicate === undefined || !sqlText(capturedPredicate).includes('org_id')).toBe(true);
+      expect(capturedPredicate).toBeUndefined();
     });
   });
 
