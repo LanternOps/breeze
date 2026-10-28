@@ -1,9 +1,11 @@
 package heartbeat
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
 )
@@ -87,5 +89,48 @@ func TestOfflineToastDoesNotTrack(t *testing.T) {
 	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, `C:\Windows\System32\mmc.exe`))
 	if n := h.pamTracker().lenForTest(); n != 0 {
 		t.Fatalf("tracker holds %d entries after an offline notice, want 0", n)
+	}
+}
+
+// The rate-limit slot is spent only by a notice that was shown: a send that
+// failed (no helper in the session yet) leaves the next attempt free to show.
+func TestOfflineToastFailedSendDoesNotSpendSlot(t *testing.T) {
+	h := &Heartbeat{}
+	rec := recordPamNotices(h)
+	mmc := `C:\Windows\System32\mmc.exe`
+
+	rec.FailWith(errors.New("pipe closed"))
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	if rec.Attempts() != 1 || len(rec.Calls()) != 0 {
+		t.Fatalf("failed send: attempts=%d shown=%+v", rec.Attempts(), rec.Calls())
+	}
+
+	rec.FailWith(nil)
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	if calls := rec.Calls(); len(calls) != 1 || calls[0].Body != offlineITBody {
+		t.Fatalf("notices = %+v, want one offline notice after the failed send", calls)
+	}
+}
+
+// The window ends: after pamOfflineNoticeWindow the same program and user may
+// be told again.
+func TestOfflineToastAllowedAgainAfterWindow(t *testing.T) {
+	clock := newPamFakeClock()
+	h := &Heartbeat{}
+	h.pamOfflineLimiter = newPamOfflineNoticeLimiter(clock.Now)
+	rec := recordPamNotices(h)
+	mmc := `C:\Windows\System32\mmc.exe`
+
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	clock.Advance(pamOfflineNoticeWindow - time.Second)
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	if n := len(rec.Calls()); n != 1 {
+		t.Fatalf("inside the window: %d notices, want 1", n)
+	}
+	clock.Advance(time.Second)
+	h.NotifyElevationSubmitFailed(offlineTestEvent(3, `CORP\alice`, mmc))
+	if n := len(rec.Calls()); n != 2 {
+		t.Fatalf("after the window: %d notices, want 2", n)
 	}
 }

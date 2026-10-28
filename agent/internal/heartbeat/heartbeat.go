@@ -650,8 +650,9 @@ type Heartbeat struct {
 	pamRequestsOnce sync.Once
 	pamRequests     *pamRequestTracker
 	// pamNotifySink, when set, receives every PAM outcome notice instead of
-	// the session broker (test seam). nil means sendSessionNotifyTitled.
-	pamNotifySink func(title, body, winSession string)
+	// the session broker (test seam); a non-nil error means "not shown". nil
+	// means sendSessionNotifyTitled.
+	pamNotifySink func(title, body, winSession string) error
 	// pamSupportNameCached is the MSP support name last returned by a
 	// successful elevation submit (pam_support_name.go), loaded from its
 	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
@@ -660,7 +661,7 @@ type Heartbeat struct {
 	// pamOfflineLimiter rate-limits the offline notice per program and user
 	// (pam_offline_notify.go); created lazily by pamOfflineRateLimiter().
 	pamOfflineLimiterOnce sync.Once
-	pamOfflineLimiter     *ipc.RateLimiter
+	pamOfflineLimiter     *pamOfflineNoticeLimiter
 	// pamApprovedConsentQuiesceWait bounds how long an uncertain approved-
 	// prompt dismissal keeps pamActuateMu while waiting for the helper to
 	// prove it finished. Zero means pamDismissTimeout; tests shrink it.

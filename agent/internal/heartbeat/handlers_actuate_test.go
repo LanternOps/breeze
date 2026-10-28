@@ -1251,6 +1251,33 @@ func TestPamApplyV2ApprovedToastOnce(t *testing.T) {
 	}
 }
 
+// The one-notice budget is spent only by a notice that was shown. If the
+// approved notice could not be delivered (no helper in the session yet), a
+// redelivered pam_apply_v2 tries again, and still shows at most one.
+func TestPamApplyV2ApprovedToastRetriedAfterFailedSend(t *testing.T) {
+	verified := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultVerifiedActive}
+	h, rec := pamApplyToastHeartbeat(t, verified, true)
+
+	rec.FailWith(errNoticeNoNotifyHelper)
+	if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001")); result.Status != "completed" {
+		t.Fatalf("apply 1 result = %+v", result)
+	}
+	if rec.Attempts() != 1 || len(rec.Calls()) != 0 {
+		t.Fatalf("failed send: attempts=%d shown=%+v", rec.Attempts(), rec.Calls())
+	}
+
+	rec.FailWith(nil)
+	for i := 2; i <= 3; i++ {
+		if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-00000000000"+string(rune('0'+i)))); result.Status != "completed" {
+			t.Fatalf("apply %d result = %+v", i, result)
+		}
+	}
+	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved by Contoso IT and is starting.", WinSession: "5"}
+	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
+	}
+}
+
 func TestPamApplyV2LaunchFailedToast(t *testing.T) {
 	failed := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultFailed, FailureCode: "launch_failed"}
 	h, rec := pamApplyToastHeartbeat(t, failed, true)

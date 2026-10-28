@@ -19,7 +19,8 @@ import (
 // own tracker, so the server cannot make the agent claim a request is about a
 // program it never saw. A request the agent is not tracking (agent restarted,
 // auto-approved, declined locally, older than the TTL) succeeds silently, so
-// the server never retries it.
+// the server never retries it. The result's "shown" is true only when the
+// notice reached a helper; otherwise "notShownReason" says why.
 
 func init() {
 	handlerRegistry[tools.CmdPamRequestNotify] = handlePamRequestNotify
@@ -51,7 +52,7 @@ func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !claimed {
 		log.Info("pam: outcome notice for a request this agent is not tracking (or already notified); not shown",
 			"elevationRequestId", payload.RequestID, "outcome", payload.Outcome)
-		return tools.NewSuccessResult(map[string]any{"shown": false}, time.Since(start).Milliseconds())
+		return tools.NewSuccessResult(map[string]any{"shown": false, "notShownReason": "not_tracked"}, time.Since(start).Milliseconds())
 	}
 
 	var title, body string
@@ -65,7 +66,16 @@ func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
 	default: // pamNotifyOutcomeExpired; validated above
 		title, body = pamCopyExpired(entry.Program, entry.SupportName)
 	}
-	h.notifyPamUser(title, body, entry.WinSession)
+	if err := h.notifyPamUser(title, body, entry.WinSession); err != nil {
+		// The command still succeeds: the server never retries it, and the
+		// outcome is final, so the entry stays removed. The result says what
+		// actually happened.
+		reason := pamNoticeNotShownReason(err)
+		log.Warn("pam: outcome notice not shown", "elevationRequestId", payload.RequestID,
+			"outcome", payload.Outcome, "targetWinSession", entry.WinSession,
+			"notShownReason", reason, "error", err.Error())
+		return tools.NewSuccessResult(map[string]any{"shown": false, "notShownReason": reason}, time.Since(start).Milliseconds())
+	}
 	log.Info("pam: showed outcome notice", "elevationRequestId", payload.RequestID,
 		"outcome", payload.Outcome, "targetWinSession", entry.WinSession)
 	return tools.NewSuccessResult(map[string]any{"shown": true}, time.Since(start).Milliseconds())

@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +152,19 @@ func (t *pamRequestTracker) ClaimNotify(requestID string) (pamTrackedRequest, bo
 	return e, true
 }
 
+// ReleaseNotify undoes a ClaimNotify whose notice could not be shown, so the
+// one-notice budget is spent only by a notice the user actually got. It is a
+// no-op for an untracked request.
+func (t *pamRequestTracker) ReleaseNotify(requestID string) {
+	key := pamTrackerKey(requestID)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e, ok := t.entries[key]; ok {
+		e.Notified = false
+		t.entries[key] = e
+	}
+}
+
 // Remove forgets requestID.
 func (t *pamRequestTracker) Remove(requestID string) {
 	t.mu.Lock()
@@ -271,21 +285,41 @@ func pamCopyOffline(p, s string) (title, body string) {
 	return "Couldn't reach " + s, "Breeze couldn't send the request for " + p + ". If you have administrator credentials, enter them in the Windows prompt."
 }
 
-// notifyPamUser shows one PAM outcome notice in winSession. An empty session
-// is refused rather than routed to the machine-global notify-helper
+// errPamNoticeNoTargetSession: a PAM notice with no target Windows session.
+var errPamNoticeNoTargetSession = errors.New("pam notice has no target session")
+
+// notifyPamUser shows one PAM outcome notice in winSession and returns nil
+// only when the notice was handed to a helper in that session. An empty
+// session is refused rather than routed to the machine-global notify-helper
 // preference: these notices carry the program name and the technician's deny
-// reason, and must reach only the user who asked. Fire-and-forget: a missing
-// helper is logged by sendSessionNotifyTitled, never surfaced to the caller.
-func (h *Heartbeat) notifyPamUser(title, body, winSession string) {
+// reason, and must reach only the user who asked. Callers log "showed" and
+// spend their one-notice budget only on a nil return.
+func (h *Heartbeat) notifyPamUser(title, body, winSession string) error {
 	if winSession == "" {
 		log.Warn("pam: outcome notice has no target session; not shown", "title", title)
-		return
+		return errPamNoticeNoTargetSession
 	}
 	if sink := h.pamNotifySink; sink != nil {
-		sink(title, body, winSession)
-		return
+		return sink(title, body, winSession)
 	}
-	h.sendSessionNotifyTitled(title, body, winSession)
+	return h.sendSessionNotifyTitled(title, body, winSession)
+}
+
+// pamNoticeNotShownReason is the stable notShownReason a command result
+// carries when notifyPamUser failed.
+func pamNoticeNotShownReason(err error) string {
+	switch {
+	case errors.Is(err, errPamNoticeNoTargetSession):
+		return "no_target_session"
+	case errors.Is(err, errNoticeNoSessionBroker):
+		return "no_session_broker"
+	case errors.Is(err, errNoticeNoNotifyHelper):
+		return "no_notify_helper"
+	case errors.Is(err, errNoticeEmptyBody):
+		return "empty_body"
+	default:
+		return "send_failed"
+	}
 }
 
 // pamUserDecisionFailureCode reports whether a failed pam_apply_v2 ended on
@@ -305,30 +339,37 @@ func pamUserDecisionFailureCode(code string) bool {
 // notifyPamApplyOutcome shows the approved / approved-but-couldn't-start
 // notice for a pam_apply_v2 result, at most once per tracked request:
 // pam_apply_v2 is redelivered on reconnect and on a generation bump, and
-// ClaimNotify makes every redelivery after the first silent. Untracked
-// requests (auto-approve, before a restart) and non-terminal states show
-// nothing.
+// ClaimNotify makes every redelivery after the first shown notice silent. A
+// notice that could not be delivered releases its claim, so a redelivery can
+// try again. Untracked requests (auto-approve, before a restart) and
+// non-terminal states show nothing.
 func (h *Heartbeat) notifyPamApplyOutcome(requestID string, result pamlifetime.Result) {
+	var copyFn func(p, s string) (string, string)
+	var kind string
 	switch result.State {
 	case pamlifetime.ResultVerifiedActive:
-		entry, ok := h.pamTracker().ClaimNotify(requestID)
-		if !ok {
-			return
-		}
-		title, body := pamCopyApproved(entry.Program, entry.SupportName)
-		h.notifyPamUser(title, body, entry.WinSession)
-		log.Info("pam: showed approved notice", "elevationRequestId", requestID, "targetWinSession", entry.WinSession)
+		copyFn, kind = pamCopyApproved, "approved"
 	case pamlifetime.ResultFailed:
 		if pamUserDecisionFailureCode(result.FailureCode) {
 			return
 		}
-		entry, ok := h.pamTracker().ClaimNotify(requestID)
-		if !ok {
-			return
-		}
-		title, body := pamCopyLaunchFailed(entry.Program, entry.SupportName)
-		h.notifyPamUser(title, body, entry.WinSession)
-		log.Info("pam: showed approved-but-couldn't-start notice", "elevationRequestId", requestID,
-			"failureCode", result.FailureCode, "targetWinSession", entry.WinSession)
+		copyFn, kind = pamCopyLaunchFailed, "approved-but-couldn't-start"
+	default:
+		return
 	}
+	tracker := h.pamTracker()
+	entry, ok := tracker.ClaimNotify(requestID)
+	if !ok {
+		return
+	}
+	title, body := copyFn(entry.Program, entry.SupportName)
+	if err := h.notifyPamUser(title, body, entry.WinSession); err != nil {
+		tracker.ReleaseNotify(requestID)
+		log.Warn("pam: "+kind+" notice not shown; a redelivered pam_apply_v2 may retry it",
+			"elevationRequestId", requestID, "failureCode", result.FailureCode,
+			"targetWinSession", entry.WinSession, "notShownReason", pamNoticeNotShownReason(err), "error", err.Error())
+		return
+	}
+	log.Info("pam: showed "+kind+" notice", "elevationRequestId", requestID,
+		"failureCode", result.FailureCode, "targetWinSession", entry.WinSession)
 }

@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -21,6 +22,16 @@ func trackedNotifyHeartbeat(t *testing.T) (*Heartbeat, *pamNotifyRecorder) {
 	rec := recordPamNotices(h)
 	h.pamTracker().MarkAwaiting(pamNotifyTestRequestID, "5", "mmc.exe", "Contoso IT")
 	return h, rec
+}
+
+// pamNotifyResultBody decodes the handler's success payload.
+func pamNotifyResultBody(t *testing.T, result tools.CommandResult) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &body); err != nil {
+		t.Fatalf("result stdout %q is not JSON: %v", result.Stdout, err)
+	}
+	return body
 }
 
 func TestPamRequestNotifyRegistered(t *testing.T) {
@@ -46,6 +57,9 @@ func TestPamRequestNotifyDeniedWithReason(t *testing.T) {
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want [%+v]", calls, want)
+	}
+	if body := pamNotifyResultBody(t, result); body["shown"] != true || body["notShownReason"] != nil {
+		t.Fatalf("result body = %+v, want shown:true and no notShownReason", body)
 	}
 	if _, ok := h.pamTracker().Get(pamNotifyTestRequestID); ok {
 		t.Fatal("a delivered outcome must remove the tracker entry")
@@ -141,6 +155,55 @@ func TestPamRequestNotifyUntrackedNoToast(t *testing.T) {
 	}
 	if calls := rec.Calls(); len(calls) != 0 {
 		t.Fatalf("untracked request showed notices: %+v", calls)
+	}
+}
+
+// A tracked notice whose send fails (no helper in the session, pipe error)
+// must not be reported as shown: the result says shown:false with the reason.
+// The command still completes (the server never retries it) and the entry is
+// still removed, because the server's outcome is final.
+func TestPamRequestNotifyReportsNotShownWhenSendFails(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		reason string
+	}{
+		{errNoticeNoNotifyHelper, "no_notify_helper"},
+		{errNoticeNoSessionBroker, "no_session_broker"},
+		{errors.New("pipe closed"), "send_failed"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			h, rec := trackedNotifyHeartbeat(t)
+			rec.FailWith(tc.err)
+			result := handlePamRequestNotify(h, pamNotifyCommand(map[string]any{
+				"requestId": pamNotifyTestRequestID, "outcome": "denied", "reason": "no",
+			}))
+			if result.Status != "completed" {
+				t.Fatalf("result = %+v", result)
+			}
+			body := pamNotifyResultBody(t, result)
+			if body["shown"] != false || body["notShownReason"] != tc.reason {
+				t.Fatalf("result body = %+v, want shown:false notShownReason:%s", body, tc.reason)
+			}
+			if rec.Attempts() != 1 || len(rec.Calls()) != 0 {
+				t.Fatalf("attempts=%d shown=%+v", rec.Attempts(), rec.Calls())
+			}
+			if _, ok := h.pamTracker().Get(pamNotifyTestRequestID); ok {
+				t.Fatal("the outcome is final: the entry must be removed even when the notice failed")
+			}
+		})
+	}
+}
+
+// An untracked request reports why nothing was shown.
+func TestPamRequestNotifyUntrackedReportsReason(t *testing.T) {
+	h := &Heartbeat{}
+	_ = recordPamNotices(h)
+	result := handlePamRequestNotify(h, pamNotifyCommand(map[string]any{
+		"requestId": pamNotifyTestRequestID, "outcome": "expired",
+	}))
+	body := pamNotifyResultBody(t, result)
+	if body["shown"] != false || body["notShownReason"] != "not_tracked" {
+		t.Fatalf("result body = %+v, want shown:false notShownReason:not_tracked", body)
 	}
 }
 

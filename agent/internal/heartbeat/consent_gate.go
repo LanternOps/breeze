@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -657,25 +658,38 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 // targetWinSession keeps the legacy machine-global selection; a non-empty one
 // routes strictly to that Windows session (see sessionNoticeTarget).
 func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
-	h.sendSessionNotifyTitled("Breeze Agent", body, targetWinSession)
+	_ = h.sendSessionNotifyTitled("Breeze Agent", body, targetWinSession)
 }
+
+// Why sendSessionNotifyTitled did not hand a notice to a helper.
+var (
+	errNoticeNoSessionBroker = errors.New("no session broker")
+	errNoticeEmptyBody       = errors.New("notice body is empty")
+	errNoticeNoNotifyHelper  = errors.New("no notify-capable helper in the target session")
+)
 
 // sendSessionNotifyTitled is sendSessionNotify with a caller-chosen title. The
 // PAM outcome notices (#8928) use it so the toast headline is the outcome
-// ("Request approved") rather than the product name.
-func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string) {
-	if h.sessionBroker == nil || body == "" {
-		return
+// ("Request approved") rather than the product name. It returns nil only when
+// the notice was handed to a helper; the PAM callers report that as "shown".
+func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string) error {
+	if h.sessionBroker == nil {
+		return errNoticeNoSessionBroker
+	}
+	if body == "" {
+		return errNoticeEmptyBody
 	}
 	session := h.sessionNoticeTarget(targetWinSession)
 	if session == nil {
 		log.Warn("no notify-capable helper for session notice", "title", title, "targetWinSession", targetWinSession)
-		return
+		return errNoticeNoNotifyHelper
 	}
 	req := sessionNoticeRequest(title, body)
 	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
+		return fmt.Errorf("send session notify: %w", err)
 	}
+	return nil
 }
 
 // sendBannerShow tells the consent-UI helper (assist app, or the native

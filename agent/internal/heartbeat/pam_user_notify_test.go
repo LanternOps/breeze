@@ -1,6 +1,8 @@
 package heartbeat
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -34,18 +36,27 @@ type pamNotifyCall struct {
 	Title, Body, WinSession string
 }
 
-// pamNotifyRecorder installs a recording pamNotifySink on h.
+// pamNotifyRecorder installs a recording pamNotifySink on h. Calls holds the
+// notices that were shown; while FailWith has set an error, every send fails
+// with it, is counted in Attempts and is not recorded as shown.
 type pamNotifyRecorder struct {
-	mu    sync.Mutex
-	calls []pamNotifyCall
+	mu       sync.Mutex
+	calls    []pamNotifyCall
+	attempts int
+	fail     error
 }
 
 func recordPamNotices(h *Heartbeat) *pamNotifyRecorder {
 	r := &pamNotifyRecorder{}
-	h.pamNotifySink = func(title, body, winSession string) {
+	h.pamNotifySink = func(title, body, winSession string) error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		r.attempts++
+		if r.fail != nil {
+			return r.fail
+		}
 		r.calls = append(r.calls, pamNotifyCall{Title: title, Body: body, WinSession: winSession})
+		return nil
 	}
 	return r
 }
@@ -54,6 +65,19 @@ func (r *pamNotifyRecorder) Calls() []pamNotifyCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]pamNotifyCall(nil), r.calls...)
+}
+
+// FailWith makes every later send fail with err; nil restores success.
+func (r *pamNotifyRecorder) FailWith(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fail = err
+}
+
+func (r *pamNotifyRecorder) Attempts() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempts
 }
 
 const (
@@ -265,29 +289,83 @@ func TestPamSupportName(t *testing.T) {
 	}
 }
 
-// notifyPamUser routes through the test seam when one is installed, and is a
-// silent no-op (not a panic) on a heartbeat with no session broker.
+// notifyPamUser routes through the test seam when one is installed, and
+// reports (not panics) a heartbeat with no session broker as not shown.
 func TestNotifyPamUserUsesSinkAndToleratesNoBroker(t *testing.T) {
 	h := &Heartbeat{}
 	rec := recordPamNotices(h)
-	h.notifyPamUser("Request approved", "mmc.exe was approved by IT and is starting.", "7")
+	if err := h.notifyPamUser("Request approved", "mmc.exe was approved by IT and is starting.", "7"); err != nil {
+		t.Fatalf("notifyPamUser = %v, want nil", err)
+	}
 	calls := rec.Calls()
 	if len(calls) != 1 || calls[0] != (pamNotifyCall{"Request approved", "mmc.exe was approved by IT and is starting.", "7"}) {
 		t.Fatalf("sink calls = %+v", calls)
 	}
 
 	bare := &Heartbeat{}
-	bare.notifyPamUser("Request approved", "body", "7") // must not panic
+	err := bare.notifyPamUser("Request approved", "body", "7") // must not panic
+	if !errors.Is(err, errNoticeNoSessionBroker) {
+		t.Fatalf("no-broker notifyPamUser = %v, want errNoticeNoSessionBroker", err)
+	}
+	if got := pamNoticeNotShownReason(err); got != "no_session_broker" {
+		t.Fatalf("reason = %q, want no_session_broker", got)
+	}
 }
 
 // A PAM notice carries the deny reason: with no target session it is dropped,
 // never routed to the machine-global preferred helper (another user's session
-// on a multi-session host).
+// on a multi-session host), and reported as not shown.
 func TestNotifyPamUserRefusesEmptySession(t *testing.T) {
 	h := &Heartbeat{}
 	rec := recordPamNotices(h)
-	h.notifyPamUser("Request denied", "mmc.exe was denied by IT.\nReason: no", "")
+	err := h.notifyPamUser("Request denied", "mmc.exe was denied by IT.\nReason: no", "")
+	if !errors.Is(err, errPamNoticeNoTargetSession) {
+		t.Fatalf("notifyPamUser = %v, want errPamNoticeNoTargetSession", err)
+	}
 	if calls := rec.Calls(); len(calls) != 0 {
 		t.Fatalf("notice with no session was shown: %+v", calls)
+	}
+}
+
+// A failed send is surfaced to the caller with a stable reason code.
+func TestNotifyPamUserReportsSendFailure(t *testing.T) {
+	h := &Heartbeat{}
+	rec := recordPamNotices(h)
+	rec.FailWith(errNoticeNoNotifyHelper)
+	err := h.notifyPamUser("Request approved", "body", "7")
+	if !errors.Is(err, errNoticeNoNotifyHelper) {
+		t.Fatalf("notifyPamUser = %v, want errNoticeNoNotifyHelper", err)
+	}
+	for in, want := range map[error]string{
+		errPamNoticeNoTargetSession:                     "no_target_session",
+		errNoticeNoSessionBroker:                        "no_session_broker",
+		errNoticeNoNotifyHelper:                         "no_notify_helper",
+		errors.New("pipe closed"):                       "send_failed",
+		fmt.Errorf("wrap: %w", errNoticeNoNotifyHelper): "no_notify_helper",
+	} {
+		if got := pamNoticeNotShownReason(in); got != want {
+			t.Errorf("pamNoticeNotShownReason(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The one-notice budget is spent only by a notice that was shown: a claim
+// whose send failed can be released and claimed again.
+func TestReleaseNotifyReArmsAClaim(t *testing.T) {
+	tr := newPamRequestTracker(newPamFakeClock().Now)
+	tr.MarkAwaiting(pamNotifyTestRequestA, "3", "mmc.exe", "Contoso IT")
+	if _, ok := tr.ClaimNotify(pamNotifyTestRequestA); !ok {
+		t.Fatal("first claim failed")
+	}
+	tr.ReleaseNotify(pamNotifyTestRequestA)
+	if _, ok := tr.ClaimNotify(pamNotifyTestRequestA); !ok {
+		t.Fatal("a released claim must be claimable again")
+	}
+	if _, ok := tr.ClaimNotify(pamNotifyTestRequestA); ok {
+		t.Fatal("an unreleased claim must stay spent")
+	}
+	tr.ReleaseNotify("40000000-0000-4000-8000-0000000000ff") // untracked: no-op, no panic
+	if n := tr.lenForTest(); n != 1 {
+		t.Fatalf("ReleaseNotify of an untracked request created an entry: len=%d", n)
 	}
 }
