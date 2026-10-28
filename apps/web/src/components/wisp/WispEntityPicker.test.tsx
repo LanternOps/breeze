@@ -262,6 +262,14 @@ describe('WispEntityPicker (W08 T9)', () => {
       expect(screen.queryByTestId('wisp-picker-kind-user')).toBeNull();
     });
 
+    it('is not offered when no user is loaded', async () => {
+      h.user = null;
+      renderPicker();
+      await screen.findByTestId('wisp-picker-row-ticket-t1');
+      expect(screen.queryByTestId('wisp-picker-kind-user')).toBeNull();
+    });
+
+    // Uses ALL_ORG_ADMIN's `*:*` grant, so it also pins the wildcard positive case.
     it('falls back to Tickets when access drops while the Users tab is open', async () => {
       h.fetchWithAuth.mockImplementation(async (url: string) => (url === '/users' ? res(200, users) : res(200, tickets)));
       const view = render(
@@ -277,6 +285,16 @@ describe('WispEntityPicker (W08 T9)', () => {
       expect(await screen.findByTestId('wisp-picker-row-ticket-t1')).toBeTruthy();
       expect(screen.getByTestId('wisp-picker-kind-ticket').getAttribute('aria-selected')).toBe('true');
       expect(screen.queryByTestId('wisp-picker-row-user-u-2')).toBeNull();
+      expect(h.fetchWithAuth.mock.calls.some(([u]) => String(u).startsWith('/users'))).toBe(false);
+
+      // Access coming back shows the tab again but does not jump back to it.
+      h.user = ALL_ORG_ADMIN;
+      view.rerender(
+        <WispEntityPicker open threadId="th-1" linkedKeys={new Set<string>()} onClose={vi.fn()} onLinked={vi.fn()} />,
+      );
+      expect(screen.getByTestId('wisp-picker-kind-user').getAttribute('aria-selected')).toBe('false');
+      expect(screen.getByTestId('wisp-picker-kind-ticket').getAttribute('aria-selected')).toBe('true');
+      await new Promise((r) => setTimeout(r, 20));
       expect(h.fetchWithAuth.mock.calls.some(([u]) => String(u).startsWith('/users'))).toBe(false);
     });
   });

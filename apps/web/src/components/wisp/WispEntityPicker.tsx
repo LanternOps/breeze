@@ -53,7 +53,11 @@ export default function WispEntityPicker({ open, threadId, linkedKeys, onClose, 
   );
   const [selectedKind, setKind] = useState<WispEntityKind>('ticket');
   // A tab that disappears while selected (access dropped mid-dialog) falls back to Tickets.
+  // The selection is reset too, so access coming back does not silently flip the picker back to Users.
   const kind: WispEntityKind = kinds.includes(selectedKind) ? selectedKind : 'ticket';
+  useEffect(() => {
+    if (kind !== selectedKind) setKind(kind);
+  }, [kind, selectedKind]);
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [list, setList] = useState<ListState>({ status: 'loading' });
