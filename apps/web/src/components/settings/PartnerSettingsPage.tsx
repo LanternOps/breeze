@@ -299,12 +299,6 @@ export default function PartnerSettingsPage() {
         />
 
         <div className="min-w-0 space-y-6">
-          {activeDef.enforced && (
-            <div className="rounded-md border bg-blue-50 dark:bg-blue-950/30 px-4 py-3 text-sm text-blue-700 dark:text-blue-300">
-              {t('partnerSettingsPage.enforcedDescription')}
-            </div>
-          )}
-
           {/* Ticketing now has its own standalone page (M0) — this tab links out
               to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (

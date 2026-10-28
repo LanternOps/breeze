@@ -1123,7 +1123,6 @@
     "description": "Configure defaults for {{name}}.",
     "yourMsp": "your MSP",
     "saveSettings": "Save Settings",
-    "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
     "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
     "modules": {
       "title": "Modules",

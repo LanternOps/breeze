@@ -1123,7 +1123,6 @@
     "description": "Configure los valores predeterminados para {{name}}.",
     "yourMsp": "su MSP",
     "saveSettings": "Guardar configuración",
-    "enforcedDescription": "Los valores que establezca aquí se aplicarán en todas las organizaciones. Deje los campos vacíos para permitir que cada organización configure individualmente.",
     "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones.",
     "modules": {
       "title": "Módulos",

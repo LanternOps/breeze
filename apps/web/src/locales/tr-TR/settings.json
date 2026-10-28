@@ -1123,7 +1123,6 @@
     "description": "{{name}} için varsayılanları yapılandırın.",
     "yourMsp": "MSP'ınız",
     "saveSettings": "Ayarları Kaydet",
-    "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
     "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
     "modules": {
       "title": "Modüller",

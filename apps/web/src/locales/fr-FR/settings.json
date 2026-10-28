@@ -1123,7 +1123,6 @@
     "description": "Configurez les paramètres par défaut pour {{name}}.",
     "yourMsp": "votre MSP",
     "saveSettings": "Enregistrer les paramètres",
-    "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
     "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
     "modules": {
       "title": "Modules du produit",

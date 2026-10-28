@@ -1123,7 +1123,6 @@
     "description": "Configure os padrões de {{name}}.",
     "yourMsp": "seu MSP",
     "saveSettings": "Salvar configurações",
-    "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
     "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
     "modules": {
       "title": "Módulos",

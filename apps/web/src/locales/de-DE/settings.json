@@ -1123,7 +1123,6 @@
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
     "saveSettings": "Einstellungen speichern",
-    "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
     "modules": {
       "title": "Module",
