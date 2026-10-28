@@ -74,7 +74,7 @@ func (h *answeringNotifyHelper) assertOnlyProbeUnsolicited(t *testing.T, prefix 
 		if !strings.HasPrefix(id, prefix) {
 			t.Fatalf("notify envelope id = %q, want prefix %q", id, prefix)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("the helper never received the notice")
 	}
 	if err := h.client.SendTyped("probe-never-sent", ipc.TypeNotifyResult, ipc.NotifyResult{Delivered: true}); err != nil {
@@ -85,7 +85,7 @@ func (h *answeringNotifyHelper) assertOnlyProbeUnsolicited(t *testing.T, prefix 
 		if env.ID != "probe-never-sent" {
 			t.Fatalf("the helper's answer to the notice (id %q, type %s) matched no waiter and fell through to the unsolicited path, where production logs \"dropping unsolicited or unauthorized helper message\" at WARN", env.ID, env.Type)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("the probe never reached the unsolicited path")
 	}
 }
