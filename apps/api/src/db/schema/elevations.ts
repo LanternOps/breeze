@@ -57,7 +57,19 @@ export const elevationStatusEnum = pgEnum('elevation_status', [
   // (Track 6 — JIT credential expiry / cleanup), at which point it flips to
   // 'expired' or 'revoked'.
   'actuating',
+  // #8971: the end user declined a pending request on the device (Deny, the
+  // dialog timed out, or it failed). Terminal; withdrawn_at/withdrawn_reason
+  // are required by elevation_requests_status_timestamps_chk.
+  'withdrawn',
 ]);
+
+/**
+ * #8971: why the end user's device withdrew a pending request. Byte-identical
+ * to elevation_requests_withdrawn_reason_chk (2027-01-10-100100 migration) and
+ * the agent's pamdecline Reason constants.
+ */
+export const PAM_WITHDRAW_REASONS = ['user_denied', 'user_timeout', 'dialog_error'] as const;
+export type PamWithdrawReason = (typeof PAM_WITHDRAW_REASONS)[number];
 
 export const elevationAuditEventTypeEnum = pgEnum('elevation_audit_event_type', [
   'requested',
@@ -72,6 +84,8 @@ export const elevationAuditEventTypeEnum = pgEnum('elevation_audit_event_type', 
   'evidence_attached',
   // #9517: the agent reported it could not act on the request.
   'device_unable',
+  // #8971: the end user declined the pending request on the device.
+  'withdrawn',
 ]);
 
 export const elevationAuditActorEnum = pgEnum('elevation_audit_actor', [
@@ -179,6 +193,14 @@ export const elevationRequests = pgTable(
     deviceUnableAt: timestamp('device_unable_at', { withTimezone: true }),
     deviceUnableReason: varchar('device_unable_reason', { length: 64 }),
     deviceUnableDetail: text('device_unable_detail'),
+
+    // #8971: set when the agent reports the end user declined a pending
+    // request (POST /agents/:id/elevation-requests/:requestId/withdraw).
+    // Both are required by elevation_requests_status_timestamps_chk when
+    // status = 'withdrawn'; the reason is bounded by
+    // elevation_requests_withdrawn_reason_chk (PAM_WITHDRAW_REASONS).
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+    withdrawnReason: varchar('withdrawn_reason', { length: 32 }).$type<PamWithdrawReason>(),
 
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
 
