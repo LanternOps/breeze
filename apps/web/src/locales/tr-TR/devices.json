@@ -2117,6 +2117,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedUserScopeTitle": "Yüklenemez: bu, Breeze'in henüz uygulayamadığı kullanıcı başına bir yükleme olduğundan hiçbir yama çalıştırması onu yüklemez.",
       "excludedFeatureUpdateTitle": "{{ring}} güncelleme halkası bu Windows özellik sürümünü engelliyor (veya cihazları başka bir sürüme sabitliyor), bu nedenle zamanlanmış yama çalıştırmaları bunu atlar.",
       "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",

@@ -246,6 +246,13 @@ export const PATCH_INELIGIBLE_REASONS = [
    * treating it as "no ring" could install a blocked app (#8186).
    */
   'ring_reference_invalid',
+  /**
+   * The device row is a per-user WinGet install (`device_patches.scope='user'`,
+   * #2727). The agent runs as SYSTEM and cannot install into a user's profile,
+   * so it is detection-only until per-user remediation exists (#10249). Denied
+   * before any approval rule, so no ring or manual approval can admit it.
+   */
+  'unsupported_user_scope',
 ] as const;
 export type PatchIneligibleReason = (typeof PATCH_INELIGIBLE_REASONS)[number];
 

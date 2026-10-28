@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
+          "unsupported_user_scope": "Breeze'in henüz uygulayamadığı kullanıcı başına yükleme",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
         },
         "failureClasses": {

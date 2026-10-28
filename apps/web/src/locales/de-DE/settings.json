@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
+          "unsupported_user_scope": "Installation pro Benutzer, die Breeze noch nicht anwenden kann",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
         },
         "failureClasses": {

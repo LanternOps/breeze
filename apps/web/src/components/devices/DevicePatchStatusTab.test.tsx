@@ -1075,6 +1075,30 @@ describe('DevicePatchStatusTab', () => {
     expect(badge.getAttribute('title')).toContain('links an update ring that no longer exists');
   });
 
+  it('explains an excluded per-user install the evaluator denied as unsupported_user_scope (#10249)', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 0,
+          approvalEvaluation: { available: true, ring: { id: 'ring-1', name: 'Workstations Ring' } },
+          pending: [{
+            id: 'user-1', title: 'Zoom', source: 'third_party', category: 'application', status: 'pending', scope: 'user',
+            approvalStatus: 'approved', effectiveApproval: { state: 'excluded', reason: 'unsupported_user_scope', holdUntil: null }, installFailure: null
+          }],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" timezone="UTC" />);
+
+    const badge = await screen.findByTestId('device-patch-user-1-approval');
+    expect(badge.textContent).toBe('Excluded by policy');
+    expect(badge.getAttribute('title')).toContain('per-user install that Breeze cannot apply yet');
+    // Not a category exclusion: the fallback title must not be used.
+    expect(badge.getAttribute('title')).not.toContain('category');
+  });
+
   it('falls back to the manual approval badge when the ring evaluation is unavailable (#7625)', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({

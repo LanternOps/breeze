@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "ring_reference_invalid": "O anel de atualização da política é inválido",
+          "unsupported_user_scope": "Instalação por usuário que o Breeze ainda não consegue aplicar",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
         },
         "failureClasses": {

@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
+          "unsupported_user_scope": "Per-user install Breeze cannot apply yet",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {

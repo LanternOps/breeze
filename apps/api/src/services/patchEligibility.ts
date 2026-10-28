@@ -168,6 +168,8 @@ export async function evaluatePatchInstallEligibility(args: {
       // Linux (#7800) entries have no vendor releaseDate, so deferral windows
       // anchor on when we first saw the patch instead of failing closed.
       firstSeenAt: devicePatches.createdAt,
+      // 'machine' | 'user' | NULL (#2727). A 'user' row is detection-only.
+      scope: devicePatches.scope,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -191,6 +193,13 @@ export async function evaluatePatchInstallEligibility(args: {
     // Without a requested list the query itself is status-filtered; with one,
     // every listed row came back and its status decides.
     if (requested && !isOutstanding(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
+    // A per-user WinGet install (#2727) cannot be applied by the SYSTEM agent:
+    // dispatching it fails the job, or — after an agent restart wiped its
+    // in-memory user-scope set — installs a second, machine-wide copy. Deny it
+    // here, before any approval rule, so every dispatcher (patch jobs, the AI
+    // patch plan, the release-time effect digest) agrees with the web UI's
+    // disabled Install button (#10249).
+    if (row.scope === 'user') { deny(row.patchId, 'unsupported_user_scope'); continue; }
     if (args.excludeSuperseded && row.supersededBy) { deny(row.patchId, 'superseded'); continue; }
     pendingPatches.push(row);
   }

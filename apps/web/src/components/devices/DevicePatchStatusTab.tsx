@@ -377,8 +377,9 @@ function getEffectiveApprovalBadge(
       return {
         label: t('devicePatchStatusTab.approval.autoApproved'),
         className: APPROVAL_BADGE_CLASS.approved,
-        // The evaluator does not look at scope, but the agent cannot install
-        // per-user apps (#2727) — never promise that the run installs one.
+        // Since #10249 the evaluator excludes per-user rows itself
+        // (`unsupported_user_scope`), so this only fires for an older API that
+        // still approves them — never promise that the run installs one.
         title: isUserScopedPatch(patch)
           ? t('devicePatchStatusTab.approval.autoApprovedUserScopeTitle', { ring })
           : t('devicePatchStatusTab.approval.autoApprovedTitle', { ring }),
@@ -399,6 +400,8 @@ function getEffectiveApprovalBadge(
           ? t('devicePatchStatusTab.approval.excludedFeatureUpdateTitle', { ring })
           : effective.reason === 'ring_reference_invalid'
             ? t('devicePatchStatusTab.approval.excludedRingReferenceTitle')
+          : effective.reason === 'unsupported_user_scope'
+            ? t('devicePatchStatusTab.approval.excludedUserScopeTitle')
             : effective.reason === 'explicitly_declined'
               ? t('devicePatchStatusTab.approval.excludedDeclinedTitle')
               : t('devicePatchStatusTab.approval.excludedCategoryTitle', { ring });

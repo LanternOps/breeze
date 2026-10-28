@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Rifiutato esplicitamente",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
           "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
+          "unsupported_user_scope": "Installazione per utente che Breeze non può ancora applicare",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {

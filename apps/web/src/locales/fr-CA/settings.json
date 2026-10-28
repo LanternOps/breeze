@@ -3089,6 +3089,7 @@
           "explicitly_declined": "Refusé explicitement",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
           "ring_reference_invalid": "L'anneau de mise à jour de la politique est invalide",
+          "unsupported_user_scope": "Installation par utilisateur que Breeze ne peut pas encore appliquer",
           "device_not_in_org": "Appareil absent de cette organisation"
         },
         "failureClasses": {
