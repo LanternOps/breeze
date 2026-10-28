@@ -47,7 +47,9 @@
  *      unchanged value enqueues nothing (the real `setWhere` skip).
  *  10. #10497 — software inventory changes make devices join and leave groups.
  *  11. #10497 — identical installed names enqueue nothing despite version changes.
- *  12. #10497 — an org move evaluates every dynamic group in the target org.
+ *  12. #10497 — POST /devices/:id/move-org enqueues device.created for the target org,
+ *      which rebuilds dynamic membership; device.updated with no fields does not.
+ *  13. #10497 — a software.notInstalled group gains the device when the software is uninstalled.
  */
 import './setup';
 
@@ -592,7 +594,7 @@ describe('software inventory and org moves re-evaluate groups (#10497)', () => {
     expect(added.data.eventType).toBe('device.updated');
     expect([...added.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
     expect(added.data.reason).toBe('software_inventory_change');
-    // Until the worker runs, membership still shows the #10497 symptom.
+    // Ingest only enqueues; membership is unchanged until the job runs.
     expect(await memberDeviceIds(groupId)).toEqual([]);
     await runDeviceGroupReevaluationJob(added.data);
     expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
@@ -607,6 +609,40 @@ describe('software inventory and org moves re-evaluate groups (#10497)', () => {
     const removed = await awaitQueuedJob(deviceId);
     await runDeviceGroupReevaluationJob(removed.data);
     expect(await memberDeviceIds(groupId)).toEqual([]);
+  }, 30_000);
+
+  runDb('a device joins a software.notInstalled group when the software is uninstalled', async () => {
+    const env = await setupTestEnvironment();
+    const orgId = env.organization.id;
+    const name = 'PowerChute Business Edition Agent';
+    const groupId = await seedDynamicGroupWithFilter(orgId, {
+      operator: 'AND',
+      conditions: [{ field: 'software.notInstalled', operator: 'equals', value: name }],
+    });
+    const deviceId = await seedDevice(orgId, env.site.id, 'wks-missing-software');
+    const device = { id: deviceId, orgId, agentVersion: '1.0.0' };
+
+    const installed = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name }, { name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:01Z'),
+    });
+    expect(installed.acceptedForInventory).toBe(true);
+    const added = await awaitQueuedJob(deviceId);
+    await runDeviceGroupReevaluationJob(added.data);
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+    await added.remove();
+
+    const uninstalled = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:02Z'),
+    });
+    expect(uninstalled.acceptedForInventory).toBe(true);
+    const removed = await awaitQueuedJob(deviceId);
+    expect([...removed.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
+    await runDeviceGroupReevaluationJob(removed.data);
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
   }, 30_000);
 
   runDb('an accepted report with identical names enqueues nothing', async () => {

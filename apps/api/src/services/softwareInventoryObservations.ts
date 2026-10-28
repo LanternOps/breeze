@@ -228,6 +228,13 @@ function rows<T>(result: unknown): T[] {
   return result as T[];
 }
 
+export const SOFTWARE_GROUP_FILTER_FIELDS = ['software.installed', 'software.notInstalled'] as const;
+
+/**
+ * Software predicates match only `software_inventory.name` (filterEngine.ts),
+ * so a version-only change cannot flip membership. Names are compared exactly
+ * because the `equals`/`in` predicates compare exactly.
+ */
 export function installedNameSetChanged(previous: readonly string[], next: readonly string[]): boolean {
   const previousNames = new Set(previous);
   const nextNames = new Set(next);
@@ -515,14 +522,14 @@ async function ingestSoftwareInventoryReportInner(input: {
         }
       }
 
-      // Software-keyed dynamic groups (#10497) had no inventory-change producer.
-      // The job has no software event type, so use device.updated with both software fields.
+      // Software-keyed dynamic groups (#10497) depend on this request. The queue has no
+      // software event type, so send device.updated with the software filter fields.
       if (decision.acceptedForInventory && installedNamesChanged) {
         requestDeviceGroupReevaluationAfterCommit({
           deviceId: input.device.id,
           orgId: input.device.orgId,
           eventType: 'device.updated',
-          changedFields: ['software.installed', 'software.notInstalled'],
+          changedFields: [...SOFTWARE_GROUP_FILTER_FIELDS],
           reason: 'software_inventory_change',
         });
       }

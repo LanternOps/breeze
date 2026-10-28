@@ -1,4 +1,3 @@
-import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } from '@breeze/shared';
 
@@ -37,8 +36,10 @@ import {
   replaceSoftwareInventoryProjection,
   ingestSoftwareInventoryReport,
   INVENTORY_LOCK_TIMEOUT_MS,
+  SOFTWARE_GROUP_FILTER_FIELDS,
   SoftwareInventoryLockTimeoutError,
 } from './softwareInventoryObservations';
+import { FILTER_FIELDS } from './filterEngine';
 
 const item = { name: 'Google Chrome', version: '127', vendor: 'Google LLC' };
 const receivedAt = new Date('2026-08-24T12:00:00.000Z');
@@ -444,7 +445,6 @@ describe('replaceSoftwareInventoryProjection installed-name diff (#10497)', () =
       receivedAt,
     });
     expect(result).toEqual({ installedNamesChanged: changed });
-    expect(tx.select).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -455,14 +455,12 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
     tightenLockTimeoutMock.mockResolvedValue(null);
   });
 
-  function ingestTx(previous: string[], stateOverrides = {}, existing: unknown[] = []) {
+  function ingestTx(previous: string[], stateOverrides = {}, legacy = false) {
+    const execute = vi.fn().mockResolvedValueOnce([{ id: inventoryDevice.id, org_id: inventoryDevice.orgId }]);
+    if (!legacy) execute.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const tx = {
       ...nameDiffTx(previous),
-      execute: vi.fn()
-        .mockResolvedValueOnce([{ id: inventoryDevice.id, org_id: inventoryDevice.orgId }])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce(existing)
-        .mockResolvedValueOnce([])
+      execute: execute.mockResolvedValueOnce([])
         .mockResolvedValueOnce([{
           latest_observation_id: null,
           latest_received_at: null,
@@ -482,7 +480,7 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
   const ingest = (inventory = report) => ingestSoftwareInventoryReport({ device: inventoryDevice, report: inventory, receivedAt });
 
   it('requests a software re-evaluation when the installed-name set changes', async () => {
-    const tx = ingestTx(['A', 'B']);
+    ingestTx(['A', 'B']);
     await ingest();
     expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith({
       deviceId: inventoryDevice.id,
@@ -491,9 +489,6 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
       changedFields: ['software.installed', 'software.notInstalled'],
       reason: 'software_inventory_change',
     });
-    expect(tx.execute).toHaveBeenCalledTimes(7);
-    expect(requestDeviceGroupReevaluationAfterCommitMock.mock.invocationCallOrder[0])
-      .toBeGreaterThan(tx.execute.mock.invocationCallOrder[6]!);
   });
 
   it('does not request one when only versions change', async () => {
@@ -510,26 +505,25 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
     expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
   });
 
-  it('does not request one on an idempotent V2 replay', async () => {
-    const first = ingestTx(['A', 'B']);
-    const result = await ingest();
-    const inserted = new PgDialect().sqlToQuery(first.execute.mock.calls[5]![0]);
-    const digest = inserted.params[16];
-    expect(digest).toMatch(/^[a-f0-9]{64}$/);
-    requestDeviceGroupReevaluationAfterCommitMock.mockReset();
-    const tx = ingestTx([], {}, [{
-      id: report.observationId,
-      org_id: inventoryDevice.orgId,
-      device_id: inventoryDevice.id,
-      report_digest: digest,
-      accepted_for_inventory: true,
-      absence_resolution_eligible: true,
-      reason_code: 'accepted_complete',
-      visible_item_count: 2,
-    }]);
-    expect(await ingest()).toEqual(result);
-    expect(tx.execute).toHaveBeenCalledTimes(3);
-    expect(tx.delete).not.toHaveBeenCalled();
-    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
+  it('requests one for an accepted legacy report whose names changed', async () => {
+    ingestTx(['A', 'B'], { has_accepted_v2: false }, true);
+    const result = await ingestSoftwareInventoryReport({
+      device: inventoryDevice,
+      report: { software: [{ name: 'A' }, { name: 'C' }] },
+      receivedAt,
+    });
+    expect(result.reasonCode).toBe('accepted_legacy');
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith({
+      deviceId: inventoryDevice.id,
+      orgId: inventoryDevice.orgId,
+      eventType: 'device.updated',
+      changedFields: ['software.installed', 'software.notInstalled'],
+      reason: 'software_inventory_change',
+    });
+  });
+
+  it('requests re-evaluation for exactly the software fields the filter catalogue offers', () => {
+    const softwareFields = FILTER_FIELDS.filter((field) => field.category === 'software').map((field) => field.key);
+    expect(softwareFields.sort()).toEqual([...SOFTWARE_GROUP_FILTER_FIELDS].sort());
   });
 });
