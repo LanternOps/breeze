@@ -1235,6 +1235,41 @@
         "noOrgs": "Noch keine Organisationen",
         "savedValue": "Gespeicherter Wert:",
         "restricted": "Die Aufschlüsselung nach Organisation erfordert vollen Partnerzugriff"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisationen mit eigenem Wert",
+          "overrides": "Organisationen, die von Ihrem Standard abweichen",
+          "shadowed": "Organisationen, deren eigener Wert nicht wirksam ist",
+          "clamped": "Auf Ihre Obergrenze begrenzte Organisationen"
+        },
+        "loading": "Organisationen werden geladen…",
+        "error": "Die Organisationen konnten nicht geladen werden.",
+        "empty": "Keine Organisationen in dieser Liste.",
+        "loadMore": "Mehr laden",
+        "set": "Festgelegt",
+        "notSet": "Nicht festgelegt",
+        "inEffect": "Wirksam",
+        "notInEffect": "Nicht wirksam",
+        "ownValue": "Eigener Wert:",
+        "channels": "Kanäle",
+        "readOnly": "Schreibgeschützt. Ändern Sie den Wert einer Organisation in deren eigenen Einstellungen."
+      },
+      "summary": {
+        "title": "Über Ihre Organisationen",
+        "locks_one": "{{count}} Einstellung sperrt Organisationen",
+        "locks_other": "{{count}} Einstellungen sperren Organisationen",
+        "overridable_one": "{{count}} kann abweichend festgelegt werden",
+        "overridable_other": "{{count}} können abweichend festgelegt werden",
+        "differ_one": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "differ_other": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "noneDiffer": "Alle Organisationen verwenden auf diesem Tab Ihre Werte.",
+        "hint": "Wählen Sie eine Einstellung oder eine Zahl unter einem Feld, um die Organisationen aufzulisten.",
+        "unavailable": "Die Aufschlüsselung nach Organisation ist gerade nicht verfügbar.",
+        "back": "Zurück zur Übersicht"
+      },
+      "fields": {
+        "defaultProvider": "Standard-Fernwartungsanbieter"
       }
     }
   },

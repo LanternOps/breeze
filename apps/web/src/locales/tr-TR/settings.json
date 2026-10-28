@@ -1235,6 +1235,41 @@
         "noOrgs": "Henüz kuruluş yok",
         "savedValue": "Kayıtlı değer:",
         "restricted": "Kuruluş dökümü tam iş ortağı erişimi gerektirir"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Kendi değeri olan kuruluşlar",
+          "overrides": "Varsayılanınızı değiştiren kuruluşlar",
+          "shadowed": "Kendi değeri yürürlükte olmayan kuruluşlar",
+          "clamped": "Üst sınırınızla kısıtlanan kuruluşlar"
+        },
+        "loading": "Kuruluşlar yükleniyor…",
+        "error": "Kuruluşlar yüklenemedi.",
+        "empty": "Bu listede kuruluş yok.",
+        "loadMore": "Daha fazla yükle",
+        "set": "Ayarlı",
+        "notSet": "Ayarlanmadı",
+        "inEffect": "Yürürlükte",
+        "notInEffect": "Yürürlükte değil",
+        "ownValue": "Kendi değeri:",
+        "channels": "Kanallar",
+        "readOnly": "Salt okunur. Bir kuruluşun değerini kendi ayarlarından değiştirin."
+      },
+      "summary": {
+        "title": "Kuruluşlarınız genelinde",
+        "locks_one": "{{count}} ayar kuruluşları kilitliyor",
+        "locks_other": "{{count}} ayar kuruluşları kilitliyor",
+        "overridable_one": "{{count}} ayar değiştirilebilir",
+        "overridable_other": "{{count}} ayar değiştirilebilir",
+        "differ_one": "{{count}} ayarda varsayılanlarınızdan farklı kuruluşlar var",
+        "differ_other": "{{count}} ayarda varsayılanlarınızdan farklı kuruluşlar var",
+        "noneDiffer": "Bu sekmede tüm kuruluşlar sizin değerlerinizi kullanıyor.",
+        "hint": "Kuruluşlarını listelemek için bir ayar veya bir alanın altındaki sayıyı seçin.",
+        "unavailable": "Kuruluş dökümü şu anda kullanılamıyor.",
+        "back": "Özete dön"
+      },
+      "fields": {
+        "defaultProvider": "Varsayılan uzak araç sağlayıcısı"
       }
     }
   },

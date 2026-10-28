@@ -1235,6 +1235,41 @@
         "noOrgs": "Ainda não há organizações",
         "savedValue": "Valor salvo:",
         "restricted": "O detalhamento por organização exige acesso completo de parceiro"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizações com valor próprio",
+          "overrides": "Organizações que alteram o seu padrão",
+          "shadowed": "Organizações cujo valor próprio não está em vigor",
+          "clamped": "Organizações limitadas ao seu teto"
+        },
+        "loading": "Carregando organizações…",
+        "error": "Não foi possível carregar as organizações.",
+        "empty": "Nenhuma organização nesta lista.",
+        "loadMore": "Carregar mais",
+        "set": "Definido",
+        "notSet": "Não definido",
+        "inEffect": "Em vigor",
+        "notInEffect": "Fora de vigor",
+        "ownValue": "Valor próprio:",
+        "channels": "Canais",
+        "readOnly": "Somente leitura. Altere o valor de uma organização nas configurações dela."
+      },
+      "summary": {
+        "title": "Em suas organizações",
+        "locks_one": "{{count}} configuração bloqueia organizações",
+        "locks_other": "{{count}} configurações bloqueiam organizações",
+        "overridable_one": "{{count}} pode ser alterada",
+        "overridable_other": "{{count}} podem ser alteradas",
+        "differ_one": "{{count}} tem organizações que diferem dos seus padrões",
+        "differ_other": "{{count}} têm organizações que diferem dos seus padrões",
+        "noneDiffer": "Todas as organizações usam os seus valores nesta guia.",
+        "hint": "Selecione uma configuração, ou um número sob um campo, para listar as organizações.",
+        "unavailable": "O detalhamento por organização não está disponível no momento.",
+        "back": "Voltar ao resumo"
+      },
+      "fields": {
+        "defaultProvider": "Provedor de acesso remoto padrão"
       }
     }
   },

@@ -1235,6 +1235,41 @@
         "noOrgs": "Aucune organisation pour l’instant",
         "savedValue": "Valeur enregistrée :",
         "restricted": "La ventilation par organisation exige un accès partenaire complet"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisations ayant leur propre valeur",
+          "overrides": "Organisations qui remplacent votre valeur par défaut",
+          "shadowed": "Organisations dont la valeur propre ne s’applique pas",
+          "clamped": "Organisations plafonnées à votre limite"
+        },
+        "loading": "Chargement des organisations…",
+        "error": "Impossible de charger les organisations.",
+        "empty": "Aucune organisation dans cette liste.",
+        "loadMore": "Charger plus",
+        "set": "Défini",
+        "notSet": "Non défini",
+        "inEffect": "Appliqué",
+        "notInEffect": "Non appliqué",
+        "ownValue": "Valeur propre :",
+        "channels": "Canaux",
+        "readOnly": "Lecture seule. Modifiez la valeur d’une organisation dans ses propres paramètres."
+      },
+      "summary": {
+        "title": "Dans vos organisations",
+        "locks_one": "{{count}} paramètre verrouille les organisations",
+        "locks_other": "{{count}} paramètres verrouillent les organisations",
+        "overridable_one": "{{count}} peut être remplacé",
+        "overridable_other": "{{count}} peuvent être remplacés",
+        "differ_one": "{{count}} a des organisations qui diffèrent de vos valeurs par défaut",
+        "differ_other": "{{count}} ont des organisations qui diffèrent de vos valeurs par défaut",
+        "noneDiffer": "Toutes les organisations utilisent vos valeurs dans cet onglet.",
+        "hint": "Sélectionnez un paramètre, ou un nombre sous un champ, pour lister ses organisations.",
+        "unavailable": "La ventilation par organisation n’est pas disponible pour le moment.",
+        "back": "Retour au résumé"
+      },
+      "fields": {
+        "defaultProvider": "Fournisseur d’accès à distance par défaut"
       }
     }
   },

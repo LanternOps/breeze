@@ -1235,6 +1235,41 @@
         "noOrgs": "No organizations yet",
         "savedValue": "Saved value:",
         "restricted": "Org breakdown requires full partner access"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Orgs with their own value",
+          "overrides": "Orgs that override your default",
+          "shadowed": "Orgs whose own value is not in effect",
+          "clamped": "Orgs clamped to your ceiling"
+        },
+        "loading": "Loading organizations…",
+        "error": "Couldn't load the organizations.",
+        "empty": "No organizations in this list.",
+        "loadMore": "Load more",
+        "set": "Set",
+        "notSet": "Not set",
+        "inEffect": "In effect",
+        "notInEffect": "Not in effect",
+        "ownValue": "Own value:",
+        "channels": "Channels",
+        "readOnly": "Read-only. Change an organization's value from its own settings."
+      },
+      "summary": {
+        "title": "Across your organizations",
+        "locks_one": "{{count}} setting locks orgs",
+        "locks_other": "{{count}} settings lock orgs",
+        "overridable_one": "{{count}} can be overridden",
+        "overridable_other": "{{count}} can be overridden",
+        "differ_one": "{{count}} has orgs that differ from your defaults",
+        "differ_other": "{{count}} have orgs that differ from your defaults",
+        "noneDiffer": "Every organization uses your values on this tab.",
+        "hint": "Select a setting, or a count under a field, to list its organizations.",
+        "unavailable": "The org breakdown is unavailable right now.",
+        "back": "Back to summary"
+      },
+      "fields": {
+        "defaultProvider": "Default remote-tool provider"
       }
     }
   },

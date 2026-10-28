@@ -44,9 +44,9 @@ import FormCard from './partnerSettings/FormCard';
 import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
 import { useUnsavedGuard } from './partnerSettings/useUnsavedGuard';
 import BadgeLegend from './partnerSettings/BadgeLegend';
-import { PartnerInheritanceContext, readPath, type PartnerInheritanceUi } from './partnerSettings/inheritanceContext';
-import { inheritanceTabFor, useInheritanceStore, useTabInheritance } from './partnerSettings/useTabInheritance';
-import { isFieldDraftDirty } from './partnerSettings/fieldDraft';
+import { PartnerInheritanceContext } from './partnerSettings/inheritanceContext';
+import InheritanceSidePanel, { InheritanceDrawer } from './partnerSettings/InheritanceSidePanel';
+import { usePartnerInheritanceUi } from './partnerSettings/usePartnerInheritanceUi';
 
 // Kept on this module's surface: existing callers and tests import it from here.
 export { runPartnerSave } from './partnerSettings/usePartnersMeUnit';
@@ -65,10 +65,6 @@ export default function PartnerSettingsPage() {
   const setDraftPartner = usePartnerSettingsDraftStore(s => s.setPartner);
   useEffect(() => { setDraftPartner(currentPartnerId ?? null); }, [currentPartnerId, setDraftPartner]);
   useEffect(() => () => usePartnerSettingsDraftStore.getState().reset(), []);
-  // Inheritance counts are cached for the page session, per partner.
-  const setInheritancePartner = useInheritanceStore(s => s.setPartner);
-  useEffect(() => { setInheritancePartner(currentPartnerId ?? null); }, [currentPartnerId, setInheritancePartner]);
-  useEffect(() => () => useInheritanceStore.getState().reset(), []);
 
   const callerVerificationUnit = useCallerVerificationUnit();
   const loginBrandingUnit = useLoginBrandingUnit();
@@ -201,17 +197,9 @@ export default function PartnerSettingsPage() {
     // Enter on a form that cannot save: take the user to what blocks it.
     if (s.kind === 'invalid') open(s.tab, s.fieldId);
   }, []);
-  // Per-field inheritance widgets read the SAVED partner record, never the draft.
-  const tabState = useTabInheritance(partner ? inheritanceTabFor(activeTab) : null);
-  const savedSettings = partner?.settings;
-  const { baseline } = me;
-  const inheritanceUi = useMemo<PartnerInheritanceUi>(() => ({
-    tabState,
-    savedSetting: path => readPath(savedSettings, path),
-    isFieldDirty: fieldId => isFieldDraftDirty(fieldId, state, baseline),
-    openDrill: () => {},
-    selectedFieldId: null,
-  }), [tabState, savedSettings, state, baseline]);
+  const { inheritanceUi, tabState, drill, setDrill, sidePanel } = usePartnerInheritanceUi({
+    partnerId: currentPartnerId, partner, activeTab, state, baseline: me.baseline,
+  });
 
   const saveApi = useMemo(() => ({
     submit: handleSave,
@@ -298,7 +286,7 @@ export default function PartnerSettingsPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <div className={`grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]${sidePanel ? ' min-[1920px]:grid-cols-[240px_minmax(0,1fr)_360px]' : ''}`}>
         <SettingsSectionNav
           groups={visibleGroups.map(group => ({
             label: t(/* i18n-dynamic */ group.label),
@@ -443,7 +431,13 @@ export default function PartnerSettingsPage() {
             </section>
           )}
         </div>
+
+        {sidePanel && (
+          <InheritanceSidePanel state={tabState} selection={drill} onSelect={setDrill} onClear={() => setDrill(null)} />
+        )}
       </div>
+
+      {!sidePanel && <InheritanceDrawer selection={drill} onClose={() => setDrill(null)} />}
     </div>
     </PartnerInheritanceContext.Provider>
     </PartnerSettingsSaveContext.Provider>

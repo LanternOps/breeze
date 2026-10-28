@@ -1235,6 +1235,41 @@
         "noOrgs": "Aún no hay organizaciones",
         "savedValue": "Valor guardado:",
         "restricted": "El desglose por organización requiere acceso completo de partner"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizaciones con su propio valor",
+          "overrides": "Organizaciones que cambian tu valor predeterminado",
+          "shadowed": "Organizaciones cuyo valor propio no tiene efecto",
+          "clamped": "Organizaciones limitadas a tu tope"
+        },
+        "loading": "Cargando organizaciones…",
+        "error": "No se pudieron cargar las organizaciones.",
+        "empty": "No hay organizaciones en esta lista.",
+        "loadMore": "Cargar más",
+        "set": "Definido",
+        "notSet": "Sin definir",
+        "inEffect": "En efecto",
+        "notInEffect": "Sin efecto",
+        "ownValue": "Valor propio:",
+        "channels": "Canales",
+        "readOnly": "Solo lectura. Cambia el valor de una organización desde sus propios ajustes."
+      },
+      "summary": {
+        "title": "En tus organizaciones",
+        "locks_one": "{{count}} ajuste bloquea organizaciones",
+        "locks_other": "{{count}} ajustes bloquean organizaciones",
+        "overridable_one": "{{count}} se puede cambiar",
+        "overridable_other": "{{count}} se pueden cambiar",
+        "differ_one": "{{count}} tiene organizaciones que difieren de tus valores",
+        "differ_other": "{{count}} tienen organizaciones que difieren de tus valores",
+        "noneDiffer": "Todas las organizaciones usan tus valores en esta pestaña.",
+        "hint": "Selecciona un ajuste, o un número bajo un campo, para ver sus organizaciones.",
+        "unavailable": "El desglose por organización no está disponible en este momento.",
+        "back": "Volver al resumen"
+      },
+      "fields": {
+        "defaultProvider": "Proveedor de acceso remoto predeterminado"
       }
     }
   },

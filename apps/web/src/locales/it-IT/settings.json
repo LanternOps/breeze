@@ -1235,6 +1235,41 @@
         "noOrgs": "Ancora nessuna organizzazione",
         "savedValue": "Valore salvato:",
         "restricted": "Il dettaglio per organizzazione richiede l’accesso completo da partner"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizzazioni con un proprio valore",
+          "overrides": "Organizzazioni che modificano il tuo predefinito",
+          "shadowed": "Organizzazioni il cui valore proprio non è in vigore",
+          "clamped": "Organizzazioni limitate al tuo tetto"
+        },
+        "loading": "Caricamento delle organizzazioni…",
+        "error": "Impossibile caricare le organizzazioni.",
+        "empty": "Nessuna organizzazione in questo elenco.",
+        "loadMore": "Carica altro",
+        "set": "Impostato",
+        "notSet": "Non impostato",
+        "inEffect": "In vigore",
+        "notInEffect": "Non in vigore",
+        "ownValue": "Valore proprio:",
+        "channels": "Canali",
+        "readOnly": "Sola lettura. Modifica il valore di un’organizzazione dalle sue impostazioni."
+      },
+      "summary": {
+        "title": "Nelle tue organizzazioni",
+        "locks_one": "{{count}} impostazione blocca le organizzazioni",
+        "locks_other": "{{count}} impostazioni bloccano le organizzazioni",
+        "overridable_one": "{{count}} può essere modificata",
+        "overridable_other": "{{count}} possono essere modificate",
+        "differ_one": "{{count}} ha organizzazioni diverse dai tuoi predefiniti",
+        "differ_other": "{{count}} hanno organizzazioni diverse dai tuoi predefiniti",
+        "noneDiffer": "Tutte le organizzazioni usano i tuoi valori in questa scheda.",
+        "hint": "Seleziona un’impostazione, o un numero sotto un campo, per elencarne le organizzazioni.",
+        "unavailable": "Il dettaglio per organizzazione non è disponibile al momento.",
+        "back": "Torna al riepilogo"
+      },
+      "fields": {
+        "defaultProvider": "Provider di accesso remoto predefinito"
       }
     }
   },
