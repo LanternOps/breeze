@@ -128,12 +128,12 @@ Q1 reversible within a minute? Q2 leaves the tenant / reaches a person / bills m
 
 | Measure | main `5b223e4a5c` | PR A branch |
 |---|---|---|
-| Always-on (B1 < 2,560) | 2,494 | _measured at T5_ |
-| billing block (B2 < 2,048) | 282 | _measured at T5_ |
-| largest block | devices 1,713 | |
-| Worst page turn (B3 < 7,040) | alert 5,257 | |
+| Always-on (B1 < 2,560) | 2,494 | 2,494 |
+| billing block (B2 < 2,048) | 282 | 524 |
+| largest block | devices 1,713 | devices 1,713 |
+| Worst page turn (B3 < 7,040) | alert 5,257 | alert 5,257 (device 4,648) |
 
-The billing block is not page-expanded (device / alert pages expand devices, scripts and monitoring), so W14 cannot move B3.
+The billing block is not page-expanded (device / alert pages expand devices, scripts and monitoring), so W14 cannot move B3. No ceiling, `DOMAIN_NOTES` or vocabulary change; none is `alwaysLoad`. Registry 338 → 343, so `MCP_TOOL_COUNT_APPROX` 330 → 340 (own commit). Golden prompts g109–g111 (an org's rate card, publish a template version, device billing); the brief's generate-invoice and Xero-push prompts join with PR B, whose tools they name.
 
 ## Quorum (codex `exec`, read-only, xhigh): AGREE WITH CHANGES
 
