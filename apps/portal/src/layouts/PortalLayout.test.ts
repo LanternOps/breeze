@@ -154,3 +154,24 @@ describe('PortalLayout custom CSS (#5940)', () => {
     expect(SOURCE).toMatch(/<header class="portal-header /);
   });
 });
+
+describe('PortalLayout welcome message (#9675)', () => {
+  it('derives it from branding through the landing-page helper', () => {
+    expect(SOURCE).toContain("import { landingWelcomeMessage } from '../lib/welcomeMessage'");
+    expect(SOURCE).toContain('landingWelcomeMessage(branding, pathname)');
+  });
+
+  it("renders it as escaped plain text that keeps the MSP's line breaks, never as HTML", () => {
+    const el = SOURCE.match(/<p[^>]*data-testid="portal-welcome"[^>]*>([\s\S]*?)<\/p>/);
+    expect(el).not.toBeNull();
+    expect(el![0]).toContain('whitespace-pre-line');
+    expect(el![0]).not.toContain('set:html');
+    expect(el![1].trim()).toBe('{welcomeMessage}');
+  });
+
+  it('places it inside the page sheet, ahead of the page content', () => {
+    const welcomeIdx = SOURCE.indexOf('data-testid="portal-welcome"');
+    expect(welcomeIdx).toBeGreaterThan(SOURCE.indexOf('data-testid="portal-sheet"'));
+    expect(welcomeIdx).toBeLessThan(SOURCE.indexOf('<slot />'));
+  });
+});

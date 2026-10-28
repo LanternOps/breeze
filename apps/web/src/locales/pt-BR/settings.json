@@ -2217,6 +2217,7 @@
       "email": "E-mail de suporte",
       "phone": "Telefone de suporte",
       "welcomeMessage": "Mensagem de boas-vindas",
+      "welcomeMessageHelp": "Exibido no topo da página inicial do cliente no portal e na página de login do portal quando a organização usa um domínio personalizado verificado. Texto simples; as quebras de linha são mantidas.",
       "footerText": "Texto do rodapé",
       "footerTextHelp": "Exibido no fim do portal do cliente e impresso nas cotações e faturas desta organização, no lugar do rodapé dos documentos do parceiro. Deixe em branco para imprimir o rodapé do parceiro.",
       "footerTextInheritedSource": "Rodapé dos documentos do parceiro"

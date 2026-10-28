@@ -2217,6 +2217,7 @@
       "email": "email assistenza",
       "phone": "Telefono assistenza",
       "welcomeMessage": "Messaggio di benvenuto",
+      "welcomeMessageHelp": "Mostrato in cima alla pagina iniziale del cliente nel portale e nella pagina di accesso del portale quando l'organizzazione usa un dominio personalizzato verificato. Solo testo; gli a capo vengono mantenuti.",
       "footerText": "Testo footer",
       "footerTextHelp": "Mostrato in fondo al portale clienti e stampato su preventivi e fatture di questa organizzazione, al posto del piè di pagina dei documenti del partner. Lascia vuoto per stampare il piè di pagina del partner.",
       "footerTextInheritedSource": "Piè di pagina dei documenti del partner"
