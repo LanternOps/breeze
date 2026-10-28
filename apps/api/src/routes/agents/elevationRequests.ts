@@ -33,6 +33,7 @@ import type { RiskTier } from '@breeze/shared';
 import { createPamDecisionIntent } from '../../services/pamActuationLifecycle';
 import { buildPamConfigUpdate } from './helpers';
 import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
+import { resolveMessageBranding } from '../../services/endpointMessaging/brandingSnapshot';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -159,6 +160,31 @@ async function safePublish(
  * the rest. No actuate command is enqueued (parity with pam.ts respond — that's
  * deferred to #1150).
  */
+/** Longest support name sent to the agent, in code points (`NAME_MAX` in brandingSnapshot). */
+const PAM_SUPPORT_NAME_MAX = 120;
+
+/**
+ * #8928: the partner's name as the end user's toasts show it ("Request
+ * approved … by {s}"). Only a real partner name: the generic sender identity
+ * ("Your IT support team") reads badly mid-sentence, so it is omitted and the
+ * agent falls back to "IT". Runs after the org-scoped ingest transaction has
+ * closed, in its own system context (partner branding is partner-axis data).
+ */
+async function resolvePamSupportName(orgId: string): Promise<string | null> {
+  try {
+    const resolved = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => resolveMessageBranding(orgId)),
+    );
+    if (!resolved || resolved.senderIdentity !== 'partner') return null;
+    const name = resolved.branding.companyName.trim();
+    if (!name) return null;
+    return Array.from(name).slice(0, PAM_SUPPORT_NAME_MAX).join('');
+  } catch (err) {
+    console.debug(`[ElevationRequests] support-name lookup failed for org=${orgId}:`, err);
+    return null;
+  }
+}
+
 async function fanOutMobileApprovals(args: {
   elevationRequestId: string;
   device: { id: string; orgId: string; hostname: string };
@@ -336,7 +362,7 @@ elevationRequestsRoutes.post(
     // to build (see the wrap site there): org scope, no partner-AXIS write
     // access, and the device org's owning partner on the read-only
     // `currentPartnerId` axis.
-    return withDbAccessContext(
+    const ingest = await withDbAccessContext(
       {
         scope: 'organization' as const,
         orgId,
@@ -741,11 +767,17 @@ elevationRequestsRoutes.post(
           }
         }
 
-        return c.json({
-          id: row.id,
-          status: row.status,
-          ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
-        }, 201);
+        // The 201 is built after this org-scoped transaction closes, so the
+        // support-name lookup below never holds a second pooled connection.
+        return {
+          kind: 'created' as const,
+          orgId: device.orgId,
+          body: {
+            id: row.id,
+            status: row.status,
+            ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
+          },
+        };
       } catch (err) {
         console.error(
           `[ElevationRequests] Failed to insert for device=${device.id} org=${device.orgId}:`,
@@ -755,5 +787,11 @@ elevationRequestsRoutes.post(
       }
       },
     );
+    if (ingest instanceof Response) return ingest;
+
+    // #8928: the MSP's name, for the end-user notices. Best-effort: a failed
+    // lookup never fails the submit; the agent then says "IT".
+    const supportName = await resolvePamSupportName(ingest.orgId);
+    return c.json({ ...ingest.body, ...(supportName ? { supportName } : {}) }, 201);
   },
 );
