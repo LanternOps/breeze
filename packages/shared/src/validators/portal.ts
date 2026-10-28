@@ -111,6 +111,9 @@ const portalCustomCssSchema = z
     }
   });
 
+/** #rgb / #rrggbb — the only shape an org document accent may take (#9962). */
+export const PORTAL_PRIMARY_COLOR_PATTERN = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
 export const updatePortalSettingsSchema = z.object({
   enableTickets: z.boolean().optional(),
   enableAssetCheckout: z.boolean().optional(),
@@ -160,6 +163,16 @@ export const updatePortalSettingsSchema = z.object({
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),
   footerText: z.string().max(2000).nullable().optional(),
+  // #9962: the org level of the one document-accent chain — partner Branding
+  // colour → this org override (resolveDocumentBrand, partnerDocumentBrand.ts).
+  // Written by the org Branding tab; null = inherit the partner colour. It is
+  // emitted into a <style> element on customer documents, so only a strict
+  // #rgb / #rrggbb hex is accepted.
+  primaryColor: z
+    .string()
+    .regex(PORTAL_PRIMARY_COLOR_PATTERN, 'Primary color must be a hex colour such as #2563eb')
+    .nullable()
+    .optional(),
   // #5952: canonical write path for portal_branding.custom_css. Rejected
   // (not silently stripped) on a disallowed pattern — see
   // findUnsafePortalCssPattern above.

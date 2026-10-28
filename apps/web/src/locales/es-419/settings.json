@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "color primario",
-      "secondary": "color secundario"
+      "secondary": "color secundario",
+      "primaryInheritedSource": "Color de marca del socio",
+      "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
+      "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "theme": {
       "title": "Tema",

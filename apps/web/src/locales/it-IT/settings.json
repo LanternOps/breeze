@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "Colore primario",
-      "secondary": "Colore secondario"
+      "secondary": "Colore secondario",
+      "primaryInheritedSource": "Colore del brand del partner",
+      "primaryHelp": "Colore di accento su preventivi, fatture e altri documenti per i clienti di questa organizzazione. Lascia vuoto per usare il colore del brand del partner.",
+      "primaryInvalid": "Inserisci un colore esadecimale, ad esempio #2563eb.",
+      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato."
     },
     "theme": {
       "title": "Tema",

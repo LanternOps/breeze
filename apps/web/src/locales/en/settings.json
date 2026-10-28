@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "Primary color",
-      "secondary": "Secondary color"
+      "secondary": "Secondary color",
+      "primaryInheritedSource": "Partner brand color",
+      "primaryHelp": "Accent color on this organization's quotes, invoices and other customer documents. Leave blank to use the partner's brand color.",
+      "primaryInvalid": "Enter a hex color such as #2563eb.",
+      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads."
     },
     "theme": {
       "title": "Theme",

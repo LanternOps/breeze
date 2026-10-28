@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "Ana renk",
-      "secondary": "İkincil renk"
+      "secondary": "İkincil renk",
+      "primaryInheritedSource": "İş ortağı marka rengi",
+      "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
+      "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "theme": {
       "title": "Tema",

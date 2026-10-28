@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "Couleur primaire",
-      "secondary": "Couleur secondaire"
+      "secondary": "Couleur secondaire",
+      "primaryInheritedSource": "Couleur de marque du partenaire",
+      "primaryHelp": "Couleur d'accent des devis, factures et autres documents clients de cette organisation. Laissez vide pour utiliser la couleur de marque du partenaire.",
+      "primaryInvalid": "Saisissez une couleur hexadécimale, par exemple #2563eb.",
+      "primaryLoadError": "Impossible de charger la couleur primaire enregistrée. La modification est désactivée jusqu'à son chargement."
     },
     "theme": {
       "title": "Thème",

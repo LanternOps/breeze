@@ -1843,7 +1843,11 @@
     },
     "colors": {
       "primary": "Primärfarbe",
-      "secondary": "Sekundärfarbe"
+      "secondary": "Sekundärfarbe",
+      "primaryInheritedSource": "Markenfarbe des Partners",
+      "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
+      "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "theme": {
       "title": "Thema",
