@@ -363,6 +363,22 @@ function canAccessAutomation(
   return auth.scope === 'partner' && !!auth.partnerId && automation.partnerId === auth.partnerId;
 }
 
+/**
+ * Tool Catalog W06 (#5221, Decision 9): a switched Job is frozen. Its flow is
+ * the one engine for it now; PUT/PATCH/DELETE/trigger/run answer
+ * `409 automation_converted { flowId }`. DELETE is refused too: an in-flight
+ * legacy run re-reads its source row on resume. Only a switch sets
+ * `converted_to_flow_id` and a revert clears it, so a shadow or reverted row
+ * is never frozen (editing a shadow row resets the shadow instead).
+ */
+function convertedAutomationResponse(
+  c: Context,
+  automation: { convertedToFlowId: string | null },
+): Response | null {
+  if (!automation.convertedToFlowId) return null;
+  return c.json({ error: 'automation_converted', flowId: automation.convertedToFlowId }, 409);
+}
+
 async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
   const [automation] = await db
     .select()
@@ -1469,6 +1485,8 @@ async function handleUpdateAutomation(c: Context) {
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
   }
+  const frozen = convertedAutomationResponse(c, automation);
+  if (frozen) return frozen;
 
   // #5289 — a row compiled from a monitor definition must be edited only by
   // the compiler; a side edit here would silently drift from the definition
@@ -1674,6 +1692,8 @@ automationRoutes.delete(
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
     }
+    const frozen = convertedAutomationResponse(c, automation);
+    if (frozen) return frozen;
 
     // #5289 — see the guard in handleUpdateAutomation. Unlike the agent-managed
     // case below, there is no soft-disable escape hatch for a monitor-managed
@@ -1823,6 +1843,8 @@ async function admitManualAutomationRun(
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
   }
+  const frozen = convertedAutomationResponse(c, automation);
+  if (frozen) return frozen;
 
   // #5289 — see the guard in handleUpdateAutomation.
   if (automation.managedByMonitorId) {

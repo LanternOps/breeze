@@ -2540,6 +2540,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): a switched Job is frozen; its flow runs it now.
+        if (existing.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: existing.convertedToFlowId });
+        }
         if (isManagedAutomation(existing)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
         }
@@ -2575,6 +2579,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): see the enable/disable branch above.
+        if (auto.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: auto.convertedToFlowId });
+        }
         if (isManagedAutomation(auto)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: auto.managedByAgentId });
         }

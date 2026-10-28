@@ -722,6 +722,65 @@ describe('manage_automations managed-by-monitor guard (#5289)', () => {
   });
 });
 
+describe('manage_automations on a switched (converted) row (#5221 W06 B7)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const FLOW_ID = '33333333-3333-4333-8333-333333333333';
+  const switched = {
+    id: 'automation-1',
+    name: 'Converted job',
+    orgId: 'org-1',
+    partnerId: null,
+    enabled: false,
+    trigger: { type: 'manual' },
+    conditions: null,
+    managedByAgentId: null,
+    managedByMonitorId: null,
+    retiredReason: 'converted_to_flow',
+    convertedToFlowId: FLOW_ID,
+  };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([switched]),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+  });
+
+  it('manage_automations run on a switched row is automation_converted', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'run', automationId: switched.id }, auth));
+    expect(result).toEqual({ error: 'automation_converted', flowId: FLOW_ID });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it.each(['enable', 'disable'])('manage_automations %s on a switched row is automation_converted', async (action) => {
+    const result = JSON.parse(await tool.handler({ action, automationId: switched.id }, auth));
+    expect(result).toEqual({ error: 'automation_converted', flowId: FLOW_ID });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+});
+
 describe('manage_maintenance_windows handler', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);

@@ -1656,6 +1656,60 @@ describe('automations routes', () => {
     expect(forwardLegacyWebhook).not.toHaveBeenCalled();
 	  });
 
+  describe('a switched row is frozen (#5221 B7, Decision 9)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    const FLOW = '33333333-3333-4333-8333-333333333333';
+    function switchedRow(over: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Converted Job', orgId: 'org-123', partnerId: null, enabled: false,
+              retiredAt: new Date(), retiredReason: 'converted_to_flow', convertedToFlowId: FLOW,
+              managedByAgentId: null, managedByMonitorId: null,
+              trigger: { type: 'manual' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+              ...over,
+            }]),
+          }),
+        }),
+      } as any);
+    }
+    const call = (method: string, path: string, body?: unknown) => app.request(`/automations/${AUTO}${path}`, {
+      method,
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+
+    it.each([
+      ['PUT', '', { name: 'renamed' }],
+      ['PATCH', '', { enabled: true }],
+      ['DELETE', '', undefined],
+      ['POST', '/trigger', undefined],
+      ['POST', '/run', undefined],
+    ] as const)('PUT, DELETE and trigger on a switched row are 409 with flowId (%s %s)', async (method, path, body) => {
+      switchedRow();
+      const res = await call(method, path, body);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'automation_converted', flowId: FLOW });
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+      expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    });
+
+    it('a reverted row (no convertedToFlowId) is not frozen', async () => {
+      switchedRow({ convertedToFlowId: null, retiredAt: null, retiredReason: null, enabled: true });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: AUTO, name: 'renamed', orgId: 'org-123' }]) }),
+        }),
+      } as any);
+      const res = await call('PUT', '', { name: 'renamed' });
+      expect(res.status).toBe(200);
+    });
+  });
+
   describe('a switched row forwards to its flow (#5221 B6)', () => {
     const AUTO = '11111111-1111-4111-8111-111111111111';
     function convertedRow(over: Record<string, unknown> = {}) {
