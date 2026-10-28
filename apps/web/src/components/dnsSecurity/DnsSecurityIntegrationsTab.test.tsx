@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import DnsSecurityIntegrationsTab from './DnsSecurityIntegrationsTab';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
+import { navigateTo } from '@/lib/navigation';
+
+vi.mock('@/lib/navigation', () => ({
+  navigateTo: vi.fn(),
+}));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -279,6 +284,8 @@ describe('DnsSecurityIntegrationsTab', () => {
     };
 
     beforeEach(() => {
+      // Drop any persistent mockResolvedValue from an earlier test.
+      fetchWithAuthMock.mockReset();
       vi.useFakeTimers({ shouldAdvanceTime: true });
       setVisibility('visible');
     });
@@ -312,6 +319,156 @@ describe('DnsSecurityIntegrationsTab', () => {
       // Nothing left deleting: no further requests.
       await advance(120_000);
       expect(listCalls()).toBe(3);
+      // Deleted elsewhere (not from this tab): it drops without a toast.
+      expect(showToastMock).not.toHaveBeenCalled();
+    });
+
+    it('backs off 5, 10, 20 s and then holds at 30 s', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [deletingRow()] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      for (const [gap, expected] of [[5_000, 2], [10_000, 3], [20_000, 4], [30_000, 5], [30_000, 6]] as const) {
+        await advance(gap - 100);
+        expect(listCalls()).toBe(expected - 1);
+        await advance(100);
+        expect(listCalls()).toBe(expected);
+      }
+    });
+
+    it('counts only consecutive failures toward the pause', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow()] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      const fail = () => makeJsonResponse({ error: 'boom' }, false, 503);
+      const ok = () => makeJsonResponse({ data: [deletingRow()] });
+      for (const res of [fail(), fail(), ok(), fail(), fail(), ok(), fail()]) {
+        fetchWithAuthMock.mockResolvedValueOnce(res);
+      }
+      // 7 polls at 5+10+20+30+30+30+30 s: four failures in total, never three in a row.
+      await advance(155_000);
+      expect(listCalls()).toBe(8);
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+      await advance(30_000);
+      expect(listCalls()).toBe(9);
+    });
+
+    it('stops polling and sends the user to login on a 401', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow()] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'unauthorized' }, false, 401));
+      await advance(5_000);
+      expect(listCalls()).toBe(2);
+      expect(vi.mocked(navigateTo)).toHaveBeenCalledWith('/login', { replace: true });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      await advance(300_000);
+      expect(listCalls()).toBe(2);
+    });
+
+    it('treats a 200 without a list as a failure, not as every row gone', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true, id: 'int-1', status: 'deleting' }, true, 202));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow()] }));
+      fireEvent.click(screen.getByTitle('Delete integration'));
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ unexpected: true }));
+      await advance(5_000);
+      expect(screen.getByRole('alert')).toHaveTextContent('Failed to load integrations');
+      expect(screen.getByText('Deleting…')).toBeInTheDocument();
+      expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'Umbrella Prod deleted' }));
+      confirmSpy.mockRestore();
+    });
+
+    it('drops an older list answer that lands after a newer one', async () => {
+      const otherRow = umbrellaRow({ id: 'int-2', name: 'Cloudflare Lab', provider: 'cloudflare' });
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow(), otherRow] }));
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Cloudflare Lab')).toBeInTheDocument());
+
+      // Sync row 1 and, before its refetch answers, delete row 2.
+      let resolveSyncRefetch: (res: Response) => void = () => {};
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true })); // POST sync
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true, id: 'int-2', status: 'deleting' }, true, 202));
+      fetchWithAuthMock.mockReturnValueOnce(new Promise<Response>((resolve) => { resolveSyncRefetch = resolve; }));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+        data: [umbrellaRow(), { ...otherRow, isActive: false, lastSyncStatus: 'deleting' }],
+      }));
+      fireEvent.click(screen.getAllByTitle('Sync now')[0]!);
+      fireEvent.click(screen.getAllByTitle('Delete integration')[1]!);
+      await waitFor(() => expect(listCalls()).toBe(3));
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      // The sync's older answer (row 2 still active) must not overwrite it.
+      await act(async () => { resolveSyncRefetch(makeJsonResponse({ data: [umbrellaRow(), otherRow] })); });
+      expect(screen.getByText('Deleting…')).toBeInTheDocument();
+      confirmSpy.mockRestore();
+    });
+
+    it('resumes a paused poll after a successful manual refresh', async () => {
+      const otherRow = umbrellaRow({ id: 'int-2', name: 'Cloudflare Lab', provider: 'cloudflare' });
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow(), otherRow] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Cloudflare Lab')).toBeInTheDocument());
+
+      for (let i = 0; i < 3; i++) fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 503));
+      await advance(35_000);
+      expect(listCalls()).toBe(4);
+      await advance(120_000);
+      expect(listCalls()).toBe(4); // paused
+
+      // Sync the other row: its refetch succeeds and restarts the poll.
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true }));
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow(), otherRow] }));
+      const syncButtons = screen.getAllByTitle('Sync now');
+      fireEvent.click(syncButtons[1]!);
+      await waitFor(() => expect(listCalls()).toBe(5));
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [otherRow] }));
+      await advance(5_000);
+      expect(listCalls()).toBe(6);
+      await waitFor(() => expect(screen.queryByText('Deleting…')).not.toBeInTheDocument());
+    });
+
+    it('resumes a paused poll when the browser tab is shown again', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [deletingRow()] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      for (let i = 0; i < 3; i++) fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 503));
+      await advance(35_000);
+      await advance(120_000);
+      expect(listCalls()).toBe(4);
+
+      fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+      setVisibility('hidden');
+      setVisibility('visible');
+      await advance(0);
+      expect(listCalls()).toBe(5);
+      await waitFor(() => expect(screen.getByText('No DNS integrations configured')).toBeInTheDocument());
+    });
+
+    it('does not refetch on a visibility change while a poll is already scheduled', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [deletingRow()] }));
+      render(<DnsSecurityIntegrationsTab />);
+      await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+
+      setVisibility('hidden');
+      setVisibility('visible');
+      setVisibility('visible');
+      await advance(0);
+      expect(listCalls()).toBe(1);
+      await advance(5_000);
+      expect(listCalls()).toBe(2);
     });
 
     it('does not poll when no row is being deleted', async () => {

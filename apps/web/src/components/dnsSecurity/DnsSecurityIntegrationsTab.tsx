@@ -55,13 +55,17 @@ function isDeleting(it: Integration): boolean {
 // out once the background job removes it: 5 s, then doubling to a 30 s cap.
 // The server has no terminal "delete failed" state (a failed job leaves the
 // row marked and the nightly sweep re-queues it), so the poll ends when no row
-// is deleting, on unmount, or after MAX_POLL_FAILURES list requests in a row
-// fail (the error banner then stays up). It sleeps while the tab is hidden.
+// is deleting or on unmount. After MAX_POLL_FAILURES list requests in a row
+// fail it pauses with the error banner up, and resumes on the next successful
+// manual refresh (any action on the tab) or when the browser tab is shown
+// again. It also sleeps while the browser tab is hidden.
 const DELETE_POLL_INITIAL_MS = 5_000;
 const DELETE_POLL_MAX_MS = 30_000;
 const MAX_POLL_FAILURES = 3;
 
-type FetchOutcome = 'ok' | 'failed' | 'aborted' | 'unauthorized';
+// 'stale': a newer list request was issued while this one was in flight, so
+// its answer (or error) is dropped in favour of the newer one.
+type FetchOutcome = 'ok' | 'failed' | 'stale' | 'aborted' | 'unauthorized';
 
 export default function DnsSecurityIntegrationsTab() {
   const { t } = useTranslation('security');
@@ -74,6 +78,12 @@ export default function DnsSecurityIntegrationsTab() {
   // Integrations this tab asked to delete, by id → name, so their removal by
   // the background job can be announced. Rows deleted elsewhere drop silently.
   const deletesStartedHere = useRef(new Map<string, string>());
+  // Bumped by every successful non-poll fetch so a poll paused by failures
+  // starts over (see the poll effect below).
+  const [pollEpoch, setPollEpoch] = useState(0);
+  // The poll and the post-action refetches overlap; only the newest request's
+  // answer is applied, so an older list can never overwrite a newer one.
+  const latestRequest = useRef(0);
 
   // `quiet` is the background poll: it keeps the table on screen (no spinner)
   // and leaves an existing error banner up until a request succeeds.
@@ -81,6 +91,7 @@ export default function DnsSecurityIntegrationsTab() {
     signal?: AbortSignal,
     { quiet = false }: { quiet?: boolean } = {},
   ): Promise<FetchOutcome> => {
+    const requestId = ++latestRequest.current;
     if (!quiet) {
       setLoading(true);
       setError(null);
@@ -96,9 +107,15 @@ export default function DnsSecurityIntegrationsTab() {
       }
       const body = await res.json();
       if (signal?.aborted) return 'aborted';
-      const rows = (body.data ?? body.integrations ?? []) as Integration[];
+      if (requestId !== latestRequest.current) return 'stale';
+      const payload: unknown = body?.data ?? body?.integrations;
+      // A 200 without a list is a failure, not "no integrations": read as an
+      // empty list it would announce every pending delete as finished.
+      if (!Array.isArray(payload)) throw new Error(t('dnsSecurityDnsSecurityIntegrationsTab.messages.loadFailed'));
+      const rows = payload as Integration[];
       setIntegrations(rows);
       setError(null);
+      if (!quiet) setPollEpoch((n) => n + 1);
       const present = new Set(rows.map((r) => r.id));
       for (const [id, name] of deletesStartedHere.current) {
         if (present.has(id)) continue;
@@ -111,6 +128,7 @@ export default function DnsSecurityIntegrationsTab() {
       return 'ok';
     } catch (err) {
       if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) return 'aborted';
+      if (requestId !== latestRequest.current) return 'stale';
       setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityIntegrationsTab.messages.loadFailed'));
       return 'failed';
     } finally {
@@ -126,9 +144,9 @@ export default function DnsSecurityIntegrationsTab() {
 
   const anyDeleting = integrations.some(isDeleting);
 
-  // One poll chain per "some row is deleting" episode: it starts when the first
-  // deleting row appears and is torn down (timer cleared, request aborted) when
-  // none remain or the tab unmounts.
+  // One poll chain per "some row is deleting" episode, restarted by pollEpoch:
+  // it starts when the first deleting row appears and is torn down (timer
+  // cleared, request aborted) when none remain or the tab unmounts.
   useEffect(() => {
     if (!anyDeleting) return;
     const controller = new AbortController();
@@ -136,7 +154,9 @@ export default function DnsSecurityIntegrationsTab() {
     let delay = DELETE_POLL_INITIAL_MS;
     let failures = 0;
     let inFlight = false;
-    let waitingForVisible = false;
+    // The chain stopped itself (browser tab hidden, or too many failures);
+    // showing the tab again restarts it from the initial delay.
+    let parked = false;
 
     const schedule = () => {
       if (controller.signal.aborted) return;
@@ -148,7 +168,7 @@ export default function DnsSecurityIntegrationsTab() {
       timer = null;
       if (controller.signal.aborted) return;
       if (document.visibilityState === 'hidden') {
-        waitingForVisible = true;
+        parked = true;
         return;
       }
       inFlight = true;
@@ -157,7 +177,10 @@ export default function DnsSecurityIntegrationsTab() {
       if (outcome === 'aborted' || outcome === 'unauthorized') return;
       if (outcome === 'failed') {
         failures += 1;
-        if (failures >= MAX_POLL_FAILURES) return;
+        if (failures >= MAX_POLL_FAILURES) {
+          parked = true;
+          return;
+        }
       } else {
         failures = 0;
       }
@@ -165,8 +188,10 @@ export default function DnsSecurityIntegrationsTab() {
     }
 
     const onVisibility = () => {
-      if (document.visibilityState !== 'visible' || !waitingForVisible || inFlight || timer !== null) return;
-      waitingForVisible = false;
+      if (document.visibilityState !== 'visible' || !parked || inFlight || timer !== null) return;
+      parked = false;
+      failures = 0;
+      delay = DELETE_POLL_INITIAL_MS;
       void tick();
     };
 
@@ -177,7 +202,7 @@ export default function DnsSecurityIntegrationsTab() {
       if (timer !== null) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [anyDeleting, fetchIntegrations]);
+  }, [anyDeleting, pollEpoch, fetchIntegrations]);
 
   const handleSync = async (integration: Integration) => {
     setBusyId(integration.id);
