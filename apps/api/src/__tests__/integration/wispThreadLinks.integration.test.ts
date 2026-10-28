@@ -36,9 +36,10 @@ import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth'
 import { resolveEntityRef } from '../../services/wisp/entityRefs';
 import { resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { buildHomeSections } from '../../services/wisp/home';
-import { addLink, listLinks, ThreadLinkError } from '../../services/wisp/threadLinks';
+import { addLink, listLinks, touchLinks, ThreadLinkError } from '../../services/wisp/threadLinks';
 import { registerWispLinkTools } from '../../services/wisp/linkTools';
 import { getOrCreateThread, seedContextForSession } from '../../services/wisp/threads';
+import type { WispLinkSource } from '@breeze/shared';
 import type { AiTool } from '../../services/aiTools';
 import {
   assignUserToPartner,
@@ -139,9 +140,9 @@ async function linkAll(env: Env) {
   const ceiling = await env.ceiling();
   const ctx = { auth: env.auth, ceiling };
   return env.inRequest(async () => ({
-    a: await addLink(ctx, env.thread.id, { kind: 'ticket', id: env.ticketA.id }),
-    b: await addLink(ctx, env.thread.id, { kind: 'ticket', id: env.ticketB.id }),
-    u: await addLink(ctx, env.thread.id, { kind: 'user', id: env.other.id }),
+    a: await addLink(ctx, env.thread.id, { kind: 'ticket', id: env.ticketA.id }, { source: 'user_pin' }),
+    b: await addLink(ctx, env.thread.id, { kind: 'ticket', id: env.ticketB.id }, { source: 'user_pin' }),
+    u: await addLink(ctx, env.thread.id, { kind: 'user', id: env.other.id }, { source: 'user_pin' }),
   }));
 }
 
@@ -218,17 +219,19 @@ describe('thread links service (real Postgres)', () => {
     expect(rows.map((r) => r.source)).toEqual(['user_pin', 'user_pin', 'user_pin']);
   });
 
-  it.each([false, true])('derives source from the insert grant (has grant: %s)', async (hasGrant) => {
+  it.each([
+    ['auto', true], ['wisp_pin', false], ['user_pin', true],
+  ] as const)('uses explicit source %s independently of grant attribution (%s)', async (source, hasGrant) => {
     const env = await seed();
     const ceiling = await env.ceiling();
     await env.inRequest(() => addLink(
       { auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id },
-      { addedByGrantId: hasGrant ? env.grantId : null },
+      { source, addedByGrantId: hasGrant ? env.grantId : null },
     ));
     const [row] = await rowsOf(env.thread.id);
     expect(row).toMatchObject({
       addedByGrantId: hasGrant ? env.grantId : null,
-      source: hasGrant ? 'wisp_pin' : 'user_pin',
+      source,
       touchCount: 1,
     });
     expect(row!.lastTouchedAt).toEqual(row!.createdAt);
@@ -238,7 +241,7 @@ describe('thread links service (real Postgres)', () => {
     const env = await seed();
     const { a } = await linkAll(env);
     const ceiling = await env.ceiling();
-    const again = await env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }));
+    const again = await env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }, { source: 'user_pin' }));
     expect(again.id).toBe(a.id);
     expect(await rowsOf(env.thread.id)).toHaveLength(3);
   });
@@ -247,7 +250,7 @@ describe('thread links service (real Postgres)', () => {
     const env = await seed();
     const ceiling = await env.ceiling();
     const code = await refusal(env.inRequest(() => addLink(
-      { auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id, orgId: env.orgB.id }, { addedByGrantId: env.grantId },
+      { auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id, orgId: env.orgB.id }, { source: 'wisp_pin', addedByGrantId: env.grantId },
     )));
     expect(code).toBe('not_found');
     expect(await rowsOf(env.thread.id)).toHaveLength(0);
@@ -259,18 +262,18 @@ describe('thread links service (real Postgres)', () => {
     const otherOrg = await createOrganization({ partnerId: otherPartner.id });
     const foreign = await insertTicket(otherOrg.id, otherPartner.id, 'not yours');
     const ceiling = await env.ceiling();
-    expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: foreign.id }))))
+    expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: foreign.id }, { source: 'user_pin' }))))
       .toBe('not_found');
   });
 
-  it('caps a thread at 50 links (link_limit)', async () => {
+  it('pin add at 50 pins still refuses with link_limit', async () => {
     const env = await seed();
     await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 50 }, () => ({
       threadId: env.thread.id, partnerId: env.partner.id, orgId: env.orgA.id, entityKind: 'ticket' as const,
-      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id, source: 'user_pin' as const,
+      entityId: randomUUID(), label: 'filler', addedByUserId: env.grantor.id, source: 'wisp_pin' as const,
     }))));
     const ceiling = await env.ceiling();
-    expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }))))
+    expect(await refusal(env.inRequest(() => addLink({ auth: env.auth, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }, { source: 'user_pin' }))))
       .toBe('link_limit');
   });
 
@@ -286,8 +289,135 @@ describe('thread links service (real Postgres)', () => {
       scope: 'organization', orgId: env.orgA.id, accessibleOrgIds: [env.orgA.id], accessiblePartnerIds: [],
       userId: env.grantor.id, currentPartnerId: env.partner.id,
     };
-    expect(await refusal(withDbAccessContext(orgCtx, () => addLink({ auth: orgToken, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }))))
+    expect(await refusal(withDbAccessContext(orgCtx, () => addLink({ auth: orgToken, ceiling }, env.thread.id, { kind: 'ticket', id: env.ticketA.id }, { source: 'user_pin' }))))
       .toBe('link_limit');
+  });
+});
+
+describe('thread links working set (real Postgres)', () => {
+  const oldTouch = new Date('2026-01-01T00:00:00Z');
+
+  async function ageLink(id: string) {
+    await asSystem(() => db.update(wispThreadLinks).set({ lastTouchedAt: oldTouch })
+      .where(eq(wispThreadLinks.id, id)));
+  }
+
+  it('a pin add over an auto link promotes it to user_pin', async () => {
+    const env = await seed();
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const ref = { kind: 'ticket' as const, id: env.ticketA.id };
+    const auto = await addLink(ctx, env.thread.id, ref, { source: 'auto' });
+    await asSystem(() => db.update(wispThreadLinks)
+      .set({ label: 'stale', orgId: env.orgB.id, lastTouchedAt: oldTouch })
+      .where(eq(wispThreadLinks.id, auto.id!)));
+
+    const pin = await env.inRequest(() => addLink(ctx, env.thread.id, ref, { source: 'user_pin' }));
+    expect(pin.id).toBe(auto.id);
+    expect(pin.source).toBe('user_pin');
+    expect(new Date(pin.lastTouchedAt).getTime()).toBeGreaterThan(oldTouch.getTime());
+    const rows = await rowsOf(env.thread.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: 'user_pin', touchCount: 2, orgId: env.orgA.id, label: pin.label });
+    expect(pin.label).toBe(`#${env.ticketA.ticketNumber} Printer offline in A`);
+  });
+
+  it.each(['user_pin', 'wisp_pin'] as const)('an auto add over a pin keeps it a pin and touches it (%s)', async (source) => {
+    const env = await seed();
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const ref = { kind: 'ticket' as const, id: env.ticketA.id };
+    const pin = await addLink(ctx, env.thread.id, ref, { source });
+    await ageLink(pin.id!);
+    const again = await addLink(ctx, env.thread.id, ref, { source: 'auto' });
+    expect(again).toMatchObject({ id: pin.id, source });
+    expect(new Date(again.lastTouchedAt).getTime()).toBeGreaterThan(oldTouch.getTime());
+    expect(await rowsOf(env.thread.id)).toMatchObject([{ source, touchCount: 2 }]);
+  });
+
+  it('sources promote through wisp_pin to user_pin and never demote on re-add', async () => {
+    const env = await seed();
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const ref = { kind: 'ticket' as const, id: env.ticketA.id };
+    const steps: Array<[WispLinkSource, WispLinkSource]> = [
+      ['auto', 'auto'], ['auto', 'auto'], ['wisp_pin', 'wisp_pin'],
+      ['wisp_pin', 'wisp_pin'], ['user_pin', 'user_pin'],
+      ['wisp_pin', 'user_pin'], ['user_pin', 'user_pin'],
+    ];
+    let id: string | null = null;
+    for (const [source, expected] of steps) {
+      const link = await addLink(ctx, env.thread.id, ref, { source });
+      id ??= link.id;
+      expect(link).toMatchObject({ id, source: expected });
+    }
+    expect(await rowsOf(env.thread.id)).toMatchObject([{ source: 'user_pin', touchCount: steps.length }]);
+  });
+
+  it('auto eviction never removes a pin', async () => {
+    const env = await seed();
+    const pins = await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 50 }, (_, i) => ({
+      threadId: env.thread.id, partnerId: env.partner.id, orgId: env.orgA.id,
+      entityKind: 'ticket' as const, entityId: randomUUID(), label: 'pin', addedByUserId: env.grantor.id,
+      source: (i % 2 ? 'user_pin' : 'wisp_pin') as WispLinkSource,
+      lastTouchedAt: new Date('2025-01-01T00:00:00Z'),
+    }))).returning());
+    const autos = await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: 20 }, (_, i) => ({
+      threadId: env.thread.id, partnerId: env.partner.id, orgId: env.orgA.id,
+      entityKind: 'ticket' as const, entityId: randomUUID(), label: 'auto', addedByUserId: env.grantor.id,
+      source: 'auto' as const, lastTouchedAt: new Date(oldTouch.getTime() + i * 1000),
+    }))).returning());
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const inserted = await addLink(ctx, env.thread.id, { kind: 'ticket', id: env.ticketA.id }, { source: 'auto' });
+    const rows = await rowsOf(env.thread.id);
+    expect(rows).toHaveLength(70);
+    expect(rows.filter((r) => r.source !== 'auto').map((r) => r.id).sort()).toEqual(pins.map((r) => r.id).sort());
+    expect(rows.filter((r) => r.source === 'auto').map((r) => r.id).sort())
+      .toEqual([...autos.slice(1).map((r) => r.id), inserted.id].sort());
+    expect(inserted.source).toBe('auto');
+  });
+
+  it('concurrent auto adds respect the auto cap', async () => {
+    const env = await seed();
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const targets = await asSystem(() => db.insert(tickets).values(Array.from({ length: 25 }, (_, i) => ({
+      orgId: env.orgA.id, partnerId: env.partner.id, ticketNumber: `WL-${randomUUID()}`,
+      subject: `Concurrent ${i}`, source: 'manual' as const,
+    }))).returning({ id: tickets.id }));
+    // Each call owns its transaction; sharing an ambient request transaction would serialize the test itself.
+    const added = await Promise.all(targets.map((target) => addLink(
+      ctx, env.thread.id, { kind: 'ticket', id: target.id }, { source: 'auto' },
+    )));
+    expect(added).toHaveLength(25);
+    expect(added.every((link) => link.source === 'auto')).toBe(true);
+    const rows = await rowsOf(env.thread.id);
+    expect(rows).toHaveLength(20);
+    expect(rows.every((row) => row.source === 'auto')).toBe(true);
+    expect(new Set(rows.map((row) => row.entityId)).size).toBe(20);
+  });
+
+  it('touchLinks bumps recency and never inserts', async () => {
+    const env = await seed();
+    const { a, b, u } = await linkAll(env);
+    await ageLink(a.id!);
+    await ageLink(u.id!);
+    // A deleted target still gets touched: this operation must not resolve or prune it.
+    await asSystem(() => db.delete(tickets).where(eq(tickets.id, env.ticketA.id)));
+    const before = await rowsOf(env.thread.id);
+    const refs = [a.ref, u.ref, a.ref, { kind: 'ticket' as const, id: randomUUID(), orgId: env.orgA.id }];
+    expect(await touchLinks(env.partner.id, env.thread.id, [])).toBe(0);
+    expect(await touchLinks(randomUUID(), env.thread.id, refs)).toBe(0);
+    expect(await touchLinks(env.partner.id, randomUUID(), refs)).toBe(0);
+    expect(await touchLinks(env.partner.id, env.thread.id, [{ ...b.ref, kind: 'device' }])).toBe(0);
+    expect(await rowsOf(env.thread.id)).toEqual(before);
+    expect(await env.inRequest(() => touchLinks(env.partner.id, env.thread.id, refs))).toBe(2);
+    const after = await rowsOf(env.thread.id);
+    expect(after).toHaveLength(3);
+    for (const id of [a.id, u.id]) {
+      const touched = after.find((row) => row.id === id)!;
+      expect(touched.touchCount).toBe(2);
+      expect(touched.lastTouchedAt.getTime()).toBeGreaterThan(oldTouch.getTime());
+      const original = before.find((row) => row.id === id)!;
+      expect(touched).toEqual({ ...original, touchCount: 2, lastTouchedAt: touched.lastTouchedAt });
+    }
+    expect(after.find((row) => row.id === b.id)).toEqual(before.find((row) => row.id === b.id));
   });
 });
 

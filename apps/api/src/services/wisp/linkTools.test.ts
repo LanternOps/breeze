@@ -212,7 +212,7 @@ describe('wisp link tools — handlers', () => {
     expect(resolveGrantCeiling).toHaveBeenCalledWith(GRANT, REVISION);
     expect(getOrCreateThread).toHaveBeenCalledWith(GRANT);
     expect(links.addLink).toHaveBeenCalledTimes(1);
-    expect(links.addLink).toHaveBeenCalledWith({ auth: a, ceiling }, THREAD, { kind: 'ticket', id: TICKET }, { addedByGrantId: GRANT });
+    expect(links.addLink).toHaveBeenCalledWith({ auth: a, ceiling }, THREAD, { kind: 'ticket', id: TICKET }, { source: 'wisp_pin', addedByGrantId: GRANT });
     expect(fencedJson(out)).toEqual({
       linked: true,
       link: { kind: 'ticket', id: TICKET, orgId: ORG, label: '#1234 Printer offline', status: 'open', href: `/tickets/${TICKET}`, source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z' },
@@ -244,7 +244,7 @@ describe('wisp link tools — handlers', () => {
     const out = JSON.parse(await run('link_entity', { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }));
 
     expect(out).toEqual({ refused: 'not_found' });
-    expect(links.addLink).toHaveBeenCalledWith(expect.anything(), THREAD, { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }, { addedByGrantId: GRANT });
+    expect(links.addLink).toHaveBeenCalledWith(expect.anything(), THREAD, { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }, { source: 'wisp_pin', addedByGrantId: GRANT });
     expect(resolveEntityRef).toHaveBeenCalledTimes(1);
     expect(dbTransaction).not.toHaveBeenCalled();
   });

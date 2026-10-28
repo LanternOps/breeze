@@ -66,7 +66,7 @@ wispThreadLinkRoutes.post('/:id/links', zValidator('json', linkEntitySchema), as
       { auth: authOf(c), ceiling: outcome.ceiling },
       own.thread.id,
       { kind: body.kind, id: body.id, orgId: body.orgId },
-      { addedByGrantId: null },
+      { source: 'user_pin', addedByGrantId: null },
     );
   } catch (err) {
     if (err instanceof ThreadLinkError) {

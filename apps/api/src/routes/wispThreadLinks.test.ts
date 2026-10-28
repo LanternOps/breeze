@@ -94,7 +94,7 @@ describe('POST /thread/:id/links', () => {
     const res = await req('POST', `/thread/${THREAD}/links`, { kind: 'ticket', id: TICKET });
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ data: { link } });
-    expect(h.addLink).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { kind: 'ticket', id: TICKET, orgId: undefined }, { addedByGrantId: null });
+    expect(h.addLink).toHaveBeenCalledWith({ auth, ceiling }, THREAD, { kind: 'ticket', id: TICKET, orgId: undefined }, { source: 'user_pin', addedByGrantId: null });
     expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'wisp.thread.link_added',
       orgId: 'o1',

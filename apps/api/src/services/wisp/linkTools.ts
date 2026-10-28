@@ -121,7 +121,7 @@ const linkEntityHandler = grantTool(linkEntitySchema, async (input, ceiling, aut
     id: input.id,
     ...(input.orgId !== undefined ? { orgId: input.orgId } : {}),
   };
-  const link = await addLink({ auth, ceiling }, thread.id, ref, { addedByGrantId: ceiling.grantId });
+  const link = await addLink({ auth, ceiling }, thread.id, ref, { source: 'wisp_pin', addedByGrantId: ceiling.grantId });
   return fenced({ linked: true, link: toolView(link) });
 });
 
