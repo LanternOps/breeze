@@ -68,7 +68,11 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     let cancelled = false;
     discoverStepUpTier()
       .then((next) => { if (!cancelled) setTier(next); })
-      .catch(() => { if (!cancelled) setFactorFailed(true); });
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.warn('[wisp] step-up factor discovery failed', err);
+        setFactorFailed(true);
+      });
     return () => { cancelled = true; };
   }, [open, initialScope]);
 
@@ -92,8 +96,9 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     fetchWispThread(orgId).then(
       () => { if (!cancelled) setProbe({ key: scopeKey, live: true }); },
       (err: unknown) => {
+        if (cancelled) return;
         if (!isNoActiveGrant(err)) console.warn('[wisp] live-grant probe failed; asking for the step-up', err);
-        if (!cancelled) setProbe({ key: scopeKey, live: false });
+        setProbe({ key: scopeKey, live: false });
       },
     );
     return () => { cancelled = true; };
@@ -108,7 +113,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   const canConfirm = reenter
     ? !busy
     : !busy && grant === 'none' && !!partnerId && !missingOrg && (tier === 'passkey' || (tier === 'totp' && code.length === 6));
-  const shownError = error ?? (factorFailed && !reenter ? t('wisp.modal.stepUpUnavailable') : null);
+  // Both can apply at once (a grant that ended, on an account whose factor
+  // lookup failed): show both, so "confirm it is you" is never left unexplained.
+  const factorError = factorFailed && !reenter ? t('wisp.modal.stepUpUnavailable') : null;
+  const shownErrors = [...new Set([error, factorError].filter((m): m is string => !!m))];
   /** A message is about the scope it was raised for. */
   const chooseScope = (next: 'org' | 'partner') => {
     setScope(next);
@@ -261,7 +269,9 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
           <p className="text-xs text-muted-foreground">{t('wisp.modal.passkey')}</p>
         ) : null}
 
-        {shownError && <p role="alert" className="text-sm text-destructive">{shownError}</p>}
+        {shownErrors.map((message) => (
+          <p key={message} role="alert" className="text-sm text-destructive">{message}</p>
+        ))}
 
         <div className="flex justify-end gap-2">
           <button type="button" className="rounded-md border px-3 py-2 text-sm" disabled={busy} onClick={onClose} data-testid="wisp-grant-cancel">
