@@ -383,7 +383,26 @@ added and verified the rows marked †.
    §3.7 has the detail. (A) is the largest tenancy change but the only one that gives a named,
    reusable cross-org object. (B) keeps the FKs but needs a reconciler and N×M copies. (C) changes
    no ownership and keeps partner precedence, but repeats the predicate on every policy.
-   **Recommend (A).** The quorum asks that (B) and (C) be weighed explicitly first.
+   **Evidence for (C), added 2026-10-28 (verified):** a filter is already a first-class execution
+   target elsewhere. `DeploymentTargetConfig` has `type: 'filter'`
+   (`packages/shared/src/validators/filters.ts:270-301`); `DeviceTargetSelector.tsx:232-234` lets
+   the user pick a saved view and copies its conditions into the target; Automations (partner-owned
+   allowed, `schema/automations.ts:43-51`), Software Deployment and Security Sweeps use it; and
+   `deploymentTargetResolver.ts:92-126` evaluates it per org at run time with the same
+   execution-tier refusal as groups (`inlineFilterHasExecutionRefusedFields`, `:99-113`). Saved
+   views themselves are org rows (`saved_filters.org_id NOT NULL`, `routes/filters.ts:300-335`) but
+   their conditions carry no org, and the device-list preview already spans every accessible org
+   for a partner user (`routes/filters.ts:140-150`). So a variant (C′) exists: add `type: 'filter'`
+   to config-policy assignments (#8957), reusing the target config, selector and resolver, and
+   optionally make `saved_filters` org XOR partner so the view is the named, reusable object.
+   (C′) needs no ownership change on `device_groups`, no membership trigger and no 65-file sweep;
+   its costs are the ~20 resolver call sites #8957 already counted and the lack of a materialized,
+   browsable membership (no member list, no "what will this hit" page, per-evaluation filter cost
+   on the effective-config path). For the requesting prospect's case (monitors only) (C′) is
+   sufficient. **Recommendation now hinges on one question for the owner: is a browsable
+   materialized membership required? If yes, (A). If monitor/policy targeting is enough, (C′) and
+   this spec is replaced by the #8957 spec plus a partner-owned saved-views wave.** The quorum
+   asked for exactly this weighing.
 2. **Who may reference a partner group.** Options: (a) partner-owned policies only, and no org-group
    rule may reference one; (b) org-owned policies too, clamped to the policy's org
    (`configPolicyAssignmentDevices.ts:129` already clamps), with `groupId` references allowed.
