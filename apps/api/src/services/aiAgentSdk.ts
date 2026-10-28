@@ -979,12 +979,22 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10193 — who an approval raised from this chat session is attributed to on
+ * the approval row, the mobile push and the intent: Wisp under a grant (the
+ * grant-driven voice, #10131), Breeze AI otherwise.
+ */
+function chatApprovalClientLabel(session: ActiveSession): string {
+  return session.wispGrant ? 'Wisp' : 'Breeze AI';
+}
+
+/**
  * #10144 — the coordinator's cheap, deterministic gates for one
  * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
  * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
- * …) is refused here with the SAME code the tool's handler returns, and nobody
- * is asked to approve a request that cannot run. Runs after the Wisp ceiling
+ * `agent_disabled` (#10193), …) is refused here with the SAME code (and
+ * `message`) the tool's handler returns, and nobody is asked to approve a
+ * request that cannot run. Runs after the Wisp ceiling
  * gate, so the target org is already inside the grant; on a pass it returns
  * that org's name for the card.
  *
@@ -997,7 +1007,7 @@ async function specialistPreApprovalGate(
   session: ActiveSession,
   input: Record<string, unknown>,
   wispState: WispCallState | null,
-): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string } }> {
+): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string; message?: string } }> {
   // The tool is inert without a grant (aiToolsWisp: GRANT_REQUIRED) — a plain
   // chat session must not ask for approval first.
   if (!session.wispGrant || !wispState) {
@@ -1015,7 +1025,13 @@ async function specialistPreApprovalGate(
     if (result.ok) return { ok: true, orgName: result.orgName };
     return {
       ok: false,
-      denial: { allowed: false, error: result.refused, ...(result.detail ? { detail: result.detail } : {}) },
+      denial: {
+        allowed: false,
+        error: result.refused,
+        ...(result.detail ? { detail: result.detail } : {}),
+        // #10193: the sentence the model reads back (names a switched-off agent).
+        ...(result.message ? { message: result.message } : {}),
+      },
     };
   } catch (err) {
     console.error(`[AI-SDK] launch_specialist precheck failed (session ${session.breezeSessionId}); asking for approval as before`, err);
@@ -1916,6 +1932,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
+              // #10193: a Wisp session's approval is Wisp's; otherwise the
+              // intent service's chat default ("Breeze AI") applies.
+              ...(session.wispGrant ? { requestingClientLabel: chatApprovalClientLabel(session) } : {}),
               orgId: flowBinding ? flowBinding.orgId : session.orgId,
               ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
@@ -2652,7 +2671,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   .values({
                     userId: session.auth.user.id,
                     executionId: approvalExec!.id,
-                    requestingClientLabel: 'Breeze AI',
+                    requestingClientLabel: chatApprovalClientLabel(session),
                     requestingMachineLabel: null,
                     actionLabel,
                     actionToolName: stripMcpPrefix(toolName),
@@ -2697,7 +2716,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
-                requestingClientLabel: 'Breeze AI',
+                requestingClientLabel: chatApprovalClientLabel(session),
               });
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);

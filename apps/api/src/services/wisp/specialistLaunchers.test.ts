@@ -110,6 +110,9 @@ const jobId = (scheduleId: string, key: string) => `sweep-occ-${scheduleId}-${ke
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.unstubAllEnvs();
+  // The agent kill switch is on (agents allowed) unless a case says otherwise.
+  vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
   h.tables = {};
   for (const k of Object.keys(h.recipeKinds)) delete h.recipeKinds[k];
 });
@@ -218,7 +221,7 @@ describe('launchOperatorRecipe', () => {
   beforeEach(() => {
     h.getRecipe.mockReturnValue({ key: 'service_recovery', version: 1 });
     h.recipeKinds.service_recovery = 'ops';
-    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-1', effective: { enabled: true } });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-1', effective: { enabled: true, mode: 'act' } });
   });
 
   it('refuses unknown recipe', async () => {
@@ -231,9 +234,18 @@ describe('launchOperatorRecipe', () => {
     expect(await launchOperatorRecipe(ctx({ params }))).toEqual({ refused: 'no_effective_agent' });
   });
 
-  it.each([[null], [{ agentId: 'a', effective: { enabled: false } }]])('refuses when agent missing/disabled', async (r) => {
-    h.resolveEffectiveAgentSystem.mockResolvedValue(r);
+  it('refuses when the agent is missing', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
     expect(await launchOperatorRecipe(ctx({ params }))).toEqual({ refused: 'no_effective_agent' });
+    expect(h.admitTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses agent_disabled, naming the agent, when it is switched off (#10193)', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[{ name: 'Ops agent' }]];
+    expect(await launchOperatorRecipe(ctx({ params }))).toEqual({
+      refused: 'agent_disabled', detail: 'disabled', message: expect.stringContaining('"Ops agent" is switched off'),
+    });
     expect(h.admitTask).not.toHaveBeenCalled();
   });
 
@@ -273,7 +285,7 @@ describe('launchOperatorRecipe', () => {
 
 describe('launchPatchPlan', () => {
   beforeEach(() => {
-    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-p', effective: { enabled: true } });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-p', effective: { enabled: true, mode: 'shadow' } });
   });
 
   it('admits a device-less patch run carrying the grant and lineage', async () => {
@@ -293,6 +305,19 @@ describe('launchPatchPlan', () => {
   it('refuses without an effective agent', async () => {
     h.resolveEffectiveAgentSystem.mockResolvedValue(null);
     expect(await launchPatchPlan(ctx())).toEqual({ refused: 'no_effective_agent' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses agent_disabled before admission when the Patching agent is switched off or mode Off (#10193)', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-p', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[{ name: 'QA Patching agent' }], [{ name: 'QA Patching agent' }]];
+    expect(await launchPatchPlan(ctx())).toEqual({
+      refused: 'agent_disabled', detail: 'disabled', message: expect.stringContaining('"QA Patching agent" is switched off'),
+    });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'agent-p', effective: { enabled: true, mode: 'off' } });
+    expect(await launchPatchPlan(ctx())).toEqual({
+      refused: 'agent_disabled', detail: 'mode_off', message: expect.stringContaining('"QA Patching agent" is set to mode Off'),
+    });
     expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
@@ -355,7 +380,7 @@ describe('launchRemediationResearch', () => {
     h.tables.ai_agent_runs = [[]];
     const order: string[] = [];
     h.ensureResearchAgent.mockImplementation(async () => { order.push('ensure'); });
-    h.resolveEffectiveAgentSystem.mockImplementation(async () => { order.push('resolve'); return { agentId: 'ag' }; });
+    h.resolveEffectiveAgentSystem.mockImplementation(async () => { order.push('resolve'); return { agentId: 'ag', effective: { enabled: true, mode: 'act' } }; });
     h.createAndEnqueueAgentRun.mockImplementation(async () => { order.push('admit'); return { created: true, run: { id: 'r1' } }; });
     expect(await launchRemediationResearch(ctx({ params }))).toEqual({ admitted: true, runId: 'r1' });
     expect(order).toEqual(['ensure', 'resolve', 'admit']);
@@ -371,6 +396,14 @@ describe('launchRemediationResearch', () => {
     h.tables.devices = [[{ id: DEVICE }]];
     h.resolveEffectiveAgentSystem.mockResolvedValue(null);
     expect(await launchRemediationResearch(ctx({ params }))).toEqual({ refused: 'no_effective_agent' });
+  });
+
+  it('refuses agent_disabled when the provisioned research agent is switched off (#10193)', async () => {
+    h.tables.devices = [[{ id: DEVICE }]];
+    h.tables.ai_agents = [[{ name: 'Remediation research' }]];
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'ag', effective: { enabled: false, mode: 'act' } });
+    expect(await launchRemediationResearch(ctx({ params }))).toMatchObject({ refused: 'agent_disabled', detail: 'disabled' });
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 });
 
@@ -475,10 +508,56 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
   it('patch_plan: refuses no_effective_agent without a Patching agent', async () => {
     h.resolveEffectiveAgentSystem.mockResolvedValue(null);
     expect(await pre('patch_plan')).toEqual({ refused: 'no_effective_agent' });
-    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true } });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true, mode: 'shadow' } });
     expect(await pre('patch_plan')).toBeNull();
     expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'patch');
     noSideEffects();
+  });
+
+  // #10193: the wizard creates every agent disabled, so "exists" is not "can run".
+  it('patch_plan: refuses agent_disabled, naming the agent and where to turn it on, for a switched-off Patching agent', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[{ name: 'QA Patching agent' }]];
+    expect(await pre('patch_plan')).toEqual({
+      refused: 'agent_disabled',
+      detail: 'disabled',
+      message: 'The agent "QA Patching agent" is switched off. Turn it on under Settings → AI Agents (/settings/ai-agents), then ask again.',
+    });
+    noSideEffects();
+  });
+
+  it('patch_plan: refuses agent_disabled (mode_off) for a Patching agent set to mode Off', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true, mode: 'off' } });
+    h.tables.ai_agents = [[{ name: 'QA Patching agent' }]];
+    expect(await pre('patch_plan')).toEqual({
+      refused: 'agent_disabled',
+      detail: 'mode_off',
+      message: expect.stringContaining('"QA Patching agent" is set to mode Off'),
+    });
+  });
+
+  it('patch_plan: names the server kill switch, not the agent, when BREEZE_AI_AGENTS_ENABLED is off', async () => {
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'false');
+    try {
+      // The resolver folds the kill switch into `enabled: false`.
+      h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'act' } });
+      h.tables.ai_agents = [[{ name: 'QA Patching agent' }]];
+      expect(await pre('patch_plan')).toEqual({
+        refused: 'agent_disabled', detail: 'kill_switch_off', message: expect.stringContaining('BREEZE_AI_AGENTS_ENABLED'),
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('patch_plan: an unreadable agent name still refuses, with a generic sentence', async () => {
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[]];
+    expect(await pre('patch_plan')).toEqual({
+      refused: 'agent_disabled',
+      detail: 'disabled',
+      message: expect.stringContaining('The agent this specialist needs is switched off'),
+    });
   });
 
   it('operator_recipe: unknown recipe, unmapped kind and a missing/disabled agent refuse as the launcher does', async () => {
@@ -488,9 +567,12 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
     h.getRecipe.mockReturnValue({ key: 'service_recovery', version: 1 });
     expect(await pre('operator_recipe', params)).toEqual({ refused: 'no_effective_agent' });
     h.recipeKinds.service_recovery = 'ops';
-    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false } });
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
     expect(await pre('operator_recipe', params)).toEqual({ refused: 'no_effective_agent' });
-    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true } });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: false, mode: 'shadow' } });
+    h.tables.ai_agents = [[{ name: 'Ops agent' }]];
+    expect(await pre('operator_recipe', params)).toMatchObject({ refused: 'agent_disabled', detail: 'disabled' });
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'a', effective: { enabled: true, mode: 'act' } });
     expect(await pre('operator_recipe', params)).toBeNull();
     noSideEffects();
   });
@@ -498,6 +580,19 @@ describe('SPECIALIST_PREREQUISITES (#10144)', () => {
   it('remediation_research: refuses a device outside the org; never provisions the research agent', async () => {
     h.tables.devices = [[], [{ id: DEVICE }]];
     expect(await pre('remediation_research', { deviceId: DEVICE })).toEqual({ refused: 'device_not_in_org' });
+    // No research agent yet: the launcher provisions one (enabled), so this passes.
+    h.resolveEffectiveAgentSystem.mockResolvedValue(null);
+    expect(await pre('remediation_research', { deviceId: DEVICE })).toBeNull();
+    noSideEffects();
+  });
+
+  it('remediation_research: refuses agent_disabled when the existing research agent is switched off (#10193)', async () => {
+    h.tables.devices = [[{ id: DEVICE }], [{ id: DEVICE }]];
+    h.tables.ai_agents = [[{ name: 'Remediation research' }]];
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'r', effective: { enabled: false, mode: 'act' } });
+    expect(await pre('remediation_research', { deviceId: DEVICE })).toMatchObject({ refused: 'agent_disabled', detail: 'disabled' });
+    expect(h.resolveEffectiveAgentSystem).toHaveBeenCalledWith(ORG, 'research');
+    h.resolveEffectiveAgentSystem.mockResolvedValue({ agentId: 'r', effective: { enabled: true, mode: 'act' } });
     expect(await pre('remediation_research', { deviceId: DEVICE })).toBeNull();
     noSideEffects();
   });
