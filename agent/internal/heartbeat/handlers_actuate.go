@@ -92,6 +92,15 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 	if !ok {
 		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
 	}
+	// #8971: an approval can land while the user still has the PAM dialog
+	// open. Wait (bounded, outside every lock) for their answer before the
+	// operation budget starts. The manager then re-checks non-blockingly under
+	// its operation and refuses a declined or unanswered request with a real
+	// boot id, before admission, PinTarget or any ledger entry.
+	if refuse, code := h.awaitPamDecline(payload.RequestID); refuse {
+		log.Warn("pam: approved apply for a request the user declined or has not answered; refusing",
+			"elevationRequestId", payload.RequestID, "actuationId", payload.ActuationID, "failureCode", code)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
 	defer cancel()
 	result := manager.ApplyWithReceivedObservation(ctx, payload, func(received pamlifetime.Result) error {
@@ -317,6 +326,25 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	payload, err := parseActuatePayload(cmd.Payload)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+
+	// #8971: refuse a request the end user declined (or has not answered)
+	// before admission. The wait for an open dialog comes before the
+	// actuation budget below, so it does not eat into it.
+	if h != nil {
+		if refuse, code := h.awaitPamDecline(payload.ElevationRequestID); refuse {
+			target := pamTarget{Path: payload.TargetPath, TargetHash: payload.TargetHash,
+				CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername}
+			log.Warn("pam: actuation REFUSED — the user declined this request on the device or has not answered",
+				"elevationRequestId", payload.ElevationRequestID, "reason", code)
+			writePAMActuationRefused(target.eventLogFields(payload.ElevationRequestID, code))
+			return tools.NewSuccessResult(actuateResult{
+				ElevationRequestID: payload.ElevationRequestID,
+				Success:            false,
+				Reason:             code,
+				Message:            "the user declined this elevation on the device",
+			}, time.Since(start).Milliseconds())
+		}
 	}
 
 	// Bound the overall handler at twice the consent-window timeout so a

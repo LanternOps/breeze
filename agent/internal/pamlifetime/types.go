@@ -85,6 +85,14 @@ type Result struct {
 	Evidence        ResultEvidence `json:"evidence"`
 }
 
+// DeclineChecker answers whether an apply for a request must be refused
+// because of the end user's answer on the device (#8971): declined, still
+// undecided, or the decision record is untrusted. code is the failure code to
+// report. Implemented by pamdecline.Store; must not block.
+type DeclineChecker interface {
+	Check(requestID string) (refuse bool, code string)
+}
+
 type Manager interface {
 	Apply(context.Context, ApplyCommand) Result
 	Cleanup(context.Context, CleanupCommand) Result
