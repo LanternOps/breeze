@@ -225,6 +225,53 @@ func TestActuateElevationRefusesDeclined(t *testing.T) {
 	}
 }
 
+// declineDuringAdmissionManager records a decline while the legacy handler
+// waits for admission, i.e. after its first (waiting) check passed.
+type declineDuringAdmissionManager struct {
+	*fakePamLifetimeManager
+	onAcquire func()
+}
+
+func (m *declineDuringAdmissionManager) AcquireLegacyActuation(ctx context.Context) (func(), error) {
+	m.onAcquire()
+	return m.fakePamLifetimeManager.AcquireLegacyActuation(ctx)
+}
+
+func TestActuateElevationRechecksAfterAdmission(t *testing.T) {
+	inner := &fakePamLifetimeManager{available: true}
+	store := pamdecline.NewStore("", nil)
+	const id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	manager := &declineDuringAdmissionManager{fakePamLifetimeManager: inner, onAcquire: func() {
+		if err := store.Decline(id, pamdecline.ReasonUserDenied); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	h := &Heartbeat{pamLifetimeManager: manager, pamDeclines: store}
+	h.pamReconciled.Store(true)
+	h.pamReceivedObservationReady.Store(true)
+	h.pamVerificationAvailable.Store(true)
+	h.uacInterceptionEnabled.Store(true)
+	account := &fakeElevationManager{cred: elevaccount.Credential{Username: elevaccount.AccountName, Password: "secret"}}
+	swapElevationManagerForTest(t, func() elevaccount.AccountManager { return account })
+	calls := swapPAMEventLogWritersForTest(t)
+
+	res := handleActuateElevation(h, Command{Payload: map[string]any{"elevationRequestId": id}})
+
+	var out actuateResult
+	if err := json.Unmarshal([]byte(res.Stdout), &out); err != nil {
+		t.Fatalf("result = %+v: %v", res, err)
+	}
+	if out.Success || out.Reason != pamdecline.CodeUserDeclined {
+		t.Fatalf("actuate result = %+v, want refused user_declined", out)
+	}
+	if account.promoteSeen != 0 {
+		t.Fatalf("account promoted %d times after the decline", account.promoteSeen)
+	}
+	if got := stageNames(*calls); len(got) != 1 || got[0] != "actuation_refused" {
+		t.Errorf("event log stages = %v, want [actuation_refused]", got)
+	}
+}
+
 func TestActuateElevationUnaffectedForOtherRequest(t *testing.T) {
 	manager := &fakePamLifetimeManager{available: true}
 	h := readyLegacyHeartbeat(manager)

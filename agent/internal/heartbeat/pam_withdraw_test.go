@@ -47,7 +47,6 @@ type withdrawServer struct {
 	ts       *httptest.Server
 	mu       sync.Mutex
 	statuses []int
-	bodies   []string
 	requests []capturedWithdraw
 }
 

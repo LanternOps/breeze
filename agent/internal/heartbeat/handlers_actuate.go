@@ -333,17 +333,7 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	// actuation budget below, so it does not eat into it.
 	if h != nil {
 		if refuse, code := h.awaitPamDecline(payload.ElevationRequestID); refuse {
-			target := pamTarget{Path: payload.TargetPath, TargetHash: payload.TargetHash,
-				CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername}
-			log.Warn("pam: actuation REFUSED — the user declined this request on the device or has not answered",
-				"elevationRequestId", payload.ElevationRequestID, "reason", code)
-			writePAMActuationRefused(target.eventLogFields(payload.ElevationRequestID, code))
-			return tools.NewSuccessResult(actuateResult{
-				ElevationRequestID: payload.ElevationRequestID,
-				Success:            false,
-				Reason:             code,
-				Message:            "the user declined this elevation on the device",
-			}, time.Since(start).Milliseconds())
+			return refuseDeclinedActuation(payload, code, start)
 		}
 	}
 
@@ -380,6 +370,11 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	defer release()
+	// Re-check without blocking under admission, as the v2 manager does under
+	// its operation: a decline recorded while this waited must still win.
+	if refuse, code := h.pamDeclineStore().Check(payload.ElevationRequestID); refuse {
+		return refuseDeclinedActuation(payload, code, start)
+	}
 
 	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
 		pamTarget{
@@ -408,6 +403,24 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	// of the firmup: the server is the one deciding retry/escalate based
 	// on the Reason code, not the agent.
 	return tools.NewSuccessResult(out, time.Since(start).Milliseconds())
+}
+
+// refuseDeclinedActuation is the legacy actuate_elevation answer for a request
+// the end user declined on the device, has not answered, or whose decision
+// record is untrusted (#8971): a success-shaped result carrying the code, a
+// log line, and the PAM refusal event for the endpoint's own event log.
+func refuseDeclinedActuation(payload actuatePayload, code string, start time.Time) tools.CommandResult {
+	target := pamTarget{Path: payload.TargetPath, TargetHash: payload.TargetHash,
+		CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername}
+	log.Warn("pam: actuation REFUSED — the user declined this request on the device or has not answered",
+		"elevationRequestId", payload.ElevationRequestID, "reason", code)
+	writePAMActuationRefused(target.eventLogFields(payload.ElevationRequestID, code))
+	return tools.NewSuccessResult(actuateResult{
+		ElevationRequestID: payload.ElevationRequestID,
+		Success:            false,
+		Reason:             code,
+		Message:            "the user declined this elevation on the device",
+	}, time.Since(start).Milliseconds())
 }
 
 // refusePamActuation builds the fail-closed refusal and logs it at the block
