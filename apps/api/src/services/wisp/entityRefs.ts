@@ -87,7 +87,7 @@ export function capLabel(raw: string, fallback: string): string {
  * read once and reused across every ref (a home render resolves up to 50).
  */
 export function createEntityResolver(ctx: EntityResolveContext) {
-  return createResolver(ctx.auth, ctx.ceiling.partnerId, ctx.ceiling);
+  return createResolver(ctx);
 }
 
 /** One-off plain-chat resolve, using only the caller's own authority. */
@@ -95,15 +95,16 @@ export function resolveEntityForCaller(
   auth: AuthContext,
   ref: { kind: WispEntityKind; id: string },
 ): Promise<ResolvedEntity | ResolveFailure> {
-  return createResolver(auth, auth.partnerId)(ref);
+  return createResolver({ auth })(ref);
 }
 
 /** Shared ordered checks; a grant-bound resolver also applies step 4. */
-function createResolver(
-  auth: AuthContext | null | undefined,
-  partnerId: string | null,
-  ceiling?: GrantCeiling,
+function createResolver({ auth, ceiling }:
+  | { auth: AuthContext; ceiling?: GrantCeiling }
+  | EntityResolveContext,
 ) {
+  if (!auth && !ceiling) throw new Error('Entity resolution requires caller auth or a grant ceiling');
+  const partnerId = ceiling ? ceiling.partnerId : auth?.partnerId ?? null;
   let perms: ReturnType<typeof getUserPermissions> | null = null;
   const permissionsOnce = (auth: AuthContext) => {
     perms ??= getUserPermissions(auth.user.id, {
