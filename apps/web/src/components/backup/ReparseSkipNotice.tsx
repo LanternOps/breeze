@@ -2,7 +2,7 @@ import { Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import '../../lib/i18n';
-import type { ReparseSkipSummary } from './reparseSkipSplit';
+import type { ReparseSkipSummary } from '@breeze/shared';
 
 // #9543: skipped reparse points are a deliberate, informational outcome of a
 // backup scan (they add nothing to errorCount), so they render as a muted

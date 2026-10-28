@@ -49,6 +49,7 @@ export {
 } from './backupExclusionGlob';
 export * from './hardwareLifecycle';
 export * from './backupHealth';
+export * from './backupReparseSkips';
 export * from './identityAccess';
 export * from './threatDetection';
 export * from './endpointManagement';

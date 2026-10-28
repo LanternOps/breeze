@@ -20,7 +20,8 @@
 // Entries are themselves joined by "; ", so the fragment's end is found by
 // counting entries against N rather than by splitting on the separator.
 //
-// Display-only: errorLog is never rewritten. If the fragment cannot be
+// Read-side only (web job views, API attention reasons): the stored errorLog
+// is never rewritten. If the fragment cannot be
 // delimited with confidence the text is returned unchanged, because hiding
 // a real error behind a misparse is worse than the clutter this removes.
 
@@ -44,12 +45,19 @@ const FRAGMENT_HEADER =
 
 const MORE_SUFFIX = / \(\+(\d+) more\)$/;
 
+// Every entry the agent writes is `path (<kind>...)`, kind being one of the
+// three skippedReparsePoint.String() descriptions.
+const ENTRY_MARKER = / \((?:junction|volume mount point|other reparse point)\b/;
+
 /**
  * Index just past the end of the reparse fragment whose entries start at
  * `entriesStart`, or -1 when it cannot be delimited. An entry ends at a `)`
  * that is followed by "; " or by the end of the text; the fragment ends
  * after the N-th entry, or earlier at an entry carrying "(+M more)" where
- * M is exactly the number of entries not listed.
+ * M is exactly the number of entries not listed. A candidate entry without
+ * the agent's description marker means the count has run past the fragment
+ * (or the fragment was damaged), so the whole parse is abandoned rather than
+ * absorb a neighbouring error.
  */
 function findFragmentEnd(text: string, entriesStart: number, total: number): number {
   let entries = 0;
@@ -59,7 +67,9 @@ function findFragmentEnd(text: string, entriesStart: number, total: number): num
     const atEnd = i === text.length - 1;
     if (!atEnd && !text.startsWith(SEPARATOR, i + 1)) continue;
     entries++;
-    const more = MORE_SUFFIX.exec(text.slice(entryStart, i + 1));
+    const entry = text.slice(entryStart, i + 1);
+    if (!ENTRY_MARKER.test(entry)) return -1;
+    const more = MORE_SUFFIX.exec(entry);
     if (more && Number(more[1]) === total - entries) return i + 1;
     if (!more && entries === total) return i + 1;
     if (entries >= total) return -1;
@@ -79,7 +89,7 @@ export function splitReparseSkipNotice(errorLog: string | null | undefined): Spl
   const total = Number(header[2]);
   if (!Number.isSafeInteger(total) || total < 1) return unchanged;
 
-  const fragmentStart = header.index + header[1].length;
+  const fragmentStart = header.index + (header[1] ?? '').length;
   const end = findFragmentEnd(text, header.index + header[0].length, total);
   if (end < 0) return unchanged;
 

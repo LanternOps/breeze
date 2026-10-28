@@ -1168,6 +1168,33 @@ describe('BackupJobList', () => {
       expect(screen.getByText('No error log recorded.')).toBeTruthy();
     });
 
+    it('keeps the "files not backed up" block for a partial run with real file errors, without the skip text in it', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/jobs') {
+          return makeJsonResponse({ data: [partialJob({ errorCount: 21, errorLog: reparseNote })] });
+        }
+        if (url === '/backup/jobs/job-partial') {
+          return makeJsonResponse({
+            id: 'job-partial', type: 'file', deviceId: 'device-2', configId: 'config-1', status: 'partial',
+            createdAt: '2026-04-01T17:59:00.000Z', errorCount: 21, errorLog: reparseNote,
+          });
+        }
+        return makeJsonResponse({ error: 'Not found' }, false, 404);
+      });
+
+      render(<BackupJobList />);
+      const row = (await screen.findByText('Gamma Laptop')).closest('tr') as HTMLElement;
+      // errorCount still drives the Errors column when the log was only the skip.
+      expect(within(row).getByTestId('backup-job-error-summary').textContent).toContain('21 errors');
+
+      fireEvent.click(screen.getByRole('button', { name: /View details for Gamma Laptop backup/i }));
+      const block = await screen.findByTestId('backup-job-files-not-backed-up');
+      expect(block.textContent).toContain('21');
+      expect(block.textContent).not.toContain('reparse');
+      expect(screen.getByTestId('backup-job-reparse-skipped')).toBeTruthy();
+    });
+
     it('does not open the "files not backed up" block for a completed_with_errors run on the skip alone', async () => {
       // errorCount 0 + a reparse-only note: the warning block must not claim
       // files failed when the only thing in errorLog is the deliberate skip.

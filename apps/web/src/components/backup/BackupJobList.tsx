@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from './reparseSkipSplit';
+import { splitReparseSkipNotice } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 

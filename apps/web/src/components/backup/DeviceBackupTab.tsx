@@ -21,7 +21,7 @@ import ExternalBackupCard from './ExternalBackupCard';
 import { formatNumber } from '@/lib/i18n/format';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import ReparseSkipNotice from './ReparseSkipNotice';
-import { splitReparseSkipNotice } from './reparseSkipSplit';
+import { splitReparseSkipNotice } from '@breeze/shared';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';

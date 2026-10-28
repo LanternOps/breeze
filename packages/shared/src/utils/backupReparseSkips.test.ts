@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitReparseSkipNotice } from './reparseSkipSplit';
+import { splitReparseSkipNotice } from './backupReparseSkips';
 
 // Fixtures are byte-for-byte what the agent's summarizeSkippedReparsePoints
 // (agent/internal/backup/reparse_skip.go) writes into the job Warning, which
@@ -59,6 +59,37 @@ describe('splitReparseSkipNotice (#9543)', () => {
     // fragment. Showing it raw beats hiding a real error after it.
     const broken = `4 ${HEADER} 4 other): C:\\a (other reparse point); C:\\b (other reparse point)`;
     const text = `${broken}; 2 file(s) failed to upload`;
+    expect(splitReparseSkipNotice(text)).toEqual({ diagnostic: text, reparseSkipped: null });
+  });
+
+  it('never counts a following fragment as an entry when an entry lost its closing paren', () => {
+    // The API redacts secrets with a `[^\s]+` value pattern, which can eat an
+    // entry's trailing `)`. The scan must not then swallow the next fragment.
+    const damaged =
+      `2 ${HEADER} 2 other): C:\\token=[REDACTED]; C:\\b.exe (other reparse point, tag 0x8000001B)`;
+    const after = '1 file(s) were modified while being backed up (recorded as volatile)';
+    const text = `${damaged}; ${after}`;
+    expect(splitReparseSkipNotice(text)).toEqual({ diagnostic: text, reparseSkipped: null });
+  });
+
+  it('never borrows parenthesised entries from a real error to make up an under-listed fragment', () => {
+    const shortList = `4 ${HEADER} 4 other): C:\\a (other reparse point); C:\\b (other reparse point)`;
+    const scanError =
+      '3 file(s) could not be read during the backup scan: C:\\l.db (permission denied); C:\\x (in use)';
+    const text = `${shortList}; ${scanError}`;
+    expect(splitReparseSkipNotice(text)).toEqual({ diagnostic: text, reparseSkipped: null });
+  });
+
+  it('shows the text raw when a path inside the fragment contains "); "', () => {
+    const odd =
+      `3 ${HEADER} 3 other): C:\\a (copy); x (other reparse point); C:\\b (other reparse point); C:\\c (other reparse point)`;
+    const text = `${odd}; disk full (code 5)`;
+    expect(splitReparseSkipNotice(text)).toEqual({ diagnostic: text, reparseSkipped: null });
+  });
+
+  it('keeps a real error after a capped fragment whose "(+M more)" does not add up', () => {
+    const bad = `9 ${HEADER} 9 other): C:\\a (other reparse point) (+3 more)`;
+    const text = `${bad}; real failure (err)`;
     expect(splitReparseSkipNotice(text)).toEqual({ diagnostic: text, reparseSkipped: null });
   });
 

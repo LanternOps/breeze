@@ -34,7 +34,7 @@ import {
   statIconMap,
   statusConfig
 } from './backupDashboardHelpers';
-import { splitReparseSkipNotice } from './reparseSkipSplit';
+import { splitReparseSkipNotice } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
