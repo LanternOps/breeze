@@ -143,7 +143,7 @@ describe('loadPartnerPortalCustomCss', () => {
       await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
 
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0][1]).toEqual({ partnerId: 'p-bad' });
+      expect(warn.mock.calls[0]?.[1]).toEqual({ partnerId: 'p-bad' });
       // The CSS itself never reaches the log.
       expect(JSON.stringify(warn.mock.calls)).not.toContain('@import');
     } finally {
