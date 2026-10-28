@@ -140,6 +140,7 @@
     "newChat": "Yeni sohbet"
   },
   "aiContextBadge": {
+    "record": "Kayıt",
     "context": "Bağlam",
     "dashboard": "Kontrol Paneli"
   },

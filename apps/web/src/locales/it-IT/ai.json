@@ -140,6 +140,7 @@
     "newChat": "Nuova chat"
   },
   "aiContextBadge": {
+    "record": "Scheda",
     "context": "Contesto",
     "dashboard": "Dashboard"
   },

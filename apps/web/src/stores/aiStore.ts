@@ -208,10 +208,10 @@ interface AiState {
 }
 
 /**
- * True when an open session belongs to a different org than the device page the
+ * True when an open session belongs to a different org than the record or device page the
  * chat is now sitting on (#5684).
  *
- * Both sides must be known: a device page context with no `orgId` (an older
+ * Both sides must be known: a page context with no `orgId` (an older
  * caller) and a session with no recorded org both mean "cannot tell", and the
  * session is left alone rather than dropped on a guess.
  */
@@ -220,7 +220,7 @@ function pageContextOrgMismatch(
   sessionOrgId: string | null,
 ): boolean {
   return (
-    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+    !!ctx && 'orgId' in ctx && typeof ctx.orgId === 'string' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
   );
 }
 

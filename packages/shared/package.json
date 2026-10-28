@@ -21,6 +21,7 @@
     "./pgErrors": "./src/pgErrors/index.ts",
     "./testing/topologyFleet": "./src/testing/topologyFleet.ts",
     "./validators/complianceInlineSettings": "./src/validators/complianceInlineSettings.ts",
+    "./validators/ai": "./src/validators/ai.ts",
     "./validators/topology": "./src/validators/topology.ts",
     "./validators/topologyConfiguration": "./src/validators/topologyConfiguration.ts",
     "./validators/topologyDiagnostics": "./src/validators/topologyDiagnostics.ts",

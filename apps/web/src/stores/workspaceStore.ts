@@ -87,6 +87,7 @@ function contextLabelOf(context: AiPageContext | null): string | null {
   return context.type === 'device' ? context.hostname
     : context.type === 'alert' ? context.title
     : context.type === 'dashboard' ? (context.orgName ?? 'Dashboard')
+    : context.type === 'record' ? (context.label ?? i18n.t('ai:aiContextBadge.record'))
     : context.type === 'custom' ? context.label
     : null;
 }
@@ -94,6 +95,7 @@ function contextLabelOf(context: AiPageContext | null): string | null {
 /** Chip fields and flags a tab takes from a hydrated session. */
 function sessionFieldsOf(view: AiSessionView): Partial<TabState> {
   return {
+    contextLabel: contextLabelOf(view.pageContext),
     orgId: view.orgId || null,
     deviceId: view.deviceId,
     deviceLabel: view.pageContext?.type === 'device' ? view.pageContext.hostname : null,

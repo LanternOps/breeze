@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -167,6 +169,7 @@ describe('OrganizationRecordPage — happy path', () => {
     await waitFor(() => expect(screen.getByTestId('org-record-header')).toBeTruthy());
     expect(screen.getByTestId('org-record-header').textContent).toContain('Acme Dental');
     expect(screen.getByTestId('org-record-status')).toBeTruthy();
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'organization', id: RECORD_ORG }));
   });
 
   it('pins EVERY request to the record org while the store points at another org', async () => {

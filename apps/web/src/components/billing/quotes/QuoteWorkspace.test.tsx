@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -62,6 +64,7 @@ describe('QuoteWorkspace tabs', () => {
   it('labels the third tab "Details" (not the bare, easy-to-misread "Detail")', async () => {
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1' }));
 
     expect(screen.getByTestId('quote-tab-detail')).toHaveTextContent('Details');
     // The Editor tab only renders for drafts (this quote is 'sent') — Preview
@@ -74,6 +77,15 @@ describe('QuoteWorkspace tabs', () => {
   // showed it) — the workspace header now always carries a status badge next
   // to the title/tabs, reusing the same StatusPill + STATUS_ROLES vocabulary
   // as QuotesPage/QuoteDetail/QuoteDocument.
+  it('uses the localized draft title for a quote without a number or title', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === '/quotes/q-1') return json({ data: { ...sentQuote, quote: { ...sentQuote.quote, quoteNumber: null } } });
+      return json({ data: {} });
+    });
+    render(<QuoteWorkspace id="q-1" />);
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', label: 'Draft quote' })));
+  });
+
   it('shows a status badge in the workspace header matching the quote status', async () => {
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(screen.getByTestId('quote-workspace')).toBeInTheDocument());

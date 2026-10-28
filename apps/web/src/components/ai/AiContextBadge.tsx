@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Monitor, Bell, LayoutDashboard, Tag } from "lucide-react";
+import { Monitor, Bell, LayoutDashboard, Tag, FileText } from "lucide-react";
 import type { AiPageContext } from "@breeze/shared";
 import { useTranslation } from "react-i18next";
 
@@ -25,10 +25,22 @@ export default function AiContextBadge({ context }: AiContextBadgeProps) {
       icon = <LayoutDashboard className="h-3 w-3" />;
       label = context.orgName ?? t("aiContextBadge.dashboard");
       break;
+    case "record":
+      icon = <FileText className="h-3 w-3" />;
+      label = context.label ?? t("aiContextBadge.record");
+      break;
+    case "topology":
+      icon = <Tag className="h-3 w-3" />;
+      label = t("aiContextBadge.context");
+      break;
     case "custom":
       icon = <Tag className="h-3 w-3" />;
       label = context.label;
       break;
+    default: {
+      const exhaustive: never = context;
+      return exhaustive;
+    }
   }
 
   return (

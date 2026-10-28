@@ -102,7 +102,7 @@ describe('restoreWorkspace hydrates and attaches each session tab', () => {
       tabs: [tab({ id: 'a', sessionId: 'sa' }), tab({ id: 'b', sessionId: 'sb' }), tab({ id: 'c' })],
       activeTabId: 'a',
     });
-    on('/ai/sessions/sa', () => session('sa', { deviceId: 'd1', contextSnapshot: { type: 'device', id: 'd1', hostname: 'h1' } }));
+    on('/ai/sessions/sa', () => session('sa', { deviceId: 'd1', contextSnapshot: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h1' } }));
     on('/ai/sessions/sb', () => session('sb'));
     on('/ai/sessions/sa/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));
     on('/ai/sessions/sb/stream', () => sse(frame(snap({ turn: 'idle', turnId: null }))));

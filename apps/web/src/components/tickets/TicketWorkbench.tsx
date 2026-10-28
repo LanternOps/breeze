@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
@@ -189,6 +190,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
+  useRecordPageContext(ticket ? { kind: 'ticket', id: ticket.id, orgId: ticket.orgId, label: `${ticket.internalNumber ?? ticket.id.slice(0, 8)} ${ticket.subject}` } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<'not-found' | 'load' | undefined>();

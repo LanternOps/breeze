@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { configure, fireEvent, getConfig, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -136,6 +138,7 @@ describe('TicketWorkbench — organization record link', () => {
     mockTicketApi({ 'tk-1': makeTicket({ orgId: 'org-9', orgName: 'Globex Inc' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'ticket', id: 'tk-1' })));
 
     const link = screen.getByTestId('org-record-link');
     expect(link.tagName).toBe('A');
