@@ -362,6 +362,36 @@ describe('get_script_proposal', () => {
     expect(out.review).toEqual({ status: 'not_requested', verdict: null });
   });
 
+  it.each([
+    ['review_failed', 'failed'],
+    ['reviewed', 'unavailable'],
+    ['approved', 'unavailable'],
+    ['executed', 'unavailable'],
+  ] as const)('with no review row, a %s proposal reports review status %s and no verdict (#10399)', async (status, reviewStatus) => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status, intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.review).toEqual({ status: reviewStatus, verdict: null });
+  });
+
+  it('reports a failed review row as failed with no verdict, never as a pass (#10399)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status: 'review_failed', intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+    latestReviewMock.mockResolvedValueOnce({
+      ...MODEL_REVIEW_ROW, status: 'failed', summary: null, riskTier: null, goalMatch: null, reversible: null,
+      verificationAdequate: null, recommendedAction: null, verdict: null,
+    });
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.review).toEqual({
+      status: 'failed', verdict: null, summary: null, riskTier: null, goalMatch: null, reversible: null,
+      verificationAdequate: null, findings: [],
+    });
+  });
+
   it('reports not found for a proposal outside the caller org', async () => {
     const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p9' }, auth));
     expect(out.error).toContain('not_found');

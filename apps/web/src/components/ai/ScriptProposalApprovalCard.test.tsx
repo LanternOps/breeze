@@ -223,6 +223,21 @@ describe('ScriptProposalApprovalCard', () => {
     expect(line).not.toHaveTextContent(/verification pending/i);
   });
 
+  // A site-restricted viewer can see an executed proposal with its runs
+  // narrowed away; the status alone must keep it out of "not run".
+  it.each(['executed', 'verified', 'verification_failed', 'promoted'])(
+    'keeps "Verification pending" for a %s proposal even with no visible runs (#10399)',
+    (status) => {
+      useScriptProposal.mockReturnValue({
+        data: dto({ proposal: { status }, executions: [] }), loading: false, error: null, reload: vi.fn(),
+      });
+      render(<ScriptProposalApprovalCard proposalId="p1" readOnly />);
+      const line = screen.getByTestId('script-proposal-verification-state');
+      expect(line).toHaveAttribute('data-outcome', 'pending');
+      expect(line).toHaveTextContent(/verification pending/i);
+    },
+  );
+
   it('keeps "Verification pending" for an approved proposal whose run has started (#10399)', () => {
     useScriptProposal.mockReturnValue({
       data: dto({

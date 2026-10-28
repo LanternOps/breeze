@@ -264,14 +264,16 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
       // the runs below. Without it the model saw only `status: 'reviewed'`
       // and told the user the review "passed" a proposal whose reviewer had
       // asked for changes. No row: still queued (`proposed`), never requested
-      // (a BASIC scan hit stops before review), or gone with the proposal.
+      // (a BASIC scan hit stops before review), failed before writing one
+      // (`review_failed`), or otherwise missing — never a verdict to infer.
       const latestReview = await selectLatestModelReview(proposal.id);
       const review = latestReview
         ? reviewForModel(latestReview)
         : {
           status: proposal.status === 'proposed' ? 'pending'
             : proposal.status === 'scan_rejected' ? 'not_requested'
-              : 'unavailable',
+              : proposal.status === 'review_failed' ? 'failed'
+                : 'unavailable',
           verdict: null,
         };
       // #7918: a run that outlived its run_script call still completed on the
