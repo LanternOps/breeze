@@ -286,7 +286,10 @@ export default function PartnerSettingsPage() {
         </div>
       )}
 
-      <div className={`grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)]${sidePanel ? ' min-[1920px]:grid-cols-[240px_minmax(0,1fr)_360px]' : ''}`}>
+      {/* The third column only exists while the ≥1920 px query matches (sidePanel
+          is gated on it), so its template needs no breakpoint variant — which
+          would also lose to lg:grid-cols in Tailwind's variant order. */}
+      <div className={`grid gap-6 ${sidePanel ? 'grid-cols-[240px_minmax(0,1fr)_360px]' : 'lg:grid-cols-[240px_minmax(0,1fr)]'}`}>
         <SettingsSectionNav
           groups={visibleGroups.map(group => ({
             label: t(/* i18n-dynamic */ group.label),

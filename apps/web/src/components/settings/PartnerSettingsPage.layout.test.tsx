@@ -106,7 +106,8 @@ describe('PartnerSettingsPage drill-down layout (#9790 W4, spec §5.5, §6)', ()
     await renderPage('#security');
     await screen.findByTestId('partner-settings-side-panel');
     const grid = screen.getByTestId('partner-settings-side-panel').parentElement!;
-    expect(grid.className).toContain('min-[1920px]:grid-cols-[240px_minmax(0,1fr)_360px]');
+    expect(grid.className).toContain('grid-cols-[240px_minmax(0,1fr)_360px]');
+    expect(grid.className).not.toContain('lg:grid-cols');
   });
 
   it.each(['#company', '#modules', '#known-guests', '#branding', '#email-templates'])('no third column on %s', async (hash) => {
@@ -114,7 +115,7 @@ describe('PartnerSettingsPage drill-down layout (#9790 W4, spec §5.5, §6)', ()
     await renderPage(hash);
     await waitFor(() => expect(screen.getByTestId('partner-settings-panel-heading')).toBeInTheDocument());
     expect(screen.queryByTestId('partner-settings-side-panel')).toBeNull();
-    expect(document.querySelector('[class*="grid-cols-[240px_minmax(0,1fr)_360px]"]')).toBeNull();
+    expect(document.querySelector('[class*="_360px]"]')).toBeNull();
   });
 
   it('switching tabs closes an open drill-down', async () => {

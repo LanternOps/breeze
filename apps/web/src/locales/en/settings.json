@@ -1216,7 +1216,7 @@
         "noneSetOwn": "No org has its own value",
         "defaultFor_one": "Default for {{count}} org",
         "defaultFor_other": "Default for {{count}} orgs",
-        "override_one": "{{count}} overrides",
+        "override_one": "{{count}} org overrides",
         "override_other": "{{count}} override",
         "setOwn_one": "{{count}} sets its own",
         "setOwn_other": "{{count}} set their own",
