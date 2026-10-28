@@ -54,6 +54,9 @@ func TestRunPamFlow(t *testing.T) {
 		dismissResult *ipc.PamDismissConsentResult
 		// dismissErr simulates an IPC round-trip error from DismissPamConsent.
 		dismissErr error
+		// wantTracked asserts the request was recorded as handed to IT
+		// (#8928): only a `pending` request the user approved is tracked.
+		wantTracked bool
 	}{
 		{
 			name:                 "policy hard-deny targets requester session and dismisses without dialog",
@@ -115,6 +118,31 @@ func TestRunPamFlow(t *testing.T) {
 			wantTriggered:        false,
 			wantDismissed:        false,
 			wantActuated:         false,
+			wantTracked:          true,
+		},
+		{
+			name:          "pending + Approve on the console fallback is tracked with no session",
+			status:        "pending",
+			dialog:        approved,
+			wantFind:      true,
+			wantDialog:    true,
+			wantTriggered: false,
+			wantDismissed: false,
+			wantActuated:  false,
+			wantTracked:   true,
+		},
+		{
+			name:                 "pending + Deny is not tracked",
+			status:               "pending",
+			subjectSessionID:     42,
+			wantTargetWinSession: "42",
+			dialog:               ipc.PamDialogResult{Approved: false},
+			wantFind:             true,
+			wantDialog:           true,
+			wantTriggered:        false,
+			wantDismissed:        true,
+			wantActuated:         false,
+			wantTracked:          false,
 		},
 		{
 			name:          "pending + user-dismissed denies",
@@ -335,9 +363,28 @@ func TestRunPamFlow(t *testing.T) {
 				TargetExecutableSigner: "signer-Acme Corp",
 				CommandLine:            `target.exe --do-thing`,
 			}
-			outcome := etwlua.ElevationOutcome{RequestID: "req-1", Status: tc.status}
+			outcome := etwlua.ElevationOutcome{RequestID: "req-1", Status: tc.status, SupportName: "Contoso IT"}
+			notices := recordPamNotices(h)
 
 			h.RunPamFlow(context.Background(), ev, outcome)
+
+			// #8928 PR 1: Approve on a `pending` request tracks it for the
+			// outcome notices; nothing else does, and no flow shows a notice
+			// itself (the waiting toast is PR 2).
+			entry, tracked := h.pamTracker().Get(outcome.RequestID)
+			if tracked != tc.wantTracked {
+				t.Errorf("tracked = %v, want %v", tracked, tc.wantTracked)
+			}
+			if tracked {
+				want := pamTrackedRequest{WinSession: tc.wantTargetWinSession, Program: "target.exe", SupportName: "Contoso IT"}
+				if entry.WinSession != want.WinSession || entry.Program != want.Program ||
+					entry.SupportName != want.SupportName || entry.Notified {
+					t.Errorf("tracked entry = %+v, want %+v", entry, want)
+				}
+			}
+			if calls := notices.Calls(); len(calls) != 0 {
+				t.Errorf("RunPamFlow showed notices in PR 1: %+v", calls)
+			}
 
 			if triggered != tc.wantTriggered {
 				t.Errorf("triggered = %v, want %v", triggered, tc.wantTriggered)

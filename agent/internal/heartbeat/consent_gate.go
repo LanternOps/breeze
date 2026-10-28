@@ -657,15 +657,22 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 // targetWinSession keeps the legacy machine-global selection; a non-empty one
 // routes strictly to that Windows session (see sessionNoticeTarget).
 func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
+	h.sendSessionNotifyTitled("Breeze Agent", body, targetWinSession)
+}
+
+// sendSessionNotifyTitled is sendSessionNotify with a caller-chosen title. The
+// PAM outcome notices (#8928) use it so the toast headline is the outcome
+// ("Request approved") rather than the product name.
+func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string) {
 	if h.sessionBroker == nil || body == "" {
 		return
 	}
 	session := h.sessionNoticeTarget(targetWinSession)
 	if session == nil {
-		log.Warn("no notify-capable helper for session notice")
+		log.Warn("no notify-capable helper for session notice", "title", title, "targetWinSession", targetWinSession)
 		return
 	}
-	req := sessionNoticeRequest(body)
+	req := sessionNoticeRequest(title, body)
 	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
 	}
@@ -868,9 +875,9 @@ func (h *Heartbeat) sessionNoticeTarget(targetWinSession string) *sessionbroker.
 // cannot be shown (toasts can be disabled, suppressed by Focus Assist, or
 // unavailable to the process). It carries no Actions: it is an announcement,
 // not a prompt.
-func sessionNoticeRequest(body string) ipc.NotifyRequest {
+func sessionNoticeRequest(title, body string) ipc.NotifyRequest {
 	return ipc.NotifyRequest{
-		Title:          "Breeze Agent",
+		Title:          title,
 		Body:           body,
 		Urgency:        "normal",
 		FallbackDialog: true,

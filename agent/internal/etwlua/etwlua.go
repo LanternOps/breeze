@@ -166,12 +166,15 @@ func (c ConsentInstance) IsZero() bool { return c.PID == 0 || c.CreatedAt.IsZero
 
 // ElevationOutcome is the server's synchronous ingest decision for a posted
 // uac_intercept elevation request, parsed from the POST response body
-// {"id":"<uuid>","status":"<status>"}. Status is one of "pending",
-// "auto_approved", "denied", or "ignored". RequestID is empty when the
-// server suppressed the request (status "ignored", id null).
+// {"id":"<uuid>","status":"<status>","supportName"?:"<name>"}. Status is one
+// of "pending", "auto_approved", "denied", or "ignored". RequestID is empty
+// when the server suppressed the request (status "ignored", id null).
+// SupportName is the MSP's display name for the end-user notices (#8928),
+// trimmed and capped at 120 runes; empty when the server sent none.
 type ElevationOutcome struct {
-	RequestID string
-	Status    ElevationStatus
+	RequestID   string
+	Status      ElevationStatus
+	SupportName string
 }
 
 // Subscriber abstracts the ETW event source. Real Windows builds use
@@ -214,6 +217,12 @@ type HeartbeatPoster interface {
 // time is correct.
 type PamRunner interface {
 	RunPamFlow(ctx context.Context, ev Event, outcome ElevationOutcome)
+	// NotifyElevationSubmitFailed tells the requesting user that a LIVE
+	// submit failed, while their UAC prompt is still up (#8928 D3). It is
+	// called only from handleEvent's submit-error branch, never for events
+	// replayed by Queue.Drain: a drained event is a stale prompt. It must not
+	// block; implementations rate-limit their own notices.
+	NotifyElevationSubmitFailed(ev Event)
 }
 
 // ErrNotPrivileged is returned by Start when the process is not running as
@@ -343,6 +352,12 @@ func handleEvent(ctx context.Context, ev Event, limiter *ipc.RateLimiter, hb Hea
 				log.Error("etwlua: enqueue failed; event dropped",
 					"error", qerr.Error())
 			}
+		}
+		// The user is looking at this prompt right now: tell them the request
+		// did not reach IT. Live failures only — Queue.Drain has no PamRunner
+		// and so can never notify for a replayed event.
+		if pam != nil {
+			pam.NotifyElevationSubmitFailed(ev)
 		}
 		return
 	}

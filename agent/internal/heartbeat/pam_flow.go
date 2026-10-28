@@ -52,8 +52,8 @@ const (
 // for a detected UAC prompt, it shows the user-desktop PAM dialog (when the
 // status warrants it), composes the decision, and either actuates locally
 // (end-user-allowed) or dismisses consent.exe (deny). The require-approval
-// path resolves remotely: the server issues an actuate_elevation command once
-// a technician approves.
+// path resolves remotely: the server issues a pam_apply_v2 command once a
+// technician approves.
 func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etwlua.ElevationOutcome) {
 	// RunPamFlow runs on the etwlua loop goroutine and reaches raw SendInput
 	// syscalls via the actuator — unlike the remote actuate path, there is no
@@ -176,7 +176,12 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// Remember this request's own consent.exe so the approved launch can
 		// close it afterwards (#8995); the launch itself never goes through it.
 		h.recordPendingPamConsent(outcome.RequestID, targetWinSession, ev.Consent)
-		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
+		// Track the hand-off so the outcome notices (#8928) can tell this user
+		// what IT decided. PR 1 shows nothing here: the consent dismiss and the
+		// "Request sent" notice come with PR 2.
+		h.pamTracker().MarkAwaiting(outcome.RequestID, targetWinSession,
+			pamProgramName(ev.TargetExecutablePath), outcome.SupportName)
+		log.Info("pam: awaiting remote technician approval; server will issue pam_apply_v2", "elevationRequestId", outcome.RequestID)
 	}
 }
 
