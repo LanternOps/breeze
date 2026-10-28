@@ -34,7 +34,7 @@ Source: the Dropsuite help article "API Settings" (help.dropsuite.com, article 2
 
 Third parties already integrate on this API in read-only mode: Rewst, Backup Radar, SuperOps, and an MSPbots MCP server. That suggests the surface is stable enough to build on (*inferred*).
 
-**What we cannot know before a live account:** the full status vocabulary, whether `errors` is a string or an object (both appear in samples), rate limits, `/accounts` pagination, and whether every `GET /users` row's `authentication_token` works as that organization's `X-Access-Token` (*inferred* from the samples and from the help text "User's Authentication Token … Organization page → Login Accounts → API"). The first wave is gated on a live partner account; see [Open decisions](#open-decisions).
+**What we cannot know before a live account:** the full status vocabulary, whether `errors` is a string or an object (both appear in samples), rate limits, `/accounts` pagination, and whether every `GET /users` row's `authentication_token` works as that organization's `X-Access-Token` (*inferred* from the samples and from the help text "User's Authentication Token … Organization page → Login Accounts → API"). The first wave settles these against our own partner account.
 
 ## Goals / Non-goals
 
@@ -167,14 +167,14 @@ No new tables. `backup_provider_*` already has RLS, cascade and export registrat
 
 ## Rollout
 
-1. **W01, live discovery (gated on a partner account):** capture scrubbed fixtures for every endpoint we use; confirm the status vocabulary, per-org tokens, `/accounts` pagination, `organization_name` on the list, and rate-limit headers. Output: an updated status table and fixtures. Ship nothing.
+1. **W01, live discovery (on our partner account):** capture scrubbed fixtures for every endpoint we use; confirm the status vocabulary, per-org tokens, `/accounts` pagination, `organization_name` on the list, and rate-limit headers. Output: an updated status table and fixtures. Ship nothing.
 2. **W02, adapter + registry + credentials + sync defaults**, with the token scrub and per-customer failure handling.
 3. **W03, surfaces:** SaaS grouping, the portal count fix, and report and posture evidence.
 4. **W04, live verification** on the partner account, then release notes and docs (`apps/docs` integration page with setup steps: partner portal → Settings → API Settings).
 
 ## Open decisions
 
-1. **Live account.** Do we have, or can we get, a Dropsuite / NinjaOne SaaS Backup partner or NFR account? W01 cannot start without one. A sub-reseller tier is enough because we only need GET calls.
+1. **Live account: resolved.** We are a Dropsuite / NinjaOne SaaS Backup partner, and W01 runs against our own partner account. Still open: our tier. A Direct Partner tier would make phase 2 writes possible; a sub-reseller tier would not.
 2. **Granularity.** Per-workload rollup (recommended) or per-item rows.
 3. **Per-customer failure semantics.** Is extending the adapter contract to "all or nothing per customer" acceptable, or should one revoked customer fail the whole sync, as Cove does?
 4. **Domain-based mapping suggestion.** Include it in phase 1 or defer?
