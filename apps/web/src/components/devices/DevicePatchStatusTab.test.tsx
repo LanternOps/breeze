@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DevicePatchStatusTab from './DevicePatchStatusTab';
 import { fetchWithAuth } from '../../stores/auth';
@@ -1187,4 +1187,119 @@ describe('DevicePatchStatusTab', () => {
     expect(screen.getByTestId('device-patch-appr-1-approval').textContent).toBe('Approved');
     expect(screen.getByTestId('device-patch-approval-ring').textContent).toContain('Workstations Ring');
   }, 15000);
+
+  // #10250: a failed (or reboot-pending) single-patch install never shrinks the
+  // pending list, so the old count-only poll spun "Installing..." for 30 min.
+  describe('install polling stops on the install outcome (#10250)', () => {
+    const patch = {
+      id: 'kb-1', title: 'Cumulative Update (KB5050001)', source: 'microsoft', category: 'security', status: 'pending',
+      approvalStatus: 'approved', effectiveApproval: { state: 'approved', reason: 'manual', holdUntil: null }, installFailure: null
+    };
+    const load = (p: Record<string, unknown>) => ({ data: { compliancePercent: 0, pending: [p], installed: [] } });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function mockInstall(opts: { poll: () => unknown; commandStatus: () => string }) {
+      fetchWithAuthMock.mockImplementation(async (url: string) => {
+        if (url.includes('/patches/install')) {
+          return makeJsonResponse({ success: true, commandId: 'cmd-1', commandStatus: 'sent', patchCount: 1 });
+        }
+        if (url === `/devices/${deviceId}/commands/cmd-1`) {
+          return makeJsonResponse({ data: { id: 'cmd-1', status: opts.commandStatus() } });
+        }
+        if (url.startsWith(`/devices/${deviceId}/patches`) && !url.includes('/history')) {
+          return makeJsonResponse(opts.poll());
+        }
+        return makeJsonResponse({});
+      });
+    }
+
+    async function clickRowInstall() {
+      const button = await screen.findByRole('button', { name: 'Install Cumulative Update (KB5050001)' });
+      fireEvent.click(button);
+      await screen.findByText(/Installing patches/i);
+      return button;
+    }
+
+    it('stops polling and shows the failure once the targeted patch reports a new install failure', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let failed = false;
+      mockInstall({
+        poll: () => load(failed
+          ? { ...patch, installFailure: { deviceCount: 1, error: 'installer exited 1603', failedAt: '2026-10-28T10:00:00.000Z' } }
+          : patch),
+        commandStatus: () => (failed ? 'failed' : 'sent'),
+      });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+      expect(screen.getByText('Polling...')).toBeInTheDocument();
+
+      failed = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/0 installed, 1 failed, 0 awaiting a restart/)).toBeInTheDocument();
+      expect(screen.getByTestId('device-patch-kb-1-install-failed')).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Install Cumulative Update (KB5050001)' })).not.toBeDisabled();
+    }, 15000);
+
+    it('stops polling when a Windows install succeeds but waits for a restart', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let done = false;
+      mockInstall({
+        poll: () => load(done ? { ...patch, awaitingRestart: { installedAt: '2026-10-28T10:00:00.000Z' } } : patch),
+        commandStatus: () => (done ? 'completed' : 'sent'),
+      });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+
+      done = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/0 installed, 0 failed, 1 awaiting a restart/)).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+    }, 15000);
+
+    it('stops polling when the install command is cancelled before the device ran it', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let status = 'pending';
+      mockInstall({ poll: () => load(patch), commandStatus: () => status });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+
+      status = 'cancelled';
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/The install command ended \(cancelled\)/)).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+    }, 15000);
+
+    it('waits for the post-install rescan after the command completes, then stops once the patch leaves the pending list', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      let phase: 'running' | 'completed' | 'rescanned' = 'running';
+      mockInstall({
+        poll: () => (phase === 'rescanned' ? { data: { compliancePercent: 100, pending: [], installed: [] } } : load(patch)),
+        commandStatus: () => (phase === 'running' ? 'sent' : 'completed'),
+      });
+
+      render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+      await clickRowInstall();
+
+      phase = 'completed';
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Command done, rescan not in yet: still polling rather than reporting a non-result.
+      expect(screen.getByText('Polling...')).toBeInTheDocument();
+
+      phase = 'rescanned';
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await screen.findByText(/1 patch\(es\) installed successfully/)).toBeInTheDocument();
+      expect(screen.queryByText('Polling...')).not.toBeInTheDocument();
+    }, 15000);
+  });
 });

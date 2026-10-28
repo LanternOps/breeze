@@ -2067,6 +2067,8 @@
     "loading": "Yama durumu yükleniyor...",
     "notDownloadedTitle": "Henüz indirilmedi; yükleme işlemi daha uzun sürecektir",
     "notices": {
+      "installCommandEnded": "Yükleme komutu, cihaz bir sonuç bildirmeden önce sona erdi ({{status}}). Ayrıntılar için cihazın komut geçmişine bakın.",
+      "installFinishedWithIssues": "Yükleme tamamlandı: {{installed}} yüklendi, {{failed}} başarısız, {{awaitingRestart}} yeniden başlatma bekliyor, {{unresolved}} henüz doğrulanmadı. Ayrıntılar için yama satırlarına bakın.",
       "installLongerThanExpected": "Kurulum beklenenden uzun sürüyor. macOS güncellemeleri 30+ dakika sürebilir. Durumu kontrol etmek için sayfayı daha sonra yenileyin.",
       "installPatchFailed": "{{name}} yüklenemedi",
       "installPatchQueued": "Kurulum \"{{name}}\" için sıraya alındı",

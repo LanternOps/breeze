@@ -31,6 +31,16 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import type { PatchInstallFailure } from '../patches/PatchList';
 import { readInstallFailure } from '../patches/patchHelpers';
+import {
+  INSTALL_POLL_INTERVAL_MS,
+  INSTALL_POLL_MAX_DURATION_MS,
+  decideInstallPoll,
+  isTerminalCommandStatus,
+  readAwaitingRestart,
+  snapshotInstallOutcomes,
+  type InstallPollDecision,
+  type InstallPollState,
+} from './patchInstallPolling';
 
 type PatchItem = {
   id?: string;
@@ -62,12 +72,6 @@ type PatchItem = {
   // the OS keeps offering the update until then, so it is still in `pending`.
   awaitingRestart?: { installedAt: string } | null;
 };
-
-function readAwaitingRestart(value: unknown): { installedAt: string } | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const installedAt = (value as Record<string, unknown>).installedAt;
-  return typeof installedAt === 'string' ? { installedAt } : undefined;
-}
 
 type PatchPayload = {
   compliancePercent?: number;
@@ -839,14 +843,7 @@ function getHomebrewUrl(patch: PatchItem, osType: OSType): string | null {
   return `${baseUrl}${baseName}`;
 }
 
-// ---------------------------------------------------------------------------
-// Poll interval / duration constants for post-install auto-refresh
-// macOS softwareupdate installs can take 30+ minutes to download + install,
-// and the post-install rescan adds another 60s. The frontend polls for the
-// full duration since the backend uses fire-and-forget command queuing.
-// ---------------------------------------------------------------------------
-const INSTALL_POLL_INTERVAL_MS = 5_000;
-const INSTALL_POLL_MAX_DURATION_MS = 1_800_000;
+// Post-install poll timing and stop rules live in ./patchInstallPolling (#10250).
 const RECENT_LINUX_INSTALL_DAYS = 7;
 const RECENT_LINUX_INSTALL_HISTORY_LIMIT = 100;
 const RECENT_LINUX_INSTALL_WINDOW_MS = RECENT_LINUX_INSTALL_DAYS * 24 * 60 * 60 * 1000;
@@ -881,8 +878,12 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // Track polling state after install
   const [isPolling, setIsPolling] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pollStartRef = useRef<number>(0);
-  const priorPendingCountRef = useRef<number>(-1);
+  // Which patches the running poll is waiting on, and its settle window.
+  const pollStateRef = useRef<InstallPollState | null>(null);
+  // Bumped on every new poll so a tick still awaiting a response from an
+  // earlier poll cannot stop (or report on) the one that replaced it.
+  const pollGenerationRef = useRef(0);
+  const pollTickInFlightRef = useRef(false);
   const recentLinuxInstallsRequestRef = useRef(0);
 
   // Use provided timezone, fetched siteTimezone, or browser default
@@ -1018,6 +1019,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // Clean up polling on unmount
   useEffect(() => {
     return () => {
+      pollGenerationRef.current += 1;
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -1110,61 +1112,128 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   };
 
   // -------------------------------------------------------------------------
-  // Post-install polling: poll every 5s for up to 90s watching pending count
+  // Post-install polling (#10250): poll every 5 s until every targeted patch
+  // has an outcome (left the pending list, or gained a new failure / restart
+  // marker), the install command is abandoned, or the settle window after the
+  // command finished runs out. Stop rules: ./patchInstallPolling.
   // -------------------------------------------------------------------------
-  const startInstallPolling = useCallback((initialPendingCount: number) => {
+  const startInstallPolling = useCallback((target: {
+    patchIds: string[];
+    commandId?: string;
+    pending: PatchItem[];
+  }) => {
     // Stop any existing poll
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
     }
 
-    priorPendingCountRef.current = initialPendingCount;
-    pollStartRef.current = Date.now();
+    const generation = ++pollGenerationRef.current;
+    const isCurrent = () => generation === pollGenerationRef.current;
+    const commandId = target.commandId;
+    let commandStatus: string | null = null;
+    let commandStatusWarned = false;
+
+    pollStateRef.current = {
+      startedAt: Date.now(),
+      patchIds: target.patchIds,
+      baseline: snapshotInstallOutcomes(target.pending, target.patchIds),
+      settleFrom: null,
+    };
     setIsPolling(true);
     setControlNotice({ kind: 'info', message: t('devicePatchStatusTab.notices.installingPolling') });
 
-    pollTimerRef.current = setInterval(async () => {
-      const elapsed = Date.now() - pollStartRef.current;
-      if (elapsed >= INSTALL_POLL_MAX_DURATION_MS) {
-        // Timeout -- stop polling
-        if (pollTimerRef.current) {
-          clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
-        }
-        setIsPolling(false);
-        setInstallingPatchIds(new Set());
-        setControlNotice({ kind: 'info', message: t('devicePatchStatusTab.notices.installLongerThanExpected') });
-        await refreshPatchView(true);
-        return;
+    const stopPolling = () => {
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+        pollTimerRef.current = null;
       }
+      pollStateRef.current = null;
+      setIsPolling(false);
+      setInstallingPatchIds(new Set());
+    };
 
-      // Skip the ring-aware evaluation on every tick (#7637): it costs a second
-      // pooled connection per request, and approval can't change mid-install.
-      const freshData = await fetchPatchStatus(true, true);
-      if (!freshData) return;
-
-      const freshPending = freshData.pending ?? freshData.pendingPatches ?? freshData.available ?? [];
-      const currentPendingCount = freshPending.length;
-
-      if (currentPendingCount < priorPendingCountRef.current) {
-        // Pending count went down -- install completed (at least partially)
-        if (pollTimerRef.current) {
-          clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
+    // The command status only tells the poll when to stop waiting; the patch
+    // list stays the source of truth. A failed read is not fatal: the poll
+    // still resolves on the patch list and stops at the outer cap.
+    const readCommandStatus = async (id: string): Promise<string | null> => {
+      try {
+        const response = await fetchWithAuth(`/devices/${deviceId}/commands/${id}`);
+        if (response.ok) {
+          const json = await response.json();
+          const status = json?.data?.status;
+          if (typeof status === 'string') return status;
         }
-        setIsPolling(false);
-        setInstallingPatchIds(new Set());
-        const installed = priorPendingCountRef.current - currentPendingCount;
-        // One full load at the end so the remaining patches' badges are current.
-        await fetchPatchStatus(true);
-        await fetchRecentLinuxInstalls(false);
-        setControlNotice({
-          kind: 'success',
-          message: t('devicePatchStatusTab.notices.installedSuccessfully', { installed, pending: currentPendingCount })
-        });
+        if (!commandStatusWarned) {
+          commandStatusWarned = true;
+          console.warn(`[DevicePatchStatusTab] Could not read install command ${id} status (HTTP ${response.status}); waiting on the patch list only.`);
+        }
+      } catch (err) {
+        if (!commandStatusWarned) {
+          commandStatusWarned = true;
+          console.warn(`[DevicePatchStatusTab] Could not read install command ${id} status; waiting on the patch list only.`, err);
+        }
+      }
+      return null;
+    };
+
+    pollTimerRef.current = setInterval(async () => {
+      if (pollTickInFlightRef.current) return;
+      pollTickInFlightRef.current = true;
+      try {
+        // Skip the ring-aware evaluation on every tick (#7637): it costs a second
+        // pooled connection per request, and approval can't change mid-install.
+        const freshData = await fetchPatchStatus(true, true);
+        if (commandId && !isTerminalCommandStatus(commandStatus)) {
+          commandStatus = (await readCommandStatus(commandId)) ?? commandStatus;
+        }
+        const state = pollStateRef.current;
+        if (!isCurrent() || !state) return;
+
+        const now = Date.now();
+        let decision: InstallPollDecision;
+        if (freshData) {
+          decision = decideInstallPoll(state, {
+            now,
+            pending: freshData.pending ?? freshData.pendingPatches ?? freshData.available ?? [],
+            commandStatus,
+          });
+        } else if (now - state.startedAt >= INSTALL_POLL_MAX_DURATION_MS) {
+          decision = { kind: 'timed_out' };
+        } else {
+          return; // transient fetch failure: try again next tick
+        }
+
+        if (decision.kind === 'continue') {
+          state.settleFrom = decision.settleFrom;
+          return;
+        }
+
+        stopPolling();
+        // One full load at the end so every row's badges are current.
+        await refreshPatchView(true);
+        if (!isCurrent()) return;
+
+        if (decision.kind === 'timed_out') {
+          setControlNotice({ kind: 'info', message: t('devicePatchStatusTab.notices.installLongerThanExpected') });
+        } else if (decision.kind === 'command_ended') {
+          setControlNotice({
+            kind: 'error',
+            message: t('devicePatchStatusTab.notices.installCommandEnded', { status: decision.status })
+          });
+        } else {
+          const { installed, failed, awaitingRestart, unresolved, pending } = decision.summary;
+          setControlNotice(failed + awaitingRestart + unresolved === 0
+            ? { kind: 'success', message: t('devicePatchStatusTab.notices.installedSuccessfully', { installed, pending }) }
+            : {
+                kind: failed > 0 ? 'error' : 'info',
+                message: t('devicePatchStatusTab.notices.installFinishedWithIssues', { installed, failed, awaitingRestart, unresolved })
+              });
+        }
+      } finally {
+        pollTickInFlightRef.current = false;
       }
     }, INSTALL_POLL_INTERVAL_MS);
-  }, [fetchPatchStatus, fetchRecentLinuxInstalls, refreshPatchView]);
+  }, [deviceId, fetchPatchStatus, refreshPatchView]);
 
   const queuePatchScan = useCallback(async (
     action: 'scan-native' | 'scan-third-party',
@@ -1221,7 +1290,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       return;
     }
 
-    const currentPendingCount = pendingNative.length + pendingOther.length;
+    const currentPending = [...pendingNative, ...pendingOther];
     setControlAction(action);
     setControlNotice(null);
     try {
@@ -1248,7 +1317,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       });
 
       // Start polling for completion
-      startInstallPolling(currentPendingCount);
+      startInstallPolling({ patchIds, commandId: body.commandId, pending: currentPending });
     } catch (err) {
       // runAction already toasted; the 409 "pending approval" detail in the JSON
       // body can't ride the toast, so add it to the inline notice when present.
@@ -1260,7 +1329,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
     } finally {
       setControlAction(null);
     }
-  }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
+  }, [deviceId, pendingNative, pendingOther, startInstallPolling]);
 
   // The batch-install buttons request confirmation first; the ConfirmDialog's
   // onConfirm runs the queuePatchInstall above. Destructive action ⇒ never fire
@@ -1281,7 +1350,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   const queueSinglePatchInstall = useCallback(async (patchId: string, patchName: string) => {
     if (!patchId) return;
 
-    const currentPendingCount = pendingNative.length + pendingOther.length;
+    const currentPending = [...pendingNative, ...pendingOther];
     setInstallingPatchIds(prev => new Set(prev).add(patchId));
     setControlNotice(null);
     try {
@@ -1302,7 +1371,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       });
 
       // Start polling for completion
-      startInstallPolling(currentPendingCount);
+      startInstallPolling({ patchIds: [patchId], commandId: body.commandId, pending: currentPending });
     } catch (err) {
       setInstallingPatchIds(prev => {
         const next = new Set(prev);
@@ -1315,7 +1384,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
         message: err instanceof ActionError ? err.message : err instanceof Error ? err.message : t('devicePatchStatusTab.notices.installPatchFailed', { name: patchName })
       });
     }
-  }, [deviceId, pendingNative.length, pendingOther.length, startInstallPolling]);
+  }, [deviceId, pendingNative, pendingOther, startInstallPolling]);
 
   if (loading) {
     return (

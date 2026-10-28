@@ -2067,6 +2067,8 @@
     "loading": "Patch-Status wird geladen...",
     "notDownloadedTitle": "Noch nicht heruntergeladen – die Installation dauert länger",
     "notices": {
+      "installCommandEnded": "Der Installationsbefehl wurde beendet ({{status}}), bevor das Gerät ein Ergebnis gemeldet hat. Details finden Sie im Befehlsverlauf des Geräts.",
+      "installFinishedWithIssues": "Installation abgeschlossen: {{installed}} installiert, {{failed}} fehlgeschlagen, {{awaitingRestart}} warten auf einen Neustart, {{unresolved}} noch nicht bestätigt. Details finden Sie in den Patch-Zeilen.",
       "installLongerThanExpected": "Die Installation dauert länger als erwartet. macOS-Updates können mehr als 30 Minuten dauern. Aktualisieren Sie die Seite später, um den Status zu überprüfen.",
       "installPatchFailed": "Die Installation von {{name}} ist fehlgeschlagen",
       "installPatchQueued": "Installation steht für „{{name}}“ in der Warteschlange",

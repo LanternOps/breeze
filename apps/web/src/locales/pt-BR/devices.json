@@ -2067,6 +2067,8 @@
     "loading": "Carregando o status dos patches...",
     "notDownloadedTitle": "Ainda não foi baixado — a instalação demorará mais",
     "notices": {
+      "installCommandEnded": "O comando de instalação terminou ({{status}}) antes que o dispositivo informasse um resultado. Verifique o histórico de comandos do dispositivo para mais detalhes.",
+      "installFinishedWithIssues": "Instalação concluída: {{installed}} instalados, {{failed}} com falha, {{awaitingRestart}} aguardando reinicialização, {{unresolved}} ainda não confirmados. Verifique as linhas dos patches para mais detalhes.",
       "installLongerThanExpected": "A instalação está demorando mais do que o esperado. As atualizações do macOS podem levar mais de 30 minutos. Atualize a página mais tarde para verificar o status.",
       "installPatchFailed": "Falha ao instalar {{name}}",
       "installPatchQueued": "Instalação de \"{{name}}\" adicionada à fila",
