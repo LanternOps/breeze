@@ -72,12 +72,13 @@ export function resolveWritableToolOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
+/** Error returned when a read's bound org is outside the caller's current reach. */
+const READ_ORG_DENIED_ERROR = 'Access denied to this organization';
+
 /**
  * Error returned when a read names no org and the caller's reach is unbounded
  * (system scope): reading every tenant on the platform is never a default.
  */
-const READ_ORG_DENIED_ERROR = 'Access denied to this organization';
-
 export const READ_ORG_UNBOUNDED_ERROR =
   'orgId is required: you have access to every organization, so name the one to read';
 

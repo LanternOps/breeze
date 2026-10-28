@@ -27,9 +27,10 @@ const NO_ORG_CONTEXT_ERROR = 'No organization context available';
 
 /**
  * True when the caller's reach is a non-empty org list. An unrestricted
- * (system, `null`) reach is refused, as it was when these commands resolved
- * `auth.orgId ?? accessibleOrgIds[0]`: a device-by-id command against any
- * tenant on the platform is never a default.
+ * (system, `null`) reach is refused: a device-by-id command against any
+ * tenant on the platform is never a default. (Under the old
+ * `auth.orgId ?? accessibleOrgIds[0]` a system caller was refused too, unless
+ * its token carried an `orgId`.)
  */
 function hasOrgReach(auth: AuthContext): boolean {
   return Array.isArray(auth.accessibleOrgIds) && auth.accessibleOrgIds.length > 0;

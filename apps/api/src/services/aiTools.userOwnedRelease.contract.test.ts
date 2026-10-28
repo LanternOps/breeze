@@ -157,8 +157,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // `resolveCommandCreatedBy` before the `device_commands.created_by` insert
   // — a synthetic (aiAgents) id degrades to NULL there instead of reaching
   // the FK raw.
-  ['services/aiToolsAgentLogs.ts:404', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentLogs.ts:469', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:405', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:470', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
   ['services/aiToolsAgentMgmt.ts:477', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
