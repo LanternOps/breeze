@@ -130,22 +130,29 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   const now = new Date();
   const daysRemaining = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-  // Determine severity
-  let severity: 'critical' | 'high' | null = null;
+  // Determine severity. Warranty expiry is a date-driven lifecycle notice, not
+  // a device fault, so it never reaches `critical`/`high` (#10371): those sit
+  // next to disk-full and offline-server alerts, inflate the active-critical
+  // dashboard counts, and trip escalation/notification rules keyed on
+  // severity. The two policy windows and expiry step up through the lower
+  // half of the scale instead: warnDays → info, criticalDays → low,
+  // expired → medium. (The `criticalDays` knob keeps its stored name; it now
+  // means "the closer, more urgent window", not "critical severity".)
+  let severity: 'medium' | 'low' | 'info' | null = null;
   let title = '';
   let message = '';
   const deviceName = device.displayName || device.hostname;
 
   if (daysRemaining <= 0) {
-    severity = 'critical';
+    severity = 'medium';
     title = `Warranty expired: ${deviceName}`;
     message = `The warranty for ${deviceName} (${warranty.manufacturer?.toUpperCase()}, S/N: ${warranty.serialNumber}) expired on ${warranty.warrantyEndDate}.`;
   } else if (daysRemaining <= settings.criticalDays) {
-    severity = 'critical';
+    severity = 'low';
     title = `Warranty expires in ${daysRemaining} days: ${deviceName}`;
     message = `The warranty for ${deviceName} (${warranty.manufacturer?.toUpperCase()}, S/N: ${warranty.serialNumber}) expires on ${warranty.warrantyEndDate} (${daysRemaining} days remaining).`;
   } else if (daysRemaining <= settings.warnDays) {
-    severity = 'high';
+    severity = 'info';
     title = `Warranty expires in ${daysRemaining} days: ${deviceName}`;
     message = `The warranty for ${deviceName} (${warranty.manufacturer?.toUpperCase()}, S/N: ${warranty.serialNumber}) expires on ${warranty.warrantyEndDate} (${daysRemaining} days remaining).`;
   }

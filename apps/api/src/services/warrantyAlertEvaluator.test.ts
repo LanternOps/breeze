@@ -209,7 +209,7 @@ describe('evaluateWarrantyAlerts gating', () => {
 
     expect(result).toBe('alert-1');
     expect(values).toHaveBeenCalledWith(
-      expect.objectContaining({ configItemName: 'warranty_expiry', deviceId: DEVICE_ID, severity: 'critical' })
+      expect.objectContaining({ configItemName: 'warranty_expiry', deviceId: DEVICE_ID, severity: 'low' })
     );
     expect(publishEventMock).toHaveBeenCalledWith(
       'alert.triggered',
@@ -218,6 +218,38 @@ describe('evaluateWarrantyAlerts gating', () => {
       'warranty-alert-evaluator',
       expect.objectContaining({}),
     );
+  });
+
+  // #10371 — warranty expiry is a date-driven lifecycle notice, not a device
+  // fault. It must never land at `critical`/`high` next to disk-full and
+  // offline-server alerts (it inflated active-critical counts and tripped
+  // critical-keyed escalation rules). Ladder: warnDays window → info, the
+  // closer criticalDays window → low, expired → medium.
+  it.each([
+    ['expired yesterday', -1, 'medium'],
+    ['expires today (0 days)', 0, 'medium'],
+    ['inside the criticalDays window', 10, 'low'],
+    ['exactly at criticalDays', 30, 'low'],
+    ['inside the warnDays window only', 60, 'info'],
+    ['exactly at warnDays', 90, 'info'],
+  ] as const)('raises a lifecycle-grade severity when the warranty %s (#10371)', async (_label, days, expected) => {
+    const { values } = captureInsert();
+    selectMock.mockReturnValueOnce(queueSelect([{ ...baseWarranty, warrantyEndDate: inDays(days) }]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBe('alert-1');
+    expect(values).toHaveBeenCalledTimes(1);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ severity: expected }));
   });
 
   it('rolls the warranty alert row back when publishing alert.triggered throws (#5325)', async () => {

@@ -420,9 +420,10 @@ describe('evaluateAgentTriggerFilters', () => {
       true,
     ],
     // #6749 — lifecycle/administrative alert sources (warranty expiry) never
-    // admit a triage run, even when every other filter matches (severity is
-    // hard-coded critical/high by warrantyAlertEvaluator.ts, so severity
-    // alone can't exclude them). Unconditional exclusion, not opt-in.
+    // admit a triage run, even when every other filter matches (an agent
+    // whose alertSeverities include info/low/medium — warranty's levels since
+    // #10371 — would otherwise admit them, so severity alone can't exclude
+    // them). Unconditional exclusion, not opt-in.
     [
       'warranty_evaluator source is excluded even though severity matches',
       triggers(),

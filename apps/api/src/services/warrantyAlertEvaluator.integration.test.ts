@@ -109,6 +109,9 @@ runDb('DOES re-create a warranty alert after the warranty is renewed to a NEW en
   const open = await openWarrantyAlerts(deviceId);
   expect(open).toHaveLength(1);
   expect(open[0]!.status).toBe('active');
+  // #10371 — 10 days out sits in the default 30-day criticalDays window, which
+  // is a lifecycle notice at `low`, never `critical`.
+  expect(open[0]!.severity).toBe('low');
 });
 
 runDb('a legacy dismissed row with no end date in context blocks re-creation unconditionally', async () => {

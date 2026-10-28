@@ -1,11 +1,11 @@
 ---
 title: Warranty Tracking
-description: Configure warning and critical warranty expiry thresholds on configuration policies so Breeze raises alerts before device manufacturer warranties lapse.
+description: Configure warning and urgent warranty expiry thresholds on configuration policies so Breeze raises low-severity lifecycle alerts before device manufacturer warranties lapse.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-The **Warranty** feature on a [configuration policy](/features/configuration-policies/) controls when Breeze raises an alert as a device's manufacturer warranty approaches expiry. You set two thresholds — a **warning** window and a **critical** window (both in days) — and Breeze evaluates each device's known warranty end date against them, opening an [alert](/features/alerts/) when the device falls inside a window.
+The **Warranty** feature on a [configuration policy](/features/configuration-policies/) controls when Breeze raises an alert as a device's manufacturer warranty approaches expiry. You set two thresholds — a **warning** window and a closer **urgent** window (both in days) — and Breeze evaluates each device's known warranty end date against them, opening an [alert](/features/alerts/) when the device falls inside a window.
 
 Warranty alerting is **opt-in**. A device with no assigned, active warranty policy is never alerted, even if Breeze knows its warranty date. You turn it on by adding a Warranty feature to a policy and assigning that policy to the devices you care about.
 
@@ -25,9 +25,9 @@ Devices on an **active AppleCare subscription** are never alerted. The reported 
 
 2. Toggle **Enable warranty expiry alerts** on.
 
-3. Set the **Warning threshold (days)** — Breeze raises a `high`-severity alert once a device's warranty is this many days or fewer from expiring. Default `90` (range 1–365).
+3. Set the **Warning threshold (days)** — Breeze raises an `info`-severity alert once a device's warranty is this many days or fewer from expiring. Default `90` (range 1–365).
 
-4. Set the **Critical threshold (days)** — inside this closer window (and once expired) Breeze raises a `critical`-severity alert instead. Default `30` (range 1–365).
+4. Set the **Urgent threshold (days)** — inside this closer window Breeze raises a `low`-severity alert instead, and once the warranty has expired, a `medium`-severity one. Default `30` (range 1–365). (The API and AI tools still call this field `criticalDays`.)
 
 5. **Save**, then assign the policy to the scope you want covered (partner, organization, site, device group, or device).
 
@@ -37,16 +37,16 @@ The settings are stored **inline** on the policy's Warranty feature link. Resolu
 
 ## What alerts fire
 
-Breeze picks a single severity per device based on days remaining until the warranty end date:
+Warranty expiry is a date-driven lifecycle notice, not a device fault, so it never raises a `critical` or `high` alert — it stays out of active-critical counts and severity-keyed escalation rules. Breeze picks a single severity per device based on days remaining until the warranty end date:
 
 | Condition | Severity | Alert |
 |---|---|---|
-| Warranty already expired (0 days or past) | `critical` | "Warranty expired: *device*" |
-| Within the **critical** threshold | `critical` | "Warranty expires in N days: *device*" |
-| Within the **warning** threshold | `high` | "Warranty expires in N days: *device*" |
+| Warranty already expired (0 days or past) | `medium` | "Warranty expired: *device*" |
+| Within the **urgent** threshold | `low` | "Warranty expires in N days: *device*" |
+| Within the **warning** threshold | `info` | "Warranty expires in N days: *device*" |
 | Outside both thresholds | — | No alert (any existing one is auto-resolved) |
 
-Each alert carries the manufacturer, serial number, end date, and days remaining. Only one open warranty alert exists per device at a time — Breeze won't create a duplicate while one is active, acknowledged, or suppressed. When a device moves back outside the thresholds (or becomes an AppleCare subscription), Breeze **auto-resolves** the open alert. A warranty alert a user has **dismissed** stays dismissed for that end date and won't be recreated; if the warranty is later renewed to a new end date and approaches expiry again, alerting resumes.
+Each alert carries the manufacturer, serial number, end date, and days remaining. Only one open warranty alert exists per device at a time — Breeze won't create a duplicate while one is active, acknowledged, or suppressed, so an alert keeps the severity it opened with as the expiry date approaches. When a device moves back outside the thresholds (or becomes an AppleCare subscription), Breeze **auto-resolves** the open alert. A warranty alert a user has **dismissed** stays dismissed for that end date and won't be recreated; if the warranty is later renewed to a new end date and approaches expiry again, alerting resumes.
 
 ## Related
 
