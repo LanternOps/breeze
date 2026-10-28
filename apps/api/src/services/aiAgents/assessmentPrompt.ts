@@ -49,8 +49,15 @@ const TITLE_MAX = 160;
 
 function reasonLine(reason: AssessmentReason): string {
   switch (reason.kind) {
-    case 'event':
-      return `event ${sanitizeSweepText(reason.eventType, 64)} (${sanitizeSweepText(reason.eventId, 64)})`;
+    case 'event': {
+      // #10388: name the event's subject, never the bus event id — the model
+      // took that id for an alert id and its lookup failed.
+      const alert = reason.alertId ? ` for alert ${sanitizeSweepText(reason.alertId, 64)}` : '';
+      const device = reason.deviceId
+        ? `${alert ? ' on' : ' for'} device ${sanitizeSweepText(reason.deviceId, 64)}`
+        : '';
+      return `event ${sanitizeSweepText(reason.eventType, 64)}${alert}${device}`;
+    }
     case 'watch':
       return `watch ${sanitizeSweepText(reason.watchId, 64)}`;
     case 'onboarding':

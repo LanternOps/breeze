@@ -534,6 +534,17 @@ describe('parseWispTriggerRef', () => {
     expect(parseWispTriggerRef({ wisp: { ...ok, watermark: 'not a date' } })).toBeNull();
     expect(parseWispTriggerRef({ wisp: { ...ok, reason: { kind: 'watch' } } })).toBeNull();
   });
+
+  // #10388: the event's subject ids survive the trigger_ref round-trip; a
+  // non-uuid id is dropped rather than rendered into the prompt.
+  it('keeps uuid alertId / deviceId on an event reason and drops anything else', () => {
+    const base = { grantId: GRANT, grantRevisionId: REV, watermark: null };
+    const reason = { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9', alertId: ALERT, deviceId: USER };
+    expect(parseWispTriggerRef({ wisp: { ...base, reason } })).toEqual({ ...base, reason });
+    expect(parseWispTriggerRef({ wisp: { ...base, reason: { ...reason, alertId: 'evt-9', deviceId: 7 } } })).toEqual({
+      ...base, reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'evt-9' },
+    });
+  });
 });
 
 describe('loadAssessmentContext', () => {
@@ -640,6 +651,17 @@ describe('loadAssessmentContext', () => {
       .filter((calls) => calls.length > 0);
     expect(limitCalls).toHaveLength(5);
     for (const calls of limitCalls) expect(calls[0]![0]).toBe(25);
+  });
+
+  // #10388: an alert resolved since the watermark is a change too — without
+  // it a resolve event leaves the run nothing to read.
+  it('lists alerts triggered OR resolved since the watermark', async () => {
+    queueDigest();
+    await loadAssessmentContext(run());
+    const q = h.queries.find((x) => x.table === alerts)!;
+    const { sql: text, params } = compile(q.where[0]);
+    expect(text).toMatch(/"triggered_at" >= \$\d+ or "alerts"\."resolved_at" >= \$\d+/);
+    expect(params).toContain(ORG);
   });
 
   it('falls back to now − 24 h when there is no watermark', async () => {

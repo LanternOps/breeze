@@ -160,6 +160,24 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(p).toContain('ticket T-1042 | open | Printer is down | 2026-10-21T07:00:00.000Z');
   });
 
+  // #10388: the reason names the event's subject (the alert / device ids a
+  // tool can look up), never the bus event id, which no tool can resolve.
+  it('an event reason names the alert and device, not the bus event id', () => {
+    const ALERT = '00000000-0000-4000-8000-0000000000b1';
+    const DEVICE = '00000000-0000-4000-8000-0000000000b2';
+    const p = buildAssessmentTaskPrompt(ctx(assessment({
+      reason: { kind: 'event', eventType: 'alert.resolved', eventId: 'bus-evt-b0bf5119', alertId: ALERT, deviceId: DEVICE },
+    })));
+    expect(p).toContain(`Why this assessment: event alert.resolved for alert ${ALERT} on device ${DEVICE}.`);
+    expect(p).not.toContain('bus-evt-b0bf5119');
+
+    const bare = buildAssessmentTaskPrompt(ctx(assessment({
+      reason: { kind: 'event', eventType: 'ticket.sla_breached', eventId: 'bus-evt-1' },
+    })));
+    expect(bare).toContain('Why this assessment: event ticket.sla_breached.');
+    expect(bare).not.toContain('bus-evt-1');
+  });
+
   it('adds the watch lines only when the run was requested by a watch', () => {
     expect(buildAssessmentTaskPrompt(ctx())).not.toContain('## Watch');
     const p = buildAssessmentTaskPrompt(ctx(assessment({

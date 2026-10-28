@@ -7,9 +7,16 @@
  */
 import type { Concern, Watch, WatchKind } from '@breeze/shared';
 
-/** Why an assessment was requested (w00 "Triage engine (W05)" + A33). */
+/**
+ * Why an assessment was requested (w00 "Triage engine (W05)" + A33).
+ *
+ * `eventId` is the bus event's own id: kept for traceability, never shown to
+ * the model (no tool can look a bus event up). `alertId` / `deviceId` are the
+ * event's subject, copied from its payload when they are uuids, so the run can
+ * look up the alert the event is about (#10388).
+ */
 export type AssessmentReason =
-  | { kind: 'event'; eventType: string; eventId: string }
+  | { kind: 'event'; eventType: string; eventId: string; alertId?: string; deviceId?: string }
   | { kind: 'tick' }
   | { kind: 'watch'; watchId: string }
   | { kind: 'onboarding' };

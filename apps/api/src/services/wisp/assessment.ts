@@ -387,13 +387,24 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);
+
 function parseReason(v: unknown): AssessmentReason | null {
   if (typeof v !== 'object' || v === null) return null;
   const r = v as Record<string, unknown>;
   switch (r.kind) {
     case 'event':
+      // #10388: the subject ids are rendered into the prompt, so anything but
+      // a uuid is dropped rather than carried.
       return isNonEmptyString(r.eventType) && isNonEmptyString(r.eventId)
-        ? { kind: 'event', eventType: r.eventType, eventId: r.eventId }
+        ? {
+          kind: 'event',
+          eventType: r.eventType,
+          eventId: r.eventId,
+          ...(isUuid(r.alertId) ? { alertId: r.alertId } : {}),
+          ...(isUuid(r.deviceId) ? { deviceId: r.deviceId } : {}),
+        }
         : null;
     case 'tick':
       return { kind: 'tick' };
@@ -470,8 +481,11 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
     const alertRows = !may('alerts') ? [] : await db
       .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
       .from(alerts)
-      .where(and(eq(alerts.orgId, orgId), gte(alerts.triggeredAt, since)))
-      .orderBy(desc(alerts.triggeredAt))
+      // #10388: an alert resolved since the watermark is a change too (a
+      // resolve event must leave the run something to read), ordered by
+      // whichever of the two happened last.
+      .where(and(eq(alerts.orgId, orgId), or(gte(alerts.triggeredAt, since), gte(alerts.resolvedAt, since))))
+      .orderBy(desc(sql`GREATEST(${alerts.triggeredAt}, ${alerts.resolvedAt})`))
       .limit(DIGEST_ROW_LIMIT);
     const ticketRows = !may('tickets') ? [] : await db
       .select({ id: tickets.id, number: tickets.ticketNumber, title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt })
