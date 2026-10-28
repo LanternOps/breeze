@@ -89,12 +89,17 @@ func TestRestartCardAndRemoteConsentLiveTogether(t *testing.T) {
 	consent, restart, consentID, restartID := showBoth(t, h, dir, m, r, calls)
 
 	// One person answers both at once: Postpone on the card (a Refresh in
-	// place, under the host's action lock) and Deny on the consent.
+	// place, under the host's action lock) and Deny on the consent. The
+	// postponement is held inside the restart domain while Deny is sent, so
+	// the two decisions really overlap (not merely two goroutines).
+	m.gate, m.entered = make(chan struct{}), make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	var resR, resC ipc.PromptActionResult
 	wg.Add(2)
 	go func() { defer wg.Done(); resR = actOn(t, h, "native-a", restart, "postpone") }()
+	<-m.entered // Postpone is inside the domain call, holding the action lock
 	go func() { defer wg.Done(); resC = actOn(t, h, "native-a", consent, "deny") }()
+	close(m.gate)
 	wg.Wait()
 
 	if resR.Result != ipc.PromptActionAccepted || resC.Result != ipc.PromptActionAccepted {
@@ -161,5 +166,51 @@ func TestRendererLossWithdrawsOnlyTheConsentNotTheRestartCard(t *testing.T) {
 	}
 	if !h.IsOpen(restartID) {
 		t.Fatal("the restart card must survive the consent's loss")
+	}
+}
+
+// The renderer comes back (a new broker session): the restart card is
+// replayed there, non-activating; the consent it had drawn stays withdrawn
+// and is never asked again.
+func TestReconnectReplaysTheRestartCardButNeverTheConsent(t *testing.T) {
+	h, dir, m, r := crossWaveHost(t)
+	calls := &consentCalls{}
+	_, _, consentID, restartID := showBoth(t, h, dir, m, r, calls)
+
+	h.RendererDisconnected("native-a")
+	dir.mu.Lock()
+	back := dir.rs[0]
+	back.Key = "native-a2"
+	dir.rs = []prompthost.RendererSession{back}
+	dir.mu.Unlock()
+	h.RendererConnected(back)
+	h.Tick()
+
+	var restartShows int
+	for _, x := range dir.take("native-a2") {
+		s, ok := x.payload.(ipc.PromptShow)
+		if !ok {
+			continue
+		}
+		switch s.Kind {
+		case "remote.consent":
+			t.Fatal("a lost consent must never be replayed")
+		case "restart.prompt":
+			restartShows++
+			if s.Focus != ipc.PromptFocusNoActivate || s.Presentation != ipc.PromptPresentationCard {
+				t.Fatalf("restart replay focus=%s presentation=%s, want no_activate card", s.Focus, s.Presentation)
+			}
+		}
+	}
+	if restartShows != 1 {
+		t.Fatalf("restart card replayed %d times, want once", restartShows)
+	}
+	if h.IsOpen(consentID) || !h.IsOpen(restartID) {
+		t.Fatalf("open: consent=%v restart=%v, want false/true", h.IsOpen(consentID), h.IsOpen(restartID))
+	}
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if len(calls.decided) != 0 || len(calls.lost) != 1 {
+		t.Fatalf("consent decided=%v lost=%v, want lost once and never decided", calls.decided, calls.lost)
 	}
 }
