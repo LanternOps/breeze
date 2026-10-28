@@ -547,7 +547,9 @@ export async function runPreFlightChecks(
   }
 
   if (session.turnCount >= session.maxTurns) {
-    return { ok: false, error: `Session turn limit reached (${session.maxTurns})` };
+    // Coded 409: a client can roll to a fresh session (Wisp does, on its one
+    // thread) instead of showing a dead end. Nothing ran, so a re-send is safe.
+    return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 409, code: 'turn_limit_reached' };
   }
 
   // Session expiration

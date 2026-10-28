@@ -8,6 +8,7 @@ import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
 import AiThinkingIndicator from '../ai/AiThinkingIndicator';
 import AiContinuationPrompt from '../ai/AiContinuationPrompt';
+import AiModelPicker from '../ai/AiModelPicker';
 import BuyCreditsLink from '../ai/BuyCreditsLink';
 import WispEntityPicker from './WispEntityPicker';
 import WispPost from './WispPost';
@@ -75,17 +76,6 @@ const COLUMN = 'mx-auto w-full max-w-3xl';
 const noop = () => {};
 
 /**
- * #10142 "New conversation", as the side panel's: close the open session (its
- * summary lands on the thread, as a focus change does), then start a fresh
- * one under the grant's current terms.
- */
-async function startNewWispSession(wisp: Wisp): Promise<boolean> {
-  if (useAiStore.getState().sessionId) await useAiStore.getState().closeSession();
-  await useAiStore.getState().enterWispMode(wisp);
-  return boundTo(wisp);
-}
-
-/**
  * The Wisp conversation, the page's main column (W08 Task 9; W01 #10211 spec
  * §4.1–4.2): the same store the docked panel uses, so leaving the page leaves
  * the session for the panel to continue (unmount touches nothing).
@@ -95,7 +85,9 @@ async function startNewWispSession(wisp: Wisp): Promise<boolean> {
  * posts (briefs, nudges, digests) come from the thread timeline, read without
  * the live session and paged backwards with Load earlier. `refreshKey` (the
  * page's poll signal) re-reads the newest page so new posts appear. A paused
- * grant shows its history read-only; an ended one reads nothing.
+ * grant shows its history read-only; an ended one reads nothing. There is no
+ * "New conversation": one thread per grant, so rotating the session would
+ * change nothing on screen (the closed session's turns stay in the timeline).
  *
  * `leading` (the thread page's summary) opens the thread; an empty thread
  * shows Wisp's welcome and suggestion chips above the composer; a paused or
@@ -301,20 +293,10 @@ export default function WispHomeThread({
                 <button type="button" onClick={clearError} className="shrink-0 hover:underline">{t('wisp.home.threadDismissError')}</button>
               </div>
             )}
-            <div className="flex justify-end px-3">
-              <button
-                type="button"
-                data-testid="wisp-home-new-conversation"
-                onClick={() => rebind(() => startNewWispSession(wisp))}
-                disabled={isLoading}
-                className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              >
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                {t('aiChatSidebar.newConversation')}
-              </button>
-            </div>
             <AiContinuationPrompt />
             <AiThinkingIndicator thinking={isStreaming && !!thinking} />
+            {/* The docked panel's model menu (registry W05): the store loads it for the bound session. */}
+            <AiModelPicker disabled={isStreaming} />
             <AiChatInput
               onSend={sendMessage}
               value={composerDraft}
