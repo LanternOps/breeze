@@ -620,6 +620,19 @@ describe('runPreFlightChecks', () => {
       expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
     });
 
+    it('a turn refused in phase 2 (budget, expired session) still consumed rate-limit capacity', async () => {
+      const { inDb } = makePhaseRunner();
+      mockCheckBudgetDetailed.mockResolvedValueOnce({ message: 'Monthly budget exhausted', reason: 'monthly_budget', permanent: false });
+      expect(await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toMatchObject({ ok: false, status: 402 });
+
+      mockGetSession.mockResolvedValueOnce(makeSession({ status: 'expired' }));
+      expect(await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toMatchObject({ ok: false, error: expect.stringContaining('expired') });
+
+      expect(mockCheckAiRateLimit).toHaveBeenCalledTimes(2);
+    });
+
     it('a missing session or an unresolved turn consumes no rate-limit capacity', async () => {
       const { inDb } = makePhaseRunner();
       mockGetSession.mockResolvedValueOnce(null);
