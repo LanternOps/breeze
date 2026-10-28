@@ -4,6 +4,7 @@ import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze
 import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
+import { PG_UUID_REGEX } from '../../utils/uuid';
 
 // ============================================
 // Enrollment
@@ -788,6 +789,18 @@ export const commandResultSchema = z.object({
   // script / install. Validated by classifyRestorePointOutcome inside the
   // ingest step, after the terminal compare-and-set.
   restorePoint: z.unknown().optional(),
+  // #3525 cancellation marker, mirrored from the agent's CommandResult
+  // (`agent/internal/websocket/client.go`, `agent/internal/remote/tools/types.go`).
+  // It is the proof `handleScriptResult` needs to close a `cancelling`
+  // execution as `cancelled`/`confirmed` when the script's own result beats the
+  // cancel ack. Before #10377 neither key was declared, so `z.object` stripped
+  // them on both transports and every such race ended `failed`/`unconfirmed`.
+  // Lenient like errorCode: a malformed marker is dropped (the result lands on
+  // the honest unproven path) rather than failing the parse and losing the
+  // outcome. PG_UUID_REGEX because the id is compared against the uuid-typed
+  // `cancel_command_id`, where a non-uuid string would raise 22P02.
+  cancelled: z.boolean().optional().catch(undefined),
+  cancelledByCommandId: z.string().regex(PG_UUID_REGEX).optional().catch(undefined),
   result: z.any().optional().refine(
     (val) => {
       const size = commandResultResultByteLength(val);
