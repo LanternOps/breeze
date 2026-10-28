@@ -6423,7 +6423,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Scegli un ruolo"
     },
     "orgAccess": {
       "title": "Accesso organizzazioni",

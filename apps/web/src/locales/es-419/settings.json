@@ -6375,7 +6375,8 @@
     },
     "placeholders": {
       "name": "fulana",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Elija un rol"
     },
     "orgAccess": {
       "title": "Acceso a la organización",

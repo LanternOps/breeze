@@ -6428,7 +6428,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "isim@şirket.com"
+      "email": "isim@şirket.com",
+      "role": "Bir rol seçin"
     },
     "orgAccess": {
       "title": "Kuruluş erişimi",
