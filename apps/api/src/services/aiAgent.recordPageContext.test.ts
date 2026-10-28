@@ -61,6 +61,7 @@ vi.mock('./wisp/entityRefs', () => ({
 
 import { buildSystemPrompt, createSession } from './aiAgent';
 import { resolveEntityForCaller } from './wisp/entityRefs';
+import { wrapUntrustedData } from './aiInputSanitizer';
 import { pageContextWriteDefaultOrgId } from './aiSessionOrgAnchor';
 import { chooseSessionModel } from './aiModels/sessionModel';
 
@@ -99,16 +100,19 @@ describe('record page context prompt', () => {
   it('renders the server label, not the client label', async () => {
     const prompt = await buildSystemPrompt(auth, page);
     expect(resolveEntityForCaller).toHaveBeenCalledWith(auth, { kind: 'ticket', id: RECORD_ID });
-    expect(prompt).toContain(`The user is viewing ticket "#42 Server ticket" (status open) (ID: ${RECORD_ID}). Prioritize information and actions related to it.`);
+    expect(prompt).toContain(`The user is viewing ${wrapUntrustedData('record_page_context', 'ticket "#42 Server ticket" (status open)')} (ID: ${RECORD_ID}). Prioritize information and actions related to it.`);
     expect(prompt).not.toContain(page.label);
     expect(prompt).not.toContain(ORG_A);
-    expect(prompt).toMatch(/<untrusted_data source="[^"]+">[\s\S]*The user is viewing ticket[\s\S]*<\/untrusted_data>/);
+    const fencedText = prompt.slice(prompt.indexOf('<untrusted_data'), prompt.indexOf('</untrusted_data>'));
+    expect(fencedText).toContain('ticket "#42 Server ticket" (status open)');
+    expect(fencedText).not.toContain(RECORD_ID);
+    expect(fencedText).not.toContain('Prioritize information and actions related to it.');
   });
 
   it('omits the optional status when the server has none', async () => {
     vi.mocked(resolveEntityForCaller).mockResolvedValue({ ...entity, status: null });
     const prompt = await buildSystemPrompt(auth, { type: 'record', kind: 'ticket', id: RECORD_ID });
-    expect(prompt).toContain(`The user is viewing ticket "#42 Server ticket" (ID: ${RECORD_ID}). Prioritize information and actions related to it.`);
+    expect(prompt).toContain(`The user is viewing ${wrapUntrustedData('record_page_context', 'ticket "#42 Server ticket"')} (ID: ${RECORD_ID}). Prioritize information and actions related to it.`);
     expect(prompt).not.toContain('(status');
   });
 
@@ -128,10 +132,28 @@ describe('record page context prompt', () => {
     expect(prompt.indexOf('wipe')).toBeLessThan(prompt.indexOf('</untrusted_data>'));
   });
 
+  it('still builds the prompt without a record line or ID when the resolver throws', async () => {
+    const error = new Error('resolver unavailable');
+    vi.mocked(resolveEntityForCaller).mockRejectedValue(error);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const prompt = await buildSystemPrompt(auth, page);
+      expect(prompt).toContain('## Current User');
+      expect(prompt).not.toContain('## Current Page Context');
+      expect(prompt).not.toContain('The user is viewing');
+      expect(prompt).not.toContain(RECORD_ID);
+      expect(prompt).not.toContain('untrusted_data');
+      expect(log).toHaveBeenCalledWith('[AI] Failed to load record page context:', error);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it.each(['not_found', 'forbidden', 'outside_ceiling', 'outside_token_scope'] as const)(
     'renders nothing for a refused record (%s)', async (reason) => {
       vi.mocked(resolveEntityForCaller).mockResolvedValue({ reason });
       const prompt = await buildSystemPrompt(auth, page);
+      expect(prompt).not.toContain('## Current Page Context');
       expect(prompt).not.toContain('The user is viewing');
       expect(prompt).not.toContain(RECORD_ID);
       expect(prompt).not.toContain(page.label);
@@ -176,6 +198,23 @@ describe('record page context org anchoring', () => {
       expect(stored.systemPrompt).not.toContain(RECORD_ID);
     },
   );
+
+  it('creates a session without a page anchor when the resolver throws', async () => {
+    vi.mocked(resolveEntityForCaller).mockRejectedValue(new Error('resolver unavailable'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const values = expectInsert();
+      await createSession(auth, { pageContext: page });
+      const stored = values.mock.calls[0]![0];
+      expect(stored.orgId).toBe(ORG_A);
+      expect(stored.contextSnapshot).not.toHaveProperty('orgAnchor');
+      expect(pageContextWriteDefaultOrgId(stored)).toBeUndefined();
+      expect(stored.systemPrompt).not.toContain('## Current Page Context');
+      expect(stored.systemPrompt).not.toContain(RECORD_ID);
+    } finally {
+      log.mockRestore();
+    }
+  });
 
   it('preserves an explicit org choice without creating a page anchor', async () => {
     const values = expectInsert();

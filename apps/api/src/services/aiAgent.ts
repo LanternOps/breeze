@@ -18,6 +18,7 @@ import { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
+import { resolveEntityForCaller, isResolveFailure } from './wisp/entityRefs';
 import {
   sanitizePageContext,
   sanitizeUntrustedText,
@@ -84,9 +85,13 @@ async function resolvePageContextOrgId(
     return (await loadAccessibleDeviceRow(pageContext.id, auth))?.orgId;
   }
   if (pageContext?.type === 'record') {
-    const { resolveEntityForCaller, isResolveFailure } = await import('./wisp/entityRefs');
-    const record = await resolveEntityForCaller(auth, { kind: pageContext.kind, id: pageContext.id });
-    return isResolveFailure(record) ? undefined : record.orgId ?? undefined;
+    try {
+      const record = await resolveEntityForCaller(auth, { kind: pageContext.kind, id: pageContext.id });
+      return isResolveFailure(record) ? undefined : record.orgId ?? undefined;
+    } catch (err) {
+      console.error('[AI] Failed to resolve record page context org:', err);
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -842,6 +847,34 @@ async function canLoadDeviceContext(deviceId: string, auth: AuthContext): Promis
   return (await loadAccessibleDeviceRow(deviceId, auth)) !== null;
 }
 
+async function renderRecordPageContext(
+  auth: AuthContext,
+  pageContext: Extract<AiPageContext, { type: 'record' }>,
+): Promise<string[]> {
+  try {
+    const record = await resolveEntityForCaller(auth, { kind: pageContext.kind, id: pageContext.id });
+    if (isResolveFailure(record)) return [];
+
+    // Server-resolved tenant text is still untrusted; client labels and org hints are never authority.
+    const flags: string[] = [];
+    const label = sanitizeUntrustedText(record.label, UNTRUSTED_FIELD_MAX_LENGTH, flags);
+    const status = record.status
+      ? ` (status ${sanitizeUntrustedText(record.status, 50, flags)})`
+      : '';
+    const fragment = wrapUntrustedData('record_page_context', `${record.ref.kind} "${label}"${status}`, flags);
+    if (flags.length > 0) {
+      console.warn('[AI] Record-page sanitization flags:', flags, 'record:', record.ref.kind, record.ref.id);
+    }
+    return [
+      '\n## Current Page Context',
+      `The user is viewing ${fragment} (ID: ${record.ref.id}). Prioritize information and actions related to it.`,
+    ];
+  } catch (err) {
+    console.error('[AI] Failed to load record page context:', err);
+    return [];
+  }
+}
+
 export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageContext, approvalMode?: AiApprovalMode): Promise<string> {
   const parts: string[] = [];
 
@@ -869,7 +902,7 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
 
   // Add page context
   if (pageContext) {
-    parts.push('\n## Current Page Context');
+    if (pageContext.type !== 'record') parts.push('\n## Current Page Context');
     switch (pageContext.type) {
       case 'device':
         parts.push(`The user is viewing device "${pageContext.hostname}" (ID: ${pageContext.id}).`);
@@ -941,29 +974,9 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
         parts.push(JSON.stringify(pageContext.data, null, 2));
         break;
 
-      case 'record': {
-        const { resolveEntityForCaller, isResolveFailure } = await import('./wisp/entityRefs');
-        const record = await resolveEntityForCaller(auth, { kind: pageContext.kind, id: pageContext.id });
-        if (isResolveFailure(record)) break;
-
-        // Neither the client badge label nor its org hint is prompt authority.
-        // Even server-resolved tenant text is untrusted: filter each field,
-        // then fence the whole line just like persisted device memory above.
-        const recordFlags: string[] = [];
-        const label = sanitizeUntrustedText(record.label, UNTRUSTED_FIELD_MAX_LENGTH, recordFlags);
-        const status = record.status
-          ? ` (status ${sanitizeUntrustedText(record.status, 50, recordFlags)})`
-          : '';
-        parts.push(wrapUntrustedData(
-          'record_page_context',
-          `The user is viewing ${record.ref.kind} "${label}"${status} (ID: ${record.ref.id}). Prioritize information and actions related to it.`,
-          recordFlags,
-        ));
-        if (recordFlags.length > 0) {
-          console.warn('[AI] Record-page sanitization flags:', recordFlags, 'record:', record.ref.kind, record.ref.id);
-        }
+      case 'record':
+        parts.push(...await renderRecordPageContext(auth, pageContext));
         break;
-      }
 
       case 'topology':
         // IDs only — the evidence itself is built server-side and is never
