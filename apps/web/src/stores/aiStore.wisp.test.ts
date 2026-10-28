@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('./auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('./orgStore', () => ({ useOrgStore: { getState: () => ({ currentOrgId: 'org-header' }) } }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/runAction', async (importOriginal) => {
@@ -12,6 +12,7 @@ import { fetchWithAuth } from './auth';
 import { isActiveGrant, useAiStore, type WispState } from './aiStore';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
+import { i18n } from '@/lib/i18n';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -271,6 +272,92 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
     await useAiStore.getState().switchSession('sess-w2');
     expect(useAiStore.getState().wisp?.grantId).toBe('grant-1');
+  });
+});
+
+describe('aiStore — Wisp rolls to a fresh session at the turn limit', () => {
+  const sse = (events: unknown[]): Response => {
+    const bytes = new TextEncoder().encode(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''));
+    return { ok: true, status: 200, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(bytes); c.close(); } }) } as unknown as Response;
+  };
+  const messagePosts = () => fetchMock.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST')
+    .map(([url, init]) => ({ url: String(url), body: JSON.parse(String((init as RequestInit).body)) as Record<string, unknown> }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAiStore.setState({
+      sessionId: 'sess-old', sessionOrgId: 'org-a', hydratedSessionId: 'sess-old', messages: [], isLoading: false, isStreaming: false,
+      error: null, errorCode: null, pageContext: null, wisp: wisp(),
+    });
+  });
+
+  it('a 409 turn_limit_reached before the turn ran: closes the session, opens one on the grant, re-sends the same message once', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1' });
+    const posts = messagePosts();
+    expect(posts.map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+    expect(posts[1]!.body.content).toBe('what changed overnight?');
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('sess-new');
+    expect(s.wisp?.grantId).toBe('grant-1');
+    expect(s.error).toBeNull();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('a second turn_limit_reached on the fresh session is shown, not retried forever', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages')) return response({ error: 'Session turn limit reached (1)', code: 'turn_limit_reached' }, 409);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(messagePosts()).toHaveLength(2);
+    expect(useAiStore.getState().errorCode).toBe('turn_limit_reached');
+    expect(useAiStore.getState().error).toBe('Session turn limit reached (1)');
+  });
+
+  it('the limit hit mid-turn (stream error turn_limit_reached): rolls the session and asks for the message again, no auto re-send', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return sse([
+        { type: 'message_start', messageId: 'a1' },
+        { type: 'error', message: 'Maximum conversation turns reached.', code: 'turn_limit_reached' },
+      ]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('dig into the printer alerts');
+
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1' });
+    expect(messagePosts()).toHaveLength(1);
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('sess-new');
+    expect(s.errorCode).toBe('turn_limit_reached');
+    expect(s.error).toBe(i18n.t('ai:wisp.turnLimitRolled'));
+  });
+
+  it('a plain chat (no Wisp) at the turn limit keeps the coded error for the panel; no session is rolled', async () => {
+    useAiStore.setState({ wisp: null });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/messages')) return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached' }, 409);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(createBodies()).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalledWith('/ai/sessions/sess-old', { method: 'DELETE' });
+    expect(useAiStore.getState()).toMatchObject({ sessionId: 'sess-old', errorCode: 'turn_limit_reached', error: 'Session turn limit reached (50)' });
   });
 });
 

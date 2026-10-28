@@ -56,3 +56,11 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 - **`notify` reaches webhook and PagerDuty channels.** A PagerDuty notice from a step uses dedup key `flow:<runId>:<stepId>:<item>`.
 - **Conversion census** for operators: `cd apps/api && npx tsx scripts/automationConversionCensus.ts` prints, as JSON, how this installation's Jobs would convert (counts only — no ids or names).
 - **Migration** `2027-01-09-100000-flow-automation-conversions.sql`: adds `flow_automation_conversions` and `automation_occurrence_claims` (both with row-level security), the column `automations.converted_to_flow_id`, and re-issues the `flow_runs` / `flow_run_steps` error-code CHECKs with `targets_over_cap`, `targets_unresolvable`, `alert_create_failed` and `script_dispatch_failed`. DDL only; no backfill.
+
+### Wisp — home thread model menu and turn-limit rollover
+
+No new environment variables or migrations.
+
+- **Model menu on the Wisp home thread.** The thread's composer now shows the same model menu as the docked chat panel, so a partner whose assignment allows user choice can pick an offering (and its effort / fast / thinking options) for Wisp turns. Which models are offered, and the default, stay what Settings → AI models says.
+- **No more "New conversation" on the Wisp home.** The column is the whole thread (one thread per grant), so the button changed nothing visible. Removed.
+- **Wisp rolls to a fresh session at the turn limit.** A session that spends its turn budget (`max_turns_per_session`, every model round-trip counts) used to answer every later message with "Maximum conversation turns reached." Under Wisp the chat now closes that session (its summary lands on the thread), opens the next one under the same grant and focus, and re-sends the refused message; when the limit is hit in the middle of a turn it opens the next session and asks for the message again. Plain chat gets a coded refusal (`409 turn_limit_reached` before the turn; `code: "turn_limit_reached"` on the stream error) and keeps its "New conversation" button.

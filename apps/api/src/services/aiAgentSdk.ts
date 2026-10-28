@@ -435,8 +435,12 @@ export type PreFlightResult = {
   ok: false;
   error: string;
   status?: number;
-  /** A recoverable model-resolution failure (the route answers 409 with it). */
-  code?: ResolveFailureReason;
+  /**
+   * A recoverable refusal the route answers 409 with: a model-resolution
+   * failure (choose another model), or `turn_limit_reached` (the session's
+   * turn budget is spent; start a new session — Wisp rolls one itself).
+   */
+  code?: ResolveFailureReason | 'turn_limit_reached';
   /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
   billingCode?: AiDenialClientCode;
 };
@@ -547,7 +551,9 @@ export async function runPreFlightChecks(
   }
 
   if (session.turnCount >= session.maxTurns) {
-    return { ok: false, error: `Session turn limit reached (${session.maxTurns})` };
+    // Coded 409: a client can roll to a fresh session (Wisp does, on its one
+    // thread) instead of showing a dead end. Nothing ran, so a re-send is safe.
+    return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 409, code: 'turn_limit_reached' };
   }
 
   // Session expiration

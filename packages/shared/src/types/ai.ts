@@ -311,7 +311,8 @@ export type AiStreamEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'message_end'; inputTokens: number; outputTokens: number }
   | { type: 'warning'; message: string; context?: string }
-  | { type: 'error'; message: string }
+  /** `code` names a failure the client can act on; `turn_limit_reached` = the session's turn budget is spent (start a new session). */
+  | { type: 'error'; message: string; code?: 'turn_limit_reached' }
   // ── Generic client-declared session tools (e.g. Helper chat) — published by
   //    services/clientSessionTools.ts when the model calls a client-declared tool.
   | { type: 'client_tool_request'; toolUseId: string; toolName: string; input: Record<string, unknown> }
