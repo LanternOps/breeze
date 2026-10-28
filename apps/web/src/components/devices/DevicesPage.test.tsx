@@ -175,7 +175,11 @@ vi.mock('./AddDeviceModal', () => ({
 }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => <div data-testid="device-filter-toolbar-stub" /> }));
+vi.mock('./DeviceFilterToolbar', () => ({
+  DeviceFilterToolbar: ({ createGroupHref }: { createGroupHref?: string }) => (
+    <div data-testid="device-filter-toolbar-stub" data-create-group-href={createGroupHref ?? ''} />
+  ),
+}));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
@@ -403,6 +407,20 @@ beforeEach(() => {
       });
     }
     return jsonResponse({ data: [] }); // /orgs, /orgs/sites, /device-groups
+  });
+});
+
+describe('DevicesPage — Add filter "New group…" shortcut (#9865)', () => {
+  // The page's own create modal made empty static groups with no org owner;
+  // the shortcut now links to the Device Groups page, which opens its create
+  // dialog on `#create` (DeviceGroupsPage CREATE_HASH).
+  it('links the toolbar shortcut to the Device Groups create flow', async () => {
+    render(<DevicesPage />);
+
+    expect(await screen.findByTestId('device-filter-toolbar-stub')).toHaveAttribute(
+      'data-create-group-href',
+      '/devices/groups#create',
+    );
   });
 });
 
