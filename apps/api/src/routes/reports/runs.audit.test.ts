@@ -270,8 +270,9 @@ describe('report run sensitive-read audit', () => {
   });
 
   it('answers 409 without auditing when the rows do not fit an Excel worksheet', async () => {
+    const { XlsxLimitError } = await import('@breeze/shared');
     rowsToXlsxMock.mockImplementationOnce(() => {
-      throw new RangeError('too many rows');
+      throw new XlsxLimitError('too many rows');
     });
     selectRows.push([{
       id: RUN_ID,
@@ -287,6 +288,27 @@ describe('report run sensitive-read audit', () => {
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: expect.stringContaining('CSV') });
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report an unexpected writer failure as "too large" (no 409, no audit)', async () => {
+    rowsToXlsxMock.mockImplementationOnce(() => {
+      // An engine RangeError (not the writer's limit error) must not map to 409.
+      throw new RangeError('Maximum call stack size exceeded');
+    });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: [{ hostname: 'pc-1' }] },
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(500);
     expect(auditSensitiveReadMock).not.toHaveBeenCalled();
   });
 

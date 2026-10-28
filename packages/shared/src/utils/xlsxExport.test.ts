@@ -3,7 +3,9 @@ import { strFromU8, unzipSync } from 'fflate';
 import {
   XLSX_MAX_CELL_CHARS,
   XLSX_MAX_ROWS,
+  XLSX_MAX_COLUMNS,
   XLSX_MIME_TYPE,
+  XlsxLimitError,
   rowsToXlsx,
   xlsxColumnName,
 } from './xlsxExport';
@@ -98,7 +100,32 @@ describe('rowsToXlsx', () => {
 
   it('refuses more rows than an Excel worksheet holds instead of writing a file Excel must repair', () => {
     const rows = { length: XLSX_MAX_ROWS, 0: { a: 1 } } as unknown as unknown[];
+    expect(() => rowsToXlsx(rows)).toThrow(XlsxLimitError);
     expect(() => rowsToXlsx(rows)).toThrow(RangeError);
+  });
+
+  it('refuses more columns than an Excel worksheet holds, and accepts exactly the limit', () => {
+    const wide = (n: number) => [Object.fromEntries(Array.from({ length: n }, (_, i) => [`c${i}`, 1]))];
+    expect(() => rowsToXlsx(wide(XLSX_MAX_COLUMNS + 1))).toThrow(XlsxLimitError);
+    expect(sheet(rowsToXlsx(wide(XLSX_MAX_COLUMNS)))).toContain('<c r="XFD2"><v>1</v></c>');
+  });
+
+  it('places every row by the header columns, whatever key order later rows use', () => {
+    const xml = sheet(rowsToXlsx([
+      { host: 'h1', site: 's1' },
+      { site: 's2', host: 'h2' },
+      { host: 'h3', site: 's3' },
+    ]));
+    expect(xml).toContain('<c r="A3" t="inlineStr"><is><t xml:space="preserve">h2</t></is></c>');
+    expect(xml).toContain('<c r="B3" t="inlineStr"><is><t xml:space="preserve">s2</t></is></c>');
+    expect(xml).toContain('<row r="4"><c r="A4" t="inlineStr"><is><t xml:space="preserve">h3</t>');
+  });
+
+  it('writes integers past 2^53 as text so Excel does not round away digits', () => {
+    const xml = sheet(rowsToXlsx([{ big: 2 ** 53 + 2, safe: 2 ** 53 - 1, frac: 0.1 }]));
+    expect(xml).toContain('<c r="A2" t="inlineStr"><is><t xml:space="preserve">9007199254740994</t></is></c>');
+    expect(xml).toContain('<c r="B2"><v>9007199254740991</v></c>');
+    expect(xml).toContain('<c r="C2"><v>0.1</v></c>');
   });
 
   it('returns a valid workbook with an empty sheet for empty input', () => {

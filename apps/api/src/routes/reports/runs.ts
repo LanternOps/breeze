@@ -27,7 +27,7 @@ import {
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
-import { rowsToCsv, rowsToXlsx, XLSX_MIME_TYPE } from '@breeze/shared';
+import { rowsToCsv, rowsToXlsx, XLSX_MIME_TYPE, XlsxLimitError } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
@@ -560,7 +560,7 @@ runsRoutes.get(
         body = rowsToXlsx(rows);
       } catch (err) {
         // Only the worksheet row/column limits are expected; anything else is a bug.
-        if (!(err instanceof RangeError)) throw err;
+        if (!(err instanceof XlsxLimitError)) throw err;
         return c.json({ error: 'Report is too large for an Excel worksheet; download it as CSV instead' }, 409);
       }
       c.header('Content-Type', XLSX_MIME_TYPE);

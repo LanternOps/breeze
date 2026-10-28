@@ -31,6 +31,18 @@ export const XLSX_MAX_CELL_CHARS = 32_767;
 
 const SHEET_NAME = 'Report';
 
+/**
+ * Thrown when report rows exceed what one Excel worksheet can hold. A distinct
+ * class so callers can map exactly this case (e.g. to "use CSV instead")
+ * without also swallowing engine RangeErrors such as a stack overflow.
+ */
+export class XlsxLimitError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'XlsxLimitError';
+  }
+}
+
 /** Zero-based column index → spreadsheet column letters (0 → A, 26 → AA). */
 export function xlsxColumnName(index: number): string {
   let name = '';
@@ -47,7 +59,7 @@ export function xlsxColumnName(index: number): string {
 // surrogates, and the U+FFFE/U+FFFF non-characters. Leaving any of them in
 // makes Excel refuse the file.
 const XML_INVALID_CHARS =
-  /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 function escapeXml(value: string): string {
   return value
@@ -65,8 +77,17 @@ function truncateCellText(value: string): string {
   return value.slice(0, XLSX_MAX_CELL_CHARS);
 }
 
+/**
+ * A number Excel can store without changing it. Excel keeps 15 significant
+ * digits, so an integer past 2^53 (a numeric ID, a nanosecond timestamp) is
+ * written as text to keep the exact digits CSV would have shown.
+ */
+function isExcelSafeNumber(value: number): boolean {
+  return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
+}
+
 function cellXml(ref: string, value: unknown): string {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === 'number' && isExcelSafeNumber(value)) {
     return `<c r="${ref}"><v>${value}</v></c>`;
   }
   if (typeof value === 'boolean') {
@@ -111,16 +132,16 @@ const WORKBOOK_RELS = XML_DECL
 /**
  * Serialize report rows to a single-sheet .xlsx workbook. Header row = the
  * first row's keys (same columns as `rowsToCsv`). Empty input yields a valid
- * workbook with an empty sheet. Throws `RangeError` when the rows or columns
- * exceed what an Excel worksheet can hold.
+ * workbook with an empty sheet. Throws `XlsxLimitError` when the rows or
+ * columns exceed what an Excel worksheet can hold.
  */
 export function rowsToXlsx(rows: readonly unknown[]): Uint8Array<ArrayBuffer> {
   const headers = rows.length > 0 ? Object.keys(rows[0] as Record<string, unknown>) : [];
   if (rows.length + 1 > XLSX_MAX_ROWS) {
-    throw new RangeError(`Report has ${rows.length} rows; an Excel worksheet holds at most ${XLSX_MAX_ROWS - 1} plus a header row`);
+    throw new XlsxLimitError(`Report has ${rows.length} rows; an Excel worksheet holds at most ${XLSX_MAX_ROWS - 1} plus a header row`);
   }
   if (headers.length > XLSX_MAX_COLUMNS) {
-    throw new RangeError(`Report has ${headers.length} columns; an Excel worksheet holds at most ${XLSX_MAX_COLUMNS}`);
+    throw new XlsxLimitError(`Report has ${headers.length} columns; an Excel worksheet holds at most ${XLSX_MAX_COLUMNS}`);
   }
 
   const sheetRows: string[] = [];

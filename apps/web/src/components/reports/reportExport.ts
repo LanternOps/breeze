@@ -85,8 +85,8 @@ export async function exportReport(
 
   if (format === 'excel') {
     if (rows.length === 0) throw new Error('No data to export');
-    // #9956: a real workbook (was TSV text saved as .xls). Throws RangeError
-    // past Excel's worksheet limits; callers surface the message.
+    // #9956: a real workbook (was TSV text saved as .xls). Throws
+    // XlsxLimitError past Excel's worksheet limits; callers surface the message.
     const workbook = rowsToXlsx(rows);
     downloadBlob(new Blob([workbook], { type: XLSX_MIME_TYPE }), `${baseFilename}.xlsx`);
     return;
