@@ -6,6 +6,8 @@
  * in: shape, next-occurrence projection, and the site axis.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const selectResults: unknown[][] = [];
 const selectCalls: Array<Record<string, unknown[]>> = [];
@@ -143,6 +145,38 @@ describe('listPolicyMaintenanceWindows (#10409)', () => {
     expect(containsMarker(selectCalls[0]?.where, 'policy-access')).toBe(true);
   });
 
+  it('filters to ACTIVE policies (resolution ignores inactive/archived ones)', async () => {
+    policyAccessCondition.mockReturnValueOnce(undefined); // system scope: no access predicate
+    selectResults.push([], []);
+    await listPolicyMaintenanceWindows(partnerAuth, { limit: 25, now: NOW });
+
+    const where = selectCalls[0]?.where?.[0] as SQL;
+    const query = new PgDialect().sqlToQuery(where);
+    expect(query.sql).toContain('"status" = $1');
+    expect(query.params).toEqual(['active']);
+  });
+
+  it('reads one row past the limit for an unrestricted caller and is not truncated at exactly the limit', async () => {
+    selectResults.push([policyRow('a'), policyRow('b')], []);
+
+    const { windows, truncated } = await listPolicyMaintenanceWindows(partnerAuth, { limit: 2, now: NOW });
+
+    expect(selectCalls[0]?.limit).toEqual([3]);
+    expect(windows).toHaveLength(2);
+    expect(truncated).toBe(false);
+  });
+
+  it('scans wider (bounded) when filtering happens after the read', async () => {
+    selectResults.push([], []);
+    await listPolicyMaintenanceWindows(siteAuth(['site-A']), { limit: 2, now: NOW });
+    expect(selectCalls[0]?.limit).toEqual([500]);
+
+    selectCalls.length = 0;
+    selectResults.push([], []);
+    await listPolicyMaintenanceWindows(partnerAuth, { limit: 2, now: NOW, activeOnly: true });
+    expect(selectCalls[0]?.limit).toEqual([500]);
+  });
+
   it('reports a window that is open right now as activeNow with the current occurrence', async () => {
     selectResults.push(
       [policyRow('pol-daily', { settings: settings({ id: 'mset-daily', recurrence: 'daily', windowStart: '02:00', durationHours: 2 }) })],
@@ -232,6 +266,44 @@ describe('listPolicyMaintenanceWindows (#10409)', () => {
       expect(windows[0]?.assignmentCount).toBe(1);
       expect(windows[0]?.assignments).toEqual([{ level: 'site', roleFilter: null, osFilter: null }]);
       expect(windows[1]?.assignments).toEqual([{ level: 'organization', roleFilter: null, osFilter: null }]);
+    });
+
+    it('resolves group and device assignments to their sites (siteless targets do not count)', async () => {
+      selectResults.push(
+        [
+          policyRow('pol-grpA', { orgId: 'org-1' }),
+          policyRow('pol-grpF', { orgId: 'org-1' }),
+          policyRow('pol-devNull', { orgId: 'org-1' }),
+          policyRow('pol-devA', { orgId: 'org-1' }),
+        ],
+        [
+          assignment('pol-grpA', 'device_group', 'group-A'),
+          assignment('pol-grpA', 'device_group', 'group-FORBIDDEN'),
+          assignment('pol-grpF', 'device_group', 'group-FORBIDDEN'),
+          assignment('pol-devNull', 'device', 'device-siteless'),
+          assignment('pol-devA', 'device', 'device-A'),
+        ],
+        // filterWindowsToSiteScope: group → site, then device → site.
+        [{ id: 'group-A', siteId: 'site-A' }, { id: 'group-FORBIDDEN', siteId: 'site-FORBIDDEN' }],
+        [{ id: 'device-siteless', siteId: null }, { id: 'device-A', siteId: 'site-A' }],
+      );
+
+      const { windows } = await listPolicyMaintenanceWindows(siteAuth(['site-A']), { limit: 25, now: NOW });
+
+      expect(windows.map((w) => w.configPolicyId)).toEqual(['pol-grpA', 'pol-devA']);
+      expect(windows[0]?.assignments).toEqual([{ level: 'device_group', roleFilter: null, osFilter: null }]);
+      expect(windows[0]?.assignmentCount).toBe(1);
+    });
+
+    it('a caller restricted to no sites still sees partner/org-level windows (they reach every site) and nothing else', async () => {
+      selectResults.push(
+        [policyRow('pol-partner'), policyRow('pol-site', { orgId: 'org-1' })],
+        [assignment('pol-partner', 'partner', 'partner-1'), assignment('pol-site', 'site', 'site-A')],
+      );
+
+      const { windows } = await listPolicyMaintenanceWindows(siteAuth([]), { limit: 25, now: NOW });
+
+      expect(windows.map((w) => w.configPolicyId)).toEqual(['pol-partner']);
     });
 
     it('hides an unassigned policy from a site-restricted caller', async () => {
