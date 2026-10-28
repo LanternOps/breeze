@@ -374,10 +374,18 @@ func TestSystemInstallNotApplicableRetriesUnscopedUpgrade(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error %q does not contain %q", err, tc.wantErr)
 				}
+				// The scoped attempt's own output is the evidence a tech
+				// needs to see that a retry happened and why.
+				if !strings.Contains(err.Error(), "Found an existing package already installed") {
+					t.Fatalf("error must carry the machine-scope install's output, got %q", err)
+				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.Contains(res.Message, "Found an existing package already installed") {
+				t.Fatalf("message must carry the machine-scope install's output, got %q", res.Message)
 			}
 			if res.PatchID != pkg || res.Provider != "winget" {
 				t.Fatalf("got %+v", res)

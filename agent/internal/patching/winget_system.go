@@ -249,7 +249,7 @@ func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 		// may have rejected every installer in a manifest that omits
 		// `Scope: machine`. Ask winget again without the scope before
 		// reporting already_current.
-		return p.upgradeUnscoped(patchID)
+		return p.upgradeUnscoped(patchID, combined)
 	}
 	if code != 0 {
 		return InstallResult{}, fmt.Errorf("winget install failed (exit %d): %s", code, combined)
@@ -261,26 +261,40 @@ func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 // this time with no scope filter in play, is reported as already_current
 // (#6910); any other non-zero exit is a real failure carrying the exit code so
 // the server raises an install-failure badge instead of leaving the row
-// pending with no explanation.
-func (p *SystemWingetProvider) upgradeUnscoped(patchID string) (InstallResult, error) {
+// pending with no explanation. scopedOut is the machine-scope install's own
+// output: every outcome carries it so a tech can see that a retry happened and
+// what winget said the first time.
+func (p *SystemWingetProvider) upgradeUnscoped(patchID, scopedOut string) (InstallResult, error) {
+	note := scopedAttemptNote(scopedOut)
 	stdout, stderr, code, err := p.run(p.wingetPath, systemUnscopedUpgradeArgs(patchID), systemWingetInstallTimeout)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry after machine-scope install returned 0x8A15002B) failed: %w", err)
+		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry) failed: %w\n%s", err, note)
 	}
 	combined := strings.TrimSpace(stdout + "\n" + stderr)
 	if isWingetUpdateNotApplicable(code) {
 		return InstallResult{
 			PatchID:    patchID,
 			Provider:   "winget",
-			Message:    combined,
+			Message:    combined + "\n" + note,
 			Skipped:    true,
 			SkipReason: SkipReasonAlreadyCurrent,
 		}, nil
 	}
 	if code != 0 {
-		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry after machine-scope install returned 0x8A15002B) failed (exit %d): %s", code, combined)
+		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry) failed (exit %d): %s\n%s", code, combined, note)
 	}
-	return wingetInstalledResult(patchID, combined), nil
+	// Reboot detection reads only the upgrade's own output (inside
+	// wingetInstalledResult), before the note is appended.
+	res := wingetInstalledResult(patchID, combined)
+	res.Message += "\n" + note
+	return res, nil
+}
+
+// scopedAttemptNote records the machine-scope install that preceded the
+// unscoped retry. It is appended after the retry's own output so the outcome
+// that decided the result leads the message.
+func scopedAttemptNote(scopedOut string) string {
+	return "[machine-scope install exited 0x8A15002B before this unscoped upgrade: " + scopedOut + "]"
 }
 
 // wingetInstalledResult builds the result of a winget run that exited 0.
