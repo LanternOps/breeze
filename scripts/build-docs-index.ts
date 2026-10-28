@@ -131,7 +131,7 @@ function extractHeadings(body: string): string[] {
     const match = line.match(SECTION_HEADING_RE);
     if (!match) continue;
 
-    const heading = cleanHeading(match[1]);
+    const heading = cleanHeading(match[1] ?? '');
     if (heading) headings.push(heading);
   }
 
@@ -242,7 +242,7 @@ function extractSections(body: string): DocsIndexSection[] {
 
     const anyHeading = inCodeFence ? null : line.match(ANY_HEADING_RE);
     if (anyHeading) {
-      const heading = cleanHeading(anyHeading[1]);
+      const heading = cleanHeading(anyHeading[1] ?? '');
       const anchor = heading ? slug(heading) : '';
       if (heading && SECTION_HEADING_RE.test(line)) {
         flush();

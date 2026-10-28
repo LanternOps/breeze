@@ -128,6 +128,7 @@ function excerpt(text: string, keywords: string[], budget: number): string {
   if (text.length <= budget) return text;
 
   const paragraphs = text.split(/\n{2,}/);
+  const sizeOf = (index: number) => paragraphs[index]?.length ?? 0;
   let best = 0;
   let bestHits = -1;
   paragraphs.forEach((paragraph, index) => {
@@ -141,11 +142,11 @@ function excerpt(text: string, keywords: string[], budget: number): string {
 
   let start = best;
   let end = best;
-  let length = paragraphs[best].length;
+  let length = sizeOf(best);
   if (length + ELLIPSIS_CHARS > budget) {
     // One paragraph (a long table or code block) is bigger than the budget:
     // window it so the first keyword hit sits near the top.
-    const paragraph = paragraphs[best];
+    const paragraph = paragraphs[best] ?? '';
     const lower = paragraph.toLowerCase();
     const hitAt = Math.min(...keywords.map((keyword) => lower.indexOf(keyword)).filter((at) => at >= 0), paragraph.length);
     const width = Math.max(0, budget - ELLIPSIS_CHARS);
@@ -157,14 +158,14 @@ function excerpt(text: string, keywords: string[], budget: number): string {
   let grew = true;
   while (grew) {
     grew = false;
-    if (end + 1 < paragraphs.length && length + 2 + paragraphs[end + 1].length + ELLIPSIS_CHARS <= budget) {
+    if (end + 1 < paragraphs.length && length + 2 + sizeOf(end + 1) + ELLIPSIS_CHARS <= budget) {
       end += 1;
-      length += 2 + paragraphs[end].length;
+      length += 2 + sizeOf(end);
       grew = true;
     }
-    if (start > 0 && length + 2 + paragraphs[start - 1].length + ELLIPSIS_CHARS <= budget) {
+    if (start > 0 && length + 2 + sizeOf(start - 1) + ELLIPSIS_CHARS <= budget) {
       start -= 1;
-      length += 2 + paragraphs[start].length;
+      length += 2 + sizeOf(start);
       grew = true;
     }
   }
