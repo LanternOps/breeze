@@ -168,7 +168,9 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 		if deps.Detect == nil {
 			return rejectV2(envelope, "detection_failed")
 		}
-		detected, err := deps.Detect()
+		// Assign, don't declare: the rollback plan below reuses `detected`
+		// when detectedReady is set, so a shadowed copy left it nil (#10442).
+		detected, err = deps.Detect()
 		if err != nil {
 			return rejectV2(envelope, "detection_failed")
 		}
