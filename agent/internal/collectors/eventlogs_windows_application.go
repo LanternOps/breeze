@@ -18,6 +18,8 @@ import (
 //
 // Keep this list small and add a provider only for a specific use case.
 // MsiInstaller covers install/uninstall (1033/1034, 11707/11724).
+// APCPBEAgent covers APC PowerChute Business Edition UPS events (EventID 2000
+// at Warning level, e.g. "UPS On Battery"; #10493).
 //
 // The API warns at rule save when an event_log rule targets an Information-
 // or Warning-level Application source outside this list. Its copy lives in
@@ -25,6 +27,7 @@ import (
 // (apps/api/src/services/eventLogProviderAllowlistParity.test.ts checks it).
 var applicationInfoProviderAllowlist = []string{
 	"MsiInstaller",
+	"APCPBEAgent",
 }
 
 // applicationInfoEventsFilterHashtable builds the Get-WinEvent

@@ -20,11 +20,21 @@ func TestApplicationInfoProviderAllowlistIsSmallAndStartsWithMsiInstaller(t *tes
 	}
 }
 
+func TestApplicationInfoProviderAllowlistIncludesAPCPowerChute(t *testing.T) {
+	// #10493: collect APC PowerChute Business Edition UPS warnings.
+	for _, provider := range applicationInfoProviderAllowlist {
+		if provider == "APCPBEAgent" {
+			return
+		}
+	}
+	t.Fatalf("allowlist must include APCPBEAgent, got %v", applicationInfoProviderAllowlist)
+}
+
 func TestApplicationInfoEventsFilterHashtable(t *testing.T) {
 	got := applicationInfoEventsFilterHashtable("2026-10-12T00:00:00Z")
 	for _, want := range []string{
 		"LogName='Application'",
-		"ProviderName='MsiInstaller'",
+		"ProviderName='MsiInstaller','APCPBEAgent'",
 		// Warning + Information only: levels 1-2 already come from the
 		// all-provider Application query, so the two queries never overlap.
 		"Level=3,4",

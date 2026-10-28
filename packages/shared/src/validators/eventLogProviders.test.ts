@@ -11,11 +11,18 @@ describe('Application-log info provider allowlist (#8174)', () => {
   it('starts with MsiInstaller and stays small', () => {
     expect(APPLICATION_INFO_EVENT_PROVIDERS[0]).toBe('MsiInstaller');
     expect(APPLICATION_INFO_EVENT_PROVIDERS.length).toBeLessThanOrEqual(10);
+    expect(APPLICATION_INFO_EVENT_PROVIDERS).toContain('APCPBEAgent');
   });
 });
 
 describe('eventLogCollectionWarning (#8174)', () => {
   const base = { category: 'application' as const, countThreshold: 1, windowMinutes: 60 };
+
+  it('collects APC PowerChute warnings and info and names it in the no-source warning', () => {
+    expect(eventLogCollectionWarning({ ...base, level: 'warning', sourcePattern: 'APCPBEAgent' })).toBeNull();
+    expect(eventLogCollectionWarning({ ...base, level: 'info', sourcePattern: 'apcpbe' })).toBeNull();
+    expect(eventLogCollectionWarning({ ...base, level: 'info' })).toMatch(/APCPBEAgent/);
+  });
 
   it('does not warn for an allowlisted provider at info level', () => {
     expect(eventLogCollectionWarning({ ...base, level: 'info', sourcePattern: 'MsiInstaller' })).toBeNull();
