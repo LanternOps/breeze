@@ -22,6 +22,13 @@ import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnec
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { DNS_INTEGRATION_DELETING_STATUS, enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { writeRouteAudit } from '../services/auditEvents';
+import {
+  decodeDnsEventsCursor,
+  dnsEventsActionCondition,
+  listDnsSecurityEventsPage,
+  resolveDnsEventsWindow,
+  type DnsEventsCursor
+} from '../services/dnsSecurityEventsPage';
 import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -274,7 +281,9 @@ const listEventsQuerySchema = z.object({
   deviceId: z.string().guid().optional(),
   integrationId: z.string().guid().optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
-  offset: z.coerce.number().int().min(0).optional()
+  offset: z.coerce.number().int().min(0).optional(),
+  // Opaque keyset cursor from a previous page's `pagination.nextCursor` (#10054).
+  cursor: z.string().min(1).max(512).optional()
 });
 
 const statsQuerySchema = z.object({
@@ -640,16 +649,30 @@ dnsSecurityRoutes.get(
       return c.json({ error: 'Invalid end date' }, 400);
     }
 
-    const windowError = validateTimeWindow(start, end);
-    if (windowError) {
-      return c.json({ error: windowError }, 400);
+    // #10054: a request with no `start` reads the last 7 days, not the org's
+    // whole history, and the 90-day ceiling covers an open-ended `start` too.
+    const window = resolveDnsEventsWindow(start, end);
+    if (!window.ok) {
+      return c.json({ error: window.error }, 400);
+    }
+
+    let cursor: DnsEventsCursor | null = null;
+    if (query.cursor !== undefined) {
+      if (query.offset !== undefined) {
+        return c.json({ error: 'cursor and offset cannot be combined' }, 400);
+      }
+      cursor = decodeDnsEventsCursor(query.cursor);
+      if (!cursor) {
+        return c.json({ error: 'Invalid cursor' }, 400);
+      }
     }
 
     const conditions: SQL[] = [];
     withOrgCondition(conditions, auth.orgCondition(dnsSecurityEvents.orgId));
-    if (start) conditions.push(gte(dnsSecurityEvents.timestamp, start));
-    if (end) conditions.push(lte(dnsSecurityEvents.timestamp, end));
-    if (query.action) conditions.push(eq(dnsSecurityEvents.action, query.action));
+    conditions.push(gte(dnsSecurityEvents.timestamp, window.start));
+    if (window.end) conditions.push(lte(dnsSecurityEvents.timestamp, window.end));
+    // Literal, so the blocked-only list can use the partial index under a cached plan.
+    if (query.action) conditions.push(dnsEventsActionCondition(query.action));
     if (query.category) conditions.push(eq(dnsSecurityEvents.category, query.category));
     if (query.deviceId) conditions.push(eq(dnsSecurityEvents.deviceId, query.deviceId));
     if (query.integrationId) conditions.push(eq(dnsSecurityEvents.integrationId, query.integrationId));
@@ -669,46 +692,27 @@ dnsSecurityRoutes.get(
 
     const limit = query.limit ?? 100;
     const offset = query.offset ?? 0;
-    const where = whereOrUndefined(conditions);
 
-    const [events, totalRows] = await Promise.all([
-      db
-        .select({
-          id: dnsSecurityEvents.id,
-          orgId: dnsSecurityEvents.orgId,
-          integrationId: dnsSecurityEvents.integrationId,
-          deviceId: dnsSecurityEvents.deviceId,
-          timestamp: dnsSecurityEvents.timestamp,
-          domain: dnsSecurityEvents.domain,
-          queryType: dnsSecurityEvents.queryType,
-          action: dnsSecurityEvents.action,
-          category: dnsSecurityEvents.category,
-          threatType: dnsSecurityEvents.threatType,
-          sourceIp: dnsSecurityEvents.sourceIp,
-          sourceHostname: dnsSecurityEvents.sourceHostname,
-          providerEventId: dnsSecurityEvents.providerEventId,
-          metadata: dnsSecurityEvents.metadata,
-          deviceHostname: devices.hostname
-        })
-        .from(dnsSecurityEvents)
-        .leftJoin(devices, eq(dnsSecurityEvents.deviceId, devices.id))
-        .where(where)
-        .orderBy(desc(dnsSecurityEvents.timestamp), desc(dnsSecurityEvents.id))
-        .limit(limit)
-        .offset(offset),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(dnsSecurityEvents)
-        .where(where)
-    ]);
+    const page = await listDnsSecurityEventsPage({
+      where: whereOrUndefined(conditions),
+      limit,
+      cursor,
+      offset,
+    });
 
     return c.json({
-      data: events,
+      data: page.rows,
       pagination: {
         limit,
         offset,
-        total: Number(totalRows[0]?.count ?? 0)
-      }
+        total: page.total,
+        totalCapped: page.totalCapped,
+        nextCursor: page.nextCursor,
+      },
+      window: {
+        start: window.start.toISOString(),
+        end: window.end ? window.end.toISOString() : null,
+      },
     });
   }
 );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ScrollText, RefreshCw } from 'lucide-react';
@@ -29,12 +29,43 @@ const ACTION_BADGE: Record<Action, string> = {
   redirected: 'bg-warning/15 text-warning',
 };
 
+const PAGE_SIZE = 100;
+const HOUR_MS = 3_600_000;
+
+/**
+ * The Events tab always reads a bounded window (#10054): an unbounded
+ * blocked-only list over a 30M-row table took minutes. The API applies the
+ * same 7-day default when `start` is absent; the UI sends it explicitly so the
+ * window is visible and selectable.
+ */
+const WINDOWS = {
+  last24h: 24 * HOUR_MS,
+  last7d: 7 * 24 * HOUR_MS,
+  last30d: 30 * 24 * HOUR_MS,
+  last90d: 90 * 24 * HOUR_MS,
+} as const;
+type WindowKey = keyof typeof WINDOWS;
+const WINDOW_KEYS = Object.keys(WINDOWS) as WindowKey[];
+
+interface EventsResponse {
+  data?: DnsEvent[];
+  pagination?: { total?: number | null; totalCapped?: boolean; nextCursor?: string | null };
+  window?: { start?: string };
+}
+
 export default function DnsSecurityEventsTab() {
   const { t } = useTranslation('security');
   const [events, setEvents] = useState<DnsEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
+  const [totalCapped, setTotalCapped] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [windowKey, setWindowKey] = useState<WindowKey>('last7d');
+  // The window start the first page was read with; "Load more" reuses it so
+  // every page and the count describe the same window.
+  const windowStartRef = useRef<string | null>(null);
 
   /**
    * Default to blocked-only — per the decision surface (Q5: "Blocked
@@ -42,30 +73,65 @@ export default function DnsSecurityEventsTab() {
    */
   const [showAll, setShowAll] = useState(false);
 
+  const requestPage = useCallback(async (
+    start: string,
+    cursor: string | null,
+    signal?: AbortSignal,
+  ): Promise<EventsResponse | null> => {
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), start });
+    if (!showAll) params.set('action', 'blocked');
+    if (cursor) params.set('cursor', cursor);
+    const res = await fetchWithAuth(`/dns-security/events?${params.toString()}`, { signal });
+    if (!res.ok) {
+      if (res.status === 401) {
+        void navigateTo('/login', { replace: true });
+        return null;
+      }
+      throw new Error(t('dnsSecurityDnsSecurityEventsTab.messages.loadHttpError', { status: res.status }));
+    }
+    return (await res.json()) as EventsResponse;
+  }, [showAll, t]);
+
   const fetchEvents = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ limit: '100' });
-      if (!showAll) params.set('action', 'blocked');
-      const res = await fetchWithAuth(`/dns-security/events?${params.toString()}`, { signal });
-      if (!res.ok) {
-        if (res.status === 401) {
-          void navigateTo('/login', { replace: true });
-          return;
-        }
-        throw new Error(t('dnsSecurityDnsSecurityEventsTab.messages.loadHttpError', { status: res.status }));
-      }
-      const body = await res.json();
-      setEvents((body.data ?? []) as DnsEvent[]);
+      const start = new Date(Date.now() - WINDOWS[windowKey]).toISOString();
+      const body = await requestPage(start, null, signal);
+      if (!body) return;
+      windowStartRef.current = body.window?.start ?? start;
+      setEvents(body.data ?? []);
       setTotal(Number(body.pagination?.total ?? 0));
+      setTotalCapped(body.pagination?.totalCapped === true);
+      setNextCursor(body.pagination?.nextCursor ?? null);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityEventsTab.messages.loadFailed'));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [showAll]);
+  }, [requestPage, windowKey, t]);
+
+  const loadMore = useCallback(async () => {
+    const start = windowStartRef.current;
+    if (!nextCursor || !start) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const body = await requestPage(start, nextCursor);
+      if (!body) return;
+      setEvents((prev) => [...prev, ...(body.data ?? [])]);
+      setNextCursor(body.pagination?.nextCursor ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('dnsSecurityDnsSecurityEventsTab.messages.loadFailed'));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [nextCursor, requestPage, t]);
+
+  const countKey = showAll
+    ? (totalCapped ? 'dnsSecurityDnsSecurityEventsTab.eventCountCapped' : 'dnsSecurityDnsSecurityEventsTab.eventCount')
+    : (totalCapped ? 'dnsSecurityDnsSecurityEventsTab.blockedEventCountCapped' : 'dnsSecurityDnsSecurityEventsTab.blockedEventCount');
 
   useEffect(() => {
     const controller = new AbortController();
@@ -81,16 +147,27 @@ export default function DnsSecurityEventsTab() {
           <p className="text-xs text-muted-foreground">
             {loading
               ? t('dnsSecurityDnsSecurityEventsTab.loading')
-              : t(/* i18n-dynamic */ showAll
-                ? 'dnsSecurityDnsSecurityEventsTab.eventCount'
-                : 'dnsSecurityDnsSecurityEventsTab.blockedEventCount', {
+              : t(/* i18n-dynamic */ countKey, {
                   count: total,
-                  shown: events.length,
-                  total,
+                  shown: events.length.toLocaleString(),
+                  total: total.toLocaleString(),
                 })}
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <select
+            value={windowKey}
+            onChange={(e) => setWindowKey(e.target.value as WindowKey)}
+            aria-label={t('dnsSecurityDnsSecurityEventsTab.window.label')}
+            data-testid="dns-events-window"
+            className="h-8 rounded border bg-background px-2 text-sm"
+          >
+            {WINDOW_KEYS.map((key) => (
+              <option key={key} value={key}>
+                {t(/* i18n-dynamic */ `dnsSecurityDnsSecurityEventsTab.window.${key}`)}
+              </option>
+            ))}
+          </select>
           <label className="inline-flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -180,6 +257,21 @@ export default function DnsSecurityEventsTab() {
               ))}
             </tbody>
           </table>
+          {nextCursor && (
+            <div className="border-t px-3 py-2 text-center">
+              <button
+                type="button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                data-testid="dns-events-load-more"
+                className="text-sm font-medium text-primary hover:underline disabled:opacity-50"
+              >
+                {loadingMore
+                  ? t('dnsSecurityDnsSecurityEventsTab.loading')
+                  : t('dnsSecurityDnsSecurityEventsTab.loadMore')}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

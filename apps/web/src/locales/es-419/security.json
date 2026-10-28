@@ -775,7 +775,6 @@
     "threatStatus": "Estado de amenaza",
     "threatWasMovedToQuarantineByPolicy": "La amenaza se movió a cuarentena por política o acción del operador.",
     "timeline": "Línea de tiempo",
-    "actionFailed": "La acción falló",
     "quarantineSucceeded": "Amenaza puesta en cuarentena",
     "restoreSucceeded": "Amenaza restaurada",
     "removeSucceeded": "Amenaza eliminada",
@@ -1837,10 +1836,20 @@
       "loadFailed": "No se pudieron cargar eventos"
     },
     "loading": "Cargando…",
-    "eventCount_one": "{{shown}} del evento {{total}} (los 100 más recientes)",
-    "eventCount_other": "{{shown}} de eventos {{total}} (los 100 más recientes)",
-    "blockedEventCount_one": "{{shown}} del evento bloqueado {{total}} (los 100 más recientes)",
-    "blockedEventCount_other": "{{shown}} de {{total}} eventos bloqueados (los 100 más recientes)",
+    "eventCount_one": "{{shown}} de {{total}} evento",
+    "eventCount_other": "{{shown}} de {{total}} eventos",
+    "blockedEventCount_one": "{{shown}} de {{total}} evento bloqueado",
+    "blockedEventCount_other": "{{shown}} de {{total}} eventos bloqueados",
+    "eventCountCapped": "{{shown}} de más de {{total}} eventos",
+    "blockedEventCountCapped": "{{shown}} de más de {{total}} eventos bloqueados",
+    "loadMore": "Cargar más",
+    "window": {
+      "label": "Intervalo de tiempo",
+      "last24h": "Últimas 24 horas",
+      "last7d": "Últimos 7 días",
+      "last30d": "Últimos 30 días",
+      "last90d": "Últimos 90 días"
+    },
     "showAll": "Mostrar todo (no solo bloqueado)",
     "actions": {
       "refresh": "Actualizar",

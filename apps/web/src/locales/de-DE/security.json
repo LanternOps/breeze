@@ -775,7 +775,6 @@
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
     "timeline": "Zeitleiste",
-    "actionFailed": "Aktion fehlgeschlagen",
     "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
     "restoreSucceeded": "Bedrohung wiederhergestellt",
     "removeSucceeded": "Bedrohung entfernt",
@@ -1837,10 +1836,20 @@
       "loadFailed": "Ereignisse konnten nicht geladen werden"
     },
     "loading": "Laden…",
-    "eventCount_one": "{{shown}} von {{total}} Ereignis (letzte 100)",
-    "eventCount_other": "{{shown}} von {{total}} Ereignissen (die letzten 100)",
-    "blockedEventCount_one": "{{shown}} von {{total}} blockiertem Ereignis (letzte 100)",
-    "blockedEventCount_other": "{{shown}} von {{total}} blockierten Ereignissen (die letzten 100)",
+    "eventCount_one": "{{shown}} von {{total}} Ereignis",
+    "eventCount_other": "{{shown}} von {{total}} Ereignissen",
+    "blockedEventCount_one": "{{shown}} von {{total}} blockiertem Ereignis",
+    "blockedEventCount_other": "{{shown}} von {{total}} blockierten Ereignissen",
+    "eventCountCapped": "{{shown}} von über {{total}} Ereignissen",
+    "blockedEventCountCapped": "{{shown}} von über {{total}} blockierten Ereignissen",
+    "loadMore": "Mehr laden",
+    "window": {
+      "label": "Zeitraum",
+      "last24h": "Letzte 24 Stunden",
+      "last7d": "Letzte 7 Tage",
+      "last30d": "Letzte 30 Tage",
+      "last90d": "Letzte 90 Tage"
+    },
     "showAll": "Alle anzeigen (nicht nur blockiert)",
     "actions": {
       "refresh": "Aktualisieren",

@@ -775,7 +775,6 @@
     "threatStatus": "Threat status",
     "threatWasMovedToQuarantineByPolicy": "Threat was moved to quarantine by policy or operator action.",
     "timeline": "Timeline",
-    "actionFailed": "Action failed",
     "quarantineSucceeded": "Threat quarantined",
     "restoreSucceeded": "Threat restored",
     "removeSucceeded": "Threat removed",
@@ -1837,10 +1836,20 @@
       "loadFailed": "Failed to load events"
     },
     "loading": "Loading…",
-    "eventCount_one": "{{shown}} of {{total}} event (most recent 100)",
-    "eventCount_other": "{{shown}} of {{total}} events (most recent 100)",
-    "blockedEventCount_one": "{{shown}} of {{total}} blocked event (most recent 100)",
-    "blockedEventCount_other": "{{shown}} of {{total}} blocked events (most recent 100)",
+    "eventCount_one": "{{shown}} of {{total}} event",
+    "eventCount_other": "{{shown}} of {{total}} events",
+    "blockedEventCount_one": "{{shown}} of {{total}} blocked event",
+    "blockedEventCount_other": "{{shown}} of {{total}} blocked events",
+    "eventCountCapped": "{{shown}} of {{total}}+ events",
+    "blockedEventCountCapped": "{{shown}} of {{total}}+ blocked events",
+    "loadMore": "Load more",
+    "window": {
+      "label": "Time range",
+      "last24h": "Last 24 hours",
+      "last7d": "Last 7 days",
+      "last30d": "Last 30 days",
+      "last90d": "Last 90 days"
+    },
     "showAll": "Show all (not just blocked)",
     "actions": {
       "refresh": "Refresh",

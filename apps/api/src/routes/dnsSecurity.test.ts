@@ -111,12 +111,22 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId)
 }));
 
+// The events page query (keyset + capped count) is covered against real
+// Postgres in dnsSecurityEventsPage.integration.test.ts; here only the route's
+// window / cursor handling and what it hands the query are under test. The
+// cursor codec and window resolver stay real.
+vi.mock('../services/dnsSecurityEventsPage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/dnsSecurityEventsPage')>()),
+  listDnsSecurityEventsPage: vi.fn()
+}));
+
 import { db, runAfterDbContextCommit } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { scheduleDnsEventSync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
+import { encodeDnsEventsCursor, listDnsSecurityEventsPage } from '../services/dnsSecurityEventsPage';
 import { dnsSecurityRoutes } from './dnsSecurity';
 
 describe('dns security routes', () => {
@@ -428,6 +438,8 @@ describe('dns security routes', () => {
     } as any);
   }
 
+  const EMPTY_PAGE = { rows: [], nextCursor: null, total: 0, totalCapped: false };
+
   describe('GET /events — site scope', () => {
     it('denies an explicit deviceId outside the caller site allowlist (403)', async () => {
       setSiteScopedAuth([SITE_ALLOWED]);
@@ -440,68 +452,136 @@ describe('dns security routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe('Device not found or access denied');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
     });
 
     it('narrows to accessible + provider-level (null-device) rows', async () => {
       setSiteScopedAuth([SITE_ALLOWED]);
       mockDeviceResolution([{ id: DEVICE_ALLOWED, siteId: SITE_ALLOWED }]);
-      // events list + count
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([
-                      { id: 'evt-1', deviceId: DEVICE_ALLOWED, domain: 'bad.example' },
-                      { id: 'evt-2', deviceId: null, domain: 'provider.example' }
-                    ])
-                  })
-                })
-              })
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 2 }])
-          })
-        } as any);
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [
+          { id: 'evt-1', deviceId: DEVICE_ALLOWED, domain: 'bad.example' },
+          { id: 'evt-2', deviceId: null, domain: 'provider.example' }
+        ],
+        nextCursor: null,
+        total: 2,
+        totalCapped: false
+      });
 
       const res = await app.request('/dns-security/events');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(2);
+      // Device resolution ran (the site-narrow condition is built from it).
+      expect(db.select).toHaveBeenCalledTimes(1);
+      expect(listDnsSecurityEventsPage).toHaveBeenCalledTimes(1);
     });
 
     it('does not narrow for unrestricted callers', async () => {
       setSiteScopedAuth(undefined);
-      // No device-resolution select should run; first select is the events list.
-      vi.mocked(db.select)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            leftJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                orderBy: vi.fn().mockReturnValue({
-                  limit: vi.fn().mockReturnValue({
-                    offset: vi.fn().mockResolvedValue([{ id: 'evt-1', deviceId: DEVICE_DENIED }])
-                  })
-                })
-              })
-            })
-          })
-        } as any)
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([{ count: 1 }])
-          })
-        } as any);
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [{ id: 'evt-1', deviceId: DEVICE_DENIED }],
+        nextCursor: null,
+        total: 1,
+        totalCapped: false
+      });
 
       const res = await app.request('/dns-security/events');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
+      // No device-resolution select.
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /events — window, cursor and count (#10054)', () => {
+    const DAY_MS = 86_400_000;
+
+    it('defaults to the last 7 days when no start is given and reports the window', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+      const before = Date.now();
+
+      const res = await app.request('/dns-security/events?action=blocked');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const start = Date.parse(body.window.start);
+      expect(start).toBeGreaterThanOrEqual(before - 7 * DAY_MS);
+      expect(start).toBeLessThanOrEqual(Date.now() - 7 * DAY_MS);
+      expect(body.window.end).toBeNull();
+    });
+
+    it('keeps an explicit start/end window', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+
+      const res = await app.request('/dns-security/events?start=2026-10-01T00:00:00.000Z&end=2026-10-02T00:00:00.000Z');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.window).toEqual({ start: '2026-10-01T00:00:00.000Z', end: '2026-10-02T00:00:00.000Z' });
+    });
+
+    it('refuses an open-ended start older than 90 days before touching the database', async () => {
+      const start = new Date(Date.now() - 91 * DAY_MS).toISOString();
+      const res = await app.request(`/dns-security/events?start=${encodeURIComponent(start)}`);
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Time range cannot exceed 90 days');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('passes a decoded cursor through and returns the next one', async () => {
+      const cursor = { ts: '2026-10-27T10:00:00.123456', id: '0b5d0f4e-1c2a-4d3b-9e8f-7a6b5c4d3e2f' };
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [{ id: 'evt-9' }],
+        nextCursor: 'next-token',
+        total: null,
+        totalCapped: false
+      });
+
+      const res = await app.request(`/dns-security/events?limit=1&cursor=${encodeDnsEventsCursor(cursor)}`);
+      expect(res.status).toBe(200);
+      expect(vi.mocked(listDnsSecurityEventsPage).mock.calls[0]![0]).toMatchObject({ limit: 1, cursor });
+      const body = await res.json();
+      expect(body.pagination).toEqual({
+        limit: 1,
+        offset: 0,
+        total: null,
+        totalCapped: false,
+        nextCursor: 'next-token'
+      });
+    });
+
+    it('surfaces a capped total', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce({
+        rows: [],
+        nextCursor: null,
+        total: 10_000,
+        totalCapped: true
+      });
+
+      const res = await app.request('/dns-security/events');
+      const body = await res.json();
+      expect(body.pagination).toMatchObject({ total: 10_000, totalCapped: true });
+    });
+
+    it('rejects a cursor it did not issue', async () => {
+      const res = await app.request('/dns-security/events?cursor=not-a-cursor');
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Invalid cursor');
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('rejects cursor combined with offset', async () => {
+      const cursor = encodeDnsEventsCursor({ ts: '2026-10-27T10:00:00.123456', id: '0b5d0f4e-1c2a-4d3b-9e8f-7a6b5c4d3e2f' });
+      const res = await app.request(`/dns-security/events?cursor=${cursor}&offset=100`);
+      expect(res.status).toBe(400);
+      expect(listDnsSecurityEventsPage).not.toHaveBeenCalled();
+    });
+
+    it('still accepts legacy offset paging', async () => {
+      vi.mocked(listDnsSecurityEventsPage).mockResolvedValueOnce(EMPTY_PAGE);
+      const res = await app.request('/dns-security/events?offset=200');
+      expect(res.status).toBe(200);
+      expect(vi.mocked(listDnsSecurityEventsPage).mock.calls[0]![0]).toMatchObject({ offset: 200, cursor: null });
     });
   });
 

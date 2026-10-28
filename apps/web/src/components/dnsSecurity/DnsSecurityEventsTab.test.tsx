@@ -88,6 +88,84 @@ describe('DnsSecurityEventsTab', () => {
     expect(screen.getAllByText('blocked').length).toBeGreaterThan(0);
   });
 
+  // #10054 — bounded window, keyset "Load more", capped count.
+  function eventRow(id: string) {
+    return {
+      id,
+      timestamp: '2026-10-27T10:00:00.000Z',
+      domain: `${id}.example.com`,
+      queryType: 'A',
+      action: 'blocked',
+      category: 'malware',
+      threatType: null,
+      sourceIp: null,
+      sourceHostname: null,
+      deviceId: null,
+      deviceHostname: `host-${id}`,
+      integrationId: 'int-1',
+    };
+  }
+
+  it('always sends a start bound (last 7 days by default)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [], pagination: { total: 0 } }));
+    const before = Date.now();
+    render(<DnsSecurityEventsTab />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    const params = new URL(String(fetchWithAuthMock.mock.calls[0]![0]), 'http://x').searchParams;
+    const start = Date.parse(params.get('start') ?? '');
+    expect(start).toBeGreaterThanOrEqual(before - 7 * 86_400_000);
+    expect(start).toBeLessThanOrEqual(Date.now() - 7 * 86_400_000);
+    expect(params.has('cursor')).toBe(false);
+  });
+
+  it('changing the time range re-fetches with the new start', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [], pagination: { total: 0 } }));
+    render(<DnsSecurityEventsTab />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByTestId('dns-events-window'), { target: { value: 'last24h' } });
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
+    const params = new URL(String(fetchWithAuthMock.mock.calls[1]![0]), 'http://x').searchParams;
+    const start = Date.parse(params.get('start') ?? '');
+    expect(Date.now() - start).toBeLessThanOrEqual(86_400_000 + 5_000);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(86_400_000 - 5_000);
+  });
+
+  it('"Load more" sends the cursor with the first page window start and appends rows', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [eventRow('a')],
+      pagination: { total: 2, totalCapped: false, nextCursor: 'cur-1' },
+      window: { start: '2026-10-20T10:00:00.000Z', end: null },
+    }));
+    render(<DnsSecurityEventsTab />);
+    await waitFor(() => expect(screen.getByText('a.example.com')).toBeInTheDocument());
+
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [eventRow('b')],
+      pagination: { total: null, totalCapped: false, nextCursor: null },
+    }));
+    fireEvent.click(screen.getByTestId('dns-events-load-more'));
+
+    await waitFor(() => expect(screen.getByText('b.example.com')).toBeInTheDocument());
+    expect(screen.getByText('a.example.com')).toBeInTheDocument();
+    const params = new URL(String(fetchWithAuthMock.mock.calls[1]![0]), 'http://x').searchParams;
+    expect(params.get('cursor')).toBe('cur-1');
+    expect(params.get('start')).toBe('2026-10-20T10:00:00.000Z');
+    expect(params.get('action')).toBe('blocked');
+    // Last page: no more button; the first page's total stays.
+    expect(screen.queryByTestId('dns-events-load-more')).not.toBeInTheDocument();
+    expect(screen.getByText(/2 of 2 blocked events/)).toBeInTheDocument();
+  });
+
+  it('shows a capped total as a lower bound', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [eventRow('a')],
+      pagination: { total: 10000, totalCapped: true, nextCursor: 'cur-1' },
+    }));
+    render(<DnsSecurityEventsTab />);
+    await waitFor(() => expect(screen.getByText(/1 of 10,000\+ blocked events/)).toBeInTheDocument());
+  });
+
   it('Surfaces an inline error when the events endpoint fails', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({}, false, 500));
     render(<DnsSecurityEventsTab />);

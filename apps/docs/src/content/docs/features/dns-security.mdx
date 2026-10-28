@@ -284,19 +284,33 @@ GET /dns-security/events?start=2026-02-01T00:00:00Z&end=2026-02-15T00:00:00Z&act
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `start` | ISO 8601 | Start of time window (inclusive) |
-| `end` | ISO 8601 | End of time window (inclusive) |
+| `start` | ISO 8601 | Start of time window (inclusive). Defaults to 7 days before `end` (or before now) |
+| `end` | ISO 8601 | End of time window (inclusive). Open (newest events) when omitted |
 | `action` | string | Filter by action: `allowed`, `blocked`, `redirected` |
 | `category` | string | Filter by threat category |
 | `domain` | string | Partial domain match (case-insensitive) |
 | `deviceId` | UUID | Filter events for a specific device |
 | `integrationId` | UUID | Filter events from a specific integration |
 | `limit` | integer | Results per page (1-500, default 100) |
-| `offset` | integer | Pagination offset (default 0) |
+| `cursor` | string | Opaque cursor from the previous page's `pagination.nextCursor`. Send the same filters, and `start` set to the first page's `window.start` |
+| `offset` | integer | Legacy pagination offset (default 0). Cannot be combined with `cursor` |
 
 <Aside type="caution">
-  The maximum query window is 90 days. Requests with a `start`-to-`end` range exceeding 90 days are rejected with a 400 error.
+  The maximum query window is 90 days. A `start`-to-`end` range wider than 90 days, or a `start` more than 90 days ago with no `end`, is rejected with a 400 error. A request with no `start` reads the last 7 days.
 </Aside>
+
+### Paging Through Events
+
+Page with the cursor rather than `offset`: request the first page, then pass `pagination.nextCursor` back as `cursor`, with the same filters and `start` set to the first page's `window.start`, until `nextCursor` is `null`. Cursor pages stay fast however deep you go; an `offset` page reads and discards every row before it.
+
+The response carries a `pagination` object and the `window` that was read:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pagination.total` | integer or null | Matching events, counted up to 10,000. Returned on the first page only (`null` on cursor pages) |
+| `pagination.totalCapped` | boolean | `true` when more than 10,000 events match; `total` is then 10,000, a lower bound |
+| `pagination.nextCursor` | string or null | Cursor for the next page, or `null` on the last page |
+| `window.start` / `window.end` | ISO 8601 | The time window the request read (`end` is `null` when open) |
 
 ### Event Response Fields
 
