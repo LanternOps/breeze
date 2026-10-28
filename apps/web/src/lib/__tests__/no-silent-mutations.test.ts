@@ -237,6 +237,8 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceSoftwareInventory.tsx',
   'src/components/devices/DeviceLinkedProfilesTab.tsx',
   'src/components/devices/DeviceWarrantyCard.tsx',
+  // Physical placement W1-D1 (#8134): the placement PUT is its own file.
+  'src/components/devices/PhysicalPlacementCard.tsx',
   'src/components/devices/PossibleReplacementBanner.tsx',
   'src/components/pam/PamRespondModal.tsx',
   'src/components/pam/PamRevokeModal.tsx',
@@ -1025,8 +1027,9 @@ describe('no silent mutations in targeted set', () => {
     // WispNeedsYou, WispEntityPicker, WispLinkButton, WispPartnerSettingsCard: 273 → 281; then
     // WispHomeContent and WispHomeThread (G3): 281 → 283.
     // AI surface cohesion W05 (#10136) deletes WispToggle (the grant decides the panel's voice): 283 → 282.
-      // Tool Catalog W4 flows/api.ts: 282 → 283.
-      expect(absoluteFiles.length).toBe(283);
+    // Tool Catalog W4 flows/api.ts: 282 → 283.
+    // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
+    expect(absoluteFiles.length).toBe(284);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

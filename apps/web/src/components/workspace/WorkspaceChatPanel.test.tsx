@@ -212,3 +212,22 @@ describe('WorkspaceChatPanel - move to the side panel, draft, chips (#9840 W3)',
     });
   });
 });
+
+describe('WorkspaceChatPanel - chat mode label (#10142)', () => {
+  it('says Wisp for a tab under a Wisp grant', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'o' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Wisp');
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveAttribute('data-mode', 'wisp');
+  });
+
+  it('says Breeze AI for a plain chat, not Wisp', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'plain' } }) as any} />);
+    expect(screen.getByTestId('workspace-chat-mode')).toHaveTextContent('Breeze AI');
+    expect(screen.getByTestId('workspace-chat-mode')).not.toHaveTextContent('Wisp');
+  });
+
+  it('shows no label while the tab is still finding out', () => {
+    render(<WorkspaceChatPanel tab={baseTab() as any} />);
+    expect(screen.queryByTestId('workspace-chat-mode')).toBeNull();
+  });
+});

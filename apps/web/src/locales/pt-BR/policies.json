@@ -899,7 +899,17 @@
         "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
         "ringDetailsNoHold": "Ordem de implantação {{order}} · sem espera antes da aprovação",
         "ringDetailsWithHold_one": "Ordem de implantação {{order}} · {{count}} dia de espera antes da aprovação",
-        "ringDetailsWithHold_other": "Ordem de implantação {{order}} · {{count}} dias de espera antes da aprovação"
+        "ringDetailsWithHold_other": "Ordem de implantação {{order}} · {{count}} dias de espera antes da aprovação",
+        "rebootPreviewHeading": "Pré-visualização",
+        "rebootPreviewDescription": "O que a pessoa no computador vê se uma reinicialização for agendada agora. Os horários são exemplos.",
+        "rebootPreviewDefaultMarker": "Padrão",
+        "rebootPreviewDefaultTitle": "Reinicie para concluir a instalação das atualizações",
+        "rebootPreviewDefaultBody": "Sua equipe de suporte de TI precisa reiniciar este computador para concluir a instalação das atualizações.",
+        "rebootPreviewConsequence": "Se você não fizer nada, este computador será reiniciado às {{time}}. Salve seu trabalho antes disso.",
+        "rebootPreviewRestartNow": "Reiniciar agora",
+        "rebootPreviewPostponeUntil": "Adiar até as {{time}}",
+        "rebootPreviewDeadline": "Adiar nunca leva a reinicialização para depois das {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",
@@ -986,6 +996,9 @@
         "showIndicatorHelp": "Mostrar o banner na tela enquanto um técnico estiver conectado.",
         "notifyOnEnd": "Aviso de término de sessão",
         "notifyOnEndHelp": "Notificar o usuário final quando a sessão terminar.",
+        "allowUserEnd": "Permitir que o usuário encerre a sessão",
+        "allowUserEndHelp": "A pessoa no dispositivo pode encerrar a sessão pelo indicador na tela, após uma confirmação. O técnico vê “Encerrada pelo usuário”.",
+        "allowUserEndNeedsIndicator": "Ative o indicador de sessão ativa para permitir que os usuários encerrem uma sessão.",
         "identityLevel": "Identidade do técnico",
         "identityLevelHelp": "Quanto da identidade do técnico o usuário final vê. O nome do MSP é sempre exibido.",
         "identityNameEmail": "Nome e e-mail",

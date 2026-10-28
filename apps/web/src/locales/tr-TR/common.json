@@ -1349,6 +1349,10 @@
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
           },
+          "deviceReinstalled": {
+            "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",
+            "label": "Cihaz Yeniden Kuruldu"
+          },
           "scriptCompleted": {
             "description": "Bir komut dosyası tamamlandığında tetiklenir.",
             "label": "Komut Dosyası Tamamlandı"

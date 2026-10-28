@@ -287,6 +287,15 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// #10190 W05 — restart-decision audit. Its dedupe and freshness rules live in
+// services/rebootUserActionAudit.test.ts; here only the wiring is pinned.
+const recordRebootUserActionMock = vi.hoisted(() => vi.fn(async () => 'written'));
+const noteRebootUserActionDroppedMock = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../services/rebootUserActionAudit', () => ({
+  recordRebootUserAction: recordRebootUserActionMock,
+  noteRebootUserActionDropped: noteRebootUserActionDroppedMock,
+}));
+
 vi.mock('../../services/deviceIpHistory', () => ({
   processDeviceIPHistoryUpdate: vi.fn(),
 }));
@@ -422,6 +431,16 @@ vi.mock('../../services/manifestSigning', () => ({
   getActiveManifestKeyDelegationsCached: (...args: unknown[]) => {
     callOrder.push('delegations:fetched');
     return getActiveManifestKeyDelegationsMock(...(args as []));
+  },
+}));
+
+// #8318 wave 1b — the directive builder is unit-tested in
+// services/deviceReattach/rebindDirective.test.ts; here only its wiring.
+const rebindDirectiveForBeatMock = vi.hoisted(() => vi.fn(async (_input: unknown): Promise<unknown> => undefined));
+vi.mock('../../services/deviceReattach/rebindDirective', () => ({
+  rebindDirectiveForBeat: (input: unknown) => {
+    callOrder.push('rebind:directive');
+    return rebindDirectiveForBeatMock(input);
   },
 }));
 
@@ -1503,6 +1522,35 @@ describe('POST /agents/:id/heartbeat — signed identity sync (#8317)', () => {
     });
     expect(signAgentIdentityAssertionMock).not.toHaveBeenCalled();
     expect(body).not.toHaveProperty('identityAssertion');
+  });
+
+  it('#8318 §6.2: a rebind-capable beat records the capability and carries the directive, built after the org transaction', async () => {
+    const directive = {
+      intentId: '00000000-0000-4000-8000-0000000000c1',
+      nonce: NONCE,
+      targetDeviceId: '00000000-0000-4000-8000-0000000000c2',
+      targetOrgId: ORG_A,
+      targetSiteId: SITE_A,
+      expiresAt: '2026-10-09T19:15:00Z',
+      keyId: 'deploy-2026-10-09-abcdef01',
+      signature: 'sig',
+    };
+    rebindDirectiveForBeatMock.mockResolvedValueOnce(directive);
+
+    const body = await beat({ securityCapabilities: { rebindProtocolVersion: 1 } });
+
+    expect(body.rebind).toEqual(directive);
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: DEVICE_ID, agentId: 'agent-1', rebindProtocolVersion: 1 });
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.indexOf('rebind:directive'));
+    expect(deviceUpdateSets.some((set) => set.rebindProtocolVersion === 1)).toBe(true);
+  });
+
+  it('#8318 §6.2: a beat without the capability records 0 and carries no directive', async () => {
+    const body = await beat({});
+
+    expect(body).not.toHaveProperty('rebind');
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: DEVICE_ID, agentId: 'agent-1', rebindProtocolVersion: 0 });
+    expect(deviceUpdateSets.some((set) => set.rebindProtocolVersion === 0)).toBe(true);
   });
 
   it('sends nothing when the reported identity already matches the row', async () => {
@@ -8478,6 +8526,95 @@ describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
     expect(updateArg.rebootMaxDeferrals).toBeNull();
   });
 
+  // #10190 W05 — the restart decision the person made on the device.
+  it('hands lastUserAction to the restart-decision audit with the snapshot counters', async () => {
+    arrange();
+    const lastUserAction = { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' };
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        deadline: DEADLINE,
+        source: 'patch_job',
+        deferralsUsed: 2,
+        maxDeferrals: 3,
+        lastUserAction,
+      },
+    });
+
+    expect(resp.status).toBe(200);
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    const [deviceId, orgId, action, context] = recordRebootUserActionMock.mock.calls[0]! as unknown as [
+      string, string, unknown, Record<string, unknown>,
+    ];
+    // The authenticated device and its org, never a body-supplied identity.
+    expect(deviceId).toBe('device-1');
+    expect(orgId).toBe('org-1');
+    expect(action).toEqual(lastUserAction);
+    expect(context).toMatchObject({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, agentId: 'device-1' });
+    expect(context.c).toBeDefined();
+    expect(noteRebootUserActionDroppedMock).not.toHaveBeenCalled();
+  });
+
+  it("attributes the restart-decision audit to the device row's org", async () => {
+    // The row's org (the org transaction's), never the token's cached org:
+    // after an org move the audit must land in the device's current tenant.
+    arrange({ orgId: 'org-2' });
+    await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    expect((recordRebootUserActionMock.mock.calls[0] as unknown[])[1]).toBe('org-2');
+  });
+
+  it('does not hold the heartbeat response on the restart-decision audit', async () => {
+    arrange();
+    recordRebootUserActionMock.mockReturnValueOnce(new Promise(() => {}));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(resp.status).toBe(200);
+  });
+
+  it('checks for a dropped lastUserAction when a schedule arrives without one', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 1, maxDeferrals: 3 } });
+    expect(noteRebootUserActionDroppedMock).toHaveBeenCalledTimes(1);
+    const [deviceId, raw, parsed] = noteRebootUserActionDroppedMock.mock.calls[0] as unknown as [string, any, unknown];
+    expect(deviceId).toBe('device-1');
+    expect(raw.rebootStatus.scheduledAt).toBe(SCHEDULED_AT);
+    expect(parsed).toBeUndefined();
+  });
+
+  it('does not call the restart-decision audit when there is no lastUserAction', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 0, maxDeferrals: 3 } });
+    await beat({ rebootStatus: null });
+    await beat({ pendingReboot: true });
+    expect(recordRebootUserActionMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing restart-decision audit does not fail the heartbeat', async () => {
+    const setSpy = arrange();
+    recordRebootUserActionMock.mockRejectedValueOnce(new Error('audit path exploded'));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'native' },
+      },
+    });
+    expect(resp.status).toBe(200);
+    // The schedule itself still landed.
+    expect(updateArgOf(setSpy).rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    // The lastUserAction member is an audit input, never a device column.
+    expect(Object.hasOwn(updateArgOf(setSpy), 'lastUserAction')).toBe(false);
+  });
+
   // NOTE: the zod-level drops (malformed scheduledAt, out-of-range counters,
   // a source outside ^[a-z0-9_]{1,32}$) are NOT testable from here — this file
   // mocks '@hono/zod-validator' so the handler reads the raw body. They live in
@@ -8866,7 +9003,14 @@ describe('tccPermissionsMeaningfullyChanged (#4340)', () => {
 // helper settings or policy, and no ingest.
 // ---------------------------------------------------------------------
 describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () => {
-  const PARKED_ALLOWED_KEYS = ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'];
+  // #8318 §6.2: the main agent's parked beat also carries the trust keyset and
+  // delegations (so it can verify the signed `rebind` directive) and, while
+  // the device is the source of an open reattach intent, the directive.
+  const PARKED_ALLOWED_KEYS: Record<'agent' | 'watchdog', string[]> = {
+    agent: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation', 'manifestTrustKeys', 'manifestKeyDelegations', 'rebind'],
+    watchdog: ['commands', 'renewCert', 'rotateToken', 'confirmTokenRotation'],
+  };
+  const TRUST_KEYS = ['manifestTrustKeys', 'manifestKeyDelegations'];
   const FORBIDDEN_KEYS = [
     'configUpdate',
     'upgradeTo',
@@ -8874,8 +9018,6 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     'watchdogUpgradeTo',
     'backup_server_url',
     'mergedConfigUpdate',
-    'manifestTrustKeys',
-    'manifestKeyDelegations',
     'manageRemoteManagement',
     'remoteAccess',
     'networkContextReceipt',
@@ -9001,9 +9143,9 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as Record<string, unknown>;
       for (const key of Object.keys(body)) {
-        expect(PARKED_ALLOWED_KEYS).toContain(key);
+        expect(PARKED_ALLOWED_KEYS[role]).toContain(key);
       }
-      for (const key of FORBIDDEN_KEYS) {
+      for (const key of role === 'watchdog' ? [...FORBIDDEN_KEYS, ...TRUST_KEYS] : FORBIDDEN_KEYS) {
         expect(body).not.toHaveProperty(key);
       }
     });
@@ -9030,8 +9172,11 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       expect(requestDeviceGroupReevaluationMock).not.toHaveBeenCalled();
       expect(loadTopologyFlagsMock).not.toHaveBeenCalled();
       expect(withResolvedTopologyFlagsMock).not.toHaveBeenCalled();
-      expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
-      expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+      if (role === 'watchdog') {
+        expect(getActiveTrustKeysetMock).not.toHaveBeenCalled();
+        expect(getActiveManifestKeyDelegationsMock).not.toHaveBeenCalled();
+        expect(rebindDirectiveForBeatMock).not.toHaveBeenCalled();
+      }
 
       const helpers = await import('./helpers');
       expect(helpers.maybeQueueThresholdFilesystemAnalysis).not.toHaveBeenCalled();
@@ -9061,11 +9206,16 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     });
   }
 
+  const PARKED_TRUST = {
+    manifestTrustKeys: [{ keyId: 'k-1', publicKeyB64: 'AAA=', validFrom: '2026-01-01T00:00:00.000Z' }],
+    manifestKeyDelegations: [{ keyId: 'k-1' }],
+  };
+
   it('agent: still delivers certificate renewal and token rotation', async () => {
     const resp = await parkedBeat('agent');
 
     const body = (await resp.json()) as Record<string, unknown>;
-    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true });
+    expect(body).toEqual({ commands: [], renewCert: true, rotateToken: true, ...PARKED_TRUST });
   });
 
   it('agent: a superseded-token caller is not asked to rotate (request flags reach the shared helper)', async () => {
@@ -9075,7 +9225,38 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true });
+    expect(await resp.json()).toEqual({ commands: [], renewCert: true, ...PARKED_TRUST });
+  });
+
+  it('agent (#8318 §6.2): records the declared rebind capability and returns the signed directive', async () => {
+    const directive = {
+      intentId: '00000000-0000-4000-8000-0000000000a1',
+      nonce: '0123456789abcdef0123456789abcdef',
+      targetDeviceId: '00000000-0000-4000-8000-000000000004',
+      targetOrgId: '00000000-0000-4000-8000-000000000001',
+      targetSiteId: '00000000-0000-4000-8000-000000000003',
+      expiresAt: '2026-10-09T19:15:00Z',
+      keyId: 'k-1',
+      signature: 'sig',
+    };
+    rebindDirectiveForBeatMock.mockResolvedValueOnce(directive);
+
+    const resp = await parkedBeat('agent', { ...richHeartbeatBody, securityCapabilities: { rebindProtocolVersion: 1 } });
+
+    const body = (await resp.json()) as Record<string, unknown>;
+    expect(body.rebind).toEqual(directive);
+    expect(body.manifestTrustKeys).toEqual(PARKED_TRUST.manifestTrustKeys);
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', rebindProtocolVersion: 1 });
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written.rebindProtocolVersion).toBe(1);
+  });
+
+  it('agent (#8318 §6.2): an unknown rebind version is recorded as 0 and asks for no directive', async () => {
+    await parkedBeat('agent', { ...richHeartbeatBody, securityCapabilities: { rebindProtocolVersion: 7 } });
+
+    expect(rebindDirectiveForBeatMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', rebindProtocolVersion: 0 });
+    const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
+    expect(written.rebindProtocolVersion).toBe(0);
   });
 
   it('agent: a staged-token caller is told to confirm when the implicit promotion does not land', async () => {
@@ -9093,7 +9274,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       body: JSON.stringify(richHeartbeatBody),
     });
 
-    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true });
+    expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true, ...PARKED_TRUST });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: expect.objectContaining({ deviceId: 'device-1' }),
@@ -9113,12 +9294,13 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(body.commands.map((cmd) => cmd.type)).toEqual(['self_uninstall']);
   });
 
-  it('agent: records liveness only — lastSeenAt, online status and agent version, guarded against terminal statuses', async () => {
+  it('agent: records liveness only — lastSeenAt, online status, agent version and the rebind capability, guarded against terminal statuses', async () => {
     await parkedBeat('agent');
 
     expect(setSpy).toHaveBeenCalledTimes(1);
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
-    expect(Object.keys(written).sort()).toEqual(['agentVersion', 'lastSeenAt', 'status']);
+    expect(Object.keys(written).sort()).toEqual(['agentVersion', 'lastSeenAt', 'rebindProtocolVersion', 'status']);
+    expect(written.rebindProtocolVersion).toBe(0);
     expect(written.status).toBe('online');
     expect(written.agentVersion).toBe('0.70.1');
     expect(written.lastSeenAt).toBeInstanceOf(Date);

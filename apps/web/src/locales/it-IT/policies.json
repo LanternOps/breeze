@@ -899,7 +899,17 @@
         "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
         "ringDetailsNoHold": "Ordine di rollout {{order}} · nessuna attesa prima dell’approvazione",
         "ringDetailsWithHold_one": "Ordine di rollout {{order}} · {{count}} giorno di attesa prima dell’approvazione",
-        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione"
+        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione",
+        "rebootPreviewHeading": "Anteprima",
+        "rebootPreviewDescription": "Ciò che vede la persona al computer se un riavvio viene pianificato ora. Gli orari sono esempi.",
+        "rebootPreviewDefaultMarker": "Predefinito",
+        "rebootPreviewDefaultTitle": "Riavvio necessario per completare l'installazione degli aggiornamenti",
+        "rebootPreviewDefaultBody": "Il tuo team di assistenza IT deve riavviare questo computer per completare l'installazione degli aggiornamenti.",
+        "rebootPreviewConsequence": "Se non fai nulla, questo computer verrà riavviato alle {{time}}. Salva il tuo lavoro prima di allora.",
+        "rebootPreviewRestartNow": "Riavvia ora",
+        "rebootPreviewPostponeUntil": "Rinvia alle {{time}}",
+        "rebootPreviewDeadline": "Posticipare non sposta mai il riavvio oltre le {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",
@@ -986,6 +996,9 @@
         "showIndicatorHelp": "Mostra il banner sullo schermo mentre un tecnico è connesso.",
         "notifyOnEnd": "Avviso di fine sessione",
         "notifyOnEndHelp": "Notifica l'utente finale al termine della sessione.",
+        "allowUserEnd": "Consenti all’utente di terminare la sessione",
+        "allowUserEndHelp": "La persona al dispositivo può terminare la sessione dall’indicatore a schermo, dopo una conferma. Il tecnico vede «Terminata dall’utente».",
+        "allowUserEndNeedsIndicator": "Attiva l’indicatore di sessione attiva per consentire agli utenti di terminare una sessione.",
         "identityLevel": "Identità tecnico",
         "identityLevelHelp": "Quanto dell'identità del tecnico viene mostrato all'utente finale. Il nome dell'MSP viene sempre mostrato.",
         "identityNameEmail": "Nome ed email",

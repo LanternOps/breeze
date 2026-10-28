@@ -278,8 +278,7 @@
       "actionPlan": "Eylem Planı",
       "autoApprove": "Otomatik Onayla",
       "hybridPlan": "Hibrit Plan"
-    },
-    "overridesOrgTab": "Burada belirlediğiniz alanlar, her kuruluşun yapay zeka sekmesindeki aynı alanın üzerine yazar ve onu kilitler."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "1 ile 99 arasında, virgülle ayrılmış en fazla beş tam sayı girin."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Cihaz kaydı",
       "ttl": "Varsayılan bağlantının sona ermesi",
-      "ttlHint": "Yeni kayıt bağlantılarının ve yükleyicilerin ne kadar süreyle geçerli kalacağını önceden seçer. Kuruluşlar kendileri için farklı bir varsayılan seçebilirler.",
+      "ttlHint": "Yeni kayıt bağlantılarının ve yükleyicilerin ne kadar süreyle geçerli kalacağını önceden seçer.",
       "deviceCount": "Bağlantı başına varsayılan cihazlar",
-      "deviceCountHint": "Bir kayıt bağlantısının varsayılan olarak kaç makineye kaydolabileceği. Kuruluşlar kendileri için farklı bir varsayılan seçebilirler.",
+      "deviceCountHint": "Bir kayıt bağlantısının varsayılan olarak kaç makineye kaydolabileceği.",
       "maxTtl": "Maksimum bağlantı ömrü",
       "maxTtlHint": "Yalnızca bir yöneticinin isteyebileceği şeylerle ilgili değil, anahtar ömrüne ilişkin bir tavan: bu iş ortağı altında basılan hiçbir şey daha uzun süre kullanılabilir kalmaz - kayıt bağlantıları, MCP dağıtım davetleri ve bir yükleyici kullanıldığında verilen alt kimlik bilgileri.",
       "maxTtlWarning": "Kuruluşlar bunu gündeme getiremez. Kısa bir sınır aynı zamanda bir makinenin yalnızca indirme süresini değil, bir bağlantıyı kullandıktan sonra kaydı bitirmesi gereken süreyi de kısaltır."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Sürüm hedeflerini güncelleyin",
     "description": "Temsilciyi ve gözlemciyi belirli bir kayıtlı sürüme sabitleyin veya küresel olarak tanıtılan sürümü takip etmek için <strong>En son tanıtılan</strong>'i bırakın. Ajan ve gözlemci bağımsızdır.",
-    "partnerDescription": "Buradaki bir pin, tüm organizasyonlarınız için varsayılandır; bir kuruluş bunu geçersiz kılabilir.",
     "organizationDescription": "Bir kuruluş PIN'i, iş ortağı varsayılanını geçersiz kılar.",
     "components": {
       "agent": "Temsilci hedefi",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Ağ Proxy’si",
       "label": "Ağ Proxy’sini ayrılmış bir kaynaktan sun",
-      "help": "Tüm kuruluşlara uygulanır; kuruluşlar bunu geçersiz kılamaz. Yalnızca bölgenizin ayrılmış bir kaynak sunduğu yerlerde etkili olur ve cihaz web arayüzleriyle uyumluluğu artırır."
+      "help": "Yalnızca bölgenizin ayrılmış bir kaynak sunduğu yerlerde etkili olur ve cihaz web arayüzleriyle uyumluluğu artırır."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1123,6 @@
     "description": "{{name}} için varsayılanları yapılandırın.",
     "yourMsp": "MSP'ınız",
     "saveSettings": "Ayarları Kaydet",
-    "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
     "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
     "modules": {
       "title": "Modüller",
@@ -1173,6 +1170,106 @@
     "knownGuests": {
       "added": "Bilinen misafir eklendi",
       "removed": "Bilinen misafir kaldırıldı"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Kuruluşları kilitler",
+        "locksConditional": "Etkinken kuruluşları kilitler",
+        "overridable": "Kuruluş değiştirebilir",
+        "overridableCap": "Kuruluş değiştirebilir, en fazla {{limit}}",
+        "partnerOnly": "İş ortağı geneli"
+      },
+      "badgeHelp": {
+        "locks": "Bu ayarlıyken her kuruluş sizin değerinizi kullanır. Kuruluşun kendi değeri yok sayılır.",
+        "locksConditional": "Etkinken her kuruluş kendi değeri yerine sizinkini kullanır. Devre dışıyken kuruluşlar kendi değerlerini kullanır.",
+        "overridable": "Sizin değeriniz varsayılandır. Kendi değerini belirleyen bir kuruluş onun yerine kendi değerini kullanır.",
+        "overridableCap": "Sizin değeriniz varsayılandır. Bir kuruluş en fazla {{limit}} olmak üzere kendi değerini belirleyebilir.",
+        "partnerOnly": "Kuruluşların bunun için kendi ayarı yoktur. Sizin değeriniz hepsine uygulanır."
+      },
+      "badgeHelpLabel": "“{{badge}}” hakkında ({{field}})",
+      "legend": {
+        "title": "Ayarlar nasıl uygulanır:",
+        "locks": "her kuruluş sizin değerinizi kullanır",
+        "overridable": "sizin değeriniz varsayılandır; bir kuruluş kendi değerini belirleyebilir",
+        "partnerOnly": "tüm kuruluşlara uygulanır; kuruluş ayarı yoktur"
+      },
+      "value": {
+        "on": "Açık",
+        "off": "Kapalı",
+        "minutes_one": "{{count}} dk",
+        "minutes_other": "{{count}} dk",
+        "hours_one": "{{count}} saat",
+        "hours_other": "{{count}} saat",
+        "days_one": "{{count}} gün",
+        "days_other": "{{count}} gün"
+      },
+      "line": {
+        "appliesToAll_one": "{{count}} kuruluşa uygulanır",
+        "appliesToAll_other": "{{count}} kuruluşun tümüne uygulanır",
+        "hadOwnValue_one": "{{count}} kuruluşun kendi değeri vardı",
+        "hadOwnValue_other": "{{count}} kuruluşun kendi değeri vardı",
+        "notSet": "Ayarlanmadı.",
+        "someSetOwn_one": "{{total}} kuruluştan {{count}} tanesi kendi değerini belirliyor",
+        "someSetOwn_other": "{{total}} kuruluştan {{count}} tanesi kendi değerini belirliyor",
+        "restUsePlatformDefault": "geri kalanlar platform varsayılanını kullanır ({{value}})",
+        "orgsUsePlatformDefault": "Kuruluşlar platform varsayılanını kullanır ({{value}})",
+        "noneSetOwn": "Hiçbir kuruluşun kendi değeri yok",
+        "defaultFor_one": "{{count}} kuruluş için varsayılan",
+        "defaultFor_other": "{{count}} kuruluş için varsayılan",
+        "override_one": "{{count}} tanesi değiştiriyor",
+        "override_other": "{{count}} tanesi değiştiriyor",
+        "setOwn_one": "{{count}} tanesi kendi değerini belirliyor",
+        "setOwn_other": "{{count}} tanesi kendi değerini belirliyor",
+        "clamped_one": "{{count}} tanesi üst sınırınızla kısıtlanıyor",
+        "clamped_other": "{{count}} tanesi üst sınırınızla kısıtlanıyor",
+        "notInForce": "Yürürlükte değil (hedef devre dışı).",
+        "orgsUseOwnDestination": "Kuruluşlar kendi hedeflerini kullanır",
+        "haveOne_one": "{{count}} tanesinin var",
+        "haveOne_other": "{{count}} tanesinin var",
+        "partnerOnlyDefault": "Platform varsayılanı ({{value}}) tüm kuruluşlara uygulanır",
+        "partnerOnlyBlank": "Ayarlanmadı. Platform varsayılanı tüm kuruluşlara uygulanır",
+        "consumerAll": "{{consumer}}: tüm kuruluşlara uygulanır",
+        "consumerOwn_one": "{{consumer}}: {{count}} kuruluş kendi değerini kullanıyor",
+        "consumerOwn_other": "{{consumer}}: {{count}} kuruluş kendi değerini kullanıyor",
+        "noOrgs": "Henüz kuruluş yok",
+        "savedValue": "Kayıtlı değer:",
+        "restricted": "Kuruluş dökümü tam iş ortağı erişimi gerektirir"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Kendi değeri olan kuruluşlar",
+          "overrides": "Varsayılanınızı değiştiren kuruluşlar",
+          "shadowed": "Kendi değeri yürürlükte olmayan kuruluşlar",
+          "clamped": "Üst sınırınızla kısıtlanan kuruluşlar"
+        },
+        "loading": "Kuruluşlar yükleniyor…",
+        "error": "Kuruluşlar yüklenemedi.",
+        "empty": "Bu listede kuruluş yok.",
+        "loadMore": "Daha fazla yükle",
+        "set": "Ayarlı",
+        "notSet": "Ayarlanmadı",
+        "inEffect": "Yürürlükte",
+        "notInEffect": "Yürürlükte değil",
+        "ownValue": "Kendi değeri:",
+        "channels": "Kanallar",
+        "readOnly": "Salt okunur. Bir kuruluşun değerini kendi ayarlarından değiştirin."
+      },
+      "summary": {
+        "title": "Kuruluşlarınız genelinde",
+        "locks_one": "{{count}} ayar kuruluşları kilitliyor",
+        "locks_other": "{{count}} ayar kuruluşları kilitliyor",
+        "overridable_one": "{{count}} ayar değiştirilebilir",
+        "overridable_other": "{{count}} ayar değiştirilebilir",
+        "differ_one": "{{count}} ayarda varsayılanlarınızdan farklı kuruluşlar var",
+        "differ_other": "{{count}} ayarda varsayılanlarınızdan farklı kuruluşlar var",
+        "noneDiffer": "Bu sekmede tüm kuruluşlar sizin değerlerinizi kullanıyor.",
+        "hint": "Kuruluşlarını listelemek için bir ayar veya bir alanın altındaki sayıyı seçin.",
+        "unavailable": "Kuruluş dökümü şu anda kullanılamıyor.",
+        "back": "Özete dön"
+      },
+      "fields": {
+        "defaultProvider": "Varsayılan uzak araç sağlayıcısı"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +7002,6 @@
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
     "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
-    "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
   },
   "orgAiApprovalTimeout": {

@@ -63,6 +63,7 @@ vi.mock('../permissions', async (importOriginal) => ({
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: () => ({}) }));
 vi.mock('../userNotifications', () => ({ createNotification: vi.fn() }));
 vi.mock('../aiOperator/taskOutbox', () => ({ publishIntentTerminalOutbox: vi.fn() }));
+vi.mock('./builtins/aiBudget', () => ({ aiStepPermanentBudgetDenial: vi.fn() }));
 
 import { eventDispatchMode, eventDispatchQueueSubscribers } from '../../config/env';
 import { FlowStepPinError, stepPinsFor, validateFlowDocument, type FlowStepPin } from '../flowValidator';
@@ -72,7 +73,8 @@ import { getUserPermissions, type UserPermissions } from '../permissions';
 import { writeAuditEvent } from '../auditEvents';
 import { createNotification } from '../userNotifications';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
-import { assertDelegatorAuthority, disableFlow, enableFlow, pauseFlow } from './versions';
+import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
+import { assertDelegatorAuthority, disableFlow, enableFlow, pauseFlow, webhookSecretSurvivesEnable } from './versions';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -150,9 +152,12 @@ const whereValues = (rec: { ops: Array<{ op: string; args: unknown[] }> }) => pa
 const setOf = (rec: { ops: Array<{ op: string; args: unknown[] }> }) => rec.ops.find((o) => o.op === 'set')!.args[0] as Record<string, unknown>;
 const valuesOf = (rec: { ops: Array<{ op: string; args: unknown[] }> }) => rec.ops.find((o) => o.op === 'values')!.args[0] as Record<string, unknown>;
 
-/** Queue the reads/writes of a successful enable: flow row, max seq, flows update, publication insert. */
-function queueEnable(flow = row(), maxSeq: number | null = null) {
-  queues.select.push([flow], [{ max: maxSeq }]);
+/**
+ * Queue the reads/writes of a successful enable: flow row, latest publication
+ * (max seq + its definition version), flows update, publication insert.
+ */
+function queueEnable(flow: ReturnType<typeof row> = row(), maxSeq: number | null = null, latestDefinitionVersion: number | null = null) {
+  queues.select.push([flow], [{ max: maxSeq, latestDefinitionVersion }]);
   queues.update.push([{ ...flow, status: 'enabled', enabledPublicationSeq: (maxSeq ?? 0) + 1, enabledByUserId: USER, enabledAt: new Date() }]);
   queues.insert.push([{ id: VERSION_ID, publicationSeq: (maxSeq ?? 0) + 1, definitionVersion: flow.definitionVersion }]);
 }
@@ -171,6 +176,7 @@ beforeEach(() => {
   vi.mocked(writeAuditEvent).mockReset();
   vi.mocked(createNotification).mockReset().mockResolvedValue('n1');
   vi.mocked(publishIntentTerminalOutbox).mockReset().mockResolvedValue(undefined);
+  vi.mocked(aiStepPermanentBudgetDenial).mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -295,11 +301,84 @@ describe('enableFlow — refusals', () => {
     }
   });
 
-  it('forEach concurrency 2 refused', async () => {
-    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[0]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
+  // W5 (#5220, Decision 11): concurrency is refused only where it cannot be honoured.
+  it('tier-3 step with concurrency 2 is foreach_concurrency_not_available', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[1]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
     queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([PINS[1]!]);
     expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
       .toEqual({ ok: false, error: 'foreach_concurrency_not_available' });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
+  it('wait in for-each with concurrency 2 is refused', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ id: 'pause', tool: 'wait', input: { minutes: 1 }, ...STEP_DEFAULTS, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 2 } }] };
+    queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([{ stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null }]);
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+      .toEqual({ ok: false, error: 'foreach_concurrency_not_available' });
+  });
+
+  it('tier-2 step with concurrency 5 enables', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ ...MANUAL_DOC.steps[0]!, forEach: { items: 'inputs.ids', as: 'item', maxItems: 10, concurrency: 5 } }] };
+    queueEnable(row({ definition: doc }));
+    vi.mocked(stepPinsFor).mockResolvedValueOnce([{ ...PINS[0]!, tier: 2 }]);
+    expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+  });
+
+  // W05 (#5220) Task A5, validator mocked (B1 adds the webhook trigger rules).
+  it('webhook flow without a secret is webhook_secret_missing', async () => {
+    const doc = { ...MANUAL_DOC, trigger: { type: 'webhook', auth: 'hmac' } };
+    queues.select.push([row({ definition: doc, webhookSecretEncrypted: null, webhookSecretFingerprint: null, webhookSecretRotatedAt: null })]);
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+      .toEqual({ ok: false, error: 'webhook_secret_missing' });
+    expect(callsOf('update')).toHaveLength(0);
+    expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  it('webhook flow with a secret enables', async () => {
+    const doc = { ...MANUAL_DOC, trigger: { type: 'webhook', auth: 'hmac' } };
+    queueEnable(row({
+      definition: doc, webhookSecretEncrypted: 'enc:v3:k:x', webhookSecretFingerprint: 'fp', webhookSecretRotatedAt: new Date('2027-03-01T00:00:00Z'),
+    }));
+    expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+  });
+
+  // W5 PR B (#5220, Decision 13): spec §6.7 "cannot be enabled if the owner has no budget".
+  describe('ai step budget', () => {
+    const AI_DOC = { ...MANUAL_DOC, steps: [{ id: 'think', tool: 'ai', input: { prompt: 'x', tools: [], output: { type: 'object' } }, ...STEP_DEFAULTS }] };
+    const AI_PINS: FlowStepPin[] = [{ stepId: 'think', tool: 'ai', source: 'builtin', tier: 1, approvalScope: null }];
+
+    it('org flow with an ai step and AI disabled is ai_budget_unavailable', async () => {
+      queues.select.push([row({ definition: AI_DOC })]);
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'AI features are disabled for this organization' });
+      expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] }))
+        .toEqual({ ok: false, error: 'ai_budget_unavailable', message: 'AI features are disabled for this organization' });
+      expect(aiStepPermanentBudgetDenial).toHaveBeenCalledWith(ORG, PARTNER);
+      expect(callsOf('update')).toHaveLength(0);
+    });
+
+    it('org flow with an ai step and a usable budget enables', async () => {
+      queueEnable(row({ definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+    });
+
+    it('a partner-wide flow checks per run org at run time, not at enable', async () => {
+      queueEnable(row({ orgId: null, partnerId: PARTNER, definition: AI_DOC }));
+      vi.mocked(stepPinsFor).mockResolvedValue(AI_PINS);
+      vi.mocked(aiStepPermanentBudgetDenial).mockResolvedValue({ reason: 'ai_disabled', message: 'x' });
+      vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
+      expect((await enableFlow(partnerAuth('all'), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
+
+    it('a flow without an ai step never checks the AI budget', async () => {
+      queueEnable();
+      expect((await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).ok).toBe(true);
+      expect(aiStepPermanentBudgetDenial).not.toHaveBeenCalled();
+    });
   });
 
   it('missing permissions are all listed', async () => {
@@ -323,6 +402,31 @@ describe('enableFlow — refusals', () => {
     expect(callsOf('insert')).toHaveLength(0);
   });
 
+  it('built-in steps are covered by rule 7 at enable (notify alerts.write, http_request external_tools.write)', async () => {
+    const doc = {
+      ...MANUAL_DOC,
+      steps: [
+        { id: 'tell', tool: 'notify', input: { channelId: SCRIPT, title: 't', message: 'm' }, ...STEP_DEFAULTS },
+        { id: 'call', tool: 'http_request', input: { method: 'POST', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS },
+        { id: 'pause', tool: 'wait', input: { minutes: 1 }, ...STEP_DEFAULTS },
+      ],
+    };
+    queues.select.push([row({ definition: doc })]);
+    vi.mocked(stepPinsFor).mockResolvedValue([
+      { stepId: 'tell', tool: 'notify', source: 'builtin', tier: 2, approvalScope: null },
+      { stepId: 'call', tool: 'http_request', source: 'builtin', tier: 3, approvalScope: 'supervised' },
+      { stepId: 'pause', tool: 'wait', source: 'builtin', tier: 1, approvalScope: null },
+    ]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toEqual({
+      ok: false,
+      error: 'permission_missing',
+      missing: [{ stepId: 'tell', permission: 'alerts.write' }, { stepId: 'call', permission: 'external_tools.write' }],
+    });
+    expect(callsOf('update')).toHaveLength(0);
+  });
+
   it('rule 7 passes for a user holding exactly the needed permissions', async () => {
     queueEnable();
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: ALL_PERMS }));
@@ -335,6 +439,19 @@ describe('enableFlow — refusals', () => {
     expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['run'] }))
       .toEqual({ ok: false, error: 'pre_approval_not_eligible', stepId: 'run', reason: 'variable_dependent' });
     expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  // W6 (#5221, Decision 5): a fleet binding binds the NEW publication's id
+  // and the user's maxTargets, and the publication row is inserted with that id.
+  it('fleet pre-approvals are assessed against the new publication with the requested maxTargets', async () => {
+    queueEnable();
+    await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: ['run'], fleetMaxTargets: { run: 40 } });
+    const [, , , requested, opts] = vi.mocked(assessPreApprovals).mock.calls[0]!;
+    expect([...(requested as Iterable<string>)]).toEqual(['run']);
+    expect(opts).toMatchObject({ fleetMaxTargets: { run: 40 } });
+    const publicationId = (opts as { publicationId: string }).publicationId;
+    expect(publicationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(valuesOf(callsOf('insert')[0]!).id).toBe(publicationId);
   });
 
   it('a pre-approval for a step the flow does not have is invalid', async () => {
@@ -441,6 +558,96 @@ describe('enableFlow — publication', () => {
     const r = await enableFlow(partnerAuth('all'), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
     expect(r.ok).toBe(true);
     expect(valuesOf(callsOf('insert')[0]!)).toMatchObject({ orgId: null, partnerId: PARTNER });
+  });
+});
+
+// #10270 "Needs Todd" 1, option (b): a webhook secret minted against an older
+// draft is invalidated when that draft is published; one minted against the
+// content being published survives.
+describe('webhookSecretSurvivesEnable', () => {
+  const MINTED = new Date('2027-03-01T00:00:00Z');
+  const LATER = new Date('2027-03-02T00:00:00Z');
+
+  it('no secret never survives', () => {
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: null, flowUpdatedAt: MINTED, definitionVersion: 3, latestPublicationDefinitionVersion: 3 })).toBe(false);
+  });
+
+  it('nothing written to the flow since the mint: survives', () => {
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: MINTED, flowUpdatedAt: new Date(MINTED), definitionVersion: 3, latestPublicationDefinitionVersion: null })).toBe(true);
+  });
+
+  it('the flow was written after the mint and the draft is newer than every publication: invalidated', () => {
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: MINTED, flowUpdatedAt: LATER, definitionVersion: 3, latestPublicationDefinitionVersion: null })).toBe(false);
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: MINTED, flowUpdatedAt: LATER, definitionVersion: 3, latestPublicationDefinitionVersion: 2 })).toBe(false);
+  });
+
+  it('a write that predates the mint (clock skew, an earlier timestamp) still counts as a change: equality only', () => {
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: LATER, flowUpdatedAt: MINTED, definitionVersion: 3, latestPublicationDefinitionVersion: null })).toBe(false);
+  });
+
+  it('the draft is unchanged since the latest publication: survives whatever was written since (a disable, a pause)', () => {
+    expect(webhookSecretSurvivesEnable({ secretRotatedAt: MINTED, flowUpdatedAt: LATER, definitionVersion: 3, latestPublicationDefinitionVersion: 3 })).toBe(true);
+  });
+});
+
+describe('enableFlow — webhook secret binding (#10270 option b)', () => {
+  const WEBHOOK_DOC = { ...MANUAL_DOC, trigger: { type: 'webhook', auth: 'hmac' } };
+  const MINTED = new Date('2027-03-01T00:00:00Z');
+  const EDITED = new Date('2027-03-01T00:05:00Z');
+  const secret = (rotatedAt: Date) => ({ webhookSecretEncrypted: 'enc:v3:k:x', webhookSecretFingerprint: 'fp', webhookSecretRotatedAt: rotatedAt });
+  const SECRET_KEYS = ['webhookSecretEncrypted', 'webhookSecretFingerprint', 'webhookSecretRotatedAt'];
+
+  it('a draft edited after the mint: the enable clears the secret in the flip and says so', async () => {
+    queueEnable(row({ definition: WEBHOOK_DOC, ...secret(MINTED), updatedAt: EDITED }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: true });
+    expect(setOf(callsOf('update')[0]!)).toMatchObject({
+      status: 'enabled', webhookSecretEncrypted: null, webhookSecretFingerprint: null, webhookSecretRotatedAt: null,
+    });
+    // The publication is still written: the flow is live, the sender needs a fresh secret.
+    expect(callsOf('insert')).toHaveLength(1);
+    const ev = vi.mocked(writeAuditEvent).mock.calls[0]![1] as { action: string; details: Record<string, unknown> };
+    expect(ev.action).toBe('flow.enable');
+    expect(ev.details).toMatchObject({ webhookSecretInvalidated: true });
+  });
+
+  it('a secret minted after the last edit survives the enable', async () => {
+    queueEnable(row({ definition: WEBHOOK_DOC, ...secret(MINTED), updatedAt: new Date(MINTED) }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: false });
+    const set = setOf(callsOf('update')[0]!);
+    for (const k of SECRET_KEYS) expect(set).not.toHaveProperty(k);
+  });
+
+  it('re-enable with no draft change since the latest publication keeps the secret (the disable bumped updated_at)', async () => {
+    queueEnable(row({ definition: WEBHOOK_DOC, status: 'disabled', ...secret(MINTED), updatedAt: EDITED }), 1, 3);
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: false, publication: { publicationSeq: 2 } });
+    const set = setOf(callsOf('update')[0]!);
+    for (const k of SECRET_KEYS) expect(set).not.toHaveProperty(k);
+  });
+
+  it('a draft edited since the latest publication, secret older than the edit: invalidated', async () => {
+    queueEnable(row({ definition: WEBHOOK_DOC, status: 'disabled', ...secret(MINTED), updatedAt: EDITED }), 1, 2);
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: true });
+    expect(setOf(callsOf('update')[0]!)).toMatchObject({ webhookSecretEncrypted: null, webhookSecretFingerprint: null, webhookSecretRotatedAt: null });
+  });
+
+  it('the flip is fenced to the secret generation it judged: a rotation racing it is version_conflict and publishes nothing', async () => {
+    queues.select.push([row({ definition: WEBHOOK_DOC, ...secret(MINTED), updatedAt: EDITED })], [{ max: null, latestDefinitionVersion: null }]);
+    queues.update.push([]);
+    expect(await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] })).toEqual({ ok: false, error: 'version_conflict' });
+    expect(whereValues(callsOf('update')[0]!).map((v) => (v instanceof Date ? v.getTime() : v))).toContain(MINTED.getTime());
+    expect(callsOf('insert')).toHaveLength(0);
+  });
+
+  it('a non-webhook flow never touches the secret columns', async () => {
+    queueEnable(row({ ...secret(MINTED), updatedAt: EDITED }));
+    const r = await enableFlow(auth(), FLOW_ID, { expectedVersion: 3, preApprovedStepIds: [] });
+    expect(r).toMatchObject({ ok: true, webhookSecretInvalidated: false });
+    const set = setOf(callsOf('update')[0]!);
+    for (const k of SECRET_KEYS) expect(set).not.toHaveProperty(k);
   });
 });
 
@@ -595,6 +802,17 @@ describe('assertDelegatorAuthority', () => {
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(false);
     vi.mocked(getUserPermissions).mockResolvedValue(perms({ scope: 'partner', orgId: null, partnerId: PARTNER, orgAccess: 'all' }));
     expect(await assertDelegatorAuthority(pub(), PARTNER_OWNER, RULE7)).toBe(true);
+  });
+
+  // W5 PR B (#5220, Decision 12): built-ins are no longer a side door.
+  it('delegator losing external_tools.write pauses the flow (built-in rule 7)', async () => {
+    const doc = { ...MANUAL_DOC, steps: [{ id: 'call', tool: 'http_request', input: { method: 'GET', url: 'https://api.example.com/x' }, ...STEP_DEFAULTS }] };
+    const rule7 = { doc: doc as never, pins: [{ stepId: 'call', tool: 'http_request', source: 'builtin', tier: 2, approvalScope: null }] as FlowStepPin[] };
+    queues.select.push([{ status: 'active' }], [{ status: 'active' }]);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'use' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(false);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ permissions: [{ resource: 'external_tools', action: 'write' }] }));
+    expect(await assertDelegatorAuthority(pub(), ORG_OWNER, rule7)).toBe(true);
   });
 
   // Review finding 6: rule 7 re-applied at run time. A delegator who is still

@@ -59,6 +59,13 @@ describe('encryptedColumnRegistry', () => {
     }
   });
 
+  it('flows.webhook_secret_encrypted is row-bound', () => {
+    // A flow's webhook signing secret pasted onto another flow's row must not decrypt.
+    const spec = encryptedColumnRegistry.find((c) => c.table === 'flows' && c.column === 'webhook_secret_encrypted');
+    expect(spec, 'flows.webhook_secret_encrypted missing from encryptedColumnRegistry').toBeDefined();
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row', aadTag: 'flows.webhook_secret_encrypted' });
+  });
+
   it('transforms text columns from legacy ciphertext to the active v2 key id', () => {
     setEncryptionEnv({ APP_ENCRYPTION_KEY: 'legacy-key-material' });
     const legacyCiphertext = encryptSecret('legacy-secret');

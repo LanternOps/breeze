@@ -10,6 +10,58 @@ function parseStepHash(hash: string): string | null | undefined {
   return hash.startsWith(STEP_HASH_PREFIX) ? hash.slice(STEP_HASH_PREFIX.length) : undefined;
 }
 
+type BuiltinDisplayTool = 'notify' | 'http_request' | 'ai';
+
+function isBuiltinDisplayTool(tool: string): tool is BuiltinDisplayTool {
+  return tool === 'notify' || tool === 'http_request' || tool === 'ai';
+}
+
+/** `https://host/path?q` -> `https://host`; anything not a parsable literal URL is shown raw. */
+function urlOrigin(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw;
+  }
+}
+
+function topLevelFields(schema: unknown): string[] {
+  if (!schema || typeof schema !== 'object') return [];
+  const props = (schema as { properties?: unknown }).properties;
+  return props && typeof props === 'object' && !Array.isArray(props) ? Object.keys(props) : [];
+}
+
+/** What a W5 built-in step does, at a glance (#5220). Reads the literal input; no lookups. */
+function BuiltinStepSummary({ stepId, tool, input }: { stepId: string; tool: BuiltinDisplayTool; input: unknown }) {
+  const { t } = useTranslation('flows');
+  const data = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const tools = Array.isArray(data.tools) ? data.tools.filter((x): x is string => typeof x === 'string') : [];
+  const fields = topLevelFields(data.output);
+  return (
+    <div className="mt-2 space-y-0.5 text-xs" data-testid={`flow-step-builtin-${stepId}`}>
+      <div className="font-medium">{t(/* i18n-dynamic */ `step.builtin.${tool}`)}</div>
+      {tool === 'notify' && typeof data.channelId === 'string' && (
+        <div className="font-mono">{t('step.notify.channel', { channel: data.channelId })}</div>
+      )}
+      {tool === 'http_request' && (
+        <>
+          <div className="font-mono">
+            {t('step.http.request', { method: String(data.method ?? ''), origin: urlOrigin(data.url), interpolation: { escapeValue: false } })}
+          </div>
+          <div className="text-muted-foreground">{t('step.http.anonymous')}</div>
+        </>
+      )}
+      {tool === 'ai' && (
+        <>
+          <div>{tools.length > 0 ? t('step.ai.tools', { tools: tools.join(', ') }) : t('step.ai.noTools')}</div>
+          {fields.length > 0 && <div>{t('step.ai.output', { fields: fields.join(', ') })}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * Ordered, read-only list of a flow's steps (#5218). The selected step lives in
  * `window.location.hash` (`#step-<id>`) per the web URL-state rule, so a link
@@ -94,6 +146,9 @@ export function FlowStepList({
                 {approval === 'pre_approved' ? t('step.approvalPreApproved') : t('step.approvalDefault')}
               </span>
             </div>
+            {isBuiltinDisplayTool(step.tool) && (
+              <BuiltinStepSummary stepId={step.id} tool={step.tool} input={step.input} />
+            )}
             {!compact && (
               <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
                 {step.when && (

@@ -14,6 +14,8 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
+const { noticesMock } = vi.hoisted(() => ({ noticesMock: { sendFlowNoticeToChannel: vi.fn(async () => {}) } }));
+vi.mock('./notices', () => noticesMock);
 
 import { notifyFlowRunUnknownOutcome, publishFlowRunTerminalEvent } from './runEvents';
 
@@ -85,8 +87,21 @@ describe('notifyFlowRunUnknownOutcome', () => {
     errorLog.mockRestore();
   });
 
-  it('no delegator (erased user) ⇒ nothing to notify', async () => {
+  it('no delegator (erased user) ⇒ no in-app notice', async () => {
     await notifyFlowRunUnknownOutcome({ delegatorUserId: null, orgId: RUN.orgId, flowId: RUN.flowId, flowName: 'x', runId: RUN.id, stepId: 'fix' });
     expect(h.createNotification).not.toHaveBeenCalled();
+  });
+
+  // W5 PR B (#5220, Decision 14): an unknown_outcome run also reaches the flow's notice channel.
+  it('also goes to the notice channel, once per run, with or without a delegator', async () => {
+    for (const delegatorUserId of ['u1', null]) {
+      noticesMock.sendFlowNoticeToChannel.mockClear();
+      await notifyFlowRunUnknownOutcome({ delegatorUserId, orgId: RUN.orgId, flowId: RUN.flowId, flowName: 'Disk cleanup', runId: RUN.id, stepId: 'fix' });
+      expect(noticesMock.sendFlowNoticeToChannel).toHaveBeenCalledWith(
+        { id: RUN.flowId, orgId: RUN.orgId },
+        null,
+        expect.objectContaining({ kind: 'unknown_outcome', title: 'Flow run needs review', dedupeKey: `flow-run-unknown:${RUN.id}` }),
+      );
+    }
   });
 });

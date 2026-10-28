@@ -67,6 +67,10 @@ vi.mock('../services/notificationSenders/webhookSender', () => ({
   validateWebhookUrlSafetyWithDns: vi.fn(async () => [])
 }));
 
+vi.mock('../services/flows/webhook/ingest', () => ({
+  ingestFlowWebhook: vi.fn(async () => ({ http: 401, body: { error: 'unauthorized' } }))
+}));
+
 // --- Stripe webhook deps (the signature handler is reached past auth) ---
 vi.mock('../services/stripeWebhook', () => ({
   verifyStripeEvent: vi.fn(() => { throw new Error('should not be reached without a signature'); }),
@@ -108,6 +112,8 @@ import { emailWebhookRoutes } from './tickets/emailWebhook';
 import { stripeWebhookRoutes } from './webhooks/stripe';
 import { quickbooksWebhookRoutes } from './webhooks/quickbooks';
 import { xeroWebhookRoutes } from './webhooks/xero';
+import { flowWebhookRoutes } from './flowWebhooks';
+import { ingestFlowWebhook } from '../services/flows/webhook/ingest';
 
 // Reproduce the index.ts mount order: CRUD router first, then the public
 // signature-gated siblings — emailWebhookRoutes at /webhooks/tickets,
@@ -120,6 +126,7 @@ function buildApp() {
   app.route('/webhooks', stripeWebhookRoutes);
   app.route('/webhooks', quickbooksWebhookRoutes);
   app.route('/webhooks', xeroWebhookRoutes);
+  app.route('/webhooks/flows', flowWebhookRoutes);
   return app;
 }
 
@@ -188,6 +195,15 @@ describe('webhooks mount-order regression (#2053)', () => {
     expect(body.error).toBe('Unauthorized');
     expect(body.error).not.toBe('Missing or invalid authorization header');
     expect(qboVerifyWebhookMock).not.toHaveBeenCalled();
+  });
+
+  it('flow webhook ingress reaches flowWebhookRoutes with no Authorization header (W05)', async () => {
+    const flowId = '7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e';
+    const res = await buildApp().request(`/webhooks/flows/${flowId}`, { method: 'POST', body: '{}' });
+    // The ingest service answered (uniform 401 body), not session auth's message.
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+    expect(ingestFlowWebhook).toHaveBeenCalledWith(expect.objectContaining({ flowId, rawBody: '{}' }));
   });
 
   it('Xero webhook reaches the signature handler, not session auth (no sig → empty 401)', async () => {

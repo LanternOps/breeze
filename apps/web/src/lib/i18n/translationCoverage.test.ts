@@ -92,7 +92,9 @@ const namespaceDuplicateBaselines = {
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
-    'devices.json': 189,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 191,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -106,7 +108,7 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Status', 'Webhook' (loanword) and 'Manual' are spelled identically in pt-BR.
     // +1 W04 (#5219): runs.trigger.manual — the same 'Manual' as trigger.manual.
-    'flows.json': 4,
+    'flows.json': 10, // W05 #5220: + Webhook (tab, title), 'Status' column, and three pure-interpolation strings
     // +3 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in pt-BR), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns pinned byte-identical by localeParity.
@@ -274,7 +276,9 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
-    'devices.json': 133,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 135,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -298,7 +302,7 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Webhook' (loanword), 'Manual' and 'Error' are spelled identically in es-419.
     // +1 W04 (#5219): runs.trigger.manual — the same 'Manual' as trigger.manual.
-    'flows.json': 4,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     // +2 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -485,7 +489,7 @@ const namespaceDuplicateBaselines = {
     // "Notes" — both spell identically in fr-FR.
     'fleetDesign.json': 3,
     // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
-    'flows.json': 3,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title), 'Secret', three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -694,7 +698,7 @@ const namespaceDuplicateBaselines = {
     // "Notes" — both spell identically in fr-CA.
     'fleetDesign.json': 3,
     // Flows (#5218): 'Webhook' (loanword), 'Validation' and 'Version {{version}}' are spelled identically in French.
-    'flows.json': 3,
+    'flows.json': 9, // W05 #5220: + Webhook (tab, title), 'Secret', three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     'integrations.json': 41,
@@ -890,7 +894,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 178,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 180,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
     // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
@@ -916,7 +922,7 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 1,
     // Flows (#5218): 'Name', 'Status', 'Webhook' and 'Version {{version}}' are spelled identically in German.
     // +1 W04 (#5219): runs.columns.status — the same 'Status' as list.status.
-    'flows.json': 5,
+    'flows.json': 11, // W05 #5220: + Webhook (tab, title), 'Status' column, three pure-interpolation strings
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
     // byte-identical by localeParity.
     // +1 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
@@ -1063,7 +1069,9 @@ const namespaceDuplicateBaselines = {
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
     // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
-    'devices.json': 155,
+    // +1 (#10190 W01): deviceInfoTab.assistStatus.label is the product name "Breeze Assist".
+    // +1 (#8134 W1-D1): physicalPlacementCard.rack — "Rack" is the standard loanword in this locale.
+    'devices.json': 157,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1087,7 +1095,7 @@ const namespaceDuplicateBaselines = {
     'fleetDesign.json': 2,
     // Flows (#5218): 'Trigger' (twice), 'Webhook', 'Timeout' and 'Input' are the standard Italian IT loanwords.
     // +1 W04 (#5219): runs.columns.trigger — the same 'Trigger' loanword.
-    'flows.json': 6,
+    'flows.json': 11, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +4 (W03 #6011): integrationsPage.backup ("Backup" is spelled identically
     // in it-IT), backupProviders.cove and backupProviders.namePlaceholder are
     // protected proper nouns, and one more backupProviders label spells
@@ -1234,7 +1242,7 @@ const namespaceDuplicateBaselines = {
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // Flows (#5218): 'Webhook' is the untranslated industry loanword.
-    'flows.json': 1,
+    'flows.json': 6, // W05 #5220: + Webhook (tab, title) and three pure-interpolation strings
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
     // are protected proper nouns pinned byte-identical by localeParity.
     'integrations.json': 24,

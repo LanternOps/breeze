@@ -31,8 +31,42 @@ const helperLink = (enabled: boolean): FeatureLink => ({
 });
 
 describe('HelperTab', () => {
-  it('keeps tray-menu options visible but disabled when deploy is off (#1863)', () => {
+  // OD-11 (#10190): a helper policy being created deploys Breeze Assist unless
+  // the technician turns it off. Existing links keep what they store.
+  it('defaults deploy on for a new helper policy and saves enabled: true', async () => {
+    saveMock.mockClear();
     render(<HelperTab {...baseProps} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => !c.disabled)).toBe(true);
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.enabled).toBe(true);
+  });
+
+  it('exposes the deploy toggle as a named switch with its state (on for a new policy, off for a stored off)', () => {
+    const { unmount } = render(<HelperTab {...baseProps} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('true');
+    unmount();
+    render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
+    expect(screen.getByRole('switch', { name: 'Deploy Breeze Assist to devices' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows deploy off when a link without settings arrives after the first render', () => {
+    const { rerender } = render(<HelperTab {...baseProps} />);
+    rerender(<HelperTab {...baseProps} existingLink={{ ...helperLink(false), inlineSettings: null }} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => c.disabled)).toBe(true);
+  });
+
+  it('shows deploy off for an existing link that does not decide enabled', () => {
+    render(<HelperTab {...baseProps} existingLink={{ ...helperLink(false), inlineSettings: { showOpenPortal: true } }} />);
+    const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
+    expect(checkboxes.every((c) => c.disabled)).toBe(true);
+  });
+
+  it('keeps tray-menu options visible but disabled when deploy is off (#1863)', () => {
+    render(<HelperTab {...baseProps} existingLink={helperLink(false)} />);
 
     // The toggles are discoverable (rendered), not hidden...
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];

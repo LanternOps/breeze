@@ -216,6 +216,53 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_topology_monitoring: { limit: 40, windowSeconds: 300 },
   manage_topology_templates: { limit: 30, windowSeconds: 300 },
   apply_topology_template: { limit: 20, windowSeconds: 300 },
+  // Full-control W09 (#6779): the probe dispatches to an agent and the sync queues a vendor pull; hosts calls the vendor cloud.
+  manage_snmp_templates: { limit: 30, windowSeconds: 300 },
+  get_snmp_metrics: { limit: 60, windowSeconds: 300 },
+  probe_network_asset: { limit: 20, windowSeconds: 300 },
+  manage_known_guests: { limit: 30, windowSeconds: 300 },
+  get_unifi_status: { limit: 30, windowSeconds: 300 },
+  trigger_unifi_sync: { limit: 6, windowSeconds: 300 },
+  // Full-control W10 (#6780): read-only replays of stored rows; the detail reads assemble several queries.
+  get_device_ai_activity: { limit: 60, windowSeconds: 300 },
+  list_operator_tasks: { limit: 60, windowSeconds: 300 },
+  get_operator_task: { limit: 40, windowSeconds: 300 },
+  list_ai_agent_schedules: { limit: 40, windowSeconds: 300 },
+  list_fleet_designs: { limit: 40, windowSeconds: 300 },
+  get_fleet_design: { limit: 30, windowSeconds: 300 },
+  // Full-control W11 (#6781, W11-D11): security policy tools. The status views assemble several queries; the
+  // recovery-key tool reaches a device (rotate / collect queue a command), compliance deactivate is permanent.
+  get_security_compliance: { limit: 40, windowSeconds: 300 },
+  manage_security_recommendations: { limit: 30, windowSeconds: 300 },
+  manage_access_reviews: { limit: 30, windowSeconds: 300 },
+  manage_audit_baselines: { limit: 30, windowSeconds: 300 },
+  manage_compliance_policies: { limit: 10, windowSeconds: 300 },
+  manage_security_policies: { limit: 20, windowSeconds: 300 },
+  manage_recovery_keys: { limit: 10, windowSeconds: 300 },
+  manage_pam_rules: { limit: 30, windowSeconds: 300 },
+  // Full-control W12 (#6782, W12-D6): device-reaching tools 10/300 s, like manage_recovery_keys.
+  manage_software_catalog: { limit: 30, windowSeconds: 300 },
+  search_packages: { limit: 30, windowSeconds: 300 },
+  manage_software_deployments: { limit: 10, windowSeconds: 300 },
+  get_device_software: { limit: 40, windowSeconds: 300 },
+  manage_device_software: { limit: 10, windowSeconds: 300 },
+  manage_software_inventory: { limit: 30, windowSeconds: 300 },
+  bootstrap_homebrew: { limit: 10, windowSeconds: 300 },
+  manage_fleet_findings: { limit: 30, windowSeconds: 300 },
+  manage_custom_fields: { limit: 20, windowSeconds: 300 },
+  // Full-control W13 (#6783, W13-D9): device reads 40/300 s, record writes 20/300 s, the vendor lookup 10/300 s.
+  get_device_events: { limit: 40, windowSeconds: 300 },
+  get_device_health: { limit: 40, windowSeconds: 300 },
+  get_process_samples: { limit: 40, windowSeconds: 300 },
+  get_management_posture: { limit: 20, windowSeconds: 300 },
+  manage_device_function: { limit: 20, windowSeconds: 300 },
+  manage_device_links: { limit: 20, windowSeconds: 300 },
+  manage_manual_assets: { limit: 20, windowSeconds: 300 },
+  manage_device_warranty: { limit: 10, windowSeconds: 300 },
+  // W13 PR B (#6783, W13-D9): the live event-log read uses the manage_processes limit.
+  browse_device_event_log: { limit: 15, windowSeconds: 300 },
+  manage_tenant_variables: { limit: 20, windowSeconds: 300 },
+  manage_support_sessions: { limit: 10, windowSeconds: 300 },
 };
 
 /**

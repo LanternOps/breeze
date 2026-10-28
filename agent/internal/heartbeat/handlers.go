@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -325,23 +326,17 @@ func handleRebootSafeMode(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	if h.sessionBroker != nil {
-		h.sessionBroker.BroadcastNotification("Safe Mode Reboot", safeModeRebootNotice(delay), "critical")
-	}
+	// A notice.info card where the session's renderer draws it and the
+	// server enables it (#10190 W04); otherwise exactly today's broadcast.
+	h.notifySafeModeReboot(delay)
 	return tools.RebootToSafeMode(cmd.Payload)
 }
 
 // safeModeRebootNotice renders the user-facing Safe Mode warning for a delay
 // that has already been parsed and clamped by tools.ShutdownDelayMinutes.
+// The wording lives with the notice.info constructor, whose Legacy it is.
 func safeModeRebootNotice(delayMinutes int) string {
-	if delayMinutes <= 0 {
-		return "System is rebooting into Safe Mode with Networking. Please save all work."
-	}
-	unit := "minutes"
-	if delayMinutes == 1 {
-		unit = "minute"
-	}
-	return fmt.Sprintf("System will reboot into Safe Mode with Networking in %d %s. Please save all work.", delayMinutes, unit)
+	return promptkinds.LegacySafeModeRebootBody(delayMinutes)
 }
 
 func handleCollectSoftware(_ *Heartbeat, cmd Command) tools.CommandResult {

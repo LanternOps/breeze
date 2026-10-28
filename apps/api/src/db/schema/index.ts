@@ -198,6 +198,9 @@ export * from './monitorConversions';
 export * from './toolSources';
 export * from './flows';
 export * from './flowRuns';
+export * from './flowWebhooks';
+export * from './flowConversions';
+export * from './flowUsage';
 export * from './topology';
 
 export * from "./topologyCollections";
@@ -219,6 +222,8 @@ export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
 export * from './backupRestoreAuthorizations';
 export * from './devicePoolAssignmentEvents';
+export * from './deviceReattachIntents';
+export * from './deviceReattachments';
 export * from './aiModelRegistry';
 export * from './aiModelRegistryCutover';
 export * from './aiModelRegistryLegacyArchive';

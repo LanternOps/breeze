@@ -124,6 +124,7 @@ import { EntityLink } from "@/components/shared/EntityLink";
 import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
 import { readSortFromHash, writeSortToHash } from "./deviceListSort";
 import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
+import { helperInstallIssueKey, helperInstalledDespiteIssue } from "./promptRenderer";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -1678,13 +1679,29 @@ export default function DeviceList({
   // so don't imply 0/blank.
   const agentCell = (device: Device, node: React.ReactNode): React.ReactNode =>
     (device.deviceClass ?? "agent") !== "agent" ? dash : node;
-  // Static keys per known code (#6925); a code from a newer agent falls back.
-  const helperInstallIssueTooltip = (issue: string): string =>
-    issue === "awaiting_server_offer"
-      ? t("deviceList.helperInstallIssueTooltip.awaitingServerOffer")
-      : issue === "install_abandoned"
-        ? t("deviceList.helperInstallIssueTooltip.installAbandoned")
-        : t("deviceList.helperInstallIssueTooltip.unknown");
+  // Static keys per known code (#6925, #10183, #10185); a code from a newer
+  // agent falls back.
+  const helperInstallIssueTooltip = (issue: string): string => {
+    switch (helperInstallIssueKey(issue)) {
+      case "awaitingServerOffer":
+        return t("deviceList.helperInstallIssueTooltip.awaitingServerOffer");
+      case "installAbandoned":
+        return t("deviceList.helperInstallIssueTooltip.installAbandoned");
+      case "webview2Outdated":
+        return t("deviceList.helperInstallIssueTooltip.webview2Outdated");
+      case "crashLoop":
+        return t("deviceList.helperInstallIssueTooltip.crashLoop");
+      case "unmanagedInstall":
+        return t("deviceList.helperInstallIssueTooltip.unmanagedInstall");
+      default:
+        return t("deviceList.helperInstallIssueTooltip.unknown");
+    }
+  };
+  // Assist on disk but not run by the agent (#10183, #10185) is not "Not installed".
+  const helperInstallIssueLabel = (issue: string): string =>
+    helperInstalledDespiteIssue(issue)
+      ? t("deviceList.helperUnavailable")
+      : t("deviceList.helperNotInstalled");
   const columnDefs: Record<
     ColumnId,
     { header: () => React.ReactNode; cell: (device: Device) => React.ReactNode }
@@ -2013,7 +2030,7 @@ export default function DeviceList({
                 title={helperInstallIssueTooltip(device.helperInstallIssue)}
                 className={pillClass}
               >
-                {t("deviceList.helperNotInstalled")}
+                {helperInstallIssueLabel(device.helperInstallIssue)}
               </span>
             ),
           });
@@ -2036,7 +2053,9 @@ export default function DeviceList({
           stuck: t("deviceList.updateStuck"),
           "agent-silent": t("deviceList.agentSilent"),
           duplicate: t("deviceList.possibleDuplicate"),
-          helper: t("deviceList.helperNotInstalled"),
+          helper: device.helperInstallIssue
+            ? helperInstallIssueLabel(device.helperInstallIssue)
+            : t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
         };
         const [topSecondary, ...restSecondary] = secondary;
@@ -2388,14 +2407,15 @@ export default function DeviceList({
         >
           {agentCell(device, fmtOptionalVersion(device.helperVersion))}
           {/* #6925: Assist is enabled but not installed — without this the
-              cell shows the same dash as a device with Assist turned off. */}
+              cell shows the same dash as a device with Assist turned off.
+              #10183/#10185: or installed but not run by the agent. */}
           {device.helperInstallIssue ? (
             <span
               data-testid={`device-${device.id}-helper-install-issue`}
               title={helperInstallIssueTooltip(device.helperInstallIssue)}
               className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning"
             >
-              {t("deviceList.helperNotInstalled")}
+              {helperInstallIssueLabel(device.helperInstallIssue)}
             </span>
           ) : null}
         </td>

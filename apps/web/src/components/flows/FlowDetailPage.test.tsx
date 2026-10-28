@@ -9,7 +9,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const api = vi.hoisted(() => ({ listFlowRuns: vi.fn().mockResolvedValue({ runs: [], total: 0 }), listFlows: vi.fn(), getFlow: vi.fn(), disableFlow: vi.fn(), enableFlow: vi.fn(), startFlowRun: vi.fn() }));
+const api = vi.hoisted(() => ({ listFlowRuns: vi.fn().mockResolvedValue({ runs: [], total: 0 }), listFlows: vi.fn(), getFlow: vi.fn(), disableFlow: vi.fn(), enableFlow: vi.fn(), startFlowRun: vi.fn(), listWebhookDeliveries: vi.fn(), rotateWebhookSecret: vi.fn() }));
 const perms = vi.hoisted(() => ({ write: true }));
 vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => r === 'automations' && a === 'write' && perms.write }),
@@ -237,5 +237,102 @@ describe('FlowDetailPage', () => {
     await user.click(screen.getByTestId('flow-enable-confirm'));
     await screen.findByTestId('flow-enable-error-version_conflict');
     await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+  });
+
+  describe('W05 (#5220): webhook tab, secret invalidation, usage and the refusal banner', () => {
+    function webhookDetail() {
+      const d = detail();
+      const flow = d.flow as Record<string, unknown> & { definition: Record<string, unknown> };
+      flow.ownerScope = 'partner';
+      flow.orgId = null;
+      flow.partnerId = 'p-1';
+      flow.triggerType = 'webhook';
+      flow.definition.trigger = { type: 'webhook', auth: 'hmac', orgResolver: { path: 'body.customer', system: 'psa' } };
+      flow.webhook = {
+        url: `https://api.example.com/api/v1/webhooks/flows/${ID}`, authMode: 'hmac', secretFingerprint: 'fp',
+        secretRotatedAt: '2026-10-20T02:00:00.000Z', lastAuthFailureAt: null, lastAuthFailureReason: null,
+      };
+      return d;
+    }
+
+    beforeEach(() => {
+      api.listWebhookDeliveries.mockResolvedValue({ deliveries: [], identifiersHidden: false });
+      api.rotateWebhookSecret.mockReset();
+    });
+
+    it('webhook tab follows #webhook for a webhook flow', async () => {
+      api.getFlow.mockResolvedValue(webhookDetail());
+      window.location.hash = '#webhook';
+      render(<FlowDetailPage flowId={ID} />);
+      expect(await screen.findByTestId('flow-webhook-panel')).toBeTruthy();
+      expect(screen.queryByTestId('flow-steps')).toBeNull();
+      const user = userEvent.setup();
+      await user.click(screen.getByTestId('flow-tab-overview'));
+      expect(window.location.hash).toBe('#overview');
+      await user.click(screen.getByTestId('flow-tab-webhook'));
+      expect(window.location.hash).toBe('#webhook');
+      expect(await screen.findByTestId('flow-webhook-panel')).toBeTruthy();
+    });
+
+    it('a non-webhook flow has no webhook tab, and #webhook falls back to the overview', async () => {
+      window.location.hash = '#webhook';
+      render(<FlowDetailPage flowId={ID} />);
+      expect(await screen.findByTestId('flow-steps')).toBeTruthy();
+      expect(screen.queryByTestId('flow-tab-webhook')).toBeNull();
+      expect(screen.queryByTestId('flow-webhook-panel')).toBeNull();
+    });
+
+    it('an enable that invalidated the webhook secret says so and links to the webhook tab', async () => {
+      api.getFlow.mockResolvedValue(webhookDetail());
+      api.enableFlow.mockResolvedValue({ ok: true, flow: {}, publication: {}, webhookSecretInvalidated: true });
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      await user.click(screen.getByTestId('flow-enable'));
+      await user.click(screen.getByTestId('flow-enable-confirm'));
+      const notice = await screen.findByTestId('flow-webhook-secret-invalidated');
+      expect(notice.textContent).toMatch(/cleared the webhook secret/i);
+      await user.click(screen.getByTestId('flow-webhook-secret-invalidated-open'));
+      expect(window.location.hash).toBe('#webhook');
+    });
+
+    it('the invalidation notice clears once the operator has created a new secret', async () => {
+      api.getFlow.mockResolvedValue(webhookDetail());
+      api.enableFlow.mockResolvedValue({ ok: true, flow: {}, publication: {}, webhookSecretInvalidated: true });
+      api.rotateWebhookSecret.mockResolvedValue({ secret: 'bwh_NEW', fingerprint: 'fp2', rotatedAt: '2026-10-26T00:00:00.000Z', warning: 'w' });
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      await user.click(screen.getByTestId('flow-enable'));
+      await user.click(screen.getByTestId('flow-enable-confirm'));
+      await screen.findByTestId('flow-webhook-secret-invalidated');
+      await user.click(screen.getByTestId('flow-tab-webhook'));
+      await user.click(await screen.findByTestId('flow-webhook-rotate'));
+      await user.click(await screen.findByTestId('flow-webhook-rotate-confirm'));
+      await user.click(await screen.findByTestId('flow-webhook-secret-done'));
+      await vi.waitFor(() => expect(screen.queryByTestId('flow-webhook-secret-invalidated')).toBeNull());
+    });
+
+    it('an enable that kept the secret shows no invalidation notice', async () => {
+      api.getFlow.mockResolvedValue(webhookDetail());
+      api.enableFlow.mockResolvedValue({ ok: true, flow: {}, publication: {}, webhookSecretInvalidated: false });
+      const user = userEvent.setup();
+      render(<FlowDetailPage flowId={ID} />);
+      await screen.findByTestId('flow-steps');
+      await user.click(screen.getByTestId('flow-enable'));
+      await user.click(screen.getByTestId('flow-enable-confirm'));
+      await vi.waitFor(() => expect(api.getFlow).toHaveBeenCalledTimes(2));
+      expect(screen.queryByTestId('flow-webhook-secret-invalidated')).toBeNull();
+    });
+
+    it('shows the refusal banner and the usage meter on the overview', async () => {
+      const d = detail() as unknown as { flow: Record<string, unknown> };
+      d.flow.lastAdmissionRefusal = { at: '2026-10-25T02:00:00.000Z', code: 'owner_monthly_cap_reached' };
+      d.flow.usage = { periodKey: '2026-10', flowRuns: 3, flowCap: 10, ownerRuns: 100, ownerCap: 100 };
+      api.getFlow.mockResolvedValue(d);
+      render(<FlowDetailPage flowId={ID} />);
+      expect((await screen.findByTestId('flow-refusal-banner')).textContent).toMatch(/all flows/i);
+      expect(screen.getByTestId('flow-usage')).toBeTruthy();
+    });
   });
 });

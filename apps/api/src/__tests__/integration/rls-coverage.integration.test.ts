@@ -464,6 +464,18 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // scope on top of the partner-axis policy asserted here.
   // Functional proof: devicePoolAssignmentEventsRls.integration.test.ts.
   ['device_pool_assignment_events', 'partner_id'],
+  // #8318 wave 1b (reattach, spec §4.3/§4.4). Both partner-axis (Shape 3) with
+  // no org_id column — source/target org ids are authorization snapshots, not
+  // tenancy keys — so no cascade / export / merge registration; the intents'
+  // device FKs cascade, the ledger's device ids are FK-less snapshots.
+  // Both: RESTRICTIVE writes system-only (every writer runs in system scope),
+  // RESTRICTIVE reads narrowed to rows whose target org (and real source org)
+  // the caller can access. device_reattach_intents: source_parked is derived
+  // by a SECURITY DEFINER trigger. device_reattachments: append-only (UPDATE
+  // trigger).
+  // Functional proof: deviceReattachIntentsRls.integration.test.ts.
+  ['device_reattach_intents', 'partner_id'],
+  ['device_reattachments', 'partner_id'],
   // Backup Provider Integration (#6008 W01): the MSP registers one external
   // backup vendor connection (Cove) and maps its discovered customers to
   // Breeze orgs. Both tables are partner-axis (Shape 3), four per-command
@@ -671,6 +683,13 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // verbatim plus the flow_versions_partner_wide_select branch. Functional
   // cross-partner forge proof: flowRunsPartnerRls.integration.test.ts.
   'flow_versions',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger and the
+  // automation-wide occurrence claims copy the automations/flows shape — org_id
+  // XOR partner_id, the flows_isolation predicate verbatim plus the
+  // *_partner_wide_select branch; owner pair kept equal to the automation's by
+  // deferred owner-guard constraint triggers.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
   // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
   // partner_id config table plus three children that DENORMALISE the owner
   // pair from their parent (owner-guard constraint triggers, like
@@ -696,6 +715,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // connection_health_incidents_org_partner_fk ties org_id to partner_id.
   // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
   'connection_health_incidents',
+  // Tool Catalog W5 (#5220, 2027-01-06-160000): flow_webhook_deliveries and
+  // flow_usage_counters copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-wide flow, NOT org XOR partner, so
+  // absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES. Neither has a
+  // breeze_current_partner_id() read branch: deliveries and counters are
+  // partner-private (an org token must never see a partner-wide flow's rows).
+  // Functional forge proof: flowWebhooksRls.integration.test.ts (Task A8).
+  'flow_webhook_deliveries',
+  'flow_usage_counters',
   // Wisp W05a (#9911, w00 A30): wisp_concerns, wisp_concern_recipients and
   // wisp_watches copy the connection_health_incidents shape — partner_id
   // always set, org_id NULL for a partner-level concern / partner-wide watch,
@@ -1057,6 +1085,11 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-wide SELECT branch (flow_versions_partner_wide_select) ships in the
   // same file. Forge proof: flowRunsPartnerRls.integration.test.ts.
   'flow_versions',
+  // flow_automation_conversions_one_owner_chk / automation_occurrence_claims_one_owner_chk,
+  // 2027-01-09-100000-flow-automation-conversions.sql (#5221); both partner-wide
+  // SELECT branches ship in the same file.
+  'flow_automation_conversions',
+  'automation_occurrence_claims',
   // business_calendars_one_owner_chk and the three children's *_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
   // All four partner-wide SELECT branches ship in the same file.

@@ -433,3 +433,95 @@ describe('createActionIntent — source flow (#5219)', () => {
     expect(a!.idempotencyKey).not.toBe(b!.idempotencyKey);
   });
 });
+
+// W5 PR B (#5220, Decision 12): a Tier-3 built-in flow step (an http_request
+// write) parks on a `source: 'flow'` intent carrying the built-in's name.
+describe('createActionIntent — built-in flow steps (#5220)', () => {
+  const POST_INPUT = { method: 'POST', url: 'https://api.example.com/tickets', body: { title: 'x' } };
+  const builtinRun = (over: Record<string, unknown> = {}) => serverRun({
+    step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'http_request', toolSource: 'builtin', tier: 3 },
+    ...over,
+  });
+  const builtinInput = (over: Partial<CreateActionIntentInput> = {}) => flowInput({
+    toolName: 'http_request', input: POST_INPUT, flowRun: flowRunInput({ builtin: true }), ...over,
+  });
+
+  beforeEach(() => {
+    flowState.loadFlowIntentRun.mockResolvedValue(builtinRun());
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+  });
+
+  it('builtin name accepted only for source flow with builtin true', async () => {
+    // A flow intent naming a built-in without the flag.
+    await expect(createActionIntent(flowAuth(), builtinInput({ flowRun: flowRunInput() }))).rejects.toMatchObject({ code: 'builtin_intent_invalid' });
+    // The flag on a core tool.
+    await expect(createActionIntent(flowAuth(), flowInput({ flowRun: flowRunInput({ builtin: true }) }))).rejects.toMatchObject({ code: 'builtin_intent_invalid' });
+    // A human caller naming a built-in (no flow principal, no flowRun).
+    await expect(createActionIntent(userAuth(), { toolName: 'http_request', input: POST_INPUT, source: 'chat', orgId: ORG_ID }))
+      .rejects.toMatchObject({ code: 'builtin_intent_invalid' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('builtin flow intent skips the core classifier, is supervised Tier 3 and never policy-decidable', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+    await createActionIntent(flowAuth(), builtinInput());
+    expect(guardrailState.checkGuardrails).not.toHaveBeenCalled();
+    const row = dbState.insertedActionIntentValues[0]!;
+    expect(row).toMatchObject({ actionName: 'http_request', approvalScope: 'supervised', riskTier: 3, policyDecisionState: 'human_required', source: 'flow' });
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it('builtin flow intent fans out to holders of its built-in permission over an indirect target', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+    await createActionIntent(flowAuth(), builtinInput());
+    expect(intentApproversState.resolveIntentTargetScope).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveAgentIntentApprovers).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'http_request', targetScope: { kind: 'indirect' }, requiredOverride: [{ resource: 'external_tools', action: 'write' }],
+    }));
+  });
+
+  it('a built-in whose input is Tier 2 (a GET) is refused tool_not_tier3', async () => {
+    await expect(createActionIntent(flowAuth(), builtinInput({ input: { method: 'GET', url: 'https://api.example.com/x' } })))
+      .rejects.toMatchObject({ code: 'tool_not_tier3' });
+  });
+
+  // W6 (#5221, Decision 5): the fleet built-in's approval scope is derived
+  // from the script (core run_script's classification), never hard-coded;
+  // its digest is mandatory.
+  describe('run_script_on_targets', () => {
+    const FLEET_INPUT = { scriptId: SCRIPT_ID, whenOffline: 'queue', deviceIds: [DEVICE_ID] };
+    const fleetRun = () => serverRun({
+      step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script_on_targets', toolSource: 'builtin', tier: 3 },
+    });
+    const fleetInput = () => builtinInput({ toolName: 'run_script_on_targets', input: FLEET_INPUT });
+
+    it('approval scope follows the script', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'a'.repeat(64) } as never);
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'four_eyes', description: 'x' } as never);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent());
+      dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+      await createActionIntent(flowAuth(), fleetInput());
+      expect(guardrailState.checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] });
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({ actionName: 'run_script_on_targets', approvalScope: 'four_eyes', riskTier: 3 });
+    });
+
+    it('missing digest refuses intent creation', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'unresolved', reason: 'target_absent' } as never);
+      await expect(createActionIntent(flowAuth(), fleetInput())).rejects.toThrow();
+      expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    });
+  });
+
+  it('the server step row must be this built-in, pinned Tier 3', async () => {
+    flowState.loadFlowIntentRun.mockResolvedValue(builtinRun({ step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script', toolSource: 'core', tier: 3 } }));
+    await expect(createActionIntent(flowAuth(), builtinInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
+    flowState.loadFlowIntentRun.mockResolvedValue(builtinRun({ step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'http_request', toolSource: 'builtin', tier: 2 } }));
+    await expect(createActionIntent(flowAuth(), builtinInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+});

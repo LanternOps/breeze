@@ -665,6 +665,57 @@ export const TOOL_TIERS = {
   manage_topology_monitoring: 1,
   manage_topology_templates: 1,
   apply_topology_template: 1,
+  // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. The multiplexers keep tier 1 as their base with
+  // per-action tier 2 writes in aiGuardrails; the probe (dispatches a ping from a site agent) and the UniFi sync
+  // (queues a vendor pull) are tier 2 throughout.
+  manage_snmp_templates: 1,
+  get_snmp_metrics: 1,
+  probe_network_asset: 2,
+  manage_known_guests: 1,
+  get_unifi_status: 1,
+  trigger_unifi_sync: 2,
+  // Spec 2026-09-23 W10 (#6780): AI-agent reads.
+  get_device_ai_activity: 1,
+  list_operator_tasks: 1,
+  get_operator_task: 1,
+  list_ai_agent_schedules: 1,
+  list_fleet_designs: 1,
+  get_fleet_design: 1,
+  // Spec 2026-09-23 W11 (#6781): security policy. Per-action classes live in aiGuardrails (W11 class review);
+  // access-review complete, apply-request decision and recovery-key reveal are human-only and absent from the tools.
+  get_security_compliance: 1,
+  manage_security_recommendations: 1,
+  manage_access_reviews: 1,
+  manage_audit_baselines: 1,
+  manage_compliance_policies: 3,
+  manage_security_policies: 1,
+  manage_recovery_keys: 1,
+  manage_pam_rules: 1,
+  // Spec 2026-09-23 W12 (#6782): software + fleet findings + custom fields. Per-action classes live in aiGuardrails
+  // (W12 class review); bootstrap_homebrew and manage_device_software are tier 3 as whole tools.
+  manage_software_catalog: 1,
+  search_packages: 1,
+  manage_software_deployments: 1,
+  get_device_software: 1,
+  manage_device_software: 3,
+  manage_software_inventory: 1,
+  bootstrap_homebrew: 3,
+  manage_fleet_findings: 2,
+  manage_custom_fields: 2,
+  // Spec 2026-09-23 W13 (#6783): device inventory + ops. Per-action classes live in aiGuardrails (W13 class
+  // review); every tool is tier 1 at the registry and its writes are classed per action.
+  get_device_events: 1,
+  get_device_health: 1,
+  get_process_samples: 1,
+  get_management_posture: 1,
+  manage_device_function: 1,
+  manage_device_links: 1,
+  manage_manual_assets: 1,
+  manage_device_warranty: 1,
+  // W13 PR B (#6783): live event-log browse, tenant variables, Quick Support sessions (classed per action).
+  browse_device_event_log: 1,
+  manage_tenant_variables: 1,
+  manage_support_sessions: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -1915,6 +1966,20 @@ export function googleToolDefinitions(
  * any other failure (`sanitizeThrownToolError` → `isError` result →
  * postToolUse).
  */
+/**
+ * W5 PR C (#5220): the `ToolExecutionContext` the pre-tool-use gate returned
+ * for ONE extra-tool call, keyed by that call's SDK `extra` object (a fresh
+ * object per call; weakly held, so it dies with the call). Core tools get
+ * their context through `makeHandler`; an extra tool's handler signature is
+ * fixed by the SDK, so it reads it here. Absent ⇒ the call was not gated with
+ * a context, and a handler that needs one must refuse.
+ */
+const EXTRA_TOOL_CALL_CONTEXT = new WeakMap<object, ToolExecutionContext>();
+
+export function extraToolCallContext(extra: unknown): ToolExecutionContext | undefined {
+  return extra && typeof extra === 'object' ? EXTRA_TOOL_CALL_CONTEXT.get(extra) : undefined;
+}
+
 export function wrapExtraToolWithHooks(
   extraTool: SdkTool,
   onPreToolUse?: PreToolUseCallback,
@@ -1946,6 +2011,9 @@ export function wrapExtraToolWithHooks(
           await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
+        // W5 PR C (#5220): the gate's context (a flow tool's resolved
+        // descriptor) rides the SDK's per-call `extra` object to the handler.
+        if (check.context && extra && typeof extra === 'object') EXTRA_TOOL_CALL_CONTEXT.set(extra, check.context);
       }
       try {
         const result = await withToolTimeout(handler(args, extra), toolTimeout, name);
@@ -3133,6 +3201,8 @@ export function buildBreezeSdkTools(
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
         message: z.string().max(500).optional(),
+        // Full-control W13 (#6783): watchdog logs only, or excluding them.
+        source: z.enum(['agent', 'watchdog']).optional(),
         ...keysetZodShape(18, 500),
         includeFields: z.boolean().optional(),
       },
@@ -3629,6 +3699,296 @@ export function buildBreezeSdkTools(
       registryDescription('apply_topology_template'),
       inputShape('apply_topology_template'),
       makeHandler('apply_topology_template', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W09 (#6779): SNMP + network monitoring. Classes live in aiGuardrails.
+    tool(
+      'manage_snmp_templates',
+      registryDescription('manage_snmp_templates'),
+      inputShape('manage_snmp_templates'),
+      makeHandler('manage_snmp_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_snmp_metrics',
+      registryDescription('get_snmp_metrics'),
+      inputShape('get_snmp_metrics'),
+      makeHandler('get_snmp_metrics', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'probe_network_asset',
+      registryDescription('probe_network_asset'),
+      inputShape('probe_network_asset'),
+      makeHandler('probe_network_asset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_known_guests',
+      registryDescription('manage_known_guests'),
+      inputShape('manage_known_guests'),
+      makeHandler('manage_known_guests', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_unifi_status',
+      registryDescription('get_unifi_status'),
+      inputShape('get_unifi_status'),
+      makeHandler('get_unifi_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'trigger_unifi_sync',
+      registryDescription('trigger_unifi_sync'),
+      inputShape('trigger_unifi_sync'),
+      makeHandler('trigger_unifi_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W10 (#6780): AI-agent reads. All tier 1; operator-task reads are denied to headless agents.
+    tool(
+      'get_device_ai_activity',
+      registryDescription('get_device_ai_activity'),
+      inputShape('get_device_ai_activity'),
+      makeHandler('get_device_ai_activity', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_operator_tasks',
+      registryDescription('list_operator_tasks'),
+      inputShape('list_operator_tasks'),
+      makeHandler('list_operator_tasks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_operator_task',
+      registryDescription('get_operator_task'),
+      inputShape('get_operator_task'),
+      makeHandler('get_operator_task', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_ai_agent_schedules',
+      registryDescription('list_ai_agent_schedules'),
+      inputShape('list_ai_agent_schedules'),
+      makeHandler('list_ai_agent_schedules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'list_fleet_designs',
+      registryDescription('list_fleet_designs'),
+      inputShape('list_fleet_designs'),
+      makeHandler('list_fleet_designs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_fleet_design',
+      registryDescription('get_fleet_design'),
+      inputShape('get_fleet_design'),
+      makeHandler('get_fleet_design', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W11 (#6781): security policy tools. Reads are tier 1; writes are classed in aiGuardrails; access
+    // reviews and PAM rules are agent-human-only.
+    tool(
+      'get_security_compliance',
+      registryDescription('get_security_compliance'),
+      inputShape('get_security_compliance'),
+      makeHandler('get_security_compliance', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_security_recommendations',
+      registryDescription('manage_security_recommendations'),
+      inputShape('manage_security_recommendations'),
+      makeHandler('manage_security_recommendations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_access_reviews',
+      registryDescription('manage_access_reviews'),
+      inputShape('manage_access_reviews'),
+      makeHandler('manage_access_reviews', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_audit_baselines',
+      registryDescription('manage_audit_baselines'),
+      inputShape('manage_audit_baselines'),
+      makeHandler('manage_audit_baselines', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_compliance_policies',
+      registryDescription('manage_compliance_policies'),
+      inputShape('manage_compliance_policies'),
+      makeHandler('manage_compliance_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_security_policies',
+      registryDescription('manage_security_policies'),
+      inputShape('manage_security_policies'),
+      makeHandler('manage_security_policies', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_recovery_keys',
+      registryDescription('manage_recovery_keys'),
+      inputShape('manage_recovery_keys'),
+      makeHandler('manage_recovery_keys', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_pam_rules',
+      registryDescription('manage_pam_rules'),
+      inputShape('manage_pam_rules'),
+      makeHandler('manage_pam_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Reads are tier 1; writes are classed
+    // in aiGuardrails; bootstrap_homebrew is agent-human-only.
+    tool(
+      'manage_software_catalog',
+      registryDescription('manage_software_catalog'),
+      inputShape('manage_software_catalog'),
+      makeHandler('manage_software_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_packages',
+      registryDescription('search_packages'),
+      inputShape('search_packages'),
+      makeHandler('search_packages', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_deployments',
+      registryDescription('manage_software_deployments'),
+      inputShape('manage_software_deployments'),
+      makeHandler('manage_software_deployments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_software',
+      registryDescription('get_device_software'),
+      inputShape('get_device_software'),
+      makeHandler('get_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_software',
+      registryDescription('manage_device_software'),
+      inputShape('manage_device_software'),
+      makeHandler('manage_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_inventory',
+      registryDescription('manage_software_inventory'),
+      inputShape('manage_software_inventory'),
+      makeHandler('manage_software_inventory', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'bootstrap_homebrew',
+      registryDescription('bootstrap_homebrew'),
+      inputShape('bootstrap_homebrew'),
+      makeHandler('bootstrap_homebrew', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_fleet_findings',
+      registryDescription('manage_fleet_findings'),
+      inputShape('manage_fleet_findings'),
+      makeHandler('manage_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_custom_fields',
+      registryDescription('manage_custom_fields'),
+      inputShape('manage_custom_fields'),
+      makeHandler('manage_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and per-device records. Reads are tier 1; writes
+    // are classed in aiGuardrails; manage_device_function:set is agent-human-only.
+    tool(
+      'get_device_events',
+      registryDescription('get_device_events'),
+      inputShape('get_device_events'),
+      makeHandler('get_device_events', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_health',
+      registryDescription('get_device_health'),
+      inputShape('get_device_health'),
+      makeHandler('get_device_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_process_samples',
+      registryDescription('get_process_samples'),
+      inputShape('get_process_samples'),
+      makeHandler('get_process_samples', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_management_posture',
+      registryDescription('get_management_posture'),
+      inputShape('get_management_posture'),
+      makeHandler('get_management_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_function',
+      registryDescription('manage_device_function'),
+      inputShape('manage_device_function'),
+      makeHandler('manage_device_function', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_links',
+      registryDescription('manage_device_links'),
+      inputShape('manage_device_links'),
+      makeHandler('manage_device_links', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_manual_assets',
+      registryDescription('manage_manual_assets'),
+      inputShape('manage_manual_assets'),
+      makeHandler('manage_manual_assets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_warranty',
+      registryDescription('manage_device_warranty'),
+      inputShape('manage_device_warranty'),
+      makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR B): event-log query / get_event, tenant-variable writes and support-session end
+    // are supervised; tenant-variable writes are agent-human-only.
+    tool(
+      'browse_device_event_log',
+      registryDescription('browse_device_event_log'),
+      inputShape('browse_device_event_log'),
+      makeHandler('browse_device_event_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tenant_variables',
+      registryDescription('manage_tenant_variables'),
+      inputShape('manage_tenant_variables'),
+      makeHandler('manage_tenant_variables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_support_sessions',
+      registryDescription('manage_support_sessions'),
+      inputShape('manage_support_sessions'),
+      makeHandler('manage_support_sessions', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.

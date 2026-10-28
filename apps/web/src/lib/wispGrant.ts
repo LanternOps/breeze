@@ -4,6 +4,7 @@
 import { fetchWithAuth } from '../stores/auth';
 import type { WispGrantStatus, WispState } from '../stores/aiStore';
 import { extractApiError } from './apiError';
+import { WispThreadError } from './wispSession';
 import { mintStepUpGrant, type StepUpReauth } from './mfaStepUp';
 import { pickReauthTier, type ReauthTier } from '../components/settings/StepUpPrompt';
 
@@ -107,11 +108,12 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
 /**
  * `GET /wisp/thread` did not yield a thread. `status` is the HTTP status and
  * `code` the server's machine code when it sent one; a 200 here means the body
- * was unreadable. See `isNoActiveGrant` for the ordinary "no grant" answer.
+ * was unreadable, and null means there was no response. See `isNoActiveGrant`
+ * for the ordinary "no grant" answer.
  */
-export class WispThreadReadError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
-    super(message);
+export class WispThreadReadError extends WispThreadError {
+  constructor(message: string, status: number | null, readonly code?: string) {
+    super(message, status);
     this.name = 'WispThreadReadError';
   }
 }
@@ -129,7 +131,13 @@ export function isNoActiveGrant(err: unknown): boolean {
 export async function fetchWispThread(orgId: string | null): Promise<NonNullable<WispState>> {
   // Exact-scope lookup on the server: the ambient `?orgId=` must not turn a
   // partner-wide read into an org-scoped miss (404 `no_active_grant`).
-  const res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread', { skipOrgIdInjection: true });
+  let res: Response;
+  try {
+    res = await fetchWithAuth(orgId ? `/wisp/thread?orgId=${encodeURIComponent(orgId)}` : '/wisp/thread', { skipOrgIdInjection: true });
+  } catch (err) {
+    // No response at all: status null, so a caller reads it as no answer, not "no grant" (#10142).
+    throw new WispThreadReadError(err instanceof Error ? err.message : 'Could not open the Wisp thread.', null);
+  }
   const body = (await res.json().catch(() => null)) as { code?: unknown } | null;
   if (!res.ok) {
     throw new WispThreadReadError(
@@ -139,6 +147,7 @@ export async function fetchWispThread(orgId: string | null): Promise<NonNullable
     );
   }
   const state = wispStateFromThread(body);
+  // A 2xx the panel cannot read is no answer, not "no grant".
   if (!state) throw new WispThreadReadError('Could not open the Wisp thread.', res.status);
   return state;
 }

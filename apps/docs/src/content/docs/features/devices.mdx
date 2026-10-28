@@ -53,6 +53,19 @@ Above the list you can:
 
 Selecting several devices and choosing **Reboot**, **Reboot into safe mode**, **Shut down**, **Lock**, **Wake** or **End maintenance** from the bulk actions bar asks for confirmation first (v0.124.0). The dialog names the action and the device count, the organization (or how many organizations) the devices belong to, and splits the count into devices that are **online now** and devices that will be **queued for next check-in** — see [Queued Actions](#queued-actions).
 
+### Moving devices to another site
+
+To move devices between sites of the same organization, use **Move to site** (v0.125.0+):
+
+- **One device:** choose **Move to site** from the row's actions in the device list, or change the site on the device page.
+- **Several devices:** select them and choose **Move to site** from the bulk actions bar. You can move up to 100 devices at once, and they must all belong to one organization; the action is disabled, with the reason shown, when the selection spans organizations or is too large.
+
+Pick the target site and confirm with MFA. Each device is moved on its own, so one failure does not stop the others: the result says how many moved and names any that did not (a device already at that site is skipped, and one that was moved by someone else in the meantime is reported as a conflict). Each move is audited. Moving a device needs `devices:write` and access to both its current site and the target site. To move devices to a different organization, see [Moving a Device to Another Organization](#moving-a-device-to-another-organization).
+
+### Force reboot now
+
+**Force reboot now**, in the device page's **Power** menu, restarts the device immediately and closes running applications instead of waiting for them, so unsaved work is lost. Use it when an unattended device is stuck behind "this app is preventing shutdown". You type the hostname to confirm and pass an MFA check. It needs `devices:execute`, an online device and agent 0.125.0 or later, and it is not available as a bulk action or to API keys, MCP clients or the AI assistant. See [`force_reboot`](/agents/commands/#force_reboot).
+
 ---
 
 ## Manual Assets
@@ -322,13 +335,13 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Hardware Summary** | CPU model, cores/threads, RAM, disk, GPU, motherboard, BIOS version. |
 | **Power** | Battery and power status (portable devices only — see above). |
 | **VPN** | Active VPN/overlay clients (only when at least one is active — see above). |
-| **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. |
+| **Agent** | Agent, watchdog and helper (Breeze Assist) versions, status, last seen, enrollment date, system uptime, logged-in user. A warning appears here when agent updates are withheld from the device. A **Breeze Assist** row (v0.125.0+) reads **Installed**, **Not deployed**, or **Unavailable** with the reason; see [Breeze Assist availability](/agents/helper/#enabling--disabling-helper-chat). |
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
 The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
 
-A device's physical placement (room, rack, rack unit and height) can be recorded through the API only, with `GET`/`PUT`/`DELETE /devices/:id/placement`; discovered network assets use `/discovery/assets/:id/placement`. The Info tab does not show it yet.
+The device **Overview** tab also has a **Physical placement** card (v0.125.0+) for the room, rack, rack unit and height (rack unit and height are whole numbers from 1 to 100). **Add** or **Edit** needs `devices:write` and an MFA check; clearing every field removes the placement. Discovered network assets have the same card on their detail page; an asset that is linked to a managed device shows the device's placement read-only, with a link to the device. The API is `GET`/`PUT`/`DELETE /devices/:id/placement` and `/discovery/assets/:id/placement`.
 
 ### System Restore tab
 

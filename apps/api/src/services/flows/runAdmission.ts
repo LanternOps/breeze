@@ -16,13 +16,16 @@
  * the cap that can never be admitted again (review round "resume/stalled slot
  * deadlock").
  */
+import type { FlowAdmissionRefusal, FlowDocumentV1 } from '@breeze/shared';
 import { flowMaxRunningPerOwner } from '../../config/env';
 import { getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import { readFlowUsage } from './budgets';
+import { effectiveFlowMonthlyCap, resolveFlowLimits } from './flowLimits';
 import * as store from './runStore';
 
-/** W05 widens this with budget / monthly-cap codes. */
-export type FlowRunAdmissionRefusal = 'flow_queue_full';
+/** The active-run cap (W04) and the monthly caps (W05, Decision 15). */
+export type FlowRunAdmissionRefusal = FlowAdmissionRefusal;
 
 /** Active = queued + running + waiting + awaiting_approval, per flow owner (Decision 8). */
 export const FLOW_MAX_ACTIVE_RUNS_PER_OWNER = 1000;
@@ -66,12 +69,27 @@ export async function assertActiveCapacity(
 }
 
 /**
- * The admission seam every run creation calls (Task A9). W04: exactly the
- * active-run cap. W05 adds per-flow budgets and monthly caps here.
+ * The admission seam every run creation calls (W04 Task A9, W05 Task A4):
+ *  1. the active-run cap (W04);
+ *  2. a read-only monthly pre-check — refuse early when this month is already
+ *     at the flow's cap (owner's per-flow value, lowered by the document's
+ *     `limits.monthlyRuns`) or the owner's cap.
+ * Returns the caps `chargeFlowRun` enforces after the insert. Called by
+ * `createFlowRun` under the owner's admission lock inside its system
+ * transaction, so the pre-check and the charge see the same counts.
  */
 export async function assertFlowRunAdmission(
   owner: ToolOwnerRef,
-  _flowId: string,
-): Promise<{ ok: true } | { ok: false; error: FlowRunAdmissionRefusal }> {
-  return assertActiveCapacity(owner);
+  flowId: string,
+  ctx: { doc: Pick<FlowDocumentV1, 'limits'>; at: Date },
+): Promise<{ ok: true; caps: { flowCap: number; ownerCap: number } } | { ok: false; error: FlowRunAdmissionRefusal }> {
+  const active = await assertActiveCapacity(owner);
+  if (!active.ok) return active;
+  const limits = await resolveFlowLimits(owner);
+  const flowCap = effectiveFlowMonthlyCap(limits, ctx.doc);
+  const ownerCap = limits.monthlyRunsPerOwner;
+  const usage = await readFlowUsage(flowId, owner, ctx.at);
+  if (usage.flowRuns >= flowCap) return { ok: false, error: 'flow_monthly_cap_reached' };
+  if (usage.ownerRuns >= ownerCap) return { ok: false, error: 'owner_monthly_cap_reached' };
+  return { ok: true, caps: { flowCap, ownerCap } };
 }

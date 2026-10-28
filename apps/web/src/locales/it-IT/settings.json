@@ -278,8 +278,7 @@
       "actionPlan": "Piano d'azione",
       "autoApprove": "Approvazione automatica",
       "hybridPlan": "Piano ibrido"
-    },
-    "overridesOrgTab": "I campi impostati qui sovrascrivono e bloccano lo stesso campo nella scheda AI di ogni organizzazione."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Inserisci fino a cinque numeri interi tra 1 e 99, separati da virgole."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Registrazione dispositivi",
       "ttl": "Validità predefinita del link",
-      "ttlHint": "Preseleziona per quanto tempo restano validi i nuovi link di registrazione e gli installer. Le org possono scegliere un valore predefinito diverso.",
+      "ttlHint": "Preseleziona per quanto tempo restano validi i nuovi link di registrazione e gli installer.",
       "deviceCount": "Dispositivi predefiniti per link",
-      "deviceCountHint": "Quanti computer può registrare un singolo link di registrazione per impostazione predefinita. Le org possono scegliere un valore predefinito diverso.",
+      "deviceCountHint": "Quanti computer può registrare un singolo link di registrazione per impostazione predefinita.",
       "maxTtl": "Durata massima del link",
       "maxTtlHint": "È un tetto sulla durata delle chiavi, non solo su ciò che un amministratore può richiedere: nulla di emesso sotto questo partner resta utilizzabile più a lungo — link di registrazione, inviti di distribuzione MCP e le credenziali figlie emesse quando un installer viene riscattato.",
       "maxTtlWarning": "Le org non possono aumentarlo. Un tetto breve accorcia anche il tempo a disposizione di un computer per completare la registrazione dopo aver riscattato un link, non solo il tempo per scaricarlo."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Target versione aggiornamento",
     "description": "Blocca agent e watchdog su una versione registrata specifica, oppure lascia <strong>Ultima promossa</strong> per seguire la release promossa globalmente. Agent e watchdog sono indipendenti.",
-    "partnerDescription": " Un blocco qui è il valore predefinito per tutte le tue organizzazioni; un'organizzazione può sovrascriverlo.",
     "organizationDescription": " Un blocco dell'organizzazione sovrascrive il valore predefinito del partner.",
     "components": {
       "agent": "Target agent",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Proxy di rete",
       "label": "Servi il proxy di rete da un’origine dedicata",
-      "help": "Si applica a tutte le organizzazioni; le organizzazioni non possono sovrascriverlo. Ha effetto solo dove la tua regione offre un’origine dedicata e migliora la compatibilità con le interfacce web dei dispositivi."
+      "help": "Ha effetto solo dove la tua regione offre un’origine dedicata e migliora la compatibilità con le interfacce web dei dispositivi."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1123,6 @@
     "description": "Configura i valori predefiniti per {{name}}.",
     "yourMsp": "il tuo MSP",
     "saveSettings": "Salva impostazioni",
-    "enforcedDescription": "I valori impostati qui vengono applicati a tutte le organizzazioni. Lascia i campi vuoti per consentire a ogni organizzazione di configurarli singolarmente.",
     "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni.",
     "modules": {
       "title": "Moduli",
@@ -1173,6 +1170,106 @@
     "knownGuests": {
       "added": "Ospite noto aggiunto",
       "removed": "Ospite noto rimosso"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Blocca le organizzazioni",
+        "locksConditional": "Blocca le organizzazioni se attivo",
+        "overridable": "L’organizzazione può modificarlo",
+        "overridableCap": "L’organizzazione può modificarlo, fino a {{limit}}",
+        "partnerOnly": "Per tutto il partner"
+      },
+      "badgeHelp": {
+        "locks": "Finché è impostato, ogni organizzazione usa il tuo valore. Il valore proprio dell’organizzazione viene ignorato.",
+        "locksConditional": "Se attivo, ogni organizzazione usa il tuo valore invece del proprio. Se disattivo, le organizzazioni usano il proprio.",
+        "overridable": "Il tuo valore è quello predefinito. Un’organizzazione che imposta un proprio valore usa quello.",
+        "overridableCap": "Il tuo valore è quello predefinito. Un’organizzazione può impostare un proprio valore, fino a {{limit}}.",
+        "partnerOnly": "Le organizzazioni non hanno un’impostazione propria. Il tuo valore vale per tutte."
+      },
+      "badgeHelpLabel": "Informazioni su «{{badge}}» ({{field}})",
+      "legend": {
+        "title": "Come si applicano le impostazioni:",
+        "locks": "ogni organizzazione usa il tuo valore",
+        "overridable": "il tuo valore è quello predefinito; un’organizzazione può impostare il proprio",
+        "partnerOnly": "vale per tutte le organizzazioni; non esiste un’impostazione per organizzazione"
+      },
+      "value": {
+        "on": "Attivo",
+        "off": "Disattivo",
+        "minutes_one": "{{count}} minuto",
+        "minutes_other": "{{count}} minuti",
+        "hours_one": "{{count}} ora",
+        "hours_other": "{{count}} ore",
+        "days_one": "{{count}} giorno",
+        "days_other": "{{count}} giorni"
+      },
+      "line": {
+        "appliesToAll_one": "Si applica a {{count}} organizzazione",
+        "appliesToAll_other": "Si applica a tutte le {{count}} organizzazioni",
+        "hadOwnValue_one": "{{count}} aveva un proprio valore",
+        "hadOwnValue_other": "{{count}} avevano un proprio valore",
+        "notSet": "Non impostato.",
+        "someSetOwn_one": "{{count}} organizzazione su {{total}} imposta il proprio",
+        "someSetOwn_other": "{{count}} organizzazioni su {{total}} impostano il proprio",
+        "restUsePlatformDefault": "le altre usano il valore predefinito della piattaforma ({{value}})",
+        "orgsUsePlatformDefault": "Le organizzazioni usano il valore predefinito della piattaforma ({{value}})",
+        "noneSetOwn": "Nessuna organizzazione ha un proprio valore",
+        "defaultFor_one": "Predefinito per {{count}} organizzazione",
+        "defaultFor_other": "Predefinito per {{count}} organizzazioni",
+        "override_one": "{{count}} lo modifica",
+        "override_other": "{{count}} lo modificano",
+        "setOwn_one": "{{count}} imposta il proprio",
+        "setOwn_other": "{{count}} impostano il proprio",
+        "clamped_one": "{{count}} è limitata al tuo tetto",
+        "clamped_other": "{{count}} sono limitate al tuo tetto",
+        "notInForce": "Non in vigore (destinazione disattivata).",
+        "orgsUseOwnDestination": "Le organizzazioni usano la propria destinazione",
+        "haveOne_one": "{{count}} ne ha una",
+        "haveOne_other": "{{count}} ne hanno una",
+        "partnerOnlyDefault": "Il valore predefinito della piattaforma ({{value}}) si applica a tutte le organizzazioni",
+        "partnerOnlyBlank": "Non impostato. Il valore predefinito della piattaforma si applica a tutte le organizzazioni",
+        "consumerAll": "{{consumer}}: si applica a tutte le organizzazioni",
+        "consumerOwn_one": "{{consumer}}: {{count}} organizzazione usa un proprio valore",
+        "consumerOwn_other": "{{consumer}}: {{count}} organizzazioni usano un proprio valore",
+        "noOrgs": "Ancora nessuna organizzazione",
+        "savedValue": "Valore salvato:",
+        "restricted": "Il dettaglio per organizzazione richiede l’accesso completo da partner"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizzazioni con un proprio valore",
+          "overrides": "Organizzazioni che modificano il tuo predefinito",
+          "shadowed": "Organizzazioni il cui valore proprio non è in vigore",
+          "clamped": "Organizzazioni limitate al tuo tetto"
+        },
+        "loading": "Caricamento delle organizzazioni…",
+        "error": "Impossibile caricare le organizzazioni.",
+        "empty": "Nessuna organizzazione in questo elenco.",
+        "loadMore": "Carica altro",
+        "set": "Impostato",
+        "notSet": "Non impostato",
+        "inEffect": "In vigore",
+        "notInEffect": "Non in vigore",
+        "ownValue": "Valore proprio:",
+        "channels": "Canali",
+        "readOnly": "Sola lettura. Modifica il valore di un’organizzazione dalle sue impostazioni."
+      },
+      "summary": {
+        "title": "Nelle tue organizzazioni",
+        "locks_one": "{{count}} impostazione blocca le organizzazioni",
+        "locks_other": "{{count}} impostazioni bloccano le organizzazioni",
+        "overridable_one": "{{count}} può essere modificata",
+        "overridable_other": "{{count}} possono essere modificate",
+        "differ_one": "{{count}} ha organizzazioni diverse dai tuoi predefiniti",
+        "differ_other": "{{count}} hanno organizzazioni diverse dai tuoi predefiniti",
+        "noneDiffer": "Tutte le organizzazioni usano i tuoi valori in questa scheda.",
+        "hint": "Seleziona un’impostazione, o un numero sotto un campo, per elencarne le organizzazioni.",
+        "unavailable": "Il dettaglio per organizzazione non è disponibile al momento.",
+        "back": "Torna al riepilogo"
+      },
+      "fields": {
+        "defaultProvider": "Provider di accesso remoto predefinito"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +7002,6 @@
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
     "description": "Per quanto tempo un turno live di Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare.",
-    "orgOverrideNote": "Le organizzazioni possono sovrascrivere questo valore dalle proprie impostazioni IA; il valore dell'organizzazione prevale se impostato.",
     "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
   },
   "orgAiApprovalTimeout": {

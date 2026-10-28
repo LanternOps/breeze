@@ -15,6 +15,8 @@ type Props = {
   maxLength?: number;
   /** Rendered under the field (e.g. a "managed by partner" note). */
   children?: ReactNode;
+  /** Rendered beside the label, outside it (e.g. an inheritance badge). */
+  labelAddon?: ReactNode;
 };
 
 /**
@@ -32,6 +34,7 @@ export default function SavedSecretInput({
   disabled,
   maxLength,
   children,
+  labelAddon,
 }: Props) {
   const { t } = useTranslation('settings');
   // Generated, not derived from testId: this field renders on partner and org
@@ -51,7 +54,14 @@ export default function SavedSecretInput({
 
   return (
     <div className="space-y-2">
-      <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+      {labelAddon ? (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+          {labelAddon}
+        </div>
+      ) : (
+        <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+      )}
       <div className={`flex gap-2 ${disabled ? 'opacity-60' : ''}`}>
         <input
           id={inputId}

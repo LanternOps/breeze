@@ -1022,6 +1022,71 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_topology_manual: new Set(['label', 'notes']),
   manage_topology_monitoring: new Set(['label', 'hostname', 'host', 'provider', 'independenceLabel']),
   manage_topology_templates: new Set(['name', 'description', 'label', 'hostname', 'host']),
+  // Full-control W09 (#6779). Template / OID names and descriptions, known-guest labels and notes are
+  // operator-authored; UniFi console / site / device / client names, SSIDs, hostnames and error strings come from
+  // the vendor or the network. All are fenced as data, never instructions.
+  manage_snmp_templates: new Set(['name', 'description', 'vendor', 'deviceClass', 'label', 'unit', 'templateName']),
+  get_snmp_metrics: new Set(['name', 'deviceName']),
+  manage_known_guests: new Set(['label', 'notes']),
+  get_unifi_status: new Set(['accountLabel', 'name', 'hostname', 'ssid', 'unifiHostName', 'unifiSiteName', 'lastPollError', 'lastSyncError', 'error', 'model']),
+  probe_network_asset: new Set(['error']),
+  // Full-control W10 (#6780). Operator-task objectives / hand-offs / step and event text are written by humans and other agent
+  // runs; plan renderings and labels name provider accounts; the Fleet Design markdown is model-generated from device-reported
+  // data; origin labels are session titles or agent names. All are fenced as data, never instructions (quorum QW4).
+  get_device_ai_activity: new Set(['label']),
+  list_operator_tasks: new Set(['objective', 'label', 'name', 'outcomeDetail', 'handoffSummary']),
+  get_operator_task: new Set([
+    'objective', 'label', 'name', 'outcomeDetail', 'handoffSummary', 'targetLabel', 'principalLabel',
+    'expectedCriterion', 'detail', 'rendering', 'resolvedModel',
+  ]),
+  get_fleet_design: new Set(['markdown', 'agentName', 'siteName', 'unavailable']),
+  // Full-control W11 (#6781, quorum QW10): every free-text field the security policy tools return, nested included.
+  // Device-reported (hostnames, local admin usernames, password-policy rule text, encryption volume labels, audit
+  // deviations), staff-authored (policy, review, rule and signer-group names, descriptions, notes, exclusions,
+  // match patterns) or identity data (member names and emails): data for the model, never instructions.
+  get_security_compliance: new Set([
+    'deviceName', 'username', 'rule', 'drive', 'method', 'status', 'providerVersion', 'definitionsVersion', 'name', 'title',
+  ]),
+  manage_security_recommendations: new Set(['title', 'description']),
+  manage_access_reviews: new Set(['name', 'description', 'notes', 'userName', 'userEmail', 'reviewerName', 'roleName']),
+  manage_audit_baselines: new Set(['name', 'baselineName', 'hostname', 'setting', 'actual', 'reason']),
+  manage_security_policies: new Set(['name', 'description', 'providerId', 'exclusions']),
+  manage_compliance_policies: new Set(['name']),
+  manage_recovery_keys: new Set(['hostname', 'volumeMount', 'protectorId', 'keyType']),
+  manage_pam_rules: new Set([
+    'name', 'description', 'matchSigner', 'matchPathGlob', 'matchParentImage', 'matchCommandLine', 'matchUser',
+    'matchAdGroup', 'matchToolName', 'subjectCn', 'signers',
+  ]),
+  // Full-control W12 (#6782, W12-D8): package, vendor and version strings are device- or vendor-reported; catalog,
+  // deployment, finding and custom-field names, notes and values are staff-authored or device-written. Data for the
+  // model, never instructions.
+  manage_software_catalog: new Set([
+    'name', 'vendor', 'category', 'description', 'version', 'releaseNotes', 'packageId', 'downloadHost',
+    'silentInstallArgs', 'silentUninstallArgs', 'architecture', 'originalFileName',
+  ]),
+  search_packages: new Set(['id', 'name', 'publisher', 'description', 'version', 'packageId', 'title', 'homepage']),
+  manage_software_deployments: new Set(['name', 'hostname', 'errorMessage', 'output', 'softwareName', 'version', 'error']),
+  get_device_software: new Set(['name', 'version', 'vendor', 'hostname']),
+  manage_device_software: new Set(['name', 'version']),
+  manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
+  manage_fleet_findings: new Set(['title']),
+  manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
+  // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
+  // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
+  // warranty strings are device-reported, vendor-reported or staff-authored. Data for the model, never instructions.
+  get_device_events: new Set(['message', 'action', 'name', 'errorMessage', 'hostname']),
+  get_device_health: new Set(['reason', 'agentVersion', 'hostname']),
+  get_process_samples: new Set(['name', 'user', 'hostname']),
+  get_management_posture: new Set(['name', 'version', 'product', 'hostname', 'displayName', 'orgName']),
+  manage_device_function: new Set(['label', 'evidence']),
+  manage_device_links: new Set(['name', 'hostname', 'displayName']),
+  manage_manual_assets: new Set(['name', 'manufacturer', 'model', 'notes', 'serialNumber', 'assetTag', 'location', 'tags', 'warnings', 'message']),
+  manage_device_warranty: new Set(['manufacturer', 'serialNumber', 'entitlements', 'lastSyncError', 'hostname', 'displayName']),
+  // W13 PR B (#6783): agent-read event text, staff-authored variable keys / values / descriptions, and the
+  // support-session attribution label. Data for the model, never instructions.
+  browse_device_event_log: new Set(['name', 'displayName', 'message', 'source', 'category', 'user', 'computer', 'logName', 'hostname']),
+  manage_tenant_variables: new Set(['key', 'value', 'description', 'orgName']),
+  manage_support_sessions: new Set(['attributionLabel', 'endedReason']),
   // Alert title/message originate from a rule match against endpoint-
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.

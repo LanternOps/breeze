@@ -99,6 +99,7 @@ vi.mock('../../db/schema', () => ({
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
+    endReason: 'remoteSessions.endReason',
   },
   devices: {
     id: 'devices.id',
@@ -313,6 +314,7 @@ function makeRemoteSessionRow(deviceId: string) {
     type: 'desktop',
     status: 'active',
     terminationPhase: undefined as 'none' | 'pending' | 'confirmed' | undefined,
+    endReason: null as 'ended_by_user' | null,
     startedAt: new Date('2026-01-01T00:00:00Z'),
     endedAt: null,
     durationSeconds: null,
@@ -616,6 +618,26 @@ describe('remote sessions — site-scope enforcement', () => {
       const body = await res.json();
       expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'none']);
     });
+
+    // #10190 W06: why the session ended, null when not known.
+    it('serializes endReason on every list row', async () => {
+      vi.mocked(db.select).mockClear();
+      rigListSessionsUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2' },
+      ]);
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
+    });
   });
 
   describe('GET /sessions/history', () => {
@@ -756,6 +778,26 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'confirmed', 'none']);
+    });
+
+    // #10190 W06: SessionHistory.tsx shows "Ended by the user" from this.
+    it('serializes endReason on every history row', async () => {
+      vi.mocked(db.select).mockClear();
+      rigSessionHistoryUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', endReason: 'ended_by_user' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2', status: 'disconnected' },
+      ]);
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { endReason: string | null }) => s.endReason)).toEqual(['ended_by_user', null]);
+      // The mock ignores the projection, so pin that the column is selected.
+      const projection = vi.mocked(db.select).mock.calls.map((c) => c[0]).find((arg) => arg && typeof arg === 'object' && 'endReason' in (arg as object));
+      expect(projection).toMatchObject({ endReason: 'remoteSessions.endReason' });
     });
   });
 
@@ -1155,6 +1197,28 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).terminationPhase).toBe(terminationPhase);
     });
+
+    it.each([['ended_by_user', 'ended_by_user'], [null, null], [undefined, null]] as const)(
+      'surfaces endReason=%s as %s (#10190 W06)',
+      async (endReason, expected) => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'disconnected', deviceId: DEVICE_IN_ALLOWED, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z'), terminationPhase: 'confirmed', endReason },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+        });
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+          }),
+        } as never);
+
+        const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+          headers: { Authorization: 'Bearer t' },
+        });
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).endReason).toBe(expected);
+      },
+    );
   });
 
   describe('POST /sessions/:id/offer', () => {

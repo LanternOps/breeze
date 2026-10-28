@@ -22,6 +22,7 @@ import { typeConfig, approvalStatusConfig } from '../discovery/DiscoveredAssetLi
 import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { IdentityCard } from './networkDevice/IdentityCard';
+import PhysicalPlacementCard from './PhysicalPlacementCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
 import { ReachabilityCard } from './networkDevice/ReachabilityCard';
 import { resolveHealthCard } from './networkDevice/health';
@@ -322,6 +323,12 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               timezone={resolveAssetTimezone(extras.siteTimezone)}
               onAnnounce={announce}
               onEditIdentity={() => openSettings('identity')}
+            />
+
+            <PhysicalPlacementCard
+              subject="discovered"
+              id={asset.id}
+              linkedDeviceName={asset.linkedDeviceName}
             />
 
             {!asset.linkedDeviceId && extras.autoLinkSuppressedAt && (

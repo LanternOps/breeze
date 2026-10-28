@@ -207,6 +207,10 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // of a terminal state. flow_runs is leave-for-erasure; resolveFlows only
   // writes cancellation columns on loser runs, never org_id.
   'flow_runs.flow_runs_immutable_trg': 'RAISEs iff org_id (or any identity column) changed; leave-for-erasure, never repointed',
+  // Tool Catalog W5 (#5220, 2027-01-07-140000-flow-webhooks-tools-budgets.sql).
+  'flow_webhook_deliveries.flow_webhook_deliveries_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
+  'flow_webhook_deliveries.flow_webhook_deliveries_immutable_trg': 'BEFORE UPDATE freezing delivery facts; flow_webhook_deliveries is leave-for-erasure so a merge never updates its rows',
+  'flow_usage_counters.flow_usage_counters_owner_guard_trg': 'BEFORE INSERT only; validates the owner pair against the parent flow on insert and never fires on a merge UPDATE',
   // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
   // immutable; wisp_grants is leave-for-erasure, never repointed.
   'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
@@ -311,6 +315,8 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
   ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
+  contract_documents: 'signed agreements, append-only (2027-01-06-150000, #9075 W4b); column-level UPDATE (contract_id, org_id): the filing link and the merge re-point, all evidence immutable',
+  automation_occurrence_claims: 'append-only cross-engine occurrence claims (2027-01-09-100000, #5221 W06); a claim follows its merged automation so the occurrence is never re-admitted, everything but org_id is immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
@@ -320,6 +326,15 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // bindings, created_at, a non-NULL delegator retarget) but deliberately
   // leaves the owner columns out, so the plain flow_versions repoint passes.
   'flow_versions.flow_versions_immutable_trg': 'freezes publication content only; org_id/partner_id are excluded and may move, so an org_id repoint passes',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): both guards RAISE on every
+  // change except an org_id → org_id restamp (never to or from NULL, partner_id
+  // unchanged) plus the conversion lifecycle columns. Where the row may move is
+  // pinned by the DEFERRED owner-guard constraint triggers, which require the
+  // owner pair to equal the automation's (and the flow's) at commit — so the
+  // merge's repoint, made after automations/flows move, passes, and any other
+  // retarget fails.
+  'flow_automation_conversions.flow_automation_conversions_immutable_trg': 'admits an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation and flow',
+  'automation_occurrence_claims.automation_occurrence_claims_append_only_trg': 'append-only except an org_id → org_id restamp (partner unchanged); the deferred owner guard ties it to the moved automation',
   // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
   // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
   // not name those columns, so the trigger never fires on it.
@@ -427,6 +442,14 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // WHERE org_id = <loser>` (buildRepoint, run under withSystemDbAccessContext
   // after the fence). Proven by aiInvocationsAppendOnly.integration.test.ts.
   'ai_invocations.ai_invocations_block_update': 'admits exactly the system-scope, same-partner org_id-only repoint away from a merging org; blocks everything else',
+  // Agreement signing W4b (#9075, 2027-01-06-150000): contract_documents is
+  // append-only, with the SAME org_id predicate as ai_invocations — an org_id
+  // change passes only in system scope, away from an org fenced 'merging', to
+  // an org of the same partner, which is the REPOINT_TABLES statement the
+  // merge runs after the fence. Proven by
+  // contractDocumentsAppendOnly.integration.test.ts and the merge-shape case in
+  // agreementRequestsRls.integration.test.ts.
+  'contract_documents.contract_documents_block_update': 'admits the system-scope, same-partner org_id-only repoint away from a merging org (plus contract_id and FK SET NULL); freezes all evidence',
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
   'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',

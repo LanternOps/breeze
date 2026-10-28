@@ -172,6 +172,9 @@ func runCallerVerify(req ipc.CallerVerifyRequest, resolve callerVerifyResolver, 
 type callerHelperCapabilities struct {
 	CallerVerify bool     `json:"callerVerify"`
 	Usernames    []string `json:"usernames"`
+	// PromptHost is the console Assist's prompt-host advertisement (#10190);
+	// omitted when there is no Assist in the console session.
+	PromptHost *promptHostTelemetry `json:"promptHost,omitempty"`
 }
 
 func (h *Heartbeat) callerHelperCapabilities() callerHelperCapabilities {
@@ -179,5 +182,5 @@ func (h *Heartbeat) callerHelperCapabilities() callerHelperCapabilities {
 	if h.sessionBroker != nil && h.sessionBroker.HasCallerVerifyHelper() {
 		users = h.sessionBroker.CallerVerifyUsers(sessionbroker.NewSessionDetector())
 	}
-	return callerHelperCapabilities{CallerVerify: len(users) > 0, Usernames: users}
+	return callerHelperCapabilities{CallerVerify: len(users) > 0, Usernames: users, PromptHost: h.promptHostTelemetry()}
 }

@@ -278,8 +278,7 @@
       "actionPlan": "Aktionsplan",
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
-    },
-    "overridesOrgTab": "Die hier festgelegten Felder überschreiben und sperren dasselbe Feld auf der KI-Registerkarte jeder Organisation."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
@@ -761,9 +760,9 @@
     "enrollment": {
       "title": "Geräteregistrierung",
       "ttl": "Standardgültigkeit von Links",
-      "ttlHint": "Legt vorab fest, wie lange neue Registrierungslinks und Installer gültig bleiben. Organisationen können einen abweichenden Standard wählen.",
+      "ttlHint": "Legt vorab fest, wie lange neue Registrierungslinks und Installer gültig bleiben.",
       "deviceCount": "Standardanzahl Geräte pro Link",
-      "deviceCountHint": "Wie viele Rechner ein Registrierungslink standardmäßig registrieren darf. Organisationen können einen abweichenden Standard wählen.",
+      "deviceCountHint": "Wie viele Rechner ein Registrierungslink standardmäßig registrieren darf.",
       "maxTtl": "Maximale Gültigkeit von Links",
       "maxTtlHint": "Eine Obergrenze für die Lebensdauer von Schlüsseln, nicht nur dafür, was ein Administrator anfordern darf: Nichts, was unter diesem Partner ausgestellt wird, bleibt länger nutzbar — Registrierungslinks, MCP-Bereitstellungseinladungen und die untergeordneten Anmeldedaten, die beim Einlösen eines Installers ausgestellt werden.",
       "maxTtlWarning": "Organisationen können diesen Wert nicht erhöhen. Eine kurze Obergrenze verkürzt auch die Zeit, die ein Rechner nach dem Einlösen eines Links zum Abschluss der Registrierung hat — nicht nur die Zeit zum Herunterladen."
@@ -789,7 +788,6 @@
   "agentVersionPins": {
     "title": "Versionsziele aktualisieren",
     "description": "Hängen Sie den Agenten und den Watchdog an eine bestimmte registrierte Version an oder belassen Sie ihn bei <strong>Neueste beworbene Version</strong>, um die weltweit beworbene Version zu verfolgen. Agent und Watchdog sind unabhängig.",
-    "partnerDescription": "Eine PIN hier ist die Standardeinstellung für alle Ihre Organisationen. Eine Organisation kann es außer Kraft setzen.",
     "organizationDescription": "Eine Organisations-PIN überschreibt den Partnerstandard.",
     "components": {
       "agent": "Agentenziel",
@@ -997,7 +995,7 @@
     "networkProxy": {
       "title": "Netzwerk-Proxy",
       "label": "Netzwerk-Proxy über einen eigenen Ursprung bereitstellen",
-      "help": "Gilt für alle Organisationen; Organisationen können dies nicht überschreiben. Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
+      "help": "Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1123,6 @@
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
     "saveSettings": "Einstellungen speichern",
-    "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
     "modules": {
       "title": "Module",
@@ -1173,6 +1170,106 @@
     "knownGuests": {
       "added": "Bekanntes Gastgerät hinzugefügt",
       "removed": "Bekanntes Gastgerät entfernt"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Sperrt Organisationen",
+        "locksConditional": "Sperrt Organisationen, wenn aktiviert",
+        "overridable": "Organisation kann abweichen",
+        "overridableCap": "Organisation kann abweichen, bis {{limit}}",
+        "partnerOnly": "Partnerweit"
+      },
+      "badgeHelp": {
+        "locks": "Solange dies gesetzt ist, verwendet jede Organisation Ihren Wert. Ein eigener Wert der Organisation wird ignoriert.",
+        "locksConditional": "Wenn aktiviert, verwendet jede Organisation Ihren Wert statt ihres eigenen. Wenn deaktiviert, verwenden die Organisationen ihren eigenen.",
+        "overridable": "Ihr Wert ist der Standard. Eine Organisation, die einen eigenen Wert festlegt, verwendet stattdessen diesen.",
+        "overridableCap": "Ihr Wert ist der Standard. Eine Organisation kann einen eigenen Wert festlegen, höchstens {{limit}}.",
+        "partnerOnly": "Organisationen haben hierfür keine eigene Einstellung. Ihr Wert gilt für alle."
+      },
+      "badgeHelpLabel": "Über „{{badge}}“ ({{field}})",
+      "legend": {
+        "title": "So gelten die Einstellungen:",
+        "locks": "jede Organisation verwendet Ihren Wert",
+        "overridable": "Ihr Wert ist der Standard; eine Organisation kann einen eigenen festlegen",
+        "partnerOnly": "gilt für alle Organisationen; es gibt keine Organisationseinstellung"
+      },
+      "value": {
+        "on": "Ein",
+        "off": "Aus",
+        "minutes_one": "{{count}} Min.",
+        "minutes_other": "{{count}} Min.",
+        "hours_one": "{{count}} Stunde",
+        "hours_other": "{{count}} Stunden",
+        "days_one": "{{count}} Tag",
+        "days_other": "{{count}} Tage"
+      },
+      "line": {
+        "appliesToAll_one": "Gilt für {{count}} Organisation",
+        "appliesToAll_other": "Gilt für alle {{count}} Organisationen",
+        "hadOwnValue_one": "{{count}} hatte einen eigenen Wert",
+        "hadOwnValue_other": "{{count}} hatten einen eigenen Wert",
+        "notSet": "Nicht festgelegt.",
+        "someSetOwn_one": "{{count}} von {{total}} Organisationen legt einen eigenen fest",
+        "someSetOwn_other": "{{count}} von {{total}} Organisationen legen einen eigenen fest",
+        "restUsePlatformDefault": "die übrigen verwenden den Plattformstandard ({{value}})",
+        "orgsUsePlatformDefault": "Organisationen verwenden den Plattformstandard ({{value}})",
+        "noneSetOwn": "Keine Organisation hat einen eigenen Wert",
+        "defaultFor_one": "Standard für {{count}} Organisation",
+        "defaultFor_other": "Standard für {{count}} Organisationen",
+        "override_one": "{{count}} weicht ab",
+        "override_other": "{{count}} weichen ab",
+        "setOwn_one": "{{count}} legt einen eigenen fest",
+        "setOwn_other": "{{count}} legen einen eigenen fest",
+        "clamped_one": "{{count}} wird auf Ihre Obergrenze begrenzt",
+        "clamped_other": "{{count}} werden auf Ihre Obergrenze begrenzt",
+        "notInForce": "Nicht wirksam (Ziel deaktiviert).",
+        "orgsUseOwnDestination": "Organisationen verwenden ihr eigenes Ziel",
+        "haveOne_one": "{{count}} hat eines",
+        "haveOne_other": "{{count}} haben eines",
+        "partnerOnlyDefault": "Plattformstandard ({{value}}) gilt für alle Organisationen",
+        "partnerOnlyBlank": "Nicht festgelegt. Der Plattformstandard gilt für alle Organisationen",
+        "consumerAll": "{{consumer}}: gilt für alle Organisationen",
+        "consumerOwn_one": "{{consumer}}: {{count}} Organisation verwendet einen eigenen Wert",
+        "consumerOwn_other": "{{consumer}}: {{count}} Organisationen verwenden einen eigenen Wert",
+        "noOrgs": "Noch keine Organisationen",
+        "savedValue": "Gespeicherter Wert:",
+        "restricted": "Die Aufschlüsselung nach Organisation erfordert vollen Partnerzugriff"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisationen mit eigenem Wert",
+          "overrides": "Organisationen, die von Ihrem Standard abweichen",
+          "shadowed": "Organisationen, deren eigener Wert nicht wirksam ist",
+          "clamped": "Auf Ihre Obergrenze begrenzte Organisationen"
+        },
+        "loading": "Organisationen werden geladen…",
+        "error": "Die Organisationen konnten nicht geladen werden.",
+        "empty": "Keine Organisationen in dieser Liste.",
+        "loadMore": "Mehr laden",
+        "set": "Festgelegt",
+        "notSet": "Nicht festgelegt",
+        "inEffect": "Wirksam",
+        "notInEffect": "Nicht wirksam",
+        "ownValue": "Eigener Wert:",
+        "channels": "Kanäle",
+        "readOnly": "Schreibgeschützt. Ändern Sie den Wert einer Organisation in deren eigenen Einstellungen."
+      },
+      "summary": {
+        "title": "Über Ihre Organisationen",
+        "locks_one": "{{count}} Einstellung sperrt Organisationen",
+        "locks_other": "{{count}} Einstellungen sperren Organisationen",
+        "overridable_one": "{{count}} kann abweichend festgelegt werden",
+        "overridable_other": "{{count}} können abweichend festgelegt werden",
+        "differ_one": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "differ_other": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "noneDiffer": "Alle Organisationen verwenden auf diesem Tab Ihre Werte.",
+        "hint": "Wählen Sie eine Einstellung oder eine Zahl unter einem Feld, um die Organisationen aufzulisten.",
+        "unavailable": "Die Aufschlüsselung nach Organisation ist gerade nicht verfügbar.",
+        "back": "Zurück zur Übersicht"
+      },
+      "fields": {
+        "defaultProvider": "Standard-Fernwartungsanbieter"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -6905,7 +7002,6 @@
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
-    "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
     "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
   },
   "orgAiApprovalTimeout": {

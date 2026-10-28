@@ -13,6 +13,7 @@ import {
   AGENT_PRESENCE_TTL_MS,
   clearAgentPresence,
   clearAgentPresenceUnfenced,
+  probeAgentPresence,
   readAgentPresence,
   refreshAgentPresence,
   setAgentPresence,
@@ -83,5 +84,20 @@ describe('agentPresence', () => {
     redisMock.set.mockRejectedValueOnce(new Error('boom'));
     await expect(setAgentPresence('a', { instanceId: 'i', connectionToken: 't' })).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+  });
+
+  // #8318 §6.5: the reattach confirm must tell "no lease" from "cannot read".
+  it('probeAgentPresence: present / absent / unavailable (no Redis, a throwing getRedis, a failed read)', async () => {
+    redisMock.get.mockResolvedValueOnce(JSON.stringify({ instanceId: 'i', connectionToken: 't' }));
+    await expect(probeAgentPresence('a')).resolves.toEqual({ present: true });
+    expect(redisMock.get).toHaveBeenLastCalledWith('agent-presence:a');
+    redisMock.get.mockResolvedValueOnce(null);
+    await expect(probeAgentPresence('a')).resolves.toEqual({ present: false });
+    redisMock.get.mockRejectedValueOnce(new Error('boom'));
+    await expect(probeAgentPresence('a')).resolves.toEqual({ unavailable: true });
+    vi.mocked(getRedis).mockReturnValueOnce(null as never);
+    await expect(probeAgentPresence('a')).resolves.toEqual({ unavailable: true });
+    vi.mocked(getRedis).mockImplementationOnce(() => { throw new Error('not initialised'); });
+    await expect(probeAgentPresence('a')).resolves.toEqual({ unavailable: true });
   });
 });

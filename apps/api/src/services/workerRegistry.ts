@@ -933,6 +933,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8318 reinstall reattach: every minute, expires reattach intents past
+    // their deadline (discarding the staged set, revoking the pending
+    // certificate) and prunes terminal ones older than 30 days. `global`: its
+    // closure is db + the certificate lifecycle + the audit service, never
+    // routes/agentWs.ts.
+    name: 'deviceReattachIntentSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/deviceReattachIntentSweep');
+      return { init: m.initializeDeviceReattachIntentSweep, shutdown: m.shutdownDeviceReattachIntentSweep };
+    },
+  },
+  {
     name: 'desktopSessionFinalization',
     placement: 'socket-owner',
     load: async () => {
@@ -1530,6 +1543,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/agreementRequestExpiryReaper');
       return { init: m.initializeAgreementRequestExpiryReaper, shutdown: m.shutdownAgreementRequestExpiryReaper };
+    },
+  },
+  {
+    // #9075 W4a (OD8 B): automatic agreement-request reminders (hourly sweep).
+    name: 'agreementRequestAutoReminder',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/agreementRequestAutoReminder');
+      return { init: m.initializeAgreementRequestAutoReminder, shutdown: m.shutdownAgreementRequestAutoReminder };
     },
   },
   {

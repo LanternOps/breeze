@@ -26,7 +26,7 @@ const step = (over: Record<string, unknown>) => ({
   id: 'row', stepId: 'list', itemIndex: null, attempt: 1, tool: 'query_devices', toolSource: 'core', tier: 1,
   status: 'completed', outputTruncated: false, bodiesPruned: false, errorCode: null, error: null,
   startedAt: '2026-10-20T02:00:00.000Z', finishedAt: '2026-10-20T02:00:02.000Z', durationMs: 2000,
-  approvalMode: 'none', actionIntentId: null, approvedByUserId: null, ...over,
+  approvalMode: 'none', actionIntentId: null, approvedByUserId: null, aiUsage: null, ...over,
 });
 
 function runDetail(over: Record<string, unknown> = {}) {
@@ -35,7 +35,7 @@ function runDetail(over: Record<string, unknown> = {}) {
     triggerKind: 'manual', triggeredVia: 'ui', status: 'running', errorCode: null, currentStepId: 'each',
     createdAt: '2026-10-20T02:00:00.000Z', startedAt: '2026-10-20T02:00:00.000Z', finishedAt: null,
     triggerPayload: null, inputs: {}, error: null, preApprovalsHonored: false, chainDepth: 0, publicationSeq: 4,
-    wakeAt: null, bodiesPrunedAt: null,
+    wakeAt: null, bodiesPrunedAt: null, aiTokensUsed: 0, parentAgentRunId: null,
     definition: {
       version: 1, name: 'Nightly offline report', trigger: { type: 'manual' }, inputs: [],
       steps: [
@@ -79,6 +79,22 @@ describe('FlowRunPage', () => {
     expect(screen.getByTestId('flow-run-step-list').getAttribute('data-reached')).toBe('true');
     const group = screen.getByTestId('flow-run-step-each');
     expect(group.querySelectorAll('[data-testid^="flow-run-item-"]').length).toBe(3);
+  });
+
+  it('shows the agent run link and AI tokens used', async () => {
+    api.getFlowRun.mockResolvedValue(runDetail({ parentAgentRunId: 'ar-9', aiTokensUsed: 1234, triggerKind: 'tool', triggeredVia: 'ai_agent' }));
+    render(<FlowRunPage runId="run-1" />);
+    const link = await screen.findByTestId('flow-run-agent-run-link');
+    expect(link.getAttribute('href')).toBe('/ai-agents/runs/ar-9');
+    expect(screen.getByTestId('flow-run-agent-run').textContent).toContain('Started by an AI agent run');
+    expect(screen.getByTestId('flow-run-ai-tokens').textContent).toContain('1234');
+  });
+
+  it('hides agent run and tokens when absent', async () => {
+    render(<FlowRunPage runId="run-1" />);
+    await screen.findByTestId('flow-run-page');
+    expect(screen.queryByTestId('flow-run-agent-run')).toBeNull();
+    expect(screen.queryByTestId('flow-run-ai-tokens')).toBeNull();
   });
 
   it('awaiting-approval banner links to /approvals', async () => {

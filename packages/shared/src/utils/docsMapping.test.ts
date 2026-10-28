@@ -21,6 +21,24 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
+    it('/security/detection-rules maps to the Detection rules section (not generic security)', () => {
+      const result = getDocsForPath('/security/detection-rules');
+      expect(result.label).toBe('Detection Rules');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/security/#detection-rules`);
+    });
+
+    it('/settings/ai (the AI settings hub) maps to the AI docs, not generic settings', () => {
+      const result = getDocsForPath('/settings/ai');
+      expect(result.label).toBe('AI Settings');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+    });
+
+    it('/settings/ai-script-authoring maps to the AI script authoring docs', () => {
+      const result = getDocsForPath('/settings/ai-script-authoring');
+      expect(result.label).toBe('AI Script Authoring');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-script-authoring/`);
+    });
+
     it('maps /ai/wisp/thread/:id to the Wisp feature page', () => {
       expect(getDocsForPath('/ai/wisp/thread/abc').url).toContain('/features/wisp/');
     });

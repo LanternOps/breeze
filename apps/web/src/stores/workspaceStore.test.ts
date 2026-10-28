@@ -73,6 +73,10 @@ function tab(over: Partial<TabState> = {}): TabState {
     composerDraft: '',
     joinedMidResponse: false,
     errorAction: null,
+    // A known plain chat: these suites cover plain-session behaviour, and an
+    // unknown mode would make the first send look up a Wisp grant first
+    // (#10142, workspaceStore.wisp.test.ts).
+    wisp: { kind: 'plain' },
     ...over,
   };
 }

@@ -289,6 +289,18 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   }),
 });
 
+/**
+ * A settings subtree with its own home (e.g. `flows`, written only by
+ * PUT /flows/limits): a wholesale settings write keeps the stored subtree and
+ * ignores an incoming one, so it can neither erase nor set it. Mutates `next`.
+ */
+function keepOwnedSettingsSubtree(next: Record<string, unknown>, currentSettings: unknown, key: string): void {
+  const stored = currentSettings && typeof currentSettings === 'object' && !Array.isArray(currentSettings)
+    ? (currentSettings as Record<string, unknown>)[key]
+    : undefined;
+  if (stored === undefined) delete next[key]; else next[key] = stored;
+}
+
 // PATCH /partners/:id writes the settings column wholesale. A write whose
 // settings (or security object) simply omits `ipAllowlist` must not silently
 // delete an active allowlist (fail-open); an explicit `ipAllowlist: []` still
@@ -592,6 +604,10 @@ const partnerPublicColumns = () => ({
   invoiceLineShowNote: partners.invoiceLineShowNote,
   invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
+  // #9075 W4a: Settings → Billing → Agreements reads these back.
+  agreementDefaultExpiryDays: partners.agreementDefaultExpiryDays,
+  agreementReminderIntervalDays: partners.agreementReminderIntervalDays,
+  agreementMaxReminders: partners.agreementMaxReminders,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   trustPageUnbranded: partners.trustPageUnbranded,
   serviceManagementMode: partners.serviceManagementMode,
@@ -646,6 +662,10 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   const clash = await db
@@ -1519,6 +1539,8 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         const next = updates.settings as Record<string, unknown>;
         const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
         if (stored === undefined) delete next.ai; else next.ai = stored;
+        // settings.flows is owned by PUT /flows/limits (W05 #5220): same rule.
+        keepOwnedSettingsSubtree(next, currentPartner.settings, 'flows');
 
         // Same contract as PATCH /partners/me: a default inbound assignee
         // must be an assignable member of THIS partner.
@@ -2087,6 +2109,10 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   let targetPartnerId: string | null = null;
@@ -2745,11 +2771,13 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
-    updates.settings = encryptColumnValueForWrite(
-      'organizations',
-      'settings',
-      stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
-    );
+    const orgSettingsNext = stripOrgLifecycleInternalSettings(resolvedSecrets.settings);
+    // settings.flows is owned by PUT /flows/limits (W05 #5220; orgs:write is
+    // not automations:write): the wholesale write keeps the stored block.
+    if (orgSettingsNext && typeof orgSettingsNext === 'object' && !Array.isArray(orgSettingsNext)) {
+      keepOwnedSettingsSubtree(orgSettingsNext as Record<string, unknown>, currentOrg?.settings, 'flows');
+    }
+    updates.settings = encryptColumnValueForWrite('organizations', 'settings', orgSettingsNext);
   }
   // `billingContact` is deliberately NOT in this UPDATE. It is written by
   // syncBillingContactRow in runUpdate below, only after this guarded UPDATE

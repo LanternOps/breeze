@@ -8,6 +8,8 @@ import { classifySendRefusal } from './aiSendRefusal';
 import { registerLogoutHook } from './logoutHooks';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
+import { i18n } from '@/lib/i18n';
+import { findActiveWispGrant, WISP_GRANT_UNUSABLE, wispSessionOrgId, type WispGrantLookup } from '@/lib/wispSession';
 import { showToast } from '../components/shared/Toast';
 import {
   processStreamEvent,
@@ -63,7 +65,17 @@ export interface TabState {
   joinedMidResponse: boolean;
   /** A refusal the workspace cannot resolve itself: the banner offers the side panel. */
   errorAction: 'continue_in_panel' | null;
+  /**
+   * #10142: whether this tab's conversation runs (or, before its first
+   * message, will be created) under a Wisp grant. Absent = not known yet (the
+   * grant lookup is in flight, or a restored tab has not been checked). An
+   * opened session reports its own grant, which is immutable for it.
+   */
+  wisp?: TabWisp;
 }
+
+/** `orgId` is the org a new session under the grant is created in (focus, else the grant's org). */
+export type TabWisp = { kind: 'plain' } | { kind: 'wisp'; grantId: string; orgId: string | null };
 
 /** Shown when a send needs a model choice or a continuation the workspace has no UI for. */
 export const CHOOSE_MODEL_IN_PANEL = 'Continue in side panel to choose a model';
@@ -87,7 +99,18 @@ function sessionFieldsOf(view: AiSessionView): Partial<TabState> {
     deviceLabel: view.pageContext?.type === 'device' ? view.pageContext.hostname : null,
     m365ConnectionId: view.m365ConnectionId,
     isFlagged: view.isFlagged,
+    wisp: view.wispGrantId ? { kind: 'wisp', grantId: view.wispGrantId, orgId: view.orgId || null } : { kind: 'plain' },
   };
+}
+
+/**
+ * The org selected in the header, or null for none (All organizations).
+ * orgStore is read lazily, as aiStore does, so this store does not pull the
+ * org/auth graph in at import time.
+ */
+async function readSelectedOrgId(): Promise<string | null> {
+  const { useOrgStore } = await import('./orgStore');
+  return useOrgStore.getState().currentOrgId ?? null;
 }
 
 /**
@@ -234,6 +257,67 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         }));
       };
       const tabGetFor = (tabId: string) => (): TabState => getTab(tabId) ?? createEmptyTab();
+
+      /** #10142: one grant lookup per sessionless tab; a send waits on it. */
+      const wispLookups = new Map<string, Promise<WispGrantLookup['kind'] | 'skipped'>>();
+      /** The header org each tab's last answered lookup was for, so a send after a header switch looks again. */
+      const wispLookupOrg = new Map<string, string | null>();
+      /**
+       * Decide whether this tab's first session is a Wisp one: the caller's
+       * active grant for the header org (the side panel's anchor), else plain.
+       * No usable answer leaves the mode unknown, so the send looks again
+       * rather than creating a plain session for good. A tab that already has
+       * a session keeps that session's grant.
+       */
+      const resolveTabWisp = (tabId: string): Promise<WispGrantLookup['kind'] | 'skipped'> => {
+        const pending = wispLookups.get(tabId);
+        if (pending) return pending;
+        const gen = workspaceGeneration;
+        const lookup = (async (): Promise<WispGrantLookup['kind'] | 'skipped'> => {
+          const orgId = await readSelectedOrgId().catch(() => null);
+          const result = await findActiveWispGrant(orgId);
+          const tab = getTab(tabId);
+          if (gen !== workspaceGeneration || !tab || tab.sessionId) return 'skipped';
+          if (result.kind === 'unknown') {
+            wispLookupOrg.delete(tabId);
+            updateTab(tabId, { wisp: undefined });
+          } else {
+            wispLookupOrg.set(tabId, orgId);
+            updateTab(tabId, {
+              wisp: result.kind === 'grant'
+                ? { kind: 'wisp', grantId: result.grant.grantId, orgId: wispSessionOrgId(result.grant) }
+                : { kind: 'plain' },
+            });
+          }
+          return result.kind;
+        })().finally(() => {
+          if (wispLookups.get(tabId) === lookup) wispLookups.delete(tabId);
+        });
+        wispLookups.set(tabId, lookup);
+        return lookup;
+      };
+
+      /**
+       * Before a sessionless tab's first create: wait for an in-flight lookup,
+       * look again when the mode is unknown or the header org changed since
+       * the lookup answered (the side panel anchors at send time too). Still
+       * no answer: the session is created plain and the user is told.
+       */
+      const settleTabWispForSend = async (tabId: string): Promise<void> => {
+        const pending = wispLookups.get(tabId);
+        if (pending) await pending;
+        let tab = getTab(tabId);
+        if (!tab || tab.sessionId) return;
+        if (tab.wisp && wispLookupOrg.has(tabId)) {
+          const orgId = await readSelectedOrgId().catch(() => null);
+          if (wispLookupOrg.get(tabId) !== orgId) updateTab(tabId, { wisp: undefined });
+        }
+        tab = getTab(tabId);
+        if (!tab || tab.wisp) return;
+        if ((await resolveTabWisp(tabId)) === 'unknown') {
+          showToast({ type: 'warning', message: i18n.t('ai:wisp.toast.grantCheckFailed') });
+        }
+      };
 
       /**
        * One stream event (send or attach) applied to one tab: background-tab
@@ -415,8 +499,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               settleReady('not_found');
               updateTab(tabId, {
                 sessionId: null, messages: [], isLoading: false, isStreaming: false, joinedMidResponse: false,
-                pendingApproval: null, pendingPlan: null, activePlan: null,
+                pendingApproval: null, pendingPlan: null, activePlan: null, wisp: undefined,
               });
+              // The next conversation in this tab is a new session: find out
+              // again whether it runs under a grant (#10142).
+              void resolveTabWisp(tabId);
               return;
             }
             if (shouldReattach(outcome, cycle)) {
@@ -467,6 +554,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             tabs: [...s.tabs, tab],
             activeTabId: tab.id,
           }));
+          void resolveTabWisp(tab.id);
         },
 
         openSession: async (sessionId, opts = {}) => {
@@ -627,6 +715,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           let sessionId = tab.sessionId;
           if (!sessionId) {
             updateTab(tabId, { isLoading: true, error: null });
+            // #10142: the session is created under the tab's Wisp grant, so a
+            // send that beats the lookup waits for it (or runs it, for a
+            // restored tab never checked).
+            // (No await when nothing is pending or unknown: the create stays on this tick.)
+            if (wispLookups.has(tabId) || !getTab(tabId)?.wisp || wispLookupOrg.has(tabId)) {
+              await settleTabWispForSend(tabId);
+            }
+            // Logged out, or the tab was closed meanwhile: create nothing.
+            if (stale() || !getTab(tabId)) return;
+            const tabWisp = getTab(tabId)?.wisp;
+            const wisp = tabWisp?.kind === 'wisp' ? tabWisp : null;
             // Snapshot the title sent with session creation. renameTab() is a
             // no-op against the API while sessionId is still null (there's no
             // session yet to PATCH), so a rename that lands *during* this
@@ -640,6 +739,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               const res = await fetchWithAuth('/ai/sessions', {
                 method: 'POST',
                 body: JSON.stringify({
+                  // The side panel's Wisp create: the grant, its anchor org
+                  // and the tab's approval mode. A plain tab sends none of it.
+                  ...(wisp
+                    ? { orgId: wisp.orgId ?? undefined, wispGrantId: wisp.grantId, approvalMode: tab.approvalMode }
+                    : {}),
                   pageContext: tab.pageContext ?? undefined,
                   // Carry a user-set title through to the new session so the
                   // server's first-message auto-title (gated on `!title`)
@@ -650,12 +754,23 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               if (stale()) return;
               if (!res.ok) {
                 const data = await res.json().catch(() => null);
+                // A grant that can no longer carry a session (revoked,
+                // expired, Wisp turned off), or a thread focus that moved
+                // (409 focus_mismatch): drop the tab's Wisp mode and look
+                // again, so the next send is not refused the same way. The
+                // error banner keeps the server's reason.
+                const code = typeof data?.code === 'string' ? data.code : null;
+                if (wisp && code && (WISP_GRANT_UNUSABLE.has(code) || code === 'focus_mismatch')) {
+                  updateTab(tabId, { wisp: undefined });
+                  void resolveTabWisp(tabId);
+                }
                 throw new Error(extractApiError(data, 'Failed to create session'));
               }
               const data = await res.json();
               if (stale()) return;
               sessionId = data.id;
-              updateTab(tabId, { sessionId, isLoading: false });
+              // A session created without a grant is a plain chat for good.
+              updateTab(tabId, { sessionId, isLoading: false, ...(wisp ? {} : { wisp: { kind: 'plain' } }) });
 
               const latestTab = getTab(tabId);
               if (latestTab?.isTitleCustom && latestTab.title !== titleAtCreation) {
@@ -1009,6 +1124,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
         restoreWorkspace: async () => {
           const gen = workspaceGeneration;
+          // #10142: a restored tab with no conversation yet learns whether
+          // its first one is a Wisp session (`wisp` is not persisted).
+          for (const t of get().tabs) if (!t.sessionId) void resolveTabWisp(t.id);
           const tabsWithSessions = get().tabs.filter((t) => t.sessionId);
           if (tabsWithSessions.length === 0) return;
 
@@ -1028,7 +1146,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               // Gone, closed, not a chat type, or a topology investigation
               // (side panel only, D4): the tab keeps its slot, not the session.
               if (result.kind !== 'ok' || result.view.type === 'topology') {
-                updateTab(tab.id, { sessionId: null, messages: [] });
+                updateTab(tab.id, { sessionId: null, messages: [], wisp: undefined });
+                void resolveTabWisp(tab.id);
                 return;
               }
               updateTab(tab.id, { messages: result.messages, ...sessionFieldsOf(result.view) });
@@ -1054,6 +1173,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           // removed by evictLocalAuthState right after its hooks run).
           workspaceGeneration += 1;
           get().cleanupAllStreams();
+          wispLookups.clear();
+          wispLookupOrg.clear();
           set({ tabs: [], activeTabId: null });
         },
       };

@@ -854,6 +854,11 @@
       "cover": "Eşlik eden mesaj (isteğe bağlı)",
       "expiry": "Bağlantının bitiş tarihi",
       "expiryPast": "Gelecekte bir son geçerlilik tarihi seçin.",
+      "expiryDefaultHint_one": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
+      "expiryDefaultHint_other": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
+      "autoReminderHint_one": "Otomatik hatırlatmalar her gün gönderilir, toplamda en fazla {{max}}.",
+      "autoReminderHint_other": "Otomatik hatırlatmalar her {{count}} günde bir gönderilir, toplamda en fazla {{max}}.",
+      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma süresi yüklenemedi; yerleşik varsayılan gösteriliyor.",
       "label": "Etiket (isteğe bağlı)",
       "createDraft": "Taslak oluştur ve önizle",
       "creating": "Oluşturuluyor…",
@@ -2475,6 +2480,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Anlaşmalar",
+      "description": "İmza için gönderdiğiniz anlaşmaların varsayılanları. Gönderenler her istekte yine de farklı bir son kullanma tarihi seçebilir.",
+      "expiryDays": "Varsayılan bağlantı geçerlilik süresi (gün)",
+      "expiryDaysHelp": "Yeni bir anlaşma isteğinin imza bağlantısı, gönderen başka bir tarih seçmedikçe oluşturulmasından bu kadar gün sonra sona erer.",
+      "expiryDaysInvalid": "{{min}} ile {{max}} arasında tam sayı olarak gün girin.",
+      "remindersEnabled": "Otomatik hatırlatmalar gönder",
+      "remindersHelp": "Anlaşma imzalanana, reddedilene, iptal edilene veya süresi dolana kadar aynı imza bağlantısını alıcılara yeniden e-postayla gönderir.",
+      "intervalDays": "Hatırlatma sıklığı (gün)",
+      "intervalDaysInvalid": "{{min}} ile {{max}} arasında tam sayı olarak gün girin.",
+      "maxReminders": "Şu kadar hatırlatmadan sonra dur",
+      "maxRemindersHelp": "İstekteki tüm hatırlatmaları sayar, manuel veya otomatik.",
+      "maxRemindersInvalid": "{{min}} ile {{max}} arasında bir tam sayı girin.",
+      "readOnlyNoSend": "Anlaşma varsayılanlarını değiştirmek için anlaşma gönderme izni gerekir. Salt görüntüleme erişiminiz var."
+    },
     "company": {
       "addressInherited": "Şirket bilgileriyle aynı",
       "addressLine1": "Adres satırı 1",
@@ -2561,6 +2581,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Varsayılanlar",
     "documents": "Belgeler",
+    "agreements": "Anlaşmalar",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
     "payments": "Ödemeler"

@@ -854,6 +854,11 @@
       "cover": "Message d’accompagnement (facultatif)",
       "expiry": "Le lien expire le",
       "expiryPast": "Choisissez une date d’expiration future.",
+      "expiryDefaultHint_one": "Par défaut : {{count}} jour, d’après Paramètres de facturation → Conventions.",
+      "expiryDefaultHint_other": "Par défaut : {{count}} jours, d’après Paramètres de facturation → Conventions.",
+      "autoReminderHint_one": "Les rappels automatiques sont envoyés chaque jour, jusqu’à {{max}} au total.",
+      "autoReminderHint_other": "Les rappels automatiques sont envoyés tous les {{count}} jours, jusqu’à {{max}} au total.",
+      "expiryDefaultUnavailable": "Impossible de charger l'expiration par défaut depuis les Paramètres de facturation ; la valeur par défaut intégrée est affichée.",
       "label": "Libellé (facultatif)",
       "createDraft": "Créer le brouillon et prévisualiser",
       "creating": "Création…",
@@ -2475,6 +2480,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Conventions",
+      "description": "Valeurs par défaut des conventions que vous envoyez pour signature. Les expéditeurs peuvent toujours choisir une autre échéance pour chaque demande.",
+      "expiryDays": "Expiration par défaut du lien (jours)",
+      "expiryDaysHelp": "Le lien de signature d’une nouvelle demande de convention expire ce nombre de jours après sa création, sauf si l’expéditeur choisit une autre date.",
+      "expiryDaysInvalid": "Saisissez un nombre entier de jours entre {{min}} et {{max}}.",
+      "remindersEnabled": "Envoyer des rappels automatiques",
+      "remindersHelp": "Renvoie par courriel le même lien de signature aux destinataires jusqu’à ce que la convention soit signée, refusée, annulée ou expirée.",
+      "intervalDays": "Rappeler tous les (jours)",
+      "intervalDaysInvalid": "Saisissez un nombre entier de jours entre {{min}} et {{max}}.",
+      "maxReminders": "Arrêter après (rappels)",
+      "maxRemindersHelp": "Compte tous les rappels de la demande, manuels ou automatiques.",
+      "maxRemindersInvalid": "Saisissez un nombre entier entre {{min}} et {{max}}.",
+      "readOnlyNoSend": "Modifier les valeurs par défaut des conventions nécessite l’autorisation d’envoyer des conventions. Vous disposez d’un accès en lecture seule."
+    },
     "company": {
       "addressInherited": "Identique aux coordonnées de l'entreprise",
       "addressLine1": "Adresse ligne 1",
@@ -2561,6 +2581,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Valeurs par défaut",
     "documents": "Documents",
+    "agreements": "Conventions",
     "connections": "Connexions",
     "rates": "Tarifs",
     "payments": "Paiements"

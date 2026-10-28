@@ -53,15 +53,22 @@ export default function HelperTab({
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
   const isInherited = !!parentLink && !existingLink;
   const effectiveLink = existingLink ?? parentLink;
+  // OD-11 (#10190): a helper policy being created deploys Breeze Assist by
+  // default (the API applies the same default on create). A stored link that
+  // does not decide `enabled` resolves to off on the server, so it shows off.
   const [settings, setSettings] = useState<HelperSettings>(() => ({
     ...defaults,
+    enabled: !effectiveLink,
     ...storedSettings(effectiveLink?.inlineSettings),
   }));
   useEffect(() => {
     const link = existingLink ?? parentLink;
-    if (link?.inlineSettings) {
+    if (link) {
+      // Also for a link with no settings (it decides nothing, so the server
+      // resolves it as off), which may arrive after the first render.
       setSettings((prev) => ({
         ...prev,
+        enabled: false,
         ...storedSettings(link.inlineSettings),
       }));
     }
@@ -141,6 +148,12 @@ export default function HelperTab({
           </div>
           <button
             type="button"
+            role="switch"
+            aria-checked={settings.enabled}
+            aria-label={i18n.t(
+              "policies:configurationPolicies.featureTabs.helperTab.deployBreezeAssistToDevices",
+            )}
+            data-testid="helper-deploy"
             onClick={() => update("enabled", !settings.enabled)}
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >

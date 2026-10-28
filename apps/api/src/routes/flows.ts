@@ -20,6 +20,10 @@ import { authMiddleware, isInteractiveUserSession, requireMfa, requirePermission
 import { getFlow, listFlows } from '../services/flows/service';
 import { cancelFlowRun, getFlowRun, getFlowRunStep, listFlowRuns, startManualRun } from '../services/flows/runService';
 import { disableFlow, enableFlow } from '../services/flows/versions';
+import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
+import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
+import { runBodiesRestricted } from '../services/flows/runBodyAccess';
+import { registerFlowLimitsRoutes } from './flowLimits';
 
 export const flowsRoutes = new Hono();
 
@@ -32,6 +36,10 @@ flowsRoutes.use('*', async (c, next) => {
   await next();
 });
 flowsRoutes.use('*', requirePermission('automations', 'read'));
+
+// W05 (#5220): GET/PUT /limits. Registered before `/:id` so the literal path
+// never reaches the uuid param schema.
+registerFlowLimitsRoutes(flowsRoutes);
 
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -90,6 +98,10 @@ const ENABLE_STATUS: Record<string, Status> = {
   pre_approval_not_eligible: 422,
   permission_missing: 422,
   invalid: 422,
+  // W5 (#5220, Decision 3): a webhook flow needs a secret before it can go live.
+  webhook_secret_missing: 422,
+  // W5 PR B (#5220, Decision 13): an org flow's ai step needs an AI budget that can be spent.
+  ai_budget_unavailable: 422,
 };
 const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
 const RUN_STATUS: Record<string, Status> = {
@@ -103,6 +115,9 @@ const RUN_STATUS: Record<string, Status> = {
   inputs_invalid: 422,
   permission_missing: 422,
   flow_queue_full: 429,
+  // W5 (#5220, Decision 15): monthly caps refuse visibly; the flow stays enabled.
+  flow_monthly_cap_reached: 429,
+  owner_monthly_cap_reached: 429,
 };
 
 /** `{ ok:false, error, ...details }` becomes `{ error, ...details }` with the mapped status (unmapped codes: 422). */
@@ -164,6 +179,56 @@ flowsRoutes.post(
     return c.json(result);
   },
 );
+
+// ── W05 (#5220): the webhook secret, revealed once (Decision 3) ───────────
+// Create or rotate. The plaintext is in this response only (the
+// routes/apiKeys.ts reveal-once pattern); rotation cuts the old secret off at
+// once. `no-store` on every outcome so no cache keeps a reveal.
+const WEBHOOK_SECRET_STATUS: Record<string, Status> = {
+  flow_not_found: 404,
+  not_webhook: 409,
+  interactive_session_required: 403,
+  partner_wide_forbidden: 403,
+  delegation_scope_restricted: 403,
+  permission_missing: 422,
+  // #10270: the draft's steps no longer resolve, so the minter cannot be checked against them.
+  draft_unresolvable: 409,
+};
+
+flowsRoutes.post('/:id/webhook-secret', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
+  const { id } = c.req.valid('param');
+  c.header('Cache-Control', 'no-store');
+  const result = await createOrRotateWebhookSecret(c.get('auth'), id);
+  if (!result.ok) return failure(c, WEBHOOK_SECRET_STATUS, result);
+  return c.json({
+    secret: result.secret,
+    fingerprint: result.fingerprint,
+    rotatedAt: result.rotatedAt,
+    warning: 'Store this secret now. It will not be shown again.',
+  });
+});
+
+// ── W05 (#5220): the webhook delivery log (Decision 2) ─────────────────────
+// Caller context: RLS (the conditional connection_health_incidents policy)
+// shows an org token only its org's rows, never a partner-level one. A flow
+// the caller cannot see is a 404; a site-limited or device-bound caller gets
+// the rows without the sender-supplied identifiers (delivery id, resolver
+// value): the run-body read ceiling.
+const deliveriesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  before: z.string().datetime({ offset: true }).optional(),
+});
+
+flowsRoutes.get('/:id/webhook-deliveries', zValidator('param', idParamSchema), zValidator('query', deliveriesQuerySchema), async (c) => {
+  const { id } = c.req.valid('param');
+  const q = c.req.valid('query');
+  const auth = c.get('auth');
+  const deliveries = await listWebhookDeliveries(auth, id, { limit: q.limit, before: q.before });
+  if (!deliveries) return c.json({ error: 'Flow not found' }, 404);
+  // W05 PR D: tells the UI the two identifiers are hidden (not absent), from
+  // the same rule the service applied.
+  return c.json({ deliveries, identifiersHidden: runBodiesRestricted(auth) });
+});
 
 flowsRoutes.post('/:id/disable', ...requireAutomationWrite, zValidator('param', idParamSchema), async (c) => {
   const { id } = c.req.valid('param');

@@ -8,20 +8,26 @@
  * rationale).
  */
 import { Counter } from 'prom-client';
+import type { FlowAdmissionRefusal } from '@breeze/shared';
 
 import { metricsRegistry } from '../metricsRegistry';
 
+// `code` is one of FLOW_ADMISSION_REFUSALS (bounded cardinality): the active
+// cap (W04) or a monthly cap (W05, #5220 Decision 15).
 const scheduleAdmissionRefused = new Counter({
   name: 'flow_schedule_admission_refused_total',
-  help: 'Scheduled flow fires refused at admission (active-run cap) for one org; the occurrence is not retried',
+  help: 'Scheduled flow fires refused at admission (active-run or monthly cap) for one org; the occurrence is not retried',
+  labelNames: ['code'] as const,
   registers: [metricsRegistry],
 });
 
 const eventAdmissionRefused = new Counter({
   name: 'flow_event_admission_refused_total',
-  help: 'Event-triggered flow runs refused at admission (active-run cap) for one org; the event is not retried for that flow',
+  help: 'Event-triggered flow runs refused at admission (active-run or monthly cap) for one org; the event is not retried for that flow',
+  labelNames: ['code'] as const,
   registers: [metricsRegistry],
 });
+
 
 const chainDepthRefused = new Counter({
   name: 'flow_chain_depth_refused_total',
@@ -29,12 +35,12 @@ const chainDepthRefused = new Counter({
   registers: [metricsRegistry],
 });
 
-export function recordFlowScheduleAdmissionRefused(): void {
-  scheduleAdmissionRefused.inc();
+export function recordFlowScheduleAdmissionRefused(code: FlowAdmissionRefusal): void {
+  scheduleAdmissionRefused.inc({ code });
 }
 
-export function recordFlowEventAdmissionRefused(): void {
-  eventAdmissionRefused.inc();
+export function recordFlowEventAdmissionRefused(code: FlowAdmissionRefusal): void {
+  eventAdmissionRefused.inc({ code });
 }
 
 export function recordFlowChainDepthRefused(): void {

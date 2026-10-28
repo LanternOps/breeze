@@ -628,7 +628,10 @@
       "refresh": "Renovar permissão",
       "revoke": "Desativar o Wisp",
       "revokeConfirm": "Desativar o Wisp para este escopo? As conversas abertas continuam legíveis.",
-      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar."
+      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar.",
+      "refreshKeepsTerms": "Esta conversa mantém os termos anteriores da permissão. Inicie uma nova conversa para usar a permissão renovada.",
+      "startNewConversation": "Iniciar uma nova conversa",
+      "dismissNote": "Dispensar"
     },
     "settings": {
       "title": "Orçamento e verificação periódica",
@@ -661,6 +664,7 @@
       "offFailed": "Não foi possível desativar o Wisp",
       "refreshed": "Permissão renovada",
       "refreshFailed": "Não foi possível renovar a permissão",
+      "grantCheckFailed": "Não foi possível verificar sua permissão do Wisp, então esta conversa começou como um chat do Breeze AI.",
       "settingsSaved": "Configurações do Wisp salvas",
       "settingsFailed": "Não foi possível salvar as configurações do Wisp",
       "focusSet": "O Wisp agora está atuando em {{org}}",

@@ -628,7 +628,10 @@
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
       "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
-      "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann."
+      "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
+      "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
+      "startNewConversation": "Neue Unterhaltung starten",
+      "dismissNote": "Schließen"
     },
     "settings": {
       "title": "Budget und Check-in",
@@ -661,6 +664,7 @@
       "offFailed": "Wisp konnte nicht deaktiviert werden",
       "refreshed": "Berechtigung erneuert",
       "refreshFailed": "Die Berechtigung konnte nicht erneuert werden",
+      "grantCheckFailed": "Ihre Wisp-Berechtigung konnte nicht geprüft werden, daher wurde diese Unterhaltung als Breeze-AI-Chat gestartet.",
       "settingsSaved": "Wisp-Einstellungen gespeichert",
       "settingsFailed": "Wisp-Einstellungen konnten nicht gespeichert werden",
       "focusSet": "Wisp arbeitet jetzt für {{org}}",
