@@ -114,7 +114,7 @@ describe('POST /agents/:id/elevation-requests/:requestId/withdraw (#8971)', () =
     expect(mocks.withdraw).toHaveBeenCalledWith(expect.objectContaining({ reason: 'user_timeout', agentDeclinedAt: null }));
   });
 
-  it('a replay answers 200 with the stored withdrawnAt and writes, publishes and expires nothing', async () => {
+  it('a replay answers 200 with the stored withdrawnAt, writes and publishes nothing, and re-runs the idempotent phone expiry', async () => {
     mocks.withdraw.mockResolvedValue({ kind: 'withdrawn', withdrawnAt: WITHDRAWN_AT, replay: true });
 
     const res = await post(buildApp(), validBody);
@@ -122,7 +122,11 @@ describe('POST /agents/:id/elevation-requests/:requestId/withdraw (#8971)', () =
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ id: REQUEST, status: 'withdrawn', withdrawnAt: WITHDRAWN_AT.toISOString() });
     expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
-    expect(mocks.afterExit).toHaveLength(0);
+    // Heals a first-call expiry that failed; no second event.
+    expect(mocks.afterExit.map((t) => t.kind)).toEqual(['exit']);
+    await runDeferred();
+    expect(mocks.expireMobile).toHaveBeenCalledWith(REQUEST);
+    expect(mocks.publishEvent).not.toHaveBeenCalled();
   });
 
   it('a non-pending request answers 409 with its status', async () => {

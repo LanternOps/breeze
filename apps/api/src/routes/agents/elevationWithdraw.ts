@@ -81,8 +81,28 @@ elevationWithdrawRoutes.post(
       return c.json({ error: 'not_found' }, 404);
     }
     if (result.kind === 'not_pending') {
+      // The agent acks this and never resends; its local record still refuses
+      // the launch. Leave a server-side trace that the user said no to a
+      // request that was already decided ("Approved · Declined on the device").
+      console.warn(`[ElevationWithdraw] user declined elevation ${requestId} on device ${agent.deviceId} after it left pending (status ${result.status}, reason ${body.reason})`);
       return c.json({ error: 'not_pending', status: result.status }, 409);
     }
+
+    // The withdraw is a savepoint inside the request transaction, so the
+    // elevation stays locked until the request ends. Expire the linked phone
+    // approvals after that (#7526: elevation first, then approval rows), in
+    // system scope (approval_requests is Shape-6). Its guard (elevation no
+    // longer pending) makes it a no-op if the request rolled back. It also runs
+    // on a replay, so an expiry that failed after the first withdraw heals on
+    // the agent's retry. If it never runs, a phone still cannot approve:
+    // decideApprovalRequest locks the elevation and sees it is not pending.
+    runAfterDbContextExit(`pam: expire mobile approvals of withdrawn elevation ${requestId}`, async () => {
+      try {
+        await expireSupersededMobileApprovals(requestId);
+      } catch (err) {
+        console.error(`[ElevationWithdraw] mobile approval expiry failed for ${requestId}:`, err);
+      }
+    });
 
     if (!result.replay) {
       writeAuditEvent(c, {
@@ -98,20 +118,6 @@ elevationWithdrawRoutes.post(
         },
       });
 
-      // The withdraw is a savepoint inside the request transaction, so the
-      // elevation stays locked until the request ends. Expire the linked phone
-      // approvals after that (#7526: elevation first, then approval rows), in
-      // system scope (approval_requests is Shape-6). Its guard
-      // (elevation no longer pending) makes it a no-op if the request rolled
-      // back. If it never runs, a phone still cannot approve:
-      // decideApprovalRequest locks the elevation and sees it is not pending.
-      runAfterDbContextExit(`pam: expire mobile approvals of withdrawn elevation ${requestId}`, async () => {
-        try {
-          await expireSupersededMobileApprovals(requestId);
-        } catch (err) {
-          console.error(`[ElevationWithdraw] mobile approval expiry failed for ${requestId}:`, err);
-        }
-      });
       // Announce only a committed withdraw. Best-effort; the row is the record.
       runAfterDbContextCommit(`pam: publish elevation.withdrawn ${requestId}`, async () => {
         try {

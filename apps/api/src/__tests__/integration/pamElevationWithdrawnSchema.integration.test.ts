@@ -115,7 +115,26 @@ describe('elevation status withdrawn (#8971)', () => {
       tdb.execute(sql`UPDATE elevation_requests SET status = 'expired' WHERE id = ${requestId}`),
       'elevation_requests_status_timestamps_chk',
     );
-    await tdb.execute(sql`UPDATE elevation_requests SET status = 'actuating', approved_at = now() WHERE id = ${requestId}`);
+    await expectConstraint(
+      tdb.execute(sql`UPDATE elevation_requests SET status = 'denied' WHERE id = ${requestId}`),
+      'elevation_requests_status_timestamps_chk',
+    );
+    await expectConstraint(
+      tdb.execute(sql`UPDATE elevation_requests SET status = 'revoked' WHERE id = ${requestId}`),
+      'elevation_requests_status_timestamps_chk',
+    );
+    // Each clause still admits its own well-formed row.
+    for (const set of [
+      sql`status = 'approved', approved_at = now()`,
+      sql`status = 'auto_approved', approved_at = now()`,
+      sql`status = 'actuating', approved_at = now()`,
+      sql`status = 'denied', denial_reason = 'no'`,
+      sql`status = 'expired', expired_at = now()`,
+      sql`status = 'revoked', revoked_at = now()`,
+    ]) {
+      await tdb.execute(sql`UPDATE elevation_requests SET ${set} WHERE id = ${requestId}`);
+      await tdb.execute(sql`UPDATE elevation_requests SET status = 'pending', approved_at = NULL, denial_reason = NULL, expired_at = NULL, revoked_at = NULL WHERE id = ${requestId}`);
+    }
   });
 
   it('accepts a withdrawn audit event', async () => {
