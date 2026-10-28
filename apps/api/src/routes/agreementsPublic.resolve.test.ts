@@ -157,6 +157,26 @@ describe('agreementsPublic token-route enumeration', () => {
       expectNoServiceWork();
     });
 
+    // #10199: a link whose jti marker was armed by answering may still be VIEWED
+    // (read-only, signed/declined) but never ANSWER again. A new route must pick
+    // a side explicitly: GETs view, POSTs respond.
+    it(`${route.method} ${route.path}: answered link (marker armed, row signed) → ${route.method === 'GET' ? 'viewable' : '401, never answers twice'}`, async () => {
+      vi.mocked(isAgreementAcceptJtiRevoked).mockResolvedValue(true);
+      vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue(live({ status: 'signed', signedAt: new Date() }) as never);
+      const res = await send(route);
+      if (route.method === 'GET') {
+        expect(res.status).not.toBe(401);
+        expect(loadTemplateVersionRenderData).toHaveBeenCalled();
+      } else {
+        expect(res.status).toBe(401);
+        expect(await res.json()).toEqual({ error: 'This link is invalid or has expired' });
+        expectNoServiceWork();
+      }
+      expect(acceptAgreementRequest).not.toHaveBeenCalled();
+      expect(declineAgreementRequest).not.toHaveBeenCalled();
+      expect(markAgreementRequestViewed).not.toHaveBeenCalled();
+    });
+
     it(`${route.method} ${route.path}: blocked tenant → 410 ORG_UNAVAILABLE`, async () => {
       vi.mocked(resolveAgreementRequestLinkOrgGate).mockResolvedValue({ ...live(), gate: { orgId: ORG_ID, status: 'archived', partnerStatus: 'active', blocked: true } } as never);
       const res = await send(route);

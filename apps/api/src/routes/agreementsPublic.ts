@@ -119,24 +119,41 @@ type ResolveOutcome = { ok: true; link: ResolvedAgreementLink } | { ok: false; r
  *
  * Reachability, honestly: the token's own `exp` IS the request's expires_at,
  * so a normally-expired link fails step 1 (401); the 410 AGREEMENT_EXPIRED is
- * the backstop for a reaper-expired row or verifier clock skew. Likewise a
- * signed/declined request's jti is revoked in Redis post-commit, so a reload
- * after answering is a 401; the read-only signed/declined render only happens
- * when that hot-path marker was lost (the durable columns still refuse any
- * second answer).
+ * the backstop for a reaper-expired row or verifier clock skew.
+ *
+ * `purpose` (#10199): every writer of the Redis marker (void, a link or portal
+ * answer, the RESPONSE_CONSUMED re-arm) commits a durable counterpart first,
+ * so the marker means "this link can no longer ANSWER". A `respond` resolve
+ * refuses on it up front (the hot path; Redis down fails closed). A `view`
+ * resolve does not stop there: it still runs every durable check (stale jti,
+ * partner continuity, void → 410), and a marked link renders only when the
+ * row confirms it was answered (signed/declined) — so the signer who reopens
+ * the link sees the read-only "signed on <date>" state, while a marker on a
+ * still-open row stays the identical 401. Answering itself is refused by the
+ * marker here and by the durable public_response_* / status columns in the
+ * service, so a reopened link can never sign twice.
  */
-async function resolveAgreementLink(c: Context, token: string, now: Date): Promise<ResolveOutcome> {
+type LinkPurpose = 'view' | 'respond';
+
+/** Statuses a marked (answered) link may still be viewed in. */
+const ANSWERED_STATUSES = new Set<AgreementRequestRow['status']>(['signed', 'declined']);
+
+async function resolveAgreementLink(c: Context, token: string, now: Date, purpose: LinkPurpose): Promise<ResolveOutcome> {
   const invalid = (): ResolveOutcome => ({ ok: false, response: c.json(INVALID_LINK, 401) });
 
   const claims = await verifyAgreementAcceptToken(token);
   if (!claims) return invalid();
-  if (await isAgreementAcceptJtiRevoked(claims.jti)) return invalid();
+  const markerArmed = await isAgreementAcceptJtiRevoked(claims.jti);
+  if (markerArmed && purpose === 'respond') return invalid();
   const orgIds = await resolveMergedOrgIds(claims.orgId, claims.partnerId);
   const { request, partnerId, partnerName, gate } = await resolveAgreementRequestLinkOrgGate(claims.requestId, orgIds);
   if (!request) return invalid();
   if (!request.acceptTokenJti || request.acceptTokenJti !== claims.jti) return invalid();
   if (partnerId !== claims.partnerId) return invalid();
   if (request.status === 'draft') return invalid();
+  // A view past the marker: only an answered row may render (see `purpose`).
+  // Checked before the tenant/void gates so a marked open link learns nothing.
+  if (markerArmed && !ANSWERED_STATUSES.has(request.status) && !isAgreementLinkDead(request)) return invalid();
 
   if (gate.blocked) return { ok: false, response: c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410) };
   const branding = { partnerName: partnerName?.trim() || 'your provider' };
@@ -167,12 +184,13 @@ function presentedStatus(status: AgreementRequestRow['status']): PublicAgreement
 }
 
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. A signed or
-// declined request that still resolves (only when its Redis marker was lost —
-// see the resolver note) renders read-only; the page shows no sign affordance.
+// declined request renders read-only with its signed/declined date (#10199:
+// the signer reopening their link after answering — see the resolver's
+// `purpose`); the page shows no sign affordance.
 agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
   const now = new Date();
-  const resolved = await resolveAgreementLink(c, token, now);
+  const resolved = await resolveAgreementLink(c, token, now, 'view');
   if (!resolved.ok) return resolved.response;
   const { request, claims, partnerName } = resolved.link;
   try {
@@ -226,7 +244,7 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
 // the page's viewer can embed it; the filename is sanitized on the way out.
 agreementsPublicRoutes.get('/:token/file', zValidator('param', tokenParam), async (c) => {
   const { token } = c.req.valid('param');
-  const resolved = await resolveAgreementLink(c, token, new Date());
+  const resolved = await resolveAgreementLink(c, token, new Date(), 'view');
   if (!resolved.ok) return resolved.response;
   const { request } = resolved.link;
   const renderData = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
@@ -344,7 +362,7 @@ agreementsPublicRoutes.post(
     const body = c.req.valid('json');
     if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
     const now = new Date();
-    const resolved = await resolveAgreementLink(c, token, now);
+    const resolved = await resolveAgreementLink(c, token, now, 'respond');
     if (!resolved.ok) return resolved.response;
     const { claims, orgIds, request } = resolved.link;
 
@@ -392,7 +410,7 @@ agreementsPublicRoutes.post(
     const { reason } = c.req.valid('json');
     if (await overRespondLimit(token)) return c.json(TOO_MANY, 429);
     const now = new Date();
-    const resolved = await resolveAgreementLink(c, token, now);
+    const resolved = await resolveAgreementLink(c, token, now, 'respond');
     if (!resolved.ok) return resolved.response;
     const { claims, orgIds, request } = resolved.link;
 

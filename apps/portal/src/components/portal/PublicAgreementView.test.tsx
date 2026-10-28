@@ -139,18 +139,37 @@ describe('PublicAgreementView', () => {
     expect(screen.queryByTestId('public-agreement-sign')).toBeNull();
   });
 
-  it('is read-only when already signed on load', async () => {
+  // #10199: the signer reopening their link after answering.
+  it('reopened after signing: read-only, says when it was signed and who to ask for a copy', async () => {
     mockLoaded({}, { status: 'signed', signedAt: '2026-11-02T10:00:00.000Z' });
     await renderLoaded();
     expect(screen.queryByTestId('public-agreement-sign')).toBeNull();
-    expect(screen.getByTestId('public-agreement-signed')).toBeTruthy();
+    const signed = screen.getByTestId('public-agreement-signed');
+    const signedOn = new Date('2026-11-02T10:00:00.000Z').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    expect(signed.textContent).toContain(`This agreement was signed on ${signedOn}.`);
+    expect(signed.textContent).toContain('If you need a copy of the signed agreement, contact Lantern IT.');
+    expect(signed.querySelector('time')?.getAttribute('datetime')).toBe('2026-11-02T10:00:00.000Z');
+    // The document stays readable — the way back to what was signed.
+    expect(screen.getByTestId('agreement-html')).toBeTruthy();
+    expect(screen.queryByTestId('public-agreement-error')).toBeNull();
   });
 
-  it('is read-only when already declined on load', async () => {
+  it('reopened after signing with no signed date on the row still renders the signed state', async () => {
+    mockLoaded({}, { status: 'signed', signedAt: null });
+    await renderLoaded();
+    const signed = screen.getByTestId('public-agreement-signed');
+    expect(signed.textContent).toContain('This agreement has been signed.');
+    expect(signed.textContent).toContain('contact Lantern IT');
+  });
+
+  it('reopened after declining: read-only, says when it was declined', async () => {
     mockLoaded({}, { status: 'declined', declinedAt: '2026-11-02T10:00:00.000Z' });
     await renderLoaded();
     expect(screen.queryByTestId('public-agreement-sign')).toBeNull();
-    expect(screen.getByTestId('public-agreement-declined')).toBeTruthy();
+    const declined = screen.getByTestId('public-agreement-declined');
+    const declinedOn = new Date('2026-11-02T10:00:00.000Z').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    expect(declined.textContent).toContain(`This agreement was declined on ${declinedOn}.`);
+    expect(declined.textContent).not.toContain('has been notified');
   });
 
   it('401 renders the generic invalid-link message, never "Session expired"', async () => {
