@@ -90,6 +90,7 @@ import { reportTypeDef } from './reportRegistry';
 import { GENERATE_REPORT_TYPES, isBusinessReportType, type GenerateReportType } from './aiReportTypes';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
+import { listPolicyMaintenanceWindows } from './policyMaintenanceWindows';
 import {
   deviceSiteDenied,
   deviceIdSiteDenied,
@@ -527,6 +528,13 @@ function notificationChannelWhere(auth: AuthContext): SQL | undefined {
   }
   return oc;
 }
+
+// #10409 — returned with every manage_maintenance_windows list/active_now so
+// the model reads a policy window as a definition, not a per-device verdict.
+const MAINTENANCE_WINDOWS_NOTE =
+  'policyWindows/activePolicyWindows come from configuration policies (where windows are configured); '
+  + 'windows/activeWindows are legacy standalone windows. Per device the closest policy assignment wins '
+  + '(device > group > site > organization > partner), so use get_effective_configuration to see which window governs a device.';
 
 // Dual-axis access for maintenance_windows (#2131): same shape as
 // alertRuleWhere — org-owned windows the caller can reach OR partner-wide
@@ -2002,7 +2010,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceIds'],
     definition: {
       name: 'manage_maintenance_windows',
-      description: 'Read maintenance windows and occurrences. Actions: list, get, active_now, create (disabled), update (disabled), delete (disabled). For writes, use manage_policy_feature_link with featureType "maintenance".',
+      description: 'Read maintenance windows. list/active_now: configuration-policy windows (schedule, next occurrence, assignment levels) + legacy standalone ones; get: one legacy window. create/update/delete disabled: use manage_policy_feature_link featureType "maintenance". Per device: get_effective_configuration.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -2079,7 +2087,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const visibleRows = (await filterWindowsToSiteScope(rows, { allowedSiteIds: auth.allowedSiteIds })).slice(0, limit);
         const windows = visibleRows.map(({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest);
 
-        return JSON.stringify({ windows, showing: windows.length });
+        // #10409: windows are authored on configuration policies now; the
+        // legacy table above is empty for most fleets. Same caller visibility
+        // (policyAccessCondition) and site-axis intersection as the rows above.
+        const policy = await listPolicyMaintenanceWindows(auth, { limit });
+
+        return JSON.stringify({
+          policyWindows: policy.windows,
+          ...(policy.truncated ? { policyWindowsTruncated: true } : {}),
+          windows,
+          showing: policy.windows.length + windows.length,
+          note: MAINTENANCE_WINDOWS_NOTE,
+        });
       }
 
       if (action === 'get') {
@@ -2176,7 +2195,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           ({ orgId: _orgId, siteIds: _siteIds, groupIds: _groupIds, deviceIds: _deviceIds, ...rest }) => rest,
         );
 
-        return JSON.stringify({ activeWindows, count: activeWindows.length });
+        // #10409: configuration-policy windows open right now.
+        const policy = await listPolicyMaintenanceWindows(auth, { limit: 100, now, activeOnly: true });
+
+        return JSON.stringify({
+          activePolicyWindows: policy.windows,
+          ...(policy.truncated ? { policyWindowsTruncated: true } : {}),
+          activeWindows,
+          count: policy.windows.length + activeWindows.length,
+          note: MAINTENANCE_WINDOWS_NOTE,
+        });
       }
 
       if (action === 'create') {
