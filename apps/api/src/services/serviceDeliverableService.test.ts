@@ -803,17 +803,19 @@ describe('serviceDeliverableService', () => {
 
   describe('rescheduleOccurrences (bulk, #9314)', () => {
     it('moves every live occurrence; reports delivered/waived/foreign ids as refused while the rest still move', async () => {
+      // Relative, so missed `d` stays inside its 14-day grace whatever day this runs.
+      const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
       queueResult([occ({ id: 'a', status: 'open' })]);      // a: load
       queueResult([{ id: 'a' }]);                           // a: update
       queueResult([occ({ id: 'a', dueAt: '2026-11-30' })]); // a: view
       queueResult([]);                                      // a: evidence
       queueResult([occ({ id: 'b', status: 'delivered' })]); // b: refused
       queueResult([]);                                      // c: foreign → not found
-      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14 })]);
+      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14, ticketId: null })]); // d: never had a ticket
       queueResult([{ id: 'd' }]);
       queueResult([occ({ id: 'd', dueAt: '2026-11-30' })]);
       queueResult([]);
-      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: '2026-11-30' }, actor);
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: future }, actor);
       expect(out.map((r) => [r.occurrenceId, r.ok])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]]);
       expect(out[1]).toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
       expect(out[2]).toMatchObject({ status: 404, code: 'NOT_FOUND' });
