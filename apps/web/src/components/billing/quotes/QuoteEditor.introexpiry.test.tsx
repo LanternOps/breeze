@@ -6,15 +6,18 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuoteEditor from './QuoteEditor';
+import { utcToday } from './QuoteIntroFields';
 import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 import { fetchWithAuth } from '../../../stores/auth';
 
+type Perm = { resource: string; action: string };
+const auth = vi.hoisted(() => ({ permissions: [] as Perm[] }));
 vi.mock('../../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
-    (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
-      selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),
+    (selector: (s: { user: { permissions: Perm[] } }) => unknown) =>
+      selector({ user: { permissions: auth.permissions } }),
     { getState: () => ({ tokens: null }) },
   ),
 }));
@@ -69,6 +72,8 @@ const patchBodies = () => fetchMock.mock.calls
 describe('QuoteEditor — Valid until + intro notes (#9859)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
+    auth.permissions = [{ resource: '*', action: '*' }];
     fetchMock.mockImplementation(async () => json({ data: {} }));
   });
 
@@ -110,12 +115,85 @@ describe('QuoteEditor — Valid until + intro notes (#9859)', () => {
     expect(screen.queryByTestId('quote-expiry-date-past')).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId('quote-expiry-date'), { target: { value: '2000-01-01' } });
     expect(screen.getByTestId('quote-expiry-date-past')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('quote-expiry-date'), { target: { value: '2099-01-01' } });
+    expect(screen.queryByTestId('quote-expiry-date-past')).not.toBeInTheDocument();
+  });
+
+  it('judges "passed" by the UTC day, like the server expiry rule', () => {
+    // 23:30 in UTC-5 on Oct 28 is already Oct 29 in UTC: an Oct 28 expiry has
+    // expired on the server, so the editor must say so; Oct 29 is still valid.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-28T23:30:00-05:00'));
+    expect(utcToday()).toBe('2026-10-29');
+    render(<QuoteEditor detail={draftDetail({ expiryDate: '2026-10-28' })} onChanged={vi.fn()} />);
+    expect(screen.getByTestId('quote-expiry-date-past')).toBeInTheDocument();
+    expect(screen.getByTestId('quote-expiry-date')).toHaveAttribute('min', '2026-10-29');
+    fireEvent.change(screen.getByTestId('quote-expiry-date'), { target: { value: '2026-10-29' } });
+    expect(screen.queryByTestId('quote-expiry-date-past')).not.toBeInTheDocument();
+  });
+
+  it('re-seeds both fields from a refetch, and keeps an in-progress draft across an unrelated one', () => {
+    // A timestamp-shaped expiry still lands in the date input as YYYY-MM-DD.
+    const view = render(<QuoteEditor detail={draftDetail({ expiryDate: '2099-12-31T00:00:00.000Z' })} onChanged={vi.fn()} />);
+    expect((screen.getByTestId('quote-expiry-date') as HTMLInputElement).value).toBe('2099-12-31');
+
+    view.rerender(<QuoteEditor detail={draftDetail({ expiryDate: '2099-06-30', introNotes: 'From server' })} onChanged={vi.fn()} />);
+    expect((screen.getByTestId('quote-expiry-date') as HTMLInputElement).value).toBe('2099-06-30');
+    expect((screen.getByTestId('quote-intro-notes') as HTMLTextAreaElement).value).toBe('From server');
+    expect(screen.queryByTestId('quote-expiry-date-unsaved')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quote-intro-notes-unsaved')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('quote-intro-notes'), { target: { value: 'Typing…' } });
+    expect(screen.getByTestId('quote-intro-notes-unsaved')).toBeInTheDocument();
+    view.rerender(<QuoteEditor detail={draftDetail({ expiryDate: '2099-06-30', introNotes: 'From server', updatedAt: '2026-06-02T00:00:00Z' })} onChanged={vi.fn()} />);
+    expect((screen.getByTestId('quote-intro-notes') as HTMLTextAreaElement).value).toBe('Typing…');
+  });
+
+  it('a read-only viewer sees both fields disabled and can never PATCH them', async () => {
+    auth.permissions = [{ resource: 'quotes', action: 'read' }];
+    render(<QuoteEditor detail={draftDetail({ expiryDate: '2099-12-31', introNotes: 'Hi' })} onChanged={vi.fn()} />);
+    const date = screen.getByTestId('quote-expiry-date');
+    const notes = screen.getByTestId('quote-intro-notes');
+    expect(date).toBeDisabled();
+    expect(notes).toBeDisabled();
+    fireEvent.change(notes, { target: { value: 'Changed' } });
+    fireEvent.blur(notes);
+    fireEvent.change(date, { target: { value: '2099-01-01' } });
+    fireEvent.blur(date);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(patchBodies()).toEqual([]);
+  });
+
+  it('disables the field while its save is in flight, then re-enables it', async () => {
+    let release!: (r: Response) => void;
+    fetchMock.mockImplementation((input: string, opts?: RequestInit) => {
+      if (input === '/quotes/q-1' && opts?.method === 'PATCH') return new Promise<Response>((r) => { release = r; });
+      return Promise.resolve(json({ data: {} }));
+    });
+    render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} />);
+    const date = screen.getByTestId('quote-expiry-date');
+    fireEvent.change(date, { target: { value: '2099-11-30' } });
+    fireEvent.blur(date);
+    await waitFor(() => expect(date).toBeDisabled());
+    release(json({ data: {} }));
+    await waitFor(() => expect(date).not.toBeDisabled());
+  });
+
+  it('a failed expiry save names "Valid until" to the Send gate', async () => {
+    fetchMock.mockImplementation(async () => json({ error: 'boom' }, false, 500));
+    const onUnsavedEditsChange = vi.fn();
+    render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} onUnsavedEditsChange={onUnsavedEditsChange} />);
+    const date = screen.getByTestId('quote-expiry-date') as HTMLInputElement;
+    fireEvent.change(date, { target: { value: '2099-11-30' } });
+    fireEvent.blur(date);
+    await waitFor(() => expect(onUnsavedEditsChange).toHaveBeenLastCalledWith('Valid until'));
+    expect(date.value).toBe('2099-11-30');
   });
 
   it('editing intro notes and blurring PATCHes { introNotes } only', async () => {
     render(<QuoteEditor detail={draftDetail()} onChanged={vi.fn()} />);
     const textarea = screen.getByTestId('quote-intro-notes');
-    fireEvent.change(textarea, { target: { value: 'Here is the plan we discussed.\nSee below.' } });
+    fireEvent.change(textarea, { target: { value: '  Here is the plan we discussed.\nSee below.\n' } });
     fireEvent.blur(textarea);
     await waitFor(() => expect(patchBodies()).toEqual([{ introNotes: 'Here is the plan we discussed.\nSee below.' }]));
     await waitFor(() => expect(screen.getByTestId('quote-intro-notes-saved')).toHaveTextContent('Saved'));
