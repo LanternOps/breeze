@@ -140,6 +140,36 @@ describe('ticket_mailbox_connections worker writes persist under FORCE RLS (no r
     expect(rows[0]!.at).toEqual(ahead);
   });
 
+  runDb('releasePollAttempt clears the stamp with no DB context, so the mailbox lists first again (#8308)', async () => {
+    const { recordPollAttempt, releasePollAttempt, listConnectedMailboxes } = await import('../../services/ticketMailbox/connectionService');
+    const late = await seedConnectedMailbox(randomUUID());
+    const other = await seedConnectedMailbox(randomUUID());
+    await withSystemDbAccessContext(async () => db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: new Date(Date.now() - 60_000) }).where(eq(ticketMailboxConnections.id, other.id)));
+    await expect(recordPollAttempt(late, 30_000)).resolves.toBe(true);
+    const ours = new Set([late.id, other.id]);
+    const listed = async () => (await listConnectedMailboxes()).map((c) => c.id).filter((id) => ours.has(id));
+    // Freshly stamped, the late mailbox sorts after the older attempt.
+    expect(await listed()).toEqual([other.id, late.id]);
+
+    // Called exactly as the worker does: no surrounding withSystemDbAccessContext.
+    await expect(releasePollAttempt(late)).resolves.toBe(true);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, late.id)));
+    expect(rows[0]!.at).toBeNull();
+    expect(await listed()).toEqual([late.id, other.id]);
+  });
+
+  runDb('releasePollAttempt leaves a stale generation alone and says so (#8308)', async () => {
+    const snapshot = await seedConnectedMailbox(randomUUID());
+    const { recordPollAttempt, releasePollAttempt } = await import('../../services/ticketMailbox/connectionService');
+    await expect(recordPollAttempt(snapshot, 30_000)).resolves.toBe(true);
+    await expect(releasePollAttempt({ ...snapshot, consentAttemptId: randomUUID() })).resolves.toBe(false);
+    const rows = await withSystemDbAccessContext(async () => db.select({ at: ticketMailboxConnections.lastPollAttemptAt })
+      .from(ticketMailboxConnections).where(eq(ticketMailboxConnections.id, snapshot.id)));
+    expect(rows[0]!.at).toBeInstanceOf(Date);
+  });
+
   runDb('recordPollAttempt does not stamp a stale generation and says so (#8308)', async () => {
     const snapshot = await seedConnectedMailbox(randomUUID());
     const { recordPollAttempt } = await import('../../services/ticketMailbox/connectionService');

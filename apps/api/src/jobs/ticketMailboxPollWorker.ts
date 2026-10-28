@@ -8,6 +8,7 @@ import {
   resetDeltaCursor,
   recordTransientPollFailure,
   recordPollAttempt,
+  releasePollAttempt,
   setConnectedMailboxStatus,
   listConnectedGmailMailboxes,
   isConnectedGmailMailboxCurrent,
@@ -57,14 +58,20 @@ const SWEEP_JOB_ID = 'ticket-mailbox-poll-sweep';
 export const GRAPH_POLL_PASS_BUDGET_MS = Math.floor((SWEEP_INTERVAL_MS * 2) / 3);
 
 /**
- * A mailbox is only started with at least this much of the pass left: half of
- * it (#8308). So every mailbox that starts has a fair share, and one the pass
- * deadline ends before its first page counts a transient failure; a mailbox that
- * keeps failing to answer in time shows on its health. With less left, the rest
- * are not stamped and go first next sweep, ahead of every mailbox this pass
- * reached. Starting mailboxes with less and not counting their cut-offs would let
- * a slow mailbox land in that late slot every sweep, never be polled, and still
- * read healthy.
+ * A mailbox is only started with at least this much of the pass left. With less,
+ * it would mostly spend its share on the token request, so it is left for the
+ * next sweep instead, where it goes first (it was not stamped as attempted).
+ */
+export const GRAPH_POLL_MIN_MAILBOX_START_MS = Math.floor(GRAPH_POLL_PASS_BUDGET_MS / 4);
+
+/**
+ * A mailbox whose delta read the pass deadline ends before the first page counts
+ * a transient failure only when it was given at least this much of the pass
+ * (#8308). With less, it started late because earlier mailboxes used the pass,
+ * so the miss says nothing about this mailbox's health: it is logged as deferred
+ * and its attempt stamp is cleared, so the next sweep starts it first with the
+ * whole pass, and a failure then does count. Keeping the stamp instead would put
+ * it back in the same late slot every sweep, never polled and never counted.
  */
 export const GRAPH_POLL_FAIR_SHARE_MS = Math.floor(GRAPH_POLL_PASS_BUDGET_MS / 2);
 
@@ -77,12 +84,32 @@ export const GRAPH_POLL_FAIR_SHARE_MS = Math.floor(GRAPH_POLL_PASS_BUDGET_MS / 2
  * (#8400) and inbound processing dedups by provider message id. The window is
  * the gap between the pass deadline and the next sweep, which is shorter than
  * the time between two back-to-back sweeps reaching the same mailbox (the last
- * mailbox a pass starts is stamped at least GRAPH_POLL_FAIR_SHARE_MS
+ * mailbox a pass starts is stamped at least GRAPH_POLL_MIN_MAILBOX_START_MS
  * before its deadline), so sequential sweeps never hit it.
  */
 export const GRAPH_POLL_ATTEMPT_CLAIM_MS = SWEEP_INTERVAL_MS - GRAPH_POLL_PASS_BUDGET_MS;
 
 type SweepJobData = { type: 'sweep' };
+
+/**
+ * Clears the attempt stamp of a mailbox this sweep stamped but did not get to
+ * poll (#8308), so it goes first next sweep. If the clear itself fails, the
+ * mailbox keeps a fresh stamp and could land in the same late slot again, so
+ * count a transient failure instead: then it shows on the mailbox's health
+ * rather than going unpolled while reading healthy. Returns whether the stamp
+ * was cleared.
+ */
+async function releaseOrCount(c: Awaited<ReturnType<typeof listConnectedMailboxes>>[number]): Promise<boolean> {
+  try {
+    return await releasePollAttempt(c);
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    await recordTransientPollFailure(c, new Date()).catch((countErr: unknown) => {
+      captureException(countErr instanceof Error ? countErr : new Error(String(countErr)));
+    });
+    return false;
+  }
+}
 
 /** Process one mailbox end-to-end. Graph I/O runs outside any DB context. */
 async function sweepOne(
@@ -97,6 +124,7 @@ async function sweepOne(
   // Enqueue and the generation rechecks are local Redis/DB work and are not
   // bounded by it.
   const deadlineAt = passDeadlineAt;
+  const startedAt = Date.now();
   let token: string;
   let page: Awaited<ReturnType<typeof listInboxDelta>>;
   try {
@@ -111,6 +139,16 @@ async function sweepOne(
     }
 
     const kind = classifyGraphPollError(err);
+    if (err instanceof GraphSweepBudgetError && deadlineAt - startedAt < GRAPH_POLL_FAIR_SHARE_MS) {
+      const released = await releaseOrCount(c);
+      console.warn('[mailboxPoll] pass deadline reached before the first page; deferred to the next sweep', {
+        id: c.id,
+        shareMs: deadlineAt - startedAt,
+        released,
+        limit: 'pass_deadline',
+      });
+      return;
+    }
     if (kind === 'transient') {
       // Leave the mailbox 'connected' so the next sweep retries. Marking it
       // 'error' would drop it from polling until a manual reconnect (#8299).
@@ -487,11 +525,12 @@ export async function runMailboxSweep(): Promise<void> {
     console.warn('[mailboxPoll] pass deadline reached; mailboxes left for the next sweep', {
       left: connections.length - i,
       total: connections.length,
+      ids: connections.slice(i).map((m) => m.id),
       limit: 'pass_deadline',
     });
   };
   for (const [i, c] of connections.entries()) {
-    if (passDeadlineAt - Date.now() < GRAPH_POLL_FAIR_SHARE_MS) {
+    if (passDeadlineAt - Date.now() < GRAPH_POLL_MIN_MAILBOX_START_MS) {
       // Not stamped, so these go ahead of every mailbox this pass reached.
       leaveRest(i);
       break;
@@ -507,10 +546,13 @@ export async function runMailboxSweep(): Promise<void> {
       try {
         stamped = await recordPollAttempt(c, GRAPH_POLL_ATTEMPT_CLAIM_MS);
       } catch (err) {
-        // Skipped without touching its health (that write would hit the same
-        // row), so report it loudly: a stamp that keeps failing leaves this
-        // mailbox unpolled while its health reads unchanged.
+        // Skipped this sweep. Count a transient failure (best effort: it writes
+        // the same row) and report it, so a stamp that keeps failing shows on
+        // the mailbox's health instead of leaving it unpolled and reading healthy.
         captureException(err instanceof Error ? err : new Error(String(err)));
+        await recordTransientPollFailure(c, new Date()).catch((countErr: unknown) => {
+          captureException(countErr instanceof Error ? countErr : new Error(String(countErr)));
+        });
         console.error('[mailboxPoll] could not record the poll attempt; skipping this mailbox this sweep', {
           id: c.id,
           err: errMsg(err),
@@ -519,10 +561,11 @@ export async function runMailboxSweep(): Promise<void> {
       }
       if (!stamped) continue;
       // The stamp is a database write and can be slow; check again so a mailbox
-      // never starts its token and Graph work without its fair share. This one
-      // was stamped, so it goes behind the rest next sweep; that only happens when
-      // a stamp eats the time it had above its fair share.
-      if (passDeadlineAt - Date.now() < GRAPH_POLL_FAIR_SHARE_MS) {
+      // never starts its token and Graph work without its minimum share. This one
+      // was stamped but not started, so clear the stamp: it then goes first next
+      // sweep with the mailboxes this pass did not reach.
+      if (passDeadlineAt - Date.now() < GRAPH_POLL_MIN_MAILBOX_START_MS) {
+        await releaseOrCount(c);
         leaveRest(i);
         break;
       }

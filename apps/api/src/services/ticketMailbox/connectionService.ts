@@ -846,6 +846,26 @@ export async function recordPollAttempt(
   }));
 }
 
+/**
+ * Clears a mailbox's attempt stamp (#8308) after the sweep started it late and
+ * the pass deadline cut it off before its first page. With no stamp it sorts
+ * with the never-attempted mailboxes, first, so the next sweep starts it with
+ * the whole pass; if it fails then, that failure counts. Without this, the
+ * fresh stamp would put it back in the same late slot every sweep, never
+ * polled and never counted. Same connected-generation guard as the stamp.
+ * Returns false when no row matched (the generation changed or the mailbox is
+ * no longer connected).
+ */
+export async function releasePollAttempt(snapshot: MailboxConnectionSnapshot): Promise<boolean> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = await db.update(ticketMailboxConnections)
+      .set({ lastPollAttemptAt: null })
+      .where(connectedSnapshotPredicate(snapshot))
+      .returning({ id: ticketMailboxConnections.id });
+    return rows.length === 1;
+  }));
+}
+
 /** Why a probe failed. `auth`: the app cannot get/use a token in the tenant
  * (consent missing or revoked) — re-consent is the fix. `policy`: Graph reached
  * the mailbox and refused/could not find it (Application Access Policy not
