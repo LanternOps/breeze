@@ -2416,9 +2416,12 @@
       "rateLimited": "Se iniciaron demasiados barridos recientemente. Inténtelo de nuevo más tarde."
     },
     "skipReasons": {
-      "agent_too_old": "dispositivos con un agente demasiado antiguo",
-      "busy_same_sweep": "dispositivos que ya ejecutan este barrido",
-      "rule_set_not_eligible": "dispositivos a los que no se aplican los conjuntos de reglas"
+      "agent_too_old_one": "{{count}} dispositivo con un agente demasiado antiguo",
+      "agent_too_old_other": "{{count}} dispositivos con un agente demasiado antiguo",
+      "busy_same_sweep_one": "{{count}} dispositivo que ya ejecuta este barrido",
+      "busy_same_sweep_other": "{{count}} dispositivos que ya ejecutan este barrido",
+      "rule_set_not_eligible_one": "{{count}} dispositivo al que no se aplican los conjuntos de reglas",
+      "rule_set_not_eligible_other": "{{count}} dispositivos a los que no se aplican los conjuntos de reglas"
     },
     "skipExplain": {
       "agent_too_old": "El agente debe actualizarse antes de poder ejecutar conjuntos de reglas YARA.",
@@ -2432,9 +2435,17 @@
       "back": "Atrás",
       "next": "Siguiente",
       "previewAction": "Vista previa",
-      "confirm": "Barrer {{targeted}} dispositivos",
+      "confirm_one": "Barrer {{count}} dispositivo",
+      "confirm_other": "Barrer {{count}} dispositivos",
       "viewRunning": "Ver el barrido en curso",
-      "confirmSummary": "Se analizarán {{targeted}} dispositivos de {{orgs}} organizaciones con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en los dispositivos.",
+      "confirmSummary_one": "Se analizará {{devices}} de {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en el dispositivo.",
+      "confirmSummary_other": "Se analizarán {{devices}} de {{orgs}} con las versiones de los conjuntos de reglas de la vista previa. Las coincidencias se informan como amenazas; no se cambia nada en los dispositivos.",
+      "counts": {
+        "devices_one": "{{count}} dispositivo",
+        "devices_other": "{{count}} dispositivos",
+        "orgs_one": "{{count}} organización",
+        "orgs_other": "{{count}} organizaciones"
+      },
       "steps": {
         "scope": "Alcance",
         "type": "Tipo de análisis",
@@ -2463,15 +2474,19 @@
         "full": "Completo",
         "custom": "Rutas personalizadas",
         "paths": "Rutas, una por línea",
-        "pathsHelp": "Hasta {{max}} rutas, de {{chars}} caracteres cada una."
+        "pathsHelp": "Hasta {{max}} rutas, de {{chars}} caracteres cada una.",
+        "pathsCount": "{{paths}} de {{max}} rutas",
+        "pathsTooMany": "{{paths}} de {{max}} rutas: quite {{remove}}.",
+        "pathTooLong": "La línea {{line}} supera los {{chars}} caracteres."
       },
       "duration": {
         "label": "Ejecutar durante (horas)",
-        "help": "Los dispositivos sin conexión ejecutan el análisis cuando vuelven dentro de este plazo. Entre 1 y {{max}} horas."
+        "help": "Los dispositivos sin conexión ejecutan el análisis cuando vuelven dentro de este plazo. Entre 1 y {{max}} horas.",
+        "invalid": "Ingrese un número entero de horas entre 1 y {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} dispositivos en {{orgs}} organizaciones",
-        "org": "{{org}}: {{devices}} dispositivos",
+        "targeted": "{{devices}} en {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Conjuntos de reglas",
         "skipped": "Omitidos",
         "scopeChanged": "Los dispositivos o los conjuntos de reglas cambiaron desde la vista previa. Revise las nuevas cifras y confirme de nuevo."

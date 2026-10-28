@@ -2416,9 +2416,12 @@
       "rateLimited": "Kısa süre önce çok fazla toplu tarama başlatıldı. Daha sonra tekrar deneyin."
     },
     "skipReasons": {
-      "agent_too_old": "ajanı çok eski olan cihazlar",
-      "busy_same_sweep": "bu toplu taramayı zaten çalıştıran cihazlar",
-      "rule_set_not_eligible": "kural kümelerinin geçerli olmadığı cihazlar"
+      "agent_too_old_one": "ajanı çok eski olan {{count}} cihaz",
+      "agent_too_old_other": "ajanı çok eski olan {{count}} cihaz",
+      "busy_same_sweep_one": "bu toplu taramayı zaten çalıştıran {{count}} cihaz",
+      "busy_same_sweep_other": "bu toplu taramayı zaten çalıştıran {{count}} cihaz",
+      "rule_set_not_eligible_one": "kural kümelerinin geçerli olmadığı {{count}} cihaz",
+      "rule_set_not_eligible_other": "kural kümelerinin geçerli olmadığı {{count}} cihaz"
     },
     "skipExplain": {
       "agent_too_old": "Ajanın YARA kural kümelerini çalıştırabilmesi için güncellenmesi gerekir.",
@@ -2432,9 +2435,17 @@
       "back": "Geri",
       "next": "İleri",
       "previewAction": "Önizle",
-      "confirm": "{{targeted}} cihazı tara",
+      "confirm_one": "{{count}} cihazı tara",
+      "confirm_other": "{{count}} cihazı tara",
       "viewRunning": "Çalışan toplu taramayı görüntüle",
-      "confirmSummary": "{{orgs}} kuruluştaki {{targeted}} cihaz, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazlarda hiçbir şey değiştirilmez.",
+      "confirmSummary_one": "{{orgs}}taki {{devices}}, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazda hiçbir şey değiştirilmez.",
+      "confirmSummary_other": "{{orgs}}taki {{devices}}, önizlemede gösterilen kural kümesi sürümleriyle taranacak. Eşleşmeler tehdit olarak bildirilir; cihazlarda hiçbir şey değiştirilmez.",
+      "counts": {
+        "devices_one": "{{count}} cihaz",
+        "devices_other": "{{count}} cihaz",
+        "orgs_one": "{{count}} kuruluş",
+        "orgs_other": "{{count}} kuruluş"
+      },
       "steps": {
         "scope": "Kapsam",
         "type": "Tarama türü",
@@ -2463,15 +2474,19 @@
         "full": "Tam",
         "custom": "Özel yollar",
         "paths": "Yollar, her satıra bir tane",
-        "pathsHelp": "En fazla {{max}} yol, her biri {{chars}} karakter."
+        "pathsHelp": "En fazla {{max}} yol, her biri {{chars}} karakter.",
+        "pathsCount": "{{paths}} / {{max}} yol",
+        "pathsTooMany": "{{paths}} / {{max}} yol: {{remove}} tanesini kaldırın.",
+        "pathTooLong": "{{line}}. satır {{chars}} karakterden uzun."
       },
       "duration": {
         "label": "Çalışma süresi (saat)",
-        "help": "Çevrimdışı cihazlar, bu süre içinde geri geldiklerinde taramayı çalıştırır. 1 ile {{max}} saat arasında."
+        "help": "Çevrimdışı cihazlar, bu süre içinde geri geldiklerinde taramayı çalıştırır. 1 ile {{max}} saat arasında.",
+        "invalid": "1 ile {{max}} arasında tam sayı olarak saat girin."
       },
       "preview": {
-        "targeted": "{{orgs}} kuruluşta {{devices}} cihaz",
-        "org": "{{org}}: {{devices}} cihaz",
+        "targeted": "{{orgs}}ta {{devices}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Kural kümeleri",
         "skipped": "Atlananlar",
         "scopeChanged": "Cihazlar veya kural kümeleri önizlemeden sonra değişti. Yeni sayıları gözden geçirin, ardından yeniden onaylayın."

@@ -160,6 +160,47 @@ describe('SweepDialog', () => {
     expect(screen.getByTestId('sweep-dialog-preview-set-set-1').textContent).toContain('Version 4');
     expect(screen.getByTestId('sweep-dialog-preview-skipped-agent_too_old').textContent).toMatch(/3.*agent that is too old/);
     expect(screen.queryByTestId('sweep-dialog-preview-skipped-busy_same_sweep')).toBeNull();
+    expect(screen.getByTestId('sweep-dialog-preview-org-org-1').textContent).toBe('Acme: 8 devices');
+    expect(screen.getByTestId('sweep-dialog-preview-skipped-agent_too_old').textContent).toMatch(
+      /^3 devices with an agent that is too old/,
+    );
+    await click('sweep-dialog-next');
+    expect(screen.getByTestId('sweep-dialog-confirm').textContent).toBe('Sweep 12 devices');
+    expect(screen.getByTestId('sweep-dialog-confirm-summary').textContent).toMatch(
+      /^12 devices in 2 organizations will be scanned .* on the devices\.$/,
+    );
+  });
+
+  // #10080: "1 devices in 1 organizations", "Sweep 1 devices".
+  it('uses singular forms for one device in one organization', async () => {
+    previewResponse = json(200, {
+      data: preview({
+        targeted: 1,
+        byOrg: [{ orgId: 'org-1', orgName: 'Acme', targeted: 1 }],
+        skipped: { agent_too_old: 1, busy_same_sweep: 1, rule_set_not_eligible: 1 },
+      }),
+    });
+    renderDialog();
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next');
+
+    expect(screen.getByTestId('sweep-dialog-preview-targeted').textContent).toBe('1 device in 1 organization');
+    expect(screen.getByTestId('sweep-dialog-preview-org-org-1').textContent).toBe('Acme: 1 device');
+    expect(screen.getByTestId('sweep-dialog-preview-skipped-agent_too_old').textContent).toMatch(
+      /^1 device with an agent that is too old/,
+    );
+    expect(screen.getByTestId('sweep-dialog-preview-skipped-busy_same_sweep').textContent).toMatch(
+      /^1 device already running this sweep/,
+    );
+    expect(screen.getByTestId('sweep-dialog-preview-skipped-rule_set_not_eligible').textContent).toMatch(
+      /^1 device the rule sets do not apply to/,
+    );
+    await click('sweep-dialog-next');
+    expect(screen.getByTestId('sweep-dialog-confirm').textContent).toBe('Sweep 1 device');
+    expect(screen.getByTestId('sweep-dialog-confirm-summary').textContent).toMatch(
+      /^1 device in 1 organization will be scanned .* on the device\.$/,
+    );
   });
 
   it('shows no skipped block for a restricted caller (empty skipped)', async () => {
@@ -299,6 +340,64 @@ describe('SweepDialog', () => {
     expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByTestId('sweep-dialog-ttl'), { target: { value: '72' } });
     expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // #10080: an over-limit input used to only grey out Next and redden the help text.
+  const expectInvalidField = (field: HTMLElement, errorTestId: string, text: string | RegExp) => {
+    const message = screen.getByTestId(errorTestId);
+    if (typeof text === 'string') expect(message.textContent).toBe(text);
+    else expect(message.textContent).toMatch(text);
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(message.id).not.toBe('');
+    expect((field.getAttribute('aria-describedby') ?? '').split(' ')).toContain(message.id);
+  };
+
+  it('says how many paths to remove when there are more than 20', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    fireEvent.change(screen.getByTestId('sweep-dialog-scan-type'), { target: { value: 'custom' } });
+    const field = screen.getByTestId('sweep-dialog-paths');
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `C:\\p${i}`).join('\n');
+
+    fireEvent.change(field, { target: { value: lines(2) } });
+    expect(screen.getByTestId('sweep-dialog-paths-count').textContent).toBe('2 of 20 paths');
+    expect(screen.queryByTestId('sweep-dialog-paths-error')).toBeNull();
+    expect(field.getAttribute('aria-invalid')).toBe('false');
+
+    fireEvent.change(field, { target: { value: lines(21) } });
+    expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(true);
+    expectInvalidField(field, 'sweep-dialog-paths-error', '21 of 20 paths: remove 1.');
+
+    fireEvent.change(field, { target: { value: lines(20) } });
+    expect(screen.queryByTestId('sweep-dialog-paths-error')).toBeNull();
+    expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('names the line whose path is too long', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    fireEvent.change(screen.getByTestId('sweep-dialog-scan-type'), { target: { value: 'custom' } });
+    const field = screen.getByTestId('sweep-dialog-paths');
+    fireEvent.change(field, { target: { value: `C:\\ok\n\n${'x'.repeat(1025)}` } });
+    expectInvalidField(field, 'sweep-dialog-paths-error', 'Line 3 is longer than 1024 characters.');
+  });
+
+  it('says the allowed range when the duration is outside 1-72 hours', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next');
+    const field = screen.getByTestId('sweep-dialog-ttl');
+    expect(screen.queryByTestId('sweep-dialog-ttl-error')).toBeNull();
+    expect(field.getAttribute('aria-invalid')).toBe('false');
+
+    fireEvent.change(field, { target: { value: '73' } });
+    expectInvalidField(field, 'sweep-dialog-ttl-error', 'Enter a whole number of hours from 1 to 72.');
+    fireEvent.change(field, { target: { value: '0' } });
+    expectInvalidField(field, 'sweep-dialog-ttl-error', 'Enter a whole number of hours from 1 to 72.');
+
+    fireEvent.change(field, { target: { value: '72' } });
+    expect(screen.queryByTestId('sweep-dialog-ttl-error')).toBeNull();
+    expect(field.getAttribute('aria-invalid')).toBe('false');
   });
 
   it('keeps the prefilled scan type and says the scope must be chosen again', async () => {

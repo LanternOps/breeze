@@ -2416,9 +2416,12 @@
       "rateLimited": "Trop de balayages ont été lancés récemment. Réessayez plus tard."
     },
     "skipReasons": {
-      "agent_too_old": "appareils dont l'agent est trop ancien",
-      "busy_same_sweep": "appareils qui exécutent déjà ce balayage",
-      "rule_set_not_eligible": "appareils auxquels les ensembles de règles ne s'appliquent pas"
+      "agent_too_old_one": "{{count}} appareil dont l'agent est trop ancien",
+      "agent_too_old_other": "{{count}} appareils dont l'agent est trop ancien",
+      "busy_same_sweep_one": "{{count}} appareil qui exécute déjà ce balayage",
+      "busy_same_sweep_other": "{{count}} appareils qui exécutent déjà ce balayage",
+      "rule_set_not_eligible_one": "{{count}} appareil auquel les ensembles de règles ne s'appliquent pas",
+      "rule_set_not_eligible_other": "{{count}} appareils auxquels les ensembles de règles ne s'appliquent pas"
     },
     "skipExplain": {
       "agent_too_old": "L'agent doit être mis à jour avant de pouvoir exécuter des ensembles de règles YARA.",
@@ -2432,9 +2435,17 @@
       "back": "Retour",
       "next": "Suivant",
       "previewAction": "Aperçu",
-      "confirm": "Balayer {{targeted}} appareils",
+      "confirm_one": "Balayer {{count}} appareil",
+      "confirm_other": "Balayer {{count}} appareils",
       "viewRunning": "Voir le balayage en cours",
-      "confirmSummary": "{{targeted}} appareils répartis dans {{orgs}} organisations seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "confirmSummary_one": "{{devices}} réparti dans {{orgs}} sera analysé avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur l'appareil.",
+      "confirmSummary_other": "{{devices}} répartis dans {{orgs}} seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "counts": {
+        "devices_one": "{{count}} appareil",
+        "devices_other": "{{count}} appareils",
+        "orgs_one": "{{count}} organisation",
+        "orgs_other": "{{count}} organisations"
+      },
       "steps": {
         "scope": "Périmètre",
         "type": "Type d'analyse",
@@ -2463,15 +2474,19 @@
         "full": "Complète",
         "custom": "Chemins personnalisés",
         "paths": "Chemins, un par ligne",
-        "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun."
+        "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun.",
+        "pathsCount": "{{paths}} chemins sur {{max}}",
+        "pathsTooMany": "{{paths}} chemins sur {{max}} : retirez-en {{remove}}.",
+        "pathTooLong": "La ligne {{line}} dépasse {{chars}} caractères."
       },
       "duration": {
         "label": "Durée d'exécution (heures)",
-        "help": "Les appareils hors ligne exécutent l'analyse à leur retour dans ce délai. Entre 1 et {{max}} heures."
+        "help": "Les appareils hors ligne exécutent l'analyse à leur retour dans ce délai. Entre 1 et {{max}} heures.",
+        "invalid": "Saisissez un nombre entier d'heures entre 1 et {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} appareils dans {{orgs}} organisations",
-        "org": "{{org}} : {{devices}} appareils",
+        "targeted": "{{devices}} dans {{orgs}}",
+        "org": "{{org}} : {{devices}}",
         "ruleSets": "Ensembles de règles",
         "skipped": "Ignorés",
         "scopeChanged": "Les appareils ou les ensembles de règles ont changé depuis l'aperçu. Vérifiez les nouveaux chiffres, puis confirmez à nouveau."
