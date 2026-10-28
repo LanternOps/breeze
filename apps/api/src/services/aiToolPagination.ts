@@ -76,7 +76,6 @@ export function pageFingerprint(toolName: string, input: Record<string, unknown>
   return createHash('sha256').update(`${toolName}\n${JSON.stringify(canonical(filters))}`).digest('hex').slice(0, 16);
 }
 
-const encodeCursor = encodePageCursor;
 
 type DecodeResult = { ok: true; body: Record<string, unknown> } | { ok: false; code: 'CURSOR_MISMATCH' | 'CURSOR_INVALID'; error: string };
 
@@ -149,7 +148,7 @@ export function pageEnvelope<T>(p: {
     offset: p.offset,
     ...(p.total !== undefined ? { total: p.total, totalMode: p.totalMode ?? 'exact' } : {}),
     hasMore,
-    nextCursor: hasMore ? encodeCursor({ f: p.fingerprint, o: nextOffset }) : null,
+    nextCursor: hasMore ? encodePageCursor({ f: p.fingerprint, o: nextOffset }) : null,
     // #10385: lets chat compaction resume after the last row it kept. Stripped
     // by compactToolResultForChat before the model sees the result; omitted on
     // an empty page, which has no rows to drop.
@@ -207,7 +206,7 @@ export function keysetEnvelope<T>(p: {
     limit: p.limit,
     ...(p.total !== undefined ? { total: p.total, totalMode: p.totalMode ?? 'exact' } : {}),
     hasMore,
-    nextCursor: hasMore && last !== undefined ? encodeCursor({ f: p.fingerprint, ...p.keyOf(last) }) : null,
+    nextCursor: hasMore && last !== undefined ? encodePageCursor({ f: p.fingerprint, ...p.keyOf(last) }) : null,
     // #10385: every row's sort key, so chat compaction can resume after the
     // last row it kept. Stripped by compactToolResultForChat before the model
     // sees the result; omitted on an empty page, which has no rows to drop.

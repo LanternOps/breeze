@@ -241,7 +241,7 @@ describe('page-resume descriptor', () => {
     const resume = readPageResume(env[PAGE_RESUME_KEY]);
     expect(resume).toMatchObject({ mode: 'keyset', key: 'alerts', after: [after.t, after.i] });
     expect(readKeysetArgs('alerts', { cursor: resumeCursorAfter(resume!, 2) }, opts))
-      .toMatchObject({ ok: true, after: { t: items[1].triggeredAtText, i: items[1].id } });
+      .toMatchObject({ ok: true, after: { t: items[1]!.triggeredAtText, i: items[1]!.id } });
     expect(readKeysetArgs('alerts', { cursor: resumeCursorAfter(resume!, 0) }, opts)).toMatchObject({ ok: true, after });
 
     const first = keysetEnvelope({ key: 'alerts', items, limit: 20, fingerprint: args.fingerprint, after: null, keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }) });

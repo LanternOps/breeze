@@ -101,7 +101,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
         JSON.stringify({
           ...keysetEnvelope<{ timestampText: string; id: string }>({
-            key: 'entries', items: [], limit, fingerprint,
+            key: 'entries', items: [], limit, fingerprint, after,
             keyOf: (r) => ({ t: r.timestampText, i: r.id }),
           }),
           ...extra,
@@ -304,7 +304,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
       const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
         JSON.stringify({
           ...keysetEnvelope<{ timestampText: string; id: string }>({
-            key: 'changes', items: [], limit, fingerprint, total: 0,
+            key: 'changes', items: [], limit, fingerprint, after, total: 0,
             keyOf: (r) => ({ t: r.timestampText, i: r.id }),
           }),
           ...extra,

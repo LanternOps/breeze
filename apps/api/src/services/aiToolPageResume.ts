@@ -103,3 +103,37 @@ export function resumeCursorAfter(resume: PageResume, kept: number): string | nu
   if (!at) return null;
   return encodePageCursor({ f: resume.f, t: at[0], i: at[1] });
 }
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Split the descriptor off a SERIALIZED tool result, for code that handles the
+ * result before the compactor does (large-result capture). Returns null when
+ * the result carries none, so the caller keeps the original string untouched.
+ */
+export function splitPageResumeJson(raw: string): { rest: string; descriptor: unknown } | null {
+  if (!raw.includes(PAGE_RESUME_KEY)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed) || !(PAGE_RESUME_KEY in parsed)) return null;
+  const { [PAGE_RESUME_KEY]: descriptor, ...rest } = parsed;
+  return { rest: JSON.stringify(rest), descriptor };
+}
+
+/** Put a descriptor split off by `splitPageResumeJson` back on a JSON object string. */
+export function attachPageResumeJson(json: string, descriptor: unknown): string {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (isPlainObject(parsed)) return JSON.stringify({ ...parsed, [PAGE_RESUME_KEY]: descriptor });
+  } catch {
+    // Redaction left something that is not JSON: hand it on without the
+    // descriptor — the compactor then leaves the envelope as the tool wrote it.
+  }
+  return json;
+}

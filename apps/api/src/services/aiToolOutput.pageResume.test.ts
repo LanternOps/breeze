@@ -103,9 +103,9 @@ describe('compaction keeps paging lossless (#10385)', () => {
     const { seen, pages } = pageThrough(keysetTool(data, 'manage_alerts'), 'manage_alerts', 'alerts', { action: 'list', limit: 100 });
     expect(seen).toEqual([...data].sort(desc).map((r) => r.id));
     // The first page really was compacted (the case the issue reports).
-    expect((pages[0]._chat as Record<string, unknown> | undefined)?.arrayItemsDropped).toBeGreaterThan(0);
-    expect(pages[0].hasMore).toBe(true);
-    expect(pages[0].total).toBe(118);
+    expect((pages[0]!._chat as Record<string, unknown> | undefined)?.arrayItemsDropped).toBeGreaterThan(0);
+    expect(pages[0]!.hasMore).toBe(true);
+    expect(pages[0]!.total).toBe(118);
   });
 
   it('keyset: a hasMore:false page that was compacted gets a usable cursor (query_change_log case)', () => {
@@ -153,6 +153,22 @@ describe('compaction keeps paging lossless (#10385)', () => {
     expect(digest._chat?.nextStep).toMatch(/smaller limit/);
     const { seen } = pageThrough(tool, 'manage_alerts', 'alerts', { action: 'list', limit: 20 }, 1_200);
     expect(seen).toEqual([...data].sort(desc).map((r) => r.id));
+  });
+
+  it('a captured page (artifact envelope) gets the same cursor fix on its compacted half', () => {
+    setToolPaginationHintResolver(() => 'cursor');
+    const data = makeRows(100, 300);
+    const raw = keysetTool(data, 'manage_alerts')({ action: 'list', limit: 100 });
+    const envelope = JSON.stringify({ artifact: { handle: 'h-1', bytes: raw.length, contentType: 'application/json', head: '', tail: '' }, compacted: raw });
+    const out = JSON.parse(compactToolResultForChat('manage_alerts', envelope)) as { artifact: { handle: string }; compacted: Page };
+    expect(out.artifact.handle).toBe('h-1');
+    expect(out.compacted).not.toHaveProperty(PAGE_RESUME_KEY);
+    const kept = (out.compacted.alerts as unknown[]).filter((x) => typeof x !== 'string').length;
+    expect(kept).toBeLessThan(100);
+    expect(out.compacted.showing).toBe(kept);
+    const next = readKeysetArgs('manage_alerts', { action: 'list', limit: 100, cursor: out.compacted.nextCursor }, { defaultLimit: 25, maxLimit: 500 });
+    const lastKept = [...data].sort(desc)[kept - 1]!;
+    expect(next).toMatchObject({ ok: true, after: { t: lastKept.ts, i: lastKept.id } });
   });
 
   it('a page that fits is returned without the resume descriptor and otherwise unchanged', () => {
