@@ -51,6 +51,13 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
   browse_device_event_log: '*',
   manage_tenant_variables: Object.freeze(['create', 'update', 'delete']),
   manage_support_sessions: Object.freeze(['end']),
+  // Full-control W14 (#6784, W14-D3): every billing-profile / work-type / assignment write and both settings writes
+  // carry requireMfa() at REST. Template and signed-agreement routes carry none, so those tools are not listed.
+  manage_billing_profiles: Object.freeze([
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ]),
+  manage_billing_settings: Object.freeze(['update_partner', 'update_org']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

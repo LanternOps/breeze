@@ -470,6 +470,19 @@ describe('W13 PR B tools in the agent catalog (#6783)', () => {
   });
 });
 
+/** Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle tools are offered beside the contract / invoice tools (their
+ * partner-only handlers refuse an org-scoped agent run); template and signed-agreement writes are
+ * AGENT_HUMAN_ONLY_ACTIONS, so the tools themselves stay offered. */
+describe('W14 billing lifecycle tools in the agent catalog (#6784)', () => {
+  it.each([
+    'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents', 'get_device_billing',
+  ])('%s is mapped to business and offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('business');
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
 describe('W13 device inventory and ops tools in the agent catalog (#6783)', () => {
   it.each([
     'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
