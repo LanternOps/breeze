@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 // #5645: every inline release hands the handler the released intent's decision
 // record (`approvalScope` + `decidedVia`) on the execution context — the same
@@ -2124,6 +2124,7 @@ describe('createSessionPreToolUse', () => {
       const reviewed = { proposal: { riskTier: 'medium', strictHits: [] } };
 
       beforeEach(() => {
+        mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null });
         vi.mocked(checkGuardrails).mockReturnValue({
           allowed: true, tier: 3, requiresApproval: true, description: 'Run reviewed proposal',
         } as any);
@@ -2152,8 +2153,8 @@ describe('createSessionPreToolUse', () => {
         expect(mockProposalApprovalSummary).toHaveBeenCalledWith(expect.objectContaining({ proposalId: 'p-x' }), 'org-2');
       });
 
-      it('publishes the inline completion under the proposal org, not the session org', async () => {
-        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+      it('publishes the inline completion under the proposal org, and records the tier from the reviewed context', async () => {
+        mockProposalInReach.mockResolvedValue({ context: reviewed, proposalOrgId: 'org-2' });
         mockWaitForIntentDecision.mockResolvedValue('approved');
         mockTransitionIntent.mockResolvedValue(true);
         const auth = reachOf('org-1', 'org-2');
@@ -2161,6 +2162,7 @@ describe('createSessionPreToolUse', () => {
 
         const pre = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
         expect(pre).toMatchObject({ allowed: true, intentId: 'intent-x' });
+        vi.mocked(checkGuardrails).mockClear();
         await createSessionPostToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] }, JSON.stringify({ results: {} }), false, 10);
 
         expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
@@ -2168,9 +2170,53 @@ describe('createSessionPreToolUse', () => {
           { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
           'intent_completed',
         );
+        // The post hook's audit tier comes from the SAME reach-resolved
+        // context: a session-org lookup would hand checkGuardrails
+        // proposal_not_found, which fails closed to tier 4.
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
       });
 
-      it('keeps the session org for a proposal outside the reach (the guardrail refuses it as proposal_not_found)', async () => {
+      afterAll(() => { mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null }); });
+
+      it('fails a cross-org intent whose release revalidation fails under the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        mockRevalidateApprovedIntentForRelease.mockResolvedValueOnce({ ok: false, errorCode: 'actor_inactive' } as IntentReleaseRevalidation);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(res).toMatchObject({ allowed: false });
+        expect(mockTransitionIntent).toHaveBeenCalledWith('intent-x', 'executing', 'failed', expect.objectContaining({ errorCode: 'actor_inactive' }));
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_failed',
+        );
+      });
+
+      it('keeps the session org for a library run_script (no proposal)', async () => {
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] });
+        await createSessionPostToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-1' });
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+      });
+
+      // Wiring only: the reach logic itself is exercised against the real
+      // loader in aiAgentSdk.wispCeiling.test.ts and guardrailContext.test.ts.
+      it('hands an out-of-reach lookup (proposal_not_found) straight to the guardrail and raises no intent', async () => {
         mockProposalInReach.mockResolvedValueOnce({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
         vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, reason: 'proposal_not_found' } as any);
         const auth = reachOf('org-1');

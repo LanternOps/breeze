@@ -2922,15 +2922,21 @@ export async function attachChatProposalToSession(
   if (typeof proposalId !== 'string' || proposalId.length === 0) return;
   try {
     const orgId = await resolveProposalOrgInReach(proposalId, (id) => session.toolAuth.canAccessOrg(id));
-    const attached = orgId !== null && await withDbAccessContext(
+    if (orgId === null) {
+      // The id came from this session's own propose_script output, so a
+      // proposal that is missing or outside the session's reach is a wiring
+      // fault, not a benign retry: keep it distinguishable from the warn below.
+      console.error(`[AI-SDK] script proposal ${proposalId} from session ${session.breezeSessionId} is missing or outside the session's reach; not attributed`);
+      return;
+    }
+    const attached = await withDbAccessContext(
       { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
       () => attachProposalToSession(proposalId, orgId, session.breezeSessionId),
     );
     if (!attached) {
-      // Not an error (an idempotent retry lands here too), but a proposal the
-      // handler just created that is NOT attributable is worth a trace: it
-      // means the id in the output is outside the session's reach.
-      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (out of reach or already attributed)`);
+      // Not an error: an idempotent retry of an already-attributed proposal
+      // lands here.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (already attributed)`);
     }
   } catch (err) {
     console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
@@ -3081,10 +3087,18 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // the call on, and an ungated flow call is treated as Tier 3.
     const guardrailCheck: { tier: number } = isFlowToolName(toolName)
       ? { tier: session.flowToolGatedTiers?.get(toolName) ?? 3 }
-      // Only `.tier` is read here. A run_script is Tier 3 whatever its
-      // proposal context, so the session-org lookup is enough even for a
-      // proposal in another org (#10384: the pre hook resolves it by reach).
-      : checkGuardrails(toolName, input, chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId)));
+      // #10384: a run_script proposal is resolved by reach, as in the pre hook.
+      // A session-org lookup would answer `proposal_not_found` for a proposal
+      // in another org, which checkGuardrails fails closed to tier 4, and the
+      // audit event below would record a tier-4 call that ran at tier 3. Only
+      // `.tier` is read here, for a call the pre hook already gated under the
+      // narrowed per-call reach, so the session tool auth is enough.
+      : checkGuardrails(toolName, input, chatGuardrailContext(
+        session,
+        toolName === 'run_script'
+          ? (await loadProposalGuardrailContextInReach(input, (orgId) => session.toolAuth.canAccessOrg(orgId))).context
+          : await loadProposalGuardrailContext(input, session.orgId),
+      ));
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.
@@ -3247,7 +3261,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // #10384: the intent's own org (a cross-org run_script proposal's intent
       // lives in the proposal's org), recorded when the pre hook won the
       // release. A sealed id the map does not hold falls back to the session
-      // org, where every non-proposal chat intent lives.
+      // org: `sealed` comes only from secret-bearing tools, never run_script,
+      // and every chat intent other than a cross-org proposal run lives there.
       const pendingIntentOrgId = pending && pending.intentId === pendingIntentId ? pending.orgId : session.orgId;
       if (pendingIntentId) {
         pendingIntentBySession.delete(session);

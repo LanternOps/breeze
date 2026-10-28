@@ -6,7 +6,9 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: <T,>(fn: () => Promise<T>) => fn(),
   runOutsideDbContext: <T,>(fn: () => T) => fn(),
 }));
-import { loadProposalGuardrailContext, loadProposalGuardrailContextInReach } from './guardrailContext';
+import {
+  loadProposalGuardrailContext, loadProposalGuardrailContextInReach, resolveProposalOrgInReach,
+} from './guardrailContext';
 
 describe('loadProposalGuardrailContext', () => {
   it('returns undefined when the input names no proposal — every other tool is unaffected', async () => {
@@ -102,5 +104,25 @@ describe('loadProposalGuardrailContextInReach', () => {
     const missing = await loadProposalGuardrailContextInReach({ proposalId: 'p1' }, reach('org-1', 'org-2'));
     expect(outOfReach).toEqual({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
     expect(outOfReach).toEqual(missing);
+  });
+});
+
+// #10384: the attribution back-fill writes under the org this returns.
+describe('resolveProposalOrgInReach', () => {
+  const reach = (...orgIds: string[]) => (orgId: string) => orgIds.includes(orgId);
+
+  it("returns the proposal's org when the caller reaches it", async () => {
+    stored = { id: 'p1', orgId: 'org-2', status: 'reviewed', riskTier: 'low', strictHits: [] };
+    await expect(resolveProposalOrgInReach('p1', reach('org-1', 'org-2'))).resolves.toBe('org-2');
+  });
+
+  it('returns null for a proposal outside the reach', async () => {
+    stored = { id: 'p1', orgId: 'org-3', status: 'reviewed', riskTier: 'low', strictHits: [] };
+    await expect(resolveProposalOrgInReach('p1', reach('org-1', 'org-2'))).resolves.toBeNull();
+  });
+
+  it('returns null for a missing proposal', async () => {
+    stored = null;
+    await expect(resolveProposalOrgInReach('p1', reach('org-1'))).resolves.toBeNull();
   });
 });
