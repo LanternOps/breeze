@@ -261,6 +261,16 @@ describe('CommandPalette — quick actions are searchable (#10196)', () => {
     expect(titlesIn('quick-actions')).not.toContain('Open Wisp');
   });
 
+  it('keeps the settings results alongside a matching action', async () => {
+    mockPartner({ wispEnabled: true });
+    render(<CommandPalette />);
+    openPalette();
+    await waitFor(() => expect(titlesIn('quick-actions')).toContain('Open Wisp'));
+    search('wisp');
+    expect(titlesIn('quick-actions')).toContain('Open Wisp');
+    expect(titlesIn('settings')).toContain('Wisp memory');
+  });
+
   it('shows no quick-actions section when nothing matches', async () => {
     mockPartner({ wispEnabled: true });
     render(<CommandPalette />);
