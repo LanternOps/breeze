@@ -33,6 +33,8 @@ An MSP prospect migrating from ConnectWise Automate, with ConnectWise Manage as 
 
 Org-owned PSA connections (a co-managed customer's own Jira or Zendesk) do not auto-ticket in W2.
 
+The requesting prospect runs Rewst (stated by the owner, 2026-10-28). Rewst consumes W1 through its generic webhook trigger and W1b through HTTP actions, and ships ConnectWise Manage actions, so W1 + W1b deliver their ask without W2. Not checked: whether Rewst's webhook trigger can verify the W1 HMAC signature. If it cannot, W1 should also accept a per-webhook static shared-secret header for low-code consumers (add to the W1 design when confirmed).
+
 ## 3. Proposed design
 
 ### W1 — partner-wide webhooks and the alert payload contract (M; two PRs)
@@ -311,7 +313,7 @@ The docs tell consumers to dedupe transport on the root event id. Ticket dedupe 
 - (a) W1 → W1b → W2, as #10499 proposed. W1 is the literal "webhook or API" ask and works with any PSA.
 - (b) W2 first, as a narrow native ConnectWise path, with W1 and W1b in parallel. This is Codex's suggestion; W2 has no runtime dependency on W1.
 
-**Recommend (a) for release order, with W2 allowed to start in parallel.** The alert-page read model moves into whichever of W1b and W2 lands first.
+**Recommend (a) for release order, with W2 allowed to start in parallel.** Evidence for (a): the requesting prospect runs Rewst, so W1 + W1b are consumable by them the week they ship; W2 serves partners with no middleware. The alert-page read model moves into whichever of W1b and W2 lands first.
 
 ## 7. Test and rollout notes
 
