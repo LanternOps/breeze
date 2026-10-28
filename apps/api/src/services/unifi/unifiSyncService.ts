@@ -236,13 +236,17 @@ async function reconcileDiscoveredAsset(
 // Per-mapping result of the network-only collection phase.
 interface MappingFetch {
   mappingId: string;
+  /** Devices to reconcile. undefined = leave this mapping's devices untouched: no writes, no stale sweep. */
   devices?: UnifiDeviceDto[];
+  /** Latest WAN sample (null = none reported for this site). undefined = leave wan_metrics untouched. */
   metrics?: UnifiIspMetrics | null;
+  /** Why this mapping is incomplete. Marks the run partial. */
   error?: string;
 }
 export interface CollectedSync {
   hostsSeen: number;
-  fatalError?: string; // listHosts failed → the whole sync is a failure
+  fatalError?: string; // an account-wide read failed → the whole sync is a failure, nothing is written
+  metricsError?: string; // the ISP-metrics read failed → devices still sync, wan_metrics untouched, run partial
   byMapping: Map<string, MappingFetch>;
 }
 
@@ -265,19 +269,58 @@ export async function collectSyncData(
   // One read of each account-wide payload per run instead of one per mapping
   // (#10491: rate-limit exposure once each read is paged). Host type does not
   // filter sync: a network-server host's devices sync just like a console's.
+  let sites: Awaited<ReturnType<UnifiClient['listSites']>>;
+  try {
+    sites = await client.listSites();
+  } catch (err) {
+    return { hostsSeen: hosts.length, fatalError: `UniFi /v1/sites read failed: ${(err as Error).message}`, byMapping };
+  }
+
   let devicesByHost: Awaited<ReturnType<UnifiClient['listDevicesByHost']>>;
-  let metricsBySite: Awaited<ReturnType<UnifiClient['listIspMetricsBySite']>>;
   try {
     devicesByHost = await client.listDevicesByHost();
+  } catch (err) {
+    return { hostsSeen: hosts.length, fatalError: `UniFi /v1/devices read failed: ${(err as Error).message}`, byMapping };
+  }
+
+  let metricsBySite: Awaited<ReturnType<UnifiClient['listIspMetricsBySite']>> | undefined;
+  let metricsError: string | undefined;
+  try {
     metricsBySite = await client.listIspMetricsBySite();
   } catch (err) {
-    for (const m of mappings) {
-      byMapping.set(m.id, { mappingId: m.id, error: `site ${m.unifiSiteId}: ${(err as Error).message}` });
-    }
-    return { hostsSeen: hosts.length, byMapping };
+    metricsError = `UniFi ISP metrics read failed: ${(err as Error).message}`;
+  }
+
+  const siteIdsByHost = new Map<string, Set<string>>();
+  for (const site of sites) {
+    if (!site.hostId) continue;
+    const siteIds = siteIdsByHost.get(site.hostId) ?? new Set<string>();
+    siteIds.add(site.id);
+    siteIdsByHost.set(site.hostId, siteIds);
   }
 
   for (const m of mappings) {
+    const metrics = metricsBySite ? (metricsBySite.get(m.unifiSiteId) ?? null) : undefined;
+    const hostSites = siteIdsByHost.get(m.unifiHostId);
+    if (!hostSites?.has(m.unifiSiteId)) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: UniFi site ${m.unifiSiteId} is not listed on host ${m.unifiHostId} by /v1/sites; its devices were not synced`,
+      });
+      continue;
+    }
+    // Devices have no site ID: assigning a multi-site host's list to any mapping
+    // could write another customer's devices into that mapping's organization.
+    if (hostSites.size > 1) {
+      byMapping.set(m.id, {
+        mappingId: m.id,
+        metrics,
+        error: `site ${m.unifiSiteId}: UniFi host ${m.unifiHostId} runs ${hostSites.size} sites and Site Manager /v1/devices does not say which site a device is on; its devices were not synced`,
+      });
+      continue;
+    }
+
     const devices = devicesByHost.get(m.unifiHostId);
     // A host absent from /v1/devices (offline/non-reporting, or the key's account is
     // not owner/super-admin on it) is NOT an empty host: treating it as [] would let
@@ -286,14 +329,14 @@ export async function collectSyncData(
     if (devices === undefined) {
       byMapping.set(m.id, {
         mappingId: m.id,
+        metrics,
         error: `site ${m.unifiSiteId}: UniFi host ${m.unifiHostId} not present in /v1/devices`,
       });
     } else {
-      const metrics = metricsBySite.get(m.unifiSiteId) ?? null;
       byMapping.set(m.id, { mappingId: m.id, devices, metrics });
     }
   }
-  return { hostsSeen: hosts.length, byMapping };
+  return { hostsSeen: hosts.length, metricsError, byMapping };
 }
 
 // Phase 2 — database only. Persists the run ledger, reconciles devices/assets,
@@ -336,26 +379,36 @@ export async function applySyncData(
       const failedMappingIds = new Set<string>();
       let anySiteFailed = false;
 
+      if (collected.metricsError) {
+        anySiteFailed = true;
+        result.error = collected.metricsError;
+      }
       for (const mapping of mappings) {
         const fetched = collected.byMapping.get(mapping.id);
-        if (!fetched || fetched.error) {
-          // Network fetch failed for this site — record and skip its writes so a
-          // transient per-site error doesn't stale still-online devices.
+        if (!fetched) {
           failedMappingIds.add(mapping.id);
           anySiteFailed = true;
-          if (fetched?.error) result.error = fetched.error;
           continue;
         }
+        if (fetched.error) {
+          anySiteFailed = true;
+          result.error = fetched.error;
+        }
+        // No device list: leave this mapping's devices untouched and out of the
+        // stale sweep so a transient per-site error doesn't stale still-online devices.
+        if (fetched.devices === undefined) failedMappingIds.add(mapping.id);
 
         try {
-          await db
-            .update(unifiSiteMappings)
-            .set({
-              wanMetrics: fetched.metrics?.raw ?? null,
-              wanMetricsAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(unifiSiteMappings.id, mapping.id));
+          if (fetched.metrics !== undefined) {
+            await db
+              .update(unifiSiteMappings)
+              .set({
+                wanMetrics: fetched.metrics?.raw ?? null,
+                wanMetricsAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(unifiSiteMappings.id, mapping.id));
+          }
 
           for (const d of fetched.devices ?? []) {
             seenDeviceIds.add(d.unifiDeviceId);

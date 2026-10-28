@@ -185,6 +185,38 @@ describe('unifiClient', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects a page 2 HTTP 500 instead of returning a partial site list', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ siteId: 's1', hostId: 'h1' }], nextToken: 'page-2' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'upstream failed' }, 500));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listSites()).rejects.toMatchObject({ name: 'UnifiApiError', status: 500 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an unreadable page 2 instead of returning a partial site list', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: [{ siteId: 's1', hostId: 'h1' }], nextToken: 'page-2' }))
+      .mockResolvedValueOnce(new Response('not JSON', { status: 200 }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listSites()).rejects.toMatchObject({ name: 'UnifiApiError', status: 502 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a numeric nextToken instead of treating it as the last page', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ siteId: 's1', hostId: 'h1' }], nextToken: 42 }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listSites()).rejects.toMatchObject({ name: 'UnifiApiError', status: 502 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an empty nextToken as the end of the list', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ siteId: 's1', hostId: 'h1' }], nextToken: '' }));
+    const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+    await expect(client.listSites()).resolves.toEqual([{ id: 's1', hostId: 'h1', name: 's1' }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   describe('listSites', () => {
     it('parses siteId + meta.name from the real /v1/sites shape (the "undefined" blocker)', async () => {
       // Site Manager /v1/sites has NO top-level id/name — only siteId, hostId, and
@@ -229,6 +261,33 @@ describe('unifiClient', () => {
       expect(devices.get('h1')!.map((d) => d.unifiDeviceId)).toEqual(['d1', 'd2']);
       expect(devices.get('h2')).toEqual([]);
       expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('omits a host when a later page has no device list while retaining other hosts', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(jsonResponse({ data: [{ hostId: 'h1', devices: [{ id: 'd1' }] }], nextToken: 'page-2' }))
+        .mockResolvedValueOnce(jsonResponse({ data: [{ hostId: 'h1' }, { hostId: 'h2', devices: [{ id: 'd2' }] }] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const devices = await client.listDevicesByHost();
+      expect(devices.has('h1')).toBe(false);
+      expect(devices.get('h2')!.map((d) => d.unifiDeviceId)).toEqual(['d2']);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[unifi] listDevicesByHost: 1 host group(s) had no device list — /v1/devices shape may have changed');
+    });
+
+    it.each([null, {}, 'invalid'])('keeps a host invalid after malformed devices %j even if a later group is valid', async (malformed) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
+        { hostId: 'h1', devices: malformed },
+        { hostId: 'h1', devices: [{ id: 'd1' }] },
+        { hostId: 'h2', devices: [] },
+      ] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const devices = await client.listDevicesByHost();
+      expect(devices.has('h1')).toBe(false);
+      expect(devices.get('h2')).toEqual([]);
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[unifi] listDevicesByHost: 1 host group(s) had no device list — /v1/devices shape may have changed');
     });
 
     it('fetches /v1/devices and returns devices grouped by host', async () => {
@@ -318,6 +377,17 @@ describe('unifiClient', () => {
       expect(fetchImpl.mock.calls[0]![0]).toBe('https://api.ui.com/v1/isp-metrics/5m');
       expect(metrics).toMatchObject({ latencyMs: 12, packetLoss: 0.5, uptimePercent: 99.9, isp: 'Comcast' });
       expect(metrics!.raw).toMatchObject({ siteId: 'site-abc' });
+    });
+
+    it('keeps the first ISP entry when a site appears twice', async () => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [
+        { siteId: 'site-abc', periods: [{ data: { wan: { avgLatency: 12 } } }] },
+        { siteId: 'site-abc', periods: [{ data: { wan: { avgLatency: 50 } } }] },
+      ] }));
+      const client = createUnifiClient({ baseUrl: 'https://api.ui.com', apiKey: 'k', fetchImpl });
+      const metrics = await client.listIspMetricsBySite();
+      expect(metrics.size).toBe(1);
+      expect(metrics.get('site-abc')!.latencyMs).toBe(12);
     });
 
     it('returns an all-null sample (not null) when the matched site has zero periods', async () => {

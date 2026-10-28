@@ -340,7 +340,7 @@ describe('unifiSyncService.syncIntegration', () => {
     // map-2 (h2): absent host → failedMappingIds captures 'map-2'
     const staledClient: UnifiClient = {
       listHosts: async () => [{ id: 'h1', name: 'C1', type: 'console', model: null }, { id: 'h2', name: 'C2', type: 'console', model: null }],
-      listSites: async () => [],
+      listSites: async () => [{ id: 's1', hostId: 'h1', name: 'S1' }, { id: 's2', hostId: 'h2', name: 'S2' }],
       listDevicesByHost: async () => new Map([['h1', []]]),
       listIspMetricsBySite: async () => new Map(),
     };
@@ -718,7 +718,7 @@ describe('collectSyncData', () => {
   const mappings = [
     { id: 'm1', unifiHostId: 'h1', unifiSiteId: 's1' },
     { id: 'm2', unifiHostId: 'ns1', unifiSiteId: 's2' },
-    { id: 'm3', unifiHostId: 'ns1', unifiSiteId: 's3' },
+    { id: 'm3', unifiHostId: 'h3', unifiSiteId: 's3' },
   ];
 
   it('fetches /v1/devices and ISP metrics once per run, not once per mapping', async () => {
@@ -726,10 +726,17 @@ describe('collectSyncData', () => {
       '/v1/hosts': [
         { id: 'h1', type: 'console', reportedState: { name: 'UDM' } },
         { id: 'ns1', type: 'network-server', reportedState: { name: 'Self-Hosted' } },
+        { id: 'h3', type: 'console', reportedState: { name: 'Third' } },
+      ],
+      '/v1/sites': [
+        { siteId: 's1', hostId: 'h1' },
+        { siteId: 's2', hostId: 'ns1' },
+        { siteId: 's3', hostId: 'h3' },
       ],
       '/v1/devices': [
         { hostId: 'h1', devices: [{ id: 'd1', mac: 'aa:bb:cc:dd:ee:01', ip: '10.0.0.1' }] },
         { hostId: 'ns1', devices: [{ id: 'd2', mac: 'aa:bb:cc:dd:ee:02', ip: '10.0.0.2' }] },
+        { hostId: 'h3', devices: [{ id: 'd3', mac: 'aa:bb:cc:dd:ee:03', ip: '10.0.0.3' }] },
       ],
       '/v1/isp-metrics/5m': ['s1', 's2', 's3'].map((siteId) => ({ siteId, periods: [] })),
     };
@@ -744,18 +751,22 @@ describe('collectSyncData', () => {
     const result = await collectSyncData(client, mappings);
     const paths = fetchImpl.mock.calls.map(([url]) => new URL(url).pathname);
     expect(paths.filter((path) => path === '/v1/devices')).toHaveLength(1);
+    expect(paths.filter((path) => path === '/v1/sites')).toHaveLength(1);
     expect(paths.filter((path) => path === '/v1/isp-metrics/5m')).toHaveLength(1);
     for (const mapping of mappings) {
       const row = result.byMapping.get(mapping.id)!;
       expect(row.error).toBeUndefined();
       expect(row.devices).toHaveLength(1);
-      expect(row.devices![0]!.unifiDeviceId).toBe(mapping.unifiHostId === 'h1' ? 'd1' : 'd2');
+      expect(row.devices![0]!.unifiDeviceId).toBe(mapping.unifiHostId === 'h1' ? 'd1' : mapping.unifiHostId === 'ns1' ? 'd2' : 'd3');
       expect(row.metrics?.raw).toMatchObject({ siteId: mapping.unifiSiteId });
     }
   });
 
   it('a mapping whose host is absent from /v1/devices is a per-mapping error, not an empty host', async () => {
-    const result = await collectSyncData(fakeClient([NET_NEW_DEVICE]), [
+    const result = await collectSyncData({
+      ...fakeClient([NET_NEW_DEVICE]),
+      listSites: async () => [{ id: 's1', hostId: 'h1', name: 'S1' }, { id: 's2', hostId: 'h2', name: 'S2' }],
+    }, [
       BASE_MAPPING,
       { id: 'map-2', unifiHostId: 'h2', unifiSiteId: 's2' },
     ]);
@@ -767,29 +778,155 @@ describe('collectSyncData', () => {
   it('skips the devices and metrics reads when there are no mappings', async () => {
     const client = {
       ...fakeClient([]),
+      listSites: vi.fn(async () => []),
       listDevicesByHost: vi.fn(async () => new Map()),
       listIspMetricsBySite: vi.fn(async () => new Map()),
     };
     const result = await collectSyncData(client, []);
     expect(result).toEqual({ hostsSeen: 1, byMapping: new Map() });
+    expect(client.listSites).not.toHaveBeenCalled();
     expect(client.listDevicesByHost).not.toHaveBeenCalled();
     expect(client.listIspMetricsBySite).not.toHaveBeenCalled();
   });
 
-  it('a failed /v1/devices read errors every mapping (no stale sweep) without a fatal', async () => {
+  it('a failed /v1/devices read is fatal', async () => {
     const client = {
       ...fakeClient([]),
       listDevicesByHost: vi.fn(async () => { throw new Error('device timeout'); }),
       listIspMetricsBySite: vi.fn(async () => new Map()),
     };
     const result = await collectSyncData(client, mappings);
-    expect(result.fatalError).toBeUndefined();
-    for (const mapping of mappings) {
-      expect(result.byMapping.get(mapping.id)).toEqual({
-        mappingId: mapping.id,
-        error: `site ${mapping.unifiSiteId}: device timeout`,
-      });
-    }
+    expect(result.fatalError).toBe('UniFi /v1/devices read failed: device timeout');
+    expect(result.byMapping.size).toBe(0);
     expect(client.listIspMetricsBySite).not.toHaveBeenCalled();
+  });
+
+  it('a failed /v1/sites read is fatal', async () => {
+    const client = {
+      ...fakeClient([]),
+      listSites: vi.fn(async () => { throw new Error('sites timeout'); }),
+      listDevicesByHost: vi.fn(async () => new Map()),
+      listIspMetricsBySite: vi.fn(async () => new Map()),
+    };
+    const result = await collectSyncData(client, mappings);
+    expect(result.fatalError).toBe('UniFi /v1/sites read failed: sites timeout');
+    expect(result.byMapping.size).toBe(0);
+    expect(client.listDevicesByHost).not.toHaveBeenCalled();
+    expect(client.listIspMetricsBySite).not.toHaveBeenCalled();
+  });
+
+  const multiSiteMappings = [
+    { id: 'm2', unifiHostId: 'ns1', unifiSiteId: 's2' },
+    { id: 'm3', unifiHostId: 'ns1', unifiSiteId: 's3' },
+  ];
+  function multiSiteClient(): UnifiClient {
+    return {
+      ...fakeClient([]),
+      listSites: async () => [
+        { id: 's2', hostId: 'ns1', name: 'S2' },
+        { id: 's3', hostId: 'ns1', name: 'S3' },
+      ],
+      listDevicesByHost: async () => new Map([['ns1', [NET_NEW_DEVICE]]]),
+      listIspMetricsBySite: async () => new Map(['s2', 's3'].map((siteId) => [
+        siteId, { latencyMs: 10, packetLoss: 0, uptimePercent: 99.9, isp: 'ACME', raw: { siteId } },
+      ])),
+    };
+  }
+
+  it("a multi-site host's devices are not attributed to any mapping", async () => {
+    const result = await collectSyncData(multiSiteClient(), multiSiteMappings);
+    for (const mapping of multiSiteMappings) {
+      const fetched = result.byMapping.get(mapping.id)!;
+      expect(fetched.devices).toBeUndefined();
+      expect(fetched.error).toContain('runs 2 sites');
+      expect(fetched.metrics?.raw).toEqual({ siteId: mapping.unifiSiteId });
+    }
+  });
+
+  it('a single mapping on a multi-site host still gets no devices', async () => {
+    const result = await collectSyncData(multiSiteClient(), [multiSiteMappings[0]!]);
+    const fetched = result.byMapping.get('m2')!;
+    expect(fetched.devices).toBeUndefined();
+    expect(fetched.error).toContain('runs 2 sites');
+    expect(fetched.metrics?.raw).toEqual({ siteId: 's2' });
+  });
+
+  it('a mapping whose site is no longer listed on its host gets no devices', async () => {
+    const result = await collectSyncData({
+      ...fakeClient([NET_NEW_DEVICE]),
+      listSites: async () => [{ id: 's1', hostId: 'another-host', name: 'Moved' }],
+    }, [BASE_MAPPING]);
+    const fetched = result.byMapping.get(BASE_MAPPING.id)!;
+    expect(fetched.devices).toBeUndefined();
+    expect(fetched.error).toContain('is not listed on host');
+    expect(fetched.metrics).toBeDefined();
+  });
+
+  it('a mapping on an Unknown console host still syncs', async () => {
+    const result = await collectSyncData({
+      ...fakeClient([]),
+      listSites: async () => [{ id: 'sg', hostId: 'ghost', name: 'Ghost site' }],
+      listDevicesByHost: async () => new Map([['ghost', [NET_NEW_DEVICE]]]),
+    }, [{ id: 'mg', unifiHostId: 'ghost', unifiSiteId: 'sg' }]);
+    const fetched = result.byMapping.get('mg')!;
+    expect(fetched.devices).toEqual([NET_NEW_DEVICE]);
+    expect(fetched.error).toBeUndefined();
+  });
+
+  it('an ISP-metrics read failure keeps devices', async () => {
+    const result = await collectSyncData({
+      ...fakeClient([NET_NEW_DEVICE]),
+      listIspMetricsBySite: async () => { throw new Error('metrics timeout'); },
+    }, [BASE_MAPPING]);
+    const fetched = result.byMapping.get(BASE_MAPPING.id)!;
+    expect(fetched.devices).toEqual([NET_NEW_DEVICE]);
+    expect(fetched.metrics).toBeUndefined();
+    expect(fetched.error).toBeUndefined();
+    expect(result.metricsError).toBe('UniFi ISP metrics read failed: metrics timeout');
+  });
+});
+
+describe('syncIntegration safe device attribution and independent WAN metrics', () => {
+  it('a multi-site host writes only site metrics across customer mappings', async () => {
+    const mappings = [
+      { ...BASE_MAPPING, id: 'map-A', unifiSiteId: 'sA', orgId: 'org-a', siteId: 'site-a' },
+      { ...BASE_MAPPING, id: 'map-B', unifiSiteId: 'sB', orgId: 'org-b', siteId: 'site-b' },
+    ];
+    const { db, writes } = scriptedDb({
+      mappings,
+      existingDevices: [{ id: 'dev-1', unifiDeviceId: 'ud-1', mappingId: 'map-A' }],
+    });
+    const client: UnifiClient = {
+      ...fakeClient([NET_NEW_DEVICE]),
+      listSites: async () => [
+        { id: 'sA', hostId: 'h1', name: 'Customer A' },
+        { id: 'sB', hostId: 'h1', name: 'Customer B' },
+      ],
+      listIspMetricsBySite: async () => new Map(['sA', 'sB'].map((siteId) => [
+        siteId, { latencyMs: 10, packetLoss: 0, uptimePercent: 99.9, isp: 'ACME', raw: { siteId } },
+      ])),
+    };
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+    expect(writes.inserts.filter((w) => w.table === unifiDevices)).toHaveLength(0);
+    expect(writes.inserts.filter((w) => w.table === discoveredAssets)).toHaveLength(0);
+    expect(writes.updates.filter((w) => w.table === unifiDevices)).toHaveLength(0);
+    const metricUpdates = writes.updates.filter((w) => w.table === unifiSiteMappings);
+    expect(metricUpdates).toHaveLength(2);
+    expect(metricUpdates.map((w) => w.values.wanMetrics)).toEqual([{ siteId: 'sA' }, { siteId: 'sB' }]);
+    expect(result.status).toBe('partial');
+    expect(result.devicesRemoved).toBe(0);
+  });
+
+  it('an ISP-metrics failure inserts devices without updating WAN metrics', async () => {
+    const { db, writes } = scriptedDb({ mappings: [BASE_MAPPING] });
+    const client: UnifiClient = {
+      ...fakeClient([NET_NEW_DEVICE]),
+      listIspMetricsBySite: async () => { throw new Error('metrics timeout'); },
+    };
+    const result = await syncIntegration({ db, client }, BASE_INTEGRATION, 'manual');
+    expect(writes.inserts.filter((w) => w.table === unifiDevices)).toHaveLength(1);
+    expect(writes.updates.filter((w) => w.table === unifiSiteMappings)).toHaveLength(0);
+    expect(result.status).toBe('partial');
+    expect(result.error).toContain('ISP metrics read failed');
   });
 });

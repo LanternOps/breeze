@@ -143,6 +143,9 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
       if (nextToken) params.set('nextToken', nextToken);
       const query = params.toString();
       const body = await request(query ? `${path}?${query}` : path);
+      if (body == null && page > 0) {
+        throw new UnifiApiError(`UniFi ${path} returned an empty or unreadable page ${page + 1}; refusing to return a partial list`, 502);
+      }
       // Distinguish an explicit `data: null` (a valid empty page, e.g. no ISP
       // metrics) from a missing envelope: `?? body` would wrongly treat the whole
       // envelope as the page on `data: null`.
@@ -154,7 +157,11 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
         }
         rows.push(...data);
       }
-      nextToken = str(body?.nextToken) ?? undefined;
+      const token = body?.nextToken;
+      if (token != null && typeof token !== 'string') {
+        throw new UnifiApiError(`UniFi ${path} returned a non-string pagination token`, 502);
+      }
+      nextToken = str(token) ?? undefined;
       if (!nextToken) return rows;
       if (seenTokens.has(nextToken)) {
         throw new UnifiApiError(`UniFi ${path} repeated a pagination token`, 502);
@@ -214,11 +221,23 @@ export function createUnifiClient(cfg: UnifiClientConfig): UnifiClient {
       // can span two groups when its devices straddle a page break, so concatenate.
       const groups = await getAll<Record<string, unknown>>('/v1/devices', { pageSize: PAGE_SIZE });
       const byHost = new Map<string, UnifiDeviceDto[]>();
+      const invalidHosts = new Set<string>();
+      let malformedGroups = 0;
       for (const group of groups) {
         const hostId = String(group.hostId ?? '');
         if (!hostId) continue;
-        const rows = (group.devices as Array<Record<string, unknown>> | undefined) ?? [];
-        byHost.set(hostId, [...(byHost.get(hostId) ?? []), ...mapDevices(rows)]);
+        if (!Array.isArray(group.devices)) {
+          invalidHosts.add(hostId);
+          malformedGroups += 1;
+          continue;
+        }
+        byHost.set(hostId, [...(byHost.get(hostId) ?? []), ...mapDevices(group.devices)]);
+      }
+      // Any missing device list makes the host incomplete, even if another group
+      // was valid. Omit it so sync fails that mapping instead of sweeping stale devices.
+      for (const hostId of invalidHosts) byHost.delete(hostId);
+      if (malformedGroups > 0) {
+        console.warn(`[unifi] listDevicesByHost: ${malformedGroups} host group(s) had no device list — /v1/devices shape may have changed`);
       }
       return byHost;
     },
