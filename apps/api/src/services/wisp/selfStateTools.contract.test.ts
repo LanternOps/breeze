@@ -36,7 +36,6 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
       raise_concern: 'adds_row',
       link_entity: 'adds_row',
       snooze_concern: 'own_concern',
-      resolve_concern: 'own_concern',
     });
   });
 
@@ -67,7 +66,9 @@ describe('WISP_SELF_STATE_TOOLS contract (#10392)', () => {
     expect(isReadOnlyResolution(tool, check)).toBe(false);
   });
 
-  it.each(['confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command'])(
+  // resolve_concern: resolveConcern always writes a shared (org/partner-owned)
+  // concern_outcome memory block — the same reason org/partner remember keeps its card.
+  it.each(['resolve_concern', 'confirm_memory', 'retract_memory', 'create_watch', 'launch_specialist', 'manage_patches', 'execute_command'])(
     '%s is not a member',
     (tool) => {
       expect(WISP_SELF_STATE_TOOLS.has(tool)).toBe(false);

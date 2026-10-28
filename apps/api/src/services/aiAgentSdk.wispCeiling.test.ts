@@ -861,31 +861,33 @@ describe('createSessionPreToolUse — Wisp bookkeeping tools skip the per_step c
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
   });
 
-  it.each(['snooze_concern', 'resolve_concern'])(
-    '%s of a concern THIS grant raised runs with no card (lookup bound to the call\'s ceiling)',
-    async (toolName) => {
-      mockIsLiveConcernRaisedByGrant.mockResolvedValue(true);
-      await expectNoCard(toolName, { concernId: CONCERN_ID, outcome: 'vendor replied', until: '2026-11-01T00:00:00Z' });
-      expect(mockIsLiveConcernRaisedByGrant).toHaveBeenCalledWith(CEILING, CONCERN_ID);
-    },
-  );
+  const SNOOZE = { concernId: CONCERN_ID, until: '2026-11-01T00:00:00Z' };
 
-  it.each(['snooze_concern', 'resolve_concern'])(
-    '%s of a concern raised by someone else (or another grant) keeps the per_step card',
-    async (toolName) => {
-      mockIsLiveConcernRaisedByGrant.mockResolvedValue(false);
-      await expectCard(toolName, { concernId: CONCERN_ID, outcome: 'done', until: '2026-11-01T00:00:00Z' });
-    },
-  );
+  it('snooze_concern of a concern THIS grant raised runs with no card (lookup bound to the call\'s ceiling)', async () => {
+    mockIsLiveConcernRaisedByGrant.mockResolvedValue(true);
+    await expectNoCard('snooze_concern', SNOOZE);
+    expect(mockIsLiveConcernRaisedByGrant).toHaveBeenCalledWith(CEILING, CONCERN_ID);
+  });
+
+  it('snooze_concern of a concern raised by someone else (or another grant) keeps the per_step card', async () => {
+    mockIsLiveConcernRaisedByGrant.mockResolvedValue(false);
+    await expectCard('snooze_concern', SNOOZE);
+  });
+
+  it('resolve_concern keeps the card EVEN for a concern this grant raised: it writes a shared org/partner concern_outcome memory block', async () => {
+    mockIsLiveConcernRaisedByGrant.mockResolvedValue(true);
+    await expectCard('resolve_concern', { concernId: CONCERN_ID, outcome: 'vendor replied' });
+    expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
+  });
 
   it('an own-concern lookup that fails keeps the card (fails toward asking) and is reported', async () => {
     mockIsLiveConcernRaisedByGrant.mockRejectedValue(new Error('connection refused'));
-    await expectCard('resolve_concern', { concernId: CONCERN_ID, outcome: 'done' });
+    await expectCard('snooze_concern', SNOOZE);
     expect(mockCaptureException).toHaveBeenCalled();
   });
 
-  it('a snooze/resolve with no string concernId keeps the card and never queries', async () => {
-    await expectCard('resolve_concern', { outcome: 'done' });
+  it('a snooze with no string concernId keeps the card and never queries', async () => {
+    await expectCard('snooze_concern', { until: '2026-11-01T00:00:00Z' });
     expect(mockIsLiveConcernRaisedByGrant).not.toHaveBeenCalled();
   });
 

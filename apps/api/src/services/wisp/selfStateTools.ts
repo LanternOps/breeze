@@ -23,10 +23,12 @@
  *                                  closes or hides an existing concern.
  *   link_entity     'adds_row'     a link on this grant's own thread.
  *   snooze_concern  'own_concern'  only a concern THIS grant raised (gate-time
- *   resolve_concern 'own_concern'  lookup, wisp/concerns.ts
- *                                  isLiveConcernRaisedByGrant). Parking or
- *                                  closing one a person or another grant raised
- *                                  changes what others see: it keeps the card.
+ *                                  lookup, wisp/concerns.ts
+ *                                  isLiveConcernRaisedByGrant). Parking one a
+ *                                  person or another grant raised changes what
+ *                                  others see: it keeps the card. A snooze
+ *                                  writes this grant's recipient row and the
+ *                                  concern status, never memory.
  *
  * `createSessionPreToolUse` (aiAgentSdk.ts) applies this only to a call that
  * passed the live Wisp ceiling gate this turn, with the #3130 read-only path's
@@ -37,6 +39,10 @@
  * agent allowlists are unchanged). A Tier-3 resolution never takes the path.
  *
  * Deliberately NOT here:
+ *   - `resolve_concern`: `resolveConcern` always remembers the outcome as an
+ *     org- or partner-owned `concern_outcome` memory block — shared standing
+ *     context, the same reason org/partner `remember` keeps its card — and it
+ *     closes the concern for every recipient.
  *   - `create_watch`: every watch is a recurring assessment that spends grant
  *     budget — the same reason an auto-admit `launch_specialist` sweep keeps
  *     its card under per_step (#10144).
@@ -57,5 +63,4 @@ export const WISP_SELF_STATE_TOOLS: ReadonlyMap<string, WispSelfStateScope> = ne
   ['raise_concern', 'adds_row'],
   ['link_entity', 'adds_row'],
   ['snooze_concern', 'own_concern'],
-  ['resolve_concern', 'own_concern'],
 ]);

@@ -539,10 +539,11 @@ export async function getConcernForCeiling(ceiling: GrantCeiling, id: string): P
 /**
  * #10392: true only when the concern is visible to this ceiling, still live,
  * and was raised by THIS grant (a chat raise_concern or this grant's own
- * assessment). The chat gate uses it to let snooze/resolve of Wisp's own
- * loose ends run without an approval card; a concern raised by a person,
- * another grant, or nobody (grant deleted → NULL) keeps the card, because
- * closing or parking it changes state other people see.
+ * assessment). The chat gate uses it to let a snooze of Wisp's own loose ends
+ * run without an approval card; a concern raised by a person, another grant,
+ * or nobody (grant deleted → NULL) keeps the card, because parking it changes
+ * state other people see. (Resolve always keeps its card: it writes shared
+ * concern_outcome memory — wisp/selfStateTools.ts.)
  */
 export async function isLiveConcernRaisedByGrant(ceiling: GrantCeiling, id: string): Promise<boolean> {
   const visible = visibilityWhere(ceiling);
