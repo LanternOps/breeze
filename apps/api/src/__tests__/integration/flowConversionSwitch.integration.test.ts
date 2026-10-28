@@ -49,8 +49,9 @@ import { processFlowRunJob } from '../../jobs/flowRunner';
 import { buildRunScriptSnapshot } from '../../services/actionIntents/runScriptSnapshot';
 import { validateFlowDocument } from '../../services/flowValidator';
 import { legacyPrefers, loadSwitchedConvertedAutomations } from '../../services/flows/conversion/claims';
-import { loadConversionContext } from '../../services/flows/conversion/context';
-import { automationSourceDigest, convertAutomation } from '../../services/flows/conversion/convertAutomation';
+import { automationSourceDigest, generatedScriptPlaceholderId } from '../../services/flows/conversion/convertAutomation';
+import { createConversion } from '../../services/flows/conversion/service';
+import { saveDraftFlow } from '../../services/flows/service';
 import { flowDocumentDigest, resetShadowIfChanged } from '../../services/flows/conversion/ledger';
 import { switchConversion } from '../../services/flows/conversion/switch';
 import { fleetScriptMaterialFromSnapshot } from '../../services/flows/fleetPreApproval';
@@ -178,45 +179,22 @@ async function job(t: Tenant, values: Partial<typeof automations.$inferInsert>) 
 type AutomationRow = Awaited<ReturnType<typeof job>>;
 
 /**
- * A shadow generation exactly as createConversion writes it (the converter's
- * document as the draft, the ledger row), aged and counted as the case needs.
- * Written directly: a converted draft that names a generated-script
- * placeholder does not pass saveDraftFlow's ownership check (see report).
+ * A shadow conversion through the real createConversion (as the Job's owner
+ * side: an org Job by the org user, a partner-wide Job by the partner user),
+ * then aged and counted as the case needs.
  */
-async function shadow(row: AutomationRow, o: { ageMs?: number; runs?: number; divergences?: number; convertedBy: string }) {
-  const ctx = await loadConversionContext(row);
-  const r = convertAutomation(row, ctx);
-  if (!r.document || r.fidelity === 'unconvertible') throw new Error(`unconvertible: ${JSON.stringify(r.findings)}`);
-  const doc = r.document;
-  return system(async () => {
-    const [flow] = await db.insert(flows).values({
-      orgId: row.orgId,
-      partnerId: row.orgId ? null : row.partnerId,
-      slug: `conv_${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-      name: doc.name,
-      definition: doc as unknown as Record<string, unknown>,
-      definitionVersion: 1,
-      effectiveTier: 3,
-      status: 'draft',
-      createdByUserId: o.convertedBy,
-    }).returning();
-    const [ledger] = await db.insert(flowAutomationConversions).values({
-      orgId: row.orgId,
-      partnerId: row.orgId ? null : row.partnerId,
-      automationId: row.id,
-      flowId: flow!.id,
-      fidelity: r.fidelity === 'exact' ? 'exact' : 'needs_review',
-      findings: r.findings,
-      sourceDigest: r.sourceDigest,
-      sourceSnapshot: r.sourceSnapshot,
-      documentDigest: flowDocumentDigest(flow!.definition),
-      convertedBy: o.convertedBy,
-      shadowRuns: o.runs ?? 5,
-      shadowDivergences: o.divergences ?? 0,
-      shadowStartedAt: new Date(Date.now() - (o.ageMs ?? 8 * 86_400_000)),
-    }).returning();
-    return { conversionId: ledger!.id, flowId: flow!.id, findings: r.findings };
-  });
+async function converted(t: Tenant, row: AutomationRow, o: { ageMs?: number; runs?: number; divergences?: number } = {}) {
+  const create = { expectedSourceDigest: automationSourceDigest(row) };
+  const r = row.orgId
+    ? await t.asOrg(() => createConversion(t.orgAuth(), row.id, create))
+    : await t.asPartner(() => createConversion(t.partnerAuth(), row.id, create));
+  if (!r.ok) throw new Error(`createConversion refused: ${JSON.stringify(r)}`);
+  await system(() => db.update(flowAutomationConversions).set({
+    shadowRuns: o.runs ?? 5,
+    shadowDivergences: o.divergences ?? 0,
+    shadowStartedAt: new Date(Date.now() - (o.ageMs ?? 8 * 86_400_000)),
+  }).where(eq(flowAutomationConversions.id, r.conversion.id)));
+  return { conversionId: r.conversion.id, flowId: r.conversion.flowId, findings: r.conversion.findings };
 }
 
 const req = (over: Partial<ConversionSwitchRequest> = {}): ConversionSwitchRequest => ({
@@ -244,7 +222,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('switch is one transaction and switch_at is 60 s ahead; the legacy loader then treats the row as switched', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
 
     const r = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()));
     expect(r.ok, JSON.stringify(r)).toBe(true);
@@ -277,7 +255,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('enable refusal rolls back scripts, secret and ledger', async () => {
     const t = await tenant();
     const row = await job(t, { trigger: { type: 'webhook', secret: encryptSecret('legacy-s3cret') } });
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     const before = await ledgerRow(s.conversionId);
 
     // A step id the document does not have: enableFlow refuses AFTER the
@@ -298,7 +276,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('site-limited user cannot switch', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
 
     // A site ceiling on the membership…
     const limited = await t.member('limited', [t.siteId]);
@@ -317,7 +295,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     const t = await tenant();
     // Org Job → org flow, org script.
     const orgJob = await job(t, {});
-    const so = await shadow(orgJob, { convertedBy: t.creator.id });
+    const so = await converted(t, orgJob, {});
     const ro = await t.asOrg(() => switchConversion(t.orgAuth(), so.conversionId, req()));
     expect(ro.ok, JSON.stringify(ro)).toBe(true);
     expect(await flowRow(so.flowId)).toMatchObject({ orgId: t.orgId, partnerId: null });
@@ -327,7 +305,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     const pwJob = await job(t, {
       orgId: null, partnerId: t.partnerId, conditions: [], createdBy: t.partnerCreator.id,
     });
-    const sp = await shadow(pwJob, { convertedBy: t.partnerCreator.id });
+    const sp = await converted(t, pwJob, {});
 
     // A selected-access partner user is refused before anything is written.
     const selected = await t.partnerMember('selected', 'selected');
@@ -348,7 +326,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('edited source refuses switch', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     await system(() => db.update(automations)
       .set({ actions: [{ type: 'execute_command', command: 'Get-Service', shell: 'powershell', whenOffline: 'queue' }] })
       .where(eq(automations.id, row.id)));
@@ -360,13 +338,13 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('shadow younger than 10 min refuses even with acknowledgement', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id, ageMs: 9 * 60_000, runs: 0 });
+    const s = await converted(t, row, { ageMs: 9 * 60_000, runs: 0 });
     expect(await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ acknowledgeDivergence: true }))))
       .toEqual({ ok: false, error: 'shadow_too_new' });
 
     // Older than 10 min but short of the gate: only an acknowledgement switches, and it is recorded.
     const row2 = await job(t, {});
-    const s2 = await shadow(row2, { convertedBy: t.creator.id, ageMs: 11 * 60_000, runs: 1, divergences: 1 });
+    const s2 = await converted(t, row2, { ageMs: 11 * 60_000, runs: 1, divergences: 1 });
     expect(await t.asOrg(() => switchConversion(t.orgAuth(), s2.conversionId, req())))
       .toEqual({ ok: false, error: 'shadow_divergent' });
     const r = await t.asOrg(() => switchConversion(t.orgAuth(), s2.conversionId, req({ acknowledgeDivergence: true })));
@@ -378,7 +356,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     const t = await tenant();
     const limitedCreator = await t.member('limited-creator', [t.siteId]);
     const row = await job(t, { createdBy: limitedCreator.id });
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     expect(s.findings.map((f) => f.code)).toContain('site_ceiling_removed');
 
     expect(await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req())))
@@ -393,14 +371,14 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('pre-approvals are unticked unless sent', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     const r = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()));
     expect(r.ok, JSON.stringify(r)).toBe(true);
     const [publication] = await publicationsOf(s.flowId);
     expect(publication!.preApprovals).toEqual([]);
 
     const row2 = await job(t, {});
-    const s2 = await shadow(row2, { convertedBy: t.creator.id });
+    const s2 = await converted(t, row2, {});
     const r2 = await t.asOrg(() => switchConversion(t.orgAuth(), s2.conversionId, req({ preApprovals: [{ stepId: 'a0_command', maxTargets: 3 }] })));
     expect(r2.ok, JSON.stringify(r2)).toBe(true);
     const [publication2] = await publicationsOf(s2.flowId);
@@ -410,7 +388,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('generated script body equals the command', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     const r = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()));
     expect(r.ok, JSON.stringify(r)).toBe(true);
 
@@ -430,7 +408,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb("fleet pre-approval binds the generated script's digest, and the run path's system-context recompute agrees", async () => {
     const t = await tenant();
     const row = await job(t, { trigger: { type: 'manual' } });
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     const r = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ preApprovals: [{ stepId: 'a0_command', maxTargets: 5 }] })));
     expect(r.ok, JSON.stringify(r)).toBe(true);
 
@@ -460,7 +438,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     const t = await tenant();
     const legacySecret = `legacy-${randomUUID()}`;
     const row = await job(t, { trigger: { type: 'webhook', secret: encryptSecret(legacySecret) } });
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
 
     // What the sender signs today, with the secret it already has.
     const body = JSON.stringify({ hello: 'world' });
@@ -491,9 +469,47 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
       osTypes: ['windows'], runAs: 'system', timeoutSeconds: 60,
     }).returning({ id: scripts.id }));
     const row = await job(t, { actions: [{ type: 'run_script', scriptId: script!.id, whenOffline: 'queue' }] });
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     expect(await t.asOrg(() => enableFlow(t.orgAuth(), s.flowId, { expectedVersion: 1, preApprovedStepIds: [] })))
       .toEqual({ ok: false, error: 'flow_conversion_not_switched' });
+  });
+
+  runDb('a command Job converts through createConversion, its draft stays editable in shadow, and the switch from it succeeds', async () => {
+    const t = await tenant();
+    const row = await job(t, {});
+    const s = await converted(t, row);
+    const placeholder = generatedScriptPlaceholderId(row.id, 0);
+    expect(scriptIdOf((await flowRow(s.flowId)).definition, 'a0_command')).toBe(placeholder);
+
+    // A user edit during shadow keeps the placeholder (and restarts the shadow).
+    const draft = (await flowRow(s.flowId)).definition as Record<string, unknown>;
+    const edited = await t.asOrg(() => saveDraftFlow(t.orgAuth(), { flowId: s.flowId, expectedVersion: 1, document: { ...draft, name: 'Renamed in shadow' } }));
+    expect(edited.saved, JSON.stringify(edited)).toBe(true);
+    expect((await ledgerRow(s.conversionId)).shadowRuns).toBe(0);
+    // A real script of another tenant is still refused in that draft.
+    const foreign = await t.asOrg(() => saveDraftFlow(t.orgAuth(), {
+      flowId: s.flowId, expectedVersion: 2,
+      document: { ...draft, steps: (draft.steps as Array<Record<string, unknown>>).map((st) => ({ ...st, input: { ...(st.input as object), scriptId: t.siblingScriptId } })) },
+    }));
+    expect(foreign).toMatchObject({ saved: false, validation: { issues: [expect.objectContaining({ code: 'reference_not_owned' })] } });
+
+    await system(() => db.update(flowAutomationConversions).set({ shadowRuns: 5, shadowStartedAt: new Date(Date.now() - 8 * 86_400_000) })
+      .where(eq(flowAutomationConversions.id, s.conversionId)));
+    const r = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ expectedFlowVersion: 2 })));
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const flow = await flowRow(s.flowId);
+    expect(flow).toMatchObject({ status: 'enabled', name: 'Renamed in shadow' });
+    const [script] = await generatedScripts(row);
+    expect(scriptIdOf(flow.definition, 'a0_command')).toBe(script!.id);
+  });
+
+  runDb('enable keeps the full check: a draft still naming a placeholder never publishes, even on its switch path', async () => {
+    const t = await tenant();
+    const row = await job(t, {});
+    const s = await converted(t, row);
+    const r = await t.asOrg(() => enableFlow(t.orgAuth(), s.flowId, { expectedVersion: 1, preApprovedStepIds: [] }, { switchingConversionId: s.conversionId }));
+    expect(r).toMatchObject({ ok: false, error: 'invalid', validation: { issues: [expect.objectContaining({ code: 'reference_not_owned', stepId: 'a0_command' })] } });
+    expect(await publicationsOf(s.flowId)).toEqual([]);
   });
 
   runDb('the ambient-transaction script read keeps the owner predicate: a foreign script is still refused', async () => {
@@ -546,7 +562,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('a concurrent Job edit and a switch never deadlock: both finish, or the switch is a clean source_changed', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
 
     // The automation PUT's transaction: row update, then the ledger reset —
     // held open long enough for the switch to start and wait.
@@ -575,7 +591,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('the switch refuses a conversion that is not shadow', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     expect((await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()))).ok).toBe(true);
     expect(await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ expectedFlowVersion: 2 }))))
       .toEqual({ ok: false, error: 'not_shadow' });
@@ -585,7 +601,7 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
   runDb('a stale expectedFlowVersion is version_conflict and writes nothing', async () => {
     const t = await tenant();
     const row = await job(t, {});
-    const s = await shadow(row, { convertedBy: t.creator.id });
+    const s = await converted(t, row, {});
     expect(await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ expectedFlowVersion: 7 }))))
       .toEqual({ ok: false, error: 'version_conflict' });
     expect(await generatedScripts(row)).toEqual([]);

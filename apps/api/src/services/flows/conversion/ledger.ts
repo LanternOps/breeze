@@ -15,11 +15,11 @@
  */
 import { createHash } from 'node:crypto';
 import { and, desc, eq, inArray, sql, type AnyColumn, type SQL } from 'drizzle-orm';
-import type { FlowConversionState } from '@breeze/shared';
+import type { FlowConversionState, FlowDocumentV1, FlowIssue } from '@breeze/shared';
 import { db } from '../../../db';
 import { automations, flowAutomationConversions, flows } from '../../../db/schema';
 import { canonicalizeArguments } from '../../actionIntents/canonicalize';
-import { automationSourceDigest } from './convertAutomation';
+import { automationSourceDigest, generatedScriptPlaceholderId } from './convertAutomation';
 
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 type AutomationRow = typeof automations.$inferSelect;
@@ -151,4 +151,69 @@ export async function resetShadowIfChanged(tx: DbExecutor, target: ShadowResetTa
     .where(and(eq(flowAutomationConversions.id, generation.id), eq(flowAutomationConversions.state, 'shadow')))
     .returning({ id: flowAutomationConversions.id });
   return reset.length > 0;
+}
+
+// ── generated-script placeholders (B1 defect, lead decision option 1) ──────
+
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * The placeholder ids a converted draft of this Job names: one per
+ * `execute_command` action, indexed exactly as `convertAutomation` indexes
+ * them (record actions only; a `restart_service` command becomes no step).
+ */
+export function generatedScriptPlaceholderIdsFor(automationId: string, actions: unknown): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(actions)) return out;
+  for (const [i, a] of actions.filter(isRecord).entries()) {
+    if (a.type === 'execute_command' && a.kind !== 'restart_service') out.add(generatedScriptPlaceholderId(automationId, i));
+  }
+  return out;
+}
+
+const SCRIPT_ID_POINTER_RE = /^\/steps\/(\d+)\/input\/scriptId$/;
+
+/** True when `v` has a script-ownership refusal an allowance could excuse (so the allowance is worth reading). */
+export function hasScriptOwnershipRefusal(v: { issues: readonly FlowIssue[] }): boolean {
+  return v.issues.some((i) => i.code === 'reference_not_owned' && SCRIPT_ID_POINTER_RE.test(i.pointer ?? ''));
+}
+
+/**
+ * SAVE TIME ONLY. Drops each `reference_not_owned` issue whose step's literal
+ * `input.scriptId` — read from the validated document, never from the issue —
+ * is one of `allowed` (the generated-script placeholders of the flow's own
+ * shadow conversion), and recomputes `valid`. Every other issue, including a
+ * real script another tenant owns, is kept. Enable and run time never call
+ * this: a placeholder can never publish, run or be pre-approved.
+ */
+export function allowGeneratedScriptPlaceholders<V extends { valid: boolean; issues: FlowIssue[]; document?: FlowDocumentV1 }>(
+  v: V,
+  allowed: ReadonlySet<string>,
+): V {
+  if (allowed.size === 0 || !v.document) return v;
+  const steps = v.document.steps;
+  const issues = v.issues.filter((issue) => {
+    if (issue.code !== 'reference_not_owned') return true;
+    const m = SCRIPT_ID_POINTER_RE.exec(issue.pointer ?? '');
+    if (!m) return true;
+    const scriptId = steps[Number(m[1])]?.input.scriptId;
+    return !(typeof scriptId === 'string' && allowed.has(scriptId));
+  });
+  if (issues.length === v.issues.length) return v;
+  return { ...v, issues, valid: issues.every((i) => i.severity !== 'error') };
+}
+
+/**
+ * The placeholders a save of this flow's draft may keep: those of its own
+ * `shadow` generation (derived from the ledger's stored source snapshot), or
+ * none. Read in the caller's context, like the draft row itself.
+ */
+export async function shadowPlaceholderAllowance(tx: DbExecutor, flowId: string): Promise<Set<string>> {
+  const [generation] = await tx
+    .select({ automationId: flowAutomationConversions.automationId, sourceSnapshot: flowAutomationConversions.sourceSnapshot })
+    .from(flowAutomationConversions)
+    .where(and(eq(flowAutomationConversions.flowId, flowId), eq(flowAutomationConversions.state, 'shadow')))
+    .limit(1);
+  if (!generation) return new Set();
+  return generatedScriptPlaceholderIdsFor(generation.automationId, generation.sourceSnapshot?.actions);
 }

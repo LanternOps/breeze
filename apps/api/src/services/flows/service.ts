@@ -41,7 +41,13 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { resolveFlowOwnerForCaller } from './owner';
 import { assessPreApprovals } from './preApproval';
-import { resetShadowIfChanged } from './conversion/ledger';
+import {
+  allowGeneratedScriptPlaceholders,
+  generatedScriptPlaceholderIdsFor,
+  hasScriptOwnershipRefusal,
+  resetShadowIfChanged,
+  shadowPlaceholderAllowance,
+} from './conversion/ledger';
 import type { ScriptReadExecutor } from './ownedReferences';
 import { ownerForFlowRow, takenFlowSlugs } from './repository';
 
@@ -62,6 +68,12 @@ export interface SaveDraftFlowInput {
    * holds the scripts it just generated (flowValidator `scriptReadExecutor`).
    */
   scriptReadExecutor?: ScriptReadExecutor;
+  /**
+   * W06 (#5221), createConversion only (never from a request body): the Job
+   * being converted, from its locked row. Its generated-script placeholders
+   * are excused at this save (conversion/ledger.ts allowGeneratedScriptPlaceholders).
+   */
+  convertedFrom?: { automationId: string; actions: unknown };
 }
 
 export type SaveDraftFlowResult =
@@ -257,7 +269,11 @@ async function createDraft(auth: AuthContext, input: SaveDraftFlowInput): Promis
   const baseSlug = input.slug ?? null;
   if (baseSlug !== null && !isValidFlowSlug(baseSlug)) return { saved: false, error: 'invalid_slug' };
 
-  const validation = await validateFlowDocument(input.document, { owner });
+  // W06: a converted Job's draft names the scripts its switch will generate (save time only).
+  const checked = await validateFlowDocument(input.document, { owner });
+  const validation = input.convertedFrom && hasScriptOwnershipRefusal(checked)
+    ? allowGeneratedScriptPlaceholders(checked, generatedScriptPlaceholderIdsFor(input.convertedFrom.automationId, input.convertedFrom.actions))
+    : checked;
   const document = validation.document;
   if (!validation.valid || !document) return { saved: false, validation: stripDocument(validation) };
 
@@ -310,10 +326,15 @@ async function updateDraft(auth: AuthContext, flowId: string, input: SaveDraftFl
 
   const owner = await ownerForFlowRow(existing);
   if (!owner) return { saved: false, error: 'flow_not_found' };
-  const validation = await validateFlowDocument(
+  const checked = await validateFlowDocument(
     input.document,
     input.scriptReadExecutor ? { owner, scriptReadExecutor: input.scriptReadExecutor } : { owner },
   );
+  // W06: while the flow's conversion is in shadow, its own generated-script
+  // placeholders are excused at save (never at enable).
+  const validation = hasScriptOwnershipRefusal(checked)
+    ? allowGeneratedScriptPlaceholders(checked, await shadowPlaceholderAllowance(db, flowId))
+    : checked;
   const document = validation.document;
   if (!validation.valid || !document) return { saved: false, validation: stripDocument(validation) };
 

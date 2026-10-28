@@ -289,6 +289,8 @@ export async function createConversion(
         document: result.document,
         ownerScope: row.orgId ? 'organization' : 'partner',
         ...(row.orgId ? { orgId: row.orgId } : {}),
+        // The locked row: its generated-script placeholders are excused at this save only.
+        convertedFrom: { automationId: row.id, actions: row.actions },
       });
       if (!saved.saved) {
         throw new ConversionRefused({
