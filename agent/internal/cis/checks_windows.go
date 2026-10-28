@@ -100,7 +100,10 @@ func checkPasswordHistory() CheckResult {
 		return result
 	}
 
-	historyCount := intFromAny(policy["historyCount"])
+	historyCount, ok := policyInt(policy, security.PasswordPolicyKeyHistoryCount)
+	if !ok {
+		return policyValueMissing(result, "password history")
+	}
 	result.Evidence = map[string]any{"historyCount": historyCount}
 
 	if historyCount >= 24 {
@@ -134,7 +137,10 @@ func checkMaxPasswordAge() CheckResult {
 		return result
 	}
 
-	maxAge := intFromAny(policy["maxPasswordAge"])
+	maxAge, ok := policyInt(policy, security.PasswordPolicyKeyMaxAgeDays)
+	if !ok {
+		return policyValueMissing(result, "maximum password age")
+	}
 	result.Evidence = map[string]any{"maxPasswordAge": maxAge}
 
 	if maxAge > 0 && maxAge <= 365 {
@@ -166,7 +172,10 @@ func checkMinPasswordAge() CheckResult {
 		return result
 	}
 
-	minAge := intFromAny(policy["minPasswordAge"])
+	minAge, ok := policyInt(policy, security.PasswordPolicyKeyMinAgeDays)
+	if !ok {
+		return policyValueMissing(result, "minimum password age")
+	}
 	result.Evidence = map[string]any{"minPasswordAge": minAge}
 
 	if minAge >= 1 {
@@ -194,7 +203,10 @@ func checkMinPasswordLength() CheckResult {
 		return result
 	}
 
-	minLen := intFromAny(policy["minPasswordLength"])
+	minLen, ok := policyInt(policy, security.PasswordPolicyKeyMinLength)
+	if !ok {
+		return policyValueMissing(result, "minimum password length")
+	}
 	result.Evidence = map[string]any{"minPasswordLength": minLen}
 
 	if minLen >= 14 {
@@ -394,6 +406,24 @@ func checkAuditCredentialValidation() CheckResult {
 		result.Status = "fail"
 		result.Message = "Audit Credential Validation is not set to Success and Failure"
 	}
+	return result
+}
+
+// policyInt reads one value of the security package's password-policy record.
+// A key the collector did not report is unknown, never 0: reading missing keys
+// as 0 failed CIS 1.1.2-1.1.4 on every Windows device (#9597).
+func policyInt(policy map[string]any, key string) (int, bool) {
+	switch v := policy[key].(type) {
+	case int, int64, float64:
+		return intFromAny(v), true
+	default:
+		return 0, false
+	}
+}
+
+func policyValueMissing(result CheckResult, what string) CheckResult {
+	result.Status = "error"
+	result.Message = fmt.Sprintf("password policy did not report the %s", what)
 	return result
 }
 

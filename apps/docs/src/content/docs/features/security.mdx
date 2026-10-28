@@ -54,7 +54,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
     - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
     - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
-    - **Password policy**: `Win32_AccountPolicy` CIM class reads min length, max age, lockout threshold, and history count
+    - **Password policy**: `secedit /export /areas SECURITYPOLICY` reads min length, complexity, max and min age, lockout threshold, and history count from the local security policy. If the export fails, `NetUserModalsGet` (what `net accounts` uses) supplies everything except complexity, which then shows as Unknown. A max age of 0 means passwords never expire, which fails the 90-day check
   </TabItem>
   <TabItem label="macOS">
     - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on

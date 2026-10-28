@@ -61,12 +61,13 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, Win32_AccountPolicy) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
+    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, secedit /export) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute', 'go h.sendRecoveryKeys()'] },
       { file: 'internal/security/windows_security_center_windows.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct'] },
       { file: 'internal/security/defender_windows.go', contains: ['Get-MpComputerStatus'] },
-      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember', 'Win32_AccountPolicy'] },
+      { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember'] },
+      { file: 'internal/security/password_policy_windows.go', contains: ['"secedit.exe"', '"/export", "/areas", "SECURITYPOLICY"'] },
       { file: 'internal/security/slow_probe.go', contains: ['slowProbeTTL = 30 * time.Minute', 'slowProbeErrorTTL = 10 * time.Minute'] },
       { file: 'internal/heartbeat/handlers_encryption.go', contains: ['recoveryKeyCollectInterval = 30 * time.Minute'] },
       { file: 'internal/security/recoverykeys.go', contains: ['Get-BitLockerVolume'] },

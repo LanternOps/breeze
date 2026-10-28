@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deriveEncryptionMethod, normalizeEncryption, parseEncryptionVolumes } from './helpers';
+import { deriveEncryptionMethod, normalizeEncryption, parseEncryptionVolumes, parsePasswordPolicySummary } from './helpers';
 
 describe('normalizeEncryption', () => {
   // Regression for #1831: 'encrypted' is a substring of 'unencrypted', so an
@@ -118,5 +118,39 @@ describe('deriveEncryptionMethod', () => {
 
   it('is unknown for an unrecognised source', () => {
     expect(deriveEncryptionMethod({ source: 'veracrypt', volumes: [] }, 'encrypted')).toBe('unknown');
+  });
+});
+
+describe('parsePasswordPolicySummary — maximum password age (#9597)', () => {
+  const windowsRecord = {
+    source: 'secedit',
+    minLength: 14,
+    complexityEnabled: true,
+    minAgeDays: 1,
+    lockoutThreshold: 5,
+    historyCount: 24
+  };
+  const maxAgeCheck = (maxAgeDays: number) =>
+    parsePasswordPolicySummary({ ...windowsRecord, maxAgeDays }).checks.find((check) => check.key === 'max_age');
+
+  // The agent reports 0 for "passwords never expire" (Windows' own convention).
+  // That must fail the 90-day rule, not pass it as "0 days".
+  it('fails a policy whose passwords never expire', () => {
+    const check = maxAgeCheck(0);
+    expect(check?.pass).toBe(false);
+    expect(check?.current).toBe('Never expires');
+  });
+
+  it('passes 1-90 days and fails longer', () => {
+    expect(maxAgeCheck(60)?.pass).toBe(true);
+    expect(maxAgeCheck(60)?.current).toBe('60 days');
+    expect(maxAgeCheck(90)?.pass).toBe(true);
+    expect(maxAgeCheck(91)?.pass).toBe(false);
+  });
+
+  it('reports every row of a full Windows record as known', () => {
+    const parsed = parsePasswordPolicySummary({ ...windowsRecord, maxAgeDays: 60 });
+    expect(parsed.checks.map((check) => check.current)).not.toContain('Unknown');
+    expect(parsed.compliant).toBe(true);
   });
 });
