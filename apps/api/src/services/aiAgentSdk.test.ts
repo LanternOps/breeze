@@ -568,6 +568,74 @@ describe('runPreFlightChecks', () => {
     expect(result).toEqual({ ok: false, error: 'Unable to verify rate limits. Please try again.' });
   });
 
+  // --- #10415: the Redis rate limit runs between DB phases, never inside one ---
+
+  describe('with a DB phase runner (#10415)', () => {
+    /**
+     * Stands in for the route's `inRequestDb`: records each phase and whether a
+     * phase is open, so a step can be pinned to "inside" or "between" phases.
+     */
+    function makePhaseRunner() {
+      const state = { open: false, phases: 0 };
+      async function inDb<T>(fn: () => Promise<T>): Promise<T> {
+        expect(state.open).toBe(false); // phases never nest
+        state.open = true;
+        state.phases += 1;
+        try {
+          return await fn();
+        } finally {
+          state.open = false;
+        }
+      }
+      return { state, inDb };
+    }
+
+    it('calls the rate limiter with no DB phase open, after the session read and turn resolution and before the budget check', async () => {
+      const { state, inDb } = makePhaseRunner();
+      const seen: Record<string, { open: boolean; phase: number }> = {};
+      const at = (name: string) => { seen[name] = { open: state.open, phase: state.phases }; };
+      mockGetSession.mockImplementation(async () => { at('getSession'); return makeSession(); });
+      mockResolveSessionTurn.mockImplementation(async () => { at('resolveSessionTurn'); return makeResolvedModel('platform'); });
+      mockCheckAiRateLimit.mockImplementation(async () => { at('rateLimit'); return null; });
+      mockCheckBudgetDetailed.mockImplementation(async () => { at('budget'); return null; });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+
+      expect(result.ok).toBe(true);
+      expect(seen.getSession).toEqual({ open: true, phase: 1 });
+      expect(seen.resolveSessionTurn).toEqual({ open: true, phase: 1 });
+      expect(seen.rateLimit).toEqual({ open: false, phase: 1 });
+      expect(seen.budget).toEqual({ open: true, phase: 2 });
+      expect(state.phases).toBe(2);
+    });
+
+    it('a rate-limited turn opens no second DB phase', async () => {
+      const { state, inDb } = makePhaseRunner();
+      mockCheckAiRateLimit.mockResolvedValue('Rate limit exceeded');
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+
+      expect(result).toEqual({ ok: false, error: 'Rate limit exceeded' });
+      expect(state.phases).toBe(1);
+      expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
+    });
+
+    it('a missing session or an unresolved turn consumes no rate-limit capacity', async () => {
+      const { inDb } = makePhaseRunner();
+      mockGetSession.mockResolvedValueOnce(null);
+      expect(await runPreFlightChecks('bad-id', 'hello', auth, undefined, undefined, undefined, inDb))
+        .toEqual({ ok: false, error: 'Session not found' });
+
+      mockResolveSessionTurn.mockResolvedValueOnce({
+        ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1', message: 'gone',
+      });
+      const unresolved = await runPreFlightChecks('session-1', 'hello', auth, undefined, undefined, undefined, inDb);
+      expect(unresolved.ok).toBe(false);
+
+      expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+    });
+  });
+
   // --- Budget uses session's org ---
 
   it('returns error when budget is exceeded', async () => {

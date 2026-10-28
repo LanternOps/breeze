@@ -475,8 +475,31 @@ function scheduleWispSummaryFinalize(sessionId: string): void {
 }
 
 /**
+ * Runs one DB phase of the pre-flight inside a short RLS context — the route's
+ * `inRequestDb` (a fresh caller-scoped `withAuthDbAccessContext`).
+ */
+export type PreFlightDbPhaseRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/** No runner: each phase runs in whatever context the caller already holds. */
+const runPreFlightPhaseInAmbientContext: PreFlightDbPhaseRunner = (fn) => fn();
+
+type PreFlightSession = NonNullable<Awaited<ReturnType<typeof getSession>>>;
+
+/**
  * Validates rate limits, budget, session status, expiration, and sanitizes input.
  * Returns all values needed to proceed with message processing, or an error.
+ *
+ * #10415 / #1105: the per-user and per-org message rate limits are Redis
+ * round-trips, so they must not run while a `withDbAccessContext` transaction
+ * is held — that pins a pooled connection idle-in-transaction for the
+ * round-trip, and for any event-loop stall that lands on it. With `inDb` the
+ * checks run as two DB phases with the rate limit BETWEEN them and no
+ * connection checked out. The order is unchanged: the session read and turn
+ * resolution still precede the rate limit (a missing session or an unresolved
+ * model consumes no capacity), and the rate limit still precedes the budget
+ * and session-state checks (a request those refuse still consumes capacity).
+ * Callers that pass `inDb` must NOT also wrap this call in a context, or the
+ * rate limit runs inside it again.
  */
 export async function runPreFlightChecks(
   sessionId: string,
@@ -486,7 +509,31 @@ export async function runPreFlightChecks(
   requestContext?: RequestLike,
   /** W05: the composer's model choice on this message (chat only; strict user resolution). */
   choice?: AiModelChoice,
+  inDb: PreFlightDbPhaseRunner = runPreFlightPhaseInAmbientContext,
 ): Promise<PreFlightResult> {
+  const loaded = await inDb(() => loadPreFlightTurn(sessionId, auth, choice));
+  if (!loaded.ok) return loaded;
+  const { session, model } = loaded;
+
+  // Rate limits — between the DB phases (see above). checkAiRateLimit
+  // self-contexts its effective-budget read when no context is held (#2190).
+  try {
+    const rateLimitError = await checkAiRateLimit(auth.user.id, session.orgId);
+    if (rateLimitError) return { ok: false, error: rateLimitError };
+  } catch (err) {
+    console.error('[AI-SDK] Rate limit check failed:', err);
+    return { ok: false, error: 'Unable to verify rate limits. Please try again.' };
+  }
+
+  return inDb(() => runPreFlightAdmission(sessionId, content, auth, session, model, pageContext, requestContext));
+}
+
+/** Pre-flight DB phase 1: the caller's session and this turn's resolved model. */
+async function loadPreFlightTurn(
+  sessionId: string,
+  auth: AuthContext,
+  choice: AiModelChoice | undefined,
+): Promise<{ ok: true; session: PreFlightSession; model: ResolvedModel } | Extract<PreFlightResult, { ok: false }>> {
   const session = await getSession(sessionId, auth);
   if (!session) {
     return { ok: false, error: 'Session not found' };
@@ -506,16 +553,23 @@ export async function runPreFlightChecks(
     return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
   }
   if (!turn.ok) return unresolvedTurn(turn);
-  const model: ResolvedModel = turn;
+  return { ok: true, session, model: turn };
+}
 
-  // Rate limits
-  try {
-    const rateLimitError = await checkAiRateLimit(auth.user.id, orgId);
-    if (rateLimitError) return { ok: false, error: rateLimitError };
-  } catch (err) {
-    console.error('[AI-SDK] Rate limit check failed:', err);
-    return { ok: false, error: 'Unable to verify rate limits. Please try again.' };
-  }
+/**
+ * Pre-flight DB phase 2, after the rate limit: budget, session state and
+ * expiry, input sanitisation and the system prompt.
+ */
+async function runPreFlightAdmission(
+  sessionId: string,
+  content: string,
+  auth: AuthContext,
+  session: PreFlightSession,
+  model: ResolvedModel,
+  pageContext: AiPageContext | undefined,
+  requestContext: RequestLike | undefined,
+): Promise<PreFlightResult> {
+  const orgId = session.orgId;
 
   // Budget
   try {
