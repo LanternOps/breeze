@@ -2613,6 +2613,17 @@ describe('org routes', () => {
       expect(getCaptured().settings.branding.customCss).toBe('.portal-card { border-radius: 4px; }');
     });
 
+    it('accepts a branding save without Custom CSS, which clears it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ branding: { customCss: '.old {}', primaryColor: '#111111' } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { primaryColor: '#222222' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding).toEqual({ primaryColor: '#222222' });
+    });
+
     it.each([
       ['@import', '@import "https://evil.example/x.css";'],
       ['a non-https url()', '.a { background: url(http://evil.example/x.png); }'],

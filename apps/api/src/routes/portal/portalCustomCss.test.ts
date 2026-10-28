@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { PORTAL_CUSTOM_CSS_MAX_LENGTH } from '@breeze/shared';
+import { PORTAL_CUSTOM_CSS_MAX_LENGTH, portalCustomCssSchema } from '@breeze/shared';
 
 // Single-read DB mock (same convention as featureFlags.test.ts). The system
 // context wrappers record that they ran, so the test can prove the partner
@@ -10,10 +10,13 @@ const { dbState } = vi.hoisted(() => ({
   dbState: {
     rows: [] as unknown[],
     where: undefined as unknown,
+    error: undefined as Error | undefined,
     systemContextCalls: 0,
     outsideContextCalls: 0,
   },
 }));
+const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
+vi.mock('../../services/sentry', () => ({ captureException: captureMock }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'innerJoin', 'limit']) chain[m] = vi.fn(() => chain);
@@ -21,8 +24,8 @@ vi.mock('../../db', () => {
     dbState.where = predicate;
     return chain;
   });
-  (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
-    Promise.resolve(dbState.rows).then(resolve);
+  (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+    (dbState.error ? Promise.reject(dbState.error) : Promise.resolve(dbState.rows)).then(resolve, reject);
   return {
     db: chain,
     runOutsideDbContext: <T>(fn: () => T): T => {
@@ -71,6 +74,19 @@ describe('partnerPortalCustomCss', () => {
     const css = `/*${'a'.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH)}*/`;
     expect(partnerPortalCustomCss({ branding: { customCss: css } })).toBeNull();
   });
+
+  it('keeps CSS exactly at the size cap', () => {
+    const css = `/*${'a'.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH - 4)}*/`;
+    expect(partnerPortalCustomCss({ branding: { customCss: css } })).toBe(css);
+  });
+
+  // The cap is counted the way the write schema counts it, so CSS a save
+  // accepted is never silently dropped on read.
+  it('agrees with the write schema on CSS with astral characters', () => {
+    const css = `.a::after { content: "${'\u{1F600}'.repeat(40_000)}"; }`;
+    expect(portalCustomCssSchema.safeParse(css).success).toBe(true);
+    expect(partnerPortalCustomCss({ branding: { customCss: css } })).toBe(css);
+  });
 });
 
 describe('combinePortalCustomCss', () => {
@@ -96,12 +112,14 @@ describe('loadPartnerPortalCustomCss', () => {
   beforeEach(() => {
     dbState.rows = [];
     dbState.where = undefined;
+    dbState.error = undefined;
     dbState.systemContextCalls = 0;
     dbState.outsideContextCalls = 0;
+    captureMock.mockClear();
   });
 
   it("reads the org's partner settings in system scope, keyed only by the org id", async () => {
-    dbState.rows = [{ settings: { branding: { customCss: '.p { color: red; }' } } }];
+    dbState.rows = [{ partnerId: 'p-ok', settings: { branding: { customCss: '.p { color: red; }' } } }];
 
     await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBe('.p { color: red; }');
 
@@ -117,8 +135,27 @@ describe('loadPartnerPortalCustomCss', () => {
     await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
   });
 
-  it('returns null when the stored partner CSS fails the safety rules', async () => {
-    dbState.rows = [{ settings: { branding: { customCss: '@import "x.css";' } } }];
+  it('returns null when the stored partner CSS fails the safety rules, warning once per partner', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      dbState.rows = [{ partnerId: 'p-bad', settings: { branding: { customCss: '@import "x.css";' } } }];
+      await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+      await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][1]).toEqual({ partnerId: 'p-bad' });
+      // The CSS itself never reaches the log.
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('@import');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('degrades to null and reports when the lookup fails, so branding still renders', async () => {
+    dbState.error = new Error('connection reset');
+
     await expect(loadPartnerPortalCustomCss(ORG_ID)).resolves.toBeNull();
+
+    expect(captureMock).toHaveBeenCalledWith(dbState.error, undefined, { area: 'portal-branding-partner-css' });
   });
 });
