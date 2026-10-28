@@ -282,6 +282,9 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/flows/conversion/claims', async () =>
   (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
 import { claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
+// #5221 B6 — a switched Job's old URL forwards to its flow (the forwarder is unit-tested on its own).
+vi.mock('../services/flows/conversion/legacyWebhookForward', () => ({ forwardLegacyWebhook: vi.fn(async () => null) }));
+import { forwardLegacyWebhook } from '../services/flows/conversion/legacyWebhookForward';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
@@ -1649,7 +1652,58 @@ describe('automations routes', () => {
 	    expect(body.run.id).toBe('run-1');
     // #5221 B2: a row with no conversion takes today's path — no claim hook.
     expect(vi.mocked(createAutomationRunRecord).mock.calls.at(-1)![0]).not.toHaveProperty('onCreated');
+    // #5221 B6: and never consults the forwarder.
+    expect(forwardLegacyWebhook).not.toHaveBeenCalled();
 	  });
+
+  describe('a switched row forwards to its flow (#5221 B6)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    function convertedRow(over: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: false,
+              retiredReason: 'converted_to_flow', convertedToFlowId: '33333333-3333-4333-8333-333333333333',
+              trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+              ...over,
+            }]),
+          }),
+        }),
+      } as any);
+    }
+    const send = (headers: Record<string, string> = {}) => app.request(`/automations/webhooks/${AUTO}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{"ping":true}',
+    });
+
+    beforeEach(() => {
+      vi.mocked(forwardLegacyWebhook).mockReset().mockResolvedValue(null);
+    });
+
+    it("answers with the forwarder's response before any legacy verification or Redis write", async () => {
+      convertedRow();
+      const redis = { set: vi.fn(async () => 'OK') };
+      vi.mocked(getRedis).mockReturnValue(redis as any);
+      vi.mocked(forwardLegacyWebhook).mockImplementationOnce(async (c: any) => c.json({ status: 'accepted', runId: 'fr-1', deliveryId: 'd-1' }, 202));
+      const res = await send({ 'x-webhook-secret': 'secret-123' });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ status: 'accepted', runId: 'fr-1', deliveryId: 'd-1' });
+      expect(vi.mocked(forwardLegacyWebhook).mock.calls[0]![1]).toBe(AUTO);
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(resolveAutomationWebhookOwnerContext).not.toHaveBeenCalled();
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+      expect(withDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('a row the forwarder does not take (no switched generation) continues on legacy unchanged', async () => {
+      convertedRow();
+      const res = await send();
+      expect(forwardLegacyWebhook).toHaveBeenCalledTimes(1);
+      // Still the disabled row legacy has always refused.
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Automation not found' });
+    });
+  });
 
   describe('occurrence claims on a converted row (#5221 B2)', () => {
     const AUTO = '11111111-1111-4111-8111-111111111111';

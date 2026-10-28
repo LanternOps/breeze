@@ -2,7 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { FLOW_WEBHOOK_DELIVERY_ID_RE, occurrenceKey, scriptParametersSchema } from '@breeze/shared';
+import { scriptParametersSchema } from '@breeze/shared';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
@@ -67,6 +67,7 @@ import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../se
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
 import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
+import { legacyWebhookDeliveryIdHeader, webhookOccurrenceInstant, webhookOccurrenceKeys } from '../services/flows/conversion/webhookOccurrence';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -251,27 +252,6 @@ async function verifyAutomationWebhookSignature(input: {
   }
 
   return { ok: true, signatureDigest: verified.signatureDigest };
-}
-
-/**
- * #5221 B2 (Decision 6) — the occurrence-claim aliases of one legacy webhook
- * delivery: `webhook:sig:<digest>` (a signed delivery) and
- * `webhook:dlv:<id>` (a sender delivery id the flow side would accept as
- * `X-Breeze-Delivery-Id`). Either conflicting makes it a duplicate.
- */
-function legacyWebhookClaimKeys(signatureDigest: string | null, eventIdHeader: string | undefined): string[] {
-  const keys: string[] = [];
-  if (signatureDigest) keys.push(occurrenceKey.webhookSig(signatureDigest));
-  const deliveryId = eventIdHeader?.trim();
-  if (deliveryId && FLOW_WEBHOOK_DELIVERY_ID_RE.test(deliveryId)) keys.push(occurrenceKey.webhookDelivery(deliveryId));
-  return keys;
-}
-
-/** The signed `x-breeze-timestamp` as an instant (seconds or milliseconds, as the verifier reads it). */
-function webhookTimestampInstant(header: string | undefined): Date | null {
-  const parsed = Number(header?.trim());
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return new Date(parsed > 1_000_000_000_000 ? parsed : parsed * 1000);
 }
 
 function getPagination(query: { page?: string; limit?: string }) {
@@ -1952,6 +1932,17 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return row ?? null;
   }, 'automations.webhook.lookup'));
 
+  // #5221 B6 — a Job switched to a flow keeps its URL: the delivery goes to the
+  // flow's ingest (its verification, replay protection and claims), before any
+  // legacy verification or Redis write. Only a row the switch retired can be
+  // switched (`converted_to_flow_id`, cleared again by a revert), so every
+  // other row skips this (and the module) entirely. Null ⇒ legacy continues.
+  if (automation?.convertedToFlowId) {
+    const { forwardLegacyWebhook } = await import('../services/flows/conversion/legacyWebhookForward');
+    const forwarded = await forwardLegacyWebhook(c, automationId);
+    if (forwarded) return forwarded;
+  }
+
   if (!automation || !automation.enabled) {
     return c.json({ error: 'Automation not found' }, 404);
   }
@@ -1975,7 +1966,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
   const rawBody = await c.req.text();
   const signatureHeader = c.req.header('x-breeze-signature');
   const timestampHeader = c.req.header('x-breeze-timestamp');
-  const eventIdHeader = c.req.header('x-breeze-event-id') ?? c.req.header('x-breeze-nonce');
+  const eventIdHeader = legacyWebhookDeliveryIdHeader((name) => c.req.header(name));
   const headerSecret = c.req.header('x-automation-secret')
     ?? c.req.header('x-webhook-secret');
 
@@ -2078,7 +2069,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     // preferred engine (a switched row is disabled and never gets this far).
     // A row with no conversion keeps today's path: no lock, no hook.
     const conversion = await currentConversionForAutomation(db, current.id);
-    const claimKeys = conversion ? legacyWebhookClaimKeys(signatureDigest, eventIdHeader) : [];
+    const claimKeys = conversion ? webhookOccurrenceKeys(signatureDigest, eventIdHeader) : [];
     try {
       return await createAutomationRunRecord({
         automation: current,
@@ -2098,7 +2089,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
                   engine: 'legacy',
                   conversionId: conversion.id,
                   legacyRunId: run.id,
-                  occurrenceAt: webhookTimestampInstant(timestampHeader),
+                  occurrenceAt: webhookOccurrenceInstant(timestampHeader),
                 });
                 if (!claim.ok) throw new OccurrenceClaimedError(claim.existing);
               },
