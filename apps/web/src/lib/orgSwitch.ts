@@ -61,6 +61,40 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
 }
 
 /**
+ * A page whose URL hash names a TAB — not an org-specific record or row — can
+ * ask an in-place switch to keep it (#9954: Integrations' "Change" used to drop
+ * the user from Microsoft 365 back on the default tab). Opt-in, because most
+ * hashes elsewhere select something that does not exist in the other org.
+ *
+ * The provider is asked at switch time and returns the hash to keep (with or
+ * without the leading `#`), or null to keep nothing. One page owns the slot at a
+ * time; the returned release only clears the slot if it is still this
+ * provider's, so the outgoing page's late unmount cannot drop the incoming
+ * page's claim.
+ */
+type KeptHashProvider = () => string | null;
+let keptHashProvider: KeptHashProvider | null = null;
+
+export function keepHashAcrossOrgSwitch(provider: KeptHashProvider): () => void {
+  keptHashProvider = provider;
+  return () => {
+    if (keptHashProvider === provider) keptHashProvider = null;
+  };
+}
+
+/** The hash the current page asked to keep (no leading `#`), or null. */
+export function orgSwitchKeptHash(): string | null {
+  try {
+    const hash = keptHashProvider?.()?.replace(/^#/, '');
+    return hash ? hash : null;
+  } catch (err) {
+    // Keeping the tab is a nicety; a broken provider must never stop the switch.
+    console.warn('[orgSwitch] kept-hash provider threw; switching without it', err);
+    return null;
+  }
+}
+
+/**
  * The one context-switch ritual, shared by the header switcher and any inline
  * affordance (e.g. OrgRequiredState's quick-pick): set the selection (null →
  * fleet view), stash the confirmation toast, wait out any in-flight
@@ -77,7 +111,12 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  *
  * The in-place target drops the URL hash on purpose: the router treats a
  * same-path navigation that carries a hash as a scroll-to-anchor and does not
- * swap the document, and hash state (selected tab/row) is org-specific anyway.
+ * swap the document, and hash state (a selected row) is usually org-specific.
+ * A page whose hash is only a tab can opt back in with keepHashAcrossOrgSwitch:
+ * the navigation still goes out hashless, and the kept hash is written onto the
+ * swapped-in URL at `astro:after-swap` — before the new page island hydrates
+ * and reads it — then announced with a `hashchange` for an island that
+ * hydrated first. A hard-load fallback keeps nothing.
  *
  * `destination` overrides both: for a switch that is itself a navigation (e.g.
  * the org record's "Open in Devices"), the caller knows where the user is
@@ -112,11 +151,25 @@ export async function applyOrgSwitch(
     if (message) showToast({ type: 'success', message });
     return;
   }
-  const target = destination
-    ?? getOrgSwitchRedirect(window.location.pathname)
-    ?? `${window.location.pathname}${window.location.search}`;
-  const mode = await navigateTo(target, { replace: !destination });
+  const redirect = destination ?? getOrgSwitchRedirect(window.location.pathname);
+  const target = redirect ?? `${window.location.pathname}${window.location.search}`;
+  // Only an in-place switch keeps a hash: a redirect or destination is another page.
+  const keptHash = redirect === null ? orgSwitchKeptHash() : null;
+  let hashRestored = false;
+  const restoreHash = () => {
+    if (window.location.pathname !== target.split('?')[0]) return;
+    window.history.replaceState(window.history.state, '', `${target}#${keptHash}`);
+    hashRestored = true;
+  };
+  if (keptHash) document.addEventListener('astro:after-swap', restoreHash, { once: true });
+  let mode: Awaited<ReturnType<typeof navigateTo>>;
+  try {
+    mode = await navigateTo(target, { replace: !destination });
+  } finally {
+    document.removeEventListener('astro:after-swap', restoreHash);
+  }
   if (mode !== 'soft') return; // a full load is under way; the next mount pops the stash
+  if (hashRestored) window.dispatchEvent(new HashChangeEvent('hashchange'));
   // The persisted switcher never remounts on a soft navigation, so its
   // mount-time consume would never fire — surface the confirmation here.
   const message = consumeSwitchToast();

@@ -258,6 +258,45 @@ describe('OrganizationRecordPage — happy path', () => {
     await waitFor(() => expect(requestedUrls.some((u) => u.includes(`/orgs/organizations/${RECORD_ORG}/contacts`))).toBe(true));
   });
 
+  // #9954: the header's primary contact comes from the summary, read once on
+  // load. A contact written on the Contacts tab must reach it without a reload.
+  it('refreshes the header primary contact after a contact is added on the Contacts tab', async () => {
+    let contactAdded = false;
+    const NEW_PRIMARY = { id: 'c9', name: 'Olga Orglevel', email: 'olga@acme.test', phone: null };
+    const pathOf = (url: string) => new URL(url, 'http://localhost').pathname;
+    const isRecordRead = (url: string) => pathOf(url).endsWith(`/orgs/organizations/${RECORD_ORG}`);
+    fetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes('/summary')) {
+        return json({
+          ...SUMMARY_BODY,
+          contacts: { count: contactAdded ? 4 : 3, primary: contactAdded ? NEW_PRIMARY : SUMMARY_BODY.contacts.primary },
+        });
+      }
+      if (url.includes(`/orgs/organizations/${RECORD_ORG}/contacts`) && init?.method === 'POST') {
+        contactAdded = true;
+        return json({ id: 'c9' }, 201);
+      }
+      if (isRecordRead(url)) return json(ORG_BODY);
+      return json({ data: [] });
+    });
+    window.location.hash = '#contacts';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-primary-contact').textContent).toContain('Dana Reed'));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-add-button')).toBeTruthy());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('org-contacts-add-button'));
+    await user.type(screen.getByTestId('contact-form-name-input'), 'Olga Orglevel');
+    await user.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(screen.getByTestId('org-record-primary-contact').textContent).toContain('Olga Orglevel'));
+    // Only the summary is re-read: the record itself is not reloaded (no loading flash).
+    expect(requestedUrls.filter((u) => u.includes('/summary'))).toHaveLength(2);
+    expect(requestedUrls.filter(isRecordRead)).toHaveLength(1);
+  });
+
   it('#sites renders OrgSitesTab, pinned to the record org via orgIdOverride', async () => {
     window.location.hash = '#sites';
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);

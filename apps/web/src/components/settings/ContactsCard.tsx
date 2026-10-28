@@ -117,13 +117,30 @@ function createBody(draft: Draft): Record<string, unknown> {
   return body;
 }
 
-type ContactsCardProps = { orgId: string };
+type ContactsCardProps = {
+  orgId: string;
+  /**
+   * Called after a write landed (create, edit, delete, CSV import), so a host
+   * that shows contact data from elsewhere — the org record header's primary
+   * contact — can refetch it (#9954). Never called for a refused write.
+   */
+  onContactsChanged?: () => void;
+};
 
 const VERIFICATION_HASH = /^contacts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/verification$/i;
 const verificationContactFromHash = (raw: string): string | null => VERIFICATION_HASH.exec(raw)?.[1] ?? null;
 
-export default function ContactsCard({ orgId }: ContactsCardProps) {
+export default function ContactsCard({ orgId, onContactsChanged }: ContactsCardProps) {
   const { t } = useTranslation('settings');
+  // The write already succeeded and was toasted; a host's refresh failing must
+  // not reach the save/delete catch and report the write itself as failed.
+  const notifyContactsChanged = () => {
+    try {
+      onContactsChanged?.();
+    } catch (err) {
+      console.error('[ContactsCard] onContactsChanged threw', err);
+    }
+  };
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [total, setTotal] = useState(0);
   const [sites, setSites] = useState<SiteOption[]>([]);
@@ -288,6 +305,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       setFormOpen(false);
       setEditing(null);
       setDraft(EMPTY_DRAFT);
+      notifyContactsChanged();
       // Refetch rather than patch: promoting a primary DEMOTES the previous one
       // in the same scope server-side, and no client-side guess reproduces that
       // without re-implementing the scope rule.
@@ -314,6 +332,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
         successMessage: t('contactsCard.toasts.deleted'),
         onUnauthorized: unauthorized,
       });
+      notifyContactsChanged();
       await loadContacts();
     } catch (err) {
       // Same contract as `save`: called through `void remove(c)`, so a rethrow
@@ -429,7 +448,7 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       {showImport && (
         <BulkContactImport
           orgId={orgId}
-          onImported={() => { void loadContacts(); }}
+          onImported={() => { notifyContactsChanged(); void loadContacts(); }}
           onUnauthorized={unauthorized}
           onClose={() => setShowImport(false)}
         />
