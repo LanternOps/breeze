@@ -202,7 +202,7 @@ describe('PAM actuation lifecycle', () => {
         tx, { id: request.id, deviceId: request.deviceId }, 'denied', 'The program could not be verified.',
       );
       // The internal refusal constant is never what the end user sees.
-      expect(notifyMocks.enqueuePamRequestNotify.mock.calls[0]![3]).not.toBe(PAM_TARGET_HASH_UNVERIFIED_REASON);
+      expect((notifyMocks.enqueuePamRequestNotify.mock.calls[0] as unknown[])[3]).not.toBe(PAM_TARGET_HASH_UNVERIFIED_REASON);
     });
 
     it('an insert-time auto_approved refusal does not notify: nobody is waiting on IT', async () => {
