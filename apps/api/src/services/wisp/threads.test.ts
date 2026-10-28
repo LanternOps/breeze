@@ -423,7 +423,7 @@ describe('seedContextForSession', () => {
     const HEADER = "Linked objects (by handle; call the object's own read tool for detail):";
     const link = (over: Record<string, unknown> = {}) => ({
       id: 'l1', ref: { kind: 'ticket', id: TICKET, orgId: ORG_A }, label: '#1234 Printer offline', status: 'open',
-      href: `/tickets/${TICKET}`, addedBy: 'wisp', createdAt: '2026-10-20T00:00:00.000Z', ...over,
+      href: `/tickets/${TICKET}`, source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-20T00:00:00.000Z', ...over,
     });
 
     it('passes the creating caller\'s auth to listLinks so an org-scoped sign-in keeps its token scope', async () => {

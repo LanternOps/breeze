@@ -45,7 +45,7 @@ const TICKET = '44444444-4444-4444-8444-444444444444';
 const auth = { user: { id: 'u1' }, partnerId: PARTNER, scope: 'partner' };
 const own = { thread: { id: THREAD, partnerId: PARTNER }, grant: { id: 'g1', currentRevisionId: 'r1' } };
 const ceiling = { grantId: 'g1', partnerId: PARTNER };
-const link = { id: LINK, ref: { kind: 'ticket', id: TICKET, orgId: 'o1' }, label: '#1 Printer', status: 'open', href: `/tickets/${TICKET}`, addedBy: 'user', createdAt: '2027-01-05T00:00:00.000Z' };
+const link = { id: LINK, ref: { kind: 'ticket', id: TICKET, orgId: 'o1' }, label: '#1 Printer', status: 'open', href: `/tickets/${TICKET}`, source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2027-01-05T00:00:00.000Z' };
 
 function app() {
   const a = new Hono();

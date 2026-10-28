@@ -33,7 +33,7 @@ export default function WispLinksPanel({
   const atLimit = links.length >= WISP_THREAD_LINK_LIMIT;
 
   const remove = async (link: WispThreadLink) => {
-    if (removingId) return;
+    if (removingId || link.id === null) return;
     setRemovingId(link.id);
     try {
       await removeWispLink(threadId, link.id);
@@ -86,12 +86,12 @@ export default function WispLinksPanel({
         <ul className="flex flex-wrap gap-1.5">
           {links.map((link) => (
             <li
-              key={link.id}
+              key={link.id ?? linkKey(link.ref.kind, link.ref.id)}
               data-testid="wisp-link-chip"
               data-link-kind={link.ref.kind}
               className="flex max-w-full items-center gap-1 rounded-full border bg-background py-0.5 pl-2.5 pr-1 text-xs"
             >
-              {link.addedBy === 'wisp' && (
+              {link.source === 'wisp_pin' && (
                 <Sparkles className="h-3 w-3 shrink-0 text-primary" aria-label={t('wisp.links.addedByWisp')} data-testid="wisp-link-added-by-wisp" />
               )}
               <a href={link.href} className="truncate font-medium hover:underline">{link.label}</a>
@@ -100,7 +100,7 @@ export default function WispLinksPanel({
                 type="button"
                 data-testid={`wisp-link-remove-${link.id}`}
                 aria-label={t('wisp.links.remove', { label: link.label })}
-                disabled={removingId !== null}
+                disabled={removingId !== null || link.id === null}
                 onClick={() => void remove(link)}
                 className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
               >

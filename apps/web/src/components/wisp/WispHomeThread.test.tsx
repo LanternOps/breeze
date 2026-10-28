@@ -55,7 +55,7 @@ vi.mock('../ai/AiChatInput', () => ({
     return <div data-testid="ai-chat-input-mock">{p.leftSlot as React.ReactNode}</div>;
   },
 }));
-const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', addedBy: 'user', createdAt: '2026-10-25T09:00:00Z' };
+const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-25T09:00:00Z' };
 vi.mock('./WispEntityPicker', () => ({
   default: (p: { open: boolean; threadId: string; onLinked: (l: unknown) => void; onClose: () => void }) =>
     p.open ? (

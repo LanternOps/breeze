@@ -25,7 +25,7 @@ const link = (id: string, over: Partial<WispThreadLink> = {}): WispThreadLink =>
   label: `#10${id} Printer jam`,
   status: 'open',
   href: `/tickets/t-${id}`,
-  addedBy: 'user',
+  source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z',
   createdAt: '2026-10-24T08:00:00Z',
   ...over,
 });
@@ -37,7 +37,7 @@ describe('WispLinksPanel (W08 Task 9)', () => {
   });
 
   it('renders each link as a chip to its page, with status and a Wisp marker for model-added links', () => {
-    render(<WispLinksPanel threadId="th-1" links={[link('1'), link('2', { addedBy: 'wisp', status: null })]} onLinksChange={vi.fn()} />);
+    render(<WispLinksPanel threadId="th-1" links={[link('1'), link('2', { source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z', status: null })]} onLinksChange={vi.fn()} />);
     const chips = screen.getAllByTestId('wisp-link-chip');
     expect(chips).toHaveLength(2);
     expect(screen.getByRole('link', { name: /#101 Printer jam/ })).toHaveAttribute('href', '/tickets/t-1');
@@ -49,6 +49,14 @@ describe('WispLinksPanel (W08 Task 9)', () => {
   it('shows the empty line with no links', () => {
     render(<WispLinksPanel threadId="th-1" links={[]} onLinksChange={vi.fn()} />);
     expect(screen.getByTestId('wisp-links-empty')).toBeInTheDocument();
+  });
+
+  it('does not remove a derived concern link with no persisted id', () => {
+    render(<WispLinksPanel threadId="th-1" links={[link('1', { id: null, source: 'concern' })]} onLinksChange={vi.fn()} />);
+    const remove = screen.getByTestId('wisp-link-remove-null');
+    expect(remove).toBeDisabled();
+    fireEvent.click(remove);
+    expect(h.removeWispLink).not.toHaveBeenCalled();
   });
 
   it('remove goes through the runAction-backed API and drops the chip', async () => {

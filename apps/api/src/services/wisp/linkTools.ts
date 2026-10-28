@@ -106,6 +106,8 @@ function toolView(link: WispThreadLink) {
     label: sanitizeUntrustedToolText(link.label),
     status: link.status === null ? null : sanitizeUntrustedToolText(link.status),
     href: link.href,
+    source: link.source,
+    lastTouchedAt: link.lastTouchedAt,
   };
 }
 

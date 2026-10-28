@@ -56,14 +56,15 @@ export const THREAD_LINK_REFUSAL_STATUS: Readonly<Record<WispLinkRefusal, 403 | 
   link_limit: 409,
 });
 
-function toLink(row: Pick<WispThreadLinkRow, 'id' | 'addedByGrantId' | 'createdAt'>, r: ResolvedEntity): WispThreadLink {
+function toLink(row: Pick<WispThreadLinkRow, 'id' | 'source' | 'lastTouchedAt' | 'createdAt'>, r: ResolvedEntity): WispThreadLink {
   return {
     id: row.id,
     ref: r.ref,
     label: r.label,
     status: r.status,
     href: r.href,
-    addedBy: row.addedByGrantId ? 'wisp' : 'user',
+    source: row.source,
+    lastTouchedAt: row.lastTouchedAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
   };
 }

@@ -10,13 +10,11 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { WispEntityKind } from '@breeze/shared';
+import type { WispEntityKind, WispLinkSource } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { wispGrants } from './wisp';
 import { wispThreads } from './wispThreads';
-
-export type WispLinkSource = 'user_pin' | 'wisp_pin' | 'auto';
 
 /**
  * Wisp W08 — soft links from a Wisp thread to Breeze objects (tickets,

@@ -212,7 +212,7 @@ describe('thread links service (real Postgres)', () => {
     expect(a.label).toBe(`#${env.ticketA.ticketNumber} Printer offline in A`);
     expect(b.ref.orgId).toBe(env.orgB.id);
     expect(u.ref.orgId).toBeNull();
-    expect(a.addedBy).toBe('user');
+    expect(a.source).toBe('user_pin');
     const rows = await rowsOf(env.thread.id);
     expect(rows.map((r) => r.orgId).sort()).toEqual([env.orgA.id, env.orgB.id, null].sort());
     expect(rows.map((r) => r.source)).toEqual(['user_pin', 'user_pin', 'user_pin']);

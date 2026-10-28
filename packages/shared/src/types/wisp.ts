@@ -10,7 +10,7 @@
  * contract test in apps/api compares them).
  */
 import type { ActivityItem, BriefSection, CurrentActivity } from './wispActivity';
-import type { Concern } from './wispConcerns';
+import type { Concern, ConcernSubjectKind } from './wispConcerns';
 
 export const WISP_ENTITY_KINDS = [
   'ticket',
@@ -27,6 +27,22 @@ export const WISP_ENTITY_KINDS = [
 ] as const;
 export type WispEntityKind = (typeof WISP_ENTITY_KINDS)[number];
 
+/** Concern subjects that can resolve to linked Breeze entities. */
+export const CONCERN_KIND_TO_ENTITY_KIND: Readonly<Partial<Record<ConcernSubjectKind, WispEntityKind>>> = {
+  org: 'organization',
+  ticket: 'ticket',
+  device: 'device',
+  alert: 'alert',
+  run: 'run',
+  task: 'task',
+  quote: 'quote',
+  invoice: 'invoice',
+  contract: 'contract',
+  site: 'site',
+};
+
+export type WispLinkSource = 'user_pin' | 'wisp_pin' | 'auto';
+
 /**
  * Kinds that never carry an org (`org_id IS NULL` links, visible to
  * partner-scoped sessions only). `organization` resolves to its own id.
@@ -35,6 +51,12 @@ export const PARTNER_LEVEL_ENTITY_KINDS: ReadonlySet<WispEntityKind> = new Set<W
 
 /** Links per thread (409 `link_limit` beyond it). */
 export const WISP_THREAD_LINK_LIMIT = 50;
+/** Maximum automatic links retained per thread. */
+export const WISP_THREAD_AUTO_LINK_LIMIT = 20;
+/** Maximum automatic links added per turn. */
+export const WISP_AUTO_LINKS_PER_TURN = 5;
+/** Maximum automatic-link lines included in the session seed. */
+export const WISP_SEED_AUTO_LINK_MAX_LINES = 15;
 /** `wisp_thread_links.label` CHECK. */
 export const WISP_LINK_LABEL_MAX = 200;
 
@@ -44,7 +66,8 @@ export type BreezeEntityRef = { kind: WispEntityKind; id: string; orgId: string 
 export type WispLinkRefusal = 'not_found' | 'forbidden' | 'outside_ceiling' | 'outside_token_scope' | 'link_limit';
 
 export type WispThreadLink = {
-  id: string;
+  /** Null only for a derived concern link (`source === 'concern'`). */
+  id: string | null;
   ref: BreezeEntityRef;
   /** Freshly resolved from the entity on this read (≤ 200 chars). */
   label: string;
@@ -52,8 +75,8 @@ export type WispThreadLink = {
   status: string | null;
   /** Same-origin path to the object's page (`wispEntityHref`). */
   href: string;
-  /** `wisp` = added by the model through `link_entity`; `user` = added from a page. */
-  addedBy: 'user' | 'wisp';
+  source: WispLinkSource | 'concern';
+  lastTouchedAt: string;
   createdAt: string;
 };
 
