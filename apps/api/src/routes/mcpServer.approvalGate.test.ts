@@ -1002,8 +1002,36 @@ describe('#10027: action tier below 3 on a flat Tier-3 tool is never filed as an
     expect(mocks.executeTool.mock.calls[0]![0]).toBe('execute_command');
     expect(mocks.executeTool.mock.calls[0]![1]).toEqual(input);
     // The scope tier is still the tool's static Tier 3, so the fail-closed
-    // Tier-3 ledger still records the call.
+    // Tier-3 ledger still records the call — at tier 3, not the action's tier.
     expect(mocks.ledgerBegin).toHaveBeenCalledTimes(1);
+    expect(mocks.ledgerBegin.mock.calls[0]![0]).toMatchObject({ tier: 3 });
+    // Not an approval bypass: only a named unattended principal is marked so.
+    const audit = mocks.writeAuditEvent.mock.calls
+      .map((args: any[]) => args[1])
+      .find((event: any) => event?.action === 'mcp.tool.execute_command');
+    expect(audit).toBeDefined();
+    expect(audit.details.tier).toBe(3);
+    expect(audit.details.approvalBypass).toBeUndefined();
+    expect(audit.details.approvalBypassPrincipal).toBeUndefined();
+  });
+
+  it('edr_endpoint_action scan (Tier 2, not read-only) runs directly like any Tier-2 MCP call; isolate is filed', async () => {
+    // The one non-read action this lifts on a static-Tier-3 tool (see
+    // aiGuardrails.mcpTier3ActionDowngrades.contract.test.ts). Tier 2 over
+    // MCP auto-executes by contract (intentService: MCP principals' Tier-2
+    // calls never need an approval object); scope stays ai:execute.
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'edr_endpoint_action' ? 3 : undefined));
+    const scanInput = { action: 'scan', deviceId: 'd1' };
+    expect(checkGuardrails('edr_endpoint_action', scanInput).tier).toBe(2);
+    const scan = await (await callTool('edr_endpoint_action', scanInput)).json();
+    expect(scan.result.isError).toBeUndefined();
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+    const isolate = await (await callTool('edr_endpoint_action', { action: 'isolate', deviceId: 'd1' })).json();
+    expect(isolate.result.structuredContent).toMatchObject({ status: 'pending_approval' });
+    expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+    const noScope = await (await callTool('edr_endpoint_action', scanInput, ['ai:read', 'ai:write'])).json();
+    expect(noScope.error.message).toContain('requires ai:execute');
   });
 
   it.each([
@@ -1074,6 +1102,15 @@ describe('#10027: action tier below 3 on a flat Tier-3 tool is never filed as an
     expect(restart.result.structuredContent).toMatchObject({ status: 'pending_approval' });
     expect(mocks.executeTool).toHaveBeenCalledTimes(1);
     expect(intentMocks.createMcpActionIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Tier-4 tool is never lifted, even for an action a per-action table rates Tier 2', async () => {
+    mocks.getToolTier.mockImplementation((name: string) => (name === 'manage_services' ? 4 : undefined));
+    expect(checkGuardrails('manage_services', { action: 'list', deviceId: 'd1' }).tier).toBe(2);
+    const body = await (await callTool('manage_services', { action: 'list', deviceId: 'd1' })).json();
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ code: 'MCP_APPROVAL_REQUIRED', reason: 'not_tier3' });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
   it('flag off: execute_command list_processes keeps today\'s refusal (unchanged)', async () => {

@@ -2259,7 +2259,10 @@ async function handleToolsCall(
   // action: `tier` stays the Math.max above, so the ai:execute /
   // ai:execute_admin / production-allowlist gates and the Tier-3 ledger below
   // still apply. With the flag off the gate is unchanged (B-W04 D-B37).
-  const actionBelowIntentTier = Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3;
+  // Only an effective Tier 3 is ever lifted: Tier 4 has no approval path, so a
+  // per-action table entry must never let a Tier-4 tool past this gate.
+  const actionBelowIntentTier = tier === 3
+    && Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3;
   const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
     && !(actionBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
