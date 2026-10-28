@@ -11,6 +11,7 @@ import {
 } from './warrantyDataSources';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { captureException } from './sentry';
 
 export type WarrantyStatus = 'active' | 'expiring' | 'expired' | 'unknown' | 'subscription_active';
 
@@ -576,6 +577,14 @@ export async function syncWarrantyBatch(
         ? `device ${subject.deviceId}`
         : `manual asset ${subject.manualAssetId}`;
       console.error(`[WarrantySync] Batch sync error for ${label}:`, err instanceof Error ? err.message : err);
+      // Vendor lookup errors never reach here (syncWarrantyForSubject records
+      // them on the row), so this is a DB/systemic fault — report it.
+      captureException(
+        err instanceof Error ? err : new Error(String(err)),
+        undefined,
+        { service: 'warrantySync', operation: 'batchSubject', subject_kind: subject.kind },
+        { fingerprint: ['warrantySync', 'batchSubject'] },
+      );
     }
   }
   return { synced, failed };

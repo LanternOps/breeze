@@ -55,6 +55,11 @@ export async function processWarrantyJob(data: WarrantyJobData): Promise<Record<
       // transaction per subject, because the partner-export lock hierarchy
       // cannot hold across orgs of different partners in one transaction.
       const { synced, failed } = await syncWarrantyBatch(subjects);
+      if (synced === 0) {
+        // Nothing on the page committed: a systemic fault (each subject was
+        // already captured). Fail the job so it shows as failed, not completed.
+        throw new Error(`[WarrantyWorker] Batch sync: all ${subjects.length} subjects failed`);
+      }
       console.log(`[WarrantyWorker] Batch synced ${synced}/${subjects.length} warranty subjects (${failed} failed)`);
       return { synced, failed };
     }

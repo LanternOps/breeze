@@ -53,6 +53,8 @@ vi.mock('./warrantyProviders', () => ({
 }));
 vi.mock('./warrantyAlertEvaluator', () => ({ evaluateWarrantyAlerts: vi.fn() }));
 vi.mock('./unassignedPool/selectorPredicate', () => ({ notParkedDeviceCondition: () => 'not-parked' }));
+const captureExceptionMock = vi.fn();
+vi.mock('./sentry', () => ({ captureException: (...args: unknown[]) => captureExceptionMock(...args) }));
 
 import { syncWarrantyBatch, type WarrantySubject } from './warrantySync';
 
@@ -127,6 +129,15 @@ describe('syncWarrantyBatch — one transaction per subject (#10403)', () => {
     expect(console.error).toHaveBeenCalledWith(
       '[WarrantySync] Batch sync error for device device-1:',
       'partner export lock hierarchy violation',
+    );
+    // A per-subject failure is a DB/systemic fault (vendor errors are recorded
+    // on the row inside syncWarrantyForSubject), so it must reach Sentry.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'partner export lock hierarchy violation' }),
+      undefined,
+      { service: 'warrantySync', operation: 'batchSubject', subject_kind: 'device' },
+      { fingerprint: ['warrantySync', 'batchSubject'] },
     );
   });
 
