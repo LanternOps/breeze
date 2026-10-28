@@ -96,6 +96,41 @@ describe('describeMaintenanceSchedule (#10397)', () => {
 
     const past = describeMaintenanceSchedule(settings({ recurrence: 'once', windowStart: '2026-01-05T22:15' }), NOW)!;
     expect(past.nextWindow).toBeNull();
+    expect(past.summary).toBe('Once on 2026-01-05 at 22:15 for 2h (UTC) (already over)');
+
+    const far = describeMaintenanceSchedule(settings({ recurrence: 'once', windowStart: '2028-01-05T22:15' }), NOW)!;
+    expect(far.nextWindow).toBeNull();
+    expect(far.summary).toMatch(/more than a year away\)$/);
+  });
+
+  it('once with an offset-bearing instant is rendered into the window zone, as the evaluator does', () => {
+    const s = settings({ recurrence: 'once', windowStart: '2026-11-05T22:15:00Z', timezone: 'America/New_York' });
+    const out = describeMaintenanceSchedule(s, NOW)!;
+    // 22:15Z on 2026-11-05 is 17:15 EST.
+    expect(out.opensOn).toBe('2026-11-05');
+    expect(out.startTime).toBe('17:15');
+    expect(out.nextWindow!.startsAt).toBe('2026-11-05T22:15:00.000Z');
+    expect(isInMaintenanceWindow(s, new Date('2026-11-05T22:16:00Z')).active).toBe(true);
+  });
+
+  it('an unknown recurrence never opens, matching the evaluator', () => {
+    const s = settings({ recurrence: 'fortnightly', windowStart: '02:00' });
+    const out = describeMaintenanceSchedule(s, NOW)!;
+    expect(out.opensOn).toBeNull();
+    expect(out.summary).toBe('Never opens: unknown recurrence "fortnightly"');
+    expect(isInMaintenanceWindow(s, new Date('2026-11-01T02:30:00Z')).active).toBe(false);
+  });
+
+  it('an invalid stored timezone is reported as the UTC the evaluator falls back to', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = settings({ windowStart: '02:00', timezone: 'Mars/Olympus_Mons' });
+    const out = describeMaintenanceSchedule(s, NOW)!;
+    expect(out.timezone).toBe('UTC');
+    expect(out.invalidTimezone).toBe('Mars/Olympus_Mons');
+    expect(out.nextWindow!.startsAt).toBe('2026-11-01T02:00:00.000Z');
+    expect(out.summary).toBe('Every Sunday at 02:00 for 2h (UTC; stored timezone "Mars/Olympus_Mons" is invalid)');
+    expect(isInMaintenanceWindow(s, new Date('2026-11-01T02:30:00Z')).active).toBe(true);
+    warn.mockRestore();
   });
 
   it('once without a windowStart never opens', () => {
@@ -110,5 +145,9 @@ describe('describeMaintenanceSchedule (#10397)', () => {
     expect(describeMaintenanceSchedule(null, NOW)).toBeNull();
     expect(describeMaintenanceSchedule({ recurrence: 'weekly' }, NOW)).toBeNull();
     expect(describeMaintenanceSchedule(settings({ durationHours: '2' }), NOW)).toBeNull();
+    // Corrupt legacy values that would overflow Date arithmetic are not described, not thrown.
+    expect(describeMaintenanceSchedule(settings({ durationHours: 1e13 }), NOW)).toBeNull();
+    expect(describeMaintenanceSchedule(settings({ durationHours: Number.NaN }), NOW)).toBeNull();
+    expect(describeMaintenanceSchedule(settings({ durationHours: 0 }), NOW)).toBeNull();
   });
 });

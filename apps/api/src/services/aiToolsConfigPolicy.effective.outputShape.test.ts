@@ -122,10 +122,17 @@ describe('get_effective_configuration output shape (#6745)', () => {
     expectDefaultPageFits('get_effective_configuration', raw);
   });
 
-  it('non-maintenance features and the compact page carry no effectiveSchedule', async () => {
+  it('only the maintenance feature, and only with includeSettings, carries effectiveSchedule', async () => {
+    // A maintenance-shaped blob on EVERY feature: only the maintenance slot may be described.
+    const cfg = effective();
+    const maintenanceShaped = { recurrence: 'weekly', windowStart: '02:00', durationHours: 2, timezone: 'UTC' };
+    for (const feature of Object.values(cfg.features)) (feature as Record<string, unknown>).inlineSettings = maintenanceShaped;
+    resolveEffectiveConfigMock.mockResolvedValue(cfg);
     const all = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, includeSettings: true }, auth())) as Record<string, any>;
-    // SETTINGS is not a maintenance shape, so even the maintenance slot gets none.
-    for (const feature of Object.values(all.features)) expect((feature as any).effectiveSchedule).toBeUndefined();
+    for (const [featureType, feature] of Object.entries(all.features)) {
+      if (featureType === 'maintenance') expect((feature as any).effectiveSchedule?.opensOn).toBe('Sunday');
+      else expect((feature as any).effectiveSchedule, featureType).toBeUndefined();
+    }
     const compact = JSON.parse(await tool().handler({ deviceId: DEVICE_ID }, auth())) as Record<string, any>;
     expect(compact.features.maintenance.effectiveSchedule).toBeUndefined();
   });

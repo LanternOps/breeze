@@ -164,9 +164,20 @@ export interface MaintenanceScheduleDescription {
   startTimeSource: 'windowStart' | 'default_midnight' | 'invalid_windowStart_fell_back_to_midnight' | null;
   durationHours: number;
   timezone: string;
+  /** Set when the stored zone is not a valid IANA name; the evaluator then runs the window in UTC. */
+  invalidTimezone?: string;
   /** The open (or next) occurrence as UTC instants. null when none is ahead. */
   nextWindow: { startsAt: string; endsAt: string } | null;
   summary: string;
+}
+
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -178,7 +189,8 @@ export interface MaintenanceScheduleDescription {
  * rather than restating its rules, so the description cannot disagree with
  * what `isInMaintenanceWindow` suppresses.
  *
- * Returns null for anything that is not a maintenance settings shape.
+ * Returns null for anything that is not a maintenance settings shape, so a
+ * malformed legacy blob never fails the read that carries it.
  */
 export function describeMaintenanceSchedule(
   settings: unknown,
@@ -186,17 +198,29 @@ export function describeMaintenanceSchedule(
 ): MaintenanceScheduleDescription | null {
   if (!settings || typeof settings !== 'object') return null;
   const s = settings as Record<string, unknown>;
-  if (typeof s.recurrence !== 'string' || typeof s.durationHours !== 'number') return null;
+  if (typeof s.recurrence !== 'string') return null;
+  // The write schema caps this at 72; the bound here only keeps a corrupt
+  // legacy value from overflowing Date arithmetic.
+  if (typeof s.durationHours !== 'number' || !(s.durationHours > 0 && s.durationHours <= 24 * 366)) return null;
 
+  const storedZone = typeof s.timezone === 'string' && s.timezone !== '' ? s.timezone : 'UTC';
+  // `maintenanceWallClock` falls back to UTC for a zone Intl rejects, so the
+  // window really runs in UTC; say so instead of echoing the bad name.
+  const zoneValid = isValidTimeZone(storedZone);
   const row: ProjectableMaintenanceSettings = {
     id: 'effective',
     recurrence: s.recurrence as MaintenanceSettingsRow['recurrence'],
     windowStart: typeof s.windowStart === 'string' ? s.windowStart : null,
-    timezone: typeof s.timezone === 'string' && s.timezone !== '' ? s.timezone : 'UTC',
+    timezone: zoneValid ? storedZone : 'UTC',
     durationHours: s.durationHours,
     rebootIfPending: s.rebootIfPending === true,
   };
-  const base = { recurrence: row.recurrence, durationHours: row.durationHours, timezone: row.timezone };
+  const base = {
+    recurrence: row.recurrence,
+    durationHours: row.durationHours,
+    timezone: row.timezone,
+    ...(zoneValid ? {} : { invalidTimezone: storedZone }),
+  };
 
   const occurrence = maintenanceOccurrenceStart(row, maintenanceWallClock(now, row.timezone));
   if (occurrence === null) {
@@ -243,13 +267,20 @@ export function describeMaintenanceSchedule(
   }
 
   const next = projectNextConfigPolicyWindow(row, now, DESCRIBE_HORIZON_DAYS);
+  // Only a `once` window can run out of occurrences; say why there is no next one.
+  let tail = '';
+  if (next === null && row.recurrence === 'once') {
+    const ended = new Date(occurrence.getTime() + row.durationHours * 60 * 60 * 1000);
+    tail = ended <= maintenanceWallClock(now, row.timezone) ? ' (already over)' : ' (more than a year away)';
+  }
+  const zoneNote = zoneValid ? row.timezone : `UTC; stored timezone "${storedZone}" is invalid`;
   return {
     ...base,
     opensOn,
     startTime,
     startTimeSource,
     nextWindow: next ? { startsAt: next.startsAt.toISOString(), endsAt: next.endsAt.toISOString() } : null,
-    summary: `${lead} at ${startTime} for ${row.durationHours}h (${row.timezone})`,
+    summary: `${lead} at ${startTime} for ${row.durationHours}h (${zoneNote})${tail}`,
   };
 }
 
