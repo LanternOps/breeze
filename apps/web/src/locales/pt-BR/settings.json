@@ -69,7 +69,7 @@
           "executing": "Em execução",
           "completed": "Concluído",
           "failed": "Falhou",
-          "rejected": "Rejeitado"
+          "rejected": "Negado"
         }
       },
       "intents": {
@@ -2547,7 +2547,7 @@
     "failedToLoadData": "Falha ao carregar dados",
     "failedToSaveBudget": "Falha ao salvar o orçamento",
     "failedToSave": "Falha ao salvar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou rejeite.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou negue.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "A IA propõe um plano de várias etapas. O usuário aprova o plano inteiro de uma só vez; depois, as etapas são executadas automaticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "As ferramentas de nível 2 são executadas automaticamente com registro de auditoria. As ferramentas de nível 3 ainda exigem aprovação.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",

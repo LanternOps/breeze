@@ -69,7 +69,7 @@
           "executing": "Executing",
           "completed": "Completed",
           "failed": "Failed",
-          "rejected": "Rejected"
+          "rejected": "Denied"
         }
       },
       "intents": {
@@ -2547,7 +2547,7 @@
     "failedToLoadData": "Failed to load data",
     "failedToSaveBudget": "Failed to save budget",
     "failedToSave": "Failed to save",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or rejects.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or denies it.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",

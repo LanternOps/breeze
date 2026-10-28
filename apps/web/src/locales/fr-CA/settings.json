@@ -69,7 +69,7 @@
           "executing": "En cours d'exécution",
           "completed": "Terminé",
           "failed": "Échoué",
-          "rejected": "Rejeté"
+          "rejected": "Refusé"
         }
       },
       "intents": {
@@ -2547,7 +2547,7 @@
     "failedToLoadData": "Impossible de charger les données",
     "failedToSaveBudget": "Impossible d’économiser son budget",
     "failedToSave": "Impossible d’enregistrer",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Chaque outil nécessite des blocages d’approbation jusqu’à ce que l’utilisateur approuve ou rejette.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Chaque outil nécessitant une approbation reste bloqué jusqu’à ce que l’utilisateur approuve ou refuse.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "L’IA propose un plan en plusieurs étapes. L’utilisateur approuve tout le plan d’un coup, puis s’exécute automatiquement par procédés.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Les outils de niveau 2 s’exécutent automatiquement avec des journaux d’audit. Les outils de niveau 3 nécessitent toujours une approbation.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",

@@ -42,7 +42,7 @@
     "deniedToast": "Azione rifiutata",
     "deniedToast_one": "{{count}} azione rifiutata",
     "deniedToast_other": "{{count}} azioni rifiutate",
-    "refusedToast": "Approvazione respinta. La richiesta è stata rifiutata.",
+    "refusedToast": "La tua approvazione è stata bloccata, quindi la richiesta è stata negata.",
     "runContextLabel": "Contesto di esecuzione:",
     "runContextChosenByAssistant": "scelto da Breeze AI",
     "runContextScriptDefault": "il valore predefinito salvato dello script",
@@ -345,7 +345,7 @@
     "toolStatus": {
       "pending": "in sospeso",
       "approved": "approvato",
-      "rejected": "rifiutato",
+      "rejected": "negato",
       "completed": "completato",
       "failed": "non riuscito"
     },
@@ -387,7 +387,7 @@
     "tokenCounts": "{{input}} in / {{output}} out",
     "requestedAt": "richiesto {{time}}",
     "approvedAt": "approvato {{time}}",
-    "rejectedAt": "rifiutato {{time}}",
+    "rejectedAt": "negato {{time}}",
     "appliedAt": "applicato {{time}}",
     "flagDialog": {
       "title": "Segnala sessione",
@@ -674,7 +674,7 @@
       "attachFailed": "Impossibile allegare",
       "attachTooLarge": "Il file supera i 5 MB",
       "attachUnsupported": "È possibile allegare solo file di testo",
-      "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riattiva Wisp per riaprirlo.",
+      "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riprova per riaprirlo.",
       "paused": "Wisp in pausa",
       "resumed": "Wisp ripreso",
       "pauseFailed": "Impossibile mettere Wisp in pausa",
@@ -795,7 +795,7 @@
     },
     "partnerSwitch": {
       "description": "Consenti ai tecnici di delegare lavoro a Wisp. Disattivandolo, ogni autorizzazione in corso viene messa in pausa al controllo successivo e le nuove vengono bloccate; non viene eliminato nulla e, riattivandolo, ciò che era in pausa riprende.",
-      "label": "Wisp attivato",
+      "label": "Consenti Wisp",
       "savedOn": "Wisp attivato",
       "savedOff": "Wisp disattivato",
       "saveFailed": "Impossibile modificare l’impostazione di Wisp.",

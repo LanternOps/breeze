@@ -42,7 +42,7 @@
     "deniedToast": "Action denied",
     "deniedToast_one": "{{count}} action denied",
     "deniedToast_other": "{{count}} actions denied",
-    "refusedToast": "Approval refused. The request was denied.",
+    "refusedToast": "Your approval was blocked, so the request was denied.",
     "runContextLabel": "Run context:",
     "runContextChosenByAssistant": "chosen by Breeze AI",
     "runContextScriptDefault": "the script's saved default",
@@ -345,7 +345,7 @@
     "toolStatus": {
       "pending": "pending",
       "approved": "approved",
-      "rejected": "rejected",
+      "rejected": "denied",
       "completed": "completed",
       "failed": "failed"
     },
@@ -387,7 +387,7 @@
     "tokenCounts": "{{input}} in / {{output}} out",
     "requestedAt": "requested {{time}}",
     "approvedAt": "approved {{time}}",
-    "rejectedAt": "rejected {{time}}",
+    "rejectedAt": "denied {{time}}",
     "appliedAt": "applied {{time}}",
     "flagDialog": {
       "title": "Flag session",
@@ -674,7 +674,7 @@
       "attachFailed": "Could not attach",
       "attachTooLarge": "That file is over 5 MB",
       "attachUnsupported": "Only text files can be attached",
-      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it.",
+      "threadFailed": "Wisp is on, but its thread could not be opened. Try again to reopen it.",
       "paused": "Wisp paused",
       "resumed": "Wisp resumed",
       "pauseFailed": "Could not pause Wisp",
@@ -795,7 +795,7 @@
     },
     "partnerSwitch": {
       "description": "Let technicians delegate work to Wisp. Turning it off pauses every running delegation at its next check and blocks new ones; nothing is deleted, and turning it back on resumes what it paused.",
-      "label": "Wisp enabled",
+      "label": "Allow Wisp",
       "savedOn": "Wisp turned on",
       "savedOff": "Wisp turned off",
       "saveFailed": "Could not change the Wisp setting.",

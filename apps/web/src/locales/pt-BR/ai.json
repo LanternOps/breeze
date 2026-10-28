@@ -42,7 +42,7 @@
     "deniedToast": "Ação negada",
     "deniedToast_one": "{{count}} ação negada",
     "deniedToast_other": "{{count}} ações negadas",
-    "refusedToast": "Aprovação recusada. A solicitação foi negada.",
+    "refusedToast": "Sua aprovação foi bloqueada, então a solicitação foi negada.",
     "runContextLabel": "Contexto de execução:",
     "runContextChosenByAssistant": "escolhido pelo Breeze AI",
     "runContextScriptDefault": "o padrão salvo do script",
@@ -345,7 +345,7 @@
     "toolStatus": {
       "pending": "pendente",
       "approved": "aprovado",
-      "rejected": "rejeitado",
+      "rejected": "negado",
       "completed": "concluído",
       "failed": "com falha"
     },
@@ -387,7 +387,7 @@
     "tokenCounts": "{{input}} entrada / {{output}} saída",
     "requestedAt": "solicitado em {{time}}",
     "approvedAt": "aprovado em {{time}}",
-    "rejectedAt": "rejeitado em {{time}}",
+    "rejectedAt": "negado em {{time}}",
     "appliedAt": "aplicado em {{time}}",
     "flagDialog": {
       "title": "Sinalizar sessão",
@@ -674,7 +674,7 @@
       "attachFailed": "Não foi possível anexar",
       "attachTooLarge": "Esse arquivo tem mais de 5 MB",
       "attachUnsupported": "Só é possível anexar arquivos de texto",
-      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la.",
+      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Tente novamente para reabri-la.",
       "paused": "Wisp pausado",
       "resumed": "Wisp retomado",
       "pauseFailed": "Não foi possível pausar o Wisp",
@@ -795,7 +795,7 @@
     },
     "partnerSwitch": {
       "description": "Permita que os técnicos deleguem trabalho ao Wisp. Ao desativar, cada permissão em andamento é pausada na próxima verificação e novas são bloqueadas; nada é excluído, e ao reativar o que foi pausado é retomado.",
-      "label": "Wisp ativado",
+      "label": "Permitir Wisp",
       "savedOn": "Wisp ativado",
       "savedOff": "Wisp desativado",
       "saveFailed": "Não foi possível alterar a configuração do Wisp.",
