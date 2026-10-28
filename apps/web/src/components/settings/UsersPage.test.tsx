@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UsersPage from './UsersPage';
@@ -409,6 +409,54 @@ describe('UsersPage — #<userId> hash selects the linked user (#10111)', () => 
       expect(screen.getByTestId(`user-row-${DANA.id}`)).toHaveAttribute('aria-current', 'true'),
     );
     expect(screen.getByTestId(`user-row-${TREVOR.id}`)).not.toHaveAttribute('aria-current');
+  });
+
+  it('does not jump back to the linked row when a save refetches the list', async () => {
+    window.history.replaceState(null, '', `/settings/users#${DANA.id}`);
+    render(<UsersPage />);
+    const row = await screen.findByTestId(`user-row-${DANA.id}`);
+    await waitFor(() => expect(row).toHaveAttribute('aria-current', 'true'));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    // An unchanged-role save still refetches /users (spinner remounts the list).
+    fireEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /save changes/i }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/users')).toHaveLength(2),
+    );
+    await screen.findByTestId(`user-row-${DANA.id}`);
+    await waitFor(() => expect(screen.queryByLabelText(/^Role$/)).not.toBeInTheDocument());
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrolls again when the same user is re-linked after the hash was cleared', async () => {
+    window.history.replaceState(null, '', `/settings/users#${DANA.id}`);
+    render(<UsersPage />);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+
+    window.history.replaceState(null, '', '/settings/users');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() =>
+      expect(screen.getByTestId(`user-row-${DANA.id}`)).not.toHaveAttribute('aria-current'),
+    );
+
+    window.history.replaceState(null, '', `/settings/users#${DANA.id}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+  });
+
+  it('leaves the search usable after landing on a linked user', async () => {
+    window.history.replaceState(null, '', `/settings/users#${DANA.id}`);
+    render(<UsersPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`user-row-${DANA.id}`)).toHaveAttribute('aria-current', 'true'),
+    );
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'trevor' } });
+    expect(screen.getByRole('searchbox')).toHaveValue('trevor');
+    expect(screen.queryByTestId(`user-row-${DANA.id}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`user-row-${TREVOR.id}`)).toBeInTheDocument();
   });
 
   it('clears an earlier search that would hide the newly linked user', async () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import UserList, { type User } from './UserList';
@@ -64,9 +64,15 @@ export default function UsersPage() {
   const [editOrgIdsError, setEditOrgIdsError] = useState<string>();
   // #10111 — user selected by the URL hash (Wisp entity links).
   const [linkedUserId, setLinkedUserId] = useState<string | null>(null);
+  // Scroll to the linked row once per navigation, not again after each
+  // refetch remounts the list. A hash navigation re-arms it.
+  const scrolledToUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const applyHash = () => setLinkedUserId(userIdFromHash(window.location.hash));
+    const applyHash = () => {
+      scrolledToUserIdRef.current = null;
+      setLinkedUserId(userIdFromHash(window.location.hash));
+    };
     applyHash();
     window.addEventListener('hashchange', applyHash);
     return () => window.removeEventListener('hashchange', applyHash);
@@ -458,6 +464,7 @@ export default function UsersPage() {
       <UserList
         users={users}
         highlightedUserId={linkedUserId}
+        scrolledToUserIdRef={scrolledToUserIdRef}
         currentUserId={currentUser?.id}
         onInvite={handleInvite}
         onEdit={handleEdit}

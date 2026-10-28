@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -60,6 +60,12 @@ type UserListProps = {
    * user as `/settings/users#<id>`). The row is marked and scrolled into view.
    */
   highlightedUserId?: string | null;
+  /**
+   * The id the highlighted row was last scrolled to. Owned by the parent so
+   * it survives this list being remounted (UsersPage swaps in a spinner on
+   * every refetch); without it each save would jump back to the linked row.
+   */
+  scrolledToUserIdRef?: MutableRefObject<string | null>;
 };
 
 const statusStyles: Record<string, string> = {
@@ -97,10 +103,13 @@ export default function UserList({
   onResendInvite,
   onResetMfa,
   highlightedUserId,
+  scrolledToUserIdRef,
 }: UserListProps) {
   const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
+  const localScrolledRef = useRef<string | null>(null);
+  const scrolledRef = scrolledToUserIdRef ?? localScrolledRef;
   const highlightedVisible = Boolean(highlightedUserId && users.some(u => u.id === highlightedUserId));
 
   // A newly linked user must not stay hidden behind an earlier search. Reset
@@ -113,8 +122,11 @@ export default function UserList({
   }
 
   useEffect(() => {
-    if (highlightedVisible) highlightedRowRef.current?.scrollIntoView({ block: 'center' });
-  }, [highlightedUserId, highlightedVisible]);
+    if (!highlightedVisible || !highlightedRowRef.current) return;
+    if (scrolledRef.current === highlightedUserId) return;
+    highlightedRowRef.current.scrollIntoView({ block: 'center' });
+    scrolledRef.current = highlightedUserId ?? null;
+  }, [highlightedUserId, highlightedVisible, scrolledRef]);
 
   const filteredUsers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
