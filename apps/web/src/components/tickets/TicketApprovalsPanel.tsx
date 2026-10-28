@@ -38,12 +38,14 @@ interface Props {
   summary: ApprovalSummary;
   /** Called after any mutation so the host reloads the summary and the time list. */
   onChanged: () => void;
+  /** #10073: a merged tombstone — every approval write 409s TICKET_MERGED. */
+  readOnly?: boolean;
 }
 
-export default function TicketApprovalsPanel({ summary, onChanged }: Props) {
+export default function TicketApprovalsPanel({ summary, onChanged, readOnly = false }: Props) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
-  const canWrite = can('tickets', 'write');
+  const canWrite = can('tickets', 'write') && !readOnly;
   const canRecord = can('tickets', 'record_approval');
   const [cancelTarget, setCancelTarget] = useState<ApprovalRequest | null>(null);
   const [cancelling, setCancelling] = useState(false);

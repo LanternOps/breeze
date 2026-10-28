@@ -20,9 +20,9 @@ vi.mock('../../stores/auth', () => ({
 
 // Stub only fetchTicketConfig; the real display/grouping helpers run unchanged.
 // Capture the props the rail hands the parts card (#3775: the ticket org's currency).
-const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string } }));
+const partsCardProps = vi.hoisted(() => ({ last: null as null | { ticketId: string; currencyCode?: string; readOnly?: boolean } }));
 vi.mock('./TicketPartsCard', () => ({
-  default: (p: { ticketId: string; currencyCode?: string }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
+  default: (p: { ticketId: string; currencyCode?: string; readOnly?: boolean }) => { partsCardProps.last = p; return <div data-testid="ticket-parts-card-stub" />; },
 }));
 
 // Stubbed for the same reason TicketPartsCard is: this suite is not testing the
@@ -3453,6 +3453,15 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
     // The composer's place shows the read-only note instead.
     expect(screen.getByTestId('ticket-merged-readonly')).toHaveTextContent('Merged tickets are read-only.');
     expect(linksCardProps.last).toMatchObject({ canWrite: false });
+    // #10073: the rail's time, billing and parts writes all 409 TICKET_MERGED,
+    // so they are inert too, with the reason and the survivor link above them.
+    for (const id of ['ticket-billing-start-timer', 'ticket-billing-quick-add-toggle', 'timer-work-type']) {
+      expect(screen.getByTestId(id), id).toBeDisabled();
+    }
+    expect(partsCardProps.last).toMatchObject({ ticketId: 'tk-1', readOnly: true });
+    expect(screen.getByTestId('ticket-rail-merged-readonly')).toHaveTextContent('Time, billing and parts are read-only');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-rail-merged-link')).toHaveTextContent('Open T-2026-0002');
     // Reading is fine: the feed still renders the tombstone's history.
     expect(screen.getByTestId('ticket-comment-c-1')).toHaveTextContent('Old reply');
   });
@@ -3463,6 +3472,9 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
     await screen.findByTestId('ticket-workbench');
     expect(screen.queryByTestId('ticket-merged-banner')).toBeNull();
     expect(screen.getByTestId('ticket-composer')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-rail-merged-readonly')).toBeNull();
+    expect(screen.getByTestId('ticket-billing-start-timer')).toBeEnabled();
+    expect(partsCardProps.last).toMatchObject({ readOnly: false });
   });
 });
 

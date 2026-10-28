@@ -103,7 +103,13 @@ function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: s
   return amounts.map((a) => ({ code: a.currencyCode, amount: a.amount }));
 }
 
-export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
+export default function TicketTimeBilling({ ticketId, readOnly = false }: {
+  ticketId: string;
+  /** #10073: the ticket is a merged tombstone. Every time write on it answers
+   *  409 TICKET_MERGED, so totals and entries stay visible and nothing that
+   *  writes is offered. The host shows the reason. */
+  readOnly?: boolean;
+}) {
   const { t } = useTranslation('tickets');
   const { can } = usePermissions();
   const canManageBilling = can('time_entries', 'manage_billing');
@@ -209,7 +215,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
     // Guard against double-fire: a start request takes a beat server-side, and
     // overlapping starts race the one-running-timer unique index. Disabling the
     // button in flight keeps the happy path single-shot.
-    if (startingTimer) return;
+    if (startingTimer || readOnly) return;
     setStartingTimer(true);
     setApprovalBlocked(false);
     void startTimerAction(
@@ -362,13 +368,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
 
       <label className="mt-2 block text-[11px] text-muted-foreground">
         {t('workType.label')}
-        <WorkTypeSelect value={timerWorkTypeId === undefined ? summary?.defaults?.workTypeId ?? null : timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer} />
+        <WorkTypeSelect value={timerWorkTypeId === undefined ? summary?.defaults?.workTypeId ?? null : timerWorkTypeId} onChange={setTimerWorkTypeId} testId="timer-work-type" disabled={startingTimer || readOnly} />
       </label>
       <div className="mt-2 flex gap-2">
         <button
           type="button"
           onClick={() => startTimer()}
-          disabled={startingTimer}
+          disabled={startingTimer || readOnly}
           className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-start-timer"
         >
@@ -377,14 +383,15 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         <button
           type="button"
           onClick={() => setQuickAddOpen((o) => !o)}
-          className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
+          disabled={readOnly}
+          className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
           data-testid="ticket-billing-quick-add-toggle"
         >
           {t('ticketTimeBilling.logTime')}
         </button>
       </div>
 
-      {approvalBlocked && (
+      {approvalBlocked && !readOnly && (
         <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900" role="alert" data-testid="ticket-billing-approval-required">
           <p>{t('ticketApproval.errors.approvalRequired')}</p>
           {/* Only billing managers may start non-billable (the server enforces it),
@@ -403,7 +410,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
         </div>
       )}
 
-      {quickAddOpen && (
+      {quickAddOpen && !readOnly && (
         <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-billing-quick-add">
           <input
             type="number"
@@ -518,8 +525,8 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                   </span>
                 )}
               </span>
-              {isAwaitingApproval(entry) && <WriteOffHeldButton entryId={entry.id} className="shrink-0 !px-1.5 !py-0.5 !text-[11px]" />}
-              {canWriteTime && entry.billingStatus !== 'billed' && (
+              {isAwaitingApproval(entry) && !readOnly && <WriteOffHeldButton entryId={entry.id} className="shrink-0 !px-1.5 !py-0.5 !text-[11px]" />}
+              {canWriteTime && !readOnly && entry.billingStatus !== 'billed' && (
                 <button
                   type="button"
                   onClick={() => setPendingDelete(entry)}

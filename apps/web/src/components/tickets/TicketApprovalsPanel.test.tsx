@@ -121,4 +121,14 @@ describe('TicketApprovalsPanel', () => {
     const { container } = render(<TicketApprovalsPanel summary={summaryWith([])} onChanged={vi.fn()} />);
     expect(container.firstChild).toBeNull();
   });
+
+  // #10073: a merged tombstone refuses every write (409 TICKET_MERGED). The
+  // history stays readable; no action is offered.
+  it('read-only shows the requests but offers no action', () => {
+    render(<TicketApprovalsPanel summary={summaryWith([req(), req({ id: 'req-2', status: 'expired' })])} onChanged={vi.fn()} readOnly />);
+    expect(screen.getByTestId('approval-request-req-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-cancel-req-1')).toBeNull();
+    expect(screen.queryByTestId('approval-record-req-1')).toBeNull();
+    expect(screen.queryByTestId('approval-reask-req-2')).toBeNull();
+  });
 });
