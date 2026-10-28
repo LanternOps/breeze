@@ -20,8 +20,18 @@ var (
 	winGetWindowThreadProcessId = winUser32.NewProc("GetWindowThreadProcessId")
 	winGetForegroundWindow      = winUser32.NewProc("GetForegroundWindow")
 	winSetForegroundWindow      = winUser32.NewProc("SetForegroundWindow")
+	winPostMessage              = winUser32.NewProc("PostMessageW")
+	winGetClassName             = winUser32.NewProc("GetClassNameW")
 	consentPromptWindowClasses  = []string{"$$$Secure UAP Background Window$$$", "Credential Dialog Xaml Host"}
-	maxConsentWindowsPerClass   = 64
+	// consentPromptDialogClasses is the prompt dialog itself, without the
+	// secure-desktop backdrop.
+	consentPromptDialogClasses = []string{"Credential Dialog Xaml Host"}
+	maxConsentWindowsPerClass  = 64
+)
+
+const (
+	wmSysCommand = 0x0112
+	scClose      = 0xF060
 )
 
 // DismissInstance cancels exactly one consent.exe prompt (#8995). It attaches
@@ -97,7 +107,41 @@ func (winConsentInstanceOps) InstanceLive(inst ConsentInstance) (bool, error) {
 }
 
 func (winConsentInstanceOps) FindInstanceWindow(pid uint32) uintptr {
-	for _, class := range consentPromptWindowClasses {
+	return findWindowOwnedBy(consentPromptWindowClasses, pid)
+}
+
+// FindInstanceDialog looks only for the prompt dialog. The secure-desktop
+// backdrop ("$$$Secure UAP Background Window$$$") is never a close target:
+// closing it alone would leave the dialog up.
+func (winConsentInstanceOps) FindInstanceDialog(pid uint32) uintptr {
+	return findWindowOwnedBy(consentPromptDialogClasses, pid)
+}
+
+// RequestClose posts WM_SYSCOMMAND/SC_CLOSE, the message the prompt's own
+// close button and Alt+F4 produce, so the prompt handles it as the user
+// cancelling. It is posted, not sent: a hung consent.exe cannot block the
+// helper. The helper runs as SYSTEM, at or above consent.exe's integrity
+// level, so UIPI does not filter it.
+func (winConsentInstanceOps) RequestClose(hwnd uintptr) error {
+	if ret, _, err := winPostMessage.Call(hwnd, wmSysCommand, scClose, 0); ret == 0 {
+		return fmt.Errorf("PostMessageW(WM_SYSCOMMAND, SC_CLOSE): %w", err)
+	}
+	return nil
+}
+
+func (winConsentInstanceOps) WindowClass(hwnd uintptr) string {
+	buf := make([]uint16, 256)
+	n, _, _ := winGetClassName.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if n == 0 {
+		return "unknown window class"
+	}
+	return windows.UTF16ToString(buf[:n])
+}
+
+// findWindowOwnedBy returns the first top-level window of one of classes
+// owned by pid on the calling thread's desktop, or 0.
+func findWindowOwnedBy(classes []string, pid uint32) uintptr {
+	for _, class := range classes {
 		classPtr, err := syscall.UTF16PtrFromString(class)
 		if err != nil {
 			continue
