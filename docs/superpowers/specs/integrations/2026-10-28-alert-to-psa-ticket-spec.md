@@ -317,6 +317,25 @@ The docs tell consumers to dedupe transport on the root event id. Ticket dedupe 
 
 **Recommend (a) for release order, with W2 allowed to start in parallel.** Evidence for (a): the requesting prospect runs Rewst, so W1 + W1b are consumable by them the week they ship; W2 serves partners with no middleware. The alert-page read model moves into whichever of W1b and W2 lands first.
 
+### 6.1 Requirements added after Gate A (2026-10-28, from the requesting MSP's engineer)
+
+- **Per-monitor board override (W2).** The connection-level board and the severity → priority map
+  stay the defaults, but a monitor definition may name the PSA board (and optionally status/priority
+  overrides) its tickets go to. Storage: a small `monitor_psa_overrides` map inside the connection's
+  `alert_ticketing` settings keyed by monitor definition id (partner-owned monitors only), or a
+  nullable `psa_board_id` on `monitor_definitions`; the plan's W2-A fixer brief decides, preferring
+  the settings map so the ticketing concept keeps one home (settings rule 9). (inferred design)
+- **Minimum severity.** The UPS monitors run at `warning`; the W2 severity filter default must not
+  silently exclude warnings.
+- **Auto-close on the recovery event.** Close-on-resolve (OD recommendation, accepted) closes the
+  PSA ticket when the Breeze alert resolves. For `event_log` alerts that only happens when the
+  monitor window expires; resolving on the paired recovery event ("Power Restored") is new monitoring
+  work tracked as #10538 and is a soft dependency of W2 for event-driven alerts. (verified: no
+  clearing-event concept exists in `handlers/eventLog.ts` or the monitor schema)
+- **Rewst.** The MSP may build a full Rewst ↔ Breeze integration on W1 + W1b; W1-A's docs task
+  should include a worked Rewst example (webhook trigger → ConnectWise action) once the HMAC question
+  is answered.
+
 ## 7. Test and rollout notes
 
 - **Red first** in every wave. Assert **remote side effects** (count the adapter's POSTs), not only rows.

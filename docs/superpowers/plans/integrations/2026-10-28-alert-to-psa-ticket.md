@@ -642,3 +642,17 @@ Owner: Todd, who supplies the developer-instance credentials. The fixer runs a s
 - W1b is opt-in by scope.
 - W2 is off per connection.
 - After each merge, run `complete_wave` for that PR's sub-issue. After plan approval, `register_feature` creates the sub-issues and fills `tracking_issue:`.
+
+## Post-approval requirements (2026-10-28)
+
+Recorded on #10499 and in spec §6.1 after Gate B; no wave split changes:
+
+- **W2-A** must add the per-monitor board override (settings map keyed by monitor definition id,
+  partner-owned monitors only; see spec §6.1) and its UI on the ticketing settings card, and the
+  severity filter default must include `warning`.
+- **W2-B** reads the override when it admits an alert (monitor id is on the alert row).
+- **W2 soft dependency:** #10538 (event_log clearing event) for alerts that must close when a
+  recovery event arrives. W2 ships without it; the docs say so until it lands.
+- **W1-A docs task:** add a Rewst worked example (webhook trigger → ConnectWise Manage action)
+  after the HMAC/static-header question is answered.
+
