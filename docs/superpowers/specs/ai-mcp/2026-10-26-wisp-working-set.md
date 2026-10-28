@@ -1,6 +1,6 @@
 ---
 title: Wisp working set — automatic links, record page context, "Talk to Wisp about this"
-status: draft (awaiting Todd)
+status: approved (plan registered as #10364)
 date: 2026-10-26
 parent: docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md §17.2 (thread links)
 extends: docs/superpowers/specs/ai-mcp/2026-10-25-wisp-home-companion.md

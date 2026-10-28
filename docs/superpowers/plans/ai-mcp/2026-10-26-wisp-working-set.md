@@ -1,7 +1,7 @@
 ---
 spec: docs/superpowers/specs/ai-mcp/2026-10-26-wisp-working-set.md
 waves: W01 (working-set model), W02 (auto-link), W03 (record page context), W04 (surface)
-tracking_issue: (set by register_feature)
+tracking_issue: https://github.com/LanternOps/breeze/issues/10364
 ---
 
 # Wisp working set Implementation Plan
