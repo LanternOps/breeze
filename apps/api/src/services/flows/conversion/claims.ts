@@ -346,6 +346,50 @@ export async function loadSwitchedConvertedAutomations(
   }));
 }
 
+// ── the schedule tick's parent claim (#5221 B5) ────────────────────────────
+
+/**
+ * The PARENT claim of a converted flow's schedule occurrence: written by the
+ * flow schedule tick before its per-org fan-out, engine `flow` with neither
+ * run id (children never claim; every other flow claim names its run). It IS
+ * that occurrence's admission (Decision 7): after a revert the per-org
+ * children are execution and still run.
+ */
+const parentScheduleClaimOf = (c: { id: string; automationId: string }) => sql`
+  automation_id = ${c.automationId}
+  AND conversion_id = ${c.id}
+  AND engine = 'flow'
+  AND flow_run_id IS NULL
+  AND legacy_run_id IS NULL`;
+
+/** Whether this generation holds the parent claim of the schedule occurrence `key` (`schedule:<UTC minute>`). */
+export async function heldParentScheduleClaim(tx: DbExecutor, c: { id: string; automationId: string }, key: string): Promise<boolean> {
+  if (!ISO_SCHEDULE_KEY_RE.test(key)) return false;
+  const [r] = rowsOf(await tx.execute(sql`
+    SELECT 1 AS held FROM automation_occurrence_claims
+    WHERE ${parentScheduleClaimOf(c)} AND occurrence_key = ${key}
+    LIMIT 1`));
+  return !!r;
+}
+
+/** This generation's newest parent schedule claim for an occurrence at or after `since`, or null. */
+export async function newestParentScheduleClaim(
+  tx: DbExecutor,
+  c: { id: string; automationId: string },
+  since: Date,
+): Promise<{ key: string; at: Date } | null> {
+  const [r] = rowsOf(await tx.execute(sql`
+    SELECT occurrence_key, occurrence_at FROM automation_occurrence_claims
+    WHERE ${parentScheduleClaimOf(c)}
+      AND occurrence_key LIKE 'schedule:%'
+      AND occurrence_at >= ${since.toISOString()}::timestamptz
+    ORDER BY occurrence_at DESC
+    LIMIT 1`));
+  const at = r ? toDate(r.occurrence_at) : null;
+  if (!r || !at) return null;
+  return { key: String(r.occurrence_key), at };
+}
+
 // ── the claim ───────────────────────────────────────────────────────────────
 
 /** Rolls the alias savepoint back when any key conflicted. */

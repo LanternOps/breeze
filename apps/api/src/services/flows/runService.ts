@@ -57,6 +57,7 @@ import {
   claimOccurrence,
   conversionForFlow,
   flowPrefers,
+  heldParentScheduleClaim,
   reportOccurrenceAnomaly,
   type ClaimExisting,
   type FlowConversionView,
@@ -329,10 +330,12 @@ class FlowRunRefused extends Error {
  *  5a. after the dedupe probe: the flow attempts only while its
  *      generation is switched (`flowPrefers`; reverted ⇒ `not_enabled`, it
  *      admits nothing new) and only an occurrence it can key. Without an
- *      occurrence (manual, tool, webhook and — until B5 — schedule runs) a
- *      reverted generation's flow refuses `flow_conversion_reverted` (#5221
- *      B4, Decision 7); the generation is read for every run (one indexed
- *      lookup by flow id);
+ *      occurrence (manual, tool, webhook and schedule runs) a reverted
+ *      generation's flow refuses `flow_conversion_reverted` (#5221 B4,
+ *      Decision 7) — except a schedule child whose `schedule:<key>` this
+ *      generation's tick parent-claimed (`heldParentScheduleClaim`, #5221 B5:
+ *      the parent claim was the admission). The generation is read for every
+ *      run (one indexed lookup by flow id);
  *  8a. after the charge, before the webhook hook: the occurrence claim
  *      (`claimOccurrence`, engine `flow`, naming the new run). A conflict
  *      throws, rolling back run, charge and claim; the caller gets
@@ -421,7 +424,13 @@ export async function createFlowRun(
       // REVERTED generation's flow admits nothing new however it is started
       // (Decision 7); its admitted runs never come back through here.
       const conversion: FlowConversionView | null = await conversionForFlow(db, flow.id);
-      if (conversion?.state === 'reverted' && !i.occurrence) return { created: false, reason: 'flow_conversion_reverted' };
+      // #5221 B5: except a schedule child whose occurrence this generation's
+      // tick parent-claimed before the revert — that claim was the admission,
+      // the child is its execution. Read here, in this transaction.
+      if (conversion?.state === 'reverted' && !i.occurrence
+          && !(i.triggerKind === 'schedule' && await heldParentScheduleClaim(db, { id: conversion.id, automationId: conversion.automationId }, i.dedupeKey))) {
+        return { created: false, reason: 'flow_conversion_reverted' };
+      }
       if (i.occurrence && conversion) {
         if (!flowPrefers(conversion)) return { created: false, reason: 'not_enabled' };
         if (i.occurrence.keys.length === 0) {

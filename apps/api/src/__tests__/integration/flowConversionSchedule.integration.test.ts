@@ -28,7 +28,11 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { occurrenceKey, type ConversionSwitchRequest } from '@breeze/shared';
 
-const { failOrg } = vi.hoisted(() => ({ failOrg: { id: null as string | null } }));
+const { failOrg, beforeChild } = vi.hoisted(() => ({
+  failOrg: { id: null as string | null },
+  /** Runs once, right before the `atCall`-th child run (1-based) is created: a revert landing mid-fan-out. */
+  beforeChild: { atCall: 0, calls: 0, fn: null as null | (() => Promise<void>), orgId: null as string | null },
+}));
 
 vi.mock('bullmq', async (importOriginal) => ({
   ...(await importOriginal<typeof import('bullmq')>()),
@@ -56,6 +60,13 @@ vi.mock('../../services/flows/runService', async (importOriginal) => {
   return {
     ...real,
     createFlowRun: vi.fn(async (i: Parameters<typeof real.createFlowRun>[0]) => {
+      beforeChild.calls += 1;
+      if (beforeChild.fn && beforeChild.calls === beforeChild.atCall) {
+        const fn = beforeChild.fn;
+        beforeChild.fn = null;
+        beforeChild.orgId = i.orgId;
+        await fn();
+      }
       if (failOrg.id && i.orgId === failOrg.id) throw new Error('injected: child run creation failed');
       return real.createFlowRun(i);
     }),
@@ -301,6 +312,91 @@ describe('converted-flow schedule mode (real Postgres, #5221 B5)', () => {
     expect(await flowRunsOf(s.flowId)).toEqual([]);
     expect(await legacyRunsOf(row.id)).toHaveLength(1);
     expect(await claimsOf(row.id)).toMatchObject([{ engine: 'legacy', occurrenceKey: occurrenceKey.schedule(at) }]);
+  });
+
+  /** Arms a revert of `s` right before the second child run of the next fan-out. */
+  function revertBeforeSecondChild(s: Awaited<ReturnType<typeof switched>>, then?: () => void) {
+    beforeChild.calls = 0;
+    beforeChild.atCall = 2;
+    beforeChild.fn = async () => {
+      const r = await s.asOwner(() => revertConversion(s.auth(), s.conversionId));
+      if (!r.ok) throw new Error(`revertConversion refused: ${JSON.stringify(r)}`);
+      then?.();
+    };
+  }
+  function disarm() {
+    beforeChild.fn = null;
+    beforeChild.atCall = 0;
+    failOrg.id = null;
+  }
+
+  runDb('a revert committed between the parent claim and the last child: every org still runs once, legacy does not, the next occurrence is legacy\'s', async () => {
+    const t = await tenant();
+    const row = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: null });
+    const s = await switched(t, row);
+    const at = nextHour(s.switchAt);
+    const key = occurrenceKey.schedule(at);
+
+    revertBeforeSecondChild(s);
+    let tick;
+    try {
+      tick = await processFlowScheduleTick(plus(at, 10_000));
+    } finally {
+      disarm();
+    }
+    const ledger = (await system(() => db.select().from(flowAutomationConversions).where(eq(flowAutomationConversions.id, s.conversionId))))[0]!;
+    expect(ledger.state).toBe('reverted');
+    expect(tick.fired).toBe(2);
+    const runs = await flowRunsOf(s.flowId);
+    expect(runs.map((r) => r.orgId).sort()).toEqual([t.orgId, t.siblingId].sort());
+    expect(runs.every((r) => r.dedupeKey === key)).toBe(true);
+    expect(await claimsOf(row.id)).toMatchObject([{ engine: 'flow', occurrenceKey: key, flowRunId: null, legacyRunId: null }]);
+    expect(await cursorOf(s.flowId)).toBe(key.slice('schedule:'.length));
+
+    // Nothing more for that occurrence on either engine.
+    expect(await processFlowScheduleTick(plus(at, 70_000))).toMatchObject({ fired: 0 });
+    expect(await flowRunsOf(s.flowId)).toHaveLength(2);
+    expect(await legacyAdmit(row.id, at, { enqueuedWhileUnswitched: false })).toMatchObject({ skipped: 'occurrence_claimed' });
+    expect(await legacyRunsOf(row.id)).toEqual([]);
+
+    // The next occurrence: the reverted flow attempts nothing, legacy runs and claims it.
+    const next = plus(at, HOUR_MS);
+    expect(await processFlowScheduleTick(plus(next, 10_000))).toMatchObject({ fired: 0 });
+    expect(await flowRunsOf(s.flowId)).toHaveLength(2);
+    expect(await legacyAdmit(row.id, next, { enqueuedWhileUnswitched: false })).toMatchObject({ runId: expect.any(String) });
+    expect((await claimsOf(row.id)).map((c) => [c.engine, c.occurrenceKey]).sort()).toEqual([
+      ['flow', key], ['legacy', occurrenceKey.schedule(next)],
+    ]);
+  });
+
+  runDb('a reverted flow finishes, on a later tick, the org a revert-time failure left behind', async () => {
+    const t = await tenant();
+    const row = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: null });
+    const s = await switched(t, row);
+    const at = nextHour(s.switchAt);
+    const key = occurrenceKey.schedule(at);
+
+    revertBeforeSecondChild(s, () => { failOrg.id = beforeChild.orgId; });
+    let missed: string | null;
+    try {
+      await processFlowScheduleTick(plus(at, 10_000));
+    } finally {
+      missed = failOrg.id;
+      disarm();
+    }
+    expect(missed).not.toBeNull();
+    expect(await flowRunsOf(s.flowId)).toHaveLength(1);
+    expect(await cursorOf(s.flowId)).not.toBe(key.slice('schedule:'.length));
+
+    // The generation is reverted now; the tick still completes what it admitted, and claims nothing new.
+    const retry = await processFlowScheduleTick(plus(at, 70_000));
+    expect(retry.fired).toBe(1);
+    const runs = await flowRunsOf(s.flowId);
+    expect(runs.map((r) => r.orgId).sort()).toEqual([t.orgId, t.siblingId].sort());
+    expect(runs.every((r) => r.dedupeKey === key)).toBe(true);
+    expect(await claimsOf(row.id)).toHaveLength(1);
+    expect(await cursorOf(s.flowId)).toBe(key.slice('schedule:'.length));
+    expect(await legacyAdmit(row.id, at, { enqueuedWhileUnswitched: false })).toMatchObject({ skipped: 'occurrence_claimed' });
   });
 
   runDb('a reverted flow attempts nothing', async () => {

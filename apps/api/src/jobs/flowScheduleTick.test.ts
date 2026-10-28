@@ -49,9 +49,10 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/flows/conversion/claims', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/flows/conversion/claims')>()),
   claimOccurrence: vi.fn(),
+  newestParentScheduleClaim: vi.fn(),
 }));
 
-import { legacyPrefers, claimOccurrence } from '../services/flows/conversion/claims';
+import { legacyPrefers, claimOccurrence, newestParentScheduleClaim } from '../services/flows/conversion/claims';
 import { flowsEnabled } from '../config/env';
 import { createFlowRun } from '../services/flows/runService';
 import { loadPartnerOrgIds } from './aiAgentSweepScheduler';
@@ -91,6 +92,7 @@ beforeEach(() => {
   vi.mocked(recordFlowScheduleAdmissionRefused).mockReset();
   vi.mocked(captureException).mockReset();
   vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(newestParentScheduleClaim).mockReset().mockResolvedValue(null);
 });
 
 describe('processFlowScheduleTick', () => {
@@ -518,11 +520,15 @@ describe('processFlowScheduleTick — converted flows (#5221 B5)', () => {
     expect(runKeys()).toEqual([`${ORG_A}|schedule:2026-10-25T11:00Z`]);
   });
 
-  it('a reverted generation\'s flow attempts nothing and reports nothing', async () => {
+  it('a reverted generation\'s flow with no unfinished parent claim attempts nothing and reports nothing', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     selects.push([convertedFlow({ conversionState: 'reverted', orgId: null, partnerId: PARTNER })]);
     const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
     expect(r).toEqual({ fired: 0, skipped: 1 });
+    // It looked for its own parent claim within the 24 h lookback, on this generation.
+    expect(newestParentScheduleClaim).toHaveBeenCalledWith(
+      expect.anything(), { id: CONVERSION, automationId: AUTOMATION }, new Date('2026-10-24T10:00:20Z'),
+    );
     expect(claimOccurrence).not.toHaveBeenCalled();
     expect(createFlowRun).not.toHaveBeenCalled();
     expect(loadPartnerOrgIds).not.toHaveBeenCalled();
@@ -532,18 +538,46 @@ describe('processFlowScheduleTick — converted flows (#5221 B5)', () => {
     err.mockRestore();
   });
 
-  it('a revert landing mid-fan-out stops the fan-out without a false error', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('a reverted flow finishes an occurrence it parent-claimed before the revert, without claiming again', async () => {
+    // Claimed and half fanned out at 10:00 (switched); reverted since; the tick is past the next hour.
+    vi.mocked(newestParentScheduleClaim).mockResolvedValue({ key: 'schedule:2026-10-25T10:00Z', at: new Date('2026-10-25T10:00:00Z') });
+    vi.mocked(createFlowRun).mockImplementation(async (i) =>
+      i.orgId === ORG_B ? { created: true, runId: RUN, preApprovalsHonored: true } : { created: false, reason: 'duplicate', runId: RUN, preApprovalsHonored: true });
+    selects.push([convertedFlow({ conversionState: 'reverted', orgId: null, partnerId: PARTNER })]);
+    updates.push([{ id: FLOW }]);
+    const r = await processFlowScheduleTick(new Date('2026-10-25T11:00:20Z'));
+    expect(r.fired).toBe(1);
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    expect(runKeys()).toEqual([ORG_A, ORG_B, ORG_C].map((o) => `${o}|schedule:2026-10-25T10:00Z`));
+    for (const [i] of vi.mocked(createFlowRun).mock.calls) {
+      expect(i).not.toHaveProperty('occurrence');
+      expect(i.scope).toEqual({ firedAt: '2026-10-25T10:00:00.000Z' });
+    }
+    expect(setOf(cas()[0]!)).toEqual({ scheduleLastOccurrenceKey: '2026-10-25T10:00Z' });
+  });
+
+  it('a reverted flow whose parent-claimed occurrence is already stamped does nothing', async () => {
+    vi.mocked(newestParentScheduleClaim).mockResolvedValue({ key: 'schedule:2026-10-25T10:00Z', at: new Date('2026-10-25T10:00:00Z') });
+    selects.push([convertedFlow({ conversionState: 'reverted', scheduleLastOccurrenceKey: '2026-10-25T10:00Z' })]);
+    expect(await processFlowScheduleTick(new Date('2026-10-25T11:00:20Z'))).toEqual({ fired: 0, skipped: 1 });
+    expect(createFlowRun).not.toHaveBeenCalled();
+    expect(claimOccurrence).not.toHaveBeenCalled();
+    expect(cas()).toHaveLength(0);
+  });
+
+  it('a child refused flow_conversion_reverted despite the parent claim is an error and leaves the key unadvanced', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     selects.push([convertedFlow({ orgId: null, partnerId: PARTNER })]);
     vi.mocked(createFlowRun).mockImplementation(async (i) =>
       i.orgId === ORG_A ? { created: true, runId: RUN, preApprovalsHonored: true } : { created: false, reason: 'flow_conversion_reverted' });
     const r = await processFlowScheduleTick(new Date('2026-10-25T10:00:20Z'));
     expect(r.fired).toBe(1);
-    expect(runKeys()).toHaveLength(2);
+    // Every org is still attempted; nothing is stamped, so the next tick retries the missing ones.
+    expect(runKeys()).toHaveLength(3);
     expect(cas()).toHaveLength(0);
-    expect(captureException).not.toHaveBeenCalled();
-    expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(FLOW);
-    warn.mockRestore();
+    expect(captureException).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(captureException).mock.calls[0]![2]).toMatchObject({ flow_id: FLOW, org_id: ORG_B, flow_site: 'schedule_tick.child_refused_reverted' });
+    err.mockRestore();
   });
 
   it('a claim that cannot be written leaves the occurrence unconsumed for the next tick', async () => {

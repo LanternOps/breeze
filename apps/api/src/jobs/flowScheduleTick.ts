@@ -40,8 +40,12 @@
  * from a legacy Job (it has a `flow_automation_conversions` row); every other
  * flow is exactly the W04 tick above:
  *  - a generation that is not `switched` (reverted; shadow cannot be enabled)
- *    attempts nothing: skipped before any evaluation, fan-out or report —
- *    legacy owns its occurrences again (Decision 7);
+ *    admits nothing new: it never evaluates its cron, claims or reports —
+ *    legacy owns its occurrences again (Decision 7). The one exception is
+ *    execution of what it already admitted: the newest occurrence it
+ *    parent-claimed while switched, not yet stamped, keeps W04's retry of
+ *    unfinished orgs until stamped (`finishRevertedOccurrence`); createFlowRun
+ *    lets exactly those children through by reading the claim itself;
  *  - the occurrence key is the UTC minute (`occurrenceKey.schedule` without
  *    its prefix, e.g. `2027-01-09T03:00Z`), as legacy keys it, so a DST
  *    repeated hour fires twice like the legacy Job did. The cursor holds that
@@ -60,9 +64,10 @@
  *    `legacy_run_id` NULL — the only claim with no run; children never claim)
  *    is a retried tick: the fan-out continues and W04's dedupe fills only the
  *    orgs that missed;
- *  - a revert landing mid-fan-out (`flow_conversion_reverted` from a child)
- *    ends the fan-out quietly, unstamped: the reverted flow attempts nothing
- *    more and its parent claim keeps legacy off that occurrence.
+ *  - a revert landing mid-fan-out does not stop it: the remaining children
+ *    still run (their parent claim holds), and the parent claim keeps legacy
+ *    off that occurrence. A child refused `flow_conversion_reverted` anyway
+ *    (claim not visible) is an error, retried next tick, unstamped.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, sql } from 'drizzle-orm';
@@ -72,9 +77,9 @@ import { flowAutomationConversions } from '../db/schema/flowConversions';
 import { flowVersions } from '../db/schema/flowRuns';
 import { flows } from '../db/schema/flows';
 import { organizations } from '../db/schema/orgs';
-import { latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
+import { SWEEP_OCCURRENCE_LOOKBACK_MINUTES, latestCronOccurrence } from '../services/aiAgents/sweepOccurrence';
 import { isFlowAdmissionRefusal, occurrenceKey, type FlowConversionState } from '@breeze/shared';
-import { claimOccurrence, legacyPrefers } from '../services/flows/conversion/claims';
+import { claimOccurrence, legacyPrefers, newestParentScheduleClaim } from '../services/flows/conversion/claims';
 import { recordFlowScheduleAdmissionRefused } from '../services/flows/flowTriggerMetrics';
 import { nullFlowInputs } from '../services/flows/inputDefaults';
 import { createFlowRun } from '../services/flows/runService';
@@ -257,9 +262,18 @@ async function stampOccurrence(flow: ScheduleFlowRow, key: string): Promise<void
   );
 }
 
-/** Fire one flow's latest occurrence across its orgs. Returns runs created and whether the key was advanced. */
-async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: string }, conversion: FlowConversion | null): Promise<number> {
-  if (conversion && !(await claimParentOccurrence(flow, conversion, occurrence))) {
+/**
+ * Fire one flow's latest occurrence across its orgs. Returns runs created and whether the key was advanced.
+ * `parentHeld`: the occurrence's parent claim is already this generation's
+ * (a reverted flow finishing what it admitted) — never claim again.
+ */
+async function fireFlow(
+  flow: ScheduleFlowRow,
+  occurrence: { at: Date; key: string },
+  conversion: FlowConversion | null,
+  opts: { parentHeld?: boolean } = {},
+): Promise<number> {
+  if (conversion && !opts.parentHeld && !(await claimParentOccurrence(flow, conversion, occurrence))) {
     await stampOccurrence(flow, occurrence.key);
     return 0;
   }
@@ -296,14 +310,16 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
         report(new Error('flow schedule fan-out stopped: flow not enabled'), 'schedule_tick.not_enabled_mid_fanout', flow, orgId);
         return created;
       } else if (result.reason === 'flow_conversion_reverted') {
-        // #5221 B5: the conversion was reverted after the parent claim. The
-        // flow attempts nothing more (Decision 7); not an error, so no capture.
-        const remaining = orgIds.length - orgIds.indexOf(orgId);
-        console.warn(
-          `${LOG} converted flow ${flow.id} was reverted mid-fan-out (occurrence ${occurrence.key}); `
-          + `${remaining} org(s) not started, key not advanced`,
+        // #5221 B5: a child of a parent-claimed occurrence runs even after a
+        // revert (createFlowRun reads the claim). A refusal means the claim
+        // was not visible: an error, retried next tick like a failed insert.
+        allHandled = false;
+        console.error(
+          `${LOG} converted flow ${flow.id}: child run refused flow_conversion_reverted at org ${orgId} `
+          + `(occurrence ${occurrence.key}) although the tick holds its parent claim; retried next tick`,
         );
-        return created;
+        report(new Error('flow schedule child refused: conversion reverted without a visible parent claim'),
+          'schedule_tick.child_refused_reverted', flow, orgId);
       }
     } catch (err) {
       allHandled = false;
@@ -317,6 +333,37 @@ async function fireFlow(flow: ScheduleFlowRow, occurrence: { at: Date; key: stri
   return created;
 }
 
+/**
+ * #5221 B5 (Decision 7) — a reverted generation's flow claims nothing new,
+ * but an occurrence it parent-claimed while switched was ADMITTED: its per-org
+ * children are execution and still run. The newest such claim (within the
+ * W04 24 h lookback) that the cursor has not stamped gets W04's retry of the
+ * unfinished orgs until it is stamped. Returns runs created; counts a skip
+ * when there is nothing to finish.
+ */
+async function finishRevertedOccurrence(
+  flow: ScheduleFlowRow,
+  conversion: FlowConversion,
+  now: Date,
+  result: FlowScheduleTickResult,
+): Promise<number> {
+  if (conversion.state !== 'reverted') {
+    result.skipped += 1;
+    return 0;
+  }
+  const since = new Date(now.getTime() - SWEEP_OCCURRENCE_LOOKBACK_MINUTES * 60_000);
+  const held = await system(
+    () => newestParentScheduleClaim(db, { id: conversion.id, automationId: conversion.automationId }, since),
+    'flowScheduleTick.revertedParentClaim',
+  );
+  const key = held ? held.key.slice(CLAIM_KEY_PREFIX.length) : null;
+  if (!held || !key || key === flow.scheduleLastOccurrenceKey) {
+    result.skipped += 1;
+    return 0;
+  }
+  return fireFlow(flow, { at: held.at, key }, conversion, { parentHeld: true });
+}
+
 export async function processFlowScheduleTick(now: Date = new Date()): Promise<FlowScheduleTickResult> {
   const result: FlowScheduleTickResult = { fired: 0, skipped: 0 };
   if (!flowsEnabled()) return result;
@@ -324,8 +371,14 @@ export async function processFlowScheduleTick(now: Date = new Date()): Promise<F
   for (const flow of await loadScheduleFlows()) {
     const conversion = conversionOf(flow);
     if (conversion && conversion.state !== 'switched') {
-      // #5221 B5: a reverted generation's flow attempts nothing new.
-      result.skipped += 1;
+      // #5221 B5: a reverted generation's flow attempts nothing new — it only
+      // finishes an occurrence it parent-claimed before the revert.
+      try {
+        result.fired += await finishRevertedOccurrence(flow, conversion, now, result);
+      } catch (err) {
+        console.error(`${LOG} reverted converted flow ${flow.id}: finishing its admitted occurrence failed; retried next tick`, err);
+        report(err, 'schedule_tick.fire_flow', flow);
+      }
       continue;
     }
     const schedule = scheduleOf(flow.trigger);

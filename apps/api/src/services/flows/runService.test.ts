@@ -88,8 +88,9 @@ vi.mock('./conversion/claims', async (importOriginal) => ({
   conversionForFlow: vi.fn(async () => null),
   claimOccurrence: vi.fn(async () => ({ ok: true })),
   reportOccurrenceAnomaly: vi.fn(),
+  heldParentScheduleClaim: vi.fn(async () => false),
 }));
-import { claimOccurrence, conversionForFlow, reportOccurrenceAnomaly } from './conversion/claims';
+import { claimOccurrence, conversionForFlow, heldParentScheduleClaim, reportOccurrenceAnomaly } from './conversion/claims';
 
 import { actionIntents, flowRuns } from '../../db/schema';
 import { getUserPermissions, type UserPermissions } from '../permissions';
@@ -746,6 +747,44 @@ describe('createFlowRun — occurrence claims (#5221 B2)', () => {
     queueCreate();
     expect(await createFlowRun(manual as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID });
     expect(claimOccurrence).not.toHaveBeenCalled();
+  });
+
+  // #5221 B5 (Decision 7): the tick's parent claim IS the admission of a
+  // schedule occurrence; its per-org children are execution and still run
+  // after a revert — checked in this transaction, never on the tick's word.
+  const scheduleChild = {
+    flowId: FLOW_ID, orgId: ORG, scope: { firedAt: '2027-03-01T10:00:00.000Z' }, inputs: {},
+    dedupeKey: 'schedule:2027-03-01T10:00Z', triggerKind: 'schedule' as const,
+  };
+
+  it('a reverted flow with no parent claim still refuses a schedule child', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    vi.mocked(heldParentScheduleClaim).mockResolvedValue(false);
+    queueCreate();
+    expect(await createFlowRun(scheduleChild as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    expect(heldParentScheduleClaim).toHaveBeenCalledWith(expect.anything(), { id: CONV, automationId: AUTO }, 'schedule:2027-03-01T10:00Z');
+    expect(callsOf('execute')).toHaveLength(0);
+    expect(chargeFlowRun).not.toHaveBeenCalled();
+  });
+
+  it('a reverted flow runs a schedule child of the parent claim it holds, and nothing else', async () => {
+    vi.mocked(conversionForFlow).mockResolvedValue(generation('reverted'));
+    vi.mocked(heldParentScheduleClaim).mockResolvedValue(true);
+    queueCreate();
+    expect(await createFlowRun(scheduleChild as CreateFlowRunInput)).toMatchObject({ created: true, runId: RUN_ID });
+    // The child never claims: the parent claim is the occurrence's admission.
+    expect(claimOccurrence).not.toHaveBeenCalled();
+
+    // A held claim never opens any other run kind.
+    vi.mocked(heldParentScheduleClaim).mockClear();
+    for (const input of [manual, tool]) {
+      queueCreate();
+      expect(await createFlowRun(input as CreateFlowRunInput)).toEqual({ created: false, reason: 'flow_conversion_reverted' });
+    }
+    queueCreate();
+    expect(await createFlowRun({ ...event, occurrence: { keys: [KEY], at } })).toEqual({ created: false, reason: 'not_enabled' });
+    expect(heldParentScheduleClaim).not.toHaveBeenCalled();
+    vi.mocked(heldParentScheduleClaim).mockReset().mockResolvedValue(false);
   });
 
   it('startManualRun surfaces flow_conversion_reverted', async () => {
