@@ -321,6 +321,37 @@ describe('thread links working set (real Postgres)', () => {
     expect(pin.label).toBe(`#${env.ticketA.ticketNumber} Printer offline in A`);
   });
 
+  it.each([49, 50])('promoting an auto link to user_pin respects the cap with %i existing pins', async (pinCount) => {
+    const env = await seed();
+    const ctx = { auth: env.auth, ceiling: await env.ceiling() };
+    const ref = { kind: 'ticket' as const, id: env.ticketA.id };
+    const auto = await addLink(ctx, env.thread.id, ref, { source: 'auto' });
+    await ageLink(auto.id!);
+    await asSystem(() => db.insert(wispThreadLinks).values(Array.from({ length: pinCount }, (_, i) => ({
+      threadId: env.thread.id, partnerId: env.partner.id, orgId: env.orgA.id,
+      entityKind: 'ticket' as const, entityId: randomUUID(), label: 'pin', addedByUserId: env.grantor.id,
+      source: (i % 2 ? 'user_pin' : 'wisp_pin') as WispLinkSource,
+    }))));
+    const before = (await rowsOf(env.thread.id)).find((row) => row.id === auto.id)!;
+    const promotion = env.inRequest(() => addLink(ctx, env.thread.id, ref, { source: 'user_pin' }));
+    if (pinCount === 50) {
+      await expect(promotion).rejects.toMatchObject({ name: 'ThreadLinkError', code: 'link_limit' });
+    } else {
+      await expect(promotion).resolves.toMatchObject({ id: auto.id, source: 'user_pin' });
+    }
+    const rows = await rowsOf(env.thread.id);
+    expect(rows).toHaveLength(pinCount + 1);
+    expect(rows.filter((row) => row.source !== 'auto')).toHaveLength(50);
+    const after = rows.find((row) => row.id === auto.id)!;
+    if (pinCount === 50) {
+      expect(after).toEqual(before);
+      expect(after.source).toBe('auto');
+    } else {
+      expect(after).toMatchObject({ source: 'user_pin', touchCount: before.touchCount + 1 });
+      expect(after.lastTouchedAt.getTime()).toBeGreaterThan(oldTouch.getTime());
+    }
+  });
+
   it.each(['user_pin', 'wisp_pin'] as const)('an auto add over a pin keeps it a pin and touches it (%s)', async (source) => {
     const env = await seed();
     const ctx = { auth: env.auth, ceiling: await env.ceiling() };
@@ -391,6 +422,33 @@ describe('thread links working set (real Postgres)', () => {
     expect(rows).toHaveLength(20);
     expect(rows.every((row) => row.source === 'auto')).toBe(true);
     expect(new Set(rows.map((row) => row.entityId)).size).toBe(20);
+  });
+
+  it('touchLinks from an org-scoped request touches partner-level and other-org links', async () => {
+    const env = await seed();
+    const { a, b, u } = await linkAll(env);
+    await ageLink(b.id!);
+    await ageLink(u.id!);
+    const before = await rowsOf(env.thread.id);
+    const orgCtx: DbAccessContext = {
+      scope: 'organization', orgId: env.orgA.id, accessibleOrgIds: [env.orgA.id], accessiblePartnerIds: [],
+      userId: env.grantor.id, currentPartnerId: env.partner.id,
+    };
+    await withDbAccessContext(orgCtx, async () => {
+      const visible = await db.select({ id: wispThreadLinks.id }).from(wispThreadLinks)
+        .where(eq(wispThreadLinks.threadId, env.thread.id));
+      expect(visible.map((row) => row.id)).toEqual([a.id]);
+      expect(await touchLinks(env.partner.id, env.thread.id, [u.ref, b.ref])).toBe(2);
+    });
+    const after = await rowsOf(env.thread.id);
+    expect(after).toHaveLength(3);
+    for (const id of [u.id, b.id]) {
+      const original = before.find((row) => row.id === id)!;
+      const touched = after.find((row) => row.id === id)!;
+      expect(touched).toEqual({ ...original, touchCount: original.touchCount + 1, lastTouchedAt: touched.lastTouchedAt });
+      expect(touched.lastTouchedAt.getTime()).toBeGreaterThan(oldTouch.getTime());
+    }
+    expect(after.find((row) => row.id === a.id)).toEqual(before.find((row) => row.id === a.id));
   });
 
   it('touchLinks bumps recency and never inserts', async () => {

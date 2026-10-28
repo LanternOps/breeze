@@ -17,6 +17,7 @@
  * org-scoped context never even loads an `org_id IS NULL` row), in system
  * scope otherwise (the session seed, which has no caller). `addLink` writes in
  * system scope once the resolver has decided, so its cap counts every row.
+ * `touchLinks` also writes in system scope for the caller-owned thread.
  * Every query is pinned to `(partner_id, thread_id)`; thread ownership is the
  * caller's job (the routes' `loadOwnThread`, the chat tools' own grant thread).
  */
@@ -109,6 +110,27 @@ export async function addLink(
       .limit(1);
     if (!thread) throw new ThreadLinkError('not_found');
 
+    const linkScope = and(
+      eq(wispThreadLinks.threadId, threadId),
+      eq(wispThreadLinks.partnerId, partnerId),
+      eq(wispThreadLinks.entityKind, ref.kind),
+      eq(wispThreadLinks.entityId, ref.id),
+    );
+    if (opts.source !== 'auto') {
+      const [prior] = await tx.select({ source: wispThreadLinks.source }).from(wispThreadLinks)
+        .where(linkScope).limit(1);
+      // Promotion consumes a pin slot just like insertion. Check before any
+      // update, under the thread lock, so a refusal leaves the auto untouched.
+      if (prior?.source === 'auto') {
+        const [pins] = await tx.select({ n: count() }).from(wispThreadLinks).where(and(
+          eq(wispThreadLinks.threadId, threadId),
+          eq(wispThreadLinks.partnerId, partnerId),
+          inArray(wispThreadLinks.source, ['user_pin', 'wisp_pin']),
+        ));
+        if ((pins?.n ?? 0) >= WISP_THREAD_LINK_LIMIT) throw new ThreadLinkError('link_limit');
+      }
+    }
+
     const [existing] = await tx.update(wispThreadLinks)
       .set({
         label: resolved.label,
@@ -120,12 +142,7 @@ export async function addLink(
         lastTouchedAt: sql`now()`,
         touchCount: sql`${wispThreadLinks.touchCount} + 1`,
       })
-      .where(and(
-        eq(wispThreadLinks.threadId, threadId),
-        eq(wispThreadLinks.partnerId, partnerId),
-        eq(wispThreadLinks.entityKind, ref.kind),
-        eq(wispThreadLinks.entityId, ref.id),
-      ))
+      .where(linkScope)
       .returning();
     if (existing) return existing;
 
@@ -164,10 +181,15 @@ export async function addLink(
   return toLink(row, resolved);
 }
 
-/** Touch existing refs only; no resolution, insertion or cached-field changes. */
+/**
+ * Touch existing refs only; no resolution, insertion or cached-field changes.
+ * Writes in system scope, pinned to the partner and thread, even when caller
+ * RLS hides some links. `partnerId` and `threadId` must be server-derived;
+ * the caller must establish that it owns the thread.
+ */
 export async function touchLinks(partnerId: string, threadId: string, refs: BreezeEntityRef[]): Promise<number> {
   if (refs.length === 0) return 0;
-  const rows = await inPartner(partnerId, () => db.update(wispThreadLinks)
+  const rows = await inSystemContext(() => db.update(wispThreadLinks)
     .set({ lastTouchedAt: sql`now()`, touchCount: sql`${wispThreadLinks.touchCount} + 1` })
     .where(and(
       eq(wispThreadLinks.threadId, threadId),
