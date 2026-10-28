@@ -131,9 +131,9 @@ func (winConsentInstanceOps) RequestClose(hwnd uintptr) error {
 
 func (winConsentInstanceOps) WindowClass(hwnd uintptr) string {
 	buf := make([]uint16, 256)
-	n, _, _ := winGetClassName.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	n, _, err := winGetClassName.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if n == 0 {
-		return "unknown window class"
+		return "unknown window class: " + err.Error()
 	}
 	return windows.UTF16ToString(buf[:n])
 }

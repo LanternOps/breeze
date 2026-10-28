@@ -43,6 +43,10 @@ type fakeInstanceOps struct {
 	dialogClosed        bool
 	// cancelOnRequest cancels the dismissal's context right after the request.
 	cancelOnRequest func()
+	// glitchFindAt makes that one FindInstanceWindow call (1-based) miss;
+	// vanishAtFind makes every call from that one on miss.
+	glitchFindAt int
+	vanishAtFind int
 }
 
 func (f *fakeInstanceOps) InstanceLive(ConsentInstance) (bool, error) {
@@ -66,6 +70,9 @@ func (f *fakeInstanceOps) InstanceLive(ConsentInstance) (bool, error) {
 func (f *fakeInstanceOps) FindInstanceWindow(uint32) uintptr {
 	f.findCalls++
 	if f.findCalls <= f.windowAfter || f.windowClosed {
+		return 0
+	}
+	if f.findCalls == f.glitchFindAt || (f.vanishAtFind > 0 && f.findCalls >= f.vanishAtFind) {
 		return 0
 	}
 	return f.window
@@ -349,8 +356,67 @@ func TestDismissConsentInstanceDialogGoneButBackdropLeftIsNotClosed(t *testing.T
 	// did not. The user is still looking at the dimmed prompt desktop.
 	ops := &fakeInstanceOps{window: 0xB0, dialog: 0xD1, dialogOnlyOnRequest: true, foreground: false}
 	res := runTargeted(t, ops, testInstance)
+	if res.Success || res.Reason != "consent_did_not_close" || ops.escapes != 0 {
+		t.Fatalf("result = %+v escapes=%d, want consent_did_not_close and no Escape while the instance still owns a prompt window", res, ops.escapes)
+	}
+}
+
+func TestDismissConsentInstanceOneMissedWindowSearchIsNotProofOfClose(t *testing.T) {
+	// The dialog is gone and one search of the desktop misses the backdrop
+	// (call 1 is the initial search, call 2 the first poll after the close
+	// request). A single empty search is not proof; the backdrop is back on
+	// the next one.
+	ops := &fakeInstanceOps{window: 0xB0, dialog: 0xD1, dialogOnlyOnRequest: true, glitchFindAt: 2}
+	res := runTargeted(t, ops, testInstance)
 	if res.Success {
-		t.Fatalf("result = %+v, want failure while the instance still owns a prompt window", res)
+		t.Fatalf("result = %+v, want failure: one missed search must not count as the prompt closing", res)
+	}
+}
+
+func TestDismissConsentInstanceCloseErrorAndNotForegroundPressedNothing(t *testing.T) {
+	// PostMessage failed, so nothing reached the prompt: the reason must stay
+	// the "nothing was pressed" consent_not_foreground, with the error kept.
+	ops := &fakeInstanceOps{window: 0xB0, dialog: 0xD1, closeErr: errors.New("PostMessage: access denied"), foreground: false}
+	res := runTargeted(t, ops, testInstance)
+	if res.Reason != ReasonConsentNotForeground || ops.escapes != 0 {
+		t.Fatalf("result = %+v escapes=%d, want %s and no Escape", res, ops.escapes, ReasonConsentNotForeground)
+	}
+	if !strings.Contains(res.DetailMessage, "PostMessage: access denied") {
+		t.Fatalf("detail %q should keep the close-request error", res.DetailMessage)
+	}
+}
+
+func TestDismissConsentInstanceNoWindowLeftButProcessLiveIsNotClosed(t *testing.T) {
+	// The close wait timed out with the dialog still alive; by the next search
+	// no window of the instance is left, but consent.exe still runs.
+	ops := &fakeInstanceOps{window: 0xB0, dialog: 0xD1, vanishAtFind: 2, foreground: true}
+	res := runTargeted(t, ops, testInstance)
+	if res.Success || res.Reason != "consent_did_not_close" || ops.escapes != 0 {
+		t.Fatalf("result = %+v escapes=%d, want consent_did_not_close without Escape", res, ops.escapes)
+	}
+	if !strings.Contains(res.DetailMessage, "still running") {
+		t.Fatalf("detail %q should say the process is still running", res.DetailMessage)
+	}
+}
+
+func TestDismissConsentInstanceEscapeSuccessKeepsCloseNote(t *testing.T) {
+	// Field diagnosis for #10177: when Escape had to finish the job, the
+	// result must still say the close request did not.
+	ops := &fakeInstanceOps{window: 0xB0, dialog: 0xD1, foreground: false, raiseWorks: true, closeOnEsc: true}
+	res := runTargeted(t, ops, testInstance)
+	if !res.Success || ops.raiseCalls != 1 || ops.escapes != 1 {
+		t.Fatalf("result = %+v raises=%d escapes=%d, want ok via raise then Escape", res, ops.raiseCalls, ops.escapes)
+	}
+	if !strings.Contains(res.DetailMessage, "still open after a close request") {
+		t.Fatalf("detail %q should record that the close request did not close the prompt", res.DetailMessage)
+	}
+}
+
+func TestDismissConsentInstanceNoDialogFoundIsRecorded(t *testing.T) {
+	ops := &fakeInstanceOps{window: 0xB0, foreground: false}
+	res := runTargeted(t, ops, testInstance)
+	if res.Reason != ReasonConsentNotForeground || !strings.Contains(res.DetailMessage, "close request skipped") {
+		t.Fatalf("result = %+v, want %s noting the skipped close request", res, ReasonConsentNotForeground)
 	}
 }
 

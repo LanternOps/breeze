@@ -9,8 +9,12 @@ import (
 
 // Reason codes specific to the targeted dismissal (#8995). Each one means
 // "nothing was pressed" except consent_did_not_close / send_input_failed,
-// which DismissInstance shares with Dismiss.
+// which DismissInstance shares with Dismiss. From DismissInstance,
+// consent_did_not_close means input reached the prompt (a close request, an
+// Escape, or both) and it may still be open.
 const (
+	reasonConsentDidNotClose = "consent_did_not_close"
+
 	// ReasonInvalidConsentInstance: the request did not carry both a PID and a
 	// creation time, so there is nothing to target.
 	ReasonInvalidConsentInstance = "invalid_consent_instance"
@@ -187,31 +191,34 @@ func dismissConsentInstance(ctx context.Context, ops consentInstanceOps, inst Co
 		}
 	}
 
-	closeNote := ""
+	// closeNote records what the close request did, and is carried into every
+	// later result, success included, so the field log shows which step closed
+	// the prompt. closeSent: the request reached the prompt's message queue.
+	closeNote := "no prompt dialog window found; close request skipped"
+	closeSent := false
 	if dialog := ops.FindInstanceDialog(inst.PID); dialog != 0 {
-		res, done, note := requestInstanceClose(ctx, ops, inst, dialog, deadline, poll)
+		res, done, note, sent := requestInstanceClose(ctx, ops, inst, dialog, deadline, poll)
 		if done {
 			return res
 		}
-		closeNote = note
+		closeNote, closeSent = note, sent
 		if hwnd = ops.FindInstanceWindow(inst.PID); hwnd == 0 {
-			// Nothing of the instance is left on the desktop, but the process
-			// is still live (or unverifiable), so this is not proof it is gone.
-			return Result{Success: false, Reason: "consent_did_not_close", DetailMessage: closeNote}
+			return Result{Success: false, Reason: reasonConsentDidNotClose,
+				DetailMessage: closeNote + "; no prompt window of consent.exe is left on the desktop, but the process is still running (or could not be verified)"}
 		}
 	}
 
 	if !ops.ForegroundOwnedBy(inst.PID) {
 		ops.BringToForeground(hwnd)
 		if !ops.ForegroundOwnedBy(inst.PID) {
-			if closeNote != "" {
-				// Input was delivered (the close request), so this is not a
-				// "nothing was pressed" reason.
-				return Result{Success: false, Reason: "consent_did_not_close",
-					DetailMessage: closeNote + "; the prompt is not the foreground window, so Escape was not sent"}
+			reason := ReasonConsentNotForeground
+			if closeSent {
+				// The close request was delivered, so this is not a "nothing
+				// was pressed" reason.
+				reason = reasonConsentDidNotClose
 			}
-			return Result{Success: false, Reason: ReasonConsentNotForeground,
-				DetailMessage: "the targeted consent prompt (" + ops.WindowClass(hwnd) + ") is not the foreground window; Escape not sent"}
+			return Result{Success: false, Reason: reason,
+				DetailMessage: closeNote + "; the targeted consent prompt (" + ops.WindowClass(hwnd) + ") is not the foreground window, so Escape was not sent"}
 		}
 	}
 
@@ -227,27 +234,24 @@ func dismissConsentInstance(ctx context.Context, ops consentInstanceOps, inst Co
 	var lastLiveErr error
 	for {
 		if !ops.WindowAlive(hwnd) {
-			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe prompt closed after Escape"}
+			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe prompt closed after Escape (" + closeNote + ")"}
 		}
 		// Process exit is a second way to see the prompt close. A liveness
 		// error is not fatal here (Escape is already sent and the window
 		// check still bounds the loop), but it is kept for the diagnosis.
 		live, err := ops.InstanceLive(inst)
 		if err == nil && !live {
-			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe exited after Escape"}
+			return Result{Success: true, Reason: "ok", DetailMessage: "targeted consent.exe exited after Escape (" + closeNote + ")"}
 		}
 		if err != nil {
 			lastLiveErr = err
 		}
 		if time.Now().After(deadline) {
-			detail := "targeted consent.exe still present after Escape (" + ops.WindowClass(hwnd) + ")"
-			if closeNote != "" {
-				detail = closeNote + "; " + detail
-			}
+			detail := closeNote + "; targeted consent.exe still present after Escape (" + ops.WindowClass(hwnd) + ")"
 			if lastLiveErr != nil {
 				detail += " (process liveness could not be verified: " + lastLiveErr.Error() + ")"
 			}
-			return Result{Success: false, Reason: "consent_did_not_close", DetailMessage: detail}
+			return Result{Success: false, Reason: reasonConsentDidNotClose, DetailMessage: detail}
 		}
 		select {
 		case <-ctx.Done():
@@ -260,19 +264,21 @@ func dismissConsentInstance(ctx context.Context, ops consentInstanceOps, inst Co
 
 // requestInstanceClose asks the target's dialog window to close and waits,
 // bounded, for the prompt to go. done=true means res is final: the prompt
-// closed, or the dismissal was cancelled. Otherwise note says what happened
-// and the caller falls back to Escape.
+// closed, or the dismissal was cancelled. Otherwise note says what happened,
+// sent says whether the request reached the window, and the caller falls back
+// to Escape.
 //
-// The prompt counts as closed when consent.exe exits, or when none of its
-// prompt windows is left on the desktop. The dialog going away is not enough
-// on its own: on the secure desktop the backdrop would still cover the screen.
-func requestInstanceClose(ctx context.Context, ops consentInstanceOps, inst ConsentInstance, dialog uintptr, deadline time.Time, poll time.Duration) (res Result, done bool, note string) {
+// The prompt counts as closed when consent.exe exits, or when the dialog is
+// gone and two searches in a row find no prompt window of the instance. The
+// dialog going away is not enough on its own: on the secure desktop the
+// backdrop would still cover the screen. One empty search is not proof either.
+func requestInstanceClose(ctx context.Context, ops consentInstanceOps, inst ConsentInstance, dialog uintptr, deadline time.Time, poll time.Duration) (res Result, done bool, note string, sent bool) {
 	class := ops.WindowClass(dialog)
 	if result, cancelled := dismissCancellationResult(ctx); cancelled {
-		return result, true, ""
+		return result, true, "", false
 	}
 	if err := ops.RequestClose(dialog); err != nil {
-		return Result{}, false, "close request to the prompt (" + class + ") failed: " + err.Error()
+		return Result{}, false, "close request to the prompt (" + class + ") failed: " + err.Error(), false
 	}
 
 	// Leave at least half of the remaining budget to the Escape fallback.
@@ -282,30 +288,39 @@ func requestInstanceClose(ctx context.Context, ops consentInstanceOps, inst Cons
 	}
 	waitUntil := time.Now().Add(wait)
 	var lastLiveErr error
+	emptySearches := 0
 	for {
 		live, err := ops.InstanceLive(inst)
 		if err == nil && !live {
 			return Result{Success: true, Reason: "ok",
-				DetailMessage: "targeted consent.exe exited after a close request to its prompt (" + class + ")"}, true, ""
+				DetailMessage: "targeted consent.exe exited after a close request to its prompt (" + class + ")"}, true, "", true
 		}
 		if err != nil {
 			lastLiveErr = err
 		}
 		if !ops.WindowAlive(dialog) && ops.FindInstanceWindow(inst.PID) == 0 {
-			return Result{Success: true, Reason: "ok",
-				DetailMessage: "targeted consent.exe prompt (" + class + ") closed after a close request"}, true, ""
+			emptySearches++
+		} else {
+			emptySearches = 0
+		}
+		if emptySearches >= 2 {
+			detail := "targeted consent.exe prompt (" + class + ") closed after a close request"
+			if lastLiveErr != nil {
+				detail += " (process liveness could not be verified: " + lastLiveErr.Error() + ")"
+			}
+			return Result{Success: true, Reason: "ok", DetailMessage: detail}, true, "", true
 		}
 		if time.Now().After(waitUntil) {
 			note = "the prompt (" + class + ") was still open after a close request"
 			if lastLiveErr != nil {
 				note += " (process liveness could not be verified: " + lastLiveErr.Error() + ")"
 			}
-			return Result{}, false, note
+			return Result{}, false, note, true
 		}
 		select {
 		case <-ctx.Done():
 			return Result{Success: false, Reason: dismissCancelledReason,
-				DetailMessage: "PAM consent dismissal cancelled after a close request while waiting for consent.exe to close: " + ctx.Err().Error()}, true, ""
+				DetailMessage: "PAM consent dismissal cancelled after a close request while waiting for consent.exe to close: " + ctx.Err().Error()}, true, "", true
 		case <-time.After(poll):
 		}
 	}
