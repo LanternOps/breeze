@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
 	"sync"
@@ -238,9 +239,14 @@ func ApplyPeripheralPolicyV2WithEvents(envelope PeripheralPolicyEnvelopeV2, loca
 // so the legacy policyName detail is dropped rather than reported as a UUID
 // (the server joins the real name from policyId). The applied revision is
 // recorded instead, so an event can be traced to the envelope that produced it.
+// The revision also prefixes the event id: the server deduplicates on
+// (org, device, eventId), and ToEvents' scan-<unix second>-<index> ids would
+// collide for two revisions applied within the same second, silently dropping
+// the second scan.
 func peripheralEventsV2(results []EvaluationResult, outcome EnforcementOutcome, revision int) []PeripheralEvent {
 	events := ToEvents(results, outcome)
 	for i := range events {
+		events[i].EventID = fmt.Sprintf("v2r%d-%s", revision, events[i].EventID)
 		delete(events[i].Details, "policyName")
 		events[i].Details["policyRevision"] = revision
 	}

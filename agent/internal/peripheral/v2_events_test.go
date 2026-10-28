@@ -1,8 +1,10 @@
 package peripheral
 
 import (
+	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func blockStorageV2Policy() []PeripheralPolicyV2 {
@@ -37,6 +39,55 @@ func TestApplyPeripheralPolicyV2WithEventsReportsTheEnforcedScan(t *testing.T) {
 	}
 	if ev.EventID == "" || ev.OccurredAt.IsZero() {
 		t.Fatalf("event lacks id/time: %+v", ev)
+	}
+}
+
+// The API's submitPeripheralEventsSchema requires peripheralType and an
+// RFC 3339 occurredAt; eventId is the dedupe key (org, device, eventId), so it
+// must differ between two revisions applied within the same second.
+func TestApplyPeripheralPolicyV2WithEventsWireShape(t *testing.T) {
+	store := newV2TestStore(t)
+	deps := PolicyV2Dependencies{
+		Detect: func() ([]DetectedPeripheral, error) {
+			return []DetectedPeripheral{{PeripheralType: "usb", Vendor: "SanDisk", Product: "Cruzer", SerialNumber: "SN1", DeviceClass: "storage", DeviceID: "usb-1"}}, nil
+		},
+		Enforcer: &v2TestEnforcer{},
+		Classes:  []string{"storage"},
+	}
+	first := testV2Envelope(t, 1, "enforce", blockStorageV2Policy())
+	_, firstEvents := ApplyPeripheralPolicyV2WithEvents(first, first.Identity, store, deps)
+	second := testV2Envelope(t, 2, "enforce", []PeripheralPolicyV2{})
+	_, secondEvents := ApplyPeripheralPolicyV2WithEvents(second, second.Identity, store, deps)
+	if len(firstEvents) != 1 || len(secondEvents) != 1 {
+		t.Fatalf("events = %+v / %+v", firstEvents, secondEvents)
+	}
+	if firstEvents[0].EventID == secondEvents[0].EventID {
+		t.Fatalf("revisions 1 and 2 share event id %q; the second batch would be deduplicated away", firstEvents[0].EventID)
+	}
+
+	raw, err := json.Marshal(EventSubmission{Events: firstEvents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Events []map[string]any `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	ev := wire.Events[0]
+	for field, want := range map[string]any{"eventType": "blocked", "peripheralType": "usb", "vendor": "SanDisk", "product": "Cruzer", "serialNumber": "SN1", "policyId": first.EffectivePolicies[0].PolicyID} {
+		if ev[field] != want {
+			t.Errorf("%s = %v, want %v (wire event %v)", field, ev[field], want, ev)
+		}
+	}
+	if id, _ := ev["eventId"].(string); id == "" || len(id) > 255 {
+		t.Errorf("eventId = %q, want 1..255 chars", id)
+	}
+	if at, _ := ev["occurredAt"].(string); at == "" {
+		t.Errorf("occurredAt missing")
+	} else if _, err := time.Parse(time.RFC3339, at); err != nil {
+		t.Errorf("occurredAt %q is not RFC 3339: %v", at, err)
 	}
 }
 
