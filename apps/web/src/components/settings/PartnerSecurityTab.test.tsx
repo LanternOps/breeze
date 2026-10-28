@@ -39,6 +39,22 @@ describe('PartnerSecurityTab session timeout (#6111)', () => {
   });
 });
 
+describe('PartnerSecurityTab limit errors (#10081)', () => {
+  it('a limit with no ceiling says "or more"; a valid or unset limit shows nothing', () => {
+    const { getByTestId, queryByTestId } = render(<PartnerSecurityTab data={{ maxSessions: 0, minLength: 12 }} onChange={vi.fn()} />);
+    expect(getByTestId('partner-security-max-sessions-error').textContent).toBe('Enter a whole number of 1 or more.');
+    expect(queryByTestId('partner-security-min-length-error')).toBeNull();
+    expect(queryByTestId('partner-security-expiration-error')).toBeNull();
+  });
+
+  it('a server message wins over the local range message', () => {
+    const { getByTestId } = render(
+      <PartnerSecurityTab data={{ minLength: 2 }} onChange={vi.fn()} serverErrors={{ minLength: 'Too small: expected number to be >=8' }} />,
+    );
+    expect(getByTestId('partner-security-min-length-error').textContent).toBe('Too small: expected number to be >=8');
+  });
+});
+
 describe('PartnerSecurityTab allowlist textarea', () => {
   // The API only clears a stored allowlist when `ipAllowlist` is present in the
   // write (routes/orgs.ts preserves it when the key is omitted), so emptying the

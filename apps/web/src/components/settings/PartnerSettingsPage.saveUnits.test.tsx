@@ -140,6 +140,54 @@ describe('PartnerSettingsPage header status and validity (W2 Task 18)', () => {
     expect(status().getAttribute('data-state')).toBe('invalid');
   });
 
+  it('a minimum password length below the server floor is flagged inline and blocks Save (#10081)', async () => {
+    const user = await renderPage('#security');
+    const input = screen.getByLabelText('Minimum Password Length') as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, '2');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe('partner-security-min-length-error');
+    expect(screen.getByTestId('partner-security-min-length-error').textContent).toBe('Enter a whole number from 6 to 128.');
+    expect(saveButton().disabled).toBe(true);
+    expect(status().getAttribute('data-state')).toBe('invalid');
+    expect(status().textContent).toBe('Fix 1 field in Security to save.');
+    await user.clear(input);
+    await user.type(input, '8');
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('a server 400 on a security limit is shown on that field, not as a raw toast blaming other tabs (#10081)', async () => {
+    const message = 'Too big: expected number to be <=5';
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'PATCH /orgs/partners/me': () => json({
+        error: `settings.security.maxSessions: ${message}`,
+        details: { formErrors: [], fieldErrors: { 'settings.security.maxSessions': [message] } },
+      }, 400),
+    });
+    const user = await renderPage();
+    await user.type(screen.getByLabelText('City'), 'ville');
+    await openTab(user, /^security$/i);
+    const input = screen.getByLabelText('Max Concurrent Sessions');
+    await user.type(input, '8');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('invalid'));
+    expect(status().textContent).toBe('Fix 1 field in Security to save.');
+    expect(screen.getByTestId('partner-security-max-sessions-error').textContent).toBe(message);
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    const errorToasts = showToastMock.mock.calls.map(([arg]) => arg as { type: string; message: string }).filter(a => a.type === 'error');
+    expect(errorToasts.map(a => a.message)).toEqual(['Settings not saved. Fix the highlighted field and save again.']);
+    // Changing the value clears the server's verdict on it; the unit is back to
+    // "last save failed", so Save is offered again.
+    await user.clear(input);
+    await user.type(input, '4');
+    expect(screen.queryByTestId('partner-security-max-sessions-error')).toBeNull();
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    expect(status().getAttribute('data-state')).toBe('failed');
+    expect(saveButton().disabled).toBe(false);
+  });
+
   it('invalid link focuses the first invalid field', async () => {
     const user = await renderPage();
     const website = screen.getByLabelText(/website/i);

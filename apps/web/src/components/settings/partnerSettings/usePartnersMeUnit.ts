@@ -15,8 +15,9 @@ import type {
   PartnerNetworkProxySettings,
   IpAllowlistStatus,
   SendingDomainsCapabilityDto,
+  SecurityLimitKey,
 } from '@breeze/shared';
-import { isValidMaintenanceWindow, isHttpUrl } from '@breeze/shared';
+import { isValidMaintenanceWindow, isHttpUrl, SECURITY_LIMIT_KEYS } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { i18n } from '@/lib/i18n';
@@ -25,7 +26,7 @@ import { normalizeLocale } from '@/lib/appearance';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { getPartnersMe, invalidatePartnersMe } from '@/lib/api/partnersMe';
 import { PARTNER_SETTINGS_SAVED_EVENT } from '../../auth/MfaPolicyOffBanner';
-import { currentIpCovered } from '../PartnerSecurityTab';
+import { currentIpCovered, invalidSecurityLimits, SECURITY_LIMIT_FIELD_IDS } from '../PartnerSecurityTab';
 import { parseThresholds } from '../AiBudgetThresholdsInput';
 import type { PinnableVersions } from '../AgentVersionPinSelectors';
 import type { TopologyFeatureFlags } from '../PartnerModulesCard';
@@ -180,6 +181,69 @@ export function buildPartnersMePayload(state: PartnersMeState): Record<string, u
   return payload;
 }
 
+/**
+ * Security limits the API rejected on the last save, each with the value that
+ * was sent. A verdict holds only while the field still has that value.
+ */
+export type SecurityServerErrors = Partial<Record<SecurityLimitKey, { message: string; sent: unknown }>>;
+
+type ValidationDetails = { formErrors?: unknown; fieldErrors?: unknown };
+
+function validationDetails(body: unknown): ValidationDetails | null {
+  if (!body || typeof body !== 'object') return null;
+  const details = (body as { details?: unknown }).details;
+  return details && typeof details === 'object' && !Array.isArray(details) ? (details as ValidationDetails) : null;
+}
+
+/** Field error path of a security limit in the API's validation 400 (apps/api/src/lib/validation.ts). */
+const securityLimitPath = (key: SecurityLimitKey) => `settings.security.${key}`;
+
+/**
+ * Reads the security limits out of a `PATCH /orgs/partners/me` validation 400
+ * (`details.fieldErrors`), so the form can put the server's message on the
+ * field instead of only in a toast (#10081).
+ */
+export function securityServerErrorsFrom(body: unknown, sent: InheritableSecuritySettings): SecurityServerErrors {
+  const fieldErrors = validationDetails(body)?.fieldErrors;
+  if (!fieldErrors || typeof fieldErrors !== 'object' || Array.isArray(fieldErrors)) return {};
+  const out: SecurityServerErrors = {};
+  for (const key of SECURITY_LIMIT_KEYS) {
+    const messages = (fieldErrors as Record<string, unknown>)[securityLimitPath(key)];
+    const message = Array.isArray(messages) ? messages.find((m): m is string => typeof m === 'string' && m.length > 0) : undefined;
+    if (message) out[key] = { message, sent: sent[key] };
+  }
+  return out;
+}
+
+/**
+ * True when every problem in a validation 400 is a security limit the form
+ * shows on its field. Only then does the toast drop the details: a problem
+ * with no field to show it on must still reach the user.
+ */
+function allValidationErrorsOnFields(body: unknown): boolean {
+  const details = validationDetails(body);
+  if (!details) return false;
+  const { formErrors, fieldErrors } = details;
+  if (Array.isArray(formErrors) && formErrors.length > 0) return false;
+  if (!fieldErrors || typeof fieldErrors !== 'object' || Array.isArray(fieldErrors)) return false;
+  const paths = Object.keys(fieldErrors);
+  const mapped = new Set(SECURITY_LIMIT_KEYS.map(securityLimitPath));
+  return paths.length > 0 && paths.every(path => mapped.has(path));
+}
+
+/** The server messages still standing: the field holds the value that was rejected. */
+export function activeSecurityServerErrors(
+  security: InheritableSecuritySettings,
+  errors: SecurityServerErrors,
+): Partial<Record<SecurityLimitKey, string>> {
+  const out: Partial<Record<SecurityLimitKey, string>> = {};
+  for (const key of SECURITY_LIMIT_KEYS) {
+    const e = errors[key];
+    if (e && security[key] === e.sent) out[key] = e.message;
+  }
+  return out;
+}
+
 function tabValidity(invalidFieldIds: string[]): TabValidity {
   return { isValid: invalidFieldIds.length === 0, invalidCount: invalidFieldIds.length, firstInvalidFieldId: invalidFieldIds[0] ?? null };
 }
@@ -188,15 +252,22 @@ function tabValidity(invalidFieldIds: string[]): TabValidity {
  * Field checks that used to run only inside `handleSave` now run on every edit
  * (spec §3.5); each field also shows its own inline error.
  */
-export function partnersMeValidity(state: PartnersMeState): Partial<Record<TabKey, TabValidity>> {
+export function partnersMeValidity(
+  state: PartnersMeState,
+  serverErrors: SecurityServerErrors = {},
+): Partial<Record<TabKey, TabValidity>> {
   const website = state.contact.website.trim();
   const mw = state.defaults.maintenanceWindow;
   const raw = state.aiBudgetsThresholdsRaw;
+  const rejected = activeSecurityServerErrors(state.security, serverErrors);
+  const invalidLimits = new Set([...invalidSecurityLimits(state.security), ...(Object.keys(rejected) as SecurityLimitKey[])]);
   return {
     company: tabValidity(website !== '' && !isHttpUrl(website) ? [PARTNERS_ME_FIELD_IDS.website] : []),
     defaults: tabValidity(typeof mw === 'string' && mw.trim() !== '' && !isValidMaintenanceWindow(mw) ? [PARTNERS_ME_FIELD_IDS.maintenanceWindow] : []),
     // The box only renders while budgets are enabled; a hidden box cannot block Save.
     aiBudgets: tabValidity(state.aiBudgets.enabled && raw !== null && !parseThresholds(raw).ok ? [PARTNERS_ME_FIELD_IDS.aiBudgetThresholds] : []),
+    // Bounds shared with the API (#10081); in form order so the status link opens the first one.
+    security: tabValidity(SECURITY_LIMIT_KEYS.filter(key => invalidLimits.has(key)).map(key => SECURITY_LIMIT_FIELD_IDS[key])),
   };
 }
 
@@ -231,6 +302,9 @@ export async function runPartnerSave(
     request: () => fetchWithAuth('/orgs/partners/me', { method: 'PATCH', body: JSON.stringify(payload) }),
     successMessage: deps.silentSuccess ? undefined : i18n.t('settings:partnerSettingsPage.saved'),
     errorFallback: i18n.t('settings:partnerSettingsPage.saveFailed'),
+    // A 400 whose every problem is shown on its field gets a plain toast; the
+    // field and the status line say what to fix (#10081).
+    friendly: (_code, _message, body) => (allValidationErrorsOnFields(body) ? i18n.t('settings:partnerSettingsPage.fieldRejected') : undefined),
     onUnauthorized: deps.onUnauthorized,
   });
 }
@@ -264,6 +338,7 @@ export function usePartnersMeUnit() {
   const [baseline, setBaseline] = useState<PartnersMeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [serverErrors, setServerErrors] = useState<SecurityServerErrors>({});
 
   const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
   const [ipStatusUnavailable, setIpStatusUnavailable] = useState(false);
@@ -291,6 +366,7 @@ export function usePartnersMeUnit() {
       setPartner(null);
       setState(null);
       setBaseline(null);
+      setServerErrors({});
     }
     try {
       setLoading(true);
@@ -363,7 +439,11 @@ export function usePartnersMeUnit() {
     return dirty;
   }, [state, baseline]);
 
-  const validity = useMemo(() => (state ? partnersMeValidity(state) : {}), [state]);
+  const validity = useMemo(() => (state ? partnersMeValidity(state, serverErrors) : {}), [state, serverErrors]);
+  const securityServerErrors = useMemo(
+    () => (state ? activeSecurityServerErrors(state.security, serverErrors) : {}),
+    [state, serverErrors],
+  );
 
   const dirtyRef = useRef(dirtyTabs);
   dirtyRef.current = dirtyTabs;
@@ -386,10 +466,14 @@ export function usePartnersMeUnit() {
       window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // Re-baseline to what was sent: an edit made during the request stays dirty.
       setBaseline(sent);
+      setServerErrors({});
       return { status: 'saved', savedAt: Date.now() };
     } catch (err) {
       if (generation.current !== gen) return { status: 'cancelled' };
       if (err instanceof ActionError && err.status === 401) return { status: 'failed' };
+      // A rejected security limit goes on its field and makes the unit invalid,
+      // so the status line points at that field rather than at every tab of the unit.
+      if (err instanceof ActionError && err.status === 400) setServerErrors(securityServerErrorsFrom(err.body, sent.security));
       // An ActionError was already toasted by runAction; anything else is shown on the page.
       if (!(err instanceof ActionError)) {
         setError(err instanceof Error ? err.message : i18n.t('settings:partnerSettingsPage.saveFailed'));
@@ -420,6 +504,8 @@ export function usePartnersMeUnit() {
     markNoPartner,
     dirtyTabs,
     validity,
+    /** Server messages for security limits rejected on the last save (see SecurityServerErrors). */
+    securityServerErrors,
     unit,
     ipStatus,
     ipStatusUnavailable,

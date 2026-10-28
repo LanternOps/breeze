@@ -931,7 +931,11 @@
     "allowlistPlaceholder": "Enter one IP or CIDR range per line. Leave blank to let each org decide.",
     "allowlistHelp": "Leave blank to let each organization configure individually. Use CIDR notation for ranges. Requires a configured reverse proxy so the API can see real client IPs.",
     "ipListed": "Your IP ({{ip}}) is listed",
-    "addCurrentIp": "Add my current IP ({{ip}})"
+    "addCurrentIp": "Add my current IP ({{ip}})",
+    "errors": {
+      "range": "Enter a whole number from {{min}} to {{max}}.",
+      "atLeast": "Enter a whole number of {{min}} or more."
+    }
   },
   "partnerNotifications": {
     "notSet": "Not set — orgs configure individually",
@@ -1111,6 +1115,7 @@
     },
     "saved": "Partner settings saved",
     "saveFailed": "Failed to save settings",
+    "fieldRejected": "Settings not saved. Fix the highlighted field and save again.",
     "permissionDenied": "You do not have permission to view partner settings",
     "fetchFailed": "Failed to fetch partner settings",
     "genericError": "An error occurred",

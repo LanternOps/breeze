@@ -32,7 +32,6 @@ import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
   clampSessionTimeoutInSettings,
-  sessionTimeoutMinutesSchema,
   sessionTimeoutSettingsError,
 } from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -83,7 +82,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, securityLimitSchemas } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -798,9 +797,11 @@ const partnerSettingsSchema = z.object({
     // The scalar limits below accept an explicit `null` meaning "clear back to
     // the inherited default" (#8976). The handler deep-merges `security`, so an
     // omitted key keeps the stored value; `null` is the only way to unset one.
-    minLength: z.number().int().min(6).max(128).nullable().optional(),
+    // The numeric bounds live in @breeze/shared (securityLimits.ts) so the
+    // partner settings form validates against the same limits (#10081).
+    minLength: securityLimitSchemas.minLength.nullable().optional(),
     complexity: z.enum(['standard', 'strict', 'passphrase']).nullable().optional(),
-    expirationDays: z.number().int().min(0).nullable().optional(),
+    expirationDays: securityLimitSchemas.expirationDays.nullable().optional(),
     requireMfa: z.boolean().optional(),
     // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
     // working before enrolment is enforced. Optional on purpose: a PATCH that
@@ -820,8 +821,8 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: sessionTimeoutMinutesSchema.nullable().optional(),
-    maxSessions: z.number().int().min(1).nullable().optional(),
+    sessionTimeout: securityLimitSchemas.sessionTimeout.nullable().optional(),
+    maxSessions: securityLimitSchemas.maxSessions.nullable().optional(),
     ipAllowlist: z
       .array(z.string())
       .optional()

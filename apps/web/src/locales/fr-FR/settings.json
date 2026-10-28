@@ -931,7 +931,11 @@
     "allowlistPlaceholder": "Entrez une plage de IP ou CIDR par ligne. Laissez le vide pour que chaque organisation décide.",
     "allowlistHelp": "Laissez chaque organisation vide pour que chaque organisation soit configurée individuellement. Utilisez la notation CIDR pour les portées. Nécessite un reverse proxy configuré pour que le API puisse voir les vraies IP des clients.",
     "ipListed": "Votre IP ({{ip}}) est listé",
-    "addCurrentIp": "Ajoutez mon IP actuel ({{ip}})"
+    "addCurrentIp": "Ajoutez mon IP actuel ({{ip}})",
+    "errors": {
+      "range": "Saisissez un nombre entier de {{min}} à {{max}}.",
+      "atLeast": "Saisissez un nombre entier supérieur ou égal à {{min}}."
+    }
   },
   "partnerNotifications": {
     "notSet": "Non défini — les organisations se configurent individuellement",
@@ -1111,6 +1115,7 @@
     },
     "saved": "Paramètres partenaires enregistrés",
     "saveFailed": "Impossible d’enregistrer les paramètres",
+    "fieldRejected": "Paramètres non enregistrés. Corrigez le champ en surbrillance et enregistrez à nouveau.",
     "permissionDenied": "Vous n’avez pas la permission de voir les paramètres du partenaire",
     "fetchFailed": "Impossible de récupérer les paramètres partenaires",
     "genericError": "Une erreur s’est produite",

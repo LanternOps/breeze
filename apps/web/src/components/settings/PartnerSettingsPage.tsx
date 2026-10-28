@@ -362,7 +362,7 @@ export default function PartnerSettingsPage() {
             )}
 
             {activeTab === 'security' && card(
-              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} />
+              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} serverErrors={me.securityServerErrors} />
             )}
             {/* Caller verification (#6354): partner baseline; the rail hides the
                 tab (and the form renders nothing) unless the server flag is on. */}

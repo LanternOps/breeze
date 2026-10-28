@@ -26,6 +26,7 @@ export * from './businessEmail';
 export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
+export * from './securityLimits';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './ringFeatureUpdates';
