@@ -263,4 +263,13 @@ describe('Header Breeze AI button gating (#6396)', () => {
     render(<Header />);
     await waitFor(() => expect(screen.getByLabelText('layout.header.ai')).toBeInTheDocument());
   });
+
+  // #10107: the AI and Help side panels dock at `top-16` (RIGHT_DOCK_PANEL_CLASS
+  // in rightDockPanel.ts) so they start below this header. Change the two
+  // together, or the panels cover the bell, theme and account menu again.
+  it('is h-16, the offset the right-docked side panels start at (#10107)', async () => {
+    const { container } = render(<Header />);
+    await waitFor(() => expect(screen.getByLabelText('layout.header.accountMenu')).toBeInTheDocument());
+    expect(container.querySelector('header')?.className.split(/\s+/)).toContain('h-16');
+  });
 });
