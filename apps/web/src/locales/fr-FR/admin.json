@@ -993,6 +993,7 @@
       "changesSnapshot": "Instantané des changements",
       "before": "Avant",
       "after": "Après",
+      "noFieldChanges": "Aucune modification de champ n’a été enregistrée pour cette action.",
       "userInfo": "Informations utilisateur",
       "requestMetadata": "Métadonnées de demande",
       "fields": {

@@ -4,22 +4,16 @@ import { Calendar, Check, ChevronDown, Loader2, Search, User, X } from 'lucide-r
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { auditActionFilterOptions, auditPrefixLabel } from '@/lib/auditFormat';
-
-type DatePreset = 'today' | '7d' | '30d' | 'custom';
-
-type AuditFiltersState = {
-  datePreset: DatePreset;
-  startDate?: string;
-  endDate?: string;
-  userId?: string;
-  userEmail?: string;
-  actions: string[];
-  resources: string[];
-  search: string;
-};
+import type { ActiveFilters, DatePreset } from './auditFilterParams';
 
 type AuditFiltersProps = {
-  onApply?: (filters: AuditFiltersState) => void;
+  /**
+   * The filters currently applied to the trail. The viewer unmounts this panel
+   * on Apply, so it seeds its state from here on every open; without it the
+   * panel reopened showing the defaults while a custom range was active (#9941).
+   */
+  initialFilters?: ActiveFilters | null;
+  onApply?: (filters: ActiveFilters) => void;
   onClear?: () => void;
 };
 
@@ -47,23 +41,23 @@ const resourceOptions = [
   'ticket'
 ];
 
-export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
+export default function AuditFilters({ initialFilters, onApply, onClear }: AuditFiltersProps) {
   const { t } = useTranslation('admin');
-  const [datePreset, setDatePreset] = useState<DatePreset>('7d');
+  const [datePreset, setDatePreset] = useState<DatePreset>(initialFilters?.datePreset ?? '7d');
   const presetLabels: Record<DatePreset, string> = {
     today: t('audit.auditFilters.presets.today'),
     '7d': t('audit.auditFilters.presets.last7Days'),
     '30d': t('audit.auditFilters.presets.last30Days'),
     custom: t('audit.auditFilters.presets.custom')
   };
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  const [customStart, setCustomStart] = useState(initialFilters?.startDate ?? '');
+  const [customEnd, setCustomEnd] = useState(initialFilters?.endDate ?? '');
   const [userSearch, setUserSearch] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [selectedUserId, setSelectedUserId] = useState<string | undefined>();
-  const [selectedActions, setSelectedActions] = useState<string[]>([]);
-  const [selectedResources, setSelectedResources] = useState<string[]>([]);
-  const [detailsSearch, setDetailsSearch] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(initialFilters?.userId);
+  const [selectedActions, setSelectedActions] = useState<string[]>(initialFilters?.actions ?? []);
+  const [selectedResources, setSelectedResources] = useState<string[]>(initialFilters?.resources ?? []);
+  const [detailsSearch, setDetailsSearch] = useState(initialFilters?.search ?? '');
   const [users, setUsers] = useState<UserOption[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
 
@@ -114,7 +108,11 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
       startDate: datePreset === 'custom' ? customStart : undefined,
       endDate: datePreset === 'custom' ? customEnd : undefined,
       userId: selectedUserId,
-      userEmail: selectedUser?.email,
+      // Keep the applied user's email if the user list has not loaded (or failed)
+      // since the panel reopened, rather than silently dropping it.
+      userEmail:
+        selectedUser?.email ??
+        (selectedUserId && selectedUserId === initialFilters?.userId ? initialFilters.userEmail : undefined),
       actions: selectedActions,
       resources: selectedResources,
       search: detailsSearch
@@ -151,6 +149,8 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
               <button
                 key={preset}
                 type="button"
+                data-testid={`audit-date-preset-${preset}`}
+                aria-pressed={datePreset === preset}
                 onClick={() => setDatePreset(preset)}
                 className={cn(
                   'rounded-full border px-3 py-1 text-xs font-medium',
@@ -313,6 +313,7 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
           <Search className="h-4 w-4 text-muted-foreground" />
           <input
             type="text"
+            data-testid="audit-details-search"
             value={detailsSearch}
             onChange={event => setDetailsSearch(event.target.value)}
             placeholder={t('audit.auditFilters.searchDetailsPlaceholder')}
