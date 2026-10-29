@@ -2401,8 +2401,8 @@
     "progress": {
       "finished_one": "{{finished}} sur {{count}} appareil terminé",
       "finished_other": "{{finished}} sur {{count}} appareils terminés",
-      "completed_one": "{{count}} analysé",
-      "completed_other": "{{count}} analysés",
+      "completed_one": "{{count}} réussi",
+      "completed_other": "{{count}} réussis",
       "timedOut_one": "{{count}} hors délai",
       "timedOut_other": "{{count}} hors délai",
       "failed_one": "{{count}} en échec",
