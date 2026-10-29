@@ -217,8 +217,10 @@ export function overlongComplianceItemNames(items: ReadonlyArray<{ name?: unknow
   return overlong;
 }
 
-export function overlongComplianceItemNameMessage(): string {
-  return `A rule set name can be at most ${COMPLIANCE_RULE_SET_NAME_MAX_LENGTH} characters.`;
+/** Names the rule set by its first 40 characters so the caller can find it. */
+export function overlongComplianceItemNameMessage(name: string): string {
+  const prefix = [...name].slice(0, 40).join('');
+  return `The rule set "${prefix}…" has a name longer than ${COMPLIANCE_RULE_SET_NAME_MAX_LENGTH} characters. Shorten it to ${COMPLIANCE_RULE_SET_NAME_MAX_LENGTH} characters or fewer.`;
 }
 
 export const complianceInlineSettingsSchema = z

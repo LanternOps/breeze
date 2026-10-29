@@ -1752,7 +1752,7 @@ export class ComplianceItemNameTooLongError extends Error {
   readonly code = 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const;
 
   constructor(readonly names: string[]) {
-    super(overlongComplianceItemNameMessage());
+    super(overlongComplianceItemNameMessage(names[0] ?? ''));
     this.name = 'ComplianceItemNameTooLongError';
   }
 }

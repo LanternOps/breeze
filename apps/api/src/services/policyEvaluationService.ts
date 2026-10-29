@@ -2500,10 +2500,14 @@ export async function scanAndEvaluateConfigPolicyCompliance(
     // other rule sets commit; a failure outside any rule set (loading the
     // device or its telemetry) rolls back the device alone. Each level keeps
     // its remediation runs and events in its own buffers until its savepoint
-    // is released, so a failure hands on nothing.
-    const deviceDeferred: DeferredRemediationEnqueues | undefined = deferred ? [] : undefined;
-    const deviceEvents: DeferredPolicyEvent[] | undefined = deferredEvents ? [] : undefined;
+    // is released, so a failure hands on nothing. The device buffers exist
+    // even without deferEnqueue: a later rule set's failure can still roll
+    // back the device, so nothing goes out before the device's savepoint is
+    // released.
+    const deviceDeferred: DeferredRemediationEnqueues = [];
+    const deviceEvents: DeferredPolicyEvent[] = [];
     let deviceRuleSetFailures = 0;
+    let handOnNow: (() => Promise<void>) | undefined;
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
       const deviceResults = await inSavepoint(() => evaluateDeviceComplianceFromConfigPolicy(
@@ -2524,8 +2528,12 @@ export async function scanAndEvaluateConfigPolicyCompliance(
         },
       ));
       allResults.push(...deviceResults);
-      if (deferred && deviceDeferred) deferred.push(...deviceDeferred);
-      if (deferredEvents && deviceEvents) deferredEvents.push(...deviceEvents);
+      if (deferred && deferredEvents) {
+        deferred.push(...deviceDeferred);
+        deferredEvents.push(...deviceEvents);
+      } else {
+        handOnNow = policyEvaluationAfterCommit(deviceDeferred, deviceEvents);
+      }
       ruleSetsFailed += deviceRuleSetFailures;
       // Every rule set it attempted failed: nothing about this device moved.
       if (deviceRuleSetFailures > 0 && deviceResults.length === 0) devicesFailed++;
@@ -2538,6 +2546,10 @@ export async function scanAndEvaluateConfigPolicyCompliance(
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
       reportScanFailure(error, 'device');
     }
+    // Without deferEnqueue: the device's savepoint has been released, so its
+    // runs and events go out now. Outside the try, and it never rejects, so a
+    // failed enqueue cannot mark a device whose writes stand as failed.
+    if (handOnNow) await handOnNow();
   }
 
   if (failures.length > 0) {

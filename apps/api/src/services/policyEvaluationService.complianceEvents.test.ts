@@ -188,16 +188,23 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
      * Models Postgres savepoints: each withDbTransaction opens a frame, a
      * rejected callback discards its frame (ROLLBACK TO SAVEPOINT), a resolved
      * one merges it into the parent (RELEASE). `committed` is what the outer
-     * transaction would commit. SECOND_RULE's upsert fails on DEVICE only.
+     * transaction would commit. By default SECOND_RULE's upsert fails on
+     * DEVICE. With `failReleaseOfCall` every upsert succeeds and instead the
+     * n-th savepoint (1-based) fails at RELEASE, after its callback has run:
+     * the failure lands once the rule set has already buffered its events.
      */
-    function trackSavepoints() {
+    function trackSavepoints(opts: { failReleaseOfCall?: number } = {}) {
       const committed: string[] = [];
       const frames: string[][] = [committed];
+      let calls = 0;
+      const releaseError = Object.assign(new Error('release failed'), { code: '40001' });
       withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+        const call = ++calls;
         const frame: string[] = [];
         frames.push(frame);
         try {
           const out = await fn();
+          if (call === opts.failReleaseOfCall) throw releaseError;
           frames.pop();
           frames[frames.length - 1]!.push(...frame);
           return out;
@@ -209,7 +216,7 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
       insertMock.mockImplementation(() => ({
         values: (row: { deviceId: string; configItemName: string }) => ({
           onConflictDoUpdate: () => {
-            if (row.deviceId === DEVICE.id && row.configItemName === SECOND_RULE.name) {
+            if (!opts.failReleaseOfCall && row.deviceId === DEVICE.id && row.configItemName === SECOND_RULE.name) {
               return Promise.reject(sqlError);
             }
             frames[frames.length - 1]!.push(`${row.deviceId}:${row.configItemName}`);
@@ -291,6 +298,50 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
           (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
         );
         expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Savepoints open in order: DEVICE, its RULE, its SECOND_RULE (call 3),
+    // OTHER, its RULE. SECOND_RULE's events are already buffered when its
+    // savepoint fails, so only the per-rule-set buffer keeps them back.
+    it.each([
+      ['with deferEnqueue', true],
+      ['without deferEnqueue', false],
+    ])('a rule set that fails after buffering its events hands none of them on (%s)', async (_label, defer) => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints({ failReleaseOfCall: 3 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance(defer ? { deferEnqueue: true } : {});
+        if (defer) await result.afterCommit!();
+
+        expect(committed).toEqual([`${DEVICE.id}:${RULE.name}`, `${OTHER.id}:${RULE.name}`]);
+        expect(result.ruleSetsFailed).toBe(1);
+        const publishedRules = publishEventMock.mock.calls.map(
+          (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
+        );
+        expect(publishedRules).not.toContain(SECOND_RULE.id);
+        expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Without deferEnqueue nothing goes out while the device's savepoint is
+    // open: a device-level failure after a rule set succeeded must not leave
+    // that rule set's events published for rows that rolled back.
+    it('without deferEnqueue, a device that fails after a rule set succeeded publishes nothing for it', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Calls: DEVICE (1) fails at release after both rule sets succeeded.
+      const committed = trackSavepoints({ failReleaseOfCall: 1 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance();
+
+        expect(committed).toEqual([`${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesFailed).toBe(1);
+        const publishedFor = publishEventMock.mock.calls.map((c) => (c[2] as { deviceId: string }).deviceId);
+        expect(publishedFor).toEqual([OTHER.id, OTHER.id]);
       } finally {
         errorSpy.mockRestore();
       }

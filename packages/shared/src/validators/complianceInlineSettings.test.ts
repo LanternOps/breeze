@@ -5,6 +5,7 @@ import {
   COMPLIANCE_RULE_SET_NAME_MAX_LENGTH,
   COMPLIANCE_RULE_TYPES,
   duplicateComplianceItemNames,
+  overlongComplianceItemNameMessage,
   overlongComplianceItemNames,
 } from './index';
 
@@ -166,5 +167,11 @@ describe('compliance rule set names', () => {
     // 200 astral characters are 400 UTF-16 code units but 200 characters.
     expect(overlongComplianceItemNames([{ name: '\u{1F642}'.repeat(200) }])).toEqual([]);
     expect(overlongComplianceItemNames(undefined)).toEqual([]);
+  });
+
+  it('names the over-long rule set by its first 40 characters', () => {
+    const msg = overlongComplianceItemNameMessage(`Baseline ${'y'.repeat(300)}`);
+    expect(msg).toContain(`"Baseline ${'y'.repeat(31)}…"`);
+    expect(msg).toContain('200 characters');
   });
 });

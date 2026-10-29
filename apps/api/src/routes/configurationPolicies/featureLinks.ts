@@ -98,7 +98,7 @@ function complianceNamesRefusal(settings: unknown) {
   const overlong = overlongComplianceItemNames(objects);
   if (overlong.length > 0) {
     return {
-      error: overlongComplianceItemNameMessage(),
+      error: overlongComplianceItemNameMessage(overlong[0]!),
       code: 'COMPLIANCE_RULE_SET_NAME_TOO_LONG' as const,
       names: overlong,
     };
