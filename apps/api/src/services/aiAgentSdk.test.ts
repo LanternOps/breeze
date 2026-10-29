@@ -350,10 +350,9 @@ function expectOnlyTheRefusalRow() {
   expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
   expect(vi.mocked(db.insert)).toHaveBeenCalledWith(aiToolExecutions);
   const values = (vi.mocked(db.insert).mock.results[0]?.value as { values?: ReturnType<typeof vi.fn> } | undefined)?.values;
-  if (values?.mock) {
-    expect(values).toHaveBeenCalledTimes(1);
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: expect.any(String) }));
-  }
+  expect(values?.mock, 'db.insert must be mocked with a values() spy for this assertion').toBeDefined();
+  expect(values).toHaveBeenCalledTimes(1);
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: expect.any(String) }));
 }
 
 function makeActiveSession(overrides: Record<string, unknown> = {}) {
@@ -5517,6 +5516,45 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(verdict).toEqual({ allowed: false, error: 'Blocked: nope' });
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('refusal ledger row'), 'execute_command', expect.anything());
     errorSpy.mockRestore();
+  });
+
+  it('a Tier 3 call whose intent cannot be created closes its own pending row as rejected — no second row', async () => {
+    const schema = await import('../db/schema');
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
+    } as any);
+    vi.mocked(db.insert).mockImplementation(((table: unknown) => ({
+      values: vi.fn((values: Record<string, unknown>) => {
+        insertedRows.push({ table, values });
+        return { returning: vi.fn(async () => [{ id: 'exec-pending' }]) };
+      }),
+    })) as any);
+    mockCreateActionIntent.mockRejectedValueOnce(new Error('connection reset'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const session = makeActiveSession();
+
+    const verdict = await createSessionPreToolUse(session)('execute_command', { deviceId: 'device-1' }, undefined, 'tu-6');
+
+    expect(verdict).toEqual({ allowed: false, error: 'Failed to create approval record' });
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'pending' });
+    expect(await ledgerUpdates()).toContainEqual(expect.objectContaining({
+      status: 'rejected', errorMessage: 'Failed to create approval record',
+    }));
+    expect(updatedRows.every((r) => r.table === schema.aiToolExecutions)).toBe(true);
+  });
+
+  it('redacts secret-shaped text in the stored refusal reason', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
+    vi.mocked(checkToolRateLimit).mockResolvedValue('Refused: password=hunter2 is not allowed');
+    const session = makeActiveSession();
+
+    await createSessionPreToolUse(session)('query_devices', {}, undefined, 'tu-7');
+
+    const rows = await ledgerInserts();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.errorMessage).not.toContain('hunter2');
   });
 
   it('a pre-hook that throws still leaves a rejected row, and the throw propagates', async () => {

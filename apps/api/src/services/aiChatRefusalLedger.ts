@@ -23,7 +23,8 @@
  */
 import { db, withDbAccessContext } from '../db';
 import { aiToolExecutions } from '../db/schema';
-import { redactSensitiveToolInput } from './aiToolOutput';
+import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
+import { captureException } from './sentry';
 import type { ActiveSession } from './streamingSessionManager';
 
 /** What the row says when the pre hook threw instead of deciding. */
@@ -48,7 +49,13 @@ function refusalsFor(session: ActiveSession): LedgeredRefusals {
   return state;
 }
 
-function boundRefusalText(text: string): string {
+/**
+ * The `error_message` a refusal row keeps: the refusal (and its detail),
+ * passed through the same text redactor as tool output — a validation message
+ * can quote a model-supplied value — and bounded.
+ */
+export function refusalLedgerText(refusal: { error: string; detail?: string }): string {
+  const text = redactAiToolOutputText(refusal.detail ? `${refusal.error} — ${refusal.detail}` : refusal.error);
   return text.length > REFUSAL_TEXT_MAX_CHARS ? `${text.slice(0, REFUSAL_TEXT_MAX_CHARS - 1)}…` : text;
 }
 
@@ -65,7 +72,7 @@ export async function recordPreHookRefusal(
   refusal: { error: string; detail?: string },
   toolUseId: string | undefined,
 ): Promise<void> {
-  const errorMessage = boundRefusalText(refusal.detail ? `${refusal.error} — ${refusal.detail}` : refusal.error);
+  const errorMessage = refusalLedgerText(refusal);
   try {
     await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -81,6 +88,9 @@ export async function recordPreHookRefusal(
         }),
     );
   } catch (err) {
+    // The call is refused either way, but this refusal now has no ledger row
+    // — the #10411 invariant is broken for it, so it is reported, not just logged.
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, { service: 'aiChatRefusalLedger', orgId: session.orgId });
     console.error('[AI-SDK] Failed to write the refusal ledger row for tool:', toolName, err instanceof Error ? err.message : err);
     return;
   }

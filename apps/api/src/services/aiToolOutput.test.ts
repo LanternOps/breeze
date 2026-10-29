@@ -894,4 +894,9 @@ describe('compactToolResultForChat is stable on its own output (#10411)', () => 
     expect(again.stdoutChars).toBe(30_000);
     expect(again.stderrChars).toBe(9_000);
   });
+
+  it('never trusts a supplied stdoutChars smaller than the stdout it describes', () => {
+    const understated = JSON.stringify({ status: 'completed', exitCode: 0, stdout: 'x'.repeat(500), stdoutChars: 3 });
+    expect(JSON.parse(compactToolResultForChat('execute_command', understated)).stdoutChars).toBe(500);
+  });
 });

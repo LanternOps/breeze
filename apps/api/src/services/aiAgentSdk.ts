@@ -106,7 +106,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
-import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, takeLedgeredRefusal } from './aiChatRefusalLedger';
+import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, refusalLedgerText, takeLedgeredRefusal } from './aiChatRefusalLedger';
 import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
@@ -1075,6 +1075,28 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
   };
 }
 
+/**
+ * #10411: a `pending` approval row whose call was refused before any intent
+ * or approval could decide it is closed `rejected` with the refusal text, so
+ * it does not sit in `pending` with no reason. Guarded on `pending` (a racing
+ * writer that already terminal-marked it wins). Best-effort.
+ */
+async function closePendingLedgerRowAsRefused(session: ActiveSession, executionId: string, reason: string): Promise<void> {
+  try {
+    await withDbAccessContext(
+      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+      () =>
+        db
+          .update(aiToolExecutions)
+          .set({ status: 'rejected', errorMessage: refusalLedgerText({ error: reason }), completedAt: new Date() })
+          .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending'))),
+    );
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error('[AI-SDK] Failed to close a refused pending approval record:', executionId, err instanceof Error ? err.message : err);
+  }
+}
+
 /** Per call: set once a gate below has inserted this call's ai_tool_executions row (#10411). */
 interface PreHookLedgerState {
   rowWritten: boolean;
@@ -1981,15 +2003,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             // A typed caller-verification refusal is the gate's answer, not a
             // fault: carry its payload intact instead of the generic wording.
             const refusal = callerRefusal(err);
-            if (refusal) {
-              return await failMatchedPlanStep({
-                allowed: false,
-                error: refusal.error,
-                requiresCallerVerification: refusal.requiresCallerVerification,
-              });
-            }
-            console.error('[AI-SDK] Failed to create action intent:', toolName, err);
-            return await failMatchedPlanStep({ allowed: false, error: intentCreationRefusal(toolName, input, err) });
+            const denial = refusal
+              ? { allowed: false as const, error: refusal.error, requiresCallerVerification: refusal.requiresCallerVerification }
+              : { allowed: false as const, error: intentCreationRefusal(toolName, input, err) };
+            if (!refusal) console.error('[AI-SDK] Failed to create action intent:', toolName, err);
+            // #10411: no intent exists, so nothing will ever decide this
+            // call's `pending` ledger row — close it with the refusal.
+            await closePendingLedgerRowAsRefused(session, approvalExec.id, denial.error);
+            return await failMatchedPlanStep(denial);
           }
 
           // Stamp the intent link onto the ledger row so handleApproval (web

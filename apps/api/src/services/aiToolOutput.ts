@@ -525,8 +525,10 @@ const COMMAND_STYLE_HANDLED_KEYS = new Set([
  * counts the text before that pass truncated it — re-counting the truncated
  * string would understate what the tool returned.
  */
-function priorCharCount(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+function priorCharCount(value: unknown, textChars = 0): number | undefined {
+  // Never smaller than the text in hand: a count below it cannot describe that
+  // text's original, so a payload-supplied value cannot understate the output.
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= textChars ? value : undefined;
 }
 
 function compactCommandStylePayload(
@@ -586,7 +588,7 @@ function compactCommandStylePayload(
       output.stdoutChars = payload.stdout.length;
     } else {
       output.stdout = truncateText(redactAiToolOutputText(payload.stdout), config.maxStdoutChars, stats);
-      output.stdoutChars = priorCharCount(payload.stdoutChars) ?? payload.stdout.length;
+      output.stdoutChars = priorCharCount(payload.stdoutChars, payload.stdout.length) ?? payload.stdout.length;
     }
   } else if (payload.stdout !== undefined && payload.stdout !== null) {
     // #10411: a structured stdout that an EARLIER pass of this function
@@ -615,7 +617,7 @@ function compactCommandStylePayload(
         stats,
       );
     }
-    output.stderrChars = priorCharCount(payload.stderrChars) ?? payload.stderr.length;
+    output.stderrChars = priorCharCount(payload.stderrChars, payload.stderr.length) ?? payload.stderr.length;
   }
 
   if (payload.data !== undefined) {
