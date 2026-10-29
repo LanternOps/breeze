@@ -4647,7 +4647,7 @@
     "recoveryCodes": "Códigos de recuperación",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use un código de recuperación para acceder a su cuenta si no puede usar su clave de acceso o aplicación de autenticación.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Los códigos de recuperación se muestran una sola vez y no se pueden volver a mostrar.",
-    "regenerateRecoveryCodes": "Regenerar códigos de recuperación",
+    "regenerateRecoveryCodes": "Generar códigos nuevos",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Los códigos existentes no se pueden volver a mostrar. Al regenerarlos se emite un conjunto nuevo y el anterior queda invalidado de inmediato.",
     "regenerateRecoveryCodesQuestion": "¿Regenerar los códigos de recuperación?",
     "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerarlos invalida de inmediato todos los códigos de recuperación que haya guardado, incluidas las copias impresas. Los nuevos se muestran una sola vez, justo después de generarlos.",

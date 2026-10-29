@@ -4,6 +4,7 @@ import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MfaMethod } from '../../stores/auth';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Dialog } from '../shared/Dialog';
 
 const DIGIT_COUNT = 6;
 
@@ -685,7 +686,7 @@ export default function MFASettings({
   }
 
   // Status view - shows current MFA state
-  if (view === 'status') {
+  if (view === 'status' || typeof view === 'object') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
         <div className="space-y-1">
@@ -806,7 +807,7 @@ export default function MFASettings({
         )}
 
         {enabled && (
-          <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
+          <div className="flex flex-col items-start gap-4 rounded-md border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <span className="text-sm font-medium">{t('mFASettings.recoveryCodes')}</span>
               <p className="text-xs text-muted-foreground">
@@ -825,12 +826,24 @@ export default function MFASettings({
                 setLocalError(undefined);
                 setLocalSuccess(undefined);
               }}
-              className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              className="h-9 shrink-0 whitespace-nowrap rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
             >
               {t('mFASettings.regenerateRecoveryCodes')}</button>
           </div>
         )}
 
+        {typeof view === 'object' && (
+          <Dialog open onClose={() => {}} title={t('mFASettings.recoveryCodes')} className="p-6">
+            <IssuedRecoveryCodes
+              modal
+              codes={view.codes ?? recoveryCodes}
+              onDone={() => {
+                if (view.codes === undefined) acknowledgedCodesRef.current = recoveryCodes;
+                setView('status');
+              }}
+            />
+          </Dialog>
+        )}
         {renderSuccess()}
         {renderError()}
       </div>
@@ -1153,19 +1166,6 @@ export default function MFASettings({
     );
   }
 
-  if (typeof view === 'object') {
-    return (
-      <IssuedRecoveryCodes
-        codes={view.codes ?? recoveryCodes}
-        success={displaySuccess}
-        onDone={() => {
-          if (view.codes === undefined) acknowledgedCodesRef.current = recoveryCodes;
-          setView('status');
-        }}
-      />
-    );
-  }
-
   if (view === 'recovery') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
@@ -1286,11 +1286,12 @@ export default function MFASettings({
   return null;
 }
 
-export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false }: {
+export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false, modal = false }: {
   codes?: readonly string[];
   success?: string;
   onDone: () => void;
   passkey?: boolean;
+  modal?: boolean;
 }) {
   const { t } = useTranslation('settings');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
@@ -1311,7 +1312,7 @@ export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false }:
   };
 
   return (
-    <div className={passkey ? 'space-y-6' : 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'}>
+    <div className={passkey || modal ? 'space-y-6' : 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'}>
       <div className="space-y-1">
         {passkey && <p className="text-sm text-emerald-600">{t('profilePage.passkeyAdded')}</p>}
         <h2 id={passkey ? 'passkey-recovery-title' : undefined} className="text-lg font-semibold">{passkey ? t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' }) : t('mFASettings.recoveryCodes')}</h2>

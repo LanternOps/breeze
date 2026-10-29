@@ -4647,7 +4647,7 @@
     "recoveryCodes": "Kurtarma kodları",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Geçiş anahtarınızı veya kimlik doğrulama uygulamanızı kullanamıyorsanız hesabınıza erişmek için bir kurtarma kodu kullanın.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Kurtarma kodları yalnızca bir kez gösterilir ve sonradan yeniden görüntülenemez.",
-    "regenerateRecoveryCodes": "Kurtarma kodlarını yeniden oluştur",
+    "regenerateRecoveryCodes": "Yeni kodlar oluştur",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Mevcut kodlar yeniden görüntülenemez. Yeniden oluşturmak yeni bir set üretir ve eskisini anında geçersiz kılar.",
     "regenerateRecoveryCodesQuestion": "Kurtarma kodları yeniden oluşturulsun mu?",
     "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Yeniden oluşturma, yazdırılmış kopyalar dahil kaydettiğiniz tüm kurtarma kodlarını anında geçersiz kılar. Yeni kodlar, oluşturulduktan hemen sonra yalnızca bir kez gösterilir.",

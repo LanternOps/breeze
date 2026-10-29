@@ -4647,7 +4647,7 @@
     "recoveryCodes": "Wiederherstellungscodes",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Verwenden Sie einen Wiederherstellungscode, um auf Ihr Konto zuzugreifen, wenn Sie Ihren Passkey oder Ihre Authentifizierungs-App nicht verwenden können.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Wiederherstellungscodes werden nur einmal angezeigt und können danach nicht erneut eingesehen werden.",
-    "regenerateRecoveryCodes": "Wiederherstellungscodes neu generieren",
+    "regenerateRecoveryCodes": "Neue Codes generieren",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Vorhandene Codes können nicht erneut angezeigt werden. Beim Neugenerieren wird ein neuer Satz ausgestellt und der alte sofort ungültig.",
     "regenerateRecoveryCodesQuestion": "Wiederherstellungscodes neu generieren?",
     "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Durch das Neugenerieren wird jeder von Ihnen gespeicherte Wiederherstellungscode sofort ungültig, auch ausgedruckte Kopien. Die neuen Codes werden unmittelbar danach ein einziges Mal angezeigt.",

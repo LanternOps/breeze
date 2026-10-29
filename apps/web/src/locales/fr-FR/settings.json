@@ -4647,7 +4647,7 @@
     "recoveryCodes": "Codes de récupération",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilisez un code de récupération pour accéder à votre compte si vous ne pouvez pas utiliser votre clé d’accès ou votre application d’authentification.",
     "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Les codes de récupération ne s’affichent qu’une seule fois et ne peuvent pas être réaffichés.",
-    "regenerateRecoveryCodes": "Régénérer les codes de récupération",
+    "regenerateRecoveryCodes": "Générer de nouveaux codes",
     "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Les codes existants ne peuvent pas être réaffichés. La régénération émet une nouvelle série et invalide immédiatement l’ancienne.",
     "regenerateRecoveryCodesQuestion": "Régénérer les codes de récupération ?",
     "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La régénération invalide immédiatement tous les codes de récupération que vous avez conservés, y compris les copies imprimées. Les nouveaux codes s’affichent une seule fois, juste après leur génération.",
