@@ -22,6 +22,7 @@ import {
   isAgentCollectedWarrantyDevice,
   isAgentOwnedWarrantySource,
   isNonVendorWarrantySource,
+  vendorHitShortensCoverage,
   warrantyEntitlementProviderForSource,
   warrantyRefreshRefusal,
 } from './warrantyDataSources';
@@ -135,5 +136,25 @@ describe('warrantyRefreshRefusal (#9862)', () => {
   it('still queues a device with no row or a vendor row, even with no provider', () => {
     expect(warrantyRefreshRefusal({ manufacturer: 'Acme Whitebox', dataSource: null })).toBeNull();
     expect(warrantyRefreshRefusal({ manufacturer: 'Acme Whitebox', dataSource: PROVIDER_WARRANTY_SOURCE })).toBeNull();
+  });
+});
+
+describe('vendorHitShortensCoverage (#9862 amendment)', () => {
+  it('a vendor end date earlier than the stored one would shorten coverage', () => {
+    expect(vendorHitShortensCoverage({ storedEndDate: '2028-06-30', vendorEndDate: '2026-03-31' })).toBe(true);
+  });
+
+  it('a vendor end date that is the same or later loses nothing', () => {
+    expect(vendorHitShortensCoverage({ storedEndDate: '2028-06-30', vendorEndDate: '2028-06-30' })).toBe(false);
+    expect(vendorHitShortensCoverage({ storedEndDate: '2028-06-30', vendorEndDate: '2030-01-01' })).toBe(false);
+  });
+
+  it('a vendor hit with no end date would erase a stored one', () => {
+    expect(vendorHitShortensCoverage({ storedEndDate: '2028-06-30', vendorEndDate: null })).toBe(true);
+  });
+
+  it('nothing stored means nothing to lose', () => {
+    expect(vendorHitShortensCoverage({ storedEndDate: null, vendorEndDate: '2026-03-31' })).toBe(false);
+    expect(vendorHitShortensCoverage({ storedEndDate: null, vendorEndDate: null })).toBe(false);
   });
 });

@@ -2617,6 +2617,7 @@
       "agentCmsl": "Ajan (HP CMSL)",
       "agentPlist": "Ajan (macOS plist)",
       "import": "İçe aktarıldı",
+      "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
       "provider": "Üretici API"
     }
   },

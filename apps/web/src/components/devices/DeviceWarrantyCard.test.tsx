@@ -279,6 +279,48 @@ describe('DeviceWarrantyCard — imported data and source labels (#9862)', () =>
     expect(await screen.findByText(label)).toBeInTheDocument();
   });
 
+  const VENDOR_BASE = {
+    provider: 'dell',
+    serviceLevelDescription: 'Basic Hardware Service',
+    entitlementType: 'INITIAL',
+    startDate: '2023-03-31',
+    endDate: '2026-03-31',
+  };
+
+  it('says when the vendor reports an earlier end than the kept import', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import', status: 'active', warrantyEndDate: '2028-06-30', entitlements: [VENDOR_BASE],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: Imported (vendor reports earlier end date)')).toBeInTheDocument();
+  });
+
+  it('keeps the plain Imported label when the vendor entitlements do not end earlier', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import',
+      status: 'active',
+      warrantyEndDate: '2028-06-30',
+      entitlements: [{ ...VENDOR_BASE, endDate: '2028-06-30' }],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: Imported')).toBeInTheDocument();
+  });
+
+  it('compact view does not pair the vendor service level with the imported end date', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({
+      dataSource: 'import', status: 'active', warrantyEndDate: '2028-06-30', entitlements: [VENDOR_BASE],
+    })));
+    render(<DeviceWarrantyCard deviceId={deviceId} compact />);
+    expect(await screen.findByText('DELL')).toBeInTheDocument();
+    expect(screen.queryByText(/Basic Hardware Service/)).not.toBeInTheDocument();
+  });
+
+  it('prints a prototype-member token as stored instead of crashing the card', async () => {
+    fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource: 'constructor' })));
+    render(<DeviceWarrantyCard deviceId={deviceId} />);
+    expect(await screen.findByText('Source: constructor')).toBeInTheDocument();
+  });
+
   it('falls back to the stored token for a source it does not know', async () => {
     fetchWithAuthMock.mockResolvedValue(jsonResponse(warrantyPayload({ dataSource: 'some_new_source' })));
     render(<DeviceWarrantyCard deviceId={deviceId} />);

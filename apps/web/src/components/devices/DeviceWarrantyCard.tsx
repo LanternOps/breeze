@@ -66,6 +66,21 @@ const DATA_SOURCE_LABEL_KEYS: Record<string, string> = {
   provider: 'deviceWarrantyCard.sources.provider',
 };
 
+// #9862 — a vendor hit whose end date is earlier than an imported row's does
+// not replace the import; the sync keeps the imported dates and records the
+// vendor's entitlements beside them. Say so, rather than plain "Imported".
+
+function vendorReportsEarlierEnd(warranty: Pick<WarrantyData, 'dataSource' | 'warrantyEndDate' | 'entitlements'>): boolean {
+  if (warranty.dataSource !== 'import' || !warranty.warrantyEndDate) return false;
+  const vendorEnds = (warranty.entitlements ?? [])
+    .map((e) => e.endDate)
+    .filter((d): d is string => typeof d === 'string' && d.length > 0);
+  if (vendorEnds.length === 0) return false;
+  // YYYY-MM-DD on both sides, so string order is date order.
+  const latestVendorEnd = vendorEnds.reduce((a, b) => (b > a ? b : a));
+  return latestVendorEnd.slice(0, 10) < warranty.warrantyEndDate.slice(0, 10);
+}
+
 // The refresh route's 409 `reason` (WARRANTY_REFRESH_NOT_AVAILABLE) → toast copy.
 // Both are expected outcomes, not failures, so they are warnings.
 const REFRESH_REFUSAL_TOAST_KEYS: Record<string, string> = {
@@ -298,7 +313,10 @@ export default function DeviceWarrantyCard({
   }
 
   const cfg = statusConfig[warranty.status] ?? statusConfig.unknown;
-  const primaryEntitlement = warranty.entitlements?.[0];
+  const vendorEarlier = vendorReportsEarlierEnd(warranty);
+  // The vendor's service level describes the vendor's (shorter) coverage, not
+  // the imported end date shown beside it, so it is not paired with it.
+  const primaryEntitlement = vendorEarlier ? undefined : warranty.entitlements?.[0];
   // For a renewing subscription the stored end date is the next renewal, not an expiry.
   const isSubscription = warranty.isSubscription || warranty.status === 'subscription_active';
   const endDateLabel = isSubscription ? t('deviceWarrantyCard.renews') : t('deviceWarrantyCard.expires');
@@ -400,9 +418,13 @@ export default function DeviceWarrantyCard({
         {warranty.dataSource && (
           <span>
             {t('deviceWarrantyCard.source', {
-              source: DATA_SOURCE_LABEL_KEYS[warranty.dataSource]
-                ? t(/* i18n-dynamic */ DATA_SOURCE_LABEL_KEYS[warranty.dataSource]!)
-                : warranty.dataSource,
+              source: vendorEarlier
+                ? t('deviceWarrantyCard.sources.importVendorEarlier')
+                // Own-property check: data_source is agent-writable free text, and
+                // a token such as 'constructor' must not resolve up the prototype chain.
+                : Object.prototype.hasOwnProperty.call(DATA_SOURCE_LABEL_KEYS, warranty.dataSource)
+                  ? t(/* i18n-dynamic */ DATA_SOURCE_LABEL_KEYS[warranty.dataSource]!)
+                  : warranty.dataSource,
             })}
           </span>
         )}

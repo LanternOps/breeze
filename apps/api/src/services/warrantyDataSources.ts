@@ -65,11 +65,35 @@ export const IMPORT_WARRANTY_SOURCE = 'import';
  * legacy of the 'provider' default.
  *
  * Weaker than agent ownership: a vendor HIT may still replace a non-vendor,
- * non-agent row (a manufacturer's own API outranks a hand-edited CSV — the same
- * ranking `warrantyTarget.ts` applies in the other direction).
+ * non-agent row, but only when that loses no coverage — see
+ * `vendorHitShortensCoverage`.
  */
 export function isNonVendorWarrantySource(dataSource: string | null | undefined): boolean {
   return typeof dataSource === 'string' && dataSource !== PROVIDER_WARRANTY_SOURCE;
+}
+
+/**
+ * #9862 — true when replacing a stored non-vendor (imported) row with a vendor
+ * HIT would erase or shorten its coverage, so the import must be kept.
+ *
+ * OEM warranty APIs routinely omit coverage an MSP bought elsewhere — an
+ * extended Care Pack through a distributor, a third-party contract — and the
+ * MSP imports it by hand. A vendor answer ending before the imported date is
+ * then not a correction, it is the vendor not knowing. A vendor end date that
+ * is the same or later loses nothing, so the vendor wins there.
+ *
+ * Dates are `YYYY-MM-DD` (`date` columns, provider output), so string order is
+ * date order. Mirrored in SQL by `upsertWarranty`'s `setWhere`, which is the
+ * authority; this is the advisory read.
+ */
+export function vendorHitShortensCoverage(input: {
+  storedEndDate: string | null | undefined;
+  vendorEndDate: string | null | undefined;
+}): boolean {
+  const stored = input.storedEndDate ?? null;
+  if (stored === null) return false;
+  const vendor = input.vendorEndDate ?? null;
+  return vendor === null || vendor < stored;
 }
 
 /** Contract bound: at most 25 entitlements per agent report. */

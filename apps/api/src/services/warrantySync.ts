@@ -1,13 +1,15 @@
 import { db } from '../db';
 import { deviceWarranty, deviceHardware, devices, manualAssets } from '../db/schema';
-import { eq, and, lt, isNull, or, sql, notInArray } from 'drizzle-orm';
+import { eq, and, lt, lte, isNull, or, sql, notInArray } from 'drizzle-orm';
 import { getProviderForManufacturer, normalizeManufacturer } from './warrantyProviders';
 import type { WarrantyEntitlement, WarrantyLookupResult } from './warrantyProviders';
 import {
   AGENT_OWNED_WARRANTY_SOURCE_LIST,
   MAX_AGENT_WARRANTY_ENTITLEMENTS,
   PROVIDER_WARRANTY_SOURCE,
+  isAgentOwnedWarrantySource,
   isNonVendorWarrantySource,
+  vendorHitShortensCoverage,
   warrantyEntitlementProviderForSource,
 } from './warrantyDataSources';
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
@@ -239,10 +241,15 @@ export async function syncWarrantyForManualAsset(manualAssetId: string): Promise
 }
 
 /**
- * Write a vendor lookup's outcome. A HIT always goes through `upsertWarranty`
- * (which still refuses agent-owned rows). A miss or a lookup error carries no
- * coverage, so it must not replace coverage that came from somewhere else
- * (#9862): for such a row only the sync bookkeeping is updated.
+ * Write a vendor lookup's outcome without losing coverage that came from
+ * somewhere else (#9862):
+ *  - A miss or a lookup error carries no coverage, so on a non-vendor row only
+ *    the sync bookkeeping is updated.
+ *  - A HIT replaces an imported row only when its end date is the same or
+ *    later (`vendorHitShortensCoverage`). Otherwise the import is kept and the
+ *    vendor's answer is recorded beside it — see `keepImportOverShorterHit`.
+ *  - Everything else goes through `upsertWarranty`, which still refuses
+ *    agent-owned rows.
  */
 async function recordLookupResult(
   subject: WarrantySubject,
@@ -251,10 +258,76 @@ async function recordLookupResult(
   serialNumber: string,
   result: WarrantyLookupResult,
 ): Promise<void> {
-  if (!result.found && await keepNonVendorRow(subject, { checked: true, error: result.error ?? null })) {
+  if (!result.found) {
+    if (await keepNonVendorRow(subject, { checked: true, error: result.error ?? null })) return;
+  } else if (await keepImportOverShorterHit(subject, result)) {
+    // The warranty answer lost to the import, but the ship date is a separate
+    // fact (purchase-date proxy) and is still the vendor's to give.
+    await recordVendorShipDate(subject, result.shipDate ?? null);
     return;
   }
   await upsertWarranty(subject, orgId, manufacturer, serialNumber, result);
+}
+
+/**
+ * #9862 — a vendor HIT whose end date is earlier than (or missing against) an
+ * imported row's must not shorten that coverage. OEM APIs routinely omit
+ * extended or third-party coverage an MSP imports by hand.
+ *
+ * When that is the case, keep the imported dates, status and `data_source`, and
+ * record the lookup as the sync outcome: `lastSyncAt` (it was a real check),
+ * no error, and the vendor's own `entitlements`. The entitlements are what the
+ * device card reads to label the row "Imported (vendor reports earlier end
+ * date)", so an operator can see both answers. Imports never write
+ * `entitlements`, so nothing imported is replaced.
+ *
+ * Warranty alerts read `warrantyEndDate` from the row, so they keep using the
+ * imported (effective) end date with no change to the evaluator.
+ *
+ * Agent-owned rows are not handled here: `upsertWarranty`'s `setWhere` already
+ * refuses a hit on them. Returns false (writing nothing) when the hit may
+ * replace the row. Advisory like `keepNonVendorRow`; the authority is the
+ * end-date arm of `upsertWarranty`'s `setWhere`.
+ */
+async function keepImportOverShorterHit(
+  subject: WarrantySubject,
+  result: WarrantyLookupResult,
+): Promise<boolean> {
+  if (subject.kind !== 'device') return false;
+
+  const [existing] = await db
+    .select({ dataSource: deviceWarranty.dataSource, warrantyEndDate: deviceWarranty.warrantyEndDate })
+    .from(deviceWarranty)
+    .where(eq(deviceWarranty.deviceId, subject.deviceId))
+    .limit(1);
+  if (!existing?.dataSource) return false;
+  if (!isNonVendorWarrantySource(existing.dataSource) || isAgentOwnedWarrantySource(existing.dataSource)) {
+    return false;
+  }
+  if (!vendorHitShortensCoverage({
+    storedEndDate: existing.warrantyEndDate,
+    vendorEndDate: result.warrantyEndDate,
+  })) {
+    return false;
+  }
+
+  const now = new Date();
+  await db
+    .update(deviceWarranty)
+    .set({
+      entitlements: result.entitlements,
+      lastSyncAt: now,
+      lastSyncError: null,
+      nextSyncAt: new Date(now.getTime() + SYNC_CADENCE_MS),
+      updatedAt: now,
+    })
+    // Only while the row is still the non-vendor row read above: an agent
+    // report landing in between must not gain vendor entitlements.
+    .where(and(
+      eq(deviceWarranty.deviceId, subject.deviceId),
+      eq(deviceWarranty.dataSource, existing.dataSource),
+    ));
+  return true;
 }
 
 /**
@@ -366,7 +439,9 @@ async function upsertWarranty(
       // writable. Manual assets can never carry a non-vendor source (only this
       // function writes them), so only the device arm needs it.
       //  - A HIT must not overwrite an agent report that landed between the
-      //    read and this write (#5511 W01); it may replace imported data.
+      //    read and this write (#5511 W01). It may replace imported data only
+      //    when that loses no coverage: the stored end date is NULL or not
+      //    after the vendor's (#9862, `vendorHitShortensCoverage`).
       //  - A miss/error carries no coverage, so it may only land on a
       //    vendor-shaped row — never on agent or imported data (#9862).
       ...(subject.kind === 'device'
@@ -374,7 +449,16 @@ async function upsertWarranty(
             setWhere: result.found
               ? or(
                   isNull(deviceWarranty.dataSource),
-                  notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
+                  eq(deviceWarranty.dataSource, PROVIDER_WARRANTY_SOURCE),
+                  and(
+                    notInArray(deviceWarranty.dataSource, [...AGENT_OWNED_WARRANTY_SOURCE_LIST]),
+                    result.warrantyEndDate
+                      ? or(
+                          isNull(deviceWarranty.warrantyEndDate),
+                          lte(deviceWarranty.warrantyEndDate, result.warrantyEndDate),
+                        )
+                      : isNull(deviceWarranty.warrantyEndDate),
+                  ),
                 )
               : or(
                   isNull(deviceWarranty.dataSource),

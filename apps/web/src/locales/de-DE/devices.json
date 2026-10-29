@@ -2617,6 +2617,7 @@
       "agentCmsl": "Agent (HP-CMSL)",
       "agentPlist": "Agent (macOS-plist)",
       "import": "Importiert",
+      "importVendorEarlier": "Importiert (Hersteller meldet früheres Enddatum)",
       "provider": "Hersteller-API"
     }
   },
