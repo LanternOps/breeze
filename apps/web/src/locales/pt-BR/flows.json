@@ -39,7 +39,9 @@
     "inputs": "Entradas",
     "steps": "Etapas",
     "version": "Versão {{version}}",
-    "createdInChat": "Criado no Breeze AI"
+    "createdInChat": "Criado no Breeze AI",
+    "movedFromJob": "Movido de um job",
+    "movedFromJobReverted": "(movido de volta)"
   },
   "step": {
     "tool": "Ferramenta",
@@ -61,7 +63,10 @@
     "builtin": {
       "notify": "Enviar um aviso",
       "http_request": "Chamar uma API externa",
-      "ai": "Perguntar à IA"
+      "ai": "Perguntar à IA",
+      "run_script_on_targets": "Executar um script em dispositivos",
+      "resolve_targets": "Encontrar dispositivos",
+      "create_alert": "Gerar um alerta"
     },
     "notify": {
       "channel": "Canal: {{channel}}"
@@ -74,6 +79,28 @@
       "tools": "Ferramentas: {{tools}}",
       "noTools": "Nenhuma ferramenta",
       "output": "Campos do resultado: {{fields}}"
+    },
+    "fleet": {
+      "script": "Script nº {{scriptId}}",
+      "target": {
+        "all": "Todos os dispositivos",
+        "devices": "Dispositivos listados",
+        "groups": "Grupos de dispositivos",
+        "filter": "Dispositivos que correspondem a um filtro",
+        "other": "Um destino de dispositivos"
+      },
+      "conditions": "Dispositivos que correspondem às condições do job",
+      "triggerDevice": "O dispositivo do evento",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "fromStep": {
+        "succeeded": "Dispositivos com sucesso em {{stepId}}",
+        "dispatched": "Dispositivos alcançados por {{stepId}}",
+        "failed": "Dispositivos com falha em {{stepId}}"
+      },
+      "offlineQueue": "Dispositivos offline: enfileirados",
+      "offlineSkip": "Dispositivos offline: ignorados",
+      "alert": "Gravidade {{severity}}"
     }
   },
   "issues": {
@@ -442,5 +469,307 @@
     "readOnly": "Você pode ver estes limites, mas não alterá-los.",
     "partnerWideForbidden": "Alterar o padrão do parceiro exige acesso a todas as organizações.",
     "orgScopeReadOnly": "Os limites da organização são definidos pelo seu provedor de serviços."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Exato",
+      "needs_review": "Precisa de revisão",
+      "unconvertible": "Ainda não pode ser movido"
+    },
+    "fidelityBlocked": "Ainda não pode ser movido: {{blocker}}",
+    "severity": {
+      "blocker": "Bloqueio",
+      "review": "Revisar",
+      "info": "Observação"
+    },
+    "state": {
+      "shadow": "Em sombra",
+      "switched": "Movido para Fluxos",
+      "reverted": "Movido de volta"
+    },
+    "actionNumber": "Ação {{n}}",
+    "noFindings": "Nada a revisar: este job é movido de forma exata.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Os fluxos estão desativados aqui",
+        "line": "Esta instalação roda com FLOWS_ENABLED=false, então os jobs ficam como estão."
+      },
+      "managed_row": {
+        "title": "Gerenciado pelo Breeze",
+        "line": "Um agente de IA ou um monitor é dono deste job; ele se move com o dono, não sozinho."
+      },
+      "policy_workflow": {
+        "title": "Parte de um workflow de política",
+        "line": "Políticas de configuração executam este job; ele se move quando os workflows de política se moverem."
+      },
+      "already_retired": {
+        "title": "Já desativado",
+        "line": "Este job foi aposentado e não executa mais."
+      },
+      "compliance_remediation_target": {
+        "title": "Usado na correção de conformidade",
+        "line": "Uma política de conformidade executa este job para corrigir dispositivos; por enquanto ele continua sendo um job."
+      },
+      "event_dispatch_not_durable": {
+        "title": "A entrega de eventos não é durável aqui",
+        "line": "Jobs de evento só se movem com EVENT_DISPATCH_MODE=enforce e flow-event-trigger inscrito."
+      },
+      "event_filter_not_strict": {
+        "title": "O filtro de eventos não pode ser copiado exatamente",
+        "line": "O filtro usa listas, objetos, chaves demais ou uma chave que os fluxos não conseguem comparar."
+      },
+      "event_filter_null": {
+        "title": "O filtro de eventos verifica valores vazios",
+        "line": "Jobs diferenciam valor vazio de valor ausente; fluxos não."
+      },
+      "cron_semantics_differ": {
+        "title": "O agendamento dispararia em horários diferentes",
+        "line": "Esta expressão cron não coincide com o agendador de fluxos nas mudanças de horário de verão."
+      },
+      "condition_unknown_type": {
+        "title": "Condição de destino desconhecida",
+        "line": "Um tipo de condição que o executor de jobs ignora; um fluxo não consegue copiá-la com segurança."
+      },
+      "targets_over_cap": {
+        "title": "Dispositivos demais",
+        "line": "Este job tem como destino mais de 400 dispositivos; uma etapa de fluxo executa no máximo 500."
+      },
+      "partner_wide_group_target": {
+        "title": "Job de todas as organizações aponta para grupos",
+        "line": "Grupos de dispositivos pertencem a uma organização, então um job de todas as organizações não pode usá-los como destino."
+      },
+      "run_as_elevated": {
+        "title": "Executa com privilégios elevados",
+        "line": "Um script movido nunca executa com privilégios elevados sem alguém acompanhando."
+      },
+      "restart_service_monitor_only": {
+        "title": "Reinicia um serviço",
+        "line": "Reinicializações de serviço só executam a partir de monitores."
+      },
+      "command_mixed_os": {
+        "title": "Comando sem shell em dispositivos mistos",
+        "line": "Escolha um shell ou restrinja os destinos a um único sistema operacional."
+      },
+      "notify_per_run_cap": {
+        "title": "Notificações demais por execução",
+        "line": "Os fluxos enviam no máximo 20 notificações por execução."
+      },
+      "channel_type_not_supported": {
+        "title": "Canal de notificação sem suporte",
+        "line": "Um fluxo ainda não consegue enviar para este tipo de canal."
+      },
+      "deploy_software_unmapped": {
+        "title": "Implanta software",
+        "line": "A implantação de software ainda não é movida para Fluxos."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Executa mais vezes que o limite mensal",
+        "line": "As execuções mensais estimadas estão acima do limite de fluxos deste dono."
+      },
+      "reference_not_owned": {
+        "title": "Usa algo que este dono não possui",
+        "line": "Um script, canal ou grupo pertence a outro dono."
+      },
+      "partner_wide_webhook": {
+        "title": "Job de webhook de todas as organizações",
+        "line": "O webhook de um fluxo precisa de uma organização para executar."
+      },
+      "text_template_unsupported": {
+        "title": "O texto contém chaves de modelo",
+        "line": "Um fluxo leria chaves duplas no texto como um modelo."
+      },
+      "event_filter_string_coercion": {
+        "title": "Valor de filtro de texto",
+        "line": "Jobs comparam como texto, fluxos comparam exatamente; confirme que o campo é sempre texto."
+      },
+      "approval_each_run": {
+        "title": "Aprovação em toda execução por webhook",
+        "line": "A pré-aprovação nunca vale para execuções por webhook, então cada execução espera uma pessoa."
+      },
+      "command_becomes_script": {
+        "title": "O comando vira um script",
+        "line": "O comando é salvo como um script da biblioteca que você revisa antes de trocar."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Executa uma vez por organização",
+        "line": "Um fluxo ignora organizações suspensas e executa em no máximo 500 delas."
+      },
+      "failure_notice_cap": {
+        "title": "Avisos de falha podem ser limitados",
+        "line": "Mais de 20 avisos de falha em uma execução não são enviados."
+      },
+      "owner_cap_pressure": {
+        "title": "Perto do limite mensal",
+        "line": "Este fluxo usaria mais de 80% das execuções mensais do dono."
+      },
+      "site_ceiling_removed": {
+        "title": "Escopo de dispositivos mais amplo",
+        "line": "O job era limitado aos sites do criador; o fluxo não é."
+      },
+      "webhook_body_shape": {
+        "title": "O corpo do webhook deve ser um objeto JSON",
+        "line": "O fluxo ignora entregas que não são objetos JSON."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Cabeçalho de segredo simples",
+        "line": "Remetentes que enviam o segredo simples precisam passar a usar X-Breeze-Webhook-Token."
+      },
+      "name_truncated": {
+        "title": "Nome encurtado",
+        "line": "Nomes de fluxo têm no máximo 120 caracteres."
+      },
+      "duration_minutes_ignored": {
+        "title": "Duração ignorada",
+        "line": "A configuração de duração do evento nunca teve efeito e é descartada."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Recupera após uma interrupção",
+        "line": "Após uma indisponibilidade, o fluxo executa uma vez o último horário perdido; o job não executava nenhum."
+      },
+      "queued_is_success": {
+        "title": "Na fila conta como concluído",
+        "line": "Como antes, um script enfileirado para um dispositivo offline conta como enviado."
+      },
+      "severity_mapped": {
+        "title": "Gravidade mapeada",
+        "line": "Alta e média viram aviso; baixa e informação viram informação."
+      },
+      "notification_emails_unused": {
+        "title": "Lista de e-mails descartada",
+        "line": "A lista de e-mails do job nunca foi usada e é descartada."
+      },
+      "webhook_url_changes": {
+        "title": "Endereço do webhook",
+        "line": "Os remetentes mantêm o endereço antigo; ele encaminha para o fluxo."
+      },
+      "delegator_pause": {
+        "title": "Pausa se você perder o acesso",
+        "line": "O fluxo executa como você e pausa se sua conta for desativada ou restringida."
+      }
+    },
+    "column": {
+      "heading": "Mover para Fluxos",
+      "move": "Mover para Fluxos",
+      "view": "Ver"
+    },
+    "panel": {
+      "title": "Mover \"{{name}}\" para Fluxos",
+      "subtitle": "Veja o que é mantido, acompanhe o fluxo em sombra ao lado do job e depois troque.",
+      "close": "Fechar",
+      "loading": "Verificando este job…",
+      "openFlow": "Abrir o fluxo",
+      "findingsHeading": "O que é mantido",
+      "stepsHeading": "Etapas do fluxo",
+      "startShadow": "Iniciar sombra",
+      "switch": "Trocar…",
+      "switchedNote": "O fluxo executa este job agora. O job fica somente leitura até você movê-lo de volta."
+    },
+    "shadow": {
+      "heading": "Sombra",
+      "explain": "O fluxo confere cada execução do job sem executar nada.",
+      "runs": "Execuções conferidas",
+      "divergences": "Diferenças",
+      "startedAt": "Iniciada",
+      "divergence": {
+        "trigger_mismatch": "Última diferença: o fluxo e o job discordaram sobre executar ou não.",
+        "target_set_mismatch": "Última diferença: o fluxo teria escolhido outros dispositivos.",
+        "would_park": "Última diferença: uma etapa teria esperado aprovação.",
+        "over_cap": "Última diferença: a execução teria atingido um limite do fluxo."
+      }
+    },
+    "switch": {
+      "title": "Trocar \"{{name}}\" para o fluxo dele",
+      "body": "Um minuto após a troca, o fluxo executa cada ocorrência e o job para. Nada executa duas vezes.",
+      "blocked": {
+        "shadow_too_new": "A troca é liberada quando a sombra tiver 10 minutos.",
+        "shadow_too_short": "A sombra conferiu menos de 3 execuções ou tem menos de 7 dias.",
+        "shadow_divergent": "A sombra viu diferenças entre o fluxo e o job.",
+        "source_changed": "O job mudou desde a conversão. Inicie uma nova sombra.",
+        "unconvertible": "Este job ainda não pode ser movido."
+      },
+      "acknowledge": "Trocar mesmo assim; aceito as evidências mostradas.",
+      "preApprovalsHeading": "Executar sem esperar aprovação",
+      "preApprovalsHelp": "Desativado por padrão. Sem isso, cada execução de uma etapa de script espera uma pessoa aprovar.",
+      "noPreApprovals": "Nenhuma etapa de script pode executar sem aprovação.",
+      "preApprove": "Pré-aprovar etapa de script",
+      "currentTargets_one": "Tem como destino {{count}} dispositivo hoje.",
+      "currentTargets_other": "Tem como destino {{count}} dispositivos hoje.",
+      "maxTargets": "Máximo de dispositivos por execução (1–{{max}})",
+      "maxTargetsInvalid": "Informe um número inteiro de 1 a {{max}}.",
+      "liveMembership": "Os dispositivos são calculados de novo a cada execução. Quem puder alterar os membros de um grupo pode mudar onde isto executa; uma execução acima do limite pausa o fluxo.",
+      "frozenDevices": "Se uma execução esperar aprovação, quem aprova vê os dispositivos exatos e só eles executam.",
+      "perOrgMultiplies": "Este é um fluxo de todas as organizações: o limite vale em cada organização, então o total pode ser esse número vezes a quantidade de organizações.",
+      "webhookApprovalEachRun": "Execuções por webhook sempre esperam aprovação, mesmo com pré-aprovação.",
+      "generatedScriptsHeading": "Scripts criados na troca",
+      "generatedScriptsHelp": "Cada comando vira um script da biblioteca com o mesmo dono do job.",
+      "acceptScripts": "Revisei estes scripts.",
+      "acceptScopeWidening": "Aceito que o fluxo não é limitado aos sites do criador do job.",
+      "webhookChange": "Os remetentes mantêm o endereço antigo do webhook; ele encaminha para o fluxo. O fluxo aceita apenas objetos JSON, e remetentes do segredo simples devem usar X-Breeze-Webhook-Token.",
+      "acceptDelegatorLifecycle": "O fluxo executa como eu. Se minha conta for desativada ou perder acesso, o fluxo pausa (o job não pausava).",
+      "confirm": "Trocar",
+      "switching": "Trocando…"
+    },
+    "revert": {
+      "action": "Mover de volta para o job…",
+      "title": "Mover \"{{name}}\" de volta para o job?",
+      "body": "O job é ativado novamente e o fluxo não inicia nada novo. As execuções já iniciadas no fluxo terminam.",
+      "confirm": "Mover de volta"
+    },
+    "toast": {
+      "created": "Sombra iniciada.",
+      "bulkCreated_one": "Sombra iniciada para {{count}} job.",
+      "bulkCreated_other": "Sombra iniciada para {{count}} jobs.",
+      "switched": "Trocado. O fluxo executa este job a partir de agora.",
+      "reverted": "Movido de volta. O job executa novamente."
+    },
+    "errors": {
+      "loadFailed": "Não foi possível carregar a mudança deste job.",
+      "createFailed": "Não foi possível iniciar a sombra.",
+      "bulkFailed": "Não foi possível iniciar as sombras.",
+      "switchFailed": "Não foi possível trocar.",
+      "revertFailed": "Não foi possível mover de volta.",
+      "automation_not_found": "Este job não existe mais.",
+      "conversion_not_found": "Esta mudança não existe mais.",
+      "conversion_exists": "Este job já está sendo movido.",
+      "source_changed": "O job mudou desde que você o abriu. Recarregue e tente de novo.",
+      "unconvertible": "Este job ainda não pode ser movido.",
+      "draft_rejected": "O rascunho do fluxo não foi aceito.",
+      "partner_wide_forbidden": "Mover jobs de todas as organizações exige acesso total de parceiro.",
+      "owner_forbidden": "Selecione uma organização primeiro.",
+      "interactive_session_required": "Entre como pessoa para fazer isto.",
+      "delegation_scope_restricted": "Seu acesso é limitado a alguns sites, então você não pode trocar nem mover de volta.",
+      "not_shadow": "Somente um job em sombra pode ser trocado.",
+      "not_switched": "Somente um job trocado pode ser movido de volta.",
+      "version_conflict": "O fluxo mudou. Recarregue e tente de novo.",
+      "already_enabled": "O fluxo já está ativado.",
+      "slug_unavailable": "Outro fluxo já usa este nome.",
+      "shadow_too_new": "A troca é liberada quando a sombra tiver 10 minutos.",
+      "shadow_too_short": "Ainda não há evidência suficiente da sombra. Confirme para trocar mesmo assim.",
+      "shadow_divergent": "A sombra viu diferenças. Confirme-as para trocar mesmo assim.",
+      "scope_widening_not_accepted": "Aceite o escopo de dispositivos mais amplo para trocar.",
+      "automation_disabled": "Ative o job antes de trocá-lo.",
+      "automation_converted": "Este job foi movido para Fluxos. Altere-o lá.",
+      "automations_moved_to_flows": "Novos jobs são criados em Fluxos.",
+      "flow_not_found": "O fluxo deste job não existe mais.",
+      "revert_closed": "Mover de volta está fechado nesta instalação.",
+      "generated_script_rejected": "Não foi possível criar um script para este job.",
+      "permission_missing": "Você não tem todas as permissões de que o fluxo precisa.",
+      "pre_approval_not_eligible": "Uma etapa não pode ser pré-aprovada.",
+      "invalid": "O fluxo não é válido.",
+      "event_dispatch_not_durable": "A entrega de eventos aqui não é durável.",
+      "webhook_secret_missing": "O segredo do webhook está ausente."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Os jobs estão sendo movidos para Fluxos.",
+        "r1Body": "Novos jobs são criados em Fluxos. Mova cada job quando a sombra dele coincidir; você pode movê-lo de volta."
+      },
+      "convertAll": "Iniciar sombra para todos os conversíveis",
+      "converting": "Iniciando…",
+      "bulkSummary": "{{created}} iniciados, {{skipped}} ignorados.",
+      "newJobOpensFlows": "Novo fluxo"
+    }
   }
 }

@@ -39,7 +39,9 @@
     "inputs": "Girdiler",
     "steps": "Adımlar",
     "version": "Sürüm {{version}}",
-    "createdInChat": "Breeze AI'da oluşturuldu"
+    "createdInChat": "Breeze AI'da oluşturuldu",
+    "movedFromJob": "İşten taşındı",
+    "movedFromJobReverted": "(geri taşındı)"
   },
   "step": {
     "tool": "Araç",
@@ -61,7 +63,10 @@
     "builtin": {
       "notify": "Bildirim gönder",
       "http_request": "Harici bir API çağır",
-      "ai": "Yapay zekaya sor"
+      "ai": "Yapay zekaya sor",
+      "run_script_on_targets": "Cihazlarda betik çalıştır",
+      "resolve_targets": "Cihazları bul",
+      "create_alert": "Uyarı oluştur"
     },
     "notify": {
       "channel": "Kanal: {{channel}}"
@@ -74,6 +79,28 @@
       "tools": "Araçlar: {{tools}}",
       "noTools": "Araç yok",
       "output": "Sonuç alanları: {{fields}}"
+    },
+    "fleet": {
+      "script": "Betik {{scriptId}}",
+      "target": {
+        "all": "Tüm cihazlar",
+        "devices": "Listelenen cihazlar",
+        "groups": "Cihaz grupları",
+        "filter": "Bir filtreyle eşleşen cihazlar",
+        "other": "Bir cihaz hedefi"
+      },
+      "conditions": "İş koşullarıyla eşleşen cihazlar",
+      "triggerDevice": "Olaydaki cihaz",
+      "devices_one": "{{count}} cihaz",
+      "devices_other": "{{count}} cihaz",
+      "fromStep": {
+        "succeeded": "{{stepId}} içinde başarılı olan cihazlar",
+        "dispatched": "{{stepId}} tarafından ulaşılan cihazlar",
+        "failed": "{{stepId}} içinde başarısız olan cihazlar"
+      },
+      "offlineQueue": "Çevrimdışı cihazlar: kuyruğa alındı",
+      "offlineSkip": "Çevrimdışı cihazlar: atlandı",
+      "alert": "Önem derecesi {{severity}}"
     }
   },
   "issues": {
@@ -442,5 +469,307 @@
     "readOnly": "Bu sınırları görüntüleyebilir ancak değiştiremezsiniz.",
     "partnerWideForbidden": "İş ortağı varsayılanını değiştirmek için tüm kuruluşlara erişim gerekir.",
     "orgScopeReadOnly": "Kuruluş sınırlarını hizmet sağlayıcınız belirler."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Birebir",
+      "needs_review": "İnceleme gerekli",
+      "unconvertible": "Henüz taşınamaz"
+    },
+    "fidelityBlocked": "Henüz taşınamaz: {{blocker}}",
+    "severity": {
+      "blocker": "Engel",
+      "review": "İncele",
+      "info": "Not"
+    },
+    "state": {
+      "shadow": "Gölgede",
+      "switched": "Akışlar'a taşındı",
+      "reverted": "Geri taşındı"
+    },
+    "actionNumber": "Eylem {{n}}",
+    "noFindings": "İncelenecek bir şey yok: bu iş birebir taşınır.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Akışlar burada kapalı",
+        "line": "Bu kurulum FLOWS_ENABLED=false ile çalışıyor, bu yüzden işler olduğu gibi kalır."
+      },
+      "managed_row": {
+        "title": "Breeze tarafından yönetiliyor",
+        "line": "Bu işin sahibi bir yapay zekâ aracısı veya bir izleyici; iş tek başına değil, sahibiyle birlikte taşınır."
+      },
+      "policy_workflow": {
+        "title": "Bir ilke iş akışının parçası",
+        "line": "Yapılandırma ilkeleri bu işi çalıştırır; ilke iş akışları taşındığında o da taşınır."
+      },
+      "already_retired": {
+        "title": "Zaten kapatılmış",
+        "line": "Bu iş kullanımdan kaldırıldı ve artık çalışmıyor."
+      },
+      "compliance_remediation_target": {
+        "title": "Uyumluluk düzeltmesi için kullanılıyor",
+        "line": "Bir uyumluluk ilkesi cihazları düzeltmek için bu işi çalıştırır; şimdilik iş olarak kalır."
+      },
+      "event_dispatch_not_durable": {
+        "title": "Olay teslimi burada kalıcı değil",
+        "line": "Olay işleri yalnızca EVENT_DISPATCH_MODE=enforce ve abone olunmuş flow-event-trigger ile taşınır."
+      },
+      "event_filter_not_strict": {
+        "title": "Olay filtresi birebir kopyalanamıyor",
+        "line": "Filtre listeler, nesneler, çok fazla anahtar veya akışların eşleştiremediği bir anahtar kullanıyor."
+      },
+      "event_filter_null": {
+        "title": "Olay filtresi boş değerleri denetliyor",
+        "line": "İşler boş değer ile eksik değeri ayırır; akışlar ayıramaz."
+      },
+      "cron_semantics_differ": {
+        "title": "Zamanlama farklı zamanlarda tetiklenir",
+        "line": "Bu cron ifadesi, yaz saati değişimlerinde akış zamanlayıcısıyla eşleşmiyor."
+      },
+      "condition_unknown_type": {
+        "title": "Bilinmeyen hedef koşulu",
+        "line": "İş çalıştırıcısının yok saydığı bir koşul türü; akış bunu güvenle kopyalayamaz."
+      },
+      "targets_over_cap": {
+        "title": "Çok fazla cihaz",
+        "line": "Bu iş 400'den fazla cihazı hedefliyor; bir akış adımı en fazla 500 cihazda çalışır."
+      },
+      "partner_wide_group_target": {
+        "title": "Tüm kuruluşlar işi gruplara hedefliyor",
+        "line": "Cihaz grupları tek bir kuruluşa aittir, bu yüzden tüm kuruluşlar işi onları hedefleyemez."
+      },
+      "run_as_elevated": {
+        "title": "Yükseltilmiş olarak çalışıyor",
+        "line": "Taşınan bir betik, biri izlemeden asla yükseltilmiş olarak çalışmaz."
+      },
+      "restart_service_monitor_only": {
+        "title": "Bir hizmeti yeniden başlatıyor",
+        "line": "Hizmet yeniden başlatmaları yalnızca izleyicilerden çalışır."
+      },
+      "command_mixed_os": {
+        "title": "Karışık cihazlarda kabuksuz komut",
+        "line": "Bir kabuk seçin veya hedefleri tek bir işletim sistemiyle sınırlayın."
+      },
+      "notify_per_run_cap": {
+        "title": "Çalıştırma başına çok fazla bildirim",
+        "line": "Akışlar çalıştırma başına en fazla 20 bildirim gönderir."
+      },
+      "channel_type_not_supported": {
+        "title": "Bildirim kanalı desteklenmiyor",
+        "line": "Akış henüz bu kanal türüne gönderemez."
+      },
+      "deploy_software_unmapped": {
+        "title": "Yazılım dağıtıyor",
+        "line": "Yazılım dağıtımı henüz Akışlar'a taşınmıyor."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Aylık sınırdan sık çalışıyor",
+        "line": "Tahmini aylık çalıştırmalar bu sahibin akış sınırını aşıyor."
+      },
+      "reference_not_owned": {
+        "title": "Bu sahibin olmayan bir şeyi kullanıyor",
+        "line": "Bir betik, kanal veya grup başka bir sahibe ait."
+      },
+      "partner_wide_webhook": {
+        "title": "Tüm kuruluşlar web kancası işi",
+        "line": "Akış web kancasının çalışacağı bir kuruluşa ihtiyacı var."
+      },
+      "text_template_unsupported": {
+        "title": "Metin şablon süslü parantezleri içeriyor",
+        "line": "Akış, metindeki çift süslü parantezleri şablon olarak okur."
+      },
+      "event_filter_string_coercion": {
+        "title": "Metin filtresi değeri",
+        "line": "İşler metin olarak, akışlar birebir karşılaştırır; alanın her zaman metin olduğunu doğrulayın."
+      },
+      "approval_each_run": {
+        "title": "Her web kancası çalıştırmasında onay",
+        "line": "Ön onay web kancası çalıştırmalarında hiç geçerli olmaz, bu yüzden her çalıştırma bir kişiyi bekler."
+      },
+      "command_becomes_script": {
+        "title": "Komut betiğe dönüşür",
+        "line": "Komut, geçişten önce incelediğiniz bir kitaplık betiği olarak kaydedilir."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Kuruluş başına bir kez çalışır",
+        "line": "Akış askıya alınmış kuruluşları atlar ve en fazla 500 kuruluşta çalışır."
+      },
+      "failure_notice_cap": {
+        "title": "Hata bildirimleri sınırlanabilir",
+        "line": "Bir çalıştırmadaki 20'den fazla hata bildirimi gönderilmez."
+      },
+      "owner_cap_pressure": {
+        "title": "Aylık sınıra yakın",
+        "line": "Bu akış sahibin aylık çalıştırmalarının %80'inden fazlasını kullanır."
+      },
+      "site_ceiling_removed": {
+        "title": "Daha geniş cihaz kapsamı",
+        "line": "İş, oluşturanın sitelerine sınırlıydı; akış sınırlı değil."
+      },
+      "webhook_body_shape": {
+        "title": "Web kancası gövdesi bir JSON nesnesi olmalı",
+        "line": "Akış, JSON nesnesi olmayan teslimatları yok sayar."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Düz gizli anahtar başlığı",
+        "line": "Düz gizli anahtarı gönderen göndericiler X-Breeze-Webhook-Token'a geçmelidir."
+      },
+      "name_truncated": {
+        "title": "Ad kısaltıldı",
+        "line": "Akış adları en fazla 120 karakterdir."
+      },
+      "duration_minutes_ignored": {
+        "title": "Süre yok sayıldı",
+        "line": "Olay süresi ayarının hiç etkisi olmadı ve atılıyor."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Kesintiden sonra telafi eder",
+        "line": "Kesintiden sonra akış kaçırılan son zamanı bir kez çalıştırır; iş hiç çalıştırmazdı."
+      },
+      "queued_is_success": {
+        "title": "Kuyruğa alma tamamlandı sayılır",
+        "line": "Eskisi gibi, çevrimdışı bir cihaz için kuyruğa alınan betik gönderilmiş sayılır."
+      },
+      "severity_mapped": {
+        "title": "Önem derecesi eşlendi",
+        "line": "Yüksek ve orta uyarıya, düşük ve bilgi bilgiye dönüşür."
+      },
+      "notification_emails_unused": {
+        "title": "E-posta listesi atıldı",
+        "line": "İşin e-posta listesi hiç kullanılmadı ve atılıyor."
+      },
+      "webhook_url_changes": {
+        "title": "Web kancası adresi",
+        "line": "Göndericiler eski adresi korur; adres akışa yönlendirir."
+      },
+      "delegator_pause": {
+        "title": "Erişimi kaybederseniz duraklar",
+        "line": "Akış sizin adınıza çalışır ve hesabınız kapatılır veya daraltılırsa duraklar."
+      }
+    },
+    "column": {
+      "heading": "Akışlar'a taşı",
+      "move": "Akışlar'a taşı",
+      "view": "Görüntüle"
+    },
+    "panel": {
+      "title": "\"{{name}}\" işini Akışlar'a taşı",
+      "subtitle": "Nelerin aktarıldığını görün, akışı işin yanında gölgede izleyin, sonra geçin.",
+      "close": "Kapat",
+      "loading": "Bu iş denetleniyor…",
+      "openFlow": "Akışı aç",
+      "findingsHeading": "Nelerin aktarıldığı",
+      "stepsHeading": "Akış adımları",
+      "startShadow": "Gölgeyi başlat",
+      "switch": "Geç…",
+      "switchedNote": "Akış artık bu işi çalıştırıyor. İşi geri taşıyana kadar iş salt okunurdur."
+    },
+    "shadow": {
+      "heading": "Gölge",
+      "explain": "Akış, hiçbir şey çalıştırmadan işin her çalıştırmasını denetler.",
+      "runs": "Denetlenen çalıştırmalar",
+      "divergences": "Farklar",
+      "startedAt": "Başlangıç",
+      "divergence": {
+        "trigger_mismatch": "Son fark: akış ve iş çalışıp çalışmayacağı konusunda anlaşamadı.",
+        "target_set_mismatch": "Son fark: akış farklı cihazlar seçerdi.",
+        "would_park": "Son fark: bir adım onay beklerdi.",
+        "over_cap": "Son fark: çalıştırma bir akış sınırına takılırdı."
+      }
+    },
+    "switch": {
+      "title": "\"{{name}}\" işini akışına geçir",
+      "body": "Geçişten bir dakika sonra akış her tekrarı çalıştırır ve iş durur. Hiçbir şey iki kez çalışmaz.",
+      "blocked": {
+        "shadow_too_new": "Gölge 10 dakikalık olunca geçiş açılır.",
+        "shadow_too_short": "Gölge 3'ten az çalıştırmayı denetledi veya 7 günden yeni.",
+        "shadow_divergent": "Gölge akış ile iş arasında farklar gördü.",
+        "source_changed": "İş dönüştürüldüğünden beri değişti. Yeni bir gölge başlatın.",
+        "unconvertible": "Bu iş henüz taşınamaz."
+      },
+      "acknowledge": "Yine de geç; gösterilen kanıtları kabul ediyorum.",
+      "preApprovalsHeading": "Onay beklemeden çalıştır",
+      "preApprovalsHelp": "Varsayılan olarak kapalıdır. Olmadan, bir betik adımının her çalıştırması bir kişinin onayını bekler.",
+      "noPreApprovals": "Hiçbir betik adımı onaysız çalışamaz.",
+      "preApprove": "Betik adımını önceden onayla",
+      "currentTargets_one": "Bugün {{count}} cihazı hedefliyor.",
+      "currentTargets_other": "Bugün {{count}} cihazı hedefliyor.",
+      "maxTargets": "Çalıştırma başına en fazla cihaz (1–{{max}})",
+      "maxTargetsInvalid": "1 ile {{max}} arasında bir tam sayı girin.",
+      "liveMembership": "Cihazlar her çalıştırmada yeniden hesaplanır. Bir grubun üyelerini değiştirebilen herkes bunun nerede çalışacağını değiştirebilir; sınırı aşan bir çalıştırma akışı duraklatır.",
+      "frozenDevices": "Bir çalıştırma onay beklerse onaylayan tam cihazları görür ve yalnızca onlar çalışır.",
+      "perOrgMultiplies": "Bu, tüm kuruluşlar için bir akıştır: sınır her kuruluşta geçerlidir, bu yüzden toplam bu sayının kuruluş sayısı katı olabilir.",
+      "webhookApprovalEachRun": "Web kancası çalıştırmaları ön onayla bile her zaman onay bekler.",
+      "generatedScriptsHeading": "Geçişte oluşturulan betikler",
+      "generatedScriptsHelp": "Her komut, iş ile aynı sahibe ait bir kitaplık betiği olur.",
+      "acceptScripts": "Bu betikleri inceledim.",
+      "acceptScopeWidening": "Akışın, işi oluşturanın sitelerine sınırlı olmadığını kabul ediyorum.",
+      "webhookChange": "Göndericiler eski web kancası adresini korur; adres akışa yönlendirir. Akış yalnızca JSON nesnelerini kabul eder ve düz gizli anahtarı gönderenler X-Breeze-Webhook-Token kullanmalıdır.",
+      "acceptDelegatorLifecycle": "Akış benim adıma çalışır. Hesabım kapatılırsa veya erişimini kaybederse akış duraklar (iş duraklamazdı).",
+      "confirm": "Geç",
+      "switching": "Geçiliyor…"
+    },
+    "revert": {
+      "action": "İşe geri taşı…",
+      "title": "\"{{name}}\" işe geri taşınsın mı?",
+      "body": "İş yeniden açılır ve akış yeni bir şey başlatmaz. Akışta başlamış çalıştırmalar tamamlanır.",
+      "confirm": "Geri taşı"
+    },
+    "toast": {
+      "created": "Gölge başlatıldı.",
+      "bulkCreated_one": "{{count}} iş için gölge başlatıldı.",
+      "bulkCreated_other": "{{count}} iş için gölge başlatıldı.",
+      "switched": "Geçildi. Akış bundan sonra bu işi çalıştırıyor.",
+      "reverted": "Geri taşındı. İş yeniden çalışıyor."
+    },
+    "errors": {
+      "loadFailed": "Bu işin taşıma bilgisi yüklenemedi.",
+      "createFailed": "Gölge başlatılamadı.",
+      "bulkFailed": "Gölgeler başlatılamadı.",
+      "switchFailed": "Geçilemedi.",
+      "revertFailed": "Geri taşınamadı.",
+      "automation_not_found": "Bu iş artık yok.",
+      "conversion_not_found": "Bu taşıma artık yok.",
+      "conversion_exists": "Bu iş zaten taşınıyor.",
+      "source_changed": "İş, açtığınızdan beri değişti. Yeniden yükleyip tekrar deneyin.",
+      "unconvertible": "Bu iş henüz taşınamaz.",
+      "draft_rejected": "Akış taslağı kabul edilmedi.",
+      "partner_wide_forbidden": "Tüm kuruluşlar işlerini taşımak için tam iş ortağı erişimi gerekir.",
+      "owner_forbidden": "Önce bir kuruluş seçin.",
+      "interactive_session_required": "Bunu yapmak için bir kişi olarak oturum açın.",
+      "delegation_scope_restricted": "Erişiminiz bazı sitelerle sınırlı, bu yüzden geçemez veya geri taşıyamazsınız.",
+      "not_shadow": "Yalnızca gölgedeki bir iş geçebilir.",
+      "not_switched": "Yalnızca geçirilmiş bir iş geri taşınabilir.",
+      "version_conflict": "Akış değişti. Yeniden yükleyip tekrar deneyin.",
+      "already_enabled": "Akış zaten açık.",
+      "slug_unavailable": "Başka bir akış bu adı zaten kullanıyor.",
+      "shadow_too_new": "Gölge 10 dakikalık olunca geçiş açılır.",
+      "shadow_too_short": "Henüz yeterli gölge kanıtı yok. Yine de geçmek için onaylayın.",
+      "shadow_divergent": "Gölge farklar gördü. Yine de geçmek için onaylayın.",
+      "scope_widening_not_accepted": "Geçmek için daha geniş cihaz kapsamını kabul edin.",
+      "automation_disabled": "İşi geçirmeden önce açın.",
+      "automation_converted": "Bu iş Akışlar'a taşındı. Değişikliği orada yapın.",
+      "automations_moved_to_flows": "Yeni işler Akışlar'da oluşturulur.",
+      "flow_not_found": "Bu işin akışı artık yok.",
+      "revert_closed": "Geri taşıma bu kurulumda kapalı.",
+      "generated_script_rejected": "Bu iş için bir betik oluşturulamadı.",
+      "permission_missing": "Akışın ihtiyaç duyduğu tüm izinlere sahip değilsiniz.",
+      "pre_approval_not_eligible": "Bir adım önceden onaylanamaz.",
+      "invalid": "Akış geçerli değil.",
+      "event_dispatch_not_durable": "Buradaki olay teslimi kalıcı değil.",
+      "webhook_secret_missing": "Web kancası gizli anahtarı eksik."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "İşler Akışlar'a taşınıyor.",
+        "r1Body": "Yeni işler Akışlar'da oluşturulur. Gölgesi eşleşince her işi taşıyın; geri de taşıyabilirsiniz."
+      },
+      "convertAll": "Dönüştürülebilir tümü için gölge başlat",
+      "converting": "Başlatılıyor…",
+      "bulkSummary": "{{created}} başlatıldı, {{skipped}} atlandı.",
+      "newJobOpensFlows": "Yeni akış"
+    }
   }
 }

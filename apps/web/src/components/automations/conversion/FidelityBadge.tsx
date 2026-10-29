@@ -29,12 +29,15 @@ export function FidelityBadge({
       data-fidelity={fidelity}
       className={cn('inline-flex max-w-xs items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium', TONE[fidelity])}
     >
-      <span className="shrink-0">{t(/* i18n-dynamic */ `conversion.fidelity.${fidelity}`)}</span>
-      {blocker && (
-        <span className="truncate font-normal" data-testid="conversion-fidelity-blocker">
-          {t('conversion.fidelityBlockerSeparator')}
-          {t(/* i18n-dynamic */ `conversion.finding.${blocker.code}.title`)}
+      {blocker ? (
+        <span className="truncate" data-testid="conversion-fidelity-blocker">
+          {t('conversion.fidelityBlocked', {
+            blocker: t(/* i18n-dynamic */ `conversion.finding.${blocker.code}.title`),
+            interpolation: { escapeValue: false },
+          })}
         </span>
+      ) : (
+        <span className="shrink-0">{t(/* i18n-dynamic */ `conversion.fidelity.${fidelity}`)}</span>
       )}
     </span>
   );

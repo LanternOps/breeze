@@ -476,7 +476,7 @@
       "needs_review": "Needs review",
       "unconvertible": "Can't move yet"
     },
-    "fidelityBlockerSeparator": ": ",
+    "fidelityBlocked": "Can't move yet: {{blocker}}",
     "severity": {
       "blocker": "Blocker",
       "review": "Review",
