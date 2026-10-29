@@ -13,7 +13,10 @@ import { claimAndDispatchScan } from '../../jobs/securityScanClaim';
 import { pumpSweeps, type PumpDispatchJob } from '../../jobs/securityScanSweepPump';
 import type { AuthContext } from '../../middleware/auth';
 import { cancelDeviceScan, startDeviceScan } from '../../services/securityScanStart';
-import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import {
+  assignUserToOrganization, createDevice, createOrganization, createPartner, createRole, createSite, createUser,
+  grantRolePermissions,
+} from './db-utils';
 import { getTestDb } from './setup';
 
 async function seed(opts: { online?: boolean } = {}) {
@@ -139,4 +142,71 @@ describe('Scan now through the dispatch caps (#10057 gap 2)', () => {
     expect(jobs).toContainEqual({ type: 'dispatch-scan', scanId: waiting, origin: 'manual' });
     expect(jobs.map((j) => j.scanId)).not.toContain(lost);
   });
+
+  // ---- security review (TOCTOU): the caller is re-checked LIVE when the claim dispatches ----
+
+  /** An org user holding devices:execute through an org role (not a platform admin). */
+  async function seedOrgCaller() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const device = await createDevice({ orgId: org.id, siteId: site.id });
+    await getTestDb().execute(sql`UPDATE devices SET agent_version = '0.124.0', status = 'online' WHERE id = ${device.id}`);
+    const user = await createUser({ partnerId: partner.id, orgId: org.id, email: `exec-${randomUUID()}@example.com` });
+    const role = await createRole({ scope: 'organization', partnerId: partner.id, orgId: org.id });
+    await grantRolePermissions(role.id, [{ resource: 'devices', action: 'execute' }, { resource: 'devices', action: 'read' }]);
+    await assignUserToOrganization(user.id, org.id, role.id);
+    const auth = {
+      principal: { kind: 'user_session' },
+      user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
+      token: null, partnerId: partner.id, orgId: org.id, scope: 'organization', accessibleOrgIds: [org.id],
+      orgCondition: (col: never) => eq(col, org.id), canAccessOrg: (id: string) => id === org.id,
+    } as unknown as AuthContext;
+    return { orgId: org.id, deviceId: device.id, userId: user.id, roleId: role.id, auth };
+  }
+
+  async function queueAs(w: Awaited<ReturnType<typeof seedOrgCaller>>) {
+    const started = await startDeviceScan(w.auth, { deviceId: w.deviceId, scanType: 'quick', mfaSatisfied: true });
+    if (!started.ok) throw new Error(started.error);
+    return started.scan.id;
+  }
+
+  it('control: an org caller who still holds devices:execute is dispatched', async () => {
+    const w = await seedOrgCaller();
+    const scanId = await queueAs(w);
+    expect((await claimAndDispatchScan(manualJob(scanId))).outcome).toBe('dispatched');
+  });
+
+  it('devices:execute revoked after queueing → the claim cancels it and sends no command', async () => {
+    const w = await seedOrgCaller();
+    const scanId = await queueAs(w);
+    await getTestDb().execute(sql`DELETE FROM role_permissions WHERE role_id = ${w.roleId}`);
+
+    expect(await claimAndDispatchScan(manualJob(scanId))).toEqual({ outcome: 'cancelled', commandId: null });
+    const row = await scanRow(scanId);
+    expect(row.status).toBe('cancelled');
+    expect(row.ruleSetErrors).toEqual([{ id: '*', code: 'caller_authority_revoked' }]);
+    expect(row.commandId).toBeNull();
+    expect(await commandCount(w.deviceId)).toBe(0);
+  });
+
+  it('caller deactivated after queueing → cancelled, no command', async () => {
+    const w = await seedOrgCaller();
+    const scanId = await queueAs(w);
+    await getTestDb().execute(sql`UPDATE users SET status = 'disabled' WHERE id = ${w.userId}`);
+    expect(await claimAndDispatchScan(manualJob(scanId))).toEqual({ outcome: 'cancelled', commandId: null });
+    expect(await commandCount(w.deviceId)).toBe(0);
+  });
+
+  it("caller's site access narrowed away from the device after queueing → cancelled caller_out_of_scope", async () => {
+    const w = await seedOrgCaller();
+    const scanId = await queueAs(w);
+    const otherSite = await createSite({ orgId: w.orgId });
+    await getTestDb().execute(sql`UPDATE organization_users SET site_ids = ARRAY[${otherSite.id}]::uuid[]
+                                   WHERE user_id = ${w.userId} AND org_id = ${w.orgId}`);
+    expect(await claimAndDispatchScan(manualJob(scanId))).toEqual({ outcome: 'cancelled', commandId: null });
+    expect((await scanRow(scanId)).ruleSetErrors).toEqual([{ id: '*', code: 'caller_out_of_scope' }]);
+    expect(await commandCount(w.deviceId)).toBe(0);
+  });
 });
+

@@ -41,6 +41,10 @@ import { checkAiRemoteToolsPolicy } from '../services/aiRemoteToolsPolicy';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import { resolveSecurityScanPolicyForDevice } from '../services/featureConfigResolver';
 import {
+  authorityAdmitsDevice,
+  resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext,
+} from '../services/sensitiveDataPolicyAuthority';
+import {
   resolveSecurityScanQuarantineAuthority,
   type QuarantineSuppressedReason,
 } from '../services/securityScanQuarantineAuthority';
@@ -65,6 +69,14 @@ export type ClaimOutcome = {
 };
 
 const orgCap = () => parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
+
+/**
+ * #10057 gap 2 — how long the MFA a Scan now's caller had at request time
+ * still authorizes auto-quarantine. A Scan now that waited longer for a slot
+ * runs detect-only (`manual_mfa_stale`): the session that satisfied MFA may be
+ * long gone, and quarantine moves files.
+ */
+export const MANUAL_SCAN_MFA_FRESH_MS = 15 * 60_000;
 const deviceCap = () => parsePositiveIntEnv('SECURITY_SCAN_DEVICE_CONCURRENCY_CAP', 1);
 
 /**
@@ -185,6 +197,10 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
       aiOrigin: securityScans.aiOrigin,
       callerMfaSatisfied: securityScans.callerMfaSatisfied,
       queueExpiresAt: securityScans.queueExpiresAt,
+      initiatedBy: securityScans.initiatedBy,
+      // Before the claim, started_at is the request time (the claim resets it).
+      queuedAt: securityScans.startedAt,
+      deviceSiteId: devices.siteId,
     })
     .from(securityScans)
     .innerJoin(devices, eq(devices.id, securityScans.deviceId))
@@ -226,6 +242,32 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     return { outcome: { outcome: 'expired', commandId: null } };
   }
 
+  // #10057 gap 2 (security review: stale authority). A Scan now runs under its
+  // CALLER's authority, captured when it was queued, and it may have waited
+  // hours for a slot. Re-check the caller LIVE, with the same resolver the
+  // stored-authority paths use: still active, still holds devices:execute in
+  // the scan's org (org membership, or a partner membership that admits the
+  // org), and the current site ceiling still covers the device. Any miss
+  // cancels the scan before it can compete for a slot. A lookup failure
+  // throws: the claim rolls back, the row stays queued, and the job retries.
+  const callerInitiated = !isSweep && locked.callerMfaSatisfied !== null && locked.callerMfaSatisfied !== undefined;
+  if (callerInitiated) {
+    const authority = locked.initiatedBy
+      ? await resolveLegacyPrincipalExecuteAuthorityInCurrentSystemContext({ orgId: locked.orgId, partnerId: null }, locked.initiatedBy)
+      : null;
+    if (!authority) {
+      console.warn(`[securityScanClaim] scan ${scan.id} cancelled: initiating user no longer holds devices:execute for org ${locked.orgId}`);
+      await terminalize(scan.id, 'cancelled', { ruleSetErrors: [{ id: '*', code: 'caller_authority_revoked' }] });
+      return { outcome: { outcome: 'cancelled', commandId: null } };
+    }
+    const device = { orgId: locked.deviceOrgId, siteId: locked.deviceSiteId ?? null, partnerId: scan.partnerId };
+    if (!authorityAdmitsDevice(authority, { orgId: locked.orgId, partnerId: null }, device)) {
+      console.warn(`[securityScanClaim] scan ${scan.id} cancelled: device ${scan.deviceId} is outside the initiating user's site scope`);
+      await terminalize(scan.id, 'cancelled', { ruleSetErrors: [{ id: '*', code: 'caller_out_of_scope' }] });
+      return { outcome: { outcome: 'cancelled', commandId: null } };
+    }
+  }
+
   // Caps, counted under the partner lock (all origins).
   const [caps] = (await db.execute(sql`
     SELECT
@@ -246,7 +288,7 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
   // for every origin; with no policy, the agent defaults apply.
   const resolved = await resolveSecurityScanPolicyForDevice(scan.deviceId);
   let settings = resolved?.settings ?? null;
-  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | 'manual_no_mfa' | null = null;
+  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | 'manual_no_mfa' | 'manual_mfa_stale' | null = null;
   let refs: YaraRuleSetRef[];
   let engine: 'yara' | 'legacy';
   let ruleSetErrors: YaraRuleSetError[] | null;
@@ -284,7 +326,6 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     ruleSetErrors = null;
     paths = scan.scanType === 'custom' && sweep.paths ? sweep.paths : undefined;
   } else {
-    const callerInitiated = locked.callerMfaSatisfied !== null && locked.callerMfaSatisfied !== undefined;
     if (locked.aiOrigin) {
       // An AI Scan now: the remote-tools policy was checked at request time
       // and is re-checked here, since the scan may have waited for a slot.
@@ -298,13 +339,20 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     if (scan.scanType === 'custom' && locked.paths && locked.paths.length > 0) paths = locked.paths;
 
     if (callerInitiated) {
-      // A Scan now runs under the CALLER's authority (devices:execute, checked
-      // by the route), not the policy's stored approval. Auto-quarantine moves
-      // files, so it also needs the MFA the caller's session had at request
-      // time; without it the scan runs detect-only and the row records why.
+      // A Scan now runs under the CALLER's authority, re-checked live above,
+      // not the policy's stored approval. Auto-quarantine moves files, so it
+      // also needs the MFA the caller's session had at request time, and that
+      // MFA must be fresh: a scan that waited past MANUAL_SCAN_MFA_FRESH_MS
+      // runs detect-only. Either way the row records why.
       if (settings?.autoQuarantine && !locked.callerMfaSatisfied) {
         settings = { ...settings, autoQuarantine: false };
         autoQuarantineSuppressedReason = 'manual_no_mfa';
+      } else if (
+        settings?.autoQuarantine
+        && (!locked.queuedAt || Date.now() - new Date(locked.queuedAt).getTime() > MANUAL_SCAN_MFA_FRESH_MS)
+      ) {
+        settings = { ...settings, autoQuarantine: false };
+        autoQuarantineSuppressedReason = 'manual_mfa_stale';
       }
     } else if (resolved && settings?.autoQuarantine) {
     // Auto-quarantine is a device-execution effect: it rides on the stored
@@ -372,7 +420,24 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
             deliverWithinMs: Math.max(SWEEP_MIN_DELIVER_WITHIN_MS, new Date(sweep.expiresAt).getTime() - Date.now()),
           },
         }
-      : {}),
+      : callerInitiated && locked.queueExpiresAt
+        ? {
+            // #10057 gap 2 (review): a claimed scan is `running` and holds a
+            // cap slot while its command waits for an offline device. A Scan
+            // now may hold it only until its queue expiry, not the 7-day
+            // standard window, so offline clicks cannot wedge the org cap.
+            offlinePolicy: {
+              kind: 'queue' as const,
+              deliverWithinMs: Math.max(
+                SWEEP_MIN_DELIVER_WITHIN_MS,
+                new Date(locked.queueExpiresAt).getTime() - Date.now(),
+              ),
+            },
+          }
+        : {}),
+    // The human who clicked Scan now, so the command row, its audit entry and
+    // per-user execute gating name them (scheduled and sweep scans have none).
+    ...(callerInitiated && locked.initiatedBy ? { userId: locked.initiatedBy } : {}),
     ...(aiOrigin ? { aiOrigin } : {}),
     deferDelivery: true,
   });
