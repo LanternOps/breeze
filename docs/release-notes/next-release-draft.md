@@ -140,3 +140,10 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Partner-owned dynamic groups now have per-device and revisioned per-org evaluation, excluding Quick Support and holding organizations.
 - Still dark: nothing user-visible until W3 adds the create route. No migration, setting or environment variable.
 - A six-hour retry sweep repairs missed evaluations; it is a retry cadence, with no freshness SLA.
+
+### Event logs
+
+- Agent event-log uploads are now validated per row (#10494). Previously one invalid event made the API reject the whole upload with 400, and every event in that collection window was lost.
+- An empty or whitespace-only event message is stored as `(no message text)`; the event's source, ID and level are kept. Rows that still fail validation (for example a message over 2000 characters or `details` over 64 KB) are dropped individually, and the other rows are stored.
+- Response bodies gain `invalidDropped` and `emptyMessageCoerced` counts, and the API logs one `[EventLogs]` warning per affected upload. An upload where every row is invalid returns 200 with `count: 0`.
+- No migration, environment variable or setting. Existing agents benefit without an update.
