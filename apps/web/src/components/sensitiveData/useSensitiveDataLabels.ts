@@ -35,9 +35,10 @@ const DATA_TYPE_KEYS: Record<string, string> = {
   financial: 'financial',
 };
 
-/** Raw value with underscores spaced out — the fallback for an unknown enum value. */
-function humanizeRaw(value: string): string {
-  return value.replace(/_/g, ' ');
+/** Fallback for an enum value with no catalog entry: "some_value" → "Some value". */
+export function humanizeRaw(value: string): string {
+  const spaced = value.replace(/_/g, ' ');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
 /** Severity rank for a risk level: 0 = critical. Unknown levels sort last. */

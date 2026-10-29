@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), handleSessionExpired: vi.fn() }));
 vi.mock('../../stores/orgStore', () => ({
@@ -18,6 +18,7 @@ import PoliciesTab from './PoliciesTab';
 import ScansTab from './ScansTab';
 import RemediationModal from './RemediationModal';
 import { fetchWithAuth } from '../../stores/auth';
+import { humanizeRaw, sortByRisk } from './useSensitiveDataLabels';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -94,6 +95,15 @@ describe('Sensitive Data labels and icon buttons (#9928)', () => {
     expect(within(row).getByText('Critical')).toBeInTheDocument();
     expect(within(row).getByText('False Positive')).toBeInTheDocument();
 
+    // Choosing a translated option still sends the raw API value.
+    fireEvent.change(statusSelect, { target: { value: 'false_positive' } });
+    fireEvent.change(riskSelect, { target: { value: 'critical' } });
+    await waitFor(() => {
+      const lastUrl = String(fetchMock.mock.calls.at(-1)?.[0]);
+      expect(lastUrl).toContain('status=false_positive');
+      expect(lastUrl).toContain('risk=critical');
+    });
+
     expect(screen.getByRole('button', { name: 'Previous page' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Next page' })).toBeInTheDocument();
   });
@@ -156,5 +166,19 @@ describe('Sensitive Data labels and icon buttons (#9928)', () => {
   it('labels the remediation modal close button', () => {
     render(<RemediationModal findingIds={['f1']} onClose={() => {}} onComplete={() => {}} />);
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+  });
+});
+
+describe('Sensitive Data label helpers (#9928)', () => {
+  it('sorts unknown risk levels after low', () => {
+    expect(sortByRisk([['unknown', 1], ['low', 2], ['critical', 3]]).map(([k]) => k)).toEqual([
+      'critical',
+      'low',
+      'unknown',
+    ]);
+  });
+
+  it('humanizes an unmapped enum value instead of rendering it raw', () => {
+    expect(humanizeRaw('needs_review')).toBe('Needs review');
   });
 });
