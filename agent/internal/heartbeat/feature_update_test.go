@@ -1,9 +1,12 @@
 package heartbeat
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/winupdate"
 )
@@ -138,5 +141,99 @@ func TestProductVersionFor(t *testing.T) {
 	}
 	if got := productVersionFor("windows-7"); got != "" {
 		t.Errorf("unknown product → %q, want empty", got)
+	}
+}
+
+// TestApplyFeatureUpdateConfig_LogsInfoOnlyOnChange pins #10382: the policy is
+// re-applied on every heartbeat (60 s), but INFO is emitted only when the
+// outcome changes; the steady-state re-assert drops to DEBUG. Enforcement
+// itself (the registry call) still runs on every beat.
+func TestApplyFeatureUpdateConfig_LogsInfoOnlyOnChange(t *testing.T) {
+	buf := &syncBuffer{}
+	logging.Init("text", "debug", buf)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	orig := applyTargetRelease
+	t.Cleanup(func() { applyTargetRelease = orig })
+
+	// Fake registry: a pin to the version already written is a re-assert.
+	var calls int
+	var writtenTarget string
+	var failNext bool
+	applyTargetRelease = func(pin *winupdate.TargetRelease) (winupdate.Result, error) {
+		calls++
+		if failNext {
+			failNext = false
+			return winupdate.Result{Supported: true}, errors.New("registry access denied")
+		}
+		if pin == nil {
+			if writtenTarget != "" {
+				writtenTarget = ""
+				return winupdate.Result{Supported: true, Reverted: true, Reason: "reverted Breeze Windows Update target-release pin"}, nil
+			}
+			return winupdate.Result{Supported: true, Reason: "no Breeze-managed Windows Update target-release pin to revert; left as-found"}, nil
+		}
+		reason := "Windows Update target release pinned (" + pin.TargetVersion + ")"
+		if writtenTarget == pin.TargetVersion {
+			reason = "Windows Update target release already pinned (re-asserted " + pin.TargetVersion + ")"
+		}
+		writtenTarget = pin.TargetVersion
+		return winupdate.Result{Supported: true, Managed: true, Enforced: true, Reason: reason}, nil
+	}
+
+	h := &Heartbeat{config: config.Default()}
+	beat := func(block map[string]any) {
+		h.applyConfigUpdate(map[string]any{"feature_update_settings": block})
+	}
+	pin := func(v string) map[string]any {
+		return map[string]any{"mode": "pin", "product": "windows-11", "targetVersion": v}
+	}
+	countInfo := func() int {
+		return strings.Count(buf.String(), `level=INFO msg="applied Windows feature-update policy"`)
+	}
+
+	for i := 0; i < 8; i++ {
+		beat(pin("25H2"))
+	}
+	if got := countInfo(); got != 1 {
+		t.Fatalf("8 identical pinned heartbeats logged %d INFO lines, want 1\n%s", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), `level=DEBUG msg="applied Windows feature-update policy"`) {
+		t.Errorf("steady-state re-assert should still be visible at DEBUG\n%s", buf.String())
+	}
+
+	// A changed target is a state change: one more INFO, then quiet again.
+	for i := 0; i < 3; i++ {
+		beat(pin("26H1"))
+	}
+	if got := countInfo(); got != 2 {
+		t.Fatalf("re-pin to a new target: %d INFO lines total, want 2\n%s", got, buf.String())
+	}
+
+	// Switching to block reverts the pin (INFO), then settles on left-as-found
+	// (one more INFO for that new steady state), then quiet.
+	for i := 0; i < 4; i++ {
+		beat(map[string]any{"mode": "block"})
+	}
+	if got := countInfo(); got != 4 {
+		t.Fatalf("revert + left-as-found: %d INFO lines total, want 4\n%s", got, buf.String())
+	}
+
+	// A failure is always logged, and the next successful apply is reported
+	// at INFO again even though the outcome matches the last one logged.
+	failNext = true
+	beat(map[string]any{"mode": "block"})
+	if !strings.Contains(buf.String(), `level=ERROR msg="failed to apply Windows Update target-release policy"`) {
+		t.Fatalf("apply error not logged\n%s", buf.String())
+	}
+	beat(map[string]any{"mode": "block"})
+	beat(map[string]any{"mode": "block"})
+	if got := countInfo(); got != 5 {
+		t.Fatalf("recovery after an error: %d INFO lines total, want 5\n%s", got, buf.String())
+	}
+
+	// Enforcement is unchanged: the registry policy is applied on every beat.
+	if calls != 8+3+4+3 {
+		t.Errorf("applyTargetRelease called %d times, want %d (one per heartbeat)", calls, 8+3+4+3)
 	}
 }

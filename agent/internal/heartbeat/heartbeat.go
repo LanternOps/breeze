@@ -464,7 +464,10 @@ type Heartbeat struct {
 	chatReplySink    func(chatReplyEvent) (int, error)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
-	unifiCollectorWake        atomic.Pointer[func()]
+	unifiCollectorWake atomic.Pointer[func()]
+	// featureUpdateLog dedups the per-heartbeat feature-update policy log
+	// line (#10382); see feature_update.go.
+	featureUpdateLog          featureUpdateLogState
 	topologyDiagnosticMu      sync.Mutex
 	topologyDiagnosticJournal *networkdiagnostic.Journal
 	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
