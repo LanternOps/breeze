@@ -795,6 +795,10 @@
       "watchdog": "Cible de surveillance"
     },
     "inheritDefault": "Héritage par défaut du partenaire ({{version}})",
+    "inheritDefaultLatest": "Hériter de la valeur par défaut du partenaire (dernière promue)",
+    "latestOverride": "Toujours la dernière promue, ignorer l’épinglage du partenaire",
+    "latestOverrideVersion": "Toujours la dernière promue ({{version}}), ignorer l’épinglage du partenaire",
+    "latestOrganization": "Défini pour cette organisation : toujours la dernière promue",
     "latestVersion": "Dernière promotion ({{version}})",
     "latest": "Dernières promotions",
     "pinnedAll": "Épinglé pour toutes les organisations",

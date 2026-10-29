@@ -795,6 +795,10 @@
       "watchdog": "Watchdog target"
     },
     "inheritDefault": "Inherit partner default ({{version}})",
+    "inheritDefaultLatest": "Inherit partner default (latest promoted)",
+    "latestOverride": "Always latest promoted, ignore partner pin",
+    "latestOverrideVersion": "Always latest promoted ({{version}}), ignore partner pin",
+    "latestOrganization": "Set for this organization: always latest promoted",
     "latestVersion": "Latest promoted ({{version}})",
     "latest": "Latest promoted",
     "pinnedAll": "Pinned for all organizations",

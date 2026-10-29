@@ -795,6 +795,10 @@
       "watchdog": "Objetivo de vigilancia"
     },
     "inheritDefault": "Heredar valor predeterminado del socio ({{version}})",
+    "inheritDefaultLatest": "Heredar valor predeterminado del socio (último promocionado)",
+    "latestOverride": "Siempre el último promocionado, ignorar la fijación del socio",
+    "latestOverrideVersion": "Siempre el último promocionado ({{version}}), ignorar la fijación del socio",
+    "latestOrganization": "Definido para esta organización: siempre el último promocionado",
     "latestVersion": "Último promocionado ({{version}})",
     "latest": "Último promocionado",
     "pinnedAll": "Fijado para todas las organizaciones",
