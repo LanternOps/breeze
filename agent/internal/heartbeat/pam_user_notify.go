@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 )
 
@@ -343,23 +344,27 @@ func pamUserDecisionFailureCode(code string) bool {
 // notice that could not be delivered releases its claim, so a redelivery can
 // try again. Untracked requests (auto-approve, before a restart) and
 // non-terminal states show nothing.
-func (h *Heartbeat) notifyPamApplyOutcome(requestID string, result pamlifetime.Result) {
+func (h *Heartbeat) notifyPamApplyOutcome(requestID string, result pamlifetime.Result, technician string) {
 	var copyFn func(p, s string) (string, string)
 	var kind string
+	var state ipc.PromptState
 	switch result.State {
 	case pamlifetime.ResultVerifiedActive:
-		copyFn, kind = pamCopyApproved, "approved"
+		copyFn, kind, state = pamCopyApproved, "approved", ipc.PromptStateApproved
 	case pamlifetime.ResultFailed:
 		if pamUserDecisionFailureCode(result.FailureCode) {
 			return
 		}
-		copyFn, kind = pamCopyLaunchFailed, "approved-but-couldn't-start"
+		copyFn, kind, state = pamCopyLaunchFailed, "approved-but-couldn't-start", ipc.PromptStateFailed
 	default:
 		return
 	}
+	// #10190 W07: the elevation prompt shows the outcome; when Assist holds
+	// it, the notice is not shown too (its one-notice budget is spent).
+	onAssist := h.elevationOutcome(requestID, state, technician, "")
 	tracker := h.pamTracker()
 	entry, ok := tracker.ClaimNotify(requestID)
-	if !ok {
+	if !ok || onAssist {
 		return
 	}
 	title, body := copyFn(entry.Program, entry.SupportName)

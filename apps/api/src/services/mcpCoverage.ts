@@ -312,6 +312,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
+  'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
   'alerts/correlations.ts': { tools: ['get_alert_correlations', 'manage_alert_correlations'] }, // W07 (#6777)
   'alerts/delivery.ts': { tools: ['manage_delivery'] },
