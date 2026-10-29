@@ -23,8 +23,10 @@
 -- as in sync, and the operator can rename the definition to resolve it.
 --
 -- Only `name` and `updated_at` change; the topology trigger on this table
--- fires on asset_id/site_id only. Idempotent: a renamed row no longer matches
--- the '[monitor] ' || name predicate, so a re-run renames nothing.
+-- fires on asset_id/site_id only. Idempotent and convergent: a renamed row no
+-- longer matches the '[monitor] ' || name predicate, so a re-run only renames
+-- a row whose collision has since been resolved (e.g. it was blocked by a
+-- sibling's pre-cleanup name that this run changed).
 
 SELECT set_config('breeze.scope', 'system', true);
 

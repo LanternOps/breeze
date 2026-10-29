@@ -89,6 +89,12 @@ describe(MIGRATION, () => {
     const partnerCheck = await createLegacyManagedCheck(partnerOwner(partnerId), `Gateway ${suffix}`);
     // A definition whose own name starts with the prefix: strip exactly one.
     const doubled = await createLegacyManagedCheck(orgOwner(orgId), `[monitor] Edge ${suffix}`);
+    // Back-date it so the rename's updated_at bump is observable.
+    const seededUpdatedAt = new Date('2020-01-01T00:00:00Z');
+    await getTestDb()
+      .update(networkMonitors)
+      .set({ updatedAt: seededUpdatedAt })
+      .where(inArray(networkMonitors.id, [orgCheck.id]));
 
     await replayMigration(MIGRATION);
 
@@ -103,7 +109,7 @@ describe(MIGRATION, () => {
       .select({ updatedAt: networkMonitors.updatedAt })
       .from(networkMonitors)
       .where(inArray(networkMonitors.id, [orgCheck.id]));
-    expect(afterFirst!.updatedAt.getTime()).toBeGreaterThanOrEqual(orgCheck.updatedAt.getTime());
+    expect(afterFirst!.updatedAt.getTime()).toBeGreaterThan(seededUpdatedAt.getTime());
 
     await replayMigration(MIGRATION);
 
