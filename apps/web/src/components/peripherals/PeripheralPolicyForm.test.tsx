@@ -170,11 +170,12 @@ describe('PeripheralPolicyForm — edit keeps targeting (#9620)', () => {
  * Date getters).
  *
  * The expiry tests pin `process.env.TZ` to a non-UTC zone so they discriminate
- * "local" from "UTC". Node only applies a runtime TZ change on the main thread:
- * in vitest's default `forks` pool the pin takes effect, but in the `threads` /
- * `vmThreads` pools it is silently ignored and the host zone wins. Expectations
- * therefore come from the zone in effect, never from the zone we asked for
- * (#9943).
+ * "local" from "UTC". Observed (#9943): in vitest's default `forks` pool the
+ * runtime pin takes effect, but in the `threads` / `vmThreads` pools it is
+ * silently ignored and the host zone wins. Expectations therefore come from the
+ * zone in effect, never from the zone we asked for. When that zone sits at UTC
+ * for these dates, local == UTC and the tests cannot tell them apart, so they
+ * skip visibly instead of passing vacuously.
  */
 function wallClockInEffectiveZone(iso: string): string {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -235,8 +236,12 @@ describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', 
     expect(screen.getByLabelText(/Expires/)).toBe(screen.getByTestId('peripheral-policy-exception-expires-0'));
   });
 
-  it('shows an existing expiry in local time, not UTC', () => {
+  /** True when the zone in effect is at UTC+0 for the instant, so local and UTC are indistinguishable. */
+  const localEqualsUtc = (iso: string) => wallClockInEffectiveZone(iso) === iso.slice(0, 16);
+
+  it('shows an existing expiry in local time, not UTC', (ctx) => {
     process.env.TZ = 'America/New_York'; // UTC-5 on 2026-03-01 (best effort; see wallClockInEffectiveZone)
+    if (localEqualsUtc('2026-03-01T03:30:00.000Z')) ctx.skip('effective zone is UTC+0; TZ pin did not apply (threads pool)');
     render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
     const expected = wallClockInEffectiveZone('2026-03-01T03:30:00.000Z');
     if (Intl.DateTimeFormat().resolvedOptions().timeZone === 'America/New_York') {
@@ -245,8 +250,9 @@ describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', 
     expect((screen.getByTestId('peripheral-policy-exception-expires-0') as HTMLInputElement).value).toBe(expected);
   });
 
-  it('saves a typed local time as the matching UTC instant', async () => {
+  it('saves a typed local time as the matching UTC instant', async (ctx) => {
     process.env.TZ = 'America/New_York';
+    if (localEqualsUtc('2026-03-02T09:00:00.000Z')) ctx.skip('effective zone is UTC+0; TZ pin did not apply (threads pool)');
     fetchWithAuthMock.mockResolvedValueOnce(okResponse());
     render(<PeripheralPolicyForm policy={policyWithExpiry} onClose={() => {}} />);
     fireEvent.change(screen.getByTestId('peripheral-policy-exception-expires-0'), { target: { value: '2026-03-02T09:00' } });
