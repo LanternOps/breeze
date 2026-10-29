@@ -894,13 +894,12 @@ export async function moveDeviceOrgInTransaction(
   );
 
   // #3182 — a device that has LEFT org A cannot remain a member of org
-  // A's device group, and device_group_memberships_group_org_fk
-  // ((group_id, org_id) -> device_groups(id, org_id)) now says so
-  // structurally. Delete, never re-point: device_groups.org_id is NOT
-  // NULL with no partner axis, groups nest and can be site-bound, and
+  // A's device group, and the deferred
+  // device_group_memberships_group_owner_check trigger enforces its owner.
+  // Delete, never re-point: org groups nest and can be site-bound, and
   // there is no deterministic source-group -> target-group mapping.
-  // Dynamic groups in the TARGET org re-materialize on their own next
-  // evaluation.
+  // Partner-group memberships are detached too; dynamic groups
+  // re-materialize on their own next evaluation.
   //
   // Placement is load-bearing, same class as the scope_ticket_id
   // tombstone above: `device_group_memberships` IS returned by

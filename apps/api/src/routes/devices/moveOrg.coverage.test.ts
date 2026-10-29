@@ -1505,9 +1505,9 @@ describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
  * re-stamped to the target org while its group_id kept naming the SOURCE org's
  * group. Two system-context readers then dereferenced those rows by group_id.
  *
- * The structural fix is two composite FKs — `(group_id, org_id) ->
- * device_groups(id, org_id)` and `(device_id, org_id) -> devices(id, org_id)`
- * — which means the memberships must now be DELETED on a move rather than
+ * The structural fix is the deferred group-owner trigger (#10521 W1) plus
+ * the composite device FK `(device_id, org_id) -> devices(id, org_id)`,
+ * which means memberships must be DELETED on a move rather than
  * re-stamped, before the generic re-stamp loop that would otherwise 23503.
  *
  * The DEVICE-axis FK's deferrability is the one non-stylistic detail here and
@@ -1533,20 +1533,22 @@ describe('device_group_memberships cross-org detach coverage (#3182)', () => {
       .map((name) => readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8'))
       .join('\n');
 
-  it('pins the group-axis composite FK to device_groups(id, org_id), DEFERRABLE', () => {
-    const match = membershipFkStatements().match(
-      /ADD CONSTRAINT device_group_memberships_group_org_fk[\s\S]{0,400}?;/,
-    );
-    expect(match, 'no migration adds device_group_memberships_group_org_fk (#3182)').toBeTruthy();
-    const ddl = match![0].replace(/\s+/g, ' ');
-    expect(
-      ddl,
-      'the group-axis FK must reference device_groups (id, org_id) — pinning the row to its group\'s org is the whole point',
-    ).toContain('REFERENCES public.device_groups (id, org_id)');
-    expect(
-      ddl,
-      'must be DEFERRABLE: the org merge runs SET CONSTRAINTS ALL DEFERRED and repoints devices/device_groups/device_group_memberships in separate statements, and orgLifecycleFoundations.integration.test.ts rejects any non-deferrable FK referencing a parent org_id',
-    ).toContain('DEFERRABLE');
+  it('pins the deferred membership owner trigger', () => {
+    const migrations = readdirSync(MIGRATIONS_DIR)
+      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, body: readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8') }));
+    const latest = [...migrations].reverse().find(({ body }) =>
+      /CREATE CONSTRAINT TRIGGER device_group_memberships_group_owner_check\b/.test(body));
+    expect(latest, 'no migration creates the membership owner trigger (#10521 W1)').toBeDefined();
+    const statement = latest!.body.match(
+      /CREATE CONSTRAINT TRIGGER device_group_memberships_group_owner_check[\s\S]*?;/,
+    )![0].replace(/\s+/g, ' ');
+    expect(statement).toContain('DEFERRABLE INITIALLY DEFERRED');
+    expect(statement).toContain('FOR EACH ROW');
+    expect(migrations.some(({ name, body }) => name.localeCompare(latest!.name) >= 0
+      && /DROP CONSTRAINT IF EXISTS device_group_memberships_group_org_fk\b/.test(body)),
+    'the replacement must drop the group-axis composite FK in the same or a later migration').toBe(true);
   });
 
   it('declares the device-axis composite FK INITIALLY DEFERRED, not IMMEDIATE', () => {
@@ -1568,11 +1570,11 @@ describe('device_group_memberships cross-org detach coverage (#3182)', () => {
     const loop = body.indexOf('breeze_device_child_orgid_tables()');
     expect(
       detach,
-      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no device_group_memberships detach — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would re-stamp memberships onto a SOURCE-org group and 23503 on device_group_memberships_group_org_fk (#3182)`,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no device_group_memberships detach — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would re-stamp memberships onto a SOURCE-org group and 23503 on device_group_memberships_group_owner_check (#10521 W1)`,
     ).toBeGreaterThan(-1);
     expect(
       detach,
-      `${name}: the device_group_memberships detach must run BEFORE the generic re-stamp loop — the loop is the statement that trips the group FK`,
+      `${name}: the device_group_memberships detach must run BEFORE the generic re-stamp loop — the loop creates the invalid owner checked by the deferred trigger`,
     ).toBeLessThan(loop);
   });
 
