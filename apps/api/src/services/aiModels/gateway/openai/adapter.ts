@@ -116,6 +116,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     body: translateChatStream(res.body as unknown as AsyncIterable<Uint8Array>, {
       model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: call.promptTokensEstimate,
       grantId: grant.id, connectionId: grant.config.connectionId, secrets: [grant.credential.secret],
+      onFailure: (message) => noteGatewayFailure(grant.aiSessionId, message),
     }),
   };
 }

@@ -256,5 +256,25 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
       expect(line).toContain('use stream=false');
       expect(line).not.toContain('sk-upstream-secret-1');
     });
+    it('a 2xx with a malformed body is logged and noted (upstream_malformed)', async () => {
+      __resetGatewayFailureNotesForTests();
+      reply = () => new Response('<html>oops</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      const { warns, restore } = captureWarns();
+      await call('sess-malformed');
+      restore();
+      const line = warns.find((w) => w.includes('upstream_malformed'));
+      expect(line).toMatch(/grant [0-9a-f-]{36}, connection c/);
+      expect(line).toContain('model "qwen"');
+      expect(takeGatewayFailureNote('sess-malformed')).toBe('The endpoint returned malformed JSON.');
+    });
+
+    it('a streamed in-band error reaches the turn as a gateway note', async () => {
+      __resetGatewayFailureNotesForTests();
+      reply = () => new Response('data: {"error":{"message":"out of memory loading model"}}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      const { restore } = captureWarns();
+      await call('sess-inband', true);
+      restore();
+      expect(takeGatewayFailureNote('sess-inband')).toContain('out of memory loading model');
+    });
   });
 });

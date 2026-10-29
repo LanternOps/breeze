@@ -90,7 +90,12 @@ async function readBody(req: IncomingMessage, limit: number, signal: AbortSignal
 }
 
 /** What a stream had delivered when the idle timer cut it. */
-export interface IdleCutStats { elapsedMs: number; bytesStreamed: number }
+export interface IdleCutStats {
+  elapsedMs: number;
+  bytesStreamed: number;
+  /** Whose silence tripped the cut: the adapter's stream, or a client that stopped reading (drain wait). */
+  waitingOn: 'upstream' | 'client';
+}
 
 async function writeResponse(
   res: ServerResponse,
@@ -105,11 +110,16 @@ async function writeResponse(
   let bytesStreamed = 0;
   let idle: NodeJS.Timeout | null = null;
   let complete = false;
+  let waitingOn: IdleCutStats['waitingOn'] = 'upstream';
   const arm = (): void => {
     if (idle) clearTimeout(idle);
     idle = setTimeout(() => {
       // Never silent (#10591): a stream cut here was otherwise invisible server-side.
-      try { onIdleCut({ elapsedMs: Date.now() - startedAt, bytesStreamed }); } catch { /* logging must not keep the stream alive */ }
+      try {
+        onIdleCut({ elapsedMs: Date.now() - startedAt, bytesStreamed, waitingOn });
+      } catch (error) {
+        console.error('[modelGateway] idle-cut report failed:', error instanceof Error ? error.message : String(error));
+      }
       res.destroy(new Error('gateway idle timeout'));
     }, idleTimeoutMs);
   };
@@ -120,6 +130,7 @@ async function writeResponse(
       bytesStreamed += chunk.length;
       if (!res.write(chunk)) {
         // Wait for drain, but also wake on abort / close / error.
+        waitingOn = 'client';
         await new Promise<void>((resolve) => {
           const done = (): void => {
             res.off('drain', done); res.off('close', done); res.off('error', done);
@@ -129,6 +140,7 @@ async function writeResponse(
           res.once('drain', done); res.once('close', done); res.once('error', done);
           signal.addEventListener('abort', done, { once: true });
         });
+        waitingOn = 'upstream';
         if (signal.aborted || res.destroyed) break;
       }
       arm();
@@ -168,6 +180,14 @@ export function idleCutMessage(idleTimeoutMs: number): string {
   return `The model endpoint sent nothing for ${Math.round(idleTimeoutMs / 1000)} seconds, so the response was cut off.`;
 }
 
+/** GatewayError codes that describe the upstream endpoint's answer or reachability. */
+const UPSTREAM_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'upstream_malformed', 'upstream_not_streamed', 'upstream_redirect', 'upstream_too_large',
+  'upstream_timeout', 'upstream_unreachable', 'egress_blocked',
+]);
+/** Of those, the ones whose raising site already writes a detailed log line. */
+const UPSTREAM_CODES_LOGGED_AT_SOURCE: ReadonlySet<string> = new Set(['upstream_not_streamed', 'upstream_timeout', 'upstream_unreachable']);
+
 const TIMED_OUT = gatewayErrorBody('api_error', 'The model endpoint did not answer in time.');
 
 export async function startModelGateway(
@@ -204,19 +224,21 @@ export async function startModelGateway(
       let timedOut = false;
       const total = setTimeout(() => { timedOut = true; ac.abort(); }, totalTimeoutMs);
       res.on('close', () => ac.abort());
+      let model: string | null = null;
       try {
         const body = await readBody(req, GATEWAY_MAX_REQUEST_BYTES, ac.signal);
         const adapter = getGatewayAdapter(grant.config.kind);
-        const model = assertAnthropicBodyModel(adapter, body, grant);
+        model = assertAnthropicBodyModel(adapter, body, grant);
         const out = await adapter.handle(
           { method: req.method ?? 'GET', path, headers: headersOf(req), body, signal: ac.signal },
           grant,
         );
-        await writeResponse(res, out, ac.signal, idleTimeoutMs, ({ elapsedMs, bytesStreamed }) => {
-          console.warn(`[modelGateway] stream idle timeout: no output for ${idleTimeoutMs} ms; response cut `
+        await writeResponse(res, out, ac.signal, idleTimeoutMs, ({ elapsedMs, bytesStreamed, waitingOn }) => {
+          // A client that stopped reading is not the endpoint's fault; only the endpoint's silence is noted for the turn.
+          if (waitingOn === 'upstream') noteGatewayFailure(grant.aiSessionId, idleCutMessage(idleTimeoutMs));
+          console.warn(`[modelGateway] stream idle timeout: no progress for ${idleTimeoutMs} ms; response cut `
             + `(grant ${grant.id}, connection ${grant.config.connectionId}, model ${model === null ? 'unknown' : JSON.stringify(model)}, `
-            + `path ${path}, idle_ms ${idleTimeoutMs}, elapsed_ms ${elapsedMs}, bytes_streamed ${bytesStreamed}).`);
-          noteGatewayFailure(grant.aiSessionId, idleCutMessage(idleTimeoutMs));
+            + `path ${path}, waiting_on ${waitingOn}, idle_ms ${idleTimeoutMs}, elapsed_ms ${elapsedMs}, bytes_streamed ${bytesStreamed}).`);
         });
       } catch (error) {
         if (timedOut) {
@@ -226,6 +248,17 @@ export async function startModelGateway(
             // The request never reached forwardUpstream; record the refusal against
             // the upstream it was bound for.
             auditGatewayEgress(grant, null, null, true);
+          }
+          if (UPSTREAM_FAILURE_CODES.has(error.code)) {
+            // The endpoint answered (or could not be reached) in a way the
+            // adapter refused. Name it for the turn; log it unless the raising
+            // site already logged it with more detail (#10591).
+            noteGatewayFailure(grant.aiSessionId, scrubSecrets(error.message, [grant.credential.secret]));
+            if (!UPSTREAM_CODES_LOGGED_AT_SOURCE.has(error.code)) {
+              console.warn(`[modelGateway] upstream failure ${error.code} (grant ${grant.id}, connection ${grant.config.connectionId}, `
+                + `model ${model === null ? 'unknown' : JSON.stringify(model)}, path ${path}, status ${error.status}): `
+                + scrubSecrets(error.message, [grant.credential.secret]));
+            }
           }
           if (error.status === 413) res.setHeader('connection', 'close');
           send(res, error.status === 499 ? 400 : error.status, gatewayErrorBody(error.errorType,
@@ -238,6 +271,8 @@ export async function startModelGateway(
           // properties could carry the credential).
           const reported = new Error(`model gateway adapter error: ${scrubbed}`);
           reported.name = error instanceof Error ? error.name : 'Error';
+          // Keep the throw site for triage; the stack's first line repeats the message, so scrub it too.
+          if (error instanceof Error && error.stack) reported.stack = scrubSecrets(error.stack, [grant.credential.secret], 8_000);
           captureException(reported, undefined, undefined, { fingerprint: ['ai_model_gateway', 'unhandled_adapter_error'] });
           send(res, 502, gatewayErrorBody('api_error', 'The model endpoint request failed.'));
         }

@@ -252,4 +252,52 @@ describe('translateChatStream diagnostics', () => {
       expect(ev.filter((e) => e.ev === 'ping')).toHaveLength(0);
     });
   });
+  describe('stream failures are reported to the turn (#10591)', () => {
+    const base = { model: 'qwen', tools, messageId: 'msg_gw_1', estimatedInputTokens: 9, secrets: ['sk-conn-secret-123456'] };
+    const runWith = async (...c: unknown[]) => {
+      const failures: string[] = [];
+      const warns: string[] = [];
+      const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+      const ev = await events(translateChatStream(sse(...c), { ...base, onFailure: (m: string) => failures.push(m) }));
+      spy.mockRestore();
+      return { ev, failures, warns };
+    };
+    it('an in-band upstream error object ends the stream with an error event, never a clean empty turn', async () => {
+      const { ev, failures, warns } = await runWith({ error: { message: 'context length exceeded for key sk-conn-secret-123456', code: 400 } }, '[DONE]');
+      expect(ev.at(-1)!.ev).toBe('error');
+      expect(ev.some((e) => e.ev === 'message_stop')).toBe(false);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('context length exceeded');
+      expect(failures[0]).not.toContain('sk-conn-secret-123456');
+      const line = warns.find((w) => w.includes('upstream stream error'));
+      expect(line).toContain('context length exceeded');
+      expect(line).not.toContain('sk-conn-secret-123456');
+    });
+    it('a stream that ends early reports the failure', async () => {
+      const { ev, failures } = await runWith({ choices: [{ index: 0, delta: { content: 'par' }, finish_reason: null }] });
+      expect(ev.at(-1)!.ev).toBe('error');
+      expect(failures).toEqual(['The endpoint stream ended early.']);
+    });
+    it('a malformed stream event reports the failure', async () => {
+      const { failures } = await runWith('{not json');
+      expect(failures).toEqual(['The endpoint sent a malformed stream event.']);
+    });
+    it('a complete stream reports no failure', async () => {
+      const { failures } = await runWith({ choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] }, '[DONE]');
+      expect(failures).toEqual([]);
+    });
+  });
+  it('keepalive pings between tool-call fragments leave block indices contiguous (#10591)', async () => {
+    const ev = await events(translateChatStream(sse(
+      { choices: [{ index: 0, delta: { reasoning_content: 'plan' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { content: 'Checking.' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"ci' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'ty":"Oslo"}' } }] }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }, '[DONE]'),
+    { model: 'qwen', tools, messageId: 'msg_gw_1', estimatedInputTokens: 9, keepaliveMs: 0 }));
+    expect(ev.filter((e) => e.ev === 'ping').length).toBeGreaterThanOrEqual(3);
+    const starts = ev.filter((e) => e.ev === 'content_block_start').map((e) => [e.data.index, e.data.content_block.type]);
+    expect(starts).toEqual([[0, 'text'], [1, 'tool_use']]);
+    expect(ev.find((e) => e.ev === 'message_delta')!.data.delta.stop_reason).toBe('tool_use');
+  });
 });

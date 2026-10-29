@@ -23,6 +23,11 @@ export interface TranslateStreamContext {
    * chunks). Defaults to a quarter of the gateway idle timeout.
    */
   keepaliveMs?: number;
+  /**
+   * Called once with the client-safe text of any error event this stream ends
+   * with, so the chat turn can name the reason (gateway failure note).
+   */
+  onFailure?: (message: string) => void;
 }
 
 /** Default keepalive spacing: well inside the server's idle window. */
@@ -126,6 +131,11 @@ export async function* translateChatStream(
   // Every event this function yields goes through here, so the keepalive clock
   // always measures time since the caller last saw a byte.
   const emit = (bytes: Uint8Array): Uint8Array => { lastYieldAt = Date.now(); return bytes; };
+  /** The terminal error event, reported to the turn first. */
+  const fail = (message: string): Uint8Array => {
+    try { ctx.onFailure?.(message); } catch { /* reporting must not change the stream */ }
+    return errorEvent(message);
+  };
 
   yield encodeSse('message_start', {
     type: 'message_start',
@@ -139,7 +149,20 @@ export async function* translateChatStream(
       let chunk: OaiChatResponse;
       try { chunk = JSON.parse(data) as OaiChatResponse; } catch (error) {
         warn('malformed upstream stream event', error instanceof Error ? error.message : String(error));
-        yield errorEvent('The endpoint sent a malformed stream event.');
+        yield fail('The endpoint sent a malformed stream event.');
+        return;
+      }
+      const inBand = (chunk as { error?: unknown }).error;
+      if (inBand !== undefined && inBand !== null) {
+        // Some OpenAI-compatible servers (vLLM, llama.cpp, LiteLLM) report a
+        // failure mid-stream as a data event with `error` and no choices; read
+        // as an empty chunk it ended as a clean, empty turn (#10591).
+        const raw = typeof inBand === 'object' && typeof (inBand as { message?: unknown }).message === 'string'
+          ? (inBand as { message: string }).message
+          : JSON.stringify(inBand);
+        const detail = scrubSecrets(raw, ctx.secrets ?? [], LOG_TEXT_MAX);
+        warn('upstream stream error', detail);
+        yield fail(`The endpoint reported an error: ${detail}`);
         return;
       }
       if (chunk.usage) usage = chunk.usage;
@@ -175,14 +198,14 @@ export async function* translateChatStream(
     }
   } catch (error) {
     warn('upstream stream failed', error instanceof Error ? error.message : String(error));
-    yield errorEvent('The endpoint stream failed.');
+    yield fail('The endpoint stream failed.');
     return;
   }
 
   const terminated = sawDone || TERMINAL_FINISH_REASONS.has(finish);
   if (!overLimit && !terminated) {
     warn('upstream stream ended without [DONE] or a recognised finish reason');
-    yield errorEvent('The endpoint stream ended early.');
+    yield fail('The endpoint stream ended early.');
     return;
   }
   const toolUses = overLimit ? null : validateToolCalls(assembler.calls, ctx.tools);

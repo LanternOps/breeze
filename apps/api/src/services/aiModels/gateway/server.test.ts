@@ -278,6 +278,7 @@ describe('model gateway server', () => {
       expect(line).toMatch(/idle_ms 100\b/);
       expect(line).toMatch(/elapsed_ms \d+/);
       expect(line).toContain('bytes_streamed 22');
+      expect(line).toContain('waiting_on upstream');
       expect(line).not.toContain('PROMPT-CANARY');
       expect(takeGatewayFailureNote('sess-idle')).toMatch(/sent nothing for/);
     });
@@ -334,6 +335,8 @@ describe('model gateway server', () => {
     const reported = sentry.exceptions[0]!;
     expect(String((reported.err as Error).message)).toContain('boom with');
     expect(String((reported.err as Error).message)).not.toContain('sk-secret-abcdef');
+    expect(String((reported.err as Error).stack)).toContain('server.test.ts');
+    expect(String((reported.err as Error).stack)).not.toContain('sk-secret-abcdef');
     expect(reported.options?.fingerprint).toEqual(['ai_model_gateway', 'unhandled_adapter_error']);
   });
 
