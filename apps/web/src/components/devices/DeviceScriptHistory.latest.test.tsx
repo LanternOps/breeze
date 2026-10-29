@@ -177,6 +177,11 @@ describe('DeviceScriptHistory script source badge (#9935)', () => {
       startedAt: '2026-02-09T00:00:00.000Z', completedAt: '2026-02-09T00:00:01.000Z',
     },
     {
+      id: 'run-ptn', scriptId: 'script-ptn', scriptName: 'Flush DNS Cache', status: 'completed',
+      scriptIsSystem: false, scriptOrgId: null, scriptPartnerId: 'partner-a',
+      startedAt: '2026-02-08T12:00:00.000Z', completedAt: '2026-02-08T12:00:01.000Z',
+    },
+    {
       // Script since deleted: the left join yields no ownership fields.
       id: 'run-gone', scriptId: 'script-gone', scriptName: null, status: 'completed',
       scriptIsSystem: null, scriptOrgId: null, scriptPartnerId: null,
@@ -197,7 +202,23 @@ describe('DeviceScriptHistory script source badge (#9935)', () => {
     await renderTab();
     expect(screen.getByTestId('device-script-latest-source-script-sys').textContent).toBe('System');
     expect(screen.getByTestId('device-script-latest-source-script-org').textContent).toBe('Organization');
+    expect(screen.getByTestId('device-script-latest-source-script-ptn').textContent).toBe('Partner-wide');
     expect(screen.queryByTestId('device-script-latest-source-script-gone')).toBeNull();
+  });
+
+  it('does not repeat the badge on the runs nested under an expanded script', async () => {
+    mockHistory([
+      { ...sameNameRows[0], id: 'run-sys-new' },
+      { ...sameNameRows[0], id: 'run-sys-old', startedAt: '2026-02-09T00:00:00.000Z' },
+    ]);
+    await renderTab();
+    fireEvent.click(screen.getByTestId('device-script-latest-toggle-script-sys'));
+    await screen.findByTestId('device-script-history-row-run-sys-old');
+
+    expect(screen.getByTestId('device-script-latest-source-script-sys').textContent).toBe('System');
+    expect(screen.queryByTestId('device-script-source-run-sys-new')).toBeNull();
+    expect(screen.queryByTestId('device-script-source-run-sys-old')).toBeNull();
+    expect(screen.getAllByText('System')).toHaveLength(1);
   });
 
   it('badges each execution row with its source in the all-runs view', async () => {
@@ -205,6 +226,7 @@ describe('DeviceScriptHistory script source badge (#9935)', () => {
     await renderTab();
     expect(screen.getByTestId('device-script-source-run-sys').textContent).toBe('System');
     expect(screen.getByTestId('device-script-source-run-org').textContent).toBe('Organization');
+    expect(screen.getByTestId('device-script-source-run-ptn').textContent).toBe('Partner-wide');
     expect(screen.queryByTestId('device-script-source-run-gone')).toBeNull();
   });
 });
