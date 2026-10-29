@@ -665,7 +665,7 @@ The call returns a normal result (not an error) whose `structuredContent` says t
 - **Nothing runs until a person approves** in the Breeze mobile or web app. Requests expire after 24 hours.
 - **The release runs under the live credential that asked.** If you revoke the API key or OAuth grant, remove `ai:execute` from it, or narrow its tool areas before the approved action is released, the action fails instead of running.
 - **Repeating an identical call** while the request is live returns the same `actionId` rather than filing a second request.
-- **An action rated below Tier 3 on a Tier 3 tool runs directly.** For example, `execute_command` with `commandType` `list_processes`, `file_list` or `event_logs_list`, and `manage_services` `list`, are not filed for approval. They still need what the tool's Tier 3 needs: `ai:execute`, and in production `ai:execute_admin` and the production allowlist. They are recorded in the Tier 3 execution ledger. With the flag off they are refused like any other call to a Tier 3 tool.
+- **A read-only action rated below Tier 3 on a Tier 3 tool runs directly.** For example, `execute_command` with `commandType` `list_processes`, `file_list` or `event_logs_list`, and `manage_services` `list`, are not filed for approval. The tool's description in `tools/list` names these actions. An action rated below Tier 3 that changes something, such as `edr_endpoint_action` `scan` (it starts a scan on the endpoint), is still filed for approval. The reads still need what the tool's Tier 3 needs: `ai:execute`, and in production `ai:execute_admin` and the production allowlist. They are recorded in the Tier 3 execution ledger. With the flag off they are refused like any other call to a Tier 3 tool.
 
 ### Checking and cancelling a request
 

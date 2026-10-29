@@ -583,3 +583,73 @@ describe('Tier-2 intents from the ai_agent principal (P2-1)', () => {
     expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
   });
 });
+
+// #10027 (Todd's ruling): over MCP with MCP_TIER3_INTENTS_ENABLED on, a call to
+// a registry-Tier-3 tool whose action a per-action table rates below Tier 3
+// runs directly ONLY if the action is read-only. A non-read one (today:
+// edr_endpoint_action scan, Tier 2 by #8167, starts an EDR scan) is filed,
+// and createMcpActionIntent marks it `mcpRegistryTierApproval`. The service
+// approves it at the tool's registry Tier 3 (the tier release revalidation
+// checks against), supervised. A read-only one is still refused.
+describe('#10027: MCP non-read action below Tier 3 on a registry-Tier-3 tool', () => {
+  const KEY_A = { kind: 'api_key', apiKeyId: 'key-A' };
+  const mcpAuth = () => makeAuth({ principal: KEY_A });
+  const scanInput = (over?: Partial<CreateActionIntentInput>): CreateActionIntentInput => ({
+    toolName: 'edr_endpoint_action',
+    input: { action: 'scan', deviceId: DEVICE_ID },
+    source: 'mcp_api',
+    orgId: ORG_ID,
+    idempotencyKey: 'mcp:v1:scan',
+    mcpRegistryTierApproval: true,
+    ...over,
+  });
+
+  beforeEach(() => {
+    aiToolsState.getToolTier.mockImplementation(
+      (toolName: string) => ({ edr_endpoint_action: 3, execute_command: 3, manage_alerts: 1 } as Record<string, number | undefined>)[toolName],
+    );
+  });
+
+  it('files edr_endpoint_action scan at riskTier 3, supervised, high', async () => {
+    dbState.selectDevicesResults.push([{ id: DEVICE_ID, siteId: SITE_ID }]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-scan' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-scan' }]);
+
+    const snapshot = await createActionIntent(mcpAuth(), scanInput());
+
+    expect(snapshot.status).toBe('pending_approval');
+    const inserted = dbState.insertedActionIntentValues[0];
+    expect(inserted?.actionName).toBe('edr_endpoint_action');
+    expect(inserted?.riskTier).toBe(3);
+    expect(inserted?.approvalScope).toBe('supervised');
+    expect(inserted?.policyDecisionState).toBe('human_required');
+    const approvals = dbState.insertedApprovalRequestsValues[0] as Array<{ riskTier: string }>;
+    expect(approvals[0]?.riskTier).toBe('high');
+  });
+
+  it('without the MCP marker, scan is still tool_not_tier3 (chat and other callers unchanged)', async () => {
+    await expect(createActionIntent(mcpAuth(), scanInput({ mcpRegistryTierApproval: undefined })))
+      .rejects.toMatchObject({ code: 'tool_not_tier3' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('the marker never files a read-only action (execute_command list_processes stays tool_not_tier3)', async () => {
+    await expect(createActionIntent(mcpAuth(), scanInput({
+      toolName: 'execute_command',
+      input: { deviceId: DEVICE_ID, commandType: 'list_processes' },
+    }))).rejects.toMatchObject({ code: 'tool_not_tier3' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('the marker never lifts a tool whose registry tier is below 3', async () => {
+    await expect(createActionIntent(mcpAuth(), scanInput({
+      toolName: 'manage_alerts',
+      input: { action: 'suppress', alertId: ALERT_ID },
+    }))).rejects.toMatchObject({ code: 'tool_not_tier3' });
+  });
+
+  it('the marker is refused on a non-MCP source', async () => {
+    await expect(createActionIntent(makeAuth(), scanInput({ source: 'chat' })))
+      .rejects.toMatchObject({ code: 'tool_not_tier3' });
+  });
+});

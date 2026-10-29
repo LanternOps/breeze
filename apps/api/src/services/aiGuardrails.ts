@@ -3005,6 +3005,23 @@ export function isReadOnlyResolution(
 }
 
 /**
+ * #10027: true for a call to a registry-Tier-3 tool whose action a per-action
+ * table rates below Tier 3 but which is NOT read-only by `isReadOnlyResolution`
+ * (today only `edr_endpoint_action` `scan`: Tier 2 by #8167, starts an EDR
+ * scan). With MCP_TIER3_INTENTS_ENABLED on, the MCP gate runs a below-Tier-3
+ * action on a Tier-3 tool directly only when it is read-only; this is every
+ * other one, filed for approval at the tool's Tier 3. Read-only needs an
+ * explicit opt-in (TIER2_READONLY_ACTIONS / TIER2_READONLY_TOOLS) at Tier 2,
+ * so a new Tier-2 action lands here, approval-gated, by default.
+ */
+export function needsRegistryTier3Approval(
+  toolName: string,
+  check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
+): boolean {
+  return getToolTier(toolName) === 3 && check.tier < 3 && !isReadOnlyResolution(toolName, check);
+}
+
+/**
  * `'act'` (wave 4 Part B): a manifest-matched, rule-equivalent mutation under
  * a live `mode: 'act'` policy. Distinct from `'allow'` — `'act'` additionally
  * signals the run-loop pre-hook to revalidate (live policy + guardrail
