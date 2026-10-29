@@ -59,7 +59,7 @@ const SWEEP_MIN_DELIVER_WITHIN_MS = 60_000;
 export type DispatchScanJobData = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan' }>;
 
 export type ClaimOutcome = {
-  outcome: 'dispatched' | 'throttled' | 'skipped' | 'failed' | 'cancelled';
+  outcome: 'dispatched' | 'throttled' | 'skipped' | 'failed' | 'cancelled' | 'expired';
   commandId: string | null;
   throttleReason?: string;
 };
@@ -117,7 +117,7 @@ export async function claimAndDispatchScan(data: DispatchScanJobData): Promise<C
 
 async function terminalize(
   scanId: string,
-  status: 'failed' | 'cancelled',
+  status: 'failed' | 'cancelled' | 'expired',
   extra: { engine?: string; ruleSetErrors?: YaraRuleSetError[] } = {},
 ): Promise<void> {
   await db
@@ -180,6 +180,11 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
       orgId: securityScans.orgId,
       sweepId: securityScans.sweepId,
       deviceOrgId: devices.orgId,
+      // #10057 gap 2 — a caller-initiated Scan now's dispatch inputs.
+      paths: securityScans.paths,
+      aiOrigin: securityScans.aiOrigin,
+      callerMfaSatisfied: securityScans.callerMfaSatisfied,
+      queueExpiresAt: securityScans.queueExpiresAt,
     })
     .from(securityScans)
     .innerJoin(devices, eq(devices.id, securityScans.deviceId))
@@ -214,6 +219,13 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     return { outcome: { outcome: 'failed', commandId: null } };
   }
 
+  // #10057 gap 2: a queued Scan now waits for a slot at most until its queue
+  // expiry. Checked before the caps, so an expired row never competes for one.
+  if (!isSweep && locked.queueExpiresAt && new Date(locked.queueExpiresAt).getTime() <= Date.now()) {
+    await terminalize(scan.id, 'expired');
+    return { outcome: { outcome: 'expired', commandId: null } };
+  }
+
   // Caps, counted under the partner lock (all origins).
   const [caps] = (await db.execute(sql`
     SELECT
@@ -234,7 +246,7 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
   // for every origin; with no policy, the agent defaults apply.
   const resolved = await resolveSecurityScanPolicyForDevice(scan.deviceId);
   let settings = resolved?.settings ?? null;
-  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | null = null;
+  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | 'manual_no_mfa' | null = null;
   let refs: YaraRuleSetRef[];
   let engine: 'yara' | 'legacy';
   let ruleSetErrors: YaraRuleSetError[] | null;
@@ -272,11 +284,33 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     ruleSetErrors = null;
     paths = scan.scanType === 'custom' && sweep.paths ? sweep.paths : undefined;
   } else {
+    const callerInitiated = locked.callerMfaSatisfied !== null && locked.callerMfaSatisfied !== undefined;
+    if (locked.aiOrigin) {
+      // An AI Scan now: the remote-tools policy was checked at request time
+      // and is re-checked here, since the scan may have waited for a slot.
+      const decision = await checkAiRemoteToolsPolicy(scan.deviceId, SECURITY_SCAN_COMMAND);
+      if (!decision.allowed) {
+        await terminalize(scan.id, 'failed', { ruleSetErrors: [{ id: '*', code: 'ai_policy_denied' }] });
+        return { outcome: { outcome: 'failed', commandId: null } };
+      }
+      aiOrigin = locked.aiOrigin as AiOriginRef;
+    }
+    if (scan.scanType === 'custom' && locked.paths && locked.paths.length > 0) paths = locked.paths;
+
+    if (callerInitiated) {
+      // A Scan now runs under the CALLER's authority (devices:execute, checked
+      // by the route), not the policy's stored approval. Auto-quarantine moves
+      // files, so it also needs the MFA the caller's session had at request
+      // time; without it the scan runs detect-only and the row records why.
+      if (settings?.autoQuarantine && !locked.callerMfaSatisfied) {
+        settings = { ...settings, autoQuarantine: false };
+        autoQuarantineSuppressedReason = 'manual_no_mfa';
+      }
+    } else if (resolved && settings?.autoQuarantine) {
     // Auto-quarantine is a device-execution effect: it rides on the stored
     // authority of whoever enabled it on the policy (devices:execute + MFA),
     // re-resolved live. Without it the scan still runs, detect-only, and the
     // row records why. Scans with auto-quarantine off never consult it.
-    if (resolved && settings?.autoQuarantine) {
       const decision = await resolveSecurityScanQuarantineAuthority(resolved.featureLinkId, scan.deviceId);
       if (!decision.allowed) {
         settings = { ...settings, autoQuarantine: false };

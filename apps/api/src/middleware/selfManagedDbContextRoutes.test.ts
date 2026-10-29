@@ -753,6 +753,15 @@ it('#6263 W04 self-manages only the YARA rule test upload (the scan runs outside
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/yara/rule-sets/not-a-uuid/test')).toBe(false);
 });
 
+it('#10057 gap 2 self-manages Scan now and the scan cancel (commit before the claim job is enqueued), not the scan reads', () => {
+  const ID = '22222222-2222-4222-8222-222222222222';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/scan/${ID}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/scans/${ID}/cancel`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/scans/${ID}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/scan/${ID}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/scan/not-a-uuid')).toBe(false);
+});
+
 it('#8973 W4 self-manages only the portal ticket create (Gate B1), not the ticket reads or comment writes', () => {
   const T = '44444444-4444-4444-8444-444444444444';
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/portal/tickets')).toBe(true);

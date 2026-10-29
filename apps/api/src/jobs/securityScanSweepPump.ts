@@ -46,6 +46,12 @@ import type { SecurityScanQueueJobData } from './queueSchemas';
 const { db } = dbModule;
 
 export type SweepDispatchJob = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan'; origin: 'sweep' }>;
+/** #10057 gap 2: a waiting Scan now re-admitted to the claim. */
+export type ManualDispatchJob = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan'; origin: 'manual' }>;
+export type PumpDispatchJob = SweepDispatchJob | ManualDispatchJob;
+
+/** At most this many waiting Scan now rows re-admitted per tick. */
+const MANUAL_READMIT_BATCH = 200;
 
 export interface PumpResult {
   skipped: boolean;
@@ -55,11 +61,13 @@ export interface PumpResult {
   admitted: number;
   /** #10057: scheduled/manual scans finalized this tick (not part of `finalized`, which is sweep scans). */
   deviceScansFinalized: number;
+  /** #10057 gap 2: waiting Scan now rows handed back to the claim this tick (idempotent per scan job id). */
+  manualReadmitted: number;
 }
 
 const orgCap = () => parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
 
-async function defaultEnqueue(jobs: SweepDispatchJob[]): Promise<void> {
+async function defaultEnqueue(jobs: PumpDispatchJob[]): Promise<void> {
   // Dynamic: securityScanJobs imports this module for its worker.
   const { enqueueSweepDispatches } = await import('./securityScanJobs');
   await enqueueSweepDispatches(jobs);
@@ -85,17 +93,18 @@ function systemAudit(
 
 export async function pumpSweeps(
   now: Date = new Date(),
-  deps: { enqueue?: (jobs: SweepDispatchJob[]) => Promise<void> } = {},
+  deps: { enqueue?: (jobs: PumpDispatchJob[]) => Promise<void> } = {},
 ): Promise<PumpResult> {
   const audits: CreateAuditLogParams[] = [];
   const jobs: SweepDispatchJob[] = [];
+  const manualJobs: ManualDispatchJob[] = [];
 
   const result = await dbModule.withSystemDbAccessContext(async (): Promise<PumpResult> => {
     const [lock] = (await db.execute(
       sql`SELECT pg_try_advisory_xact_lock(hashtext('security-sweep-pump')) AS locked`,
     )) as unknown as Array<{ locked: boolean }>;
     if (!lock?.locked) {
-      return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0 };
+      return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0, manualReadmitted: 0 };
     }
 
     // 1. Expire. Lock the expiring rows in id order first (a group cancel
@@ -155,6 +164,22 @@ export async function pumpSweeps(
     `)) as unknown as Array<{ id: string }>;
     // #10057: the same backstop for scans outside any sweep.
     const orphans = await finalizeOrphanedDeviceScans(now);
+
+    // #10057 gap 2: hand every Scan now still waiting for a slot back to the
+    // claim. The dispatch job id is stable per scan, so a job that is already
+    // waiting or delayed (a throttle retry) is left alone; this only matters
+    // when the request-time enqueue failed or its job ran before the row
+    // committed and found nothing to claim.
+    const waitingManual = (await db.execute(sql`
+      SELECT id FROM security_scans
+       WHERE sweep_id IS NULL
+         AND status = 'queued'
+         AND command_id IS NULL
+         AND queue_expires_at > ${now.toISOString()}
+       ORDER BY queue_expires_at
+       LIMIT ${MANUAL_READMIT_BATCH}
+    `)) as unknown as Array<{ id: string }>;
+    for (const row of waitingManual) manualJobs.push({ type: 'dispatch-scan', scanId: row.id, origin: 'manual' });
 
     // 3. Complete.
     const completed = await db
@@ -263,6 +288,7 @@ export async function pumpSweeps(
       completed: completed.length,
       admitted: jobs.length,
       deviceScansFinalized: orphans.expired + orphans.failed,
+      manualReadmitted: manualJobs.length,
     };
   }, 'securityScanSweepPump');
 
@@ -270,6 +296,7 @@ export async function pumpSweeps(
   if (result.finalized > 0) {
     console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered or past the scan ceiling)`);
   }
-  if (jobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(jobs);
+  const allJobs: PumpDispatchJob[] = [...jobs, ...manualJobs];
+  if (allJobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(allJobs);
   return result;
 }

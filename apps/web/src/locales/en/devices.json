@@ -2395,7 +2395,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2417,7 +2419,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",

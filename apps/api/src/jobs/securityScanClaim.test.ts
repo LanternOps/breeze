@@ -517,3 +517,95 @@ describe('claimAndDispatchScan — sweep branch', () => {
     expect(h.dispatch.mock.calls[0]![0].offlinePolicy).toBeUndefined();
   });
 });
+
+/**
+ * #10057 gap 2 — a manual "Scan now" row goes through this claim like every
+ * other origin. What the old direct dispatch carried in memory is on the row:
+ * `paths`, `ai_origin`, `caller_mfa_satisfied` (the caller's authority; NULL on
+ * scheduled and sweep rows, which use the policy's stored one) and
+ * `queue_expires_at` (a throttled Scan now waits at most this long).
+ */
+describe('claimAndDispatchScan — caller-initiated Scan now (#10057 gap 2)', () => {
+  const lockedManual = (over: Record<string, unknown> = {}) => [{
+    status: 'queued', orgId: ORG, sweepId: null, deviceOrgId: ORG,
+    paths: null, aiOrigin: null, callerMfaSatisfied: true,
+    queueExpiresAt: new Date(Date.now() + 3_600_000),
+    ...over,
+  }];
+  const AI_ORIGIN = { kind: 'ai_chat', sessionId: 'sess-1' };
+
+  it('a queued Scan now past its queue expiry is expired, never dispatched, and counts no caps', async () => {
+    h.world = { locked: lockedManual({ queueExpiresAt: new Date(Date.now() - 1000) }) };
+    const result = await claimAndDispatchScan(manual);
+    expect(result).toEqual({ outcome: 'expired', commandId: null });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    const [update] = scanUpdates();
+    expect(setOf(update!)).toMatchObject({ status: 'expired' });
+    expect(whereParams(update!)).toContain('queued');
+    // No cap count: an expired scan never competes for a slot.
+    expect(ops().filter((o) => o.kind === 'execute')).toHaveLength(1);
+  });
+
+  it('a throttled Scan now stays queued for the retry (caps apply to manual scans)', async () => {
+    h.world = { locked: lockedManual(), counts: counts({ device_running: 1 }) };
+    const result = await claimAndDispatchScan(manual);
+    expect(result).toMatchObject({ outcome: 'throttled', throttleReason: expect.stringContaining('device cap') });
+    expect(scanUpdates()).toEqual([]);
+  });
+
+  it('a custom Scan now sends the paths stored on its row', async () => {
+    h.world = { scan: [scanRow({ scanType: 'custom' })], locked: lockedManual({ paths: ['/srv', '/home'] }) };
+    await claimAndDispatchScan(manual);
+    expect(h.dispatch.mock.calls[0]![0].payload).toMatchObject({ scanType: 'custom', paths: ['/srv', '/home'] });
+  });
+
+  it("runs under the CALLER's authority: no MFA → detect-only, recorded manual_no_mfa, stored authority not consulted", async () => {
+    h.policy.mockResolvedValue(policy({ autoQuarantine: true }));
+    h.world = { locked: lockedManual({ callerMfaSatisfied: false }) };
+    await claimAndDispatchScan(manual);
+    expect(h.authority).not.toHaveBeenCalled();
+    expect(h.dispatch.mock.calls[0]![0].payload).toMatchObject({ autoQuarantine: false });
+    expect(setOf(scanUpdates()[0]!)).toMatchObject({ status: 'running', autoQuarantineSuppressedReason: 'manual_no_mfa' });
+  });
+
+  it("with the caller's MFA satisfied the policy's auto-quarantine applies, even when the stored authority would refuse", async () => {
+    h.policy.mockResolvedValue(policy({ autoQuarantine: true }));
+    h.authority.mockResolvedValue({ allowed: false, reason: 'reapproval_required' });
+    h.world = { locked: lockedManual({ callerMfaSatisfied: true }) };
+    await claimAndDispatchScan(manual);
+    expect(h.authority).not.toHaveBeenCalled();
+    expect(h.dispatch.mock.calls[0]![0].payload).toMatchObject({ autoQuarantine: true });
+    expect(setOf(scanUpdates()[0]!)).toMatchObject({ autoQuarantineSuppressedReason: null });
+  });
+
+  it('an AI-originated Scan now re-checks the remote-tools policy at dispatch and carries aiOrigin onto the command', async () => {
+    h.world = { locked: lockedManual({ aiOrigin: AI_ORIGIN }) };
+    await claimAndDispatchScan(manual);
+    expect(h.aiPolicy).toHaveBeenCalledWith(DEVICE, 'security_scan');
+    expect(h.dispatch.mock.calls[0]![0]).toMatchObject({ aiOrigin: AI_ORIGIN });
+  });
+
+  it('an AI-originated Scan now the policy now denies is failed ai_policy_denied, never dispatched', async () => {
+    h.aiPolicy.mockResolvedValue({ allowed: false, error: 'denied' });
+    h.world = { locked: lockedManual({ aiOrigin: AI_ORIGIN }) };
+    expect(await claimAndDispatchScan(manual)).toEqual({ outcome: 'failed', commandId: null });
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(setOf(scanUpdates()[0]!)).toMatchObject({ status: 'failed', ruleSetErrors: [{ id: '*', code: 'ai_policy_denied' }] });
+  });
+
+  it('a human Scan now never consults the AI policy', async () => {
+    h.world = { locked: lockedManual() };
+    await claimAndDispatchScan(manual);
+    expect(h.aiPolicy).not.toHaveBeenCalled();
+    expect(h.dispatch.mock.calls[0]![0]).not.toHaveProperty('aiOrigin');
+  });
+
+  it('a scheduled row (caller_mfa_satisfied NULL) still uses the stored authority', async () => {
+    h.policy.mockResolvedValue(policy({ autoQuarantine: true }));
+    h.authority.mockResolvedValue({ allowed: false, reason: 'reapproval_required' });
+    h.world = { locked: lockedManual({ callerMfaSatisfied: null, queueExpiresAt: null }) };
+    await claimAndDispatchScan(manual);
+    expect(h.authority).toHaveBeenCalled();
+    expect(setOf(scanUpdates()[0]!)).toMatchObject({ autoQuarantineSuppressedReason: 'reapproval_required' });
+  });
+});
