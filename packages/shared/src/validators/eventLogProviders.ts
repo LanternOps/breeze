@@ -9,7 +9,7 @@
  * what is collected, and this copy only drives the save-time warning. Keep the
  * two in sync (apps/api/src/services/eventLogProviderAllowlistParity.test.ts).
  */
-export const APPLICATION_INFO_EVENT_PROVIDERS = ['MsiInstaller'] as const;
+export const APPLICATION_INFO_EVENT_PROVIDERS = ['MsiInstaller', 'APCPBEAgent'] as const;
 
 /** Levels below error: collected for Application only from the allowlist above. */
 const ALLOWLIST_ONLY_LEVELS = new Set(['info', 'warning']);

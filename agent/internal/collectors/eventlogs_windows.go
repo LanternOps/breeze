@@ -306,16 +306,14 @@ func (c *EventLogCollector) runWinEventFilter(filterHashtable string) ([]winEven
 	)
 
 	output, err := runCollectorOutput(collectorLongCommandTimeout, "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8PowerShellCommand(psCmd))
-	if err != nil {
-		// No events found is not an error
+	// winEventFilterStdout preserves events despite non-terminating provider errors
+	// and treats empty results, timeouts, and oversize output as no events.
+	out := winEventFilterStdout(output, err)
+	if out == nil {
 		return nil, nil
 	}
 
-	if len(output) == 0 {
-		return nil, nil
-	}
-
-	return parseWinEventJSON(output), nil
+	return parseWinEventJSON(out), nil
 }
 
 // parseWinEventJSON parses PowerShell ConvertTo-Json output into winEvent slices.

@@ -336,6 +336,11 @@ type SecurityCapabilities struct {
 	// /agents/:id/prompt-identity/logo. The API sends the block only to a
 	// beat declaring exactly 1.
 	PromptIdentityProtocolVersion int `json:"promptIdentityProtocolVersion,omitempty"`
+	// PamUserNotifyProtocolVersion (#8928) declares that this build claims
+	// pam_request_notify and shows the end-user PAM outcome notices. Windows
+	// builds only (PAM interception is Windows-only); the API normalizes any
+	// value other than 1 to 0 and never dispatches the command to 0.
+	PamUserNotifyProtocolVersion int `json:"pamUserNotifyProtocolVersion,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -659,6 +664,23 @@ type Heartbeat struct {
 	// technician approval was raised from, so a verified pam_apply_v2 launch
 	// can dismiss that prompt and no other (pam_approved_consent.go).
 	pamPendingConsents pendingPamConsents
+	// pamRequests tracks the requests the user handed to IT so the outcome
+	// notices (#8928) can be shown; created lazily by pamTracker().
+	pamRequestsOnce sync.Once
+	pamRequests     *pamRequestTracker
+	// pamNotifySink, when set, receives every PAM outcome notice instead of
+	// the session broker (test seam); a non-nil error means "not shown". nil
+	// means sendSessionNotifyTitled.
+	pamNotifySink func(title, body, winSession string) error
+	// pamSupportNameCached is the MSP support name last returned by a
+	// successful elevation submit (pam_support_name.go), loaded from its
+	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
+	pamSupportNameMu     sync.Mutex
+	pamSupportNameCached string
+	// pamOfflineLimiter rate-limits the offline notice per program and user
+	// (pam_offline_notify.go); created lazily by pamOfflineRateLimiter().
+	pamOfflineLimiterOnce sync.Once
+	pamOfflineLimiter     *pamOfflineNoticeLimiter
 	// pamApprovedConsentQuiesceWait bounds how long an uncertain approved-
 	// prompt dismissal keeps pamActuateMu while waiting for the helper to
 	// prove it finished. Zero means pamDismissTimeout; tests shrink it.
@@ -1745,6 +1767,7 @@ func (h *Heartbeat) SetStatePath(path string) {
 		h.loadPamDeclineStore(filepath.Join(filepath.Dir(path), pamDeclineFileName))
 		h.installPamDeclineChecker()
 	}
+	h.loadPamSupportName()
 }
 
 func (h *Heartbeat) ReconcilePAMLifetime(ctx context.Context) []pamlifetime.Result {
@@ -8828,5 +8851,16 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		WorkloadInventoryProtocolVersion:      workloads.ProtocolVersion,
 		RetainStateProtocolVersion:            retainStateProtocolVersion,
 		PromptIdentityProtocolVersion:         promptidentity.ProtocolVersion,
+		PamUserNotifyProtocolVersion:          pamUserNotifyProtocolVersion(),
 	}
+}
+
+// pamUserNotifyProtocolVersion is 1 on Windows builds, the only platform with
+// UAC interception and so the only one that can have a tracked hand-off to
+// notify about (#8928). Elsewhere it is 0 and omitted from the beat.
+func pamUserNotifyProtocolVersion() int {
+	if runtime.GOOS == "windows" {
+		return 1
+	}
+	return 0
 }

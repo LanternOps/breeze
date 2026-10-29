@@ -1226,3 +1226,117 @@ func TestActuateElevationEventLogDemoteFailureSkipsAccountDemoted(t *testing.T) 
 		t.Fatalf("stages = %v, want [elevation_actuated session_ended] (no account_demoted on Demote failure)", got)
 	}
 }
+
+// pamApplyToastHeartbeat is a ready pam_apply_v2 heartbeat whose fake manager
+// returns result, with the notice sink recorded. The apply payload's request
+// (pamApplyV2TestCommand) is tracked as handed to IT unless untracked.
+func pamApplyToastHeartbeat(t *testing.T, result pamlifetime.Result, tracked bool) (*Heartbeat, *pamNotifyRecorder) {
+	t.Helper()
+	manager := &fakePamLifetimeManager{applyResult: result, available: true}
+	h := readyPamApplyTestHeartbeat(manager, newPamReconciliationOutbox(t.TempDir()))
+	rec := recordPamNotices(h)
+	if tracked {
+		h.pamTracker().MarkAwaiting("40000000-0000-4000-8000-000000000001", "5", "mmc.exe", "Contoso IT")
+	}
+	return h, rec
+}
+
+// Review Focus 2: pam_apply_v2 is redelivered on reconnect or a generation
+// bump. Two applies that both reach verified_active show one notice.
+func TestPamApplyV2ApprovedToastOnce(t *testing.T) {
+	verified := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultVerifiedActive}
+	h, rec := pamApplyToastHeartbeat(t, verified, true)
+
+	for i := 0; i < 2; i++ {
+		if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-00000000000"+string(rune('1'+i)))); result.Status != "completed" {
+			t.Fatalf("apply %d result = %+v", i, result)
+		}
+	}
+	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved by Contoso IT and is starting.", WinSession: "5"}
+	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
+	}
+}
+
+// The one-notice budget is spent only by a notice that was shown. If the
+// approved notice could not be delivered (no helper in the session yet), a
+// redelivered pam_apply_v2 tries again, and still shows at most one.
+func TestPamApplyV2ApprovedToastRetriedAfterFailedSend(t *testing.T) {
+	verified := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultVerifiedActive}
+	h, rec := pamApplyToastHeartbeat(t, verified, true)
+
+	rec.FailWith(errNoticeNoNotifyHelper)
+	if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001")); result.Status != "completed" {
+		t.Fatalf("apply 1 result = %+v", result)
+	}
+	if rec.Attempts() != 1 || len(rec.Calls()) != 0 {
+		t.Fatalf("failed send: attempts=%d shown=%+v", rec.Attempts(), rec.Calls())
+	}
+
+	rec.FailWith(nil)
+	for i := 2; i <= 3; i++ {
+		if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-00000000000"+string(rune('0'+i)))); result.Status != "completed" {
+			t.Fatalf("apply %d result = %+v", i, result)
+		}
+	}
+	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved by Contoso IT and is starting.", WinSession: "5"}
+	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
+	}
+}
+
+func TestPamApplyV2LaunchFailedToast(t *testing.T) {
+	failed := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultFailed, FailureCode: "launch_failed"}
+	h, rec := pamApplyToastHeartbeat(t, failed, true)
+	if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001")); result.Status != "completed" {
+		t.Fatalf("result = %+v", result)
+	}
+	// A redelivered failure does not toast again.
+	_ = handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000002"))
+	want := pamNotifyCall{Title: "Request approved", Body: "mmc.exe was approved but couldn't start. Contact Contoso IT.", WinSession: "5"}
+	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("notices = %+v, want exactly [%+v]", calls, want)
+	}
+}
+
+// #8971's user-decision failure codes mean the user already chose; telling
+// them the approved launch "couldn't start" would be wrong.
+func TestPamApplyV2UserDeclinedNoToast(t *testing.T) {
+	for _, code := range []string{"user_declined", "user_decision_pending", "user_decline_record_untrusted"} {
+		t.Run(code, func(t *testing.T) {
+			failed := pamlifetime.Result{ProtocolVersion: 2, State: pamlifetime.ResultFailed, FailureCode: code}
+			h, rec := pamApplyToastHeartbeat(t, failed, true)
+			if result := handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001")); result.Status != "completed" {
+				t.Fatalf("result = %+v", result)
+			}
+			if calls := rec.Calls(); len(calls) != 0 {
+				t.Fatalf("user-decision failure %q showed notices: %+v", code, calls)
+			}
+		})
+	}
+}
+
+// Auto-approve, policy-deny and requests from before a restart are never
+// tracked, so their applies never toast; neither do non-terminal states.
+func TestPamApplyV2UntrackedNoToast(t *testing.T) {
+	for _, result := range []pamlifetime.Result{
+		{ProtocolVersion: 2, State: pamlifetime.ResultVerifiedActive},
+		{ProtocolVersion: 2, State: pamlifetime.ResultFailed, FailureCode: "launch_failed"},
+	} {
+		h, rec := pamApplyToastHeartbeat(t, result, false)
+		_ = handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+		if calls := rec.Calls(); len(calls) != 0 {
+			t.Fatalf("untracked %s apply showed notices: %+v", result.State, calls)
+		}
+	}
+	for _, state := range []pamlifetime.ResultState{pamlifetime.ResultReceived, pamlifetime.ResultCleaned} {
+		h, rec := pamApplyToastHeartbeat(t, pamlifetime.Result{ProtocolVersion: 2, State: state}, true)
+		_ = handlePamApplyV2(h, pamApplyV2TestCommand("60000000-0000-4000-8000-000000000001"))
+		if calls := rec.Calls(); len(calls) != 0 {
+			t.Fatalf("tracked %s apply showed notices: %+v", state, calls)
+		}
+		if _, ok := h.pamTracker().ClaimNotify("40000000-0000-4000-8000-000000000001"); !ok {
+			t.Fatalf("a non-terminal %s apply must not consume the outcome notice", state)
+		}
+	}
+}
