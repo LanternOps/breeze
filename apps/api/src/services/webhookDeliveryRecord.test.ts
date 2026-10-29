@@ -125,6 +125,72 @@ describe('recordDeliveryOutcome', () => {
     });
   });
 
+  describe('failure aggregate counts deliveries, not attempts (#9946)', () => {
+    const aggregateSet = () => state.updateCalls[state.updateCalls.length - 1]!.set;
+
+    it('does not count a failed attempt that will be retried', async () => {
+      state.updateResults = [[{ id: 'delivery-1' }], []];
+
+      await recordDeliveryOutcome({ ...RESULT, success: false, finalAttempt: false } as never);
+
+      // The row still records the attempt, and "Last Triggered" still moves...
+      expect(state.updateCalls[0]!.set).toMatchObject({ status: 'failed', attempts: 1 });
+      expect(aggregateSet()).toHaveProperty('lastDeliveryAt');
+      // ...but the delivery has not failed yet, so the chip must not move.
+      expect(aggregateSet()).not.toHaveProperty('failureCount');
+      expect(aggregateSet()).not.toHaveProperty('successCount');
+    });
+
+    it('counts the delivery once, on its final failed attempt', async () => {
+      state.updateResults = [[{ id: 'delivery-1' }], []];
+
+      await recordDeliveryOutcome({ ...RESULT, success: false, attempts: 5, finalAttempt: true } as never);
+
+      expect(aggregateSet()).toHaveProperty('failureCount');
+    });
+
+    it('one delivery failing all five attempts moves the failure count exactly once', async () => {
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        state.updateResults.push([{ id: 'delivery-1' }], []);
+        await recordDeliveryOutcome({
+          ...RESULT,
+          success: false,
+          attempts: attempt,
+          finalAttempt: attempt === 5
+        } as never);
+      }
+
+      const failureBumps = state.updateCalls.filter((c) => 'failureCount' in c.set);
+      expect(failureBumps).toHaveLength(1);
+    });
+
+    it('does not count a late final failure on a row that already succeeded', async () => {
+      // The outcome CAS refused the write (row is `delivered`), so this
+      // delivery's final state is success — counting it failed would contradict
+      // its own history row.
+      state.updateResults = [[], []];
+
+      await recordDeliveryOutcome({ ...RESULT, success: false, finalAttempt: true } as never);
+
+      expect(aggregateSet()).not.toHaveProperty('failureCount');
+      expect(aggregateSet()).toHaveProperty('lastDeliveryAt');
+    });
+
+    it('counts a final failed DLQ replay, which has no row to write', async () => {
+      state.updateResults = [[]];
+
+      await recordDeliveryOutcome({
+        ...RESULT,
+        success: false,
+        hasDeliveryRow: false,
+        finalAttempt: true
+      } as never);
+
+      expect(state.updateCalls).toHaveLength(1);
+      expect(aggregateSet()).toHaveProperty('failureCount');
+    });
+  });
+
   it('still moves the webhook aggregates for a DLQ replay — the POST happened', async () => {
     state.updateResults = [[]];
 

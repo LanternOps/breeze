@@ -229,6 +229,59 @@ describe('webhook delivery execution claim', () => {
     expect(seen).toEqual([true, false]);
   });
 
+  it('STAMPS each outcome with whether it is the delivery\'s final attempt (#9946)', async () => {
+    // Producer side of the per-delivery failure count. The outcome writer only
+    // counts a failure once the delivery has no retry left; with nothing
+    // asserting the worker SETS `finalAttempt`, stamping it `true` on every
+    // attempt was green — and one failing delivery read "5 failed" again.
+    const seen: Array<{ success: boolean; attempts: number; finalAttempt: boolean }> = [];
+    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
+    getWebhookWorker().setDeliveryCallback(async (r) => {
+      seen.push({ success: r.success, attempts: r.attempts, finalAttempt: r.finalAttempt });
+    });
+    safeFetchMock.mockResolvedValue({ status: 500, ok: false, text: async () => 'server error' });
+
+    // Default policy: 5 attempts. Attempts 1-4 schedule a retry; 5 goes to the DLQ.
+    for (let attempts = 0; attempts < 5; attempts += 1) {
+      brpopMock.mockResolvedValueOnce(['queue', JSON.stringify({ ...JOB, attempts })]);
+      await processOnce();
+    }
+    // A retry that then succeeds is final too.
+    safeFetchMock.mockResolvedValueOnce({ status: 200, ok: true, text: async () => 'ok' });
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify({ ...JOB, attempts: 2 })]);
+    await processOnce();
+
+    expect(seen).toEqual([
+      { success: false, attempts: 1, finalAttempt: false },
+      { success: false, attempts: 2, finalAttempt: false },
+      { success: false, attempts: 3, finalAttempt: false },
+      { success: false, attempts: 4, finalAttempt: false },
+      { success: false, attempts: 5, finalAttempt: true },
+      { success: true, attempts: 3, finalAttempt: true }
+    ]);
+  });
+
+  it('honours the webhook\'s own maxRetries when deciding the final attempt', async () => {
+    const seen: boolean[] = [];
+    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
+    getWebhookWorker().setDeliveryCallback(async (r) => { seen.push(r.finalAttempt); });
+    safeFetchMock.mockResolvedValue({ status: 500, ok: false, text: async () => 'server error' });
+    const oneShot: WebhookDeliveryJob = {
+      ...JOB,
+      webhook: {
+        ...JOB.webhook!,
+        retryPolicy: { maxRetries: 1, backoffMultiplier: 2, initialDelayMs: 1000, maxDelayMs: 60000 }
+      }
+    };
+
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(oneShot)]);
+    await processOnce();
+
+    expect(seen).toEqual([true]);
+    // ...and the ladder agrees: no retry was scheduled, the job went to the DLQ.
+    expect(lpushMock.mock.calls.map((c) => c[0])).toEqual(['breeze:webhooks:dlq']);
+  });
+
   it('names the real cause when a job loses its claim', async () => {
     // "duplicate" is only one of three ways to lose. Collapsing them mislabels
     // the other two — the same mislabeling the DLQ fix removed elsewhere.

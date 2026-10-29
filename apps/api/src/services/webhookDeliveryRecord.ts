@@ -6,7 +6,7 @@ import type {
   WebhookFanoutTarget,
   WebhookDeliveryJob,
   WebhookDeliveryRecordOutcome,
-  WebhookDeliveryResult,
+  WebhookDeliveryOutcome,
   DeliveryClaimOutcome
 } from '../workers/webhookDelivery';
 
@@ -176,8 +176,15 @@ export async function claimDeliveryForExecution(
  * Extracted from `index.ts` (#4095) so the CAS above is reachable by a test:
  * as an anonymous closure in a coverage-excluded file, deleting its
  * `ne(status, 'delivered')` conjunct passed everywhere.
+ *
+ * `webhooks.success_count` / `failure_count` count DELIVERIES, not attempts
+ * (#9946). This runs once per attempt, so a failure is only counted on the
+ * attempt that resolves the delivery (`finalAttempt`) and only when this write
+ * actually landed — a late failure refused by the outcome CAS belongs to a
+ * delivery whose final state is `delivered`. A success is always final.
+ * `last_delivery_at` ("Last Triggered") still moves on every attempt.
  */
-export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Promise<void> {
+export async function recordDeliveryOutcome(result: WebhookDeliveryOutcome): Promise<void> {
   await runWithSystemDbAccess(async () => {
     const deliveryStatus = result.success ? 'delivered' : 'failed';
     const deliveredAt = result.success
@@ -193,6 +200,10 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
     // replay, with a stated cause ("someone else resolved it first") that is
     // simply untrue — which would void that warning for the real race it exists
     // to catch. The POST still happened, so the aggregates below still move.
+    //
+    // `outcomeRecorded`: whether this attempt's outcome is now the delivery's
+    // state. A DLQ replay has no row, so the aggregates are its only record.
+    let outcomeRecorded = true;
     if (result.hasDeliveryRow === false) {
       console.log(`[WebhookDelivery] dlq-replay-completed ${JSON.stringify({
         errorId: 'WEBHOOK_DLQ_REPLAY_COMPLETED',
@@ -223,6 +234,7 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
         .returning({ id: webhookDeliveries.id });
 
       if (written.length === 0) {
+        outcomeRecorded = false;
         // Genuinely surprising now that DLQ replays are routed away: it means
         // the row was already `delivered` by someone else, or has vanished.
         console.warn(`[WebhookDelivery] outcome-write-skipped ${JSON.stringify({
@@ -234,16 +246,19 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
       }
     }
 
+    const deliveryFailed = !result.success && result.finalAttempt && outcomeRecorded;
     const aggregateUpdate = result.success
       ? {
         successCount: sql`${webhooksTable.successCount} + 1`,
         lastSuccessAt: new Date(),
         lastDeliveryAt: new Date()
       }
-      : {
-        failureCount: sql`${webhooksTable.failureCount} + 1`,
-        lastDeliveryAt: new Date()
-      };
+      : deliveryFailed
+        ? {
+          failureCount: sql`${webhooksTable.failureCount} + 1`,
+          lastDeliveryAt: new Date()
+        }
+        : { lastDeliveryAt: new Date() };
 
     await db
       .update(webhooksTable)

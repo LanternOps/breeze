@@ -153,6 +153,20 @@ export interface WebhookDeliveryResult {
 }
 
 /**
+ * What the outcome callback receives: one attempt's result, stamped by
+ * `processNextJob` with whether the delivery is now resolved.
+ *
+ * `finalAttempt` is false only for a failed attempt that will be retried. The
+ * outcome writer counts a webhook's failures per DELIVERY, not per attempt
+ * (#9946): without this, one delivery that failed all five tries read
+ * "5 failed" on the webhook list. Required (not optional) so a new caller
+ * cannot silently fall back to per-attempt counting.
+ */
+export interface WebhookDeliveryOutcome extends WebhookDeliveryResult {
+  finalAttempt: boolean;
+}
+
+/**
  * Generate HMAC-SHA256 signature for webhook payload
  *
  * The signature is computed as: HMAC-SHA256(secret, timestamp + '.' + payload)
@@ -409,7 +423,7 @@ function calculateRetryDelay(
  */
 class WebhookDeliveryWorker extends EventEmitter {
   private running = false;
-  private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
+  private onDeliveryComplete?: (result: WebhookDeliveryOutcome) => Promise<void>;
   private onClaimDelivery?: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>;
   /**
    * Dedicated connection for the `BRPOP` in `processNextJob` — see
@@ -447,7 +461,7 @@ class WebhookDeliveryWorker extends EventEmitter {
   /**
    * Set callback for delivery completion (for updating database)
    */
-  setDeliveryCallback(callback: (result: WebhookDeliveryResult) => Promise<void>): void {
+  setDeliveryCallback(callback: (result: WebhookDeliveryOutcome) => Promise<void>): void {
     this.onDeliveryComplete = callback;
   }
 
@@ -592,9 +606,21 @@ class WebhookDeliveryWorker extends EventEmitter {
       }
 
       // Attempt delivery
-      const result2 = await deliverWebhook(job);
-      // A DLQ replay has no backing row; the outcome writer needs to know.
-      result2.hasDeliveryRow = !job.skipExecutionClaim;
+      const delivered = await deliverWebhook(job);
+      // `delivered.retryPolicy` (resolved inside deliverWebhook) replaces
+      // `job.webhook.retryPolicy` — new-shape jobs don't carry an embedded
+      // config to read it from.
+      const maxRetries = delivered.retryPolicy?.maxRetries ?? MAX_RETRIES;
+      const retriesExhausted = job.attempts + 1 >= maxRetries;
+      const result2: WebhookDeliveryOutcome = {
+        ...delivered,
+        // A DLQ replay has no backing row; the outcome writer needs to know.
+        hasDeliveryRow: !job.skipExecutionClaim,
+        // Decided HERE, from the same inputs as the retry/DLQ ladder below,
+        // so the outcome writer's per-delivery failure count (#9946) cannot
+        // disagree with whether a retry is actually scheduled.
+        finalAttempt: delivered.success || delivered.superseded === true || retriesExhausted
+      };
 
       // Persist the outcome. This is split out of the outer catch because the
       // two sides of the POST are NOT equally recoverable: anything that throws
@@ -645,12 +671,8 @@ class WebhookDeliveryWorker extends EventEmitter {
         return;
       }
 
-      // Handle failure. `result2.retryPolicy` (resolved inside deliverWebhook)
-      // replaces `job.webhook.retryPolicy` — new-shape jobs don't carry an
-      // embedded config to read it from.
-      const maxRetries = result2.retryPolicy?.maxRetries ?? MAX_RETRIES;
-
-      if (job.attempts + 1 >= maxRetries) {
+      // Handle failure (`retriesExhausted` resolved above).
+      if (retriesExhausted) {
         // Move to dead letter queue
         console.log(`[WebhookWorker] Max retries reached for ${job.id}, moving to DLQ`);
         // Site-ceiling gate contract §7E: a legacy job (embedded `webhook`)
