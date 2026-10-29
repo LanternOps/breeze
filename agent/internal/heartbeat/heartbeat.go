@@ -493,6 +493,8 @@ type Heartbeat struct {
 	hardwareCollectFn    func() (*collectors.HardwareInfo, error)
 	memoryCollectFn      func() (*collectors.MemoryInfo, error)
 	memoryCollectTimeout time.Duration
+	// eventLogSendInFlight protects the collect/send/ack cycle from overlapping ticks.
+	eventLogSendInFlight atomic.Bool
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
@@ -2803,6 +2805,9 @@ func (h *Heartbeat) sendInventoryData(endpoint string, payload any, label string
 	} else {
 		log.Warn("inventory send failed", "label", label, "status", resp.StatusCode)
 	}
+	if endpoint == "eventlogs" {
+		return &eventLogsSubmissionError{status: resp.StatusCode}
+	}
 	if endpoint == "hardware-health" {
 		return &hardwareSubmissionError{status: resp.StatusCode}
 	}
@@ -4494,7 +4499,32 @@ func (h *Heartbeat) sendConnectionsInventory() {
 	h.sendInventoryData("connections", map[string]any{"connections": items}, fmt.Sprintf("connections (%d active)", len(connections)))
 }
 
+// eventLogsSubmissionError preserves a rejected upload's HTTP status so only
+// permanent client rejections count toward the poison-batch guard.
+type eventLogsSubmissionError struct{ status int }
+
+func (e *eventLogsSubmissionError) Error() string {
+	return fmt.Sprintf("inventory send failed for event logs: status %d", e.status)
+}
+
+func eventLogPassOutcome(err error) collectors.EventLogPassOutcome {
+	if err == nil {
+		return collectors.EventLogPassSent
+	}
+	var submission *eventLogsSubmissionError
+	if errors.As(err, &submission) && submission.status >= http.StatusBadRequest && submission.status < http.StatusInternalServerError &&
+		submission.status != http.StatusRequestTimeout && submission.status != http.StatusTooManyRequests {
+		return collectors.EventLogPassRejected
+	}
+	return collectors.EventLogPassFailed
+}
+
 func (h *Heartbeat) sendEventLogs() {
+	if !h.eventLogSendInFlight.CompareAndSwap(false, true) {
+		log.Debug("event log upload already in flight; skipping this tick")
+		return
+	}
+	defer h.eventLogSendInFlight.Store(false)
 	if !h.loopReady("PUT", h.agentRouteURL("eventlogs")) {
 		return // Avoid collecting while this upload route is deferred.
 	}
@@ -4505,7 +4535,7 @@ func (h *Heartbeat) sendEventLogs() {
 	}
 
 	if len(events) == 0 {
-		h.eventLogCol.CompletePass(true)
+		h.eventLogCol.CompletePass(collectors.EventLogPassSent)
 		return
 	}
 
@@ -4513,7 +4543,7 @@ func (h *Heartbeat) sendEventLogs() {
 	if errors.Is(err, ErrDeferred) {
 		return
 	}
-	h.eventLogCol.CompletePass(err == nil)
+	h.eventLogCol.CompletePass(eventLogPassOutcome(err))
 }
 
 // sendSecurityStatus uploads security posture. The 5-minute tick passes

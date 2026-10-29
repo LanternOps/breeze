@@ -183,12 +183,12 @@ func TestWindowsStreamsAckRetryAndRestart(t *testing.T) {
 	if got := streamTestBookmark(t, c, "security"); got != old {
 		t.Fatalf("unacknowledged pass advanced bookmark: %+v", got)
 	}
-	c.CompletePass(false)
+	c.CompletePass(EventLogPassFailed)
 	c.collectWindowsStreams(run, now)
 	if len(queries) != 2 || queries[0] != queries[1] || !strings.Contains(queries[1], "EventRecordID>10") {
 		t.Fatalf("failed send did not retry old bookmark: %v", queries)
 	}
-	c.CompletePass(true)
+	c.CompletePass(EventLogPassSent)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -212,20 +212,20 @@ func TestWindowsStreamsAckRetryAndRestart(t *testing.T) {
 	}
 }
 
-func TestWindowsStreamsRepeatedSendFailuresCommit(t *testing.T) {
+func TestWindowsStreamsRepeatedRejectionsCommit(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	c := NewPersistentEventLogCollector(filepath.Join(t.TempDir(), "bookmarks.json"))
 	c.categories = []string{"security"}
 	c.lastCollectTime = now.Add(-time.Minute)
 	for pass := 1; pass <= 3; pass++ {
 		c.collectWindowsStreams(func(_, _ string) ([]winEvent, error) { return []winEvent{streamTestEvent(7, now)}, nil }, now)
-		c.CompletePass(false)
+		c.CompletePass(EventLogPassRejected)
 		got := streamTestBookmark(t, c, "security").RecordID
 		if pass < 3 && got != 0 {
-			t.Fatalf("failure %d committed prematurely: %d", pass, got)
+			t.Fatalf("rejection %d committed prematurely: %d", pass, got)
 		}
 		if pass == 3 && got != 7 {
-			t.Fatalf("poison batch did not advance on third failure: %d", got)
+			t.Fatalf("poison batch did not advance on third rejection: %d", got)
 		}
 	}
 }
@@ -324,7 +324,7 @@ func TestWindowsStreamsCutStagesOnlyConsumedRecords(t *testing.T) {
 	if len(got) != 2 || got[0].EventID != "1104:1" || got[1].EventID != "1104:2" {
 		t.Fatalf("unexpected cut: %+v", got)
 	}
-	c.CompletePass(true)
+	c.CompletePass(EventLogPassSent)
 	if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{RecordID: 2, Time: recordTime}) {
 		t.Fatalf("cut stream was incorrectly treated as caught up: %+v", got)
 	}
@@ -351,7 +351,7 @@ func TestWindowsStreamsPendingReplacedWithoutAck(t *testing.T) {
 	if strings.Contains(retryXPath, "EventRecordID>") || !strings.Contains(retryXPath, "2026-10-29T11:59:00.0000000Z") {
 		t.Fatalf("unacknowledged batch changed next query: %s", retryXPath)
 	}
-	c.CompletePass(true)
+	c.CompletePass(EventLogPassSent)
 	if got := streamTestBookmark(t, c, "security").RecordID; got != 0 {
 		t.Fatalf("stale pending batch committed after failed query: %d", got)
 	}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -14,6 +15,16 @@ const (
 	eventLogFirstRunLookback  = 15 * time.Minute
 	eventLogMaxSendFailures   = 3
 	eventLogBookmarkFileLimit = 64 * 1024
+)
+
+// EventLogPassOutcome distinguishes delivery from retryable failures and
+// deterministic payload rejection. Only rejection can exhaust the batch budget.
+type EventLogPassOutcome uint8
+
+const (
+	EventLogPassSent EventLogPassOutcome = iota
+	EventLogPassRejected
+	EventLogPassFailed
 )
 
 type eventLogBookmark struct {
@@ -55,7 +66,7 @@ func (c *EventLogCollector) loadBookmarksLocked() {
 	bookmarks, err := readEventLogBookmarks(c.bookmarkPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			slog.Warn("failed to load event log bookmarks", "error", err)
+			slog.Warn("failed to load event log bookmarks", "collector", c.name, "error", err)
 		}
 		return
 	}
@@ -113,8 +124,17 @@ func (c *EventLogCollector) commitBookmarksLocked(advances map[string]eventLogBo
 		c.bookmarks[key] = bookmark
 	}
 	if c.bookmarkPath != "" {
-		if err := c.saveBookmarksLocked(); err != nil {
-			slog.Warn("failed to save event log bookmarks", "error", err)
+		err := c.saveBookmarksLocked()
+		warn, recovered := eventLogStateTransition(c.saveFailing, err != nil)
+		c.saveFailing = err != nil
+		if err != nil {
+			if warn {
+				slog.Warn("failed to save event log bookmarks", "collector", c.name, "error", err)
+			} else {
+				slog.Info("failed to save event log bookmarks", "collector", c.name, "error", err)
+			}
+		} else if recovered {
+			slog.Info("event log bookmark saving recovered", "collector", c.name)
 		}
 	}
 }
@@ -138,29 +158,59 @@ func (c *EventLogCollector) saveBookmarksLocked() error {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err := syncAndCloseEventLogBookmarks(file); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, c.bookmarkPath)
 }
 
-// CompletePass acknowledges a Windows pass. Failed uploads are re-collected
-// from committed bookmarks, with a bounded retry count for poison batches.
+// Flush the temporary file before closing it or publishing it with Rename.
+func syncAndCloseEventLogBookmarks(file interface {
+	Sync() error
+	Close() error
+}) error {
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// CompletePass acknowledges a Windows pass. Retryable failures always retain
+// committed bookmarks; only repeated payload rejections skip a poison batch.
 // Other platforms never stage bookmarks, making this a no-op there.
-func (c *EventLogCollector) CompletePass(sent bool) {
+func (c *EventLogCollector) CompletePass(outcome EventLogPassOutcome) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.pending) == 0 {
 		return
 	}
-	if !sent {
+	switch outcome {
+	case EventLogPassSent:
+		// Delivery commits the batch and resets the rejection budget below.
+	case EventLogPassRejected:
 		c.failedSends++
 		if c.failedSends < eventLogMaxSendFailures {
-			slog.Warn("event log upload failed; window will be re-collected next pass")
+			slog.Warn("event log upload rejected; window will be re-collected next pass", "collector", c.name, "rejections", c.failedSends)
 			c.pending = nil
 			return
 		}
-		slog.Warn("event log upload failed repeatedly; skipping this batch", "streams", len(c.pending))
+		keys := make([]string, 0, len(c.pending))
+		recordIDs := make(map[string]map[string]int64, len(c.pending))
+		for key, bookmark := range c.pending {
+			keys = append(keys, key)
+			recordIDs[key] = map[string]int64{
+				"fromRecordId": c.bookmarks[key].RecordID,
+				"toRecordId":   bookmark.RecordID,
+			}
+		}
+		sort.Strings(keys)
+		slog.Warn("event log upload rejected repeatedly; skipping this batch", "collector", c.name,
+			"streams", keys, "recordIds", recordIDs, "rejections", c.failedSends)
+	default:
+		slog.Info("event log upload failed; window will be re-collected next pass", "collector", c.name)
+		c.pending = nil
+		return
 	}
 	c.commitBookmarksLocked(c.pending)
 	c.pending = nil

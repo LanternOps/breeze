@@ -34,6 +34,7 @@ var levelOrder = map[string]int{
 // EventLogCollector collects OS event logs on a per-platform basis
 type EventLogCollector struct {
 	mu              sync.Mutex
+	name            string
 	lastCollectTime time.Time
 	// sourceWatermarks tracks per-sub-collector watermarks on platforms whose
 	// sub-collectors can fail independently (darwin). Each source advances only
@@ -51,6 +52,9 @@ type EventLogCollector struct {
 	bookmarksLoaded bool
 	ackRequired     bool
 	failedSends     int
+	floored         map[string]bool
+	failing         map[string]bool
+	saveFailing     bool
 	maxEvents       int
 	categories      []string
 	minimumLevel    string
@@ -60,6 +64,7 @@ type EventLogCollector struct {
 // NewEventLogCollector creates a new EventLogCollector
 func NewEventLogCollector() *EventLogCollector {
 	return &EventLogCollector{
+		name:            "eventlogs",
 		lastCollectTime: time.Now(),
 		maxEvents:       100,
 		categories:      []string{"security", "hardware", "application", "system"},
@@ -184,7 +189,7 @@ func (c *EventLogCollector) runEventLogSubCollectors(subs []eventLogSubCollector
 			defer wg.Done()
 			events, err := sc.fn(c.sourceSince(sc.name))
 			if err != nil {
-				slog.Warn("event log sub-collector error", "source", sc.name, "error", err.Error())
+				slog.Warn("event log sub-collector error", "collector", c.name, "source", sc.name, "error", err.Error())
 				return
 			}
 			mu.Lock()

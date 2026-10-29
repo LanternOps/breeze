@@ -50,7 +50,7 @@ func (c *EventLogCollector) Collect() ([]EventLogEntry, error) {
 			defer wg.Done()
 			events, err := f(lastCollect)
 			if err != nil {
-				slog.Warn("event log sub-collector error", "error", err.Error())
+				slog.Warn("event log sub-collector error", "collector", c.name, "error", err.Error())
 				return
 			}
 			mu.Lock()

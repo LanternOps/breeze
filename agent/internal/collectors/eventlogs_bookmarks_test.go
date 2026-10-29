@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,46 @@ import (
 	"testing"
 	"time"
 )
+
+type eventLogBookmarkSyncTestFile struct {
+	calls    []string
+	syncErr  error
+	closeErr error
+}
+
+func (f *eventLogBookmarkSyncTestFile) Sync() error {
+	f.calls = append(f.calls, "sync")
+	return f.syncErr
+}
+
+func (f *eventLogBookmarkSyncTestFile) Close() error {
+	f.calls = append(f.calls, "close")
+	return f.closeErr
+}
+
+func TestEventLogBookmarksSyncBeforeClose(t *testing.T) {
+	syncErr := errors.New("sync failed")
+	closeErr := errors.New("close failed")
+	for _, tc := range []struct {
+		name     string
+		syncErr  error
+		closeErr error
+		wantErr  error
+	}{
+		{"success", nil, nil, nil},
+		{"sync fails but still closes", syncErr, nil, syncErr},
+		{"close fails", nil, closeErr, closeErr},
+		{"sync error takes precedence", syncErr, closeErr, syncErr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &eventLogBookmarkSyncTestFile{syncErr: tc.syncErr, closeErr: tc.closeErr}
+			err := syncAndCloseEventLogBookmarks(file)
+			if !errors.Is(err, tc.wantErr) || !reflect.DeepEqual(file.calls, []string{"sync", "close"}) {
+				t.Fatalf("calls=%v error=%v; want sync then close and %v", file.calls, err, tc.wantErr)
+			}
+		})
+	}
+}
 
 func TestPersistentEventLogCollectorConstructor(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bookmarks.json")
@@ -89,24 +130,28 @@ func TestCompleteEventLogPass(t *testing.T) {
 	next := eventLogBookmark{RecordID: 20, Time: now}
 	for _, tc := range []struct {
 		name     string
-		sent     []bool
+		outcomes []EventLogPassOutcome
 		want     eventLogBookmark
 		failures int
 		saved    bool
 	}{
-		{"success", []bool{true}, next, 0, true},
-		{"one failure", []bool{false}, old, 1, false},
-		{"two failures", []bool{false, false}, old, 2, false},
-		{"poison batch", []bool{false, false, false}, next, 0, true},
-		{"success resets failures", []bool{false, true}, next, 0, true},
+		{"success", []EventLogPassOutcome{EventLogPassSent}, next, 0, true},
+		{"one rejection", []EventLogPassOutcome{EventLogPassRejected}, old, 1, false},
+		{"two rejections", []EventLogPassOutcome{EventLogPassRejected, EventLogPassRejected}, old, 2, false},
+		{"poison batch", []EventLogPassOutcome{EventLogPassRejected, EventLogPassRejected, EventLogPassRejected}, next, 0, true},
+		{"success resets rejections", []EventLogPassOutcome{EventLogPassRejected, EventLogPassSent}, next, 0, true},
+		{"repeated failures never skip", []EventLogPassOutcome{EventLogPassFailed, EventLogPassFailed, EventLogPassFailed, EventLogPassFailed, EventLogPassFailed}, old, 0, false},
+		{"failure does not spend rejection budget", []EventLogPassOutcome{EventLogPassRejected, EventLogPassFailed, EventLogPassFailed, EventLogPassRejected}, old, 2, false},
+		{"three rejections across transient failures skip", []EventLogPassOutcome{EventLogPassRejected, EventLogPassFailed, EventLogPassRejected, EventLogPassFailed, EventLogPassRejected}, next, 0, true},
+		{"failure then success", []EventLogPassOutcome{EventLogPassFailed, EventLogPassSent}, next, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "nested", "bookmarks.json")
 			c := NewPersistentEventLogCollector(path)
 			c.bookmarks = map[string]eventLogBookmark{"security": old, "system-power": old}
-			for _, sent := range tc.sent {
+			for _, outcome := range tc.outcomes {
 				c.pending = map[string]eventLogBookmark{"security": next}
-				c.CompletePass(sent)
+				c.CompletePass(outcome)
 				if c.pending != nil {
 					t.Fatal("pending not cleared")
 				}
@@ -149,10 +194,10 @@ func TestCompleteEventLogPass(t *testing.T) {
 }
 
 func TestCompleteEventLogPassWithoutPending(t *testing.T) {
-	for _, sent := range []bool{true, false} {
+	for _, outcome := range []EventLogPassOutcome{EventLogPassSent, EventLogPassRejected, EventLogPassFailed} {
 		c := NewPersistentEventLogCollector(filepath.Join(t.TempDir(), "bookmarks.json"))
 		c.failedSends = 2
-		c.CompletePass(sent)
+		c.CompletePass(outcome)
 		if c.failedSends != 2 || c.bookmarks != nil {
 			t.Fatalf("ack with no pending mutated state: failures=%d bookmarks=%v", c.failedSends, c.bookmarks)
 		}
@@ -171,8 +216,35 @@ func TestEventLogBookmarkSaveFailureKeepsMemory(t *testing.T) {
 	c := NewPersistentEventLogCollector(filepath.Join(parent, "bookmarks.json"))
 	next := eventLogBookmark{RecordID: 42, Time: time.Now().UTC()}
 	c.pending = map[string]eventLogBookmark{"security": next}
-	c.CompletePass(true)
+	c.CompletePass(EventLogPassSent)
 	if c.bookmarks["security"] != next || c.pending != nil || c.failedSends != 0 {
 		t.Fatalf("save failure lost committed state: bookmarks=%v pending=%v failures=%d", c.bookmarks, c.pending, c.failedSends)
+	}
+}
+
+func TestEventLogBookmarkSaveFailureRecovers(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(parent, []byte("blocks directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewPersistentEventLogCollector(filepath.Join(parent, "bookmarks.json"))
+	for i := int64(1); i <= 2; i++ {
+		c.pending = map[string]eventLogBookmark{"security": {RecordID: i}}
+		c.CompletePass(EventLogPassSent)
+		if !c.saveFailing || c.bookmarks["security"].RecordID != i {
+			t.Fatalf("failed save %d: saveFailing=%v bookmarks=%v", i, c.saveFailing, c.bookmarks)
+		}
+	}
+	if err := os.Remove(parent); err != nil {
+		t.Fatal(err)
+	}
+	c.pending = map[string]eventLogBookmark{"security": {RecordID: 3}}
+	c.CompletePass(EventLogPassSent)
+	if c.saveFailing {
+		t.Fatal("save failure state did not recover")
+	}
+	saved, err := readEventLogBookmarks(c.bookmarkPath)
+	if err != nil || saved["security"].RecordID != 3 {
+		t.Fatalf("recovered saved state=%v error=%v", saved, err)
 	}
 }

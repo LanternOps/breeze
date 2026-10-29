@@ -92,9 +92,11 @@ func psSingleQuote(s string) string {
 }
 
 func buildWinEventCommand(logName, xpath string) string {
-	return fmt.Sprintf(`$ErrorActionPreference='Stop'; `+
-		`try { $ev = @(Get-WinEvent -LogName %s -FilterXPath %s -Oldest -MaxEvents %d) } `+
-		`catch { if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { exit 0 }; [Console]::Error.WriteLine($_.Exception.Message); exit 3 }; `+
+	return fmt.Sprintf(`try { $ev = @(Get-WinEvent -LogName %s -FilterXPath %s -Oldest -MaxEvents %d -ErrorAction SilentlyContinue -ErrorVariable gwe) } `+
+		`catch { [Console]::Error.WriteLine($_.Exception.Message); exit 3 }; `+
+		`$errs = @($gwe | Where-Object { $_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*' }); `+
+		`if ($ev.Count -eq 0 -and $errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message); exit 3 }; `+
+		`if ($errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message) }; `+
 		`$ev | Select-Object RecordId, LogName, Level, Keywords, @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}}, @{N='TimeCreatedUtc';E={$_.TimeCreated.ToUniversalTime().ToString('o')}}, ProviderName, Id, Message, @{N='InsertionText';E={ if ([string]::IsNullOrWhiteSpace($_.Message)) { ($_.Properties.Value -join ' ') } else { $null } }} | ConvertTo-Json -Depth 2 -Compress; exit 0`,
 		psSingleQuote(logName), psSingleQuote(xpath), perQueryCap)
 }
@@ -128,6 +130,7 @@ type winEvent struct {
 }
 
 func parseWinEventJSON(data []byte) ([]winEvent, error) {
+	raw := data
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
 		return nil, nil
@@ -136,18 +139,25 @@ func parseWinEventJSON(data []byte) ([]winEvent, error) {
 	switch data[0] {
 	case '[':
 		if err := json.Unmarshal(data, &events); err != nil {
-			return nil, fmt.Errorf("parse Windows events: %w", err)
+			return nil, winEventParseError(raw, err)
 		}
 	case '{':
 		var event winEvent
 		if err := json.Unmarshal(data, &event); err != nil {
-			return nil, fmt.Errorf("parse Windows event: %w", err)
+			return nil, winEventParseError(raw, err)
 		}
 		events = []winEvent{event}
 	default:
-		return nil, errors.New("parse Windows events: expected JSON array or object")
+		return nil, winEventParseError(raw, errors.New("expected JSON array or object"))
 	}
 	return sanitizeWinEvents(events), nil
+}
+
+func winEventParseError(data []byte, err error) error {
+	if len(data) > 120 {
+		data = data[:120]
+	}
+	return fmt.Errorf("parse Windows events: %w (output prefix: %q)", err, data)
 }
 
 func sanitizeWinEvents(events []winEvent) []winEvent {

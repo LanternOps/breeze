@@ -147,37 +147,59 @@ func caughtUpWinEventAdvances(streams []winEventStreamResult, consumed []int, pr
 	return advances
 }
 
-// collectWindowsStreams snapshots state under the mutex, but never holds it
-// while querying Windows. Each goroutine owns a result slot so scheduling cannot
-// change the cut order or starve a stream.
-func (c *EventLogCollector) collectWindowsStreams(run winEventQueryRunner, now time.Time) []EventLogEntry {
+type windowsEventPassSnapshot struct {
+	categories []string
+	minLevel   string
+	maxEvents  int
+	streams    []winEventStream
+	xpaths     []string
+	previous   map[string]eventLogBookmark
+}
+
+// snapshotWindowsStreams releases the mutex even if query construction or
+// logging panics, allowing the outer collector Guard to recover safely.
+func (c *EventLogCollector) snapshotWindowsStreams(now time.Time) windowsEventPassSnapshot {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.loadBookmarksLocked()
-	categories := append([]string(nil), c.categories...)
-	minLevel, maxEvents := c.minimumLevel, c.maxEvents
-	streams := windowsEventStreams(categories)
-	xpaths := make([]string, len(streams))
-	previous := make(map[string]eventLogBookmark, len(streams))
-	for i, stream := range streams {
+	snapshot := windowsEventPassSnapshot{
+		categories: append([]string(nil), c.categories...),
+		minLevel:   c.minimumLevel,
+		maxEvents:  c.maxEvents,
+		previous:   make(map[string]eventLogBookmark),
+	}
+	snapshot.streams = windowsEventStreams(snapshot.categories)
+	snapshot.xpaths = make([]string, len(snapshot.streams))
+	for i, stream := range snapshot.streams {
 		if !stream.enabled {
 			continue
 		}
 		var bookmark *eventLogBookmark
 		if b, ok := c.bookmarks[stream.key]; ok {
 			bookmark = &b
-			previous[stream.key] = b
+			snapshot.previous[stream.key] = b
 		}
 		var floored bool
-		xpaths[i], floored = buildWinEventXPath(stream.selection, bookmark, c.lastCollectTime, now)
+		snapshot.xpaths[i], floored = buildWinEventXPath(stream.selection, bookmark, c.lastCollectTime, now)
+		warn, recovered := updateEventLogStreamState(&c.floored, stream.key, floored)
 		if floored {
 			logFloor := slog.Info
-			if c.ackRequired {
+			if warn {
 				logFloor = slog.Warn
 			}
-			logFloor("event log backlog floor applied", "stream", stream.key, "floor", now.Add(-eventLogMaxBacklog))
+			logFloor("event log backlog floor applied", "collector", c.name, "stream", stream.key, "floor", now.Add(-eventLogMaxBacklog))
+		} else if recovered {
+			slog.Info("event log backlog caught up", "collector", c.name, "stream", stream.key)
 		}
 	}
-	c.mu.Unlock()
+	return snapshot
+}
+
+// collectWindowsStreams never holds c.mu while querying Windows. Each goroutine
+// owns a result slot so scheduling cannot change the cut order or starve a stream.
+func (c *EventLogCollector) collectWindowsStreams(run winEventQueryRunner, now time.Time) []EventLogEntry {
+	snapshot := c.snapshotWindowsStreams(now)
+	streams := snapshot.streams
 
 	results := make([]winEventStreamResult, len(streams))
 	var wg sync.WaitGroup
@@ -190,30 +212,40 @@ func (c *EventLogCollector) collectWindowsStreams(run winEventQueryRunner, now t
 		wg.Add(1)
 		go func(i int, stream winEventStream) {
 			defer wg.Done()
-			events, err := run(stream.logName, xpaths[i])
+			defer func() {
+				if value := recover(); value != nil {
+					results[i].err = fmt.Errorf("stream %s panicked: %v", stream.key, value)
+					results[i].records = nil
+				}
+			}()
+			events, err := run(stream.logName, snapshot.xpaths[i])
 			if err != nil {
 				results[i].err = fmt.Errorf("stream %s: %w", stream.key, err)
-				slog.Warn("event log query failed; bookmark not advanced", "stream", stream.key, "error", results[i].err)
 				return
 			}
 			for _, event := range events {
-				results[i].records = append(results[i].records, winEventRecordFor(stream.key, event, categories))
+				results[i].records = append(results[i].records, winEventRecordFor(stream.key, event, snapshot.categories))
 			}
 		}(i, stream)
 	}
 	wg.Wait()
 
-	events, advances, consumed := cutWinEventStreams(results, minLevel, maxEvents)
-	for key, bookmark := range caughtUpWinEventAdvances(results, consumed, previous, now) {
+	events, advances, consumed := cutWinEventStreams(results, snapshot.minLevel, snapshot.maxEvents)
+	for key, bookmark := range caughtUpWinEventAdvances(results, consumed, snapshot.previous, now) {
 		advances[key] = bookmark
 	}
 	for i, result := range results {
 		if len(result.records) == perQueryCap || consumed[i] < len(result.records) {
-			slog.Info("event log backlog; draining next pass", "stream", result.key, "returned", len(result.records), "consumed", consumed[i])
+			slog.Info("event log backlog; draining next pass", "collector", c.name, "stream", result.key, "returned", len(result.records), "consumed", consumed[i])
 		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for _, result := range results {
+		if !result.skipped {
+			c.logWindowsQueryResultLocked(result.key, result.err)
+		}
+	}
 	if c.ackRequired {
 		c.pending = advances
 	} else {

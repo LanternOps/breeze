@@ -70,7 +70,7 @@ func TestWindowsQuietStreamRefreshesAnchor(t *testing.T) {
 			if c.pending["security"] != want || len(c.bookmarks) != 0 {
 				t.Fatalf("quiet advance must wait for ack: pending=%v committed=%v", c.pending, c.bookmarks)
 			}
-			c.CompletePass(true)
+			c.CompletePass(EventLogPassSent)
 			bookmark := streamTestBookmark(t, c, "security")
 			if bookmark != want {
 				t.Fatalf("quiet bookmark = %+v, want %+v", bookmark, want)
@@ -85,7 +85,7 @@ func TestWindowsQuietStreamRefreshesAnchor(t *testing.T) {
 			if query != wantXPath || !strings.Contains(query, "TimeCreated[@SystemTime>='2026-10-29T12:00:00.0000000Z']") || strings.Contains(query, "EventRecordID") {
 				t.Fatalf("second quiet pass did not use first pass anchor: %s", query)
 			}
-			c.CompletePass(true)
+			c.CompletePass(EventLogPassSent)
 			if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{Time: second}) {
 				t.Fatalf("second quiet bookmark = %+v", got)
 			}

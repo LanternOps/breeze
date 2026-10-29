@@ -92,10 +92,27 @@ func TestWindowsStreamSelections(t *testing.T) {
 func TestBuildWinEventCommand(t *testing.T) {
 	xpath := "*[System[Provider[@Name='MsiInstaller']]]"
 	got := buildWinEventCommand("Application", xpath)
-	for _, want := range []string{"$ErrorActionPreference='Stop'", "-LogName 'Application'", "-Oldest", "-MaxEvents 50", "-FilterXPath '*[System[Provider[@Name=''MsiInstaller'']]]'", "NoMatchingEventsFound*", "exit 3", "[Console]::Error.WriteLine", "InsertionText", "$_.Properties.Value -join ' '", "TimeCreatedUtc", "ToUniversalTime()", "Keywords", "exit 0"} {
+	for _, want := range []string{"-LogName 'Application'", "-Oldest", "-MaxEvents 50", "-FilterXPath '*[System[Provider[@Name=''MsiInstaller'']]]'", "NoMatchingEventsFound*", "exit 3", "[Console]::Error.WriteLine", "InsertionText", "$_.Properties.Value -join ' '", "TimeCreatedUtc", "ToUniversalTime()", "Keywords", "exit 0"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("command missing %q: %s", want, got)
 		}
+	}
+	for _, want := range []string{
+		"-ErrorAction SilentlyContinue -ErrorVariable gwe",
+		"catch { [Console]::Error.WriteLine($_.Exception.Message); exit 3 }",
+		"$errs = @($gwe | Where-Object { $_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*' })",
+		"if ($ev.Count -eq 0 -and $errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message); exit 3 }",
+		"if ($errs.Count -gt 0) { [Console]::Error.WriteLine($errs[0].Exception.Message) }; $ev | Select-Object",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("command missing error-handling guard %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "$ErrorActionPreference") || strings.Contains(got, "-ErrorAction Stop") {
+		t.Errorf("command must retain events alongside non-terminating errors: %s", got)
+	}
+	if strings.Count(got, "exit 3") != 2 {
+		t.Errorf("only terminating errors and empty failed queries should exit 3: %s", got)
 	}
 	if got := psSingleQuote("a'b"); got != "'a''b'" {
 		t.Errorf("psSingleQuote=%q", got)
@@ -146,6 +163,40 @@ func TestParseWinEventJSON(t *testing.T) {
 	events := sanitizeWinEvents(make([]winEvent, collectorResultLimit+1))
 	if len(events) != collectorResultLimit {
 		t.Errorf("result cap=%d", len(events))
+	}
+}
+
+func TestParseWinEventJSONErrorPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"array", `[{"RecordId":1}`},
+		{"object", `{"RecordId":"wrong type"}`},
+		{"scalar", `42`},
+		{"quoted scalar", `"unexpected output"`},
+		{"escaped", "notice: \"quoted\"\n\t\x00\\path"},
+		{"leading whitespace", "  diagnostic\n"},
+		{"bounded", strings.Repeat("x", 120) + "MUST_NOT_APPEAR"},
+		{"byte boundary", strings.Repeat("x", 119) + "éMUST_NOT_APPEAR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseWinEventJSON([]byte(tc.raw))
+			if err == nil {
+				t.Fatal("expected parse error")
+			}
+			prefix := tc.raw
+			if len(prefix) > 120 {
+				prefix = prefix[:120]
+			}
+			want := fmt.Sprintf("(output prefix: %q)", prefix)
+			if !strings.HasSuffix(err.Error(), want) {
+				t.Errorf("error %q missing quoted prefix %q", err, want)
+			}
+			if strings.ContainsAny(err.Error(), "\n\t\x00") || strings.Contains(err.Error(), "MUST_NOT_APPEAR") {
+				t.Errorf("error contains unescaped or excessive output: %q", err)
+			}
+		})
 	}
 }
 
