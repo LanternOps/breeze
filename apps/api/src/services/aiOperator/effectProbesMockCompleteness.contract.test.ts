@@ -35,10 +35,10 @@ function testFiles(dir: string): string[] {
 /** Each `vi.mock('<…>/effectProbes', …)` call's text, up to its balanced close paren. */
 function effectProbesMockCalls(src: string): string[] {
   const out: string[] = [];
-  const re = /vi\.mock\(\s*'(?:\.\.?\/)+effectProbes(?:\/index)?'/g;
+  const re = /vi\.(?:do)?[mM]ock\(\s*(['"`])(?:\.\.?\/)+effectProbes(?:\/index)?\1/g;
   for (let m = re.exec(src); m; m = re.exec(src)) {
     let depth = 0;
-    let i = m.index + 'vi.mock'.length;
+    let i = src.indexOf('(', m.index);
     for (; i < src.length; i++) {
       if (src[i] === '(') depth++;
       else if (src[i] === ')' && --depth === 0) break;
@@ -46,6 +46,10 @@ function effectProbesMockCalls(src: string): string[] {
     out.push(src.slice(m.index, i + 1));
   }
   return out;
+}
+
+function stripComments(code: string): string {
+  return code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 }
 
 describe('effectProbes mocks are complete for effectDispatch (#10174)', () => {
@@ -62,9 +66,11 @@ describe('effectProbes mocks are complete for effectDispatch (#10174)', () => {
       if (file === __filename) continue;
       for (const call of effectProbesMockCalls(readFileSync(file, 'utf8'))) {
         scanned++;
-        // A factory that spreads the original module inherits every export.
-        if (/\.\.\.\s*\(\s*await\s+\w+/.test(call)) continue;
-        const missing = required.filter((name) => !new RegExp(`\\b${name}\\b`).test(call));
+        const code = stripComments(call);
+        // A factory that spreads its own importOriginal parameter inherits every export.
+        const param = code.match(/async\s*\(\s*(\w+)/)?.[1];
+        if (param && new RegExp(`\\.\\.\\.\\s*\\(\\s*await\\s+${param}\\b`).test(code)) continue;
+        const missing = required.filter((name) => !new RegExp(`\\b${name}\\b`).test(code));
         if (missing.length > 0) gaps.push(`${relative(DIR, file)}: missing ${missing.join(', ')}`);
       }
     }
