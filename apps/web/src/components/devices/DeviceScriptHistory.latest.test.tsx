@@ -160,3 +160,51 @@ describe('DeviceScriptHistory per-script latest-result view (#7413)', () => {
     expect(screen.getByTestId(/^device-script-latest-excerpt-/).textContent).toBe('second');
   });
 });
+
+// #9935 — a catalog script and its imported org copy share a name; once both
+// have run on the device the tab lists two identical rows unless each says
+// where the script comes from.
+describe('DeviceScriptHistory script source badge (#9935)', () => {
+  const sameNameRows = [
+    {
+      id: 'run-sys', scriptId: 'script-sys', scriptName: 'Flush DNS Cache', status: 'completed',
+      scriptIsSystem: true, scriptOrgId: null, scriptPartnerId: null,
+      startedAt: '2026-02-10T00:00:00.000Z', completedAt: '2026-02-10T00:00:01.000Z',
+    },
+    {
+      id: 'run-org', scriptId: 'script-org', scriptName: 'Flush DNS Cache', status: 'completed',
+      scriptIsSystem: false, scriptOrgId: 'org-a', scriptPartnerId: null,
+      startedAt: '2026-02-09T00:00:00.000Z', completedAt: '2026-02-09T00:00:01.000Z',
+    },
+    {
+      // Script since deleted: the left join yields no ownership fields.
+      id: 'run-gone', scriptId: 'script-gone', scriptName: null, status: 'completed',
+      scriptIsSystem: null, scriptOrgId: null, scriptPartnerId: null,
+      startedAt: '2026-02-08T00:00:00.000Z', completedAt: '2026-02-08T00:00:01.000Z',
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    mockHistory(sameNameRows);
+  });
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('badges each per-script row with its source in the latest view', async () => {
+    await renderTab();
+    expect(screen.getByTestId('device-script-latest-source-script-sys').textContent).toBe('System');
+    expect(screen.getByTestId('device-script-latest-source-script-org').textContent).toBe('Organization');
+    expect(screen.queryByTestId('device-script-latest-source-script-gone')).toBeNull();
+  });
+
+  it('badges each execution row with its source in the all-runs view', async () => {
+    window.location.hash = '#scripts/view=all';
+    await renderTab();
+    expect(screen.getByTestId('device-script-source-run-sys').textContent).toBe('System');
+    expect(screen.getByTestId('device-script-source-run-org').textContent).toBe('Organization');
+    expect(screen.queryByTestId('device-script-source-run-gone')).toBeNull();
+  });
+});
