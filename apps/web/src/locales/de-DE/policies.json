@@ -1814,7 +1814,11 @@
       "deviceCount": "Geräteanzahl",
       "allowed2": "erlaubt",
       "blocked2": "blockiert",
-      "summary": "Zeigt {{range}} von {{total}}"
+      "summary": "Zeigt {{range}} von {{total}}",
+      "policyWouldNotApply": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Ändern oder entfernen Sie unter „Konfigurationsrichtlinien“ die Zuweisung von {{configPolicy}} und versuchen Sie es erneut.",
+      "policyWouldNotApplySameMode": "„{{policy}}“ würde für kein Gerät in dieser Organisation gelten, daher wurde nichts geändert. Jedes Gerät folgt genau einer Softwarerichtlinie, und auf allen Geräten gilt {{winners}}. Fügen Sie den Titel stattdessen unter „Softwarerichtlinien“ zu {{winner}} hinzu.",
+      "theWinningConfigPolicy": "die geltende Konfigurationsrichtlinie",
+      "nowOverridesPolicies": "„{{policy}}“ hat auf den Geräten dieser Organisation jetzt Vorrang vor {{names}}."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "Das Abrufen des Softwareinventars ist fehlgeschlagen",
@@ -1985,6 +1989,17 @@
       "uninstallCommandCopied": "Deinstallationsbefehl kopiert",
       "breezeDoesNotUninstall": "Breeze deinstalliert diese Clients nicht. Führen Sie den Befehl auf dem Gerät aus, um einen zu entfernen.",
       "copyFailed": "Kopieren fehlgeschlagen. Markieren Sie den Befehl und kopieren Sie ihn manuell."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Gilt für {{count}} Gerät",
+      "appliesTo_other": "Gilt für {{count}} Geräte",
+      "appliesToNone": "Gilt für 0 Geräte",
+      "notAssigned": "Über keine Konfigurationsrichtlinie zugewiesen",
+      "overriddenBy": "Überschrieben von {{names}}",
+      "overriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den Geräten, denen diese Richtlinie zugewiesen ist, gilt {{names}}.",
+      "partlyOverriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den übrigen zugewiesenen Geräten gilt {{names}}.",
+      "anotherPolicy": "eine andere Softwarerichtlinie",
+      "partnerWide": "partnerweite Richtlinie {{name}}"
     }
   }
 }
