@@ -136,6 +136,23 @@ describe('generateSecurityCompliancePostureReport', () => {
     );
   });
 
+  it('does not treat SaaS-only native backup as configured endpoint backup', async () => {
+    mockGeneratorQueries({ 8: [], 9: [{ status: 'active', provider: 'm365' }] });
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((result.summary as any).controls.backupConfigured).toBe(false);
+  });
+
+  it('keeps endpoint backup unconfigured with provider SaaS evidence alone', async () => {
+    mockGeneratorQueries({ 8: [] });
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(selection?.accountType ? [{
+      orgId: ORG, provider: 'dropsuite', accountType: 'm365', dataSources: ['m365_mail'],
+      status: 'completed', lastSuccessAt: new Date(), errorsCount: 0,
+    }] : [])) as never);
+    const result = await generateSecurityCompliancePostureReport(ORG, {});
+    expect((result.summary as any).controls.backupConfigured).toBe(false);
+    expect(JSON.stringify(result.summary)).toContain('NinjaOne SaaS Backup (Dropsuite)');
+  });
+
   it('places tenant-safe open vulnerability counts into per-device rows', async () => {
     mockGeneratorQueries();
     const result = await generateSecurityCompliancePostureReport(ORG, {});

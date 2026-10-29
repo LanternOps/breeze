@@ -9,6 +9,7 @@ import {
   deriveBackupHealth,
   mapBackupJobStatus,
   worstBackupStatus,
+  saasWorkloadLabel,
 } from './backupHealth';
 import { EXTERNAL_BACKUP_STATUSES, type ExternalBackupStatus } from '../types/backupHealth';
 
@@ -308,5 +309,23 @@ describe('deriveBackupHealth — exhaustive status x recency matrix', () => {
         expect(r.covered, `${status} @ ${recency}`).toBe(recency === 'under_24h' || recency === 'under_48h');
       }
     }
+  });
+});
+
+describe('saasWorkloadLabel', () => {
+  it.each([
+    ['m365_mail', 'Microsoft 365 mail'],
+    ['m365_onedrive', 'Microsoft 365 OneDrive'],
+    ['m365_sharepoint', 'Microsoft 365 SharePoint'],
+    ['m365_teams', 'Microsoft 365 Teams'],
+    ['gws_mail', 'Google Workspace mail'],
+    ['gws_drive', 'Google Drive'],
+    ['gws_shared_drive', 'Google shared drives'],
+    ['future_workload', 'SaaS'],
+    ['__proto__', 'SaaS'],
+    ['constructor', 'SaaS'],
+    [undefined, 'SaaS'],
+  ])('labels %s as %s', (source, label) => {
+    expect(saasWorkloadLabel(source)).toBe(label);
   });
 });

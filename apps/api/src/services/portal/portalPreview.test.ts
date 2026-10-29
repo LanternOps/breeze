@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   documentsForOrg: vi.fn(),
   securityOverview: vi.fn(),
   backupOverview: vi.fn(),
+  backupSaasWorkloads: vi.fn(),
   listPortalRuns: vi.fn(),
   brandingRow: vi.fn(),
   resolveOrgTimezone: vi.fn(),
@@ -15,7 +16,7 @@ vi.mock('./dashboard', () => ({ dashboardForOrg: m.dashboardForOrg }));
 vi.mock('./serviceReadModel', () => ({ serviceOverview: m.serviceOverview }));
 vi.mock('./documentsReadModel', () => ({ documentsForOrg: m.documentsForOrg }));
 vi.mock('./securityReadModel', () => ({ securityOverview: m.securityOverview }));
-vi.mock('./backupReadModel', () => ({ backupOverview: m.backupOverview }));
+vi.mock('./backupReadModel', () => ({ backupOverview: m.backupOverview, backupSaasWorkloads: m.backupSaasWorkloads }));
 vi.mock('./reportsSelfService', () => ({ listPortalRuns: m.listPortalRuns }));
 vi.mock('./timezone', () => ({ resolveOrgTimezone: m.resolveOrgTimezone }));
 vi.mock('../../db', () => ({
@@ -146,6 +147,7 @@ describe('buildPortalPreview (#9350)', () => {
     m.documentsForOrg.mockResolvedValue({ groups: [{ category: 'runbook', documents: [{ id: 'd' }] }] });
     m.securityOverview.mockResolvedValue({ dataStatus: 'ok' });
     m.backupOverview.mockResolvedValue({ dataStatus: 'ok' });
+    m.backupSaasWorkloads.mockResolvedValue([]);
     m.listPortalRuns.mockResolvedValue({ data: [{ id: 'r' }], pagination: { page: 1, limit: 20, total: 1 } });
   });
 
@@ -193,6 +195,15 @@ describe('buildPortalPreview (#9350)', () => {
     expect(m.backupOverview).toHaveBeenCalledWith(ORG, expect.objectContaining({ timezone: 'America/Chicago' }));
     expect(m.listPortalRuns).toHaveBeenCalledWith(ORG, 'America/Chicago', { page: 1, limit: 20 });
     expect(out.sections.find((s) => s.key === 'service')!.data).toEqual({ groups: [] });
+  });
+
+  it('includes the safe SaaS projection in the backup preview', async () => {
+    m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
+    const workloads = [{ provider: 'dropsuite', providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 5 }];
+    m.backupSaasWorkloads.mockResolvedValue(workloads);
+    const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
+    expect(out.sections.find((section) => section.key === 'backups')?.data).toEqual({ dataStatus: 'ok', saasWorkloads: workloads });
+    expect(m.backupSaasWorkloads).toHaveBeenCalledWith(ORG, expect.objectContaining({ now: expect.any(Date) }));
   });
 
   it('without portalUser the dashboard support tile is omitted with a note', async () => {
@@ -274,6 +285,7 @@ describe('buildPortalPreview — per-section staff permission (#9350)', () => {
     m.documentsForOrg.mockResolvedValue({ groups: [] });
     m.securityOverview.mockResolvedValue({ dataStatus: 'ok' });
     m.backupOverview.mockResolvedValue({ dataStatus: 'ok' });
+    m.backupSaasWorkloads.mockResolvedValue([]);
     m.listPortalRuns.mockResolvedValue({ data: [], pagination: { page: 1, limit: 20, total: 0 } });
   });
 

@@ -127,6 +127,7 @@ export async function persistVendorSnapshot(
 
   const deviceCountByVendorCustomer = new Map<string, number>();
   for (const device of devices) {
+    if (device.accountType === 'm365' || device.accountType === 'gws') continue;
     deviceCountByVendorCustomer.set(
       device.vendorCustomerId,
       (deviceCountByVendorCustomer.get(device.vendorCustomerId) ?? 0) + 1,
@@ -208,6 +209,7 @@ export async function persistVendorSnapshot(
       id: backupProviderDevices.id,
       vendorDeviceId: backupProviderDevices.vendorDeviceId,
       customerId: backupProviderDevices.customerId,
+      accountType: backupProviderDevices.accountType,
     })
     .from(backupProviderDevices)
     .where(eq(backupProviderDevices.connectionId, connection.id));
@@ -218,7 +220,7 @@ export async function persistVendorSnapshot(
   for (const device of devices) {
     const mapping = mappedByVendorId.get(device.vendorCustomerId);
     if (!mapping) {
-      unmappedDevices += 1;
+      if (device.accountType !== 'm365' && device.accountType !== 'gws') unmappedDevices += 1;
       continue;
     }
     deviceValues.push({
@@ -404,7 +406,10 @@ export async function persistVendorSnapshot(
   return {
     customers: upsertedCustomers.length + failedCustomerRowIds.size,
     unmappedCustomers,
-    devices: upsertedDevices.length + existingDevices.filter((row) => failedCustomerRowIds.has(row.customerId)).length,
+    // Retained rows for failed customers still count, but SaaS workloads never do.
+    devices: deviceValues.filter((row) => row.accountType !== 'm365' && row.accountType !== 'gws').length
+      + existingDevices.filter((row) => failedCustomerRowIds.has(row.customerId)
+        && row.accountType !== 'm365' && row.accountType !== 'gws').length,
     unmappedDevices,
     linked,
     ambiguous,

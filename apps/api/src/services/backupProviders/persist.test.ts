@@ -181,7 +181,9 @@ describe('persistVendorSnapshot', () => {
     );
     const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
       customers: [vendorCustomer()],
-      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' })],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' }),
+        vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
     });
     expect(counters.devices).toBe(0);
     expect(counters.unmappedDevices).toBe(2);
@@ -325,6 +327,24 @@ describe('persistVendorSnapshot', () => {
     expect(restamp).toContain('backup_provider_devices');
     expect(restamp).toContain(CONNECTION.id);
     expect(restamp).toContain('org_id');
+  });
+
+  it('persists SaaS workloads without counting them as customer or connection devices', async () => {
+    const { tx, calls } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }],
+        [{ id: 'p1', orgId: ORG }, { id: 'p2', orgId: ORG }, { id: 'p3', orgId: ORG }]],
+    );
+    const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer()],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
+    });
+    expect(counters.devices).toBe(1);
+    const inserts = calls.filter((call) => call.kind === 'insert');
+    expect(inserts[0]!.payload).toMatchObject([{ deviceCount: 1 }]);
+    expect(inserts[1]!.payload).toHaveLength(3);
+    expect(inserts[2]!.payload).toHaveLength(3); // SaaS history remains evidence.
   });
 
   it('returns the counters the connection card shows', async () => {

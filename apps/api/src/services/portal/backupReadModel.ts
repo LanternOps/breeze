@@ -1,4 +1,4 @@
-import { and, asc, countDistinct, desc, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, countDistinct, desc, eq, inArray, isNull, notInArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   backupConfigs,
@@ -12,12 +12,15 @@ import {
   DEGRADED_BACKUP_JOB_STATUSES,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
+import { deriveBackupHealth } from '@breeze/shared';
+import { providerLabelFor } from '../backupHealthRows';
 import type {
   BackupDeviceRow,
   BackupDevicesDto,
   BackupHealth,
   BackupHealthRow,
   BackupOverviewDto,
+  BackupSaasWorkloadDto,
   ExternalBackupStatus,
 } from '@breeze/shared';
 import { getFirstPartyCoverageForDevices, listBackupHealthRows } from '../backupHealthReadModel';
@@ -131,7 +134,7 @@ export async function backupTile(orgId: string, now: Date) {
         devices,
         and(eq(devices.id, backupProviderDevices.breezeDeviceId), eq(devices.orgId, orgId)),
       )
-      .where(eq(backupProviderDevices.orgId, orgId));
+      .where(and(eq(backupProviderDevices.orgId, orgId), notInArray(backupProviderDevices.accountType, ['m365', 'gws'])));
     const linkedOnly = Number(counts?.linkedOnly ?? 0);
     const unlinked = Number(counts?.unlinked ?? 0);
     // One population for the count AND the Backups table (#7505): the table
@@ -180,12 +183,13 @@ const PROVIDER_PAGE_SIZE = 500;
 const PROVIDER_MAX_PAGES = 20;
 
 /**
- * Every third-party backup row for the org, from the unified read model with
+ * Every third-party endpoint backup row for the org, from the unified read model with
  * CUSTOMER labels (`labels: 'portal'`): the vendor is named only where the
  * MSP turned the per-connection toggle on (spec D5). The portal runs under an
  * org token, so the read model's own org + RLS scoping already fences this;
  * the `orgId` filter here is defence in depth on a customer-facing surface.
- * Portal users carry no site restriction, so unlinked rows are theirs to see.
+ * Portal users carry no site restriction, so unlinked endpoint rows are theirs
+ * to see. SaaS rows belong to backupSaasWorkloads, never the device ledger.
  */
 async function loadPortalProviderRows(orgId: string, now: Date): Promise<BackupHealthRow[]> {
   const out: BackupHealthRow[] = [];
@@ -196,7 +200,7 @@ async function loadPortalProviderRows(orgId: string, now: Date): Promise<BackupH
       { sources: ['provider'], labels: 'portal', page: { limit: PROVIDER_PAGE_SIZE, cursor }, now },
     );
     for (const row of result.rows) {
-      if (row.orgId === orgId) out.push(row);
+      if (row.orgId === orgId && row.accountType !== 'm365' && row.accountType !== 'gws') out.push(row);
     }
     if (!result.nextCursor) return out;
     cursor = result.nextCursor;
@@ -205,6 +209,41 @@ async function loadPortalProviderRows(orgId: string, now: Date): Promise<BackupH
     `[portal/backupReadModel] org ${orgId} has more than ${PROVIDER_PAGE_SIZE * PROVIDER_MAX_PAGES} third-party backup rows; the portal shows the first ${out.length}`,
   );
   return out;
+}
+
+/** Customer-safe SaaS projection. The denormalized visibility flag remains
+ * readable under portal org RLS even when the partner connection is hidden. */
+export async function backupSaasWorkloads(orgId: string, args: { now: Date }): Promise<BackupSaasWorkloadDto[]> {
+  const rows = await db.select({
+    provider: backupProviderDevices.provider,
+    portalShowProviderName: backupProviderDevices.portalShowProviderName,
+    accountType: backupProviderDevices.accountType,
+    dataSources: backupProviderDevices.dataSources,
+    status: backupProviderDevices.status,
+    lastSuccessAt: backupProviderDevices.lastSuccessAt,
+    errorsCount: backupProviderDevices.errorsCount,
+    vendorRaw: backupProviderDevices.vendorRaw,
+  }).from(backupProviderDevices).where(and(
+    eq(backupProviderDevices.orgId, orgId),
+    inArray(backupProviderDevices.accountType, ['m365', 'gws']),
+  )).orderBy(asc(backupProviderDevices.provider), asc(backupProviderDevices.vendorDeviceId));
+
+  return rows.flatMap((row) => {
+    if (row.accountType !== 'm365' && row.accountType !== 'gws') return [];
+    const itemCount = row.vendorRaw?.itemCount;
+    return [{
+      provider: row.provider,
+      providerLabel: row.portalShowProviderName
+        ? providerLabelFor(row.provider, { portalShowProviderName: true, labels: 'portal' })
+        : null,
+      workload: row.dataSources?.[0] ?? row.accountType,
+      accountType: row.accountType,
+      health: deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount, now: args.now }).health,
+      status: row.status,
+      lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
+      itemCount: typeof itemCount === 'number' && Number.isSafeInteger(itemCount) && itemCount >= 0 ? itemCount : null,
+    }];
+  });
 }
 
 /** The third-party row that speaks for a managed device. Two rows per device is

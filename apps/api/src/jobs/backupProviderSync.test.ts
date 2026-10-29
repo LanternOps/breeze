@@ -249,7 +249,7 @@ describe('syncConnectionById — failure handling', () => {
       [{ id: 'c-old', vendorCustomerId: 'revoked-customer' }, { id: 'c-good', vendorCustomerId: 'working-customer' }],
       [{ id: 'c-old', vendorCustomerId: 'revoked-customer', orgId: BASE_ROW.partnerId },
         { id: 'c-good', vendorCustomerId: 'working-customer', orgId: BASE_ROW.partnerId }],
-      [{ id: 'old-row', vendorDeviceId: 'revoked:mail', customerId: 'c-old' },
+      [{ id: 'old-row', vendorDeviceId: 'revoked:mail', customerId: 'c-old', accountType: 'gws' },
         { id: 'good-row', vendorDeviceId: 'working:mail', customerId: 'c-good' }],
     ];
     const returns = [[{ id: 'c-good', vendorCustomerId: 'working-customer' }], [{ id: 'good-row', orgId: BASE_ROW.partnerId }]];
@@ -271,7 +271,7 @@ describe('syncConnectionById — failure handling', () => {
     expect(inserted.filter((row) => 'vendorDeviceId' in row))
       .toMatchObject([{ vendorDeviceId: 'working:mail', customerId: 'c-good', usedBytes: 100 }]);
     expect(updatePayloads.find((u) => u.payload.lastSyncStatus === 'success')?.payload)
-      .toMatchObject({ status: 'connected', lastSyncDevices: 2, lastSyncError: '1 customer(s) skipped: access denied or unavailable' });
+      .toMatchObject({ status: 'connected', lastSyncDevices: 0, lastSyncUnmappedDevices: 0, lastSyncLinkedDevices: 0, lastSyncAmbiguousDevices: 0, lastSyncError: '1 customer(s) skipped: access denied or unavailable' });
   });
 
   it('does not persist anything when the vendor enumeration fails, and records the error', async () => {
