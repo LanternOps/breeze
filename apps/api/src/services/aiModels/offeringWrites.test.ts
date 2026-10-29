@@ -1,4 +1,5 @@
-import { getTableName } from 'drizzle-orm';
+import { getTableName, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const h = vi.hoisted(() => ({
   dbInsertReturning: vi.fn(),
   dbDeleteReturning: vi.fn(),
   dbDeleteAssignmentsReturning: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  assignmentDeleteWhere: undefined as unknown,
   lastSet: undefined as Record<string, unknown> | undefined,
   insertedValues: undefined as Record<string, unknown> | undefined,
   systemContexts: 0,
@@ -60,11 +62,12 @@ vi.mock('../../db', () => {
         },
       }),
       delete: (table: unknown) => ({
-        where: () => ({
+        where: (cond: unknown) => ({
           returning: (...a: unknown[]) => {
             // Name the table: removeOffering may delete inert platform-only assignment rows first (#9496).
             const name = getTableName(table as Parameters<typeof getTableName>[0]);
             h.calls.push(name === 'partner_ai_models' ? 'delete' : `delete:${name}`);
+            if (name !== 'partner_ai_models') h.assignmentDeleteWhere = cond;
             return name === 'partner_ai_models' ? h.dbDeleteReturning(...a) : h.dbDeleteAssignmentsReturning(...a);
           },
         }),
@@ -126,6 +129,7 @@ beforeEach(() => {
   h.calls = [];
   h.lastSet = undefined;
   h.insertedValues = undefined;
+  h.assignmentDeleteWhere = undefined;
   h.systemContexts = 0;
   h.getPlatformModelById.mockResolvedValue(null);
   h.getPlatformInferenceGeo.mockResolvedValue(null);
@@ -667,6 +671,28 @@ describe('removeOffering (#8510)', () => {
     h.dbDeleteReturning.mockResolvedValue([manual()]);
     const r = await removeOffering({ partnerId: P, offeringId: OFF });
     expect(r.id).toBe(OFF);
+    expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
+    // The inert delete is pinned to this partner, to the platform-only surfaces
+    // seen, and to rows that reference this offering (never a configurable row).
+    const q = new PgDialect().sqlToQuery(h.assignmentDeleteWhere as SQL);
+    expect(q.sql).toContain('"offering_partner_id" = $1');
+    expect(q.sql).toMatch(/"surface" in \(\$2\)/);
+    expect(q.sql).toContain('"default_offering_id" =');
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."fallback_offering_ids"\)/);
+    expect(q.sql).toMatch(/ANY\("ai_model_assignments"\."permitted_offering_ids"\)/);
+    expect(q.params.slice(0, 2)).toEqual([P, 'patch_test']);
+    expect(q.params).toContain(OFF);
+  });
+
+  it('also drops an inert patch_test row that names it only as a fallback (no dangling id)', async () => {
+    h.getOffering.mockResolvedValue(manual());
+    h.dbSelectRows = [
+      [{ providerConfig: null }],
+      [{ surface: 'patch_test', orgId: null, defaultOfferingId: FB, fallbackOfferingIds: [OFF], permittedOfferingIds: null }],
+      [], [],
+    ];
+    h.dbDeleteReturning.mockResolvedValue([manual()]);
+    expect((await removeOffering({ partnerId: P, offeringId: OFF })).id).toBe(OFF);
     expect(h.calls).toEqual([`lock:${P}`, 'delete:ai_model_assignments', 'delete']);
   });
 
