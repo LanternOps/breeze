@@ -108,7 +108,7 @@ function integrationRow() {
 }
 
 function event(domain: string, at: Date) {
-  return { timestamp: at, domain, queryType: 'A', action: 'allowed' as const };
+  return { timestamp: at, domain, queryType: 'A', action: 'blocked' as const };
 }
 
 function successWrites() {

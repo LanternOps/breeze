@@ -119,6 +119,15 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 import { dnsSecurityRoutes } from './dnsSecurity';
 
+/** The integration-config read /stats makes to work out allowed-traffic coverage (#10054). */
+function integrationConfigsSel(configs: Array<Record<string, unknown>>) {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(configs.map((config) => ({ config })))
+    })
+  };
+}
+
 describe('dns security routes', () => {
   let app: Hono;
 
@@ -629,13 +638,91 @@ describe('dns security routes', () => {
         .mockReturnValueOnce(summarySel as any)
         .mockReturnValueOnce(groupSel as any)
         .mockReturnValueOnce(groupSel as any)
-        .mockReturnValueOnce(deviceGroupSel as any);
+        .mockReturnValueOnce(deviceGroupSel as any)
+        .mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }]) as any);
 
       const res = await app.request('/dns-security/stats');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.summary.totalQueries).toBe(5);
       expect(body.source).toBe('raw');
+    });
+  });
+
+  // #10054 — sync stores allowed traffic only for integrations that opted in,
+  // so /stats says whether its allowed count is real instead of returning a
+  // misleading zero.
+  describe('GET /stats — allowed traffic coverage (#10054)', () => {
+    beforeEach(() => {
+      // The site-scope tests above leave a restricted caller in place.
+      setSiteScopedAuth(undefined);
+      vi.mocked(db.select).mockReset();
+    });
+
+    function mockRawStats(summaryRow: Record<string, number>) {
+      const summarySel = {
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([summaryRow]) })
+      };
+      const groupSel = {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            groupBy: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        })
+      };
+      const deviceGroupSel = {
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+              })
+            })
+          })
+        })
+      };
+      vi.mocked(db.select)
+        .mockReturnValueOnce(summarySel as any)
+        .mockReturnValueOnce(groupSel as any)
+        .mockReturnValueOnce(groupSel as any)
+        .mockReturnValueOnce(deviceGroupSel as any);
+    }
+
+    const row = { totalQueries: 120, blockedQueries: 100, allowedQueries: 0, redirectedQueries: 20 };
+
+    it('reports allowedTraffic=none with a null allowed count and blocked rate when no integration stores allowed', async () => {
+      mockRawStats(row);
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{}, { storeAllowedTraffic: false }]) as any);
+
+      const res = await app.request('/dns-security/stats');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary).toMatchObject({ totalQueries: 120, blockedQueries: 100, allowedQueries: null, blockedRate: null });
+    });
+
+    it('reports allowedTraffic=some and keeps the numbers when only part of the integrations store allowed', async () => {
+      mockRawStats({ ...row, totalQueries: 1120, allowedQueries: 1000 });
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }, {}]) as any);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('some');
+      expect(body.summary.allowedQueries).toBe(1000);
+      expect(typeof body.summary.blockedRate).toBe('number');
+    });
+
+    it('reports allowedTraffic=all when every integration stores allowed', async () => {
+      mockRawStats({ ...row, totalQueries: 1120, allowedQueries: 1000 });
+      vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }]) as any);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('all');
+      expect(body.summary.allowedQueries).toBe(1000);
     });
   });
 
@@ -1077,6 +1164,61 @@ describe('dns security routes', () => {
         mockIntegrationLookup(undefined);
         const res = await patch({ retentionDays: 30 });
         expect(res.status).toBe(404);
+      });
+
+      // #10054 — the allowed-traffic opt-in lives on the same integration
+      // config and is edited through the same PATCH.
+      it('sets storeAllowedTraffic without touching retentionDays', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', retentionDays: 7 } });
+        const set = mockUpdate();
+
+        const res = await patch({ storeAllowedTraffic: true });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ id: INTEGRATION_ID, retentionDays: 7, storeAllowedTraffic: true });
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 7, storeAllowedTraffic: true }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          action: 'dns.integration.update',
+          details: { storeAllowedTraffic: { from: false, to: true } }
+        }));
+      });
+
+      it('turning the opt-in off removes the key so the default (not stored) applies', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', storeAllowedTraffic: true } });
+        const set = mockUpdate();
+
+        const res = await patch({ storeAllowedTraffic: false, retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', retentionDays: 30 }
+        }));
+        expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          details: {
+            retentionDays: { from: null, to: 30 },
+            storeAllowedTraffic: { from: true, to: false }
+          }
+        }));
+      });
+
+      it('keeps an existing opt-in when only retentionDays is sent', async () => {
+        mockIntegrationLookup({ ...activeRow, config: { organizationId: '42', storeAllowedTraffic: true } });
+        const set = mockUpdate();
+
+        const res = await patch({ retentionDays: 30 });
+
+        expect(res.status).toBe(200);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({
+          config: { organizationId: '42', storeAllowedTraffic: true, retentionDays: 30 }
+        }));
+      });
+
+      it.each([{}, { storeAllowedTraffic: 'yes' }])('rejects body %j', async (body) => {
+        const res = await patch(body);
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
       });
 
       it('requires organizations:write and MFA', async () => {

@@ -34,7 +34,7 @@ type Integration = {
   provider: Provider;
   name: string;
   isActive?: boolean;
-  config?: { retentionDays?: number } | null;
+  config?: { retentionDays?: number; storeAllowedTraffic?: boolean } | null;
   lastSync: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
@@ -259,6 +259,7 @@ export default function DnsSecurityIntegrationsTab() {
             id: retentionTarget.id,
             name: retentionTarget.name,
             retentionDays: retentionTarget.config?.retentionDays ?? null,
+            storeAllowedTraffic: retentionTarget.config?.storeAllowedTraffic === true,
           }}
           onClose={() => setRetentionTarget(null)}
           onSaved={() => void fetchIntegrations()}

@@ -775,7 +775,6 @@
     "threatStatus": "Statut de menace",
     "threatWasMovedToQuarantineByPolicy": "La menace a été placée en quarantaine par la politique ou par action de l’opérateur.",
     "timeline": "Chronologie",
-    "actionFailed": "Échec de l'action",
     "quarantineSucceeded": "Menace mise en quarantaine",
     "restoreSucceeded": "Menace restaurée",
     "removeSucceeded": "Menace supprimée",
@@ -1740,13 +1739,18 @@
       "totalQueries": "Requêtes totales",
       "blocked": "Bloqué",
       "allowed": "Autorisé",
-      "redirected": "Redirigé"
+      "redirected": "Redirigé",
+      "notStored": "Non stocké"
     },
     "topBlocked": {
       "title": "Domaines bloqués en tête",
       "empty": "Aucun domaine bloqué dans la fenêtre actuelle."
     },
-    "loading": "Chargement..."
+    "loading": "Chargement...",
+    "allowedTraffic": {
+      "none": "Les requêtes autorisées ne sont pas stockées pour ces intégrations; seules les requêtes bloquées et redirigées sont donc comptées. Pour les compter, activez « Stocker le trafic autorisé » dans les paramètres de données stockées d'une intégration.",
+      "some": "Les requêtes autorisées ne sont stockées que pour certaines intégrations; le nombre de requêtes autorisées est donc partiel."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Intégrations configurées",
@@ -1763,7 +1767,7 @@
       "addIntegration": "Ajouter une intégration",
       "syncNow": "Synchronisez maintenant",
       "deleteIntegration": "Supprimer l’intégration",
-      "editRetention": "Modifier la période de conservation"
+      "editRetention": "Données stockées"
     },
     "messages": {
       "loadHttpError": "Impossible de charger les intégrations (HTTP {{status}})",
@@ -1792,8 +1796,8 @@
     "deletingInBackground": "Suppression en cours…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Conservation des données",
-    "description": "Les événements et les statistiques quotidiennes plus anciens sont supprimés par le nettoyage nocturne.",
+    "title": "Données stockées",
+    "description": "Choisissez quelles requêtes DNS Breeze stocke pour cette intégration et combien de temps il les conserve.",
     "fieldLabel": "Conserver les événements et statistiques DNS pendant (jours)",
     "fieldHelp": "De 1 à 365 jours. Laissez vide pour utiliser la valeur par défaut du déploiement (90 jours, sauf si votre administrateur l’a modifiée).",
     "invalid": "Entrez un nombre entier de jours entre 1 et 365, ou laissez le champ vide.",
@@ -1803,8 +1807,13 @@
       "saving": "Enregistrement…"
     },
     "messages": {
-      "saved": "Conservation mise à jour pour {{name}}",
-      "saveFailed": "Impossible de mettre à jour la conservation de {{name}}"
+      "saved": "Paramètres de données stockées mis à jour pour {{name}}",
+      "saveFailed": "Impossible de mettre à jour les paramètres de données stockées de {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Stocker le trafic autorisé",
+      "helpOff": "Seules les requêtes bloquées et redirigées sont stockées. Les requêtes autorisées représentent généralement presque tout le trafic, et votre fournisseur DNS les conserve dans ses propres rapports.",
+      "helpOn": "Les requêtes autorisées sont aussi stockées, soit généralement environ 100 fois plus de lignes. Désactiver cette option plus tard ne supprime pas les requêtes autorisées déjà stockées; la rétention les supprime."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

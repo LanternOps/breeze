@@ -199,7 +199,7 @@ describe('DnsSecurityIntegrationsTab', () => {
     await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
     expect(screen.getByTitle('Sync now')).toBeDisabled();
     expect(screen.getByTitle('Delete integration')).toBeDisabled();
-    expect(screen.getByTitle('Change retention period')).toBeDisabled();
+    expect(screen.getByTitle('Stored data')).toBeDisabled();
   });
 
   it('edits retentionDays with PATCH, prefilled from the integration config', async () => {
@@ -209,7 +209,7 @@ describe('DnsSecurityIntegrationsTab', () => {
     render(<DnsSecurityIntegrationsTab />);
     await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTitle('Change retention period'));
+    fireEvent.click(screen.getByTitle('Stored data'));
     const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
     expect(input).toHaveValue(7);
 
@@ -221,12 +221,12 @@ describe('DnsSecurityIntegrationsTab', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith('/dns-security/integrations/int-1', expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ retentionDays: 30 }),
+        body: JSON.stringify({ retentionDays: 30, storeAllowedTraffic: false }),
       }));
     });
     await waitFor(() => {
       expect(showToastMock).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'success', message: 'Retention updated for Umbrella Prod' }),
+        expect.objectContaining({ type: 'success', message: 'Stored data settings updated for Umbrella Prod' }),
       );
     });
   });
@@ -238,7 +238,7 @@ describe('DnsSecurityIntegrationsTab', () => {
     render(<DnsSecurityIntegrationsTab />);
     await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTitle('Change retention period'));
+    fireEvent.click(screen.getByTitle('Stored data'));
     const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ id: 'int-1', retentionDays: null }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
@@ -248,7 +248,7 @@ describe('DnsSecurityIntegrationsTab', () => {
     await waitFor(() => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith('/dns-security/integrations/int-1', expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ retentionDays: null }),
+        body: JSON.stringify({ retentionDays: null, storeAllowedTraffic: false }),
       }));
     });
   });
@@ -258,7 +258,7 @@ describe('DnsSecurityIntegrationsTab', () => {
     render(<DnsSecurityIntegrationsTab />);
     await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTitle('Change retention period'));
+    fireEvent.click(screen.getByTitle('Stored data'));
     const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
     fireEvent.change(input, { target: { value: '400' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));

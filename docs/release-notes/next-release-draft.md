@@ -18,6 +18,7 @@ Last release: **v0.125.0** (2026-10-27).
 
 - **On-device notices are opt-in (#10190 W04).** `PROMPT_HOST_ENABLED_KINDS` is optional. Unset (or `default`) means the code default, which enables nothing in this release. Set it to `notice.info` on the `api` service to opt in. Enable it only after this release's Breeze Assist build is published. No migration.
 - **Restart prompts are opt-in too (#10190 W05).** Add `restart.prompt,restart.final` to `PROMPT_HOST_ENABLED_KINDS` (for example `notice.info,restart.prompt,restart.final`) only after the W05 Breeze Assist build is published. Unset still enables nothing. No migration.
+- **DNS Security stores blocked and redirected queries only, by default (#10054).** DNS sync no longer stores allowed queries (about 99% of rows; around 1M a day on a busy tenant) unless the integration opts in with `config.storeAllowedTraffic: true` (**DNS Security → Integrations → Stored data → Store allowed traffic**). This applies to every existing integration on upgrade. Cisco Umbrella integrations also stop downloading allowed records, which saves request budget. The Overview tab and `GET /dns-security/stats` now say **Not stored** (`allowedTraffic: "none"`, `allowedQueries: null`, `blockedRate: null`) instead of showing zero allowed queries. Allowed rows stored before the upgrade are **not** deleted; retention removes them as they age out, and the docs (DNS Security → Stored traffic) show how to delete them by hand in batches. No migration, no new environment variable.
 
 ## Features / API
 

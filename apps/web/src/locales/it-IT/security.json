@@ -775,7 +775,6 @@
     "threatStatus": "Stato minaccia",
     "threatWasMovedToQuarantineByPolicy": "La minaccia è stata spostata in quarantena da un criterio o da un operatore.",
     "timeline": "Timeline",
-    "actionFailed": "Azione non riuscita",
     "quarantineSucceeded": "Minaccia messa in quarantena",
     "restoreSucceeded": "Minaccia ripristinata",
     "removeSucceeded": "Minaccia rimossa",
@@ -1740,13 +1739,18 @@
       "totalQueries": "Query totali",
       "blocked": "Bloccate",
       "allowed": "Consentite",
-      "redirected": "Reindirizzate"
+      "redirected": "Reindirizzate",
+      "notStored": "Non archiviato"
     },
     "topBlocked": {
       "title": "Domini bloccati principali",
       "empty": "Nessun dominio bloccato nella finestra attuale."
     },
-    "loading": "Caricamento…"
+    "loading": "Caricamento…",
+    "allowedTraffic": {
+      "none": "Le query consentite non vengono archiviate per queste integrazioni, quindi vengono conteggiate solo le query bloccate e reindirizzate. Per conteggiarle, attiva \"Archivia il traffico consentito\" nelle impostazioni dei dati archiviati di un'integrazione.",
+      "some": "Le query consentite vengono archiviate solo per alcune integrazioni, quindi il conteggio delle consentite è parziale."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Integrazioni configurate",
@@ -1763,7 +1767,7 @@
       "addIntegration": "Aggiungi integrazione",
       "syncNow": "Sincronizza ora",
       "deleteIntegration": "Elimina integrazione",
-      "editRetention": "Modifica periodo di conservazione"
+      "editRetention": "Dati archiviati"
     },
     "messages": {
       "loadHttpError": "Impossibile caricare le integrazioni (HTTP {{status}})",
@@ -1792,8 +1796,8 @@
     "deletingInBackground": "Eliminazione in corso…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Conservazione dei dati",
-    "description": "Gli eventi e le statistiche giornaliere più vecchi vengono eliminati dalla pulizia notturna.",
+    "title": "Dati archiviati",
+    "description": "Scegli quali query DNS Breeze archivia per questa integrazione e per quanto tempo le conserva.",
     "fieldLabel": "Conserva eventi e statistiche DNS per (giorni)",
     "fieldHelp": "Da 1 a 365 giorni. Lascia vuoto per usare il valore predefinito dell’installazione (90 giorni, salvo modifiche dell’amministratore).",
     "invalid": "Inserisci un numero intero di giorni da 1 a 365 oppure lascia il campo vuoto.",
@@ -1803,8 +1807,13 @@
       "saving": "Salvataggio…"
     },
     "messages": {
-      "saved": "Conservazione aggiornata per {{name}}",
-      "saveFailed": "Impossibile aggiornare la conservazione per {{name}}"
+      "saved": "Impostazioni dei dati archiviati aggiornate per {{name}}",
+      "saveFailed": "Impossibile aggiornare le impostazioni dei dati archiviati per {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Archivia il traffico consentito",
+      "helpOff": "Vengono archiviate solo le query bloccate e reindirizzate. Le query consentite sono di solito quasi tutto il traffico e il tuo provider DNS le conserva nei propri report.",
+      "helpOn": "Vengono archiviate anche le query consentite, di solito circa 100 volte più righe. Disattivare l'opzione in seguito non elimina le query consentite già archiviate; le rimuove la conservazione."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

@@ -775,7 +775,6 @@
     "threatStatus": "Threat status",
     "threatWasMovedToQuarantineByPolicy": "Threat was moved to quarantine by policy or operator action.",
     "timeline": "Timeline",
-    "actionFailed": "Action failed",
     "quarantineSucceeded": "Threat quarantined",
     "restoreSucceeded": "Threat restored",
     "removeSucceeded": "Threat removed",
@@ -1740,13 +1739,18 @@
       "totalQueries": "Total queries",
       "blocked": "Blocked",
       "allowed": "Allowed",
-      "redirected": "Redirected"
+      "redirected": "Redirected",
+      "notStored": "Not stored"
     },
     "topBlocked": {
       "title": "Top blocked domains",
       "empty": "No blocked domains in the current window."
     },
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "allowedTraffic": {
+      "none": "Allowed queries are not stored for these integrations, so only blocked and redirected queries are counted. To count them, turn on \"Store allowed traffic\" in an integration's stored data settings.",
+      "some": "Allowed queries are stored for some integrations only, so the allowed count is partial."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Configured integrations",
@@ -1763,7 +1767,7 @@
       "addIntegration": "Add integration",
       "syncNow": "Sync now",
       "deleteIntegration": "Delete integration",
-      "editRetention": "Change retention period"
+      "editRetention": "Stored data"
     },
     "messages": {
       "loadHttpError": "Failed to load integrations (HTTP {{status}})",
@@ -1792,8 +1796,8 @@
     "deletingInBackground": "Deleting…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Data retention",
-    "description": "Events and daily statistics older than this are deleted by the nightly retention sweep.",
+    "title": "Stored data",
+    "description": "Choose which DNS queries Breeze stores for this integration and how long it keeps them.",
     "fieldLabel": "Keep DNS events and statistics for (days)",
     "fieldHelp": "1–365 days. Leave empty to use the deployment default (90 days unless your administrator changed it).",
     "invalid": "Enter a whole number of days from 1 to 365, or leave it empty.",
@@ -1803,8 +1807,13 @@
       "saving": "Saving…"
     },
     "messages": {
-      "saved": "Retention updated for {{name}}",
-      "saveFailed": "Failed to update retention for {{name}}"
+      "saved": "Stored data settings updated for {{name}}",
+      "saveFailed": "Failed to update stored data settings for {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Store allowed traffic",
+      "helpOff": "Only blocked and redirected queries are stored. Allowed queries are usually almost all of the traffic, and your DNS provider keeps them in its own reports.",
+      "helpOn": "Allowed queries are stored too, which is usually around 100 times more rows. Turning this off later does not delete allowed queries already stored; retention removes them."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

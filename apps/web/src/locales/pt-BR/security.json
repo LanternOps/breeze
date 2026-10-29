@@ -775,7 +775,6 @@
     "threatStatus": "Status da ameaça",
     "threatWasMovedToQuarantineByPolicy": "A ameaça foi movida para quarentena por política ou ação do operador.",
     "timeline": "Linha do tempo",
-    "actionFailed": "Falha na ação",
     "quarantineSucceeded": "Ameaça colocada em quarentena",
     "restoreSucceeded": "Ameaça restaurada",
     "removeSucceeded": "Ameaça removida",
@@ -1740,13 +1739,18 @@
       "totalQueries": "Total de consultas",
       "blocked": "Bloqueadas",
       "allowed": "Permitidas",
-      "redirected": "Redirecionadas"
+      "redirected": "Redirecionadas",
+      "notStored": "Não armazenado"
     },
     "topBlocked": {
       "title": "Principais domínios bloqueados",
       "empty": "Nenhum domínio bloqueado na janela atual."
     },
-    "loading": "Carregando…"
+    "loading": "Carregando…",
+    "allowedTraffic": {
+      "none": "As consultas permitidas não são armazenadas para estas integrações, então só as consultas bloqueadas e redirecionadas são contadas. Para contá-las, ative \"Armazenar tráfego permitido\" nas configurações de dados armazenados de uma integração.",
+      "some": "As consultas permitidas são armazenadas apenas para algumas integrações, então a contagem de permitidas é parcial."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Integrações configuradas",
@@ -1763,7 +1767,7 @@
       "addIntegration": "Adicionar integração",
       "syncNow": "Sincronizar agora",
       "deleteIntegration": "Excluir integração",
-      "editRetention": "Alterar período de retenção"
+      "editRetention": "Dados armazenados"
     },
     "messages": {
       "loadHttpError": "Falha ao carregar integrações (HTTP {{status}})",
@@ -1792,8 +1796,8 @@
     "deletingInBackground": "Excluindo…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Retenção de dados",
-    "description": "Eventos e estatísticas diárias mais antigos são excluídos pela limpeza noturna de retenção.",
+    "title": "Dados armazenados",
+    "description": "Escolha quais consultas DNS o Breeze armazena para esta integração e por quanto tempo as mantém.",
     "fieldLabel": "Manter eventos e estatísticas de DNS por (dias)",
     "fieldHelp": "De 1 a 365 dias. Deixe vazio para usar o padrão da instalação (90 dias, a menos que seu administrador tenha alterado).",
     "invalid": "Informe um número inteiro de dias entre 1 e 365 ou deixe vazio.",
@@ -1803,8 +1807,13 @@
       "saving": "Salvando…"
     },
     "messages": {
-      "saved": "Retenção atualizada para {{name}}",
-      "saveFailed": "Falha ao atualizar a retenção de {{name}}"
+      "saved": "Configurações de dados armazenados atualizadas para {{name}}",
+      "saveFailed": "Falha ao atualizar as configurações de dados armazenados de {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Armazenar tráfego permitido",
+      "helpOff": "Somente consultas bloqueadas e redirecionadas são armazenadas. As consultas permitidas costumam ser quase todo o tráfego, e seu provedor de DNS as mantém nos próprios relatórios.",
+      "helpOn": "As consultas permitidas também são armazenadas, o que costuma significar cerca de 100 vezes mais linhas. Desativar depois não exclui as consultas permitidas já armazenadas; a retenção as remove."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
