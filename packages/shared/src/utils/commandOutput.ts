@@ -17,19 +17,39 @@ const CARET_SGR = /\^\[\[[0-9;]*m/g;
 // eslint-disable-next-line no-control-regex
 const STRAY_CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
+/**
+ * Input bound for stripAnsi, in UTF-16 code units: 256 KiB, 8x the agent's
+ * 32 KiB installer-output cap (agent result_limits.go
+ * maxInstallerOutputBytes), so real output is never cut. Longer input keeps
+ * its TAIL, where a failing tool prints its reason. The bound caps the work
+ * done on device-controlled text; every pattern below is also linear.
+ */
+export const STRIP_ANSI_MAX_INPUT_CHARS = 256 * 1024;
+
+/** The final frame of a line a terminal redrew with bare \r (spinners). Linear. */
+function lastCarriageReturnFrame(line: string): string {
+  // A trailing \r overwrites nothing; skip it without a /\r+$/ regex, which
+  // backtracks quadratically on a long \r run that is not at the end.
+  let end = line.length;
+  while (end > 0 && line.charCodeAt(end - 1) === 13) end--;
+  const start = line.lastIndexOf('\r', end - 1) + 1;
+  return line.slice(start, end);
+}
+
 /** Remove ANSI/VT escape sequences and stray control characters. */
 export function stripAnsi(text: string): string {
-  return text
+  const bounded =
+    text.length > STRIP_ANSI_MAX_INPUT_CHARS ? text.slice(text.length - STRIP_ANSI_MAX_INPUT_CHARS) : text;
+  return bounded
     .replace(OSC_SEQUENCE, '')
     .replace(CSI_SEQUENCE, '')
     .replace(OTHER_ESCAPE, '')
     .replace(CARET_SGR, '')
     .replace(/\r\n/g, '\n')
     // A bare \r is a terminal overwrite (progress spinner): keep the frame
-    // that was left on screen, not every frame as its own line. A trailing
-    // \r overwrites nothing.
+    // that was left on screen, not every frame as its own line.
     .split('\n')
-    .map((line) => line.replace(/\r+$/, '').split('\r').pop() ?? '')
+    .map(lastCarriageReturnFrame)
     .join('\n')
     .replace(STRAY_CONTROLS, '');
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsi, commandOutputExcerpt } from './commandOutput';
+import { stripAnsi, commandOutputExcerpt, STRIP_ANSI_MAX_INPUT_CHARS } from './commandOutput';
 
 const ESC = '\u001b';
 
@@ -21,6 +21,31 @@ describe('stripAnsi', () => {
     expect(stripAnsi('Downloading 10%\rDownloading 50%\rDownloading 100%\r\nERR boom\r\n')).toBe(
       'Downloading 100%\nERR boom\n',
     );
+  });
+
+  it('stays linear on hostile device output (no regex backtracking blow-up)', () => {
+    const hostile = [
+      `${'\r'.repeat(100_000)}x`, // long \r run not at end of line
+      `${ESC}[${'0'.repeat(100_000)}`, // unterminated CSI
+      `${ESC}]${'a'.repeat(100_000)}`, // unterminated OSC
+      `^[[${'1'.repeat(100_000)}`, // unterminated caret SGR
+      `${ESC}[`.repeat(50_000), // many CSI starts
+      `${ESC}]`.repeat(50_000), // many OSC starts
+    ];
+    for (const input of hostile) {
+      const began = performance.now();
+      stripAnsi(input);
+      commandOutputExcerpt(input);
+      expect(performance.now() - began).toBeLessThan(100);
+    }
+    expect(stripAnsi(`${'\r'.repeat(100_000)}x`)).toBe('x');
+  });
+
+  it(`caps input at ${STRIP_ANSI_MAX_INPUT_CHARS} chars, keeping the tail`, () => {
+    const input = `${'a'.repeat(STRIP_ANSI_MAX_INPUT_CHARS)}TAIL`;
+    const out = stripAnsi(input);
+    expect(out.length).toBe(STRIP_ANSI_MAX_INPUT_CHARS);
+    expect(out.endsWith('TAIL')).toBe(true);
   });
 
   it('removes caret-notation SGR left behind by a terminal capture', () => {
