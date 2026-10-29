@@ -146,6 +146,7 @@ async function tenant() {
     siteId: site!.id,
     otherSiteId: otherSite!.id,
     orgRoleId: orgRole.id,
+    partnerRoleId: partnerRole.id,
     deviceId: device.id,
     siblingScriptId: siblingScript!.id,
     switcher,
@@ -678,6 +679,30 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(ids).not.toContain(monitorRetired.id);
     expect(before.data.find((r) => r.id === switched.id)?.conversion).toEqual({ id: s.conversionId, state: 'switched', flowId: s.flowId });
     expect(before.pagination?.total ?? before.data.length).toBe(before.data.length);
+
+    // A partner-scope caller sees a switched partner-wide Job too (the partner branch ANDs on the same predicate).
+    const pwJob = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: t.partnerCreator.id });
+    const sp = await converted(t, pwJob, {});
+    const pr = await t.asPartner(() => switchConversion(t.partnerAuth(), sp.conversionId, req()));
+    expect(pr.ok, JSON.stringify(pr)).toBe(true);
+    const pwRetired = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: t.partnerCreator.id });
+    await system(() => db.update(automations)
+      .set({ enabled: false, retiredAt: new Date(), retiredReason: 'monitor_deleted' })
+      .where(eq(automations.id, pwRetired.id)));
+    const partnerToken = await createAccessToken({
+      sub: t.partnerSwitcher.id, email: t.partnerSwitcher.email, roleId: t.partnerRoleId, orgId: null, partnerId: t.partnerId,
+      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const pres = await app.request('/automations?limit=100', { headers: { Authorization: `Bearer ${partnerToken}` } });
+    expect(pres.status, await pres.clone().text()).toBe(200);
+    const pbody = await pres.json() as { data: Array<{ id: string; conversion: unknown }>; pagination?: { total: number } };
+    const pids = pbody.data.map((r) => r.id);
+    expect(pids).toContain(pwJob.id);
+    expect(pids).toContain(switched.id);
+    expect(pids).not.toContain(pwRetired.id);
+    expect(pids).not.toContain(monitorRetired.id);
+    expect(pbody.data.find((r) => r.id === pwJob.id)?.conversion).toEqual({ id: sp.conversionId, state: 'switched', flowId: sp.flowId });
+    expect(pbody.pagination?.total ?? pbody.data.length).toBe(pbody.data.length);
 
     // After a revert the Job is an ordinary row again.
     const rv = await t.asOrg(() => revertConversion(t.orgAuth(), s.conversionId));

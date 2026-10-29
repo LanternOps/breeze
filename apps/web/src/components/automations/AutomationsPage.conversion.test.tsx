@@ -96,6 +96,21 @@ describe('AutomationsPage — Move to Flows (#5221)', () => {
     await waitFor(() => expect(within(cell).getByTestId('conversion-fidelity-badge').textContent).toBe('Needs review'));
   });
 
+  it('badges come from every page of live conversions (the list route caps limit at 100)', async () => {
+    const page = (offset: number) => Array.from({ length: 100 }, (_, i) => ({
+      id: `cx-${offset + i}`, automationId: `zz-${offset + i}`, flowId: 'f', state: 'shadow', fidelity: 'exact', findings: [],
+    }));
+    conv.listConversions.mockImplementation(async ({ state, offset = 0 }: { state: string; offset?: number }) => {
+      if (state !== 'shadow') return { conversions: [], total: 0 };
+      if (offset === 0) return { conversions: page(0), total: 101 };
+      return { conversions: [{ id: 'c-3', automationId: 'a-3', flowId: 'f-3', state: 'shadow', fidelity: 'needs_review', findings: [] }], total: 101 };
+    });
+    render(<AutomationsPage />);
+    const cell = await screen.findByTestId('automation-move-cell-a-3');
+    await waitFor(() => expect(within(cell).getByTestId('conversion-fidelity-badge').textContent).toBe('Needs review'));
+    expect(conv.listConversions).toHaveBeenCalledWith(expect.objectContaining({ state: 'shadow', offset: 100 }));
+  });
+
   it('switched row is read-only with a flow link', async () => {
     render(<AutomationsPage />);
     const link = await screen.findByTestId('automation-moved-link-a-2');

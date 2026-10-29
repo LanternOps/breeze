@@ -662,7 +662,8 @@
       "stepsHeading": "Passaggi del flusso",
       "startShadow": "Avvia ombra",
       "switch": "Passa…",
-      "switchedNote": "Ora il flusso esegue questa attività. L'attività è di sola lettura finché non la riporti indietro."
+      "switchedNote": "Ora il flusso esegue questa attività. L'attività è di sola lettura finché non la riporti indietro.",
+      "flowUnavailable": "Impossibile caricare il flusso. Puoi comunque riportare indietro l'attività."
     },
     "shadow": {
       "heading": "Ombra",

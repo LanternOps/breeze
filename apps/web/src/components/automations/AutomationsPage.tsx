@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Plus } from 'lucide-react';
@@ -168,6 +168,9 @@ function toRunHistoryRun(raw: unknown, automation: Automation): RunHistoryRun {
 }
 
 const RUN_HISTORY_POLL_MS = 4000;
+/** The conversions list route caps `limit` at 100; 20 pages covers 2,000 live conversions per state. */
+const CONVERSION_PAGE_SIZE = 100;
+const CONVERSION_PAGES_MAX = 20;
 
 const DEVICE_RESULT_STATUSES = ['pending', 'running', 'success', 'failed', 'skipped'] as const;
 
@@ -350,19 +353,27 @@ export default function AutomationsPage() {
 
   // Fidelity for the column: the live (shadow / switched) conversions. A 404
   // means Flows are off here; the column is then not shown at all.
+  const conversionsSeq = useRef(0);
   const fetchConversions = useCallback(async () => {
+    const mine = ++conversionsSeq.current;
+    const all = async (state: 'shadow' | 'switched') => {
+      const out: FlowConversionDto[] = [];
+      for (let page = 0; page < CONVERSION_PAGES_MAX; page += 1) {
+        const r = await listConversions({ state, limit: CONVERSION_PAGE_SIZE, offset: page * CONVERSION_PAGE_SIZE });
+        out.push(...r.conversions);
+        if (r.conversions.length < CONVERSION_PAGE_SIZE || out.length >= r.total) break;
+      }
+      return out;
+    };
     try {
-      const [shadow, switched] = await Promise.all([
-        listConversions({ state: 'shadow', limit: 100 }),
-        listConversions({ state: 'switched', limit: 100 }),
-      ]);
-      setLiveConversions([...shadow.conversions, ...switched.conversions]);
+      const [shadow, switched] = await Promise.all([all('shadow'), all('switched')]);
+      if (mine === conversionsSeq.current) setLiveConversions([...shadow, ...switched]);
     } catch (err) {
-      // The column still works without badges; the panel loads its own preview.
+      // Keep the badges already shown: the column works without them and the
+      // panel loads its own preview. A 404 means Flows are off here.
       if (!(err instanceof ActionError) || err.status !== 404) {
         console.warn('[AutomationsPage] could not load conversions', err);
       }
-      setLiveConversions([]);
     }
   }, []);
 

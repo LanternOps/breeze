@@ -233,6 +233,36 @@ describe('SwitchDialog', () => {
     expect(onSwitched).not.toHaveBeenCalled();
   });
 
+  it('an unmapped refusal shows the server message inline (it is not toasted)', async () => {
+    api.switchConversion.mockRejectedValue(new ActionError('Permission denied', 403, undefined, { error: 'Permission denied' }));
+    renderDialog({ preview: preview({ preApprovalCandidates: [] }) });
+    tick('conversion-switch-accept-delegator');
+    fireEvent.click(confirm());
+    const err = await screen.findByTestId('conversion-switch-error');
+    expect(err.textContent).toContain('Permission denied');
+  });
+
+  it('the 10-minute floor lifts by itself while the dialog is open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let clock = NOW;
+      render(
+        <SwitchDialog
+          open jobName="J" partnerWide={false} isWebhook={false} conversion={conversion({}, 9 * 60_000)}
+          preview={preview({ preApprovalCandidates: [] })} flowVersion={3} onClose={vi.fn()} onSwitched={vi.fn()} now={() => clock}
+        />,
+      );
+      tick('conversion-switch-accept-delegator');
+      expect(confirm().disabled).toBe(true);
+      clock = NOW + 61_000;
+      await vi.advanceTimersByTimeAsync(61_000);
+      await waitFor(() => expect(confirm().disabled).toBe(false));
+      expect(screen.queryByTestId('conversion-switch-too-new')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a 409 automation_disabled renders inline and asks the caller to reload', async () => {
     api.switchConversion.mockRejectedValue(new ActionError('x', 409, undefined, { error: 'automation_disabled' }));
     const { onStale } = renderDialog({ preview: preview({ preApprovalCandidates: [] }) });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
@@ -20,6 +20,8 @@ import {
 
 interface SwitchErrorBody {
   error?: string;
+  /** The server's message, shown when the token has no localized copy (these refusals are never toasted). */
+  message?: string;
   findings?: FlowConversionFinding[];
   validation?: { issues?: Array<{ code: string; message: string }> };
   missing?: Array<{ stepId: string; permission: string }>;
@@ -87,6 +89,14 @@ export function SwitchDialog({
 
   const startedAt = Date.parse(conversion.shadow.startedAt);
   const tooNew = !Number.isFinite(startedAt) || now() - startedAt < CONVERSION_MIN_SHADOW_MS;
+  // Re-render once the 10-minute floor passes, so an open dialog unlocks by itself.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!tooNew || !Number.isFinite(startedAt)) return;
+    const wait = Math.max(0, startedAt + CONVERSION_MIN_SHADOW_MS - now()) + 250;
+    const timer = setTimeout(rerender, wait);
+    return () => clearTimeout(timer);
+  }, [tooNew, startedAt, now]);
   const blockedBy = conversion.switchBlockedBy;
   const needsAck = blockedBy !== null && ACKNOWLEDGEABLE.has(blockedBy);
   const hardBlocked = tooNew || (blockedBy !== null && !needsAck);
@@ -112,31 +122,36 @@ export function SwitchDialog({
     if (!canSubmit) return;
     setSubmitting(true);
     setError(null);
+    let result: SwitchConversionResult;
     try {
-      const result = await switchConversion(conversion.id, {
+      result = await switchConversion(conversion.id, {
         expectedFlowVersion: flowVersion,
         preApprovals: preApprovals.map((p) => ({ stepId: p.stepId, maxTargets: p.maxTargets as number })),
         acceptScopeWidening: widensScope && acceptScope,
         acceptDelegatorLifecycle: true,
         acknowledgeDivergence: needsAck && acknowledge,
       });
-      onSwitched(result);
     } catch (err) {
+      setSubmitting(false);
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (err instanceof ActionError) {
         const body = err.body && typeof err.body === 'object' ? (err.body as SwitchErrorBody) : {};
-        setError({ ...body, error: conversionErrorToken(err) ?? body.error });
+        setError({ ...body, error: conversionErrorToken(err) ?? body.error, message: err.message });
         if (err.status === 409) onStale?.();
       } else {
         showToast({ type: 'error', message: t('conversion.errors.switchFailed') });
       }
-    } finally {
-      setSubmitting(false);
+      return;
     }
+    setSubmitting(false);
+    // Outside the try: the switch succeeded, so a caller error is never reported as a failed switch.
+    onSwitched(result);
   };
 
   const errorCode = error?.error;
-  const errorText = errorCode === 'MFA_REQUIRED' ? t('errors:MFA_REQUIRED') : conversionErrorMessage(errorCode);
+  const errorText = errorCode === 'MFA_REQUIRED'
+    ? t('errors:MFA_REQUIRED')
+    : conversionErrorMessage(errorCode) ?? error?.message;
 
   return (
     <Dialog open={open} onClose={onClose} title={t('conversion.switch.title', { name: jobName })} maxWidth="2xl" className="p-6">

@@ -662,7 +662,8 @@
       "stepsHeading": "Akış adımları",
       "startShadow": "Gölgeyi başlat",
       "switch": "Geç…",
-      "switchedNote": "Akış artık bu işi çalıştırıyor. İşi geri taşıyana kadar iş salt okunurdur."
+      "switchedNote": "Akış artık bu işi çalıştırıyor. İşi geri taşıyana kadar iş salt okunurdur.",
+      "flowUnavailable": "Akış yüklenemedi. İşi yine de geri taşıyabilirsiniz."
     },
     "shadow": {
       "heading": "Gölge",

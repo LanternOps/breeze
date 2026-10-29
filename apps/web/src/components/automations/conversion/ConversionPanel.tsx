@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import type {
@@ -147,11 +147,18 @@ export function ConversionPanel({
   const [flow, setFlow] = useState<{ flow: FlowDetailDto; validation: FlowValidationResult } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // The flow is secondary: if it fails to load, findings and Revert stay usable.
+  const [flowUnavailable, setFlowUnavailable] = useState(false);
+  // Overlapping loads (an explicit reload plus the effect on a new conversionId):
+  // only the latest one may write state.
+  const loadSeq = useRef(0);
   const [busy, setBusy] = useState(false);
   const [switchOpen, setSwitchOpen] = useState(false);
   const [revertOpen, setRevertOpen] = useState(false);
 
   const load = useCallback(async (id: string | null) => {
+    const mine = ++loadSeq.current;
+    const current = () => mine === loadSeq.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -159,13 +166,26 @@ export function ConversionPanel({
         previewConversion(job.id),
         id ? getConversion(id) : Promise.resolve(null),
       ]);
+      if (!current()) return;
+      let f: { flow: FlowDetailDto; validation: FlowValidationResult } | null = null;
+      let unavailable = false;
+      if (c && c.state !== 'reverted') {
+        try {
+          f = await getFlow(c.flowId);
+        } catch (err) {
+          console.warn('[ConversionPanel] could not load the flow', err);
+          unavailable = true;
+        }
+      }
+      if (!current()) return;
       setPreview(p);
       setConversion(c);
-      setFlow(c && c.state !== 'reverted' ? await getFlow(c.flowId) : null);
+      setFlow(f);
+      setFlowUnavailable(unavailable);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : t('conversion.errors.loadFailed'));
+      if (current()) setLoadError(err instanceof Error ? err.message : t('conversion.errors.loadFailed'));
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [job.id, t]);
 
@@ -188,8 +208,14 @@ export function ConversionPanel({
       await load(created.id);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('conversion.errors.createFailed') });
-      else if (err.status === 409) await load(conversionId);
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('conversion.errors.createFailed') });
+      } else if (err.status === 409) {
+        // conversion_exists names the live generation; source_changed has none — reload the preview.
+        const existing = err.body && typeof err.body === 'object' ? (err.body as { conversionId?: unknown }).conversionId : undefined;
+        if (typeof existing === 'string') onChanged();
+        await load(typeof existing === 'string' ? existing : conversion?.id ?? null);
+      }
     } finally {
       setBusy(false);
     }
@@ -252,6 +278,12 @@ export function ConversionPanel({
                 </a>
               )}
             </div>
+
+            {flowUnavailable && (
+              <p role="status" className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-sm" data-testid="conversion-flow-unavailable">
+                {t('conversion.panel.flowUnavailable')}
+              </p>
+            )}
 
             {live?.state === 'switched' && (
               <p className="rounded border p-2 text-sm" data-testid="conversion-switched-note">

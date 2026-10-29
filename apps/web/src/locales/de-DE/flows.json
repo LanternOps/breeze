@@ -662,7 +662,8 @@
       "stepsHeading": "Ablaufschritte",
       "startShadow": "Schattenlauf starten",
       "switch": "Umschalten …",
-      "switchedNote": "Der Ablauf führt diesen Auftrag jetzt aus. Der Auftrag ist schreibgeschützt, bis Sie ihn zurückverschieben."
+      "switchedNote": "Der Ablauf führt diesen Auftrag jetzt aus. Der Auftrag ist schreibgeschützt, bis Sie ihn zurückverschieben.",
+      "flowUnavailable": "Der Ablauf konnte nicht geladen werden. Sie können den Auftrag trotzdem zurückverschieben."
     },
     "shadow": {
       "heading": "Schattenlauf",

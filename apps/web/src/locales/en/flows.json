@@ -662,7 +662,8 @@
       "stepsHeading": "Flow steps",
       "startShadow": "Start shadow",
       "switch": "Switch…",
-      "switchedNote": "The flow runs this job now. The job is read-only until you move it back."
+      "switchedNote": "The flow runs this job now. The job is read-only until you move it back.",
+      "flowUnavailable": "Couldn't load the flow. You can still move the job back."
     },
     "shadow": {
       "heading": "Shadow",

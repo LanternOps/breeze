@@ -662,7 +662,8 @@
       "stepsHeading": "Pasos del flujo",
       "startShadow": "Iniciar sombra",
       "switch": "Cambiar…",
-      "switchedNote": "El flujo ejecuta este trabajo ahora. El trabajo es de solo lectura hasta que lo devuelvas."
+      "switchedNote": "El flujo ejecuta este trabajo ahora. El trabajo es de solo lectura hasta que lo devuelvas.",
+      "flowUnavailable": "No se pudo cargar el flujo. Aún puedes devolver el trabajo."
     },
     "shadow": {
       "heading": "Sombra",

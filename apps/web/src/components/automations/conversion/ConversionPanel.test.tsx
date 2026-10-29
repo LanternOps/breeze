@@ -21,8 +21,10 @@ vi.mock('./conversionApi', async (importOriginal) => ({
 }));
 const flowsApi = vi.hoisted(() => ({ getFlow: vi.fn() }));
 vi.mock('../../flows/api', () => flowsApi);
-vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+const toast = vi.hoisted(() => ({ showToast: vi.fn() }));
+vi.mock('../../shared/Toast', () => toast);
 
+import { ActionError } from '@/lib/runAction';
 import { ConversionPanel, parseConvertHash } from './ConversionPanel';
 import { FidelityBadge } from './FidelityBadge';
 import { JobsMigrationBanner } from './JobsMigrationBanner';
@@ -178,6 +180,27 @@ describe('ConversionPanel', () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
+  it('a flow that fails to load still leaves Revert reachable for a switched Job', async () => {
+    api.getConversion.mockResolvedValue(conversion({ state: 'switched', switchAt: OLD }));
+    flowsApi.getFlow.mockRejectedValue(new Error('Request failed (500)'));
+    render(<ConversionPanel job={JOB} conversionId="c-1" canWrite onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(await screen.findByTestId('conversion-flow-unavailable')).toBeTruthy();
+    expect(screen.queryByTestId('conversion-panel-error')).toBeNull();
+    expect(screen.getByTestId('conversion-open-revert')).toBeTruthy();
+  });
+
+  it('a create that finds an existing conversion (409) loads it and tells the page', async () => {
+    api.createConversion.mockRejectedValue(new ActionError('exists', 409, undefined, { error: 'conversion_exists', conversionId: 'c-9' }));
+    api.getConversion.mockResolvedValue(conversion({ id: 'c-9' }));
+    const onChanged = vi.fn();
+    render(<ConversionPanel job={JOB} conversionId={null} canWrite onClose={vi.fn()} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('conversion-start-shadow'));
+    await waitFor(() => expect(api.getConversion).toHaveBeenCalledWith('c-9'));
+    expect(onChanged).toHaveBeenCalled();
+    expect(await screen.findByTestId('conversion-shadow')).toBeTruthy();
+    expect(screen.queryByTestId('conversion-start-shadow')).toBeNull();
+  });
+
   it('no write permission hides actions', async () => {
     api.getConversion.mockResolvedValue(conversion({ state: 'switched', switchAt: OLD }));
     render(<ConversionPanel job={JOB} conversionId="c-1" canWrite={false} onClose={vi.fn()} onChanged={vi.fn()} />);
@@ -205,6 +228,23 @@ describe('JobsMigrationBanner', () => {
     await waitFor(() => expect(api.createConversionsBulk).toHaveBeenCalledWith({ ownerScope: 'organization', orgId: 'o-1' }));
     expect((await screen.findByTestId('jobs-migration-summary')).textContent).toMatch(/2.*1/);
     expect(onConverted).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a network failure toasts once and re-enables the button', new Error('net'), 1],
+    ['an ActionError (already toasted by runAction) is not toasted again', new ActionError('x', 500), 0],
+    ['a 401 is left to the auth redirect', new ActionError('Unauthorized', 401), 0],
+  ] as const)('bulk: %s', async (_name, failure, toasts) => {
+    toast.showToast.mockReset();
+    api.createConversionsBulk.mockRejectedValue(failure);
+    const onConverted = vi.fn();
+    render(<JobsMigrationBanner canWrite orgId="o-1" onConverted={onConverted} />);
+    const button = screen.getByTestId('jobs-migration-convert-all') as HTMLButtonElement;
+    fireEvent.click(button);
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(toast.showToast).toHaveBeenCalledTimes(toasts);
+    expect(onConverted).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('jobs-migration-summary')).toBeNull();
   });
 
   it('no write permission hides the bulk action', () => {

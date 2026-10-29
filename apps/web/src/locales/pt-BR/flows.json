@@ -662,7 +662,8 @@
       "stepsHeading": "Etapas do fluxo",
       "startShadow": "Iniciar sombra",
       "switch": "Trocar…",
-      "switchedNote": "O fluxo executa este job agora. O job fica somente leitura até você movê-lo de volta."
+      "switchedNote": "O fluxo executa este job agora. O job fica somente leitura até você movê-lo de volta.",
+      "flowUnavailable": "Não foi possível carregar o fluxo. Você ainda pode devolver o job."
     },
     "shadow": {
       "heading": "Sombra",

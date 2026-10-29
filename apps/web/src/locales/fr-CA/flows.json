@@ -662,7 +662,8 @@
       "stepsHeading": "Étapes du flux",
       "startShadow": "Démarrer le mode fantôme",
       "switch": "Basculer…",
-      "switchedNote": "Le flux exécute maintenant cette tâche. La tâche est en lecture seule tant que vous ne la remettez pas en tâche."
+      "switchedNote": "Le flux exécute maintenant cette tâche. La tâche est en lecture seule tant que vous ne la remettez pas en tâche.",
+      "flowUnavailable": "Impossible de charger le flux. Vous pouvez tout de même remettre la tâche."
     },
     "shadow": {
       "heading": "Mode fantôme",
