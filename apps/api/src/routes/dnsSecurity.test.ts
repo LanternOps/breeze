@@ -715,6 +715,54 @@ describe('dns security routes', () => {
       expect(typeof body.summary.blockedRate).toBe('number');
     });
 
+    /** Shape-routed select mock: config read → configs; aggregation probe → count; summary → row; else []. */
+    function mockStatsByShape(configs: Array<Record<string, unknown>>, summaryRow: Record<string, number>) {
+      const thenable = (result: unknown): any => {
+        const p: any = Promise.resolve(result);
+        for (const m of ['from', 'leftJoin', 'where', 'groupBy', 'orderBy', 'limit']) p[m] = () => p;
+        return p;
+      };
+      vi.mocked(db.select).mockImplementation(((cols?: Record<string, unknown>) => {
+        const keys = cols ? Object.keys(cols) : [];
+        if (keys.length === 1 && keys[0] === 'config') return thenable(configs.map((config) => ({ config })));
+        if (keys.length === 1 && keys[0] === 'count') return thenable([{ count: 3 }]);
+        if (keys.includes('totalQueries')) return thenable([summaryRow]);
+        return thenable([]);
+      }) as any);
+    }
+
+    it('applies the coverage on the aggregated (> 7 day) path too', async () => {
+      mockStatsByShape([{}], { totalQueries: 120, blockedQueries: 100, allowedQueries: 0 });
+
+      const res = await app.request('/dns-security/stats?start=2026-09-01T00:00:00Z&end=2026-10-01T00:00:00Z');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('aggregated');
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary).toMatchObject({ allowedQueries: null, blockedRate: null, blockedQueries: 100 });
+    });
+
+    it('is none when the caller has no active integration at all', async () => {
+      mockStatsByShape([], row);
+
+      const body = await (await app.request('/dns-security/stats')).json();
+
+      expect(body.allowedTraffic).toBe('none');
+      expect(body.summary.allowedQueries).toBeNull();
+    });
+
+    it('nulls the total of an allowed-only view, and leaves a blocked-only view alone', async () => {
+      mockStatsByShape([{}], { totalQueries: 0, blockedQueries: 0, allowedQueries: 0, redirectedQueries: 0 });
+      const allowedOnly = await (await app.request('/dns-security/stats?action=allowed')).json();
+      expect(allowedOnly.summary).toMatchObject({ totalQueries: null, allowedQueries: null, blockedRate: null });
+
+      mockStatsByShape([{}], { totalQueries: 100, blockedQueries: 100, allowedQueries: 0, redirectedQueries: 0 });
+      const blockedOnly = await (await app.request('/dns-security/stats?action=blocked')).json();
+      expect(blockedOnly.allowedTraffic).toBe('none');
+      expect(blockedOnly.summary).toMatchObject({ totalQueries: 100, allowedQueries: 0, blockedRate: 100 });
+    });
+
     it('reports allowedTraffic=all when every integration stores allowed', async () => {
       mockRawStats({ ...row, totalQueries: 1120, allowedQueries: 1000 });
       vi.mocked(db.select).mockReturnValueOnce(integrationConfigsSel([{ storeAllowedTraffic: true }]) as any);

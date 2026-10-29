@@ -184,6 +184,8 @@ How each provider handles it:
 
 When no active integration in scope stores allowed traffic, `GET /dns-security/stats` returns `"allowedTraffic": "none"` with `allowedQueries` and `blockedRate` set to `null`, and the Overview tab shows **Not stored** instead of a zero. When only some integrations store it, the response says `"some"` and the counts are partial. The `get_dns_security` AI tool reports the same field with a short note.
 
+The coverage follows the integrations' current setting, not the history of the rows in the window. After you turn **Store allowed traffic** off, allowed rows that are still stored no longer appear in the totals, which show **Not stored**. After you turn it on, the allowed count covers only the time since then.
+
 #### Removing allowed queries stored before this change
 
 Breeze does not delete allowed queries that earlier versions stored. The nightly retention job removes them as they pass `retentionDays`. To free the space sooner, an operator can delete them by hand. Connect to the database as its owner (the API's `breeze_app` role cannot see rows outside a tenant scope), then run this in batches until it reports `DELETE 0`:
