@@ -138,13 +138,14 @@ func (h *Heartbeat) hideBanner(sessionID, targetWinSession string, expect *shown
 	rec, wasShown := b.shown[sessionID]
 	if expect != nil && rec != expect {
 		b.mu.Unlock()
+		log.Debug("swept banner hide skipped: the session was shown again", "sessionId", sessionID)
 		return
 	}
 	if wasShown {
 		delete(b.shown, sessionID)
 		targetWinSession = rec.target
 	}
-	sent, held := h.sendBannerHideLocked(sessionID, targetWinSession)
+	sent, held := h.sendBannerHideLocked(sessionID, targetWinSession, false)
 	var p *pendingBannerHide
 	if wasShown && !held {
 		p = &pendingBannerHide{target: targetWinSession, delivered: sent}
@@ -166,16 +167,22 @@ func (h *Heartbeat) hideBanner(sessionID, targetWinSession string, expect *shown
 
 // sendBannerHideLocked sends one banner_hide. held reports that it was not
 // sent because another session's banner is up where it would land; sent
-// that a helper took it. Callers hold h.banners.mu.
-func (h *Heartbeat) sendBannerHideLocked(sessionID, target string) (sent, held bool) {
+// that a helper took it. A re-send logs a missing helper at Debug: a helper
+// restarting is what the re-sends are for, and resendBannerHide warns once if
+// none of them ever lands. Callers hold h.banners.mu.
+func (h *Heartbeat) sendBannerHideLocked(sessionID, target string, resend bool) (sent, held bool) {
 	if other := h.banners.bannerHideConflictLocked(sessionID, target); other != "" {
 		log.Info("session banner hide held: another session's banner is up",
-			"sessionId", sessionID, "liveSessionId", other)
+			"sessionId", sessionID, "liveSessionId", other, "resend", resend)
 		return false, true
 	}
 	session := h.bannerUISession(target)
 	if session == nil {
-		log.Warn("no consent-ui-capable helper to hide session banner", "sessionId", sessionID, "targetWinSession", target)
+		if resend {
+			log.Debug("no consent-ui-capable helper for banner hide re-send", "sessionId", sessionID, "targetWinSession", target)
+		} else {
+			log.Warn("no consent-ui-capable helper to hide session banner", "sessionId", sessionID, "targetWinSession", target)
+		}
 		return false, false
 	}
 	if err := session.SendNotify("banner-hide-"+sessionID, ipc.TypeBannerHide, map[string]any{"sessionId": sessionID}); err != nil {
@@ -220,7 +227,7 @@ func (h *Heartbeat) resendBannerHide(sessionID string, p *pendingBannerHide, del
 			b.mu.Unlock()
 			return
 		}
-		sent, held := h.sendBannerHideLocked(sessionID, p.target)
+		sent, held := h.sendBannerHideLocked(sessionID, p.target, true)
 		if held {
 			delete(b.pending, sessionID)
 			b.mu.Unlock()

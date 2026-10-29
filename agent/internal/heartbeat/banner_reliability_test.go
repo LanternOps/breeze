@@ -73,10 +73,13 @@ func TestBannerHideIsResentToAHelperThatComesBack(t *testing.T) {
 		t.Fatalf("expected banner_show, got %+v", env)
 	}
 
+	// Wide enough that a loaded -race host cannot run out the schedule
+	// before the helper is back.
+	h.bannerHideRetryDelays = []time.Duration{150 * time.Millisecond, 300 * time.Millisecond, 600 * time.Millisecond}
+	second := newConsentHelper(t, []string{ipc.ScopeConsentUI})
+
 	cur.Store(nil) // the helper is gone when the session ends
 	h.sendBannerHide(bannerTestSession, "")
-
-	second := newConsentHelper(t, []string{ipc.ScopeConsentUI})
 	cur.Store(second.session)
 	env := second.recvWithin(2 * time.Second)
 	if env == nil || env.Type != ipc.TypeBannerHide {
@@ -142,16 +145,21 @@ func TestBannerReshowCancelsPendingHides(t *testing.T) {
 	var cur atomic.Pointer[sessionbroker.Session]
 	cur.Store(helper.session)
 	h := bannerTestHeartbeat(t, &cur)
+	// The first re-send must not fire before the re-show on a slow host.
+	h.bannerHideRetryDelays = []time.Duration{300 * time.Millisecond, 600 * time.Millisecond}
 
 	h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "")
 	_ = helper.recv(t)
 	h.sendBannerHide(bannerTestSession, "")
+	h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "")
 	if env := helper.recv(t); env == nil || env.Type != ipc.TypeBannerHide {
 		t.Fatalf("expected the immediate hide, got %+v", env)
 	}
-	h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "")
+	if env := helper.recv(t); env == nil || env.Type != ipc.TypeBannerShow {
+		t.Fatalf("expected the re-show, got %+v", env)
+	}
 
-	for env := helper.recvWithin(400 * time.Millisecond); env != nil; env = helper.recvWithin(400 * time.Millisecond) {
+	for env := helper.recvWithin(time.Second); env != nil; env = helper.recvWithin(time.Second) {
 		if env.Type == ipc.TypeBannerHide {
 			t.Fatal("a re-shown session's banner must not be hidden by its earlier end's re-sends")
 		}
@@ -194,6 +202,9 @@ func TestBannerSweepKeepsLiveSessionsBanners(t *testing.T) {
 		{"websocket stream", func(t *testing.T, h *Heartbeat, _ *sessionbroker.Session) {
 			setUnexportedField(t, h.wsDesktopMgr, "sessions", map[string]*desktop.WsStreamSession{bannerTestSession: {}})
 		}},
+		{"in-process webrtc", func(t *testing.T, h *Heartbeat, _ *sessionbroker.Session) {
+			setUnexportedField(t, h.desktopMgr, "sessions", map[string]*desktop.Session{bannerTestSession: {}})
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			helper := newConsentHelper(t, []string{ipc.ScopeConsentUI})
@@ -231,5 +242,80 @@ func TestBannerSweepTreatsADisconnectedOwnerAsGone(t *testing.T) {
 	env := helper.recvWithin(2 * time.Second)
 	if env == nil || env.Type != ipc.TypeBannerHide {
 		t.Fatalf("a banner whose owner helper is gone must be hidden, got %+v", env)
+	}
+}
+
+// A re-send owed to an ended session is abandoned once another session's
+// banner comes up where it would land.
+func TestBannerHideResendIsHeldWhenAnotherBannerComesUp(t *testing.T) {
+	helper := newConsentHelper(t, []string{ipc.ScopeConsentUI})
+	var cur atomic.Pointer[sessionbroker.Session]
+	cur.Store(helper.session)
+	h := bannerTestHeartbeat(t, &cur)
+	h.bannerHideRetryDelays = []time.Duration{300 * time.Millisecond, 600 * time.Millisecond}
+
+	h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "")
+	h.sendBannerHide(bannerTestSession, "")
+	h.sendBannerShow(bannerTestSession2, bannerTestPrompt(), "")
+	for _, want := range []string{ipc.TypeBannerShow, ipc.TypeBannerHide, ipc.TypeBannerShow} {
+		if env := helper.recv(t); env == nil || env.Type != want {
+			t.Fatalf("expected %s, got %+v", want, env)
+		}
+	}
+	if env := helper.recvWithin(time.Second); env != nil {
+		t.Fatalf("a re-send must not hide the newer session's banner, got %s", env.Type)
+	}
+}
+
+// Banners in different Windows sessions never hold each other's hides; an
+// untargeted banner holds every hide, since an untargeted send can land in
+// any session.
+func TestBannerHideConflictFollowsTheTargetSession(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		otherTarget string
+		wantHide    bool
+	}{
+		{"other Windows session", "2", true},
+		{"same Windows session", "1", false},
+		{"untargeted other banner", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			helper := newConsentHelper(t, []string{ipc.ScopeConsentUI})
+			var cur atomic.Pointer[sessionbroker.Session]
+			cur.Store(helper.session)
+			h := bannerTestHeartbeat(t, &cur)
+
+			h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "1")
+			_ = helper.recv(t)
+			h.sendBannerShow(bannerTestSession2, bannerTestPrompt(), tc.otherTarget)
+			_ = helper.recv(t)
+
+			h.sendBannerHide(bannerTestSession, "1")
+			env := helper.recvWithin(300 * time.Millisecond)
+			if got := env != nil && env.Type == ipc.TypeBannerHide; got != tc.wantHide {
+				t.Fatalf("hide sent = %v, want %v", got, tc.wantHide)
+			}
+		})
+	}
+}
+
+// Only consecutive misses count: a session seen live again starts over.
+func TestBannerSweepMissesResetWhenTheSessionIsSeenAgain(t *testing.T) {
+	helper := newConsentHelper(t, []string{ipc.ScopeConsentUI})
+	var cur atomic.Pointer[sessionbroker.Session]
+	cur.Store(helper.session)
+	h := bannerTestHeartbeat(t, &cur)
+
+	h.sendBannerShow(bannerTestSession, bannerTestPrompt(), "")
+	_ = helper.recv(t)
+
+	h.sweepSessionBanners() // gone: miss 1
+	setUnexportedField(t, h.wsDesktopMgr, "sessions", map[string]*desktop.WsStreamSession{bannerTestSession: {}})
+	h.sweepSessionBanners() // live: reset
+	setUnexportedField(t, h.wsDesktopMgr, "sessions", map[string]*desktop.WsStreamSession{})
+	h.sweepSessionBanners() // gone: miss 1 again
+	if env := helper.recvWithin(300 * time.Millisecond); env != nil {
+		t.Fatalf("misses must reset when the session is seen live, got %s", env.Type)
 	}
 }
