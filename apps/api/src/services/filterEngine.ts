@@ -501,6 +501,11 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     if (field === 'software.version') {
       const parsed = softwareVersionValueSchema.safeParse(value);
       if (!parsed.success) throw new FilterValueError('software.version requires a non-empty name and version');
+      // A target with no numeric prefix keys to NULL and would match nothing
+      // silently; refuse it here too, since some callers skip validateFilter.
+      if (normalizeSoftwareVersion(parsed.data.version) === null) {
+        throw new FilterValueError('software.version version must start with a number, for example 10.0.5');
+      }
       const actual = softwareVersionKeySql(sql`${softwareInventory.version}`);
       const expected = softwareVersionKeySql(sql`${parsed.data.version}::text`);
       let comparison: SQL<unknown>;

@@ -9,7 +9,7 @@ import {
   evaluateFilter, extractFieldsFromFilter, softwareVersionKeySql,
   type FilterCondition, type FilterConditionGroup,
 } from '../../services/filterEngine';
-import { compareSoftwareVersions } from '../../services/softwareVersionCompare';
+import { compareInventoryVersions } from '../../services/softwareVersionCompare';
 import { setupTestEnvironment } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -72,9 +72,10 @@ describe('software version/vendor dynamic groups against Postgres', () => {
     expect(await version('below')).toEqual([low, multiple].sort());
     expect(await version('atLeast')).toEqual([high, suffix, multiple].sort());
     expect(await version('equals', 'v10.0.5.0-beta')).toEqual([suffix]);
-    expect(await version('below', 'unknown')).toEqual([]);
-    expect(await version('equals', 'unknown')).toEqual([]);
-    expect(await version('atLeast', 'unknown')).toEqual([]);
+    // A target with no numeric prefix is refused rather than matching nothing.
+    for (const op of ['below', 'equals', 'atLeast'] as const) {
+      await expect(version(op, 'unknown')).rejects.toThrow(/must start with a number/);
+    }
     expect(await run({ field: 'software.vendor', operator: 'equals', value: 'acme' })).toEqual([low, suffix, multiple].sort());
     expect(await run({ field: 'software.vendor', operator: 'contains', value: 'ACME' })).toEqual([low, high, suffix, multiple].sort());
     expect(await run({ field: 'software.vendor', operator: 'contains', value: '%_' })).toEqual([differentName]);
@@ -105,7 +106,7 @@ describe('software version/vendor dynamic groups against Postgres', () => {
     for (const row of rows) {
       const a = versions[Number(row.a)]!;
       const b = versions[Number(row.b)]!;
-      expect(row.comparison, `${JSON.stringify(a)} vs ${JSON.stringify(b)}`).toBe(compareSoftwareVersions(a, b));
+      expect(row.comparison, `${JSON.stringify(a)} vs ${JSON.stringify(b)}`).toBe(compareInventoryVersions(a, b));
     }
     const keys = await withSystemDbAccessContext(() => db.execute(sql`
       SELECT ${softwareVersionKeySql(sql`'0.0'`)}::text AS zero,

@@ -85,7 +85,10 @@ export function FilterValueEditor({
   }, [field.key]);
 
   const setOp = (nextOp: FilterOperator) => {
-    onChange({ ...condition, operator: nextOp, value: defaultValueForOp(field, nextOp) });
+    // below / atLeast / equals all take the same { name, version } value: keep what was typed.
+    const v = condition.value;
+    const keepSoftwareVersion = field.key === 'software.version' && typeof v === 'object' && v !== null && 'name' in v && 'version' in v;
+    onChange({ ...condition, operator: nextOp, value: keepSoftwareVersion ? v : defaultValueForOp(field, nextOp) });
   };
 
   const setValue = (v: FilterValue) => {

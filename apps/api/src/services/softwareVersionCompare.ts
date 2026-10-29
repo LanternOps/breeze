@@ -48,7 +48,7 @@ export function normalizeSoftwareVersion(version: string | null | undefined): st
 }
 
 /** Compare inventory version keys with arbitrary-length integer segments. */
-export function compareSoftwareVersions(
+export function compareInventoryVersions(
   a: string | null | undefined,
   b: string | null | undefined,
 ): -1 | 0 | 1 | null {

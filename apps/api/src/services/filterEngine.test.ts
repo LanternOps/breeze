@@ -133,6 +133,19 @@ describe('software version and vendor predicates (#10539)', () => {
     expect(validateFilter(condition as FilterCondition).valid).toBe(false);
   });
 
+  // Saved rows can bypass validateFilter (route body is z.any(), legacy/imported
+  // rows): the compiler must refuse, never fall back to match-nothing/match-all.
+  it.each([
+    { field: 'software.version', operator: 'below', value: 'Chrome' },
+    { field: 'software.version', operator: 'contains', value: { name: 'A', version: '1' } },
+    { field: 'software.vendor', operator: 'equals', value: { name: 'A', version: '1' } },
+    { field: 'software.vendor', operator: 'below', value: 'x' },
+    // No numeric prefix: would compile to `version < NULL` and match nothing silently.
+    { field: 'software.version', operator: 'below', value: { name: 'A', version: 'latest' } },
+  ])('buildConditionSQL refuses malformed software rule %j', (condition) => {
+    expect(() => buildConditionSQL(condition as FilterCondition)).toThrow(FilterValueError);
+  });
+
   it('extracts new keys for filter_fields_used, including nested conditions, and refuses execution targeting', () => {
     expect(extractFieldsFromFilter({ operator: 'AND', conditions: [
       { field: 'software.version', operator: 'below', value: { name: 'App', version: '2' } },

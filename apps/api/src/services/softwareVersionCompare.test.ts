@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareSoftwareVersions, compareVersions, normalizeSoftwareVersion } from './softwareVersionCompare';
+import { compareInventoryVersions, compareVersions, normalizeSoftwareVersion } from './softwareVersionCompare';
 
 describe('normalizeSoftwareVersion', () => {
   it.each([
@@ -19,12 +19,12 @@ describe('normalizeSoftwareVersion', () => {
 
   it.each(['', '   ', 'unknown', null, undefined])('rejects %s', (input) => {
     expect(normalizeSoftwareVersion(input)).toBeNull();
-    expect(compareSoftwareVersions(input, '1.0')).toBeNull();
-    expect(compareSoftwareVersions('1.0', input)).toBeNull();
+    expect(compareInventoryVersions(input, '1.0')).toBeNull();
+    expect(compareInventoryVersions('1.0', input)).toBeNull();
   });
 });
 
-describe('compareSoftwareVersions', () => {
+describe('compareInventoryVersions', () => {
   it.each([
     ['1.2.10', '1.2.9', 1],
     ['10.10', '10.2', 1],
@@ -41,8 +41,8 @@ describe('compareSoftwareVersions', () => {
     ['0.0', '0', 0],
     ['1.0.05', '1.0.5', 0],
   ] as const)('compares %s against %s', (a, b, expected) => {
-    expect(compareSoftwareVersions(a, b)).toBe(expected);
-    expect(compareSoftwareVersions(b, a)).toBe(expected === 0 ? 0 : -expected);
+    expect(compareInventoryVersions(a, b)).toBe(expected);
+    expect(compareInventoryVersions(b, a)).toBe(expected === 0 ? 0 : -expected);
   });
 
   it('agrees wherever strict comparison is non-null for safe numeric and decorated versions', () => {
@@ -53,7 +53,7 @@ describe('compareSoftwareVersions', () => {
       for (const b of versions) {
         const strict = compareVersions(a, b);
         if (strict !== null) {
-          expect(compareSoftwareVersions(a, b), `${a} vs ${b}`).toBe(strict);
+          expect(compareInventoryVersions(a, b), `${a} vs ${b}`).toBe(strict);
         }
       }
     }
@@ -68,6 +68,6 @@ describe('compareSoftwareVersions', () => {
 
   it('keeps legacy rounding unchanged while the inventory comparator retains huge-integer precision', () => {
     expect(compareVersions('9007199254740992', '9007199254740993')).toBe(0);
-    expect(compareSoftwareVersions('9007199254740992', '9007199254740993')).toBe(-1);
+    expect(compareInventoryVersions('9007199254740992', '9007199254740993')).toBe(-1);
   });
 });

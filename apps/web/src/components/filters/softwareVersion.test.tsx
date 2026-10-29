@@ -67,4 +67,13 @@ describe('software version filters', () => {
     expect(within(screen.getByTestId('filter-operator-select')).getAllByRole('option').map(o => o.textContent)).toEqual(['below', 'at least', 'is']);
     expect(summarizeCondition(field, condition)).toBe('Software Version below Chrome 130');
   });
+
+  it('keeps the typed name and version when the chip editor operator changes', () => {
+    const field = versionField();
+    const onChange = vi.fn();
+    const condition: FilterCondition = { field: field.key, operator: 'below', value: { name: 'Chrome', version: '130' } };
+    render(<FilterValueEditor field={field} condition={condition} onChange={onChange} />);
+    fireEvent.change(screen.getByTestId('filter-operator-select'), { target: { value: 'atLeast' } });
+    expect(onChange).toHaveBeenLastCalledWith({ field: field.key, operator: 'atLeast', value: { name: 'Chrome', version: '130' } });
+  });
 });
