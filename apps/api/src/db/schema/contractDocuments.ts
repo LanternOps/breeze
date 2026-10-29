@@ -184,7 +184,7 @@ export const contractDocuments = pgTable('contract_documents', {
   // The template name AS IT WAS AT SIGNING (#10294 follow-up): the certificate,
   // the portal list and the signed-copy email name the agreement from this, so
   // a later template rename never changes signed evidence. NULL only on a row
-  // written before 2027-01-13-110000-contract-documents-template-name-snapshot
+  // written before 2027-01-14-120000-contract-documents-template-name-snapshot
   // by an instance still on older code; readers fall back to the live name.
   templateNameSnapshot: varchar('template_name_snapshot', { length: 255 })
 }, (t) => [
