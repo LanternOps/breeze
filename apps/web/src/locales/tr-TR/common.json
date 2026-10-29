@@ -1303,7 +1303,7 @@
         "thisOrganizationOnly": "Yalnızca bu kuruluş",
         "all": "Tümü",
         "organization": "Kuruluş",
-        "test": "Test"
+        "test": "Test gönderimi"
       },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} teslimat denemeleri",

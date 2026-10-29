@@ -1303,7 +1303,7 @@
         "thisOrganizationOnly": "Cette organisation seulement",
         "all": "Toutes",
         "organization": "Organisation",
-        "test": "Test"
+        "test": "Envoi de test"
       },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentatives de livraison",
