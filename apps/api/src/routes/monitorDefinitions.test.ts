@@ -14,6 +14,7 @@ import { MONITOR_KINDS } from '@breeze/shared';
  */
 
 const {
+  loadPolicyApplicationProvidersMock,
   hasPermMock,
   mfaOkMock,
   listMonitorDefinitionsMock,
@@ -25,6 +26,7 @@ const {
   selectMock,
   isMonitorAttachableToPolicyMock,
 } = vi.hoisted(() => ({
+  loadPolicyApplicationProvidersMock: vi.fn(async (): Promise<string[]> => []),
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOkMock: vi.fn(() => true),
   listMonitorDefinitionsMock: vi.fn(),
@@ -40,6 +42,8 @@ const {
   // that the route respects the pre-check's answer.
   isMonitorAttachableToPolicyMock: vi.fn(async () => true),
 }));
+
+vi.mock('../services/eventLogPolicyProviders', () => ({ loadPolicyApplicationProviders: loadPolicyApplicationProvidersMock }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
@@ -254,6 +258,7 @@ function jsonRequest(app: Hono, method: string, path: string, body?: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  loadPolicyApplicationProvidersMock.mockResolvedValue([]);
   hasPermMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   selectMock.mockReturnValue(selectChain([]));
@@ -389,6 +394,35 @@ describe('event_log collection warnings at save (#8174)', () => {
     sourcePattern,
     countThreshold: 1,
     windowMinutes: 60,
+  });
+
+  it.each(['POST', 'PATCH'])('%s uses scoped policy providers for advisory warnings', async (method) => {
+    const row = { ...monitorRow(), kind: 'event_log', condition: infoCondition('Dell UPS Local Node Manager') };
+    createMonitorDefinitionMock.mockResolvedValue(row);
+    updateMonitorDefinitionMock.mockResolvedValue(row);
+    const request = () => jsonRequest(buildApp(), method, method === 'POST' ? '' : `/${MONITOR_ID}`, method === 'POST' ? validCreateBody() : { name: 'Renamed' });
+    expect((await (await request()).json()).warnings).toHaveLength(1);
+    loadPolicyApplicationProvidersMock.mockResolvedValue(['Dell UPS Local Node Manager']);
+    expect((await (await request()).json()).warnings).toBeUndefined();
+    expect(loadPolicyApplicationProvidersMock).toHaveBeenLastCalledWith({ orgId: ORG_ID, partnerId: null });
+  });
+
+  it('does not query providers for other monitor kinds or composites without event logs', async () => {
+    for (const row of [monitorRow(), monitorRow({ kind: 'composite', condition: { children: [{ kind: 'cpu', condition: {} }] } })]) {
+      createMonitorDefinitionMock.mockResolvedValue(row);
+      await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+    }
+    expect(loadPolicyApplicationProvidersMock).not.toHaveBeenCalled();
+  });
+
+  it('queries providers for an event-log composite child', async () => {
+    loadPolicyApplicationProvidersMock.mockResolvedValue(['Dell UPS Local Node Manager']);
+    createMonitorDefinitionMock.mockResolvedValue(monitorRow({ kind: 'composite', condition: { children: [
+      { kind: 'event_log', condition: infoCondition('Dell UPS') },
+    ] } }));
+    const response = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+    expect((await response.json()).warnings).toBeUndefined();
+    expect(loadPolicyApplicationProvidersMock).toHaveBeenCalledTimes(1);
   });
 
   it('POST returns warnings for an info-level Application source outside the agent allowlist', async () => {

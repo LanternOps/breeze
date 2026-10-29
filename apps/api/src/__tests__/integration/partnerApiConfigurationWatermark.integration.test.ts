@@ -539,6 +539,7 @@ describe('partner desired-configuration material watermarks', () => {
       retentionDays: 30, maxEventsPerCycle: 100,
       collectCategories: ['security', 'hardware', 'application', 'system'],
       minimumLevel: 'info', collectionIntervalMinutes: 15, rateLimitPerHour: 12000,
+      applicationProviders: [],
     });
     expect(settings.sensitive_data).toEqual({
       detectionClasses: ['credential'], includePaths: [], excludePaths: [], fileTypes: [],
