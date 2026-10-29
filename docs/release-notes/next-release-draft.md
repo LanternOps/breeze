@@ -166,6 +166,9 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Still dark: nothing user-visible until W3 adds the create route. No migration, setting or environment variable.
 - A six-hour retry sweep repairs missed evaluations; it is a retry cadence, with no freshness SLA.
 
+### Device group software rules
+
+Dynamic device groups can now match software versions below, at least, or equal to a chosen version, and match software vendors by name or substring. Version rules compare numeric segments and ignore suffixes such as “(x64)” or “-beta”, so 1.2 and 1.2.0 match equally. Membership updates when installed versions or vendors change, even when software names stay the same.
 ### Event logs
 
 - Agent event-log uploads are now validated per row (#10494). Previously one invalid event made the API reject the whole upload with 400, and every event in that collection window was lost.
@@ -195,6 +198,13 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Partner-owned configuration policies can assign partner-wide groups from the Assignments tab. A partner-wide monitor's **Deploy monitor** dialog lists partner-wide groups next to organization groups.
 - The AI assistant's refusal to change a partner-wide group now says where a partner administrator can change it.
 - No migration, setting, or environment variable.
+### AI full control (#6754) — W14 billing tools, PR B
+
+- **Generate a contract invoice from chat (four-eyes).** `manage_contracts` gains `preview_invoice` (what the next billing run would invoice) and `generate_invoice`, which needs a second approver and refuses to release if the invoice changed after approval. An auto-issued invoice is emailed only if its total is the approved one, and only to the approved recipients.
+- **QuickBooks / Xero sync tool.** `manage_accounting_sync` reads connection status, mappings and customers; links, unlinks or re-syncs a mapping (one approver); pushes invoices into the books (four-eyes, up to 10 per call, pushed at release rather than queued).
+- **Durable approvals of partner-wide actions now release.** A released action reconstructed for a partner user now carries that user's current "all organizations" access, so partner-wide gates (rate cards, partner billing settings, accounting) no longer refuse a full-partner administrator's approved action.
+- AI agents are never offered these writes. No migration, setting or environment variable.
+
 ### Agent event-log collection
 
 - **Windows event logs are no longer skipped.** The collector keeps a record-ID bookmark per query in `eventlog_bookmarks.json` in the agent data directory and advances it only past events it uploaded. A failed, timed-out or capped query, or a failed upload, is retried on the next pass instead of being dropped. Queries read oldest-first, so a backlog drains over passes; a bookmark more than 24 hours behind skips the older events and logs a warning.

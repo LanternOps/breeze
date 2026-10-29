@@ -2871,7 +2871,9 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
       "logShippingFailing": "Günlük gönderimi başarısız"
     }
@@ -2941,7 +2943,9 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
       "logShippingFailing": "Günlük gönderimi başarısız"
     }
@@ -3028,7 +3032,9 @@
       },
       "software": {
         "installed": "Yazılım Yüklü",
-        "notInstalled": "Eksik Yazılım"
+        "notInstalled": "Eksik Yazılım",
+        "version": "Yazılım sürümü",
+        "vendor": "Yazılım sağlayıcısı"
       },
       "logShippingFailing": "Günlük gönderimi başarısız"
     }

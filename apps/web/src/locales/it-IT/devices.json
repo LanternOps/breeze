@@ -2871,7 +2871,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }
@@ -2941,7 +2943,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }
@@ -3028,7 +3032,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }

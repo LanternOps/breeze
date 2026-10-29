@@ -32,6 +32,9 @@ function fakeVendor(override?: (path: string, token: string | undefined) => { st
 }
 afterEach(() => { __setDropsuiteClientFactoryForTests(null); vi.useRealTimers(); vi.restoreAllMocks(); });
 describe('configuration', () => {
+  it('declares SaaS inventory for workload counters', () => {
+    expect(adapter.inventoryKind).toBe('saas');
+  });
   it('validates credentials and defaults', () => {
     expect(dropsuiteCredentialsSchema.parse({ ...CREDS, authToken: ' admin ' })).toEqual({ ...CREDS, authToken: 'admin' });
     for (const bad of [{ ...CREDS, resellerToken: 'bad' }, { ...CREDS, authToken: ' ' }, { ...CREDS, authToken: 'x'.repeat(201) }]) expect(dropsuiteCredentialsSchema.safeParse(bad).success).toBe(false);

@@ -86,7 +86,7 @@ listDevices.mockImplementation(async () => { fetchDepths.push(contextDepth); ret
 
 vi.mock('../services/backupProviders/types', () => ({ ProviderRequestError: FakeProviderRequestError }));
 vi.mock('../services/backupProviders/registry', () => ({
-  getBackupProvider: () => ({ key: 'cove', label: 'Cove Data Protection', listCustomers, listDevices }),
+  getBackupProvider: (key: string) => ({ key, inventoryKind: key === 'dropsuite' ? 'saas' : undefined, label: key, listCustomers, listDevices }),
 }));
 vi.mock('../services/backupProviders/credentials', () => ({
   decryptProviderCredentials: vi.fn(() => ({ partnerName: 'p', username: 'u', password: 'x' })),
@@ -185,6 +185,18 @@ describe('syncConnectionById — phase boundaries', () => {
     expect(fetchDepths).toEqual([0, 0]);
   });
 
+  it('passes Dropsuite SaaS inventory semantics through the sync and publishes three workloads', async () => {
+    connectionRow.provider = 'dropsuite';
+    persistVendorSnapshot.mockResolvedValue({ customers: 1, unmappedCustomers: 0, devices: 3, unmappedDevices: 0, linked: 0, ambiguous: 0 });
+    await syncConnectionById(CONNECTION_ID);
+    expect(persistVendorSnapshot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      provider: 'dropsuite', inventoryKind: 'saas',
+    }), expect.anything());
+    expect(updatePayloads.find(u => u.payload.lastSyncStatus === 'success')?.payload).toMatchObject({
+      lastSyncDevices: 3, lastSyncUnmappedDevices: 0, lastSyncLinkedDevices: 0, lastSyncAmbiguousDevices: 0,
+    });
+  });
+
   it('marks the connection running before fetching and successful after persisting', async () => {
     await syncConnectionById(CONNECTION_ID);
     expect(updatePayloads[0]!.payload).toMatchObject({ lastSyncStatus: 'running', lastSyncError: null });
@@ -249,7 +261,7 @@ describe('syncConnectionById — failure handling', () => {
       [{ id: 'c-old', vendorCustomerId: 'revoked-customer' }, { id: 'c-good', vendorCustomerId: 'working-customer' }],
       [{ id: 'c-old', vendorCustomerId: 'revoked-customer', orgId: BASE_ROW.partnerId },
         { id: 'c-good', vendorCustomerId: 'working-customer', orgId: BASE_ROW.partnerId }],
-      [{ id: 'old-row', vendorDeviceId: 'revoked:mail', customerId: 'c-old' },
+      [{ id: 'old-row', vendorDeviceId: 'revoked:mail', customerId: 'c-old', accountType: 'gws' },
         { id: 'good-row', vendorDeviceId: 'working:mail', customerId: 'c-good' }],
     ];
     const returns = [[{ id: 'c-good', vendorCustomerId: 'working-customer' }], [{ id: 'good-row', orgId: BASE_ROW.partnerId }]];
@@ -271,7 +283,7 @@ describe('syncConnectionById — failure handling', () => {
     expect(inserted.filter((row) => 'vendorDeviceId' in row))
       .toMatchObject([{ vendorDeviceId: 'working:mail', customerId: 'c-good', usedBytes: 100 }]);
     expect(updatePayloads.find((u) => u.payload.lastSyncStatus === 'success')?.payload)
-      .toMatchObject({ status: 'connected', lastSyncDevices: 2, lastSyncError: '1 customer(s) skipped: access denied or unavailable' });
+      .toMatchObject({ status: 'connected', lastSyncDevices: 0, lastSyncUnmappedDevices: 0, lastSyncLinkedDevices: 0, lastSyncAmbiguousDevices: 0, lastSyncError: '1 customer(s) skipped: access denied or unavailable' });
   });
 
   it('does not persist anything when the vendor enumeration fails, and records the error', async () => {
