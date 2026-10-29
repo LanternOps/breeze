@@ -64,6 +64,7 @@ describe('AnalyticsPage custom range (#9649)', () => {
 
     fireEvent.change(await screen.findByLabelText('Start date'), { target: { value: '2026-01-01' } });
     fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-01-31' } });
+    fireEvent.click(screen.getByTestId('analytics-custom-range-apply'));
 
     await waitFor(() => {
       for (const path of ['/metrics/trends', '/analytics/capacity']) {
@@ -105,5 +106,130 @@ describe('AnalyticsPage custom range (#9649)', () => {
 
     expect(await screen.findByText(HINT)).toBeInTheDocument();
     expect(queriesFor('/metrics/trends')).toHaveLength(before);
+  });
+});
+
+/** Every request the page has made so far, of any path. */
+const requestCount = () => fetchMock.mock.calls.length;
+
+/** Lets any wrongly scheduled effect or timer fire before a "nothing happened" assertion. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+/** Switch the picker to Custom range and wait for that one load round to finish. */
+const switchToCustom = async () => {
+  await waitFor(() => expect(queriesFor('/metrics/trends')).toHaveLength(1));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Date range' }), { target: { value: 'custom' } });
+  await waitFor(() => expect(queriesFor('/metrics/trends')).toHaveLength(2));
+  await screen.findByText(/^Updated /);
+  await flush();
+};
+
+// #9942: every keystroke in a custom-range date input reloaded every card
+// (~9 requests). Edits are now a draft; only Apply (or Enter) loads a range.
+describe('AnalyticsPage custom range is applied explicitly (#9942)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => okResponse());
+  });
+
+  it('switching to Custom range loads the seeded window exactly once', async () => {
+    render(<AnalyticsPage />);
+    await switchToCustom();
+
+    expect(queriesFor('/metrics/trends')).toHaveLength(2);
+    const seeded = queriesFor('/metrics/trends').at(-1);
+    expect(seeded?.get('startDate')).toBe((screen.getByLabelText('Start date') as HTMLInputElement).value);
+    expect(seeded?.get('endDate')).toBe((screen.getByLabelText('End date') as HTMLInputElement).value);
+  });
+
+  it('editing either date fires no request until Apply, then exactly one load round', async () => {
+    render(<AnalyticsPage />);
+    await switchToCustom();
+    const before = requestCount();
+
+    const start = screen.getByLabelText('Start date');
+    const end = screen.getByLabelText('End date');
+    for (const value of ['2026-01-01', '2026-01-02', '2026-01-03']) {
+      fireEvent.change(start, { target: { value } });
+    }
+    for (const value of ['2026-01-29', '2026-01-30', '2026-01-31']) {
+      fireEvent.change(end, { target: { value } });
+    }
+    fireEvent.blur(end);
+    await flush();
+    expect(requestCount()).toBe(before);
+
+    fireEvent.click(screen.getByTestId('analytics-custom-range-apply'));
+    await waitFor(() => expect(queriesFor('/metrics/trends')).toHaveLength(3));
+    await flush();
+    expect(queriesFor('/metrics/trends')).toHaveLength(3);
+    const last = queriesFor('/metrics/trends').at(-1);
+    expect(last?.get('startDate')).toBe('2026-01-03');
+    expect(last?.get('endDate')).toBe('2026-01-31');
+  });
+
+  it('Enter in a date input (form submit) applies the range', async () => {
+    render(<AnalyticsPage />);
+    await switchToCustom();
+
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-03-01' } });
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-03-31' } });
+    fireEvent.submit(screen.getByTestId('analytics-custom-range-form'));
+
+    await waitFor(() => expect(queriesFor('/metrics/trends')).toHaveLength(3));
+    expect(queriesFor('/metrics/trends').at(-1)?.get('startDate')).toBe('2026-03-01');
+  });
+
+  it('Apply is disabled for an unchanged or invalid draft, and submitting one sends nothing', async () => {
+    render(<AnalyticsPage />);
+    await switchToCustom();
+    const apply = screen.getByTestId('analytics-custom-range-apply');
+    expect(apply).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2000-01-01' } });
+    expect(apply).toBeDisabled();
+    expect(await screen.findByText(HINT)).toBeInTheDocument();
+
+    const before = requestCount();
+    fireEvent.submit(screen.getByTestId('analytics-custom-range-form'));
+    await flush();
+    expect(requestCount()).toBe(before);
+  });
+
+  it('Refresh reloads the applied range, not an unapplied draft', async () => {
+    render(<AnalyticsPage />);
+    await switchToCustom();
+    const applied = queriesFor('/metrics/trends').at(-1);
+
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-02-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => expect(queriesFor('/metrics/trends')).toHaveLength(3));
+    expect(queriesFor('/metrics/trends').at(-1)?.get('startDate')).toBe(applied?.get('startDate'));
+  });
+});
+
+// #9942 (second half): a fleet whose only recent enrollments fall in one week
+// got "No data available" because the sparkline needs two points.
+describe('AnalyticsPage weekly enrollments with a single week (#9942)', () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async (input) => {
+      if (String(input).split('?')[0] !== '/analytics/executive-summary') return okResponse();
+      const body = {
+        data: {
+          trendData: [{ timestamp: '2026-10-19T00:00:00.000Z', value: 5 }],
+          trendLabel: 'Weekly enrollments'
+        }
+      };
+      return { ...okResponse(), text: async () => JSON.stringify(body), json: async () => body } as unknown as Response;
+    });
+  });
+
+  it('renders the lone week instead of "No data available"', async () => {
+    render(<AnalyticsPage />);
+    const single = await screen.findByTestId('analytics-trend-single-week');
+    expect(single).toHaveTextContent('5');
+    expect(single).toHaveTextContent(/Week of .*19/);
   });
 });

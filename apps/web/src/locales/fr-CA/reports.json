@@ -32,7 +32,8 @@
       "subtitle": "Analyses sur votre flotte et vos services",
       "title": "Analytique",
       "trend": {
-        "operationalHealth": "Santé opérationnelle"
+        "operationalHealth": "Santé opérationnelle",
+        "weekOf": "Semaine du {{date}}"
       },
       "widgets": {
         "alertTable": {

@@ -32,7 +32,8 @@
       "subtitle": "Insight su flotta e servizi",
       "title": "Analisi",
       "trend": {
-        "operationalHealth": "Stato operativo"
+        "operationalHealth": "Stato operativo",
+        "weekOf": "Settimana del {{date}}"
       },
       "widgets": {
         "alertTable": {

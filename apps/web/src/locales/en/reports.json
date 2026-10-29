@@ -33,7 +33,8 @@
       "subtitle": "Insights across your fleet and services",
       "title": "Analytics",
       "trend": {
-        "operationalHealth": "Operational health"
+        "operationalHealth": "Operational health",
+        "weekOf": "Week of {{date}}"
       },
       "widgets": {
         "alertTable": {

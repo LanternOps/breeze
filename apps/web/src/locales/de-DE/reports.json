@@ -32,7 +32,8 @@
       "subtitle": "Einblicke in Ihre Flotte und Dienstleistungen",
       "title": "Analytik",
       "trend": {
-        "operationalHealth": "Betriebszustand"
+        "operationalHealth": "Betriebszustand",
+        "weekOf": "Woche vom {{date}}"
       },
       "widgets": {
         "alertTable": {

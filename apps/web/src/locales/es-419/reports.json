@@ -32,7 +32,8 @@
       "subtitle": "Información sobre su flota y servicios",
       "title": "Analítica",
       "trend": {
-        "operationalHealth": "Salud operativa"
+        "operationalHealth": "Salud operativa",
+        "weekOf": "Semana del {{date}}"
       },
       "widgets": {
         "alertTable": {

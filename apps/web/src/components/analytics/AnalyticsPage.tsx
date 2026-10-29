@@ -22,7 +22,7 @@ import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
 import { FilterSelect } from '../shared/FilterSelect';
 import { cn, formatNumber } from '@/lib/utils';
-import { formatTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatTime } from '@/lib/dateTimeFormat';
 import { formatPercent } from '@/lib/i18n/format';
 import { useStableT } from '@/lib/i18n/useStableT';
 
@@ -455,6 +455,9 @@ const toDateInputValue = (date: Date) => {
 /** Mirrors the API's MAX_CUSTOM_RANGE_DAYS (apps/api/src/routes/analyticsQueryScope.ts). */
 const MAX_CUSTOM_RANGE_DAYS = 366;
 
+/** A custom range as `YYYY-MM-DD` local calendar days, end inclusive. */
+type CustomRange = { start: string; end: string };
+
 /**
  * A custom range is applied only when both dates are set, in order
  * (`YYYY-MM-DD` compares correctly as a string) and within the API's cap
@@ -468,12 +471,15 @@ const isCompleteCustomRange = (start: string, end: string) => {
 };
 
 export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
-  const { t } = useTranslation('reports');
+  const { t } = useTranslation(['reports', 'common']);
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [selectedDashboard, setSelectedDashboard] = useState('operations');
   const [dateRange, setDateRange] = useState('30d');
+  // The date inputs edit a draft; only an applied range is requested (#9942),
+  // so typing a date no longer reloads every card per keystroke.
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
+  const [appliedCustomRange, setAppliedCustomRange] = useState<CustomRange | null>(null);
   const [summaryMetrics, setSummaryMetrics] = useState<SummaryMetrics>({
     uptime: 0,
     sessions: 0
@@ -522,26 +528,47 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     if (typeof window !== 'undefined') window.location.hash = value;
   }, []);
 
-  const customRangeComplete = dateRange === 'custom' && isCompleteCustomRange(customStartDate, customEndDate);
+  const customDraftComplete = isCompleteCustomRange(customStartDate, customEndDate);
+  const customDraftApplied = appliedCustomRange !== null
+    && appliedCustomRange.start === customStartDate
+    && appliedCustomRange.end === customEndDate;
+  const canApplyCustomRange = customDraftComplete && !customDraftApplied;
 
   const changeDateRange = useCallback((value: string) => {
-    // Seed an empty custom range with the last 30 days so switching to it
-    // applies a real, visible window instead of an implicit default (#9649).
-    if (value === 'custom' && !customStartDate && !customEndDate) {
-      const today = new Date();
-      const start = new Date(today);
-      start.setDate(start.getDate() - 30);
-      setCustomStartDate(toDateInputValue(start));
-      setCustomEndDate(toDateInputValue(today));
+    if (value === 'custom') {
+      if (appliedCustomRange) {
+        // Coming back to a range applied earlier: show it again, drop any
+        // unapplied edits, so the inputs match what the cards show.
+        setCustomStartDate(appliedCustomRange.start);
+        setCustomEndDate(appliedCustomRange.end);
+      } else {
+        // First switch: seed the last 30 days and apply it at once, so the
+        // "Custom range" label sits over a real, visible window instead of an
+        // implicit default (#9649). That is the one load this switch costs.
+        const today = new Date();
+        const start = new Date(today);
+        start.setDate(start.getDate() - 30);
+        const seeded = { start: toDateInputValue(start), end: toDateInputValue(today) };
+        setCustomStartDate(seeded.start);
+        setCustomEndDate(seeded.end);
+        setAppliedCustomRange(seeded);
+      }
     }
     setDateRange(value);
-  }, [customStartDate, customEndDate]);
+  }, [appliedCustomRange]);
+
+  /** Apply button and Enter in a date input (form submit) — the only way an edited range loads. */
+  const applyCustomRange = useCallback((event?: React.FormEvent) => {
+    event?.preventDefault();
+    if (!canApplyCustomRange) return;
+    setAppliedCustomRange({ start: customStartDate, end: customEndDate });
+  }, [canApplyCustomRange, customStartDate, customEndDate]);
 
   const fetchAnalyticsData = useCallback(async () => {
-    // An incomplete custom range has nothing valid to send; keep what is on
-    // screen and let the inline hint explain, rather than requesting without
-    // a window (which the API used to answer with 30 days).
-    if (dateRange === 'custom' && !isCompleteCustomRange(customStartDate, customEndDate)) {
+    // Defensive: "custom" is only ever selected together with an applied
+    // range (see changeDateRange). Never request without a window — the API
+    // used to answer that with 30 days under a "Custom range" label.
+    if (dateRange === 'custom' && !appliedCustomRange) {
       setError(undefined);
       setLoading(false);
       return;
@@ -554,11 +581,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     const errors: string[] = [];
     const params = new URLSearchParams();
 
-    if (dateRange !== 'custom') {
-      params.set('range', dateRange);
+    if (dateRange === 'custom' && appliedCustomRange) {
+      params.set('startDate', appliedCustomRange.start);
+      params.set('endDate', appliedCustomRange.end);
     } else {
-      params.set('startDate', customStartDate);
-      params.set('endDate', customEndDate);
+      params.set('range', dateRange);
     }
 
     const queryString = params.toString();
@@ -790,7 +817,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     } finally {
       setLoading(false);
     }
-  }, [dateRange, customEndDate, customStartDate, stableT]);
+  }, [dateRange, appliedCustomRange, stableT]);
 
   useEffect(() => {
     fetchAnalyticsData();
@@ -953,9 +980,28 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         <h3 className="text-sm font-semibold">{fleetSummary.trendLabel}</h3>
         <p className="text-xs text-muted-foreground">{t('analytics.executiveSummary.weeklyTrend')}</p>
       </div>
-      {fleetSummary.trendData.length < 2 ? (
+      {fleetSummary.trendData.length === 0 ? (
         <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
           {t('analytics.chartWidget.noData')}
+        </div>
+      ) : fleetSummary.trendData.length === 1 ? (
+        // A line needs two points; one week of data is still data (#9942).
+        <div className="flex flex-1 flex-col justify-end gap-1" data-testid="analytics-trend-single-week">
+          <span className="text-2xl font-semibold tabular-nums">
+            {formatNumber(fleetSummary.trendData[0]!.value)}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {t('analytics.analyticsPage.trend.weekOf', {
+              // Week buckets are UTC midnights (date_trunc('week') on the
+              // API); format in UTC so the label does not slip a day west.
+              date: formatDate(fleetSummary.trendData[0]!.timestamp, {
+                timeZone: 'UTC',
+                month: 'short',
+                day: 'numeric',
+                fallback: fleetSummary.trendData[0]!.timestamp
+              })
+            })}
+          </span>
         </div>
       ) : (
         <div className="flex flex-1 flex-col justify-end">
@@ -1037,10 +1083,15 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       </div>
 
       {dateRange === 'custom' && (
-        <div className="flex flex-wrap items-center gap-3">
+        <form
+          className="flex flex-wrap items-center gap-3"
+          onSubmit={applyCustomRange}
+          data-testid="analytics-custom-range-form"
+        >
           <input
             type="date"
             aria-label={t('analytics.queryBuilder.labels.startDate')}
+            data-testid="analytics-custom-range-start"
             value={customStartDate}
             max={customEndDate || undefined}
             onChange={event => setCustomStartDate(event.target.value)}
@@ -1049,17 +1100,26 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
           <input
             type="date"
             aria-label={t('analytics.queryBuilder.labels.endDate')}
+            data-testid="analytics-custom-range-end"
             value={customEndDate}
             min={customStartDate || undefined}
             onChange={event => setCustomEndDate(event.target.value)}
             className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
           />
-          {!customRangeComplete && (
+          <button
+            type="submit"
+            data-testid="analytics-custom-range-apply"
+            disabled={!canApplyCustomRange}
+            className="inline-flex h-9 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t('common:actions.apply')}
+          </button>
+          {!customDraftComplete && (
             <p className="text-xs text-muted-foreground" role="status">
               {t('analytics.analyticsPage.customRangeIncomplete')}
             </p>
           )}
-        </div>
+        </form>
       )}
 
       <div className="flex gap-1 border-b" role="tablist">

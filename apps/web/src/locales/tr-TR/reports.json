@@ -32,7 +32,8 @@
       "subtitle": "Filonuz ve hizmetleriniz hakkında bilgiler",
       "title": "Analitik",
       "trend": {
-        "operationalHealth": "Operasyonel sağlık"
+        "operationalHealth": "Operasyonel sağlık",
+        "weekOf": "{{date}} haftası"
       },
       "widgets": {
         "alertTable": {
