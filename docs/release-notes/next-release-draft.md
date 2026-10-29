@@ -134,6 +134,14 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Config-policy and automation-schedule expansion of a `device_group` assignment now resolves a partner-owned group to its members in every org of the partner.
 - Every other target surface (maintenance windows, backup SLAs, script runs, software deployments, automations, endpoint messages, AI agent triggers, peripheral policies, the enrollment default group, user device-group scope) answers a partner-owned group id with `400 PARTNER_GROUP_TARGET_UNSUPPORTED`. The groups API and the AI `manage_groups` tool treat partner-owned groups as read-only (`400 PARTNER_GROUP_READ_ONLY`).
 
+### Partner API external ticket refs
+
+- **Three alert reference routes (#10533, part of #10528).** `PUT` and `DELETE /api/v1/partner-api/alerts/<id>/external-ticket` require `alerts:write` and manage only the caller's principal-namespaced reference. PUT accepts an HTTPS URL and uses full replacement; identical PUTs and repeated DELETEs are idempotent. `GET /api/v1/partner-api/alerts/<id>/external-tickets` requires `alerts:read` and lists every principal's references plus eligible PSA mappings.
+- **Create a ticket from an alert.** Partner API ticket creation accepts `alertId` and atomically writes a `created_from` link. Unknown or inaccessible alerts return 404; a different accessible org returns 422; reusing an idempotency key with a different alert id returns 409.
+- **Organization exports include `externalLinks`.** Link insert, exported-field update, and deletion advance the org export watermark, including removal of the last link.
+- **Alert pages show read-only External tickets chips,** using the ticket number when available and linking only HTTPS URLs. Org-scoped users see only org-owned PSA mappings; partner-principal refs and partner-owned PSA mappings are hidden.
+- **V2 alert webhook `externalTickets` now includes references permitted for its owner at enrichment time.** Partner-owned webhooks receive principal refs and their partner’s or the alert org’s PSA mappings. Org-owned webhooks receive only org-owned PSA mappings, never partner-principal refs or partner-owned PSA mappings. Use the GET route for current state under the same viewer restrictions. V1 payloads are unchanged.
+- **Migrations:** `2027-01-14-110000-alerts-id-org-unique.sql` builds `alerts_id_org_uq` concurrently on the hot alerts table; `2027-01-14-110100-alert-external-refs.sql` creates the tenant-isolated reference table, constraints, indexes and RLS policies; `2027-01-14-110200-org-external-links-export-watermark.sql` adds the link-change watermark triggers. DDL/trigger definitions only: the migrations write no rows. No new environment variables.
 
 ### Device groups (partner-owned, dark) — W2b
 
@@ -147,3 +155,16 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - An empty or whitespace-only event message is stored as `(no message text)`; the event's source, ID and level are kept. Rows that still fail validation (for example a message over 2000 characters or `details` over 64 KB) are dropped individually, and the other rows are stored.
 - Response bodies gain `invalidDropped` and `emptyMessageCoerced` counts, and the API logs one `[EventLogs]` warning per affected upload. An upload where every row is invalid returns 200 with `count: 0`.
 - No migration, environment variable or setting. Existing agents benefit without an update.
+
+### Device groups (partner-owned) — W3 API
+
+- Partner administrators with access to all organizations can create, edit, preview, and delete partner-owned dynamic device groups through the API.
+- Organization users can read their partner's group names and All orgs ownership fields, with only their own organization's members and counts; filter rules stay hidden.
+- Partner-owned configuration policies can target their partner's groups, using device-group assignment precedence.
+- Unsupported group filter references return `PARTNER_GROUP_FILTER_UNSUPPORTED`; manual membership changes and pinning remain unavailable for partner groups.
+- No migration, setting, or environment variable is required for this wave.
+
+#### Review fixes
+
+- Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
+- Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.

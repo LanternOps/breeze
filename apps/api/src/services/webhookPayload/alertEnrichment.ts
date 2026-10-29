@@ -4,6 +4,7 @@ import * as dbModule from '../../db';
 import { alerts, devices, organizations, organizationExternalLinks, sites } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { captureException } from '../sentry';
+import { listAlertExternalTickets, type AlertExternalTicket } from '../alertExternalTickets';
 import { alertWebhookDataV2Schema, type AlertWebhookDataV2, type AlertWebhookDataV2Partner } from './alertV2';
 
 const { db } = dbModule;
@@ -39,6 +40,10 @@ function eventPayload(event: BreezeEvent): Record<string, unknown> {
   return event.payload !== null && typeof event.payload === 'object' && !Array.isArray(event.payload)
     ? event.payload
     : {};
+}
+
+function projectExternalTickets(tickets: AlertExternalTicket[]): AlertWebhookDataV2['externalTickets'] {
+  return tickets.map(({ source, externalId, externalUrl, externalNumber }) => ({ source, externalId, externalUrl, externalNumber }));
 }
 
 async function readEnrichment(event: BreezeEvent) {
@@ -143,6 +148,8 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
 }> {
   let row: EnrichmentRow;
   let orgExternalIds: { system: string; externalId: string }[] = [];
+  let externalTickets: AlertWebhookDataV2['externalTickets'] = [];
+  let partnerExternalTickets: AlertWebhookDataV2['externalTickets'] = [];
   let readFailed = false;
   try {
     ({ row, orgExternalIds } = await runWithSystemDbAccess(() => readEnrichment(event)));
@@ -159,6 +166,29 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
     row = undefined;
     orgExternalIds = [];
   }
+  // Keep optional ticket enrichment failures from discarding the main row.
+  // Pin reads to the event org without locking the publisher's alert row:
+  // fan-out may be awaited while another connection holds its UPDATE lock.
+  if (row?.alertId) {
+    const { alertId, partnerId } = row;
+    try {
+      ({ externalTickets, partnerExternalTickets } = await runWithSystemDbAccess(async () => ({
+        // Enforce audience visibility even under system access.
+        externalTickets: projectExternalTickets(await listAlertExternalTickets(alertId, null, { orgId: event.orgId })),
+        partnerExternalTickets: projectExternalTickets(await listAlertExternalTickets(alertId, partnerId, { orgId: event.orgId })),
+      })));
+    } catch (error) {
+      const context = { errorId: 'WEBHOOK_ALERT_EXTERNAL_TICKETS_FAILED', eventId: event.id, orgId: event.orgId, eventType: event.type };
+      readFailed = true;
+      externalTickets = [];
+      partnerExternalTickets = [];
+      captureException(error, undefined, context, { fingerprint: ['webhook-alert-external-tickets-failed'] });
+      console.error(`[WebhookAlertEnrichment] external-tickets-failed ${JSON.stringify({
+        ...context,
+        error: error instanceof Error ? error.message : String(error),
+      })}`);
+    }
+  }
   const reason = !validUuid(eventPayload(event).alertId) ? 'alert_id_invalid'
     : !row ? 'org_not_found'
       : !row.alertId ? 'alert_not_visible' : null;
@@ -167,6 +197,6 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
       errorId: 'WEBHOOK_ALERT_ENRICHMENT_INCOMPLETE', eventId: event.id, orgId: event.orgId, eventType: event.type, reason,
     })}`);
   }
-  const data = project(event, row, readFailed || reason !== null);
-  return { org: frozenCopy(data), partner: frozenCopy({ ...data, orgExternalIds }) };
+  const data = { ...project(event, row, readFailed || reason !== null), externalTickets };
+  return { org: frozenCopy(data), partner: frozenCopy({ ...data, externalTickets: partnerExternalTickets, orgExternalIds }) };
 }
