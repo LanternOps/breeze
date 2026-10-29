@@ -59,7 +59,8 @@ export function orgAgnosticPatchesHash(hash: string): string | null {
   const { tab, status } = parsePatchesHash(hash);
   const keptTab = tab ?? (status ? 'compliance' : null);
   if (!keptTab) return null;
-  return status ? `${keptTab}&status=${status}` : keptTab;
+  // The status is a compliance-tab filter; on any other tab it means nothing.
+  return status && keptTab === 'compliance' ? `${keptTab}&status=${status}` : keptTab;
 }
 
 /** A standalone compliance-tab hash for a link: `#compliance[&status=…]`. */

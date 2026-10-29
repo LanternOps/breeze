@@ -78,6 +78,11 @@ describe('orgAgnosticPatchesHash', () => {
     expect(orgAgnosticPatchesHash('#compliance&status=bogus')).toBe('compliance');
   });
 
+  it('keeps the status only on the compliance tab, where it is a filter', () => {
+    expect(orgAgnosticPatchesHash('#patches/abc-123&status=failed')).toBe('patches');
+    expect(orgAgnosticPatchesHash('#rings&status=failed')).toBe('rings');
+  });
+
   it('keeps nothing for an empty or unrecognised hash', () => {
     expect(orgAgnosticPatchesHash('')).toBeNull();
     expect(orgAgnosticPatchesHash('#')).toBeNull();
