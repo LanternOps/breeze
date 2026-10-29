@@ -45,6 +45,11 @@
  *      `filter_fields_used`, and running it flips membership both ways; a
  *      write whose transaction rolls back enqueues nothing; re-writing an
  *      unchanged value enqueues nothing (the real `setWhere` skip).
+ *  10. #10497 — software inventory changes make devices join and leave groups.
+ *  11. #10497 — identical installed names enqueue nothing despite version changes.
+ *  12. #10497 — POST /devices/:id/move-org enqueues device.created for the target org,
+ *      which rebuilds dynamic membership; device.updated with no fields does not.
+ *  13. #10497 — a software.notInstalled group gains the device when the software is uninstalled.
  */
 import './setup';
 
@@ -52,6 +57,8 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import type { Worker } from 'bullmq';
+import { Hono } from 'hono';
+import type { SoftwareInventoryObservationV2 } from '@breeze/shared';
 
 import { db, withSystemDbAccessContext } from '../../db';
 import {
@@ -74,6 +81,10 @@ import {
 import { closeRedis } from '../../services/redis';
 import { extractFieldsFromFilter, type FilterConditionGroup } from '../../services/filterEngine';
 import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
+import { ingestSoftwareInventoryReport } from '../../services/softwareInventoryObservations';
+import { createAccessToken } from '../../services/jwt';
+import { moveOrgRoutes } from '../../routes/devices/moveOrg';
+import { withMoveOrgStepUpGrant } from './moveOrgStepUpFixture';
 import {
   createOrganization,
   createPartner,
@@ -527,6 +538,184 @@ describe('custom-field value writes re-evaluate dynamic groups (#8832)', () => {
     expect(await getDeviceGroupReevaluationQueue().getJob(deviceGroupReevaluationJobId(deviceId))).toBeUndefined();
     await writeDisposition(deviceId, orgId, definitionId, 'retired');
     expect((await awaitQueuedJob(deviceId)).data.reason).toBe('custom_field_write:manual');
+  }, 30_000);
+});
+
+describe('software inventory and org moves re-evaluate groups (#10497)', () => {
+  afterEach(async () => {
+    await getDeviceGroupReevaluationQueue().obliterate({ force: true }).catch(() => {});
+  });
+
+  async function awaitQueuedJob(deviceId: string) {
+    const queue = getDeviceGroupReevaluationQueue();
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const job = await queue.getJob(deviceGroupReevaluationJobId(deviceId));
+      if (job) return job;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`no re-evaluation job was enqueued for device ${deviceId}`);
+  }
+
+  function report(items: Array<{ name: string; version?: string }>): SoftwareInventoryObservationV2 {
+    return {
+      schemaVersion: 2,
+      observationId: randomUUID(),
+      collectorVersion: '1.0.0',
+      observedAt: '2026-08-24T12:00:00.000Z',
+      completeness: 'complete',
+      expectedSources: ['windows:registry:hklm64'],
+      succeededSources: ['windows:registry:hklm64'],
+      failedSources: [],
+      truncated: false,
+      itemCount: items.length,
+      items,
+    };
+  }
+
+  runDb('a device joins then leaves a software.installed group as its inventory changes', async () => {
+    const env = await setupTestEnvironment();
+    const orgId = env.organization.id;
+    const name = 'PowerChute Business Edition Agent';
+    const groupId = await seedDynamicGroupWithFilter(orgId, {
+      operator: 'AND',
+      conditions: [{ field: 'software.installed', operator: 'equals', value: name }],
+    });
+    const deviceId = await seedDevice(orgId, env.site.id, 'wks-software');
+    const device = { id: deviceId, orgId, agentVersion: '1.0.0' };
+
+    const installed = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name }, { name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:01Z'),
+    });
+    expect(installed.acceptedForInventory).toBe(true);
+    const added = await awaitQueuedJob(deviceId);
+    expect(added.data.eventType).toBe('device.updated');
+    expect([...added.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
+    expect(added.data.reason).toBe('software_inventory_change');
+    // Ingest only enqueues; membership is unchanged until the job runs.
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+    await runDeviceGroupReevaluationJob(added.data);
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
+    await added.remove();
+
+    const uninstalled = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:02Z'),
+    });
+    expect(uninstalled.acceptedForInventory).toBe(true);
+    const removed = await awaitQueuedJob(deviceId);
+    await runDeviceGroupReevaluationJob(removed.data);
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+  }, 30_000);
+
+  runDb('a device joins a software.notInstalled group when the software is uninstalled', async () => {
+    const env = await setupTestEnvironment();
+    const orgId = env.organization.id;
+    const name = 'PowerChute Business Edition Agent';
+    const groupId = await seedDynamicGroupWithFilter(orgId, {
+      operator: 'AND',
+      conditions: [{ field: 'software.notInstalled', operator: 'equals', value: name }],
+    });
+    const deviceId = await seedDevice(orgId, env.site.id, 'wks-missing-software');
+    const device = { id: deviceId, orgId, agentVersion: '1.0.0' };
+
+    const installed = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name }, { name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:01Z'),
+    });
+    expect(installed.acceptedForInventory).toBe(true);
+    const added = await awaitQueuedJob(deviceId);
+    await runDeviceGroupReevaluationJob(added.data);
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+    await added.remove();
+
+    const uninstalled = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'Other software' }]),
+      receivedAt: new Date('2026-08-24T12:00:02Z'),
+    });
+    expect(uninstalled.acceptedForInventory).toBe(true);
+    const removed = await awaitQueuedJob(deviceId);
+    expect([...removed.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
+    await runDeviceGroupReevaluationJob(removed.data);
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
+  }, 30_000);
+
+  runDb('an accepted report with identical names enqueues nothing', async () => {
+    const env = await setupTestEnvironment();
+    const orgId = env.organization.id;
+    const deviceId = await seedDevice(orgId, env.site.id, 'wks-same-software');
+    const device = { id: deviceId, orgId, agentVersion: '1.0.0' };
+
+    await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'A', version: '1' }, { name: 'B', version: '1' }]),
+      receivedAt: new Date('2026-08-24T12:00:01Z'),
+    });
+    await (await awaitQueuedJob(deviceId)).remove();
+
+    const unchanged = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'B', version: '2' }, { name: 'A', version: '2' }]),
+      receivedAt: new Date('2026-08-24T12:00:02Z'),
+    });
+    expect(unchanged.acceptedForInventory).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await getDeviceGroupReevaluationQueue().getJob(deviceGroupReevaluationJobId(deviceId))).toBeUndefined();
+
+    // Positive control: removing a name on the same device still enqueues.
+    await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'A', version: '2' }]),
+      receivedAt: new Date('2026-08-24T12:00:03Z'),
+    });
+    expect((await awaitQueuedJob(deviceId)).data.reason).toBe('software_inventory_change');
+  }, 30_000);
+
+  runDb('a device moved to org B joins B\'s matching dynamic group', async () => {
+    const { partner, organization, site, user, role } = await setupTestEnvironment({ scope: 'partner' });
+    const targetOrg = await createOrganization({ partnerId: partner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    const groupId = await seedDynamicGroup(targetOrg.id);
+    const deviceId = await seedDevice(organization.id, site.id, 'srv-moving');
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
+    });
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+
+    const response = await app.request(`/devices/${deviceId}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(await withMoveOrgStepUpGrant(token, deviceId, {
+        orgId: targetOrg.id,
+        siteId: targetSite.id,
+      })),
+    });
+    expect(response.status).toBe(200);
+    const job = await awaitQueuedJob(deviceId);
+    expect(job.data.eventType).toBe('device.created');
+    expect(job.data.orgId).toBe(targetOrg.id);
+    expect(job.data.reason).toBe('device_org_moved');
+
+    // The old parked-assignment payload cannot rebuild the deleted memberships.
+    await runDeviceGroupReevaluationJob({ ...job.data, eventType: 'device.updated', changedFields: [] });
+    expect(await memberDeviceIds(groupId)).toEqual([]);
+    await runDeviceGroupReevaluationJob(job.data);
+    expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
   }, 30_000);
 });
 
