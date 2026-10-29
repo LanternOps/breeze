@@ -2874,6 +2874,35 @@ export async function cascadeDeletePartner(
               )
       `,
     },
+    // #10521 W1, plan D9: group_membership_log and device_group_memberships
+    // reference device_groups without ON DELETE. Clear by group ownership so
+    // rows outside the per-org cascade list (reparented orgs or held shells
+    // skipped above) cannot block the partner's group deletion. A still-targeted
+    // group also makes its delete statement trigger raise: assignments go first.
+    {
+      table: 'config_policy_assignments',
+      clearSql: sql`
+        DELETE FROM config_policy_assignments
+        WHERE level = 'device_group'
+          AND target_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'group_membership_log',
+      clearSql: sql`
+        DELETE FROM group_membership_log
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
+    {
+      table: 'device_group_memberships',
+      // The statement-level membership-delete touch trigger (2026-07-18)
+      // pre-locks the complete sorted DISTINCT org set before updating devices.
+      clearSql: sql`
+        DELETE FROM device_group_memberships
+        WHERE group_id IN (SELECT id FROM device_groups WHERE partner_id = ${partnerId})
+      `,
+    },
   ];
   for (const assoc of partnerAssociatedPreClears) {
     try {

@@ -490,6 +490,31 @@ describe('groups routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    it('rejects ownerScope partner without orgId for a multi-org partner while partner creation is dark', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'partner@example.com', name: 'Partner' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: PARTNER_ID,
+          accessibleOrgIds: [ORG_ID, ORG_ID_2],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID || orgId === ORG_ID_2
+        });
+        return next();
+      });
+
+      const res = await app.request('/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Partner Group', ownerScope: 'partner' })
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('orgId is required when partner has multiple organizations');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('rejects an inaccessible org supplied via the query param', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
