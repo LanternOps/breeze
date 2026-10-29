@@ -349,10 +349,9 @@ jobs:
       - name: Test dev tooling scripts (wt-stack / test-stack)
         run: pnpm test:dev-scripts
 
-      - name: Check for schema drift
-        working-directory: apps/api
-        continue-on-error: true
-        run: pnpm db:check-drift
+      # The schema-drift check runs in `check-migrations` below, against the
+      # database that job just migrated. It used to sit here with no database
+      # and continue-on-error, so it could only exit 2 unseen (#10357).
 
   typecheck:
     name: Type Check
@@ -715,6 +714,13 @@ jobs:
 
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
+
+      # Ledger-vs-disk drift on the database the step above just migrated:
+      # every core migration file must have a ledger row and vice versa
+      # (apps/api/scripts/check-drift.ts). Blocking; exit 2 (no database) is a
+      # failure here, never a silent pass (#10357).
+      - name: Check for schema drift
+        run: pnpm --filter @breeze/api run db:check-drift
 
   # Real-Postgres apply of every migration as a NON-SUPERUSER role that mirrors
   # a managed-Postgres admin (DigitalOcean doadmin / AWS RDS). The class-complete

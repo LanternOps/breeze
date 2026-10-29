@@ -64,6 +64,7 @@ import {
   CHECKSUM_RECONCILIATIONS,
   planMigrations,
   partitionLedgerRows,
+  classifyExtensionLedgerRows,
   autoMigrate,
   CORE_MIGRATION_LOCK_KEY,
 } from './autoMigrate';
@@ -1424,6 +1425,47 @@ describe('extension-owned ledger rows', () => {
 
     expect(verify).toEqual(['0001-core.sql']);
     expect(skip).toEqual(['workspace/2026-07-10-a.sql', 'ghost/2026-01-01-x.sql']);
+  });
+
+  // #10357: check-drift reported every `workspace/*` row as "belongs to an
+  // extension not present on disk" even with ee/workspace/migrations/ present,
+  // because it never looked for the file. Only a genuinely missing file is absent.
+  it('classifies extension ledger rows by whether the extension file exists on disk', () => {
+    const onDisk = new Set(['workspace/2026-07-10-a.sql']);
+    const seen: Array<[string, string]> = [];
+    const { present, absent } = classifyExtensionLedgerRows(
+      ['workspace/2026-07-10-a.sql', 'workspace/2026-07-11-removed.sql', 'ghost/2026-01-01-x.sql'],
+      (extension, filename) => {
+        seen.push([extension, filename]);
+        return onDisk.has(`${extension}/${filename}`);
+      },
+    );
+
+    expect(present).toEqual(['workspace/2026-07-10-a.sql']);
+    expect(absent).toEqual(['workspace/2026-07-11-removed.sql', 'ghost/2026-01-01-x.sql']);
+    expect(seen).toEqual([
+      ['workspace', '2026-07-10-a.sql'],
+      ['workspace', '2026-07-11-removed.sql'],
+      ['ghost', '2026-01-01-x.sql'],
+    ]);
+  });
+
+  it('treats a malformed or path-escaping extension ledger row as absent without probing disk', () => {
+    const probe = vi.fn(() => true);
+    const { present, absent } = classifyExtensionLedgerRows(
+      ['/2026-07-10-a.sql', 'workspace/', 'workspace/../../etc/passwd', 'a/b/c.sql', '0001-core.sql'],
+      probe,
+    );
+
+    expect(present).toEqual([]);
+    expect(absent).toEqual([
+      '/2026-07-10-a.sql',
+      'workspace/',
+      'workspace/../../etc/passwd',
+      'a/b/c.sql',
+      '0001-core.sql',
+    ]);
+    expect(probe).not.toHaveBeenCalled();
   });
 });
 
