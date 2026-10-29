@@ -4304,6 +4304,7 @@
       "pending": "Ainda não verificada",
       "private": "Registro privado — credenciais necessárias",
       "unsupported_registry": "Registro não suportado",
+      "provenance_unknown": "Origem desconhecida — o nome da imagem não é enviado a nenhum registro",
       "error": "Falha na verificação do registro — será repetida",
       "behind": "Uma imagem mais recente foi publicada para esta tag",
       "current": "Corresponde ao registro",

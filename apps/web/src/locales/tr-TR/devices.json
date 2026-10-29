@@ -4304,6 +4304,7 @@
       "pending": "Henüz denetlenmedi",
       "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
       "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "provenance_unknown": "Kaynak bilinmiyor — imaj adı hiçbir kayıt defterine gönderilmez",
       "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
       "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
       "current": "Kayıt defteriyle eşleşiyor",

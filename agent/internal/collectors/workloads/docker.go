@@ -343,7 +343,9 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 		images[normalizeImageID(img.ID)] = img
 	}
 
-	ws := buildContainerWorkloads(containers, images, identity)
+	// Provenance is Docker-only: Podman's store is not Docker's, and the agent
+	// makes no claim it cannot back with the engine's own answer.
+	ws := buildContainerWorkloads(containers, images, identity, d.runtime == RuntimeDocker)
 	observed := len(ws)
 	ws, truncated := orderAndCap(ws)
 	if truncated {
@@ -427,8 +429,9 @@ func normalizeImageID(id string) string {
 	return id
 }
 
-// identity is true when the image list carries each image's provenance.
-func buildContainerWorkloads(containers []apiContainer, images map[string]apiImage, identity bool) []Workload {
+// identity is true when the image list carries each image's provenance;
+// provenance asks for Workload.ImageProvenance to be filled (Docker only).
+func buildContainerWorkloads(containers []apiContainer, images map[string]apiImage, identity, provenance bool) []Workload {
 	seen := make(map[string]bool, len(containers))
 	out := make([]Workload, 0, len(containers))
 	noProvenance := 0
@@ -437,7 +440,7 @@ func buildContainerWorkloads(containers []apiContainer, images map[string]apiIma
 			continue
 		}
 		seen[c.ID] = true
-		w, dropped := mapContainer(c, images, identity)
+		w, dropped := mapContainer(c, images, identity, provenance)
 		if dropped {
 			noProvenance++
 		}
@@ -451,9 +454,9 @@ func buildContainerWorkloads(containers []apiContainer, images map[string]apiIma
 
 // mapContainer also reports whether a repo digest was withheld for lack of
 // registry provenance (see below).
-func mapContainer(c apiContainer, images map[string]apiImage, identity bool) (Workload, bool) {
+func mapContainer(c apiContainer, images map[string]apiImage, identity, provenance bool) (Workload, bool) {
 	imageID := normalizeImageID(c.ImageID)
-	img := images[imageID]
+	img, listed := images[imageID]
 	ref := strings.TrimSpace(c.Image)
 	if IsImageID(ref) {
 		// The engine reports a bare id when the tag has moved to another image;
@@ -483,6 +486,12 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity bool) (Wo
 	if digest == "" && parsed.Pinned && digestPattern.MatchString(parsed.Digest) {
 		digest = parsed.Digest
 	}
+	var prov string
+	if provenance && listed {
+		// Without the image list there is no evidence either way: report none
+		// and the server keeps its digest-unknown handling.
+		prov = imageProvenance(digest, imageID, identity, dropped, img, parsed.Repository)
+	}
 
 	name := ""
 	if len(c.Names) > 0 {
@@ -502,6 +511,7 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity bool) (Wo
 		ImageTag:          strp(parsed.Tag),
 		ImageDigest:       strp(digest),
 		ImageID:           strp(imageID),
+		ImageProvenance:   strp(prov),
 		ComposeProject:    strp(c.Labels.Project),
 		ComposeService:    strp(c.Labels.Service),
 		ComposeWorkingDir: strp(c.Labels.WorkingDir),
@@ -513,6 +523,33 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity bool) (Wo
 	// hours" string, which is neither exact nor stable between collections.
 	w.Bound()
 	return w, dropped
+}
+
+// imageProvenance is the engine's evidence for where the image came from
+// (#9067). digest is the repo digest mapContainer settled on.
+//
+//	digest withheld for lack of provenance, or no repo digest -> local
+//	repo digest != image id (classic store manifest digest)   -> confirmed
+//	repo digest == image id, no identity (Docker < 29.3)      -> unknown
+//	repo digest == image id, identity says pulled from here   -> confirmed
+//	repo digest == image id, identity says otherwise          -> local
+//
+// On the classic store a repo digest is a manifest digest and can never equal
+// the image id (the config digest), so "== image id" is the containerd store's
+// synthetic "name@<target>" entry, which says nothing about any registry.
+func imageProvenance(digest, imageID string, identity, dropped bool, img apiImage, repository string) string {
+	switch {
+	case dropped || digest == "":
+		return ProvenanceLocal
+	case digest != imageID:
+		return ProvenanceConfirmed
+	case !identity:
+		return ProvenanceUnknown
+	case img.pulledFrom(repository):
+		return ProvenanceConfirmed
+	default:
+		return ProvenanceLocal
+	}
 }
 
 func mapContainerState(raw string) string {

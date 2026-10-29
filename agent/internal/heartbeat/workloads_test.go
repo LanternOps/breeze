@@ -118,6 +118,37 @@ func TestParseWorkloadSettings(t *testing.T) {
 	}
 }
 
+// #9067: the server says whether its ingest schema accepts imageProvenance.
+// Absent (a server that predates it) or not a boolean means no: sending the
+// key to such a server gets the whole report rejected.
+func TestParseWorkloadSettingsAcceptsImageProvenance(t *testing.T) {
+	base := func(extra map[string]any) map[string]any {
+		m := map[string]any{"enabled": true, "interval_minutes": 60.0}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	for name, tc := range map[string]struct {
+		extra map[string]any
+		want  bool
+	}{
+		"absent":        {nil, false},
+		"snake true":    {map[string]any{"accepts_image_provenance": true}, true},
+		"camel true":    {map[string]any{"acceptsImageProvenance": true}, true},
+		"false":         {map[string]any{"accepts_image_provenance": false}, false},
+		"not a boolean": {map[string]any{"accepts_image_provenance": "yes"}, false},
+	} {
+		s, ok := parseWorkloadSettings(base(tc.extra))
+		if !ok {
+			t.Fatalf("%s: settings rejected", name)
+		}
+		if s.AcceptsImageProvenance != tc.want {
+			t.Errorf("%s: AcceptsImageProvenance = %v, want %v", name, s.AcceptsImageProvenance, tc.want)
+		}
+	}
+}
+
 func TestApplyWorkloadInventoryConfig(t *testing.T) {
 	h, r, _ := newWorkloadsHeartbeat(t, fixedCollector())
 	if r.settings.Enabled {

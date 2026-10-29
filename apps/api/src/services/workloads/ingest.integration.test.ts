@@ -402,3 +402,61 @@ it('a complete snapshot reporting a null digest stores null and resets to pendin
   const [row] = await f.workloads();
   expect(row).toMatchObject({ imageDigest: null, upstreamStatus: 'pending' });
 });
+
+// ---- Image provenance (#9067) ----
+
+it('stores imageProvenance, and an older agent that omits it stores null', async () => {
+  const f = await fixture();
+  await f.send(
+    reportFixture({
+      collectedAt: at(0),
+      runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' }), wl('b')] })],
+    }),
+  );
+  const rows = Object.fromEntries((await f.workloads()).map((r) => [r.workloadId, r]));
+  expect(rows.a!.imageProvenance).toBe('unknown');
+  expect(rows.b!.imageProvenance).toBeNull();
+});
+
+it('a provenance change that changes the decision resets the row to pending', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'confirmed' })] })] }));
+  await markChecked(f.device.id);
+  await f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' })] })] }));
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageProvenance: 'unknown', upstreamStatus: 'pending', upstreamDigest: null, upstreamCheckedAt: null });
+});
+
+it('an agent upgrade from no provenance to confirmed keeps the upstream columns and behind_since', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await getTestDb().execute(
+    sql`UPDATE device_workloads SET upstream_status = 'behind', upstream_digest = ${DIGEST('e')}, upstream_checked_at = now(),
+        behind_since = now() - interval '3 days' WHERE device_id = ${f.device.id}`,
+  );
+  await f.send(reportFixture({ collectedAt: at(1), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'confirmed' })] })] }));
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageProvenance: 'confirmed', upstreamStatus: 'behind', upstreamDigest: DIGEST('e') });
+  expect(row!.behindSince).not.toBeNull();
+});
+
+it('an incomplete snapshot that keeps the stored digest keeps its provenance with it', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a', { imageProvenance: 'unknown' })] })] }));
+  await f.send(
+    reportFixture({
+      collectedAt: at(1),
+      runtimes: [runtimeFixture({ complete: false, error: 'images_list_failed', workloads: [wl('a', { imageDigest: null })] })],
+    }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: DIGEST('a'), imageProvenance: 'unknown' });
+});
+
+it('the database refuses a provenance outside the vocabulary', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await expect(
+    getTestDb().execute(sql`UPDATE device_workloads SET image_provenance = 'pulled' WHERE device_id = ${f.device.id}`),
+  ).rejects.toThrow();
+});
