@@ -22,5 +22,6 @@ if (pending.statusCode === 401 || signed.statusCode === 401) {
     pending={pending.data?.data ?? []}
     signed={signed.data?.data ?? []}
     error={pending.error ?? signed.error}
+    timezone={pending.data?.timezone ?? signed.data?.timezone}
   />
 </PortalLayout>

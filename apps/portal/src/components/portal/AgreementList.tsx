@@ -9,6 +9,8 @@ interface AgreementListProps {
   pending: PortalAgreementSummary[];
   signed: PortalSignedAgreement[];
   error?: string | null;
+  /** The org zone from the API; this list is SSR-only, so without it dates print in the server's zone (#10291). */
+  timezone?: string;
 }
 
 function sourceLine(a: PortalSignedAgreement): string {
@@ -22,7 +24,7 @@ const LIST = 'divide-y divide-border/70 border-y border-border/70';
 const ITEM = 'flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-1 py-3.5 sm:px-4';
 const SECTION_HEADING = 'mb-2 font-display text-lg font-semibold text-foreground';
 
-export function AgreementList({ pending, signed, error }: AgreementListProps) {
+export function AgreementList({ pending, signed, error, timezone }: AgreementListProps) {
   if (error) {
     return (
       <div data-testid="agreements-load-error">
@@ -57,7 +59,7 @@ export function AgreementList({ pending, signed, error }: AgreementListProps) {
                 <div>
                   <p className="font-semibold text-foreground">{a.name}</p>
                   <p className="text-figures text-xs text-muted-foreground sm:text-sm">
-                    Expires {shortDate(a.expiresAt)}
+                    Expires {shortDate(a.expiresAt, timezone)}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -93,7 +95,7 @@ export function AgreementList({ pending, signed, error }: AgreementListProps) {
                 <div>
                   <p className="font-semibold text-foreground">{a.name}</p>
                   <p className={cn('text-figures text-xs text-muted-foreground sm:text-sm')}>
-                    {shortDate(a.signedAt ?? a.createdAt)} · {sourceLine(a)}
+                    {shortDate(a.signedAt ?? a.createdAt, timezone)} · {sourceLine(a)}
                   </p>
                 </div>
                 <div className="flex items-center gap-4">

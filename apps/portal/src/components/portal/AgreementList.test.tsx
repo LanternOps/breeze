@@ -31,6 +31,22 @@ describe('AgreementList', () => {
     expect(row.textContent).not.toContain('Sent to another contact');
   });
 
+  // #10291: the list is SSR-only (UTC container); expiry and signed dates format
+  // in the org zone so they match the hydrated detail page.
+  it('formats expiry and signed dates as calendar days in the org zone', () => {
+    render(
+      <AgreementList
+        pending={[pending({ expiresAt: '2026-11-10T06:59:59.999Z' })]}
+        signed={[signed({ signedAt: '2026-11-06T03:00:00.000Z' })]}
+        timezone="America/Denver"
+      />,
+    );
+    expect(screen.getByTestId('agreements-pending-row-p1').textContent)
+      .toContain(`Expires ${new Date(2026, 10, 9).toLocaleDateString()}`);
+    expect(screen.getByTestId('agreements-signed-row-s1').textContent)
+      .toContain(new Date(2026, 10, 5).toLocaleDateString());
+  });
+
   it('shows View and a muted note for an agreement sent to another contact', () => {
     render(<AgreementList pending={[pending({ canSign: false })]} signed={[]} />);
     const row = screen.getByTestId('agreements-pending-row-p1');

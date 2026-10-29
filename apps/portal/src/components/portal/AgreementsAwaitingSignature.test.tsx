@@ -35,4 +35,18 @@ describe('AgreementsAwaitingSignature', () => {
     expect(all.textContent).toContain('View all agreements');
     expect(all.getAttribute('href')).toMatch(/\/agreements$/);
   });
+
+  // #10291: SSR (UTC container) printed 11/10 for an expiry at the end of 9 Nov
+  // Denver while the hydrated detail printed November 9. The card formats in
+  // the org zone it is handed, so both agree whatever the runtime zone.
+  it('shows the expiry as the calendar day in the org zone', () => {
+    render(
+      <AgreementsAwaitingSignature
+        agreements={[{ ...row('a', true), expiresAt: '2026-11-10T06:59:59.999Z' }]}
+        timezone="America/Denver"
+      />,
+    );
+    expect(screen.getByTestId('dashboard-agreements-awaiting-row-a').textContent)
+      .toContain(`Expires ${new Date(2026, 10, 9).toLocaleDateString()}`);
+  });
 });
