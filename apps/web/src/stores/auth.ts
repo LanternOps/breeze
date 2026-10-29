@@ -2080,6 +2080,13 @@ export async function fetchAndApplyPreferences(): Promise<void> {
       console.warn('[fetchAndApplyPreferences] session changed while /users/me was in flight; response dropped');
       return;
     }
+    // A refresh cookie for a different account than the persisted user (another
+    // tab signed in elsewhere) must not graft that account's grants onto it.
+    const storedUserId = useAuthStore.getState().user?.id;
+    if (typeof data.id === 'string' && storedUserId && data.id !== storedUserId) {
+      console.warn('[fetchAndApplyPreferences] /users/me answered for a different user; response dropped');
+      return;
+    }
     // isPlatformAdmin rides along with this refresh: fresh logins carry it in
     // the login payload, but sessions persisted before the field existed only
     // learn it here — without the merge, the platform-admin nav stays hidden
@@ -2091,6 +2098,10 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     // the field existed still pick up their grants without a re-login.
     if (Array.isArray(data.permissions)) {
       useAuthStore.getState().updateUser({ permissions: data.permissions });
+    } else if (!Array.isArray(useAuthStore.getState().user?.permissions)) {
+      // The nav keeps every permission-gated item hidden in this state (#9927);
+      // make that diagnosable instead of a silently empty sidebar.
+      console.warn('[fetchAndApplyPreferences] GET /users/me returned no permissions list; gated navigation stays hidden');
     }
     // #4018: same rationale — the password-login path stores `data.user` from
     // /auth/login, which carries no hasPassword, and sessions persisted before

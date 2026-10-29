@@ -2857,6 +2857,37 @@ describe('ensureSessionPermissions (#9927)', () => {
     await ensureSessionPermissions();
 
     expect(fetchMock).not.toHaveBeenCalled();
+
+    // The token landing (cookie restore) must still get its one read: the
+    // once-per-session guard may not be spent while the token was missing.
+    useAuthStore.setState({ tokens: baseTokens });
+    await ensureSessionPermissions();
+    expect(meCalls(fetchMock)).toBe(1);
+    expect(useAuthStore.getState().user?.permissions).toEqual(ME.permissions);
+  });
+
+  it('warns when /users/me answers without a permission list (nav stays hidden)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ...ME, permissions: undefined }));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    await ensureSessionPermissions();
+
+    expect(useAuthStore.getState().user?.permissions).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no permissions list'));
+  });
+
+  it('drops a /users/me answer that belongs to a different user than the stored one', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ ...ME, id: 'someone-else' }));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    await ensureSessionPermissions();
+
+    expect(useAuthStore.getState().user?.permissions).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('different user'));
   });
 
   it('does nothing without a signed-in session', async () => {
@@ -2886,6 +2917,7 @@ describe('ensureSessionPermissions (#9927)', () => {
   });
 
   it('drops a /users/me answer that lands after the session changed hands', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let resolveMe: (r: Response) => void = () => {};
     const fetchMock = vi.fn().mockImplementation(
       () => new Promise<Response>((resolve) => { resolveMe = resolve; })
@@ -2903,5 +2935,6 @@ describe('ensureSessionPermissions (#9927)', () => {
     expect(useAuthStore.getState().user?.id).toBe('user-2');
     expect(useAuthStore.getState().user?.permissions).toBeUndefined();
     expect(useAuthStore.getState().user?.canManagePartnerWide).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('response dropped'));
   });
 });

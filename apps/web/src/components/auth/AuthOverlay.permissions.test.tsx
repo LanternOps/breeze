@@ -72,6 +72,9 @@ describe('AuthOverlay permission self-heal (#9927)', () => {
     render(<AuthOverlay />);
 
     await waitFor(() => expect(meCalls).toBe(1));
+    // Let the 500 land and any effect re-run settle: still hidden, no retry loop.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(meCalls).toBe(1);
     expect(useAuthStore.getState().user?.permissions).toBeUndefined();
   });
 });
