@@ -1297,6 +1297,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Ownership",
+        "allOrganizations": "All organizations",
+        "thisOrganizationOnly": "This organization only",
+        "all": "All",
+        "organization": "Organization",
+        "test": "Test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} delivery attempts",
         "empty": "No delivery attempts yet.",

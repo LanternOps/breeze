@@ -127,6 +127,7 @@ export async function recordWebhookDelivery(
       .insert(webhookDeliveries)
       .values({
         webhookId: webhook.id,
+        orgId: event.orgId,
         eventType: event.type,
         eventId: event.id,
         payload: event.payload,
@@ -180,6 +181,7 @@ export async function claimDeliveryForExecution(
       .returning({
         id: webhookDeliveries.id,
         webhookId: webhookDeliveries.webhookId,
+        orgId: webhookDeliveries.orgId,
         eventId: webhookDeliveries.eventId,
         eventType: webhookDeliveries.eventType,
         payload: webhookDeliveries.payload,

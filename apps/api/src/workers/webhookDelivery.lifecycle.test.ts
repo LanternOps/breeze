@@ -16,7 +16,7 @@ const delays = [60_000, 300_000, 1_800_000, 7_200_000, 21_600_000, 43_200_000];
 import * as mod from './webhookDelivery';
 const claim = vi.fn();
 const recordOutcome = vi.fn();
-const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'device.created', payload: {}, payloadVersion: 1, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: null, attempts: 0 };
+const row = { orgId: 'org-1', id: deliveryId, webhookId, eventId: 'event-1', eventType: 'device.created', payload: {}, payloadVersion: 1, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: null, attempts: 0 };
 let webhook: Record<string, unknown>;
 function job(attemptsMade = 0) { return { data: { deliveryId, webhookId, generation: 3, attemptsMade } } as Job; }
 beforeEach(() => {
@@ -29,7 +29,7 @@ beforeEach(() => {
   claim.mockResolvedValue({ claimed: true, delivery: row });
   recordOutcome.mockResolvedValue(true);
   m.enqueue.mockResolvedValue('job');
-  webhook = { id: webhookId, orgId: 'org-1', status: 'active', approvalGeneration: 3, url: 'https://hooks.example.com', events: [] };
+  webhook = { id: webhookId, orgId: 'org-1', partnerId: null, status: 'active', approvalGeneration: 3, url: 'https://hooks.example.com', events: [] };
   m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [webhook] }) }) });
   m.fetch.mockResolvedValue(new Response('error', { status: 503 }));
 });
@@ -47,9 +47,33 @@ describe('webhook attempt outcomes', () => {
     Object.assign(webhook, change);
     await mod.processWebhookAttemptJob(job(), 'token');
     expect(m.fetch).not.toHaveBeenCalled();
-    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ superseded: true, success: false, nextAttemptAt: null }));
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ superseded: true, supersededReason: 'superseded', success: false, nextAttemptAt: null }));
     expect(m.enqueue).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_SUPERSEDED'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('"cause":"superseded"'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('"orgId":"org-1"'));
+  });
+  it.each([
+    { name: 'missing org', org: undefined, cause: 'org_departed', message: "superseded_by_edit: organization no longer belongs to this webhook's partner" },
+    { name: 'moved org', org: { partnerId: 'other-partner', live: true }, cause: 'org_departed', message: "superseded_by_edit: organization no longer belongs to this webhook's partner" },
+    ...['suspended', 'merging', 'archived', 'holding', 'quick-support', 'soft-deleted'].map(name => ({
+      name, org: { partnerId: 'partner-1', live: false }, cause: 'org_inactive',
+      message: 'superseded_by_edit: organization is not active for partner-wide delivery',
+    })),
+  ])('reports an accurate cause and event org for $name without POST or retry', async ({ org, cause, message }) => {
+    Object.assign(webhook, { orgId: null, partnerId: 'partner-1' });
+    m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [webhook] }) }) });
+    m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => org ? [org] : [] }) }) });
+    await mod.processWebhookAttemptJob(job(), 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      superseded: true, supersededReason: cause, nextAttemptAt: null, errorMessage: message,
+    }));
+    const warning = vi.mocked(console.warn).mock.calls.find(([line]) => String(line).includes('WEBHOOK_DELIVERY_SUPERSEDED'))![0];
+    expect(JSON.parse(String(warning).slice(String(warning).indexOf('{')))).toMatchObject({
+      cause, orgId: row.orgId, deliveryId, webhookId,
+    });
   });
   it.each([1, 2, 3, 4, 5, 6])('schedules failure of attempt %i from the persisted outcome', async attempt => {
     claim.mockResolvedValue({ claimed: true, delivery: { ...row, attempts: attempt - 1 } });
@@ -88,7 +112,7 @@ describe('webhook attempt outcomes', () => {
 });
 describe('worker lifecycle', () => {
   it('import and API-role fan-out never create or attach a worker', async () => {
-    mod.configureWebhookFanout({ getWebhooksForEvent: async () => [{ id: webhookId, orgId: 'org-1', approvalGeneration: 3, payloadVersion: 1 }], createDeliveryRecord: async () => ({ created: true, deliveryId }) });
+    mod.configureWebhookFanout({ getWebhooksForEvent: async () => [{ id: webhookId, orgId: 'org-1', partnerId: null, approvalGeneration: 3, payloadVersion: 1 }], createDeliveryRecord: async () => ({ created: true, deliveryId }) });
     await mod.handleWebhookFanoutEvent({ id: 'event-1', type: 'device.created', orgId: 'org-1', payload: {}, metadata: { timestamp: now.toISOString() } } as never);
     expect(m.enqueue).toHaveBeenCalledTimes(1);
     expect(m.worker).not.toHaveBeenCalled();

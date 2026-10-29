@@ -107,3 +107,11 @@ describe('webhook_deliveries retention (#9128)', () => {
     expect(upsertJobSchedulerMock.mock.calls[0]![1]).toEqual({ pattern: jobSchedule('webhook-delivery-retention') });
   });
 });
+
+
+it('preserves partner webhook failure evidence without requiring an organization owner', async () => {
+  await runWebhookDeliveryRetention({ retentionDays: 30 });
+  const sqlText = flat(new PgDialect().sqlToQuery(pruneMock.mock.calls.at(-1)![0].where as SQL).sql);
+  expect(sqlText).toContain('FROM webhooks w WHERE w.id = webhook_deliveries.webhook_id AND w.last_success_at >');
+  expect(sqlText).not.toMatch(/org_id|partner_id|JOIN organizations/);
+});

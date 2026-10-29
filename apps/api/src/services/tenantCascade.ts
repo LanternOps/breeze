@@ -1170,6 +1170,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'user_risk_scores',
   'users',
   'vault_snapshot_inventory',
+  'webhook_deliveries',
   'webhooks',
   // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
   // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a

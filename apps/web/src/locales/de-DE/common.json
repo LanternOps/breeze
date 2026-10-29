@@ -1297,6 +1297,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Zuständigkeit",
+        "allOrganizations": "Alle Organisationen",
+        "thisOrganizationOnly": "Nur diese Organisation",
+        "all": "Alle",
+        "organization": "Organisation",
+        "test": "Testzustellung"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} Zustellversuche",
         "empty": "Noch keine Zustellversuche.",
