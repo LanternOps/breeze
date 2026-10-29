@@ -1,6 +1,7 @@
 // scripts/dev/wt-stack/cli.ts
 import { execFileSync } from 'node:child_process';
-import { resolveProject, downCandidates, pickExistingProject, assertCaddyPortAvailable, descriptorPath } from './project';
+import { resolveProject, assertCaddyPortAvailable, descriptorPath, SHARED_PROJECT } from './project';
+import { downStack } from './down';
 import { writeDescriptor, readDescriptor, readRecordedProject, removeDescriptor } from './descriptor';
 import { writeEnvStack, readStackEnvValue, pinWebAuthnForStack, caddyPortPin } from './env';
 import {
@@ -22,8 +23,12 @@ function up(shared: boolean, rebuild: boolean): void {
   const worktreePath = process.cwd();
   // #9864 — reuse the project this worktree's descriptor recorded, so a
   // checkout (detached HEAD, branch switch) re-ups the same stack, not a second one.
+  // A descriptor left by `up --shared` does not pull a plain `up` onto the
+  // shared stack (pre-#9864 behaviour); `down` still insists on --shared.
+  const recorded = readRecordedProject(worktreePath);
   const { project, source } = resolveProject({
-    worktreePath, shared, recordedProject: readRecordedProject(worktreePath), override: process.env.BREEZE_WT_PROJECT,
+    worktreePath, shared, recordedProject: recorded === SHARED_PROJECT ? null : recorded,
+    override: process.env.BREEZE_WT_PROJECT,
   });
   console.log(`[wt-stack] project=${project} (from ${source}) engine=${dockerContext()}`);
   const pinnedCaddyPort = caddyPortPin();
@@ -45,21 +50,13 @@ function info(): void {
 }
 
 function down(keepVolumes: boolean): void {
-  const worktreePath = process.cwd();
-  const recordedProject = readRecordedProject(worktreePath);
-  // #9864 — target the project `up` recorded; fall back to derived names only
-  // without a descriptor, and fail loudly rather than `compose down` a project
-  // that does not exist (which exits 0 and leaves the real stack running).
-  const candidates = downCandidates({
-    worktreePath, shared: process.argv.includes('--shared'), branch: currentBranch(),
-    recordedProject, override: process.env.BREEZE_WT_PROJECT,
+  downStack({
+    worktreePath: process.cwd(), shared: process.argv.includes('--shared'), keepVolumes,
+    branch: currentBranch(), override: process.env.BREEZE_WT_PROJECT,
+  }, {
+    readRecordedProject, composeProjectExists, listBreezeProjects, composeDown, removeDescriptor,
+    log: (m) => console.log(m),
   });
-  const project = pickExistingProject(candidates, composeProjectExists, listBreezeProjects());
-  console.log(`[wt-stack] down project=${project}${keepVolumes ? ' (keeping volumes)' : ''}`);
-  composeDown(project, !keepVolumes);
-  // Keep the descriptor with --keep-volumes so the next `up` reattaches the
-  // same volumes under the same project.
-  if (!keepVolumes && recordedProject === project) removeDescriptor(worktreePath);
 }
 
 function test(passthrough: string[]): void {

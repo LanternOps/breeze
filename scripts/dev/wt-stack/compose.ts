@@ -113,10 +113,29 @@ export function composeProjectExists(project: string): boolean {
   return vols.trim().length > 0;
 }
 
-/** #9864 — compose project label of each running container publishing `port` ('' when unlabelled). */
+/**
+ * #9864 — parse `docker ps --format '{{.Label "com.docker.compose.project"}}|{{.Ports}}'`
+ * and return the project label ('' when unlabelled) of each container whose
+ * HOST side publishes `port` (`0.0.0.0:8443->80/tcp`, `[::]:8443->80/tcp`).
+ * Parsed here rather than via `docker ps --filter publish=`, whose match on the
+ * host vs container side of a binding is not something to rely on.
+ */
+export function parsePortOwners(output: string, port: number): string[] {
+  const hostSide = new RegExp(`:${port}(?:-\\d+)?->`);
+  const owners: string[] = [];
+  for (const line of output.split('\n')) {
+    const sep = line.indexOf('|');
+    if (sep < 0) continue;
+    const ports = line.slice(sep + 1).split(',').map((p) => p.trim());
+    if (ports.some((p) => hostSide.test(p))) owners.push(line.slice(0, sep).trim());
+  }
+  return owners;
+}
+
+/** #9864 — compose project label of each running container publishing host `port`. */
 export function portOwners(port: number): string[] {
-  const out = execFileSync('docker', ['ps', '--filter', `publish=${port}`, '--format', 'owner={{.Label "com.docker.compose.project"}}'], { encoding: 'utf8' });
-  return out.split('\n').filter((l) => l.startsWith('owner=')).map((l) => l.slice('owner='.length).trim());
+  const out = execFileSync('docker', ['ps', '--format', '{{.Label "com.docker.compose.project"}}|{{.Ports}}'], { encoding: 'utf8' });
+  return parsePortOwners(out, port);
 }
 
 export function composeDown(project: string, removeVolumes: boolean): void {
