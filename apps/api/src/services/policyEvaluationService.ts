@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, hasDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   automationPolicies,
   automationPolicyCompliance,
@@ -2429,12 +2429,29 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   const allResults: ConfigPolicyEvaluationResult[] = [];
 
   for (const deviceId of allDeviceIds) {
+    // #10401 — the worker runs this whole scan in ONE system transaction. A
+    // statement error in one device's evaluation aborts that transaction, and
+    // postgres.js re-throws it at COMMIT even though the catch below swallowed
+    // it: nothing any device wrote persists, no policy.* event goes out, and
+    // the next scan hits the same device. Every compliance alert in the fleet
+    // stays as it was for as long as that one device keeps failing. Each
+    // device runs in its own savepoint instead, and keeps its remediation runs
+    // and events in its own buffers until the savepoint is released, so a
+    // device that fails rolls back alone and contributes nothing.
+    const deviceDeferred: DeferredRemediationEnqueues | undefined = deferred ? [] : undefined;
+    const deviceEvents: DeferredPolicyEvent[] | undefined = deferredEvents ? [] : undefined;
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
-      const deviceResults = await evaluateDeviceComplianceFromConfigPolicy(deviceId, { ruleIds: dueRuleIds, deferred, deferredEvents });
+      const deviceResults = await inDeviceSavepoint(() => evaluateDeviceComplianceFromConfigPolicy(
+        deviceId,
+        { ruleIds: dueRuleIds, deferred: deviceDeferred, deferredEvents: deviceEvents },
+      ));
       allResults.push(...deviceResults);
+      if (deferred && deviceDeferred) deferred.push(...deviceDeferred);
+      if (deferredEvents && deviceEvents) deferredEvents.push(...deviceEvents);
     } catch (error) {
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
+      captureException(error);
     }
   }
 
@@ -2444,6 +2461,16 @@ export async function scanAndEvaluateConfigPolicyCompliance(
     results: allResults,
     ...afterCommitOf(deferred, deferredEvents),
   };
+}
+
+/**
+ * One device's share of the compliance scan, in a driver-owned savepoint when a
+ * transaction is open (see the loop in scanAndEvaluateConfigPolicyCompliance).
+ * With no DB context each statement autocommits on its own, so a failure
+ * cannot reach any other device and there is nothing to isolate.
+ */
+function inDeviceSavepoint<T>(fn: () => Promise<T>): Promise<T> {
+  return hasDbAccessContext() ? withDbTransaction(fn) : fn();
 }
 
 /** `{ afterCommit }` for an evaluation run under `deferEnqueue`, or `{}`. */

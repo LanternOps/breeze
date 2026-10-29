@@ -11,12 +11,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * The real-DB proof is configComplianceAlertDelivery.integration.test.ts.
  */
 
-const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock, withDbTransactionMock, captureExceptionMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
   publishEventMock: vi.fn(),
   resolveRulesMock: vi.fn(),
   scanDueMock: vi.fn(),
+  withDbTransactionMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../jobs/automationWorker', () => ({ enqueueAutomationRun: vi.fn() }));
@@ -27,9 +29,11 @@ vi.mock('../db', () => ({
     update: vi.fn(),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  hasDbAccessContext: () => true,
+  withDbTransaction: withDbTransactionMock,
 }));
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./featureConfigResolver', () => ({
   resolveComplianceRulesForDevice: resolveRulesMock,
   scanDueComplianceChecks: scanDueMock,
@@ -77,6 +81,8 @@ beforeEach(() => {
   publishEventMock.mockReset();
   resolveRulesMock.mockReset();
   scanDueMock.mockReset();
+  withDbTransactionMock.mockClear();
+  captureExceptionMock.mockReset();
 
   mockSelects();
   insertMock.mockReturnValue({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) });
@@ -163,5 +169,59 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
 
     expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.violation']);
     expect(result.afterCommit).toBeUndefined();
+  });
+
+  // #10401 — the scan runs every device in ONE system transaction. A SQL error
+  // in one device's evaluation aborts that transaction, and postgres.js
+  // re-throws it at COMMIT: nothing the scan wrote persists, no event goes
+  // out, and every compliance alert in the fleet stays as it was. Each device
+  // runs in its own savepoint, and a device that fails contributes nothing.
+  it('runs each device in its own savepoint and drops a failed device\'s events', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const OTHER = { ...DEVICE, id: '55555555-5555-4555-8555-555555555555', hostname: 'WS-2' };
+    const SECOND_RULE = { ...RULE, id: '66666666-6666-4666-8666-666666666666', name: 'Second rule set' };
+    let deviceLookups = 0;
+    selectMock.mockImplementation(() => {
+      const chain: Record<string, unknown> = {};
+      const step = () => chain;
+      chain.from = step;
+      chain.where = step;
+      chain.innerJoin = step;
+      chain.leftJoin = step;
+      chain.limit = () => Promise.resolve([deviceLookups++ === 0 ? DEVICE : OTHER]);
+      chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+      return chain;
+    });
+    scanDueMock.mockResolvedValue([
+      { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+      { complianceRule: SECOND_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+      { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+    ]);
+    resolveRulesMock.mockResolvedValue([RULE, SECOND_RULE]);
+    // DEVICE's first rule set persists and queues its events; its second one
+    // fails at the upsert (in Postgres: rolled back to the savepoint).
+    const sqlError = new Error('value too long for type character varying(200)');
+    let upserts = 0;
+    insertMock.mockImplementation(() => ({
+      values: () => ({
+        onConflictDoUpdate: () => (++upserts === 2 ? Promise.reject(sqlError) : Promise.resolve()),
+      }),
+    }));
+    publishEventMock.mockResolvedValue('event-id');
+
+    try {
+      const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+
+      expect(withDbTransactionMock).toHaveBeenCalledTimes(2);
+      expect(result.devicesEvaluated).toBe(2);
+      expect(result.results.map((r) => r.deviceId)).toEqual([OTHER.id]);
+      expect(captureExceptionMock).toHaveBeenCalledWith(sqlError);
+
+      await result.afterCommit!();
+      const publishedFor = publishEventMock.mock.calls.map((c) => (c[2] as { deviceId: string }).deviceId);
+      expect(publishedFor).toEqual([OTHER.id, OTHER.id]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
