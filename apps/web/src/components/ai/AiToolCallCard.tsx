@@ -18,6 +18,7 @@ import {
   aiToolLabel,
   isAiToolHandoffOutput,
   isAiToolOutputTombstone,
+  isAiUnknownToolOutput,
   type AiToolHandoffStatus,
 } from "@breeze/shared";
 
@@ -100,8 +101,16 @@ export default function AiToolCallCard({
   // this codebase), and until now the only outcome shown for them was a red
   // icon in the collapsed header — no reason unless you expanded. Gated on
   // `!handoffStatus` so a handoff-failed call keeps using its own message.
+  // #9855: the model called a tool name that does not exist and the Agent SDK
+  // rejected it before anything ran (the server marks the dropped call
+  // `unknownTool`). The model retries with a real tool, so this is a neutral
+  // note: no red, and the raw name rather than a humanized label that reads
+  // as if it ran ("Listed processes placeholder").
+  const isUnknownTool = Boolean(isError) && !handoffStatus && isAiUnknownToolOutput(output);
+
   const plainErrorMessage =
     !handoffStatus &&
+    !isUnknownTool &&
     isError &&
     output !== null &&
     typeof output === "object" &&
@@ -118,6 +127,8 @@ export default function AiToolCallCard({
         ? () => <ShieldCheck className="h-3.5 w-3.5 text-green-400" />
         : isExecuting
           ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
+          : isUnknownTool
+            ? () => <Wrench className="h-3.5 w-3.5 text-gray-400" />
           : isError
             ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
             : output !== undefined
@@ -136,10 +147,18 @@ export default function AiToolCallCard({
           <ChevronRight className="h-3 w-3 text-gray-500" />
         )}
         <StatusIcon />
-        <span className="font-medium text-gray-700 dark:text-gray-300">
-          {aiToolLabel(toolName, isExecuting ? "running" : "completed", input)}
-        </span>
-        {isApprovedFailed ? (
+        {isUnknownTool ? (
+          <code className="font-mono text-gray-600 dark:text-gray-400">{toolName}</code>
+        ) : (
+          <span className="font-medium text-gray-700 dark:text-gray-300">
+            {aiToolLabel(toolName, isExecuting ? "running" : "completed", input)}
+          </span>
+        )}
+        {isUnknownTool ? (
+          <span className="text-gray-500 dark:text-gray-400" data-testid="ai-tool-unknown">
+            {t("aiToolCallCard.unknownTool")}
+          </span>
+        ) : isApprovedFailed ? (
           <span className="text-red-400" data-testid="ai-tool-approved-failed">
             {t("aiToolCallCard.approvedFailed")}
           </span>
@@ -195,7 +214,7 @@ export default function AiToolCallCard({
           {output !== undefined && (
             <div>
               <span
-                className={`font-medium ${isError ? "text-red-400" : "text-gray-500 dark:text-gray-400"}`}
+                className={`font-medium ${isError && !isUnknownTool ? "text-red-400" : "text-gray-500 dark:text-gray-400"}`}
               >
                 {isError
                   ? t("aiToolCallCard.error")

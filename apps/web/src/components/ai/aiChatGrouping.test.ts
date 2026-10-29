@@ -93,6 +93,22 @@ describe('groupChatUnits', () => {
     expect(group.finishedAt?.getTime()).toBe(at(4).getTime());
   });
 
+  // #9855: a call to a nonexistent tool name is a neutral note, not a failure.
+  it('does not count an unknown-tool drop as failed', () => {
+    const unknown = { error: 'No such tool available: x', droppedBeforeExecution: true, unknownTool: true };
+    const units = groupChatUnits(
+      [
+        use('t1', 'a', 'list_processes_placeholder', 1),
+        result('r1', 'a', 'list_processes_placeholder', 1, { isError: true, toolOutput: unknown }),
+        use('t2', 'b', 'execute_command', 2), result('r2', 'b', 'execute_command', 2),
+      ],
+      noCards,
+    );
+    const group = units[0] as Extract<ChatUnit, { kind: 'tools' }>;
+    expect(group.calls).toHaveLength(2);
+    expect(group.failed).toBe(0);
+  });
+
   it('marks a group executing while a call has no result, with no finishedAt', () => {
     const units = groupChatUnits([use('t1', 'a'), result('r1', 'a'), use('t2', 'b')], noCards);
     const group = units[0] as Extract<ChatUnit, { kind: 'tools' }>;

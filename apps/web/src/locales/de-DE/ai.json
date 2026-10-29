@@ -175,7 +175,8 @@
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:",
-    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
+    "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen",
+    "unknownTool": "Unbekanntes Tool · nicht ausgeführt"
   },
   "aiForOfficePage": {
     "title": "Breeze AI for Office",

@@ -237,6 +237,52 @@ describe('dropped tool_result fallback (#3094)', () => {
     expect(flagUpdates[0]!.flagReason).toContain('set_device_context');
   });
 
+  // #9855: the model called a tool that does not exist. The CLI answers with
+  // its own "No such tool available" error and the model retries; the result
+  // is marked unknownTool so the sidebar renders a neutral note, not a red
+  // Failed card.
+  it('marks a call to a nonexistent tool as unknownTool', async () => {
+    const id = 'toolu_unknown_01';
+    const name = 'mcp__breeze__list_processes_placeholder';
+    mockSdkQuery([
+      toolUseStreamEvent(id, name),
+      assistantToolUseMessage(id, name, {}),
+      userToolResultMessage(id, `<tool_use_error>Error: No such tool available: ${name}</tool_use_error>`),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-unknown', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const resultRows = insertedRows.filter((r) => r.role === 'tool_result');
+    expect(resultRows).toHaveLength(1);
+    expect(resultRows[0]).toMatchObject({ toolName: 'list_processes_placeholder', toolUseId: id });
+    expect(resultRows[0]!.toolOutput).toMatchObject({ droppedBeforeExecution: true, unknownTool: true });
+    const event = session.eventBus.getReplayEvents().find((e) => e.type === 'tool_result');
+    expect(event).toMatchObject({ toolUseId: id, isError: true, output: { unknownTool: true } });
+    // Still flagged: an invented tool name is a model-quality signal for review.
+    expect(updateCalls.filter((u) => typeof u.flagReason === 'string')).toHaveLength(1);
+  });
+
+  it('does not mark an input-validation drop as unknownTool', async () => {
+    mockSdkQuery([
+      toolUseStreamEvent(TOOL_USE_ID, 'mcp__breeze__set_device_context'),
+      assistantToolUseMessage(TOOL_USE_ID, 'mcp__breeze__set_device_context', PAREN_INPUT),
+      userToolResultMessage(TOOL_USE_ID, VALIDATION_ERROR_TEXT),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-validation', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const output = insertedRows.find((r) => r.role === 'tool_result')!.toolOutput as Record<string, unknown>;
+    expect(output).not.toHaveProperty('unknownTool');
+  });
+
   it('does not double-record a tool_result already handled by postToolUse (id no longer queued)', async () => {
     mockSdkQuery([
       // No content_block_start for this id — simulates postToolUse having
