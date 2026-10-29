@@ -708,7 +708,14 @@ type Heartbeat struct {
 	// wsStreamStopNotify reports a lease-driven stream stop to the control
 	// plane; nil means sendDesktopDisconnectNotification (tests override it).
 	wsStreamStopNotify func(sessionID, reason string)
-	desktopOwners      sync.Map // desktop session ID -> helper session ID
+	// banners tracks the session banners this agent asked a helper to show,
+	// and the banner_hide re-sends still owed to ended ones (#10316,
+	// banner_reliability.go). bannerUISessionFn and bannerHideRetryDelays are
+	// test seams: nil means consentUISessionForTarget and the default schedule.
+	banners               bannerTracker
+	bannerUISessionFn     func(targetWinSession string) *sessionbroker.Session
+	bannerHideRetryDelays []time.Duration
+	desktopOwners         sync.Map // desktop session ID -> helper session ID
 	// endedDesktopOwners: desktopOwnerKey(desktop session ID, helper session
 	// ID) -> desktopOwnerTombstone, so a helper's teardown report that lands
 	// just after it stopped owning the session is still attributed (see
@@ -2290,6 +2297,7 @@ func (h *Heartbeat) Start() {
 	}
 	if h.sessionBroker != nil {
 		h.startDarwinDesktopWatcher()
+		h.startSessionBannerSweep()
 	}
 	if h.promptHost != nil {
 		promptCtx, promptCancel := context.WithCancel(context.Background())

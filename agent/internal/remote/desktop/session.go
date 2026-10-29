@@ -327,6 +327,15 @@ func (m *SessionManager) HasActiveSessions() bool {
 	return false
 }
 
+// HasSession reports whether sessionID is still registered with this manager
+// (#10316: the agent's banner sweep asks before hiding a session's banner).
+func (m *SessionManager) HasSession(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.sessions[sessionID]
+	return ok
+}
+
 // SetAtLoginWindow updates the login-window input mode on all active sessions.
 // Called when the macOS console user changes.
 func (m *SessionManager) SetAtLoginWindow(atLoginWindow bool) {
