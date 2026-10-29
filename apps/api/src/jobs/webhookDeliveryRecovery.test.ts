@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
 
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 const enqueueWebhookAttemptMock = vi.hoisted(() => vi.fn());
+const cutover = vi.hoisted(() => ({ pending: vi.fn(), drain: vi.fn() }));
+vi.mock('./webhookLegacyQueueCutover', () => ({ legacyWebhookQueuesPending: cutover.pending, drainLegacyWebhookQueues: cutover.drain }));
 
 vi.mock('../db', () => ({
   db: {
@@ -137,6 +139,8 @@ describe('webhook delivery recovery sweep', () => {
     enqueueWebhookAttemptMock.mockReset();
     enqueueWebhookAttemptMock.mockResolvedValue('delivery-1');
     captureExceptionMock.mockReset();
+    cutover.pending.mockReset().mockResolvedValue(false);
+    cutover.drain.mockReset().mockResolvedValue({});
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -166,9 +170,9 @@ describe('webhook delivery recovery sweep', () => {
     state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 3, createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 1) })];
     state.updateResults = [landed ? [{ id: 'delivery-1' }] : []];
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
-    expect(summary).toMatchObject({ tooOld: landed ? 1 : 0, terminalWriteLost: landed ? 0 : 1, scheduledRedriven: 0 });
+    expect(summary).toMatchObject({ scheduledTooOld: landed ? 1 : 0, scheduledTerminalWriteLost: landed ? 0 : 1, tooOld: 0, terminalWriteLost: 0, scheduledRedriven: 0 });
     expect(state.updateCalls).toHaveLength(1);
-    expect(state.updateCalls[0]!.set).toEqual({ status: 'failed', nextRetryAt: null, errorMessage: 'Retry was not sent before the delivery became too old; abandoned without delivery' });
+    expect(state.updateCalls[0]!.set).toEqual({ status: 'failed', failedAt: NOW, nextRetryAt: null, errorMessage: 'Retry was not sent before the delivery became too old; abandoned without delivery' });
     const compiled = new PgDialect().sqlToQuery(state.updateCalls[0]!.where as SQL);
     expect(compiled.sql).toContain('"status" =');
     expect(compiled.sql).toContain('"attempts" =');
@@ -180,9 +184,40 @@ describe('webhook delivery recovery sweep', () => {
     state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 2 })];
     enqueueWebhookAttemptMock.mockRejectedValueOnce(new Error('Redis down'));
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
-    expect(summary).toMatchObject({ enqueueFailed: 1, scheduledRedriven: 0 });
+    expect(summary).toMatchObject({ scheduledEnqueueFailed: 1, enqueueFailed: 0, scheduledRedriven: 0 });
     expect(state.updateCalls).toEqual([]);
     structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED');
+  });
+
+  it.each(['pending', 'scheduled'])('keeps the recorded generation for a %s re-drive', async status => {
+    const candidate = orphan({ status, webhookGeneration: 3, webhookApprovalGeneration: 4 });
+    if (status === 'pending') { state.candidates = [candidate]; state.updateResults = [claimWon(1)]; }
+    else state.scheduledCandidates = [candidate];
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect(enqueueWebhookAttemptMock.mock.calls[0]![0].generation).toBe(3);
+  });
+
+  it.each(['pending', 'scheduled'])('falls back to current generation for legacy NULL %s rows', async status => {
+    const candidate = orphan({ status, webhookGeneration: null, webhookApprovalGeneration: 4 });
+    if (status === 'pending') { state.candidates = [candidate]; state.updateResults = [claimWon(1)]; }
+    else state.scheduledCandidates = [candidate];
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect(enqueueWebhookAttemptMock.mock.calls[0]![0].generation).toBe(4);
+  });
+
+  it.each([true, false])('drains legacy queues at sweep end only when pending=%s', async pending => {
+    cutover.pending.mockResolvedValue(pending);
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect(cutover.pending).toHaveBeenCalledOnce();
+    expect(cutover.drain).toHaveBeenCalledTimes(pending ? 1 : 0);
+  });
+
+  it('captures cut-over failure without failing the sweep', async () => {
+    const error = new Error('cut-over failed');
+    cutover.pending.mockResolvedValue(true);
+    cutover.drain.mockRejectedValue(error);
+    await expect(runWebhookDeliveryRecoverySweep(NOW)).resolves.toMatchObject({ scanned: 0 });
+    expect(captureExceptionMock).toHaveBeenCalledWith(error);
   });
 
   it('leases the row it claimed so a concurrent sweep cannot re-queue it', async () => {
@@ -253,7 +288,7 @@ describe('webhook delivery recovery sweep', () => {
     // retry endpoint accepts, so the row stays hand-drivable instead of sitting
     // pending forever.
     const terminal = state.updateCalls[1]!;
-    expect(terminal.set).toMatchObject({ status: 'failed', nextRetryAt: null });
+    expect(terminal.set).toMatchObject({ failedAt: expect.any(Date), status: 'failed', nextRetryAt: null });
     // Wording matters: a `pending` row proves only that no worker ever CLAIMED
     // it, so the message says that rather than asserting more than we know.
     expect(String(terminal.set.errorMessage)).toContain('Never claimed by a delivery worker');
@@ -269,7 +304,7 @@ describe('webhook delivery recovery sweep', () => {
 
     expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ undeliverable: 1 });
-    expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
+    expect(state.updateCalls[1]!.set).toMatchObject({ failedAt: expect.any(Date), status: 'failed' });
     const payload = structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE');
     expect(payload).toMatchObject({ webhookStatus: 'disabled' });
   });
@@ -324,7 +359,7 @@ describe('webhook delivery recovery sweep', () => {
 
     expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ tooOld: 1, requeued: 0 });
-    expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
+    expect(state.updateCalls[1]!.set).toMatchObject({ failedAt: expect.any(Date), status: 'failed' });
     expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('too old');
     structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD');
   });
@@ -382,7 +417,7 @@ describe('webhook delivery recovery sweep', () => {
 
     expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ abandonedInFlight: 1, requeued: 0 });
-    expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
+    expect(state.updateCalls[1]!.set).toMatchObject({ failedAt: expect.any(Date), status: 'failed' });
     expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('outcome unknown');
     structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED');
   });

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const m = vi.hoisted(() => ({ configure: vi.fn(), initialize: vi.fn(), shutdown: vi.fn(), claim: vi.fn(), outcome: vi.fn(), cutover: vi.fn(), capture: vi.fn() }));
+const m = vi.hoisted(() => ({ configure: vi.fn(), initialize: vi.fn(), shutdown: vi.fn(), claim: vi.fn(), release: vi.fn(), outcome: vi.fn(), cutover: vi.fn(), capture: vi.fn() }));
 vi.mock('../workers/webhookDelivery', () => ({ configureWebhookDeliveryExecution: m.configure, initializeWebhookDelivery: m.initialize, shutdownWebhookDelivery: m.shutdown }));
-vi.mock('./webhookDeliveryRecord', () => ({ claimDeliveryForExecution: m.claim, recordDeliveryOutcome: m.outcome }));
+vi.mock('./webhookDeliveryRecord', () => ({ claimDeliveryForExecution: m.claim, releaseDeliveryClaim: m.release, recordDeliveryOutcome: m.outcome }));
 vi.mock('../jobs/webhookLegacyQueueCutover', () => ({ drainLegacyWebhookQueues: m.cutover }));
 vi.mock('./sentry', () => ({ captureException: m.capture }));
 import { initializeWebhookDeliveryWorker, shutdownWebhookDeliveryWorker } from './webhookDeliveryInit';
@@ -9,7 +9,7 @@ beforeEach(() => { vi.clearAllMocks(); m.cutover.mockResolvedValue({}); });
 describe('webhookDeliveryInit', () => {
   it('wires execution before initialize, then drains the retired queues', async () => {
     await initializeWebhookDeliveryWorker();
-    expect(m.configure).toHaveBeenCalledExactlyOnceWith({ claim: m.claim, recordOutcome: m.outcome });
+    expect(m.configure).toHaveBeenCalledExactlyOnceWith({ claim: m.claim, releaseClaim: m.release, recordOutcome: m.outcome });
     expect(m.initialize).toHaveBeenCalledTimes(1); expect(m.cutover).toHaveBeenCalledTimes(1);
     expect(m.configure.mock.invocationCallOrder[0]).toBeLessThan(m.initialize.mock.invocationCallOrder[0]!);
     expect(m.initialize.mock.invocationCallOrder[0]).toBeLessThan(m.cutover.mock.invocationCallOrder[0]!);

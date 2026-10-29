@@ -10,18 +10,19 @@ const fixtures = readdirSync(dir).sort().map(name => JSON.parse(readFileSync(new
 describe('v1 wire golden fixtures', () => {
   beforeEach(() => { vi.clearAllMocks(); safeFetchMock.mockResolvedValue(new Response('ok')); });
   it.each(fixtures)('today’s deliverWebhook preserves $event.type bytes', async ({ event, expectedBody }) => {
-    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'webhook-1', orgId: event.orgId, status: 'active', name: 'Golden', url: 'https://hooks.example.com/events', events: ['*'] }] }) }) });
+    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'webhook-1', orgId: event.orgId, status: 'active', approvalGeneration: 1, name: 'Golden', url: 'https://hooks.example.com/events', events: ['*'] }] }) }) });
     const job = {
-      id: 'delivery-1', webhookId: 'webhook-1', attempts: 0,
+      id: 'delivery-1', webhookId: 'webhook-1', generation: 1, attempts: 0,
+      payloadVersion: 1,
       event: { id: event.id, type: event.type, payload: event.data, timestamp: event.timestamp },
     } as WebhookDeliveryJob;
     expect((await deliverWebhook(job)).success).toBe(true);
     expect(safeFetchMock.mock.calls[0]![1].body).toBe(expectedBody);
   });
   it.each(fixtures)('v1 replay preserves $event.type golden bytes and identifies its root', async ({ event, expectedBody }) => {
-    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'webhook-1', orgId: event.orgId, status: 'active', name: 'Golden', url: 'https://hooks.example.com/events', events: ['*'] }] }) }) });
+    selectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'webhook-1', orgId: event.orgId, status: 'active', approvalGeneration: 1, name: 'Golden', url: 'https://hooks.example.com/events', events: ['*'] }] }) }) });
     const job = {
-      id: 'delivery-1', webhookId: 'webhook-1', attempts: 0,
+      id: 'delivery-1', webhookId: 'webhook-1', generation: 1, attempts: 0,
       payloadVersion: 1, replayOf: 'root-event',
       event: { id: event.id, type: event.type, payload: event.data, timestamp: event.timestamp },
     } as WebhookDeliveryJob;

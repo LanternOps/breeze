@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, isNull, inArray, or, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import type { BreezeEvent } from './eventBus';
@@ -58,24 +58,37 @@ export function buildExecutionClaimCas(deliveryId: string, attemptsMade: number)
 }
 
 /**
- * The OUTCOME WRITE predicate: this row, unless it already succeeded.
- *
- * Keying on `id` alone was safe while the delivery callback was the ONLY
- * writer. It no longer is: the recovery sweep also writes terminal outcomes,
- * and `deliverWebhook` clears its abort timeout once response HEADERS arrive,
- * so a slow response body can keep an attempt in flight past the execution
- * lease and land here after the sweep has already resolved the row. Without
- * `ne(status, 'delivered')` a late-arriving FAILURE would overwrite a recorded
- * success and the customer's delivery history would lie.
- *
- * `status` is NOT NULL, so `<>` cannot silently drop rows the way a negation
- * over a nullable column would.
+ * Outcomes belong to one attempt. A late failure must not revive a row the
+ * recovery sweep resolved; a late success can correct that attempt's unknown
+ * outcome so delivery history still reflects the confirmed POST.
  */
-export function buildOutcomeWriteCas(deliveryId: string): SQL {
+export function buildOutcomeWriteCas(deliveryId: string, attemptsBefore: number, success: boolean): SQL {
   return and(
     eq(webhookDeliveries.id, deliveryId),
-    ne(webhookDeliveries.status, 'delivered')
+    eq(webhookDeliveries.attempts, attemptsBefore),
+    success
+      ? inArray(webhookDeliveries.status, ['retrying', 'failed'])
+      : eq(webhookDeliveries.status, 'retrying')
   )!;
+}
+
+export function buildReleaseClaimCas(deliveryId: string, attemptsMade: number): SQL {
+  return and(
+    eq(webhookDeliveries.id, deliveryId),
+    eq(webhookDeliveries.status, 'retrying'),
+    eq(webhookDeliveries.attempts, attemptsMade)
+  )!;
+}
+
+/** A pre-send exception consumed no attempt; let BullMQ retry the same claim. */
+export async function releaseDeliveryClaim(input: { deliveryId: string; attemptsMade: number }): Promise<boolean> {
+  return runWithSystemDbAccess(async () => {
+    const written = await db.update(webhookDeliveries)
+      .set({ status: input.attemptsMade === 0 ? 'pending' : 'scheduled', nextRetryAt: null })
+      .where(buildReleaseClaimCas(input.deliveryId, input.attemptsMade))
+      .returning({ id: webhookDeliveries.id });
+    return written.length > 0;
+  });
 }
 
 /**
@@ -118,6 +131,7 @@ export async function recordWebhookDelivery(
         eventId: event.id,
         payload: event.payload,
         payloadVersion: webhook.payloadVersion ?? 1,
+        webhookGeneration: webhook.approvalGeneration,
         eventTimestamp,
         replayRootEventId: null,
         status: 'pending',
@@ -170,6 +184,7 @@ export async function claimDeliveryForExecution(
         eventType: webhookDeliveries.eventType,
         payload: webhookDeliveries.payload,
         payloadVersion: webhookDeliveries.payloadVersion,
+        webhookGeneration: webhookDeliveries.webhookGeneration,
         eventTimestamp: webhookDeliveries.eventTimestamp,
         createdAt: webhookDeliveries.createdAt,
         replayRootEventId: webhookDeliveries.replayRootEventId,
@@ -199,10 +214,7 @@ export async function claimDeliveryForExecution(
 
 /**
  * Persist the outcome of one delivery attempt and move the webhook aggregates.
- *
- * Extracted from `index.ts` (#4095) so the CAS above is reachable by a test:
- * as an anonymous closure in a coverage-excluded file, deleting its
- * `ne(status, 'delivered')` conjunct passed everywhere.
+ * The attempt/status CAS above also protects against recovery racing a slow response.
  */
 export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Promise<boolean> {
   return runWithSystemDbAccess(async () => {
@@ -224,9 +236,10 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
         responseTimeMs,
         errorMessage: result.errorMessage ?? null,
         deliveredAt,
+        failedAt: deliveryStatus === 'failed' ? new Date() : null,
         nextRetryAt: result.nextAttemptAt ?? null
       })
-      .where(buildOutcomeWriteCas(result.deliveryId))
+      .where(buildOutcomeWriteCas(result.deliveryId, result.attempts - 1, result.success))
       .returning({ id: webhookDeliveries.id });
 
     if (written.length === 0) {
@@ -236,6 +249,9 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
         webhookId: result.webhookId,
         attemptedStatus: deliveryStatus
       })}`);
+      // A retried write may have committed before its acknowledgement was lost.
+      // Only the winning outcome write can move counts and recovery timestamps.
+      return false;
     }
 
     const aggregateUpdate = result.success
@@ -253,6 +269,6 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
       .update(webhooksTable)
       .set(aggregateUpdate)
       .where(eq(webhooksTable.id, result.webhookId));
-    return written.length > 0;
+    return true;
   });
 }

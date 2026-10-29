@@ -13,20 +13,20 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 // only the final failure is `failed`. Excluded:
 //   - superseded deliveries (webhook edited or disabled after enqueue,
 //     workers/webhookDelivery.ts; error_message `superseded_by_edit:`), which
-//     were never attempted against the endpoint (the exception is
+//     are not attempted again after the edit (the exception is
 //     DECRYPT_FAILED_MESSAGE below: undecryptable credentials are a break);
 //   - rows recovery resolved before any endpoint attempt
 //     (jobs/webhookDeliveryRecovery.ts), which carry attempts 0: a Breeze-side
 //     failure, not the endpoint's.
 // A retry whose worker stopped mid-request (recovery resolves it `failed`,
 // outcome unknown, attempts > 0) does count: the endpoint had already failed
-// and the delivery ended undelivered without a manual replay.
+// and the delivery ended without a confirmed delivery.
 // Recovery is affirmative: webhooks.last_success_at after the latest terminal
 // failure. A webhook whose endpoint died and that receives no more events stays
 // open until a delivery succeeds or the webhook is disabled (retired).
 //
-// Both tables grow with orgs, so both reads are index-backed (2026-12-30-120100):
-//   broken:  webhook_deliveries_failed_recent_idx (created_at) WHERE status = 'failed'
+// Both tables grow with orgs, so both reads are index-backed:
+//   broken:  webhook_deliveries_failed_at_recent_idx (failed_at) WHERE status = 'failed'
 //   tracked: webhook_deliveries_failed_webhook_idx (webhook_id, created_at)
 //            WHERE status = 'failed' AND attempts > 0
 // The tracked index's extra `attempts > 0` is deliberate: only the tracked
@@ -95,6 +95,8 @@ const windowStart = (now: Date) => new Date(now.getTime() - TERMINAL_FAILURE_WIN
  */
 function brokenWebhooksQuery(now: Date): SQL {
   // A semi-join, not SELECT DISTINCT: nothing asks for webhook_id order.
+  // Legacy NULL failed_at rows never open new incidents; tracked reads still
+  // fall back to created_at so existing incidents retain their evidence.
   return sql`
     SELECT wh.id
     FROM webhooks wh
@@ -103,7 +105,7 @@ function brokenWebhooksQuery(now: Date): SQL {
         SELECT d.webhook_id
         FROM webhook_deliveries d
         WHERE d.status = ${FAILED}
-          AND d.created_at >= ${windowStart(now)}::timestamp
+          AND d.failed_at >= ${windowStart(now)}::timestamp
           AND ${TERMINAL}
       )`;
 }
@@ -118,16 +120,16 @@ type DbRow = {
 export function trackedWebhooksQuery(ids: string[]): SQL {
   return sql`
     SELECT w.id, w.org_id, o.partner_id, w.name, w.status, w.created_at,
-      f.created_at AS failed_at, f.error_message, f.response_status,
-      (f.created_at IS NOT NULL AND w.last_success_at IS NOT NULL AND w.last_success_at > f.created_at) AS recovered
+      COALESCE(f.failed_at, f.created_at) AS failed_at, f.error_message, f.response_status,
+      (COALESCE(f.failed_at, f.created_at) IS NOT NULL AND w.last_success_at IS NOT NULL AND w.last_success_at > COALESCE(f.failed_at, f.created_at)) AS recovered
     FROM webhooks w
     JOIN organizations o ON o.id = w.org_id
     LEFT JOIN LATERAL (
-      SELECT d.created_at, d.error_message, d.response_status
+      SELECT d.failed_at, d.created_at, d.error_message, d.response_status
       FROM webhook_deliveries d
       WHERE d.webhook_id = w.id AND d.status = ${FAILED} AND ${ATTEMPTED}
         AND ${TERMINAL}
-      ORDER BY d.created_at DESC
+      ORDER BY COALESCE(d.failed_at, d.created_at) DESC
       LIMIT 1
     ) f ON true
     WHERE w.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`;

@@ -13,6 +13,7 @@ import {
   TERMINAL_FAILURE_WINDOW_MS,
   webhookObservation,
   webhookSource,
+  trackedWebhooksQuery,
   type WebhookRow,
 } from './webhook';
 
@@ -78,7 +79,9 @@ describe('webhook source', () => {
 
   it('the broken query reads only failed deliveries inside the window, with literal predicates', () => {
     const q = new PgDialect().sqlToQuery(webhookSource.brokenQuery(NOW) as SQL);
-    // Literal so the planner can match webhook_deliveries_failed_recent_idx.
+    // Literal so the planner can match webhook_deliveries_failed_at_recent_idx.
+    expect(q.sql).toMatch(/d\.failed_at >= \$\d+::timestamp/);
+    expect(q.sql).not.toContain('d.created_at >=');
     expect(q.sql).toContain(`d.status = 'failed'`);
     expect(q.sql).not.toMatch(/retry_policy|maxRetries|JOIN webhooks w ON/);
     expect(q.sql).toContain('((d.attempts > 0 AND');
@@ -86,6 +89,13 @@ describe('webhook source', () => {
     expect(q.sql).toContain(`NOT LIKE 'superseded\\_by\\_edit:%'`);
     expect(q.params).toContain(new Date(NOW.getTime() - TERMINAL_FAILURE_WINDOW_MS).toISOString());
     expect(TERMINAL_FAILURE_WINDOW_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('tracks the latest terminal time and only recovers after that failure', () => {
+    const q = new PgDialect().sqlToQuery(trackedWebhooksQuery([ID]));
+    expect(q.sql).toContain('COALESCE(f.failed_at, f.created_at) AS failed_at');
+    expect(q.sql).toContain('w.last_success_at > COALESCE(f.failed_at, f.created_at)');
+    expect(q.sql).toContain('ORDER BY COALESCE(d.failed_at, d.created_at) DESC');
   });
 
   it('stays in step with the delivery worker decrypt-failure message', () => {

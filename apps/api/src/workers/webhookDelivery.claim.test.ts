@@ -12,9 +12,11 @@ import { configureWebhookDeliveryExecution, processWebhookAttemptJob } from './w
 const deliveryId = '11111111-1111-4111-8111-111111111111';
 const webhookId = '22222222-2222-4222-8222-222222222222';
 const now = new Date('2026-10-28T12:00:00Z');
-const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'alert.triggered', payload: { hello: true }, payloadVersion: 1 as const, eventTimestamp: now, createdAt: now, replayRootEventId: 'root-event', attempts: 0 };
+const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'alert.triggered', payload: { hello: true }, payloadVersion: 1 as const, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: 'root-event', attempts: 0 };
 const claim = vi.fn();
 const recordOutcome = vi.fn();
+const releaseClaim = vi.fn();
+const sleep = vi.fn(async () => {});
 function job(attemptsMade = 0) { return { data: { deliveryId, webhookId, generation: 3, attemptsMade }, moveToDelayed: vi.fn() } as unknown as Job; }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -24,8 +26,9 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   claim.mockResolvedValue({ claimed: true, delivery: row });
-  recordOutcome.mockResolvedValue(true);
-  configureWebhookDeliveryExecution({ claim, recordOutcome });
+  recordOutcome.mockReset().mockResolvedValue(true);
+  releaseClaim.mockResolvedValue(true);
+  configureWebhookDeliveryExecution({ claim, recordOutcome, releaseClaim, sleep });
   m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: webhookId, orgId: 'org-1', status: 'active', approvalGeneration: 3, payloadVersion: 2, url: 'https://hooks.example.com', events: [] }] }) }) });
   m.fetch.mockResolvedValue(new Response('ok'));
 });
@@ -87,11 +90,60 @@ describe('durable webhook execution claims', () => {
     await processWebhookAttemptJob(job(), 'token');
     expect(JSON.parse(m.fetch.mock.calls[0]![1].body).timestamp).toBe(now.toISOString());
   });
+  it('uses the recorded generation even when the job and current webhook are newer', async () => {
+    m.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: webhookId, status: 'active', approvalGeneration: 4 }] }) }) });
+    const queued = job(); queued.data.generation = 4;
+    await processWebhookAttemptJob(queued, 'token');
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ superseded: true, nextAttemptAt: null }));
+    expect(m.enqueue).not.toHaveBeenCalled();
+  });
+  it('uses the job generation only for a legacy NULL row generation', async () => {
+    claim.mockResolvedValue({ claimed: true, delivery: { ...row, webhookGeneration: null } });
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('retains the row generation on the next wake-up despite newer job data', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    const queued = job(); queued.data.generation = 4;
+    await processWebhookAttemptJob(queued, 'token');
+    expect(m.fetch).toHaveBeenCalledTimes(1);
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ generation: 3 }), expect.any(Date));
+  });
+  it.each([false, true])('releases a pre-send error and preserves it (release throws %s)', async releaseThrows => {
+    const original = new Error('config SELECT failed');
+    m.select.mockImplementation(() => { throw original; });
+    if (releaseThrows) releaseClaim.mockRejectedValue(new Error('release failed'));
+    await expect(processWebhookAttemptJob(job(), 'token')).rejects.toBe(original);
+    expect(m.fetch).not.toHaveBeenCalled();
+    expect(recordOutcome).not.toHaveBeenCalled();
+    expect(releaseClaim).toHaveBeenCalledExactlyOnceWith({ deliveryId, attemptsMade: 0 });
+    expect(m.capture).toHaveBeenCalledWith(original);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_PRE_SEND_FAILED'));
+    if (releaseThrows) expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_CLAIM_RELEASE_FAILED'));
+  });
+  it('retries a known outcome locally and enqueues after the successful write', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    recordOutcome.mockRejectedValueOnce(new Error('temporary write failure')).mockResolvedValueOnce(true);
+    await processWebhookAttemptJob(job(), 'token');
+    expect(recordOutcome).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(250);
+    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ generation: 3, attemptsMade: 1 }), expect.any(Date));
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
+  });
+  it('does not enqueue a late failure whose outcome CAS missed', async () => {
+    m.fetch.mockResolvedValue(new Response('down', { status: 503 }));
+    recordOutcome.mockResolvedValue(false);
+    await processWebhookAttemptJob(job(), 'token');
+    expect(m.enqueue).not.toHaveBeenCalled();
+  });
   it.each([true, false])('reports and rethrows an unrecorded POST (success %s)', async success => {
     m.fetch.mockResolvedValue(new Response('body', { status: success ? 200 : 503 }));
     recordOutcome.mockRejectedValue(new Error('db write failed'));
     await expect(processWebhookAttemptJob(job(), 'token')).rejects.toThrow('db write failed');
     expect(m.fetch).toHaveBeenCalledTimes(1);
+    expect(recordOutcome).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[250], [1000]]);
     expect(m.enqueue).not.toHaveBeenCalled();
     expect(m.capture).toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));

@@ -15,7 +15,7 @@ import { formatHttpFailure } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
-import { webhooks as webhooksTable } from '../db/schema';
+import { webhooks as webhooksTable, webhookDeliveryStatusEnum } from '../db/schema';
 import { toWebhookConfig } from '../services/webhookConfig';
 import { scrubUrlsInText } from '../utils/endpointDisplay';
 import { isSelfDeliveryOfHealthEvent } from '../services/connectionHealth/eventPayload';
@@ -54,8 +54,8 @@ export interface WebhookConfig {
 export interface WebhookDeliveryJob {
   id: string;
   webhookId: string;
-  generation?: number;
-  payloadVersion?: 1 | 2;
+  generation: number;
+  payloadVersion: 1 | 2;
   replayOf?: string | null;
   attempts: number;
   event: { id: string; type: string; timestamp: string; payload: unknown };
@@ -78,6 +78,7 @@ export interface WebhookFanoutTarget {
 }
 
 export interface ClaimedWebhookDelivery {
+  webhookGeneration: number | null;
   id: string;
   webhookId: string;
   eventId: string;
@@ -92,7 +93,7 @@ export interface ClaimedWebhookDelivery {
 
 export type DeliveryClaimOutcome =
   | { claimed: true; delivery: ClaimedWebhookDelivery }
-  | { claimed: false; observedStatus: string | null; observedAttempts: number | null; dueInMs: number | null };
+  | { claimed: false; observedStatus: typeof webhookDeliveryStatusEnum.enumValues[number] | null; observedAttempts: number | null; dueInMs: number | null };
 
 export interface WebhookDeliveryResult {
   deliveryId: string;
@@ -140,7 +141,7 @@ async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<Re
   if (row.status !== 'active') {
     return { status: 'superseded' };
   }
-  if (job.generation !== undefined && row.approvalGeneration !== job.generation) {
+  if (row.approvalGeneration !== job.generation) {
     return { status: 'superseded' };
   }
 
@@ -197,7 +198,7 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   // Prepare payload
   const payload = buildWebhookEnvelope({
-    version: job.payloadVersion ?? 1,
+    version: job.payloadVersion,
     id: event.id,
     type: event.type,
     timestamp: event.timestamp,
@@ -324,6 +325,8 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 interface WebhookDeliveryExecution {
   claim: (input: { deliveryId: string; attemptsMade: number }) => Promise<DeliveryClaimOutcome>;
   recordOutcome: (result: WebhookDeliveryResult) => Promise<boolean>;
+  releaseClaim: (input: { deliveryId: string; attemptsMade: number }) => Promise<boolean>;
+  sleep?: (ms: number) => Promise<void>;
 }
 let execution: WebhookDeliveryExecution | null = null;
 
@@ -333,7 +336,7 @@ export function configureWebhookDeliveryExecution(callbacks: WebhookDeliveryExec
 
 export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, token?: string): Promise<void> {
   if (!execution) throw new Error('processWebhookAttemptJob invoked before configureWebhookDeliveryExecution()');
-  const { deliveryId, webhookId, generation, attemptsMade } = parseQueueJobData(
+  const { deliveryId, webhookId, generation: jobGeneration, attemptsMade } = parseQueueJobData(
     WEBHOOK_DELIVERY_QUEUE, job, webhookAttemptJobDataSchema
   );
   const outcome = await execution.claim({ deliveryId, attemptsMade });
@@ -365,20 +368,51 @@ export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, 
   }
 
   const row = outcome.delivery;
-  const result = await deliverWebhook({
-    id: row.id, webhookId: row.webhookId, generation,
-    payloadVersion: row.payloadVersion, replayOf: row.replayRootEventId, attempts: row.attempts,
-    event: { id: row.eventId, type: row.eventType, payload: row.payload,
-      timestamp: (row.eventTimestamp ?? row.createdAt).toISOString() }
-  });
+  const generation = row.webhookGeneration ?? jobGeneration;
+  let result: WebhookDeliveryResult;
+  try {
+    result = await deliverWebhook({
+      id: row.id, webhookId: row.webhookId, generation,
+      payloadVersion: row.payloadVersion, replayOf: row.replayRootEventId, attempts: row.attempts,
+      event: { id: row.eventId, type: row.eventType, payload: row.payload,
+        timestamp: (row.eventTimestamp ?? row.createdAt).toISOString() }
+    });
+  } catch (err) {
+    // deliverWebhook catches transport errors; a throw here preceded any POST.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[WebhookWorker] pre-send-failed ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_PRE_SEND_FAILED', deliveryId, attemptsMade,
+      error: err instanceof Error ? err.message : String(err)
+    })}`);
+    try {
+      await execution.releaseClaim({ deliveryId, attemptsMade });
+    } catch (releaseError) {
+      captureException(releaseError instanceof Error ? releaseError : new Error(String(releaseError)));
+      console.error(`[WebhookWorker] claim-release-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_CLAIM_RELEASE_FAILED', deliveryId, attemptsMade,
+        error: releaseError instanceof Error ? releaseError.message : String(releaseError)
+      })}`);
+    }
+    throw err;
+  }
   const nextAttemptAt = result.success || result.superseded ? null : nextWebhookRetryAt(result.attempts, new Date());
   result.nextAttemptAt = nextAttemptAt;
-  let recorded: boolean;
+  let recorded = false;
   try {
-    recorded = await execution.recordOutcome(result);
+    const sleep = execution.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt++) {
+      try {
+        recorded = await execution.recordOutcome(result);
+        break;
+      } catch (err) {
+        if (writeAttempt === 2) throw err;
+        await sleep(writeAttempt === 0 ? 250 : 1000);
+      }
+    }
   } catch (persistError) {
-    // The POST already happened. Recovery can only mark its outcome unknown,
-    // so an outcome-write failure must page rather than silently retry it.
+    // The POST may already have happened. Do not persist its result on the job:
+    // after a DB outage longer than ~1.3s, recovery's documented "outcome unknown"
+    // handling owns resolution, without trusting a separately persisted result.
     captureException(persistError instanceof Error ? persistError : new Error(String(persistError)));
     console.error(`[WebhookWorker] delivery-outcome-unrecorded ${JSON.stringify({
       errorId: 'WEBHOOK_DELIVERY_OUTCOME_UNRECORDED', deliveryId, webhookId,
@@ -485,8 +519,8 @@ function reportDuplicateSkip(
   // A still-`pending` original may never have been enqueued at all, and a row
   // we cannot read back tells us nothing — both deserve more than an info line.
   // Neither is re-queued here: the recovery sweep (jobs/webhookDeliveryRecovery)
-  // is the single owner of re-queueing, so that a redelivered event and the
-  // sweep cannot both drive the same row and POST twice.
+  // and legacy cut-over own re-queueing. Execution claims prevent duplicate
+  // wake-ups from POSTing the same attempt twice.
   if (existing && BENIGN_DUPLICATE_STATUSES.has(existing.status)) {
     console.log(line);
   } else {

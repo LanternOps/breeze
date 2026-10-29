@@ -40,12 +40,12 @@ import { deliverWebhook, type WebhookDeliveryJob } from './webhookDelivery';
 import { MAX_OPERATOR_ERROR_LENGTH } from '../services/httpFailureMessage';
 
 const webhookConfig = {
-  id: 'webhook-1', orgId: 'org-1', name: 'Webhook', status: 'active',
+  id: 'webhook-1', orgId: 'org-1', name: 'Webhook', status: 'active', approvalGeneration: 3,
   url: 'https://hooks.example.test/events', secret: 'signing-secret', events: ['device.created'],
   headers: { Authorization: 'Bearer token' },
 };
 function makeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-  return { id: 'delivery-1', webhookId: 'webhook-1', attempts: 0,
+  return { id: 'delivery-1', webhookId: 'webhook-1', generation: 3, payloadVersion: 1, attempts: 0,
     event: { id: 'event-1', type: 'device.created', payload: { deviceId: 'device-1' }, timestamp: '2026-05-02T00:00:00.000Z' }, ...overrides };
 }
 
@@ -163,6 +163,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
       id: 'delivery-1',
       webhookId: 'webhook-1',
       generation: 3,
+      payloadVersion: 1,
       event: {
         id: 'event-1',
         type: 'device.created',
@@ -257,14 +258,14 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     expect(safeFetchMock).toHaveBeenCalledWith('https://hooks.example.test/events', expect.any(Object));
   });
 
-  it('skips the generation comparison entirely when the job carries no generation (legacy producer, opt-in only)', async () => {
+  it('delivers when a legacy row is re-driven with the current generation', async () => {
     mockRow({
       id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 99,
       url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
     });
     safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
 
-    const result = await deliverWebhook(newShapeJob({ generation: undefined }));
+    const result = await deliverWebhook(newShapeJob({ generation: 99 }));
 
     expect(result.success).toBe(true);
   });

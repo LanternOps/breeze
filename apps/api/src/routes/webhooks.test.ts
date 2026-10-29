@@ -276,7 +276,7 @@ describe('webhook routes', () => {
       const res = await request({ payload }, 'POST', `/webhooks/${WEBHOOK_ID_1}/test`);
       expect(res.status).toBe(202);
       const recorded = values.mock.calls[0]![0];
-      expect(recorded).toMatchObject({ payloadVersion: version, eventTimestamp: expect.any(Date), payload });
+      expect(recorded).toMatchObject({ payloadVersion: version, webhookGeneration: 1, eventTimestamp: expect.any(Date), payload });
       expect(enqueueWebhookAttemptMock).toHaveBeenCalledWith({ deliveryId: WEBHOOK_ID_1, webhookId: WEBHOOK_ID_1, generation: 1, attemptsMade: 0 }, expect.any(Date));
       expect(runAfterDbContextCommit).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
     });
@@ -318,7 +318,7 @@ describe('webhook routes', () => {
       const res = await request({}, 'POST', `/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`);
       expect(res.status).toBe(202);
       const recorded = values.mock.calls[0]![0];
-      expect(recorded).toMatchObject({ payloadVersion: version, payload: source.payload,
+      expect(recorded).toMatchObject({ payloadVersion: version, webhookGeneration: 1, payload: source.payload,
         replayRootEventId: root ?? source.eventId, eventTimestamp: expect.any(Date) });
       expect(recorded.eventId).not.toBe(source.eventId);
       expect(enqueueWebhookAttemptMock).toHaveBeenCalledWith({ deliveryId: WEBHOOK_ID_1, webhookId: WEBHOOK_ID_1, generation: 1, attemptsMade: 0 }, expect.any(Date));

@@ -345,10 +345,11 @@ describe('webhook delivery recovery against real Postgres', () => {
     expect(outcomes.filter(outcome => outcome.claimed)).toHaveLength(1);
   });
 
-  it('a past-due scheduled row is re-driven exactly once', async () => {
+  it('a past-due scheduled row is re-driven exactly once with its recorded generation', async () => {
     const now = new Date();
-    const dueId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, createdAt: now, nextRetryAt: new Date(now.getTime() - 20 * 60_000) });
+    const dueId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, webhookGeneration: 1, createdAt: now, nextRetryAt: new Date(now.getTime() - 20 * 60_000) });
     const futureId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, createdAt: now, nextRetryAt: new Date(now.getTime() + 600_000) });
+    await withSystemDbAccessContext(() => db.update(webhooks).set({ approvalGeneration: 2 }).where(eq(webhooks.id, webhookId)));
     const jobId = webhookAttemptJobId(dueId, 2);
     recoveryJobIds.push(jobId, webhookAttemptJobId(futureId, 2));
     await Promise.all([runWebhookDeliveryRecoverySweep(now), runWebhookDeliveryRecoverySweep(now)]);
@@ -356,13 +357,13 @@ describe('webhook delivery recovery against real Postgres', () => {
     const jobs = await queue.getJobs(['waiting', 'delayed', 'active', 'completed', 'failed']);
     expect(jobs.filter(job => job.id === jobId)).toHaveLength(1);
     expect(await queue.getJob(webhookAttemptJobId(futureId, 2))).toBeUndefined();
-    expect((await queue.getJob(jobId))!.data).toMatchObject({ deliveryId: dueId, webhookId, attemptsMade: 2 });
+    expect((await queue.getJob(jobId))!.data).toMatchObject({ deliveryId: dueId, webhookId, generation: 1, attemptsMade: 2 });
     await (await queue.getJob(jobId))!.remove();
   });
 
   it('the partial index the sweep depends on exists and is partial', async () => {
-    // The sweep ticks every five minutes forever and this table has no
-    // retention job, so a full index (or none) would mean a growing scan.
+    // The sweep ticks every five minutes; only pending/retrying rows belong
+    // in its lease index. Scheduled rows have their own due-time index.
     const rows = await withSystemDbAccessContext(() =>
       db.execute(sql`
         SELECT indexdef FROM pg_indexes

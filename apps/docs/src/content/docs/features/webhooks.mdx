@@ -5,7 +5,7 @@ description: Push signed JSON event notifications to external HTTP endpoints wit
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks are scoped to an organization and support custom headers, HMAC-SHA256 signature verification, automatic retries with exponential backoff, and a full delivery history with per-delivery status tracking.
+Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks are scoped to an organization and support custom headers, HMAC-SHA256 signature verification, automatic retries on a fixed schedule, and a full delivery history with per-delivery status tracking.
 
 ---
 
@@ -251,7 +251,7 @@ The original v1 JSON POST body has this structure. See [Payload versions](#paylo
 
 Each webhook has a `payloadVersion`: `1` or `2`. Webhooks created before this release stay on `1`; their payload is unchanged byte for byte. New webhooks default to `2`. Webhooks created through the API without `payloadVersion` also default to `2`.
 
-Choose the version in the edit form, or send `PATCH /webhooks/:id` with `{ "payloadVersion": 2 }`. You can switch back to `1`. Each delivery keeps the version it was recorded with, including retries and replays.
+Choose the version in the edit form, or send `PATCH /webhooks/:id` with `{ "payloadVersion": 2 }`. You can switch back to `1`. Each delivery keeps the payload version it was recorded at, including manual replays and legacy rows. Editing the webhook stops its scheduled retries when they next come due.
 
 The v2 envelope is `{ id, type, timestamp, orgId, schemaVersion: 2, replayOf, data }`, in that order. The v1 envelope has no `schemaVersion` or `replayOf`. For non-alert events, v2 changes only the envelope; `data` is the same as v1. A test delivery (`POST /webhooks/:id/test`) uses the webhook's version with sample `data`; it does not enrich that sample.
 
@@ -445,11 +445,11 @@ Every non-2xx response, timeout, or transport error is retried on this fixed sch
 
 Each delay has **±20% jitter**. The base schedule spans about **21 hours** from the first attempt to the last; a seventh failure leaves the delivery `failed`. The per-webhook `retry_policy` is ignored.
 
-Retry state lives in Postgres, with BullMQ delayed jobs waking each attempt. A Redis restart loses no retries: the recovery sweep re-drives deliveries more than 15 minutes overdue. Each attempt is claimed before sending, so two workers cannot send the same attempt. If a worker stops mid-request, recovery marks the delivery `failed` with an unknown outcome instead of re-sending a potentially delivered request.
+Retry state lives in Postgres, with BullMQ delayed jobs waking each attempt. A wake-up lost to a failed enqueue or to Redis data loss is re-driven by the recovery sweep once the delivery is more than 15 minutes overdue. Each attempt is claimed before sending, so two workers cannot send the same attempt. If a worker stops mid-request, recovery marks the delivery `failed` with an unknown outcome instead of re-sending a potentially delivered request.
 
-Editing or disabling a webhook stops its scheduled retries. When each next attempt comes due, the worker marks it `failed` with a `superseded_by_edit:` message; replay it manually if needed. Retries always use the payload version recorded on the delivery, even if the webhook's version has changed.
+Editing or disabling a webhook stops its scheduled retries; each is marked `failed` (`superseded_by_edit:`) when it next comes due, including retries re-driven by the recovery sweep. Replay it manually if needed. A delivery keeps the payload version it was recorded at; this also applies to manual replays and legacy rows.
 
-The Redis dead-letter queue is retired. On first start after upgrading, Breeze drains the old Redis delivery list and DLQ: queued deliveries are re-driven, and DLQ entries become `failed` deliveries available for manual replay.
+The Redis dead-letter queue is retired. On first start after upgrading, Breeze drains the old Redis delivery list and DLQ: pending rows and old in-memory retries are re-driven; entries whose delivery no longer exists or already finished are dropped and counted. DLQ entries become `failed` deliveries available for manual replay when their webhook still exists. Entries that fail to process stay in Redis and are retried by the recovery sweep.
 
 <Aside type="caution">
   Redirects are rejected (`redirect: "error"`). If your endpoint returns a 3xx redirect, the delivery will be treated as a failure and retried.
@@ -564,7 +564,7 @@ This outline uses a low-code automation platform such as Rewst between Breeze an
 
 Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
-From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending, scheduled or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose delivery ends `failed` after its last attempt, with no later success, opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
+From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending, scheduled or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose delivery ends `failed` after its last attempt, with no later success, opens a connection-health incident on **Integrations**. For a dead endpoint, that is about 21 hours after the first failed attempt, rather than minutes. Decrypt failures open an incident immediately. See [Connection Health Checks](/features/notifications/#connection-health-checks).
 
 ### Listing Deliveries
 
@@ -631,7 +631,7 @@ When you fetch a single webhook via `GET /webhooks/:id`, the response includes a
 
 ### Retrying a Failed Delivery
 
-You can manually retry any delivery that has a `failed` status. The retry creates a new delivery record with the same event type and payload, and queues it for immediate processing.
+You can manually retry any delivery that has a `failed` status. The retry creates a new delivery record with the same event type and payload, and queues it for immediate processing. The endpoint returns 202 Accepted even when queuing fails: the delivery stays `pending`, and the recovery sweep sends it within about 15–20 minutes.
 
 ```bash
 POST /webhooks/:id/retry/:deliveryId
@@ -689,7 +689,7 @@ Response (202 Accepted):
 }
 ```
 
-The test delivery is queued through the same delivery pipeline as real events, so it exercises the full path including HMAC signing, URL validation, and retry logic.
+The test endpoint returns 202 Accepted even when queuing fails: the delivery stays `pending`, and the recovery sweep sends it within about 15–20 minutes. The AI `test_webhook` tool likewise reports the delivery as accepted when queuing fails. A test delivery uses the same HMAC signing, URL validation, and delivery pipeline as real events; a failing endpoint follows the full retry schedule.
 
 ---
 
@@ -825,7 +825,9 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `replay_root_event_id` | varchar(100), nullable | Original event id for manual replays; null for original deliveries |
 | `status` | enum | `pending` (awaiting first attempt), `scheduled` (awaiting retry), `retrying` (in flight), `delivered`, or `failed` |
 | `attempts` | integer | Number of delivery attempts made |
-| `next_retry_at` | timestamp | Next attempt time (`scheduled`) or execution lease (`retrying`) |
+| `next_retry_at` | timestamp | Due time (`scheduled`), execution lease (`retrying`), or the recovery sweep’s 15-minute lease on a re-driven `pending` row |
+| `failed_at` | timestamp, nullable | When the delivery became `failed`; null on legacy rows |
+| `webhook_generation` | integer, nullable | Webhook approval generation when recorded; retries stop after an edit. Legacy null rows fall back to the webhook’s current generation |
 | `response_status` | integer | HTTP response status code from the endpoint |
 | `response_body` | text | Response body (truncated to 1,000 characters) |
 | `response_time_ms` | integer | Round-trip time in milliseconds |

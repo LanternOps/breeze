@@ -97,6 +97,8 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   payload: jsonb('payload').notNull(),
   // Pinned wire version; legacy deliveries retain version 1.
   payloadVersion: smallint('payload_version').notNull().default(1),
+  // Approval generation at recording time; NULL legacy rows use the current generation.
+  webhookGeneration: integer('webhook_generation'),
   // Original envelope timestamp, preserved when recovery requeues a delivery.
   eventTimestamp: timestamp('event_timestamp', { withTimezone: true }),
   // Original event ID shared by every manual replay in a chain.
@@ -105,13 +107,17 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   /** HTTP delivery attempts. Written by the delivery callback, shown in the UI. */
   attempts: integer('attempts').notNull().default(0),
   /**
-   * Times the recovery sweep has re-queued this row (#4095). Deliberately NOT
+   * Times the pending/retrying recovery arm has re-queued this row (#4095). NOT
    * `attempts`: that column is overwritten by the delivery callback, so a
    * counter kept there would reset on the first completed attempt and would
    * misreport enqueue recoveries as HTTP attempts in the UI.
    */
   recoveryAttempts: integer('recovery_attempts').notNull().default(0),
+  // Scheduled due time, retrying execution lease, or a re-driven pending row's 15-minute lease.
   nextRetryAt: timestamp('next_retry_at'),
+  // Terminal time drives health windows: retries can finish many hours after creation.
+  // UTC wall clock (no timezone), matching nextRetryAt; legacy failed rows stay NULL.
+  failedAt: timestamp('failed_at'),
   responseStatus: integer('response_status'),
   responseBody: text('response_body'),
   responseTimeMs: integer('response_time_ms'),
@@ -125,11 +131,9 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   // event POSTs to the customer's endpoint twice (2026-09-11-a migration).
   webhookEventUq: uniqueIndex('webhook_deliveries_webhook_event_uq')
     .on(table.webhookId, table.eventId),
-  // Partial, over the UNRESOLVED statuses only (2026-09-11-d migration). The
-  // recovery sweep ticks every five minutes forever and this table has no
-  // retention job, so the index it scans must not grow with the table —
-  // `pending`/`retrying` are transient, so in a healthy fleet this holds ~0
-  // entries however large `webhook_deliveries` becomes.
+  // Partial, over the pending/retrying recovery lease arm (2026-09-11-d).
+  // Retention removes terminal rows; scheduled rows use their own due-time
+  // index below. This scan stays small while pending/retrying rows are transient.
   unresolvedIdx: index('webhook_deliveries_unresolved_idx')
     .on(table.createdAt)
     .where(sql`${table.status} IN ('pending', 'retrying')`),
@@ -140,8 +144,8 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
     .where(sql`${table.status} = 'scheduled'`),
   // Connection health W4 webhook source (2026-12-30-120100): failed rows only,
   // so both grow with failures, not with traffic.
-  failedRecentIdx: index('webhook_deliveries_failed_recent_idx')
-    .on(table.createdAt)
+  failedAtRecentIdx: index('webhook_deliveries_failed_at_recent_idx')
+    .on(table.failedAt)
     .where(sql`${table.status} = 'failed'`),
   failedWebhookIdx: index('webhook_deliveries_failed_webhook_idx')
     .on(table.webhookId, table.createdAt)

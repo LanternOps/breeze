@@ -13,9 +13,9 @@ const event: BreezeEvent = { id: 'event-1', type: 'alert.triggered', orgId: 'org
 const org = Object.freeze({ alertId: 'alert-1', status: 'active' });
 function target(id: string, payloadVersion: 1 | 2) { return { id, orgId: 'org-1', approvalGeneration: 1, payloadVersion }; }
 function job(extra: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-  return { id: 'delivery-1', webhookId: 'hook-1', event: { id: event.id, type: event.type, payload: event.payload, timestamp: event.metadata.timestamp }, attempts: 0, ...extra };
+  return { id: 'delivery-1', webhookId: 'hook-1', generation: 1, payloadVersion: 1, event: { id: event.id, type: event.type, payload: event.payload, timestamp: event.metadata.timestamp }, attempts: 0, ...extra };
 }
-beforeEach(() => { vi.clearAllMocks(); mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'hook-1', status: 'active', orgId: 'org-1', name: 'Hook', url: 'https://hooks.example.com', secret: 'secret', events: ['*'] }] }) }) }); mocks.enrich.mockResolvedValue({ org, partner: { ...org, orgExternalIds: [] } }); mocks.fetch.mockResolvedValue(new Response('ok')); });
+beforeEach(() => { vi.clearAllMocks(); mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'hook-1', status: 'active', approvalGeneration: 1, orgId: 'org-1', name: 'Hook', url: 'https://hooks.example.com', secret: 'secret', events: ['*'] }] }) }) }); mocks.enrich.mockResolvedValue({ org, partner: { ...org, orgExternalIds: [] } }); mocks.fetch.mockResolvedValue(new Response('ok')); });
 afterEach(() => vi.restoreAllMocks());
 describe('per-delivery payload version', () => {
   it('still records and queues v1 when v2 enrichment rejects', async () => {
@@ -53,7 +53,7 @@ describe('per-delivery payload version', () => {
     expect(mocks.enrich).not.toHaveBeenCalled();
     expect(queue).toHaveBeenCalledWith({ deliveryId: 'delivery-1', webhookId: 'hook-1', generation: 1, attemptsMade: 0 }, expect.any(Date));
   });
-  it.each([undefined, 1, 2] as const)('signs the actual body for version %s and carries replay headers', async payloadVersion => {
+  it.each([1, 2] as const)('signs the actual body for version %s and carries replay headers', async payloadVersion => {
     await deliverWebhook(job({ payloadVersion, replayOf: 'original-id' }));
     const { body, headers } = mocks.fetch.mock.calls[0]![1];
     const parsed = JSON.parse(body);

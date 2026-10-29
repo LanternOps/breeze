@@ -28,12 +28,9 @@ vi.mock('../db', () => ({
   },
 }));
 
-// test_webhook now mirrors routes/webhooks.ts POST /:id/test and actually
-// dispatches to the worker (D.1 fix) — mock the worker so these tests
-// exercise the dispatch call without touching Redis/eventBus. Site-ceiling
-// gate contract §7E: enqueueWebhookAttempt no longer takes a decrypted config —
-// there is nothing left to map here; the worker resolves and decrypts the
-// row itself at send time.
+// Mock the queue producer so test_webhook exercises persisted delivery creation
+// and the post-commit wake-up without touching Redis. The worker reads and
+// decrypts the webhook at send time; the job carries only ids and generation.
 vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: mocks.enqueueWebhookAttempt }));
 
 // Mock the schema so Drizzle column references resolve without a real DB.
@@ -329,7 +326,7 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     expect(mocks.enqueueWebhookAttempt.mock.calls[0]![0]).toEqual({ deliveryId: DELIVERY_ID, webhookId: WEBHOOK_ID, generation: 1, attemptsMade: 0 });
     if (version === 1 || version === 2) {
       const values = mocks.dbInsert.mock.results[0]!.value.values.mock.calls[0][0];
-      expect(values).toMatchObject({ payloadVersion: version, eventTimestamp: expect.any(Date) });
+      expect(values).toMatchObject({ payloadVersion: version, webhookGeneration: 1, eventTimestamp: expect.any(Date) });
     }
   });
 

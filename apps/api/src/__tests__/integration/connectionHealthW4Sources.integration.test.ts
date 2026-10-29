@@ -52,7 +52,7 @@ describe('webhook source (terminal delivery failures)', () => {
   }
   async function delivery(webhookId: string, over: Partial<typeof webhookDeliveries.$inferInsert>) {
     await asSystem(() => db.insert(webhookDeliveries).values({
-      webhookId, eventType: 'device.offline', eventId: randomUUID(), payload: {}, status: 'failed', attempts: 5, createdAt: minAgo(10), ...over,
+      webhookId, eventType: 'device.offline', eventId: randomUUID(), payload: {}, status: 'failed', attempts: 5, createdAt: minAgo(21 * 60), failedAt: minAgo(10), ...over,
     }));
   }
 
@@ -62,10 +62,10 @@ describe('webhook source (terminal delivery failures)', () => {
       webhook(o), webhook(o), webhook(o), webhook(o), webhook(o),
     ]);
     await delivery(terminal, { errorMessage: 'HTTP 503 from https://hooks.example.test/in?token=abc', responseStatus: 503 });
-    await delivery(midRetry, { status: 'scheduled', attempts: 2, nextRetryAt: new Date(NOW.getTime() + 60_000) });
+    await delivery(midRetry, { status: 'scheduled', failedAt: null, attempts: 2, nextRetryAt: new Date(NOW.getTime() + 60_000) });
     await delivery(superseded, { errorMessage: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued' });
     await delivery(sweep, { attempts: 0, errorMessage: 'Delivery was claimed by a worker that stopped before reporting a result; outcome unknown' });
-    await delivery(old, { createdAt: minAgo(120) });
+    await delivery(old, { createdAt: minAgo(10), failedAt: minAgo(120) });
 
     const obs = await observe(webhookSource);
     expect(obs.filter((x) => x.sourceId === terminal)).toEqual([expect.objectContaining({
@@ -85,9 +85,9 @@ describe('webhook source (terminal delivery failures)', () => {
   it('tracked: a later success recovers; an old failure without success stays broken; disabled retires; deleted is absent', async () => {
     const { o } = await org();
     const [recovered, stillBroken, disabled, deleted] = await Promise.all([webhook(o), webhook(o), webhook(o), webhook(o)]);
-    await delivery(recovered, { createdAt: minAgo(90) });
+    await delivery(recovered, { createdAt: minAgo(21 * 60), failedAt: minAgo(90) });
     await asSystem(() => db.update(webhooks).set({ lastSuccessAt: minAgo(30) }).where(eq(webhooks.id, recovered)));
-    await delivery(stillBroken, { createdAt: minAgo(600) });
+    await delivery(stillBroken, { createdAt: minAgo(21 * 60), failedAt: minAgo(600) });
     await delivery(disabled, {});
     await asSystem(() => db.update(webhooks).set({ status: 'disabled' }).where(eq(webhooks.id, disabled)));
     await asSystem(() => db.delete(webhooks).where(eq(webhooks.id, deleted)));
@@ -99,11 +99,11 @@ describe('webhook source (terminal delivery failures)', () => {
     expect(ids(obs)).not.toContain(deleted);
   });
 
-  it('a success before the failure does not count as recovery', async () => {
+  it('a success after creation but before terminal failure does not count as recovery', async () => {
     const { o } = await org();
     const w = await webhook(o, { lastSuccessAt: minAgo(60) });
-    await delivery(w, { createdAt: minAgo(10) });
-    expect((await observe(webhookSource)).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
+    await delivery(w, { createdAt: minAgo(21 * 60), failedAt: minAgo(10) });
+    expect((await observe(webhookSource, [w])).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
   });
 });
 

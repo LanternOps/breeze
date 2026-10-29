@@ -3,6 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   buildExecutionClaimCas,
   buildExistingDeliveryLookup,
+  buildReleaseClaimCas,
   buildOutcomeWriteCas
 } from './webhookDeliveryRecord';
 
@@ -34,17 +35,22 @@ describe('webhook delivery record predicates (compiled SQL)', () => {
     expect(params).toEqual(['delivery-1', 3, 'pending', 'scheduled']);
   });
 
-  it('outcome write refuses to overwrite a recorded success', () => {
-    const { sql, params } = dialect.sqlToQuery(buildOutcomeWriteCas('delivery-1'));
+  it('failure outcome requires the same attempt still retrying', () => {
+    const { sql, params } = dialect.sqlToQuery(buildOutcomeWriteCas('delivery-1', 3, false));
+    expect(sql).toBe('("webhook_deliveries"."id" = $1 and "webhook_deliveries"."attempts" = $2 and "webhook_deliveries"."status" = $3)');
+    expect(params).toEqual(['delivery-1', 3, 'retrying']);
+  });
 
-    // The `<> 'delivered'` conjunct is what stops a late-arriving FAILURE from
-    // clobbering a success the customer already received. It lived as an
-    // anonymous closure in coverage-excluded `index.ts`, where deleting it
-    // passed everywhere.
-    expect(sql).toBe(
-      '("webhook_deliveries"."id" = $1 and "webhook_deliveries"."status" <> $2)'
-    );
-    expect(params).toEqual(['delivery-1', 'delivered']);
+  it('success may correct only the same retrying or failed attempt', () => {
+    const { sql, params } = dialect.sqlToQuery(buildOutcomeWriteCas('delivery-1', 3, true));
+    expect(sql).toBe('("webhook_deliveries"."id" = $1 and "webhook_deliveries"."attempts" = $2 and "webhook_deliveries"."status" in ($3, $4))');
+    expect(params).toEqual(['delivery-1', 3, 'retrying', 'failed']);
+  });
+
+  it('release CAS pins retrying status and the attempt', () => {
+    const { sql, params } = dialect.sqlToQuery(buildReleaseClaimCas('delivery-1', 3));
+    expect(sql).toBe('("webhook_deliveries"."id" = $1 and "webhook_deliveries"."status" = $2 and "webhook_deliveries"."attempts" = $3)');
+    expect(params).toEqual(['delivery-1', 'retrying', 3]);
   });
 
   it('dedupe read-back is keyed on BOTH webhook and event', () => {

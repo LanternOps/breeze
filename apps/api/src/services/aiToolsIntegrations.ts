@@ -317,6 +317,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
           eventId,
           payload,
           payloadVersion: webhook.payloadVersion,
+          webhookGeneration: webhook.approvalGeneration,
           eventTimestamp: now,
           status: 'pending',
           attempts: 0,

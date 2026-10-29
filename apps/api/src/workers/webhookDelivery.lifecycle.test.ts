@@ -16,7 +16,7 @@ const delays = [60_000, 300_000, 1_800_000, 7_200_000, 21_600_000, 43_200_000];
 import * as mod from './webhookDelivery';
 const claim = vi.fn();
 const recordOutcome = vi.fn();
-const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'device.created', payload: {}, payloadVersion: 1, eventTimestamp: now, createdAt: now, replayRootEventId: null, attempts: 0 };
+const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'device.created', payload: {}, payloadVersion: 1, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: null, attempts: 0 };
 let webhook: Record<string, unknown>;
 function job(attemptsMade = 0) { return { data: { deliveryId, webhookId, generation: 3, attemptsMade } } as Job; }
 beforeEach(() => {
@@ -42,7 +42,7 @@ it('requires execution callbacks before processing', async () => {
 });
 
 describe('webhook attempt outcomes', () => {
-  beforeEach(() => mod.configureWebhookDeliveryExecution({ claim, recordOutcome }));
+  beforeEach(() => mod.configureWebhookDeliveryExecution({ claim, recordOutcome, releaseClaim: vi.fn() }));
   it.each([{ status: 'disabled' }, { approvalGeneration: 4 }])('supersedes changed lifecycle %j', async change => {
     Object.assign(webhook, change);
     await mod.processWebhookAttemptJob(job(), 'token');

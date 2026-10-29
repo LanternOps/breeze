@@ -3,12 +3,12 @@
  * types, and importing that service back into the worker creates a cycle.
  */
 import { configureWebhookDeliveryExecution, initializeWebhookDelivery, shutdownWebhookDelivery } from '../workers/webhookDelivery';
-import { claimDeliveryForExecution, recordDeliveryOutcome } from './webhookDeliveryRecord';
+import { claimDeliveryForExecution, releaseDeliveryClaim, recordDeliveryOutcome } from './webhookDeliveryRecord';
 import { drainLegacyWebhookQueues } from '../jobs/webhookLegacyQueueCutover';
 import { captureException } from './sentry';
 
 export async function initializeWebhookDeliveryWorker(): Promise<void> {
-  configureWebhookDeliveryExecution({ claim: claimDeliveryForExecution, recordOutcome: recordDeliveryOutcome });
+  configureWebhookDeliveryExecution({ claim: claimDeliveryForExecution, releaseClaim: releaseDeliveryClaim, recordOutcome: recordDeliveryOutcome });
   await initializeWebhookDelivery();
   try {
     await drainLegacyWebhookQueues();
