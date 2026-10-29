@@ -624,6 +624,18 @@ describe('#10413: a query that started from zero bills every modelUsage key at i
     expect(second.usageConfirmed).toBe(true);
   });
 
+  it('an empty first result keeps no snapshot, so the next result still bills every key from zero', () => {
+    const empty = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+      queryStartedAtZero: true, result: success({ usage: ru(tok(0, 0)), modelUsage: { [SONNET]: mu(tok(0, 0)) } }) });
+    expect(empty.usageNote).toBe('empty_usage');
+    expect(empty.nextSnapshot).toBeNull();
+    const next = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: empty.nextSnapshot,
+      queryStartedAtZero: true,
+      result: success({ usage: ru(MAIN), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    expect(next.usage).toEqual([std(SONNET, MAIN), std(BG, BG_USAGE)]);
+    expect(next.usageConfirmed).toBe(true);
+  });
+
   it('a failed query whose only usage is the background call bills that call, unconfirmed, served = bound (#7786)', () => {
     const frames = [...retries('overloaded', 529), syntheticError('server_error'), failedResult(529)];
     const out = sdkTurnUsage({ binding: B, observation: observed(frames), previousSnapshot: null,
