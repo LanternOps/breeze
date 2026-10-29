@@ -497,7 +497,12 @@ export function processStreamEvent(
     }
 
     case 'done':
-      set(() => ({ isStreaming: false, thinking: false, joinedMidResponse: false }));
+      // #9431: a card whose wait already ended has nothing left to show once
+      // the turn is over (a denied / settled call may send no tool_result).
+      set((s) => ({
+        isStreaming: false, thinking: false, joinedMidResponse: false,
+        ...(s.pendingApproval?.resolution ? { pendingApproval: null } : {}),
+      }));
       return null;
 
     // #9427: the first frame of an attach. Applies the snapshot of the

@@ -344,6 +344,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             updateTab(tabId, { hasApprovalPending: true });
           }
         }
+        // #9431: the tab's approval was decided (here or anywhere else) — drop
+        // the badge unless a plan card is still waiting.
+        if (event.type === 'approval_resolved' && getTab(tabId)?.pendingApproval?.executionId === event.executionId && !getTab(tabId)?.pendingPlan) {
+          updateTab(tabId, { hasApprovalPending: false });
+        }
 
         // Update title from title_updated events — but never stomp on a title
         // the user explicitly set (guards a race where the rename lands after

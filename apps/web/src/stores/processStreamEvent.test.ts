@@ -112,6 +112,16 @@ describe('approval_resolved (#9431)', () => {
     expect(h.state.pendingApproval?.resolution).toBeUndefined();
   });
 
+  it('done removes a resolved card but leaves an undecided one', () => {
+    const h = harness();
+    processStreamEvent(card, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.pendingApproval?.executionId).toBe('e1');
+    processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'not_approved' }, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.pendingApproval).toBeNull();
+  });
+
   it('does not resurrect a card that is already gone', () => {
     const h = harness();
     processStreamEvent({ type: 'approval_resolved', executionId: 'e1', outcome: 'approved' }, h.set, h.get, null);

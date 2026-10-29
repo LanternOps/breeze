@@ -58,6 +58,16 @@ describe('aiStore approvals decided elsewhere (#9431)', () => {
     },
   );
 
+  it('a 409 for an execution that is no longer the card on screen leaves that card alone', async () => {
+    useAiStore.setState({ pendingApproval: card({ executionId: 'exec-2' }) });
+    fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ code: 'approval_already_decided', outcome: 'approved' }, 409));
+
+    await useAiStore.getState().approveExecution('exec-1', true);
+
+    expect(useAiStore.getState().pendingApproval).toMatchObject({ executionId: 'exec-2' });
+    expect(useAiStore.getState().pendingApproval?.resolution).toBeUndefined();
+  });
+
   it('any other refusal still surfaces as an error and leaves the card actionable', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(jsonResponse({ error: 'Execution not found or already processed' }, 404));
 

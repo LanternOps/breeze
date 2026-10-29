@@ -80,6 +80,33 @@ describe('workspaceStore approvals decided elsewhere (#9431)', () => {
     expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/sa/stream', expect.anything());
   });
 
+  it('does not open a second stream for a tab whose session already streams', () => {
+    const reader = {} as ReadableStreamDefaultReader<Uint8Array>;
+    useWorkspaceStore.setState({ _readers: new Map([['sa', reader]]) });
+
+    useWorkspaceStore.getState().recheckPendingApprovals();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    useWorkspaceStore.setState({ _readers: new Map() });
+  });
+
+  it('a resolution arriving on the stream clears a background tab\'s approval badge', async () => {
+    let push!: (s: string) => void;
+    const body = new ReadableStream<Uint8Array>({ start(c) { push = (s) => c.enqueue(enc.encode(s)); } });
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, body } as unknown as Response);
+    useWorkspaceStore.setState({ activeTabId: 'other' });
+
+    useWorkspaceStore.getState().recheckPendingApprovals();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const pending = { type: 'approval_required', executionId: 'exec-1', toolName: 'file_operations', input: {}, description: 'Delete a file' };
+    push(`data: ${JSON.stringify({ type: 'attach_state', turn: 'running', turnId: 't1', lastSeq: 0, turnUserMessageId: null, partial: true, replay: [], pendingCards: [pending], activePlan: null, turnModel: null })}\n\n`);
+    await vi.waitFor(() => expect(tabOf('a')?.hasApprovalPending).toBe(true));
+    push(`data: ${JSON.stringify({ type: 'approval_resolved', executionId: 'exec-1', outcome: 'approved' })}\n\n`);
+
+    await vi.waitFor(() => expect(tabOf('a')?.hasApprovalPending).toBe(false));
+    expect(tabOf('a')?.pendingApproval?.resolution).toBe('approved');
+  });
+
   it('leaves a tab whose card is already decided alone', () => {
     useWorkspaceStore.setState({ tabs: [tab({ id: 'a', sessionId: 'sa', pendingApproval: card({ resolution: 'approved' }) })] });
 
