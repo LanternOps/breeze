@@ -769,6 +769,7 @@
       "fileWrongType": "Attach a PDF, PNG or JPEG file.",
       "variables": "Agreement details",
       "unresolved": "Provide a value for: {{names}}",
+      "needsSignedCopy": "Breeze can't fill {{names}} without a quote. Attach the signed copy to record this agreement.",
       "consequence": "This files a signed agreement for {{org}}. It cannot be deleted afterwards.",
       "submit": "Record signed agreement",
       "success": "Signed agreement recorded.",

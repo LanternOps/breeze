@@ -769,6 +769,7 @@
       "fileWrongType": "Bir PDF, PNG veya JPEG dosyası ekleyin.",
       "variables": "Anlaşma bilgileri",
       "unresolved": "Şunlar için bir değer girin: {{names}}",
+      "needsSignedCopy": "Breeze, teklif olmadan {{names}} alanını dolduramaz. Bu sözleşmeyi kaydetmek için imzalı kopyayı ekleyin.",
       "consequence": "Bu işlem {{org}} için imzalı bir anlaşma kaydeder. Sonradan silinemez.",
       "submit": "İmzalı anlaşmayı kaydet",
       "success": "İmzalı anlaşma kaydedildi.",

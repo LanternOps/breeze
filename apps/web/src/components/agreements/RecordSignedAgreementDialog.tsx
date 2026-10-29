@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { QUOTE_ACCEPT_ON_BEHALF_METHODS, type QuoteAcceptOnBehalfMethod } from '@breeze/shared';
+import { QUOTE_ACCEPT_ON_BEHALF_METHODS, autoVariablesNeedingQuote, type QuoteAcceptOnBehalfMethod } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -209,27 +209,42 @@ export default function RecordSignedAgreementDialog({
     if (templateId && !template) setTemplateId('');
   }, [templateId, template]);
 
+  const autoNames = useMemo(
+    () => new Set((version?.declaredVariables ?? []).filter((v) => v.kind === 'auto').map((v) => v.name)),
+    [version],
+  );
+
   const variableFields: VariableField[] = useMemo(() => {
     const declared = (version?.declaredVariables ?? [])
       .filter((v) => v.kind === 'manual')
       .map((v) => ({ name: v.name, label: v.label ?? v.name }));
     const known = new Set(declared.map((d) => d.name));
-    // A declared AUTO variable the server could not resolve (a quote-only key
-    // such as totals.monthly has no value on a standalone agreement) is not
-    // something the tech can type in — the server only takes declared manual
-    // values — so it gets no input; the toast names it.
-    const auto = new Set((version?.declaredVariables ?? []).filter((v) => v.kind === 'auto').map((v) => v.name));
-    // Names the server just told us it still needs (e.g. a variable the
-    // declared list did not carry) are required fields too.
-    return [...declared, ...unresolved.filter((n) => !known.has(n) && !auto.has(n)).map((n) => ({ name: n, label: n }))];
-  }, [version, unresolved]);
+    // A declared AUTO variable is never an input: the server only takes
+    // declared manual values (an auto value cannot be overridden on the legal
+    // record), so it goes to `signedCopyFor` below instead. Names the server
+    // just told us it still needs that the declared list did not carry are
+    // required fields.
+    return [...declared, ...unresolved.filter((n) => !known.has(n) && !autoNames.has(n)).map((n) => ({ name: n, label: n }))];
+  }, [version, unresolved, autoNames]);
 
-  // An attached signed copy is frozen as-is: no variables are rendered, so none are asked for.
-  const needsVariables = !file && variableFields.length > 0;
+  // Declared auto variables a quote-less render cannot fill (quote.number,
+  // totals.* …), plus any auto variable a 422 named. Nothing typed here can
+  // resolve them, so the only way to record this template is the signed copy,
+  // which is filed verbatim with nothing rendered (#9296).
+  const signedCopyFor = useMemo(() => {
+    const names = autoVariablesNeedingQuote(version?.declaredVariables);
+    for (const n of unresolved) if (autoNames.has(n) && !names.includes(n)) names.push(n);
+    return names;
+  }, [version, unresolved, autoNames]);
+  const needsSignedCopy = !file && signedCopyFor.length > 0;
+
+  // An attached signed copy is frozen as-is: no variables are rendered, so none
+  // are asked for — nor while a signed copy is required anyway.
+  const needsVariables = !file && signedCopyFor.length === 0 && variableFields.length > 0;
   const variablesFilled = !needsVariables || variableFields.every((f) => (values[f.name] ?? '').trim().length > 0);
   const today = localToday();
   const ready = Boolean(orgId && version && reference.trim() && signerName.trim()
-    && signedDate && signedDate <= today && !fileError && variablesFilled);
+    && signedDate && signedDate <= today && !fileError && !needsSignedCopy && variablesFilled);
   const orgName = orgs.find((o) => o.id === orgId)?.name ?? t('agreements.recordSigned.orgFallback');
 
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -275,6 +290,9 @@ export default function RecordSignedAgreementDialog({
           const names = unresolvedVariableNamesFromMessage(message);
           if (names.length === 0) return undefined;
           setUnresolved(names);
+          // An auto variable has no input to fill: point at the signed copy.
+          const auto = names.filter((n) => autoNames.has(n));
+          if (auto.length > 0) return t('agreements.recordSigned.needsSignedCopy', { names: auto.join(', ') });
           return t('agreements.recordSigned.unresolved', { names: names.join(', ') });
         },
         parseSuccess: (data) => (data as { data: { signedAgreementId: string } }).data.signedAgreementId,
@@ -289,7 +307,7 @@ export default function RecordSignedAgreementDialog({
       setSubmitting(false);
     }
   }, [submitting, ready, version, orgId, lockedContractId, contractId, file, variableFields, values, signerName,
-    signerEmail, signedDate, method, reference, onRecorded, t]);
+    signerEmail, signedDate, method, reference, onRecorded, autoNames, t]);
 
   return (
     <Dialog
@@ -454,13 +472,25 @@ export default function RecordSignedAgreementDialog({
               accept="application/pdf,image/png,image/jpeg"
               onChange={onFileChange}
               disabled={submitting}
+              required={signedCopyFor.length > 0}
               data-testid="agreements-record-file"
-              aria-describedby="agreements-record-file-help"
+              aria-describedby={needsSignedCopy
+                ? 'agreements-record-file-help agreements-record-needs-signed-copy'
+                : 'agreements-record-file-help'}
               className="block w-full text-sm text-foreground file:mr-3 file:rounded-md file:border file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium disabled:opacity-60"
             />
             <span id="agreements-record-file-help" className="mt-1 block text-xs text-muted-foreground">
               {t('agreements.recordSigned.fileHelp')}
             </span>
+            {needsSignedCopy && (
+              <span
+                id="agreements-record-needs-signed-copy"
+                className="mt-1 block text-xs text-destructive"
+                data-testid="agreements-record-needs-signed-copy"
+              >
+                {t('agreements.recordSigned.needsSignedCopy', { names: signedCopyFor.join(', ') })}
+              </span>
+            )}
             {fileError && (
               <span className="mt-1 block text-xs text-destructive" data-testid="agreements-record-file-error">{fileError}</span>
             )}

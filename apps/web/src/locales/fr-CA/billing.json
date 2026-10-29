@@ -769,6 +769,7 @@
       "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
       "variables": "Renseignements de l'entente",
       "unresolved": "Indiquez une valeur pour : {{names}}",
+      "needsSignedCopy": "Breeze ne peut pas remplir {{names}} sans soumission. Joignez la copie signée pour consigner cette entente.",
       "consequence": "Ceci verse au dossier une entente signée pour {{org}}. Elle ne pourra pas être supprimée par la suite.",
       "submit": "Enregistrer l'entente signée",
       "success": "Entente signée enregistrée.",

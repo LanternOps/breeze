@@ -769,6 +769,7 @@
       "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
       "variables": "Informations de la convention",
       "unresolved": "Renseignez une valeur pour : {{names}}",
+      "needsSignedCopy": "Breeze ne peut pas renseigner {{names}} sans devis. Joignez la copie signée pour enregistrer cet accord.",
       "consequence": "Ceci archive une convention signée pour {{org}}. Elle ne pourra pas être supprimée ensuite.",
       "submit": "Enregistrer la convention signée",
       "success": "Convention signée enregistrée.",

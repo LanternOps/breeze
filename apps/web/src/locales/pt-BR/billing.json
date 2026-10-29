@@ -769,6 +769,7 @@
       "fileWrongType": "Anexe um arquivo PDF, PNG ou JPEG.",
       "variables": "Dados do acordo",
       "unresolved": "Informe um valor para: {{names}}",
+      "needsSignedCopy": "O Breeze não consegue preencher {{names}} sem uma cotação. Anexe a cópia assinada para registrar este acordo.",
       "consequence": "Isso arquiva um acordo assinado para {{org}}. Ele não poderá ser excluído depois.",
       "submit": "Registrar acordo assinado",
       "success": "Acordo assinado registrado.",

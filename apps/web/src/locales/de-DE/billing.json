@@ -769,6 +769,7 @@
       "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
       "variables": "Angaben zur Vereinbarung",
       "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "needsSignedCopy": "Breeze kann {{names}} ohne Angebot nicht ausfüllen. Hängen Sie die unterschriebene Kopie an, um diese Vereinbarung zu erfassen.",
       "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",

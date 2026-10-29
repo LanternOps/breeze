@@ -769,6 +769,7 @@
       "fileWrongType": "Adjunta un archivo PDF, PNG o JPEG.",
       "variables": "Datos del acuerdo",
       "unresolved": "Indica un valor para: {{names}}",
+      "needsSignedCopy": "Breeze no puede completar {{names}} sin una cotización. Adjunta la copia firmada para registrar este acuerdo.",
       "consequence": "Esto registra un acuerdo firmado para {{org}}. No se puede eliminar después.",
       "submit": "Registrar acuerdo firmado",
       "success": "Acuerdo firmado registrado.",
