@@ -23,6 +23,7 @@ import {
 } from '../../db/schema/aiOperatorTaskGraph';
 import { contactExternalLinks } from '../../db/schema/contacts';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
+import { reserveTaskAccount } from './accountReservations';
 
 /** Mirrors `ai_operator_task_targets_label_len_chk`. */
 const MAX_TARGET_LABEL_CHARS = 255;
@@ -192,6 +193,15 @@ export async function freezeTargetAccount(
     // ON CONFLICT DO UPDATE always returns the inserted-or-updated row.
     throw new Error('[aiOperator] freezeTargetAccount: upsert returned no row');
   }
+
+  // #9981: an account is never frozen onto a task without being reserved for
+  // it. The caller must already have run `lockAndCheckAccountReservations` in
+  // this transaction; if it did not and another task holds the account, this
+  // throws and the whole freeze rolls back.
+  await reserveTaskAccount(dbh, {
+    orgId: input.orgId, taskId: input.taskId, provider: input.provider,
+    externalId: values.externalId, principalLabel: values.principalLabel,
+  });
 
   if (input.actor) {
     await appendTaskEvent(dbh, {

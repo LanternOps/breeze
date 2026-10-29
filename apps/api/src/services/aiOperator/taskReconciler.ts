@@ -55,6 +55,7 @@ import {
 import { parseTaskCheckpoint } from './taskService';
 import { isServiceRecoveryCheckpoint } from '@breeze/shared';
 import { sendHumanWorkReminders } from './humanWorkService';
+import { releaseSettledAccountReservations } from './accountReservations';
 
 /**
  * A NOTE ON EVERY `${...}` BELOW THAT CARRIES A TIMESTAMP.
@@ -108,6 +109,8 @@ export interface ReconcilerPassResult {
   terminalUnsettled: number;
   /** Set 5 (recipe library E3): overdue human-work steps reminded this pass. */
   humanWorkReminders: number;
+  /** Set 6 (#9981): account reservations of terminal tasks with nothing left in flight, released. */
+  accountReservationsReleased: number;
 }
 
 /**
@@ -124,12 +127,22 @@ export async function runReconcilerPass(now: Date = new Date()): Promise<Reconci
     runningPastLease: 0,
     terminalUnsettled: 0,
     humanWorkReminders: 0,
+    accountReservationsReleased: 0,
   };
 
   result.queuedPastWake = await advanceScanSet('queued_past_wake', await selectQueuedPastWake(now));
   result.waitingPastWake = await advanceScanSet('waiting_past_wake', await selectWaitingPastWake(now));
   result.runningPastLease = await advanceScanSet('running_past_lease', await selectRunningPastLease(now));
   result.terminalUnsettled = await settleTerminalUnsettled(now);
+
+  // SET 6 — account reservations a terminal task still holds (#9981).
+  //
+  // An `unknown_effect` handoff keeps its provider accounts reserved because
+  // an action it sent may still land. Set 4 just wrote any late result it
+  // found onto the operation rows, so this runs right after it: a task with
+  // nothing left in flight gets its accounts back in the same pass. An
+  // operation still `unknown` keeps them; a person releases those.
+  result.accountReservationsReleased = await releaseSettledAccountReservations();
 
   // SET 5 — human-work steps past their reminder clock (recipe library E3).
   //

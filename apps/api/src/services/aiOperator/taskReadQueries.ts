@@ -192,6 +192,28 @@ export type OperatorTaskDetail = AiOperatorTaskDto & {
   accounts?: CreatedAccountView[];
 };
 
+/**
+ * The task's id, org and state when the caller can see it — the same org and
+ * site-visibility predicate as the detail — or null. For write routes that
+ * need the task's org without loading the whole detail.
+ */
+export async function findVisibleTask(
+  auth: AuthContext,
+  taskId: string,
+): Promise<{ id: string; orgId: string; state: string } | null> {
+  const [task] = await db
+    .select({ id: aiOperatorTasks.id, orgId: aiOperatorTasks.orgId, state: aiOperatorTasks.state })
+    .from(aiOperatorTasks)
+    .leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id))
+    .where(and(
+      eq(aiOperatorTasks.id, taskId),
+      auth.orgCondition(aiOperatorTasks.orgId),
+      siteVisibilityCondition(auth.allowedSiteIds),
+    ))
+    .limit(1);
+  return task ?? null;
+}
+
 /** `GET /ai/operator/tasks/:id`: the detail, or null when absent / outside the caller's org or site visibility. */
 export async function loadOperatorTaskDetail(auth: AuthContext, taskId: string): Promise<OperatorTaskDetail | null> {
   const [task] = await db

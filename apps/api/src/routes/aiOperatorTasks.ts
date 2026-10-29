@@ -83,7 +83,9 @@ import { normalizeContactEmail } from '../services/contacts/crud';
 import type { AnyRecipeDefinition, PlannedEffect } from '../services/aiOperator/recipes/types';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
-import { listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { findVisibleTask, listOperatorTasks, loadOperatorTaskDetail } from '../services/aiOperator/taskReadQueries';
+import { releaseTaskAccountReservations } from '../services/aiOperator/accountReservations';
+import { writeRouteAudit } from '../services/auditEvents';
 
 /**
  * The agent kind an operator task is delegated to. The effective agent is
@@ -529,6 +531,10 @@ async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperato
           code: 'OPERATOR_DUPLICATE_LIVE_TASK',
           taskId: result.existingTaskId ?? null,
         }, 409);
+      // #9981: another task holds one of the person's provider accounts. The
+      // detail names the account, the task and why it is still held.
+      case 'account_reserved':
+        return c.json({ error: result.detail, code: 'OPERATOR_ACCOUNT_RESERVED', taskId: result.existingTaskId ?? null }, 409);
       case 'pending_cap_reached':
         return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
       case 'unknown_recipe':
@@ -558,6 +564,68 @@ aiOperatorTasksRoutes.get(
     if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Organization not found' }, 404);
     const readiness = await listWorkflowReadiness(orgId, auth);
     return c.json({ data: readiness.map(toWorkflowDto) });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/tasks/:id/account-reservations/release` (#9981).
+ *
+ * A task reserves every provider account it acts on, and a task that ended
+ * `unknown_effect` keeps them: an action it sent may still land. The
+ * reconciler releases them once the operation settles; when it never will
+ * (a result that stays `unknown`), a person who checked the provider releases
+ * them here. Terminal tasks only — a live task is still acting, and the way
+ * to free its accounts is to stop it.
+ *
+ * Same gates as starting an offboarding (it re-opens the accounts to one):
+ * `ai_agents:write` + MFA, `organizations:write`, no site ceiling, and the
+ * task visible to the caller (non-enumerating 404). Audited.
+ */
+const releaseReservationsSchema = z.object({ note: z.string().trim().max(1000).optional() }).strict();
+
+aiOperatorTasksRoutes.post(
+  '/tasks/:id/account-reservations/release',
+  scopes,
+  requireAiWrite,
+  requireMfa(),
+  zValidator('json', releaseReservationsSchema),
+  async (c) => {
+    const taskId = uuidParam(c, 'id');
+    if (!taskId) return c.json({ error: 'Task not found' }, 404);
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+      return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+    }
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Provider accounts are organization-wide; site-restricted users cannot release them.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    const task = await findVisibleTask(auth, taskId);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const note = c.req.valid('json').note || null;
+    const result = await releaseTaskAccountReservations({
+      orgId: task.orgId, taskId: task.id, userId: auth.user?.id ?? null, note,
+    });
+    if (!result.ok) {
+      if (result.reason === 'task_live') {
+        return c.json({
+          error: 'This task is still running. Stop it to release the accounts it holds.',
+          code: 'OPERATOR_TASK_LIVE',
+        }, 409);
+      }
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    writeRouteAudit(c, {
+      orgId: task.orgId,
+      action: 'ai_operator.account_reservations.release',
+      resourceType: 'ai_operator_task',
+      resourceId: task.id,
+      details: { released: result.released, ...(note ? { note } : {}) },
+    });
+    return c.json({ released: result.released });
   },
 );
 
