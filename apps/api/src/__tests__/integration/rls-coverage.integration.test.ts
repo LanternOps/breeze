@@ -563,6 +563,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'service_catalogs',
   'service_catalog_items',
   'billing_payment_settings',
@@ -1036,6 +1041,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // functionally by reportsPartnerRls.integration.test.ts instead. The same
 // holds for its runs, `report_runs` (#4247, reportRunsOwnerRls).
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
+  // device_groups_partner_wide_select branch ships in the same file and is
+  // load-bearing on the agent-auth config path. Functional proof:
+  // deviceGroupsPartnerRls.integration.test.ts.
+  'device_groups',
   'billing_payment_settings',
   'caller_verification_policies',
   // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its
