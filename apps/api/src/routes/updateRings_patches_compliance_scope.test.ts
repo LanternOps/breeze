@@ -753,6 +753,12 @@ describe('updateRings routes', () => {
           expect(text, key).not.toContain('IN (NULL)');
           expect(text, key).toContain('"organizations"."partner_id" = ');
           expect(text, key).toContain(PARTNER_ID);
+          // Same patching population as GET /patches
+          // (resolveOutstandingDeviceScope): no ephemeral Quick Support
+          // devices, no holding-org (unassigned pool) devices, no deleted orgs.
+          expect(text, key).toContain('"devices"."is_ephemeral" = false');
+          expect(text, key).toContain(`"organizations"."type" <> 'unassigned_pool'`);
+          expect(text, key).toContain('"organizations"."deleted_at" IS NULL');
         }
       });
 

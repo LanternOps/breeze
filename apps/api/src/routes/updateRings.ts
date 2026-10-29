@@ -567,8 +567,10 @@ updateRingRoutes.get(
     // `device_patches` row directly.
     //
     // A ring with no devices yet (#9930) falls back to the devices of the
-    // ring's own partner — the fleet the ring would govern, and the same
-    // population GET /patches resolves severity from for that partner. The
+    // ring's own partner — the fleet the ring would govern, filtered like
+    // GET /patches' device scope (resolveOutstandingDeviceScope): no
+    // ephemeral Quick Support devices, no holding-org (unassigned pool)
+    // devices, and no soft-deleted orgs. The
     // old `IN (NULL)` matched nothing, so every non-trusted row read
     // 'unknown' (Unrated). Pinned to `ring.partnerId`, never unscoped:
     // `patches` is global and system-scope callers bypass RLS. Display only:
@@ -581,6 +583,9 @@ updateRingRoutes.get(
         FROM "devices"
         INNER JOIN "organizations" ON "organizations"."id" = "devices"."org_id"
         WHERE "organizations"."partner_id" = ${ring.partnerId}
+          AND "organizations"."deleted_at" IS NULL
+          AND "organizations"."type" <> 'unassigned_pool'
+          AND "devices"."is_ephemeral" = false
       )`;
     const effectiveSeveritySql = sql<string>`COALESCE(NULLIF(${patches.severity}::text, 'unknown'), (
       SELECT "device_patches"."reported_severity"::text
