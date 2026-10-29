@@ -36,6 +36,7 @@ import {
 } from "./deviceGroupMatching";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { useHashState } from "../../lib/useHashState";
 
 type OSType = "windows" | "macos" | "linux";
 
@@ -202,9 +203,9 @@ export default function DeviceGroupsPage() {
   const { canCreatePartnerGroup, canWritePartnerGroups } = usePartnerGroupCapabilities();
   const { defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScope] = useState<GroupOwnerScope>(defaultOwnerScope);
-  const [ownerFilter, setOwnerFilter] = useState<GroupOwnerScope | "all">(() => {
-    const owner = new URLSearchParams(typeof window === "undefined" ? "" : window.location.hash.slice(1)).get("owner");
-    return owner === "organization" || owner === "partner" ? owner : "all";
+  const [ownerFilter, setOwnerFilter] = useHashState<GroupOwnerScope | "all">("all", (hash) => {
+    const owner = new URLSearchParams(hash).get("owner");
+    return owner === "organization" || owner === "partner" ? owner : undefined;
   });
   const changeOwnerFilter = (owner: GroupOwnerScope | "all") => {
     setOwnerFilter(owner);
