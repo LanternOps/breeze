@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel, AiAttachState, AiPendingCardEvent, AiApprovalOutcome } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -89,6 +89,25 @@ export interface PendingApproval {
    * to expand a JSON blob.
    */
   scriptRunContext?: AiScriptRunContext | null;
+  /**
+   * #9431: set once the server says this card's wait ended — decided here or
+   * anywhere else (another window, Approvals, mobile), timed out, or settled.
+   * The card stays visible with its buttons disabled and says how it ended,
+   * until the turn's next event removes it.
+   */
+  resolution?: AiApprovalOutcome;
+}
+
+/**
+ * #9431: the approve route's answer to a click on a card that was already
+ * decided (409 `approval_already_decided`) — the outcome to show on the card,
+ * or null for any other response.
+ */
+export function alreadyDecidedOutcome(status: number, body: unknown): AiApprovalOutcome | null {
+  if (status !== 409 || !body || typeof body !== 'object') return null;
+  const { code, outcome } = body as { code?: unknown; outcome?: unknown };
+  if (code !== 'approval_already_decided') return null;
+  return outcome === 'approved' || outcome === 'not_approved' || outcome === 'ended' ? outcome : null;
 }
 
 export interface PendingPlan {
@@ -309,6 +328,14 @@ export function processStreamEvent(
 
     case 'approval_required':
       set(() => ({ pendingApproval: pendingApprovalFromCard(event) }));
+      return currentAssistantId;
+
+    // #9431: the card's wait ended, wherever it was decided. Matched by
+    // executionId, so another card (or none) is never touched.
+    case 'approval_resolved':
+      set((s) => (s.pendingApproval?.executionId === event.executionId
+        ? { pendingApproval: { ...s.pendingApproval, resolution: event.outcome } }
+        : {}));
       return currentAssistantId;
 
     case 'title_updated':

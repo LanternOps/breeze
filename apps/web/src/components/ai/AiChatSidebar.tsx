@@ -15,6 +15,7 @@ import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
 import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
 import { useEntitlement } from "@/hooks/useEntitlement";
+import { useOnWindowReturn } from "@/hooks/useOnWindowReturn";
 import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
@@ -120,7 +121,10 @@ export default function AiChatSidebar() {
     enterWispMode,
     topologySiteId,
     joinedMidResponse,
+    recheckPendingApproval,
   } = useAiStore();
+  // #9431: an approval card may have been decided in another window meanwhile.
+  useOnWindowReturn(() => recheckPendingApproval?.());
   const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
   const wispScopeOrgName = useOrgStore((s) =>
     wisp?.scopeOrgId ? (s.organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null : null,

@@ -131,6 +131,7 @@ vi.mock('../services/aiAgent', () => ({
   getSessionMessages: vi.fn(),
   handleApproval: vi.fn(),
   isIntentBackedExecution: vi.fn(),
+  getDecidedExecutionOutcome: vi.fn(),
   searchSessions: vi.fn(),
 }));
 
@@ -193,6 +194,7 @@ import {
   getSessionMessages,
   handleApproval,
   isIntentBackedExecution,
+  getDecidedExecutionOutcome,
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
@@ -771,6 +773,31 @@ describe('AI routes', () => {
       // Never the plain "success: true" shape the non-intent branch returns.
       expect(body.approved).toBeUndefined();
     });
+
+    // #9431: a stale card (decided in another window, in Approvals, on mobile,
+    // or timed out) gets a clear "already decided" answer — never a second
+    // decision and never the generic "not found".
+    it.each(['approved', 'not_approved'] as const)(
+      'returns 409 approval_already_decided with outcome %s for an execution of this session that is no longer pending',
+      async (outcome) => {
+        vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, orgId: ORG_ID } as any);
+        vi.mocked(handleApproval).mockResolvedValueOnce(false);
+        vi.mocked(isIntentBackedExecution).mockResolvedValueOnce(false);
+        vi.mocked(getDecidedExecutionOutcome).mockResolvedValueOnce(outcome);
+
+        const res = await app.request(`/ai/sessions/${SESSION_ID}/approve/${EXEC_ID}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ approved: true }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body).toMatchObject({ code: 'approval_already_decided', outcome });
+        expect(body.success).toBeUndefined();
+        expect(getDecidedExecutionOutcome).toHaveBeenCalledWith(EXEC_ID, SESSION_ID);
+      },
+    );
   });
 
 });

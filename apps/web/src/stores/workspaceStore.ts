@@ -20,6 +20,7 @@ import {
   type PendingPlan,
   type ActivePlan,
   type ChatRunState,
+  alreadyDecidedOutcome,
 } from './processStreamEvent';
 
 export const MAX_TABS = 5;
@@ -211,6 +212,12 @@ interface WorkspaceState {
    * approveExecution: it talks to no endpoint.
    */
   clearPendingApproval: (tabId: string) => void;
+  /**
+   * #9431: the window came back (focus / visible) — re-attach every tab that
+   * shows an undecided approval card but has no live stream to deliver
+   * `approval_resolved`, so the server's pending cards replace it.
+   */
+  recheckPendingApprovals: () => void;
   approvePlan: (tabId: string, approved: boolean) => Promise<void>;
   abortPlan: (tabId: string) => Promise<void>;
   pauseAi: (tabId: string, paused: boolean) => Promise<void>;
@@ -921,6 +928,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             });
             if (!res.ok) {
               const data = await res.json().catch(() => null);
+              // #9431: decided elsewhere first — show that decision on the card.
+              const decided = alreadyDecidedOutcome(res.status, data);
+              if (decided) {
+                const current = getTab(tabId)?.pendingApproval;
+                if (current?.executionId === executionId) {
+                  updateTab(tabId, { pendingApproval: { ...current, resolution: decided }, hasApprovalPending: false });
+                }
+                return;
+              }
               updateTab(tabId, { error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
               return;
             }
@@ -933,6 +949,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
         clearPendingApproval: (tabId: string) => {
           updateTab(tabId, { pendingApproval: null, hasApprovalPending: false });
+        },
+
+        recheckPendingApprovals: () => {
+          const { tabs, _readers, _attachControllers } = get();
+          for (const tab of tabs) {
+            if (!tab.sessionId || !tab.pendingApproval || tab.pendingApproval.resolution) continue;
+            // A live stream delivers approval_resolved itself.
+            if (_readers.has(tab.sessionId) || _attachControllers.has(tab.id)) continue;
+            void startTabAttach(tab.id).finished;
+          }
         },
 
         approvePlan: async (tabId: string, approved: boolean) => {

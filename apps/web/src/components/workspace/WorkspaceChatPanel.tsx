@@ -12,6 +12,7 @@ import CreateTicketFromChatModal, {
 import { showToast } from "../shared/Toast";
 import { ActionError, handleActionError } from "@/lib/runAction";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useOnWindowReturn } from "@/hooks/useOnWindowReturn";
 import type { AiTicketDraft } from "@breeze/shared";
 import type { TabState } from "@/stores/workspaceStore";
 import { useTranslation } from "react-i18next";
@@ -37,7 +38,10 @@ export default function WorkspaceChatPanel({ tab, onContinueInPanel }: Workspace
     draftTicketFromChat,
     saveTicketFromChat,
     setComposerDraft,
+    recheckPendingApprovals,
   } = useWorkspaceStore();
+  // #9431: an approval card may have been decided in another window meanwhile.
+  useOnWindowReturn(() => recheckPendingApprovals?.());
 
   const [modalOpen, setModalOpen] = useState(false);
   const [draft, setDraft] = useState<AiTicketDraft | null>(null);
