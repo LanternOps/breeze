@@ -30,5 +30,7 @@
   "tool_source_unavailable": "L'origine di questo strumento non è al momento disponibile",
   "ai_not_configured": "L'IA non è configurata su questo server. Un amministratore deve aggiungere una chiave di un fornitore di modelli.",
   "ACCESS_REVIEW_SELF_DECISION": "Non puoi decidere sul tuo accesso: un altro amministratore deve esaminare questo elemento",
-  "NO_UPDATES_PROVIDED": "Non sono state fornite modifiche"
+  "NO_UPDATES_PROVIDED": "Non sono state fornite modifiche",
+  "PARTNER_GROUP_TARGET_UNSUPPORTED": "I gruppi di dispositivi a livello di partner possono essere destinazioni solo dei criteri di configurazione del partner",
+  "PARTNER_GROUP_READ_ONLY": "Questo gruppo di dispositivi a livello di partner non può essere modificato qui"
 }

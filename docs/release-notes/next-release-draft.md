@@ -111,3 +111,8 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - `2027-01-13-100000-webhooks-partner-ownership.sql` adds partner ownership, owner-based RLS, and the delivery event-organization guard.
 - `2027-01-13-100100-webhook-deliveries-org-id-backfill.sql` fills delivery `org_id` in 10k-row batches and validates the organization/test-send invariant. `2027-01-13-100200-webhook-deliveries-org-id-index.sql` builds the organization index concurrently for erasure, merge, and export.
 - No new environment variables.
+### Device groups (partner-owned, dark) — W2a
+
+- Still dark: no partner-owned group can be created yet. No migration, environment variable or setting.
+- Config-policy and automation-schedule expansion of a `device_group` assignment now resolves a partner-owned group to its members in every org of the partner.
+- Every other target surface (maintenance windows, backup SLAs, script runs, software deployments, automations, endpoint messages, AI agent triggers, peripheral policies, the enrollment default group, user device-group scope) answers a partner-owned group id with `400 PARTNER_GROUP_TARGET_UNSUPPORTED`. The groups API and the AI `manage_groups` tool treat partner-owned groups as read-only (`400 PARTNER_GROUP_READ_ONLY`).

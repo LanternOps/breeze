@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock } = vi.hoisted(() => ({
@@ -359,6 +365,18 @@ describe('manage_groups peripheral reconciliation', () => {
     vi.clearAllMocks();
   });
 
+  it.each(['update', 'delete', 'add_devices', 'remove_devices'])('manage_groups %s refuses partner groups before persisting', async (action) => {
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue([{ id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null }]),
+    }) }) } as any);
+    const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, auth));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY', error: 'Partner-wide device groups are read-only here' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(mockDeleteDeviceGroup).not.toHaveBeenCalled();
+  });
+
   it('schedules exactly the memberships inserted by the direct AI path', async () => {
     let selectCall = 0;
     vi.mocked(db.select).mockImplementation(() => {
@@ -663,6 +681,21 @@ describe('manage_maintenance_windows handler', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
   const tool = toolMap.get('manage_maintenance_windows')!;
+
+  it.each(['create', 'update'])('%s refuses partner-group targets without writes and checks the supplied group ids', async (action) => {
+    vi.clearAllMocks();
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    const auth = {
+      user: { id: 'u1' }, orgId: 'org-1', scope: 'organization', partnerId: null,
+      accessibleOrgIds: ['org-1'], canAccessOrg: () => true, orgCondition: () => undefined,
+    } as any;
+    const result = JSON.parse(await tool.handler({ action, windowId: 'window-1', groupIds: [groupId] }, auth));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
 
   // Regression guard for the #2131 scripted-edit self-recursion bug:
   // maintenanceWindowWhere once called ITSELF instead of orgWhere, so every

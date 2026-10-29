@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY } from '../services/deviceGroupOwnership';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
@@ -52,7 +53,8 @@ async function canAccessDeviceSite(
 
 type DeviceGroup = {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   siteId: string | null;
   name: string;
   type: 'static' | 'dynamic';
@@ -196,6 +198,18 @@ async function getOrgIdsForAuth(
   return null;
 }
 
+async function canReadGroup(
+  group: typeof deviceGroups.$inferSelect,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+): Promise<boolean> {
+  if (group.orgId !== null) return ensureOrgAccess(group.orgId, auth);
+  return auth.scope === 'system' || (group.partnerId !== null && group.partnerId === auth.partnerId);
+}
+
+function redactPartnerGroup(group: typeof deviceGroups.$inferSelect, auth: Pick<AuthContext, 'scope'>): boolean {
+  return isPartnerOwnedGroup(group) && auth.scope !== 'partner' && auth.scope !== 'system';
+}
+
 async function getGroupWithAccess(
   groupId: string,
   auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
@@ -210,7 +224,7 @@ async function getGroupWithAccess(
     return null;
   }
 
-  const hasAccess = await ensureOrgAccess(group.orgId, auth);
+  const hasAccess = await canReadGroup(group, auth);
   if (!hasAccess) {
     return null;
   }
@@ -255,18 +269,20 @@ async function siteBelongsToOrg(siteId: string, orgId: string): Promise<boolean>
 function mapGroupRow(
   group: typeof deviceGroups.$inferSelect,
   deviceCount: number,
+  redact: boolean,
   deviceIds?: string[],
   policy?: { id: string; name: string } | null
 ): DeviceGroup {
   const result: DeviceGroup = {
     id: group.id,
     orgId: group.orgId,
+    partnerId: group.partnerId,
     siteId: group.siteId,
     name: group.name,
     type: group.type,
-    rules: group.rules,
-    filterConditions: group.filterConditions as FilterConditionGroup | null,
-    filterFieldsUsed: group.filterFieldsUsed ?? [],
+    rules: redact ? null : group.rules,
+    filterConditions: redact ? null : group.filterConditions as FilterConditionGroup | null,
+    filterFieldsUsed: redact ? [] : group.filterFieldsUsed ?? [],
     parentId: group.parentId,
     deviceCount,
     createdAt: group.createdAt.toISOString(),
@@ -457,6 +473,7 @@ groupRoutes.get(
       mapGroupRow(
         group,
         countMap.get(group.id) ?? 0,
+        redactPartnerGroup(group, auth),
         membershipMap?.get(group.id),
         groupPolicyMap.get(group.id)
       )
@@ -509,6 +526,7 @@ groupRoutes.get(
       data: mapGroupRow(
         group,
         deviceCount,
+        redactPartnerGroup(group, auth),
         undefined,
         assignedPolicy ? { id: assignedPolicy.policyId, name: assignedPolicy.policyName } : null
       ),
@@ -639,7 +657,7 @@ groupRoutes.post(
       })
       .returning();
 
-    if (!group) {
+    if (!group || group.orgId === null) {
       return c.json({ error: 'Failed to create group' }, 500);
     }
 
@@ -668,6 +686,7 @@ groupRoutes.post(
     if (group.type === 'static' && requestedDeviceIds.length > 0) {
       const { added } = await addManualGroupMemberships({
         groupId: group.id,
+        group,
         orgId: group.orgId,
         deviceIds: requestedDeviceIds
       });
@@ -711,7 +730,7 @@ groupRoutes.post(
       }
     }
 
-    return c.json({ data: mapGroupRow(group, deviceCount) }, 201);
+    return c.json({ data: mapGroupRow(group, deviceCount, redactPartnerGroup(group, auth)) }, 201);
   }
 );
 
@@ -732,6 +751,7 @@ groupRoutes.patch(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (!groupSiteAllowed(group, perms)) {
@@ -824,13 +844,13 @@ groupRoutes.patch(
         .where(eq(deviceGroups.id, id))
         .returning();
 
-      if (siteChanged && row?.siteId) {
+      if (siteChanged && row?.siteId && row.orgId !== null) {
         const pruned = await pruneGroupMembershipsOutsideSite(
           row.id,
           row.siteId,
           row.orgId,
           tx,
-          { deferPeripheralReconciliation: true },
+          { deferPeripheralReconciliation: true, group: row },
         );
         prunedDeviceIds = pruned.deviceIds ?? [];
       }
@@ -874,7 +894,7 @@ groupRoutes.patch(
 
     const deviceCount = await getDeviceCountForGroup(id);
 
-    return c.json({ data: mapGroupRow(updated, deviceCount) });
+    return c.json({ data: mapGroupRow(updated, deviceCount, redactPartnerGroup(updated, auth)) });
   }
 );
 
@@ -893,6 +913,7 @@ groupRoutes.delete(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -936,7 +957,7 @@ groupRoutes.delete(
       resourceName: group.name
     });
 
-    return c.json({ data: mapGroupRow(group, 0) });
+    return c.json({ data: mapGroupRow(group, 0, redactPartnerGroup(group, auth)) });
   }
 );
 
@@ -972,6 +993,7 @@ groupRoutes.get(
     const memberships = await db
       .select({
         deviceId: deviceGroupMemberships.deviceId,
+        orgId: devices.orgId,
         isPinned: deviceGroupMemberships.isPinned,
         addedAt: deviceGroupMemberships.addedAt,
         addedBy: deviceGroupMemberships.addedBy,
@@ -992,6 +1014,7 @@ groupRoutes.get(
 
     const data = scopedMemberships.map((m) => ({
       deviceId: m.deviceId,
+      orgId: m.orgId,
       hostname: m.hostname,
       displayName: m.displayName,
       status: m.status,
@@ -1022,6 +1045,7 @@ groupRoutes.post(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1049,6 +1073,7 @@ groupRoutes.post(
 
     const { added: newDeviceIds, skipped } = await addManualGroupMemberships({
       groupId: id,
+      group,
       orgId: group.orgId,
       deviceIds: payload.deviceIds
     });
@@ -1093,6 +1118,7 @@ groupRoutes.delete(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (!groupSiteAllowed(group, perms)) {
@@ -1170,6 +1196,7 @@ groupRoutes.post(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1234,6 +1261,7 @@ groupRoutes.post(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1263,7 +1291,7 @@ groupRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    await pinDeviceToGroup(id, deviceId, true, group.orgId);
+    await pinDeviceToGroup(id, deviceId, true, group.orgId, group);
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -1302,6 +1330,7 @@ groupRoutes.delete(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1335,7 +1364,7 @@ groupRoutes.delete(
       return c.json({ error: 'Device is not pinned to this group' }, 400);
     }
 
-    await pinDeviceToGroup(id, deviceId, false, group.orgId);
+    await pinDeviceToGroup(id, deviceId, false, group.orgId, group);
 
     writeRouteAudit(c, {
       orgId: group.orgId,

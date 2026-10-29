@@ -62,6 +62,13 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  'routes/groups.ts': 'refuses any org_id IS NULL group before writing (PARTNER_GROUP_READ_ONLY); create stays org-only until W3 adds the canManagePartnerWidePolicies gate (#10521)',
+  'routes/devices/groups.ts': 'legacy org-only API; refuses partner-owned groups (#10521 W2a)',
+  'services/aiToolsFleet.ts': 'manage_groups refuses partner-owned groups (#10521 W2a; W3 adds the gate)',
+  'services/deviceGroupDelete.ts': 'data access; gate in routes/groups.ts',
+  'services/fleetDesign/apply.ts': 'org-scoped fleet design; never touches org_id IS NULL rows',
+  'services/groupMembership.ts': 'system-context evaluator; partner groups skipped until W2b',
+
   // --- flows W05 (#5220) ------------------------------------------------------
   'services/flows/webhook/deliveries.ts': 'W05 (#5220) webhook delivery log (flow_webhook_deliveries): append-only ingress bookkeeping, not partner-wide config. Its only writer is services/flows/webhook/ingest.ts behind the router-auth-exempt POST /api/v1/webhooks/flows/:flowId; there is no AuthContext to gate — every write runs in system context AFTER HMAC/token verification against the flow\'s own secret, and a failed verification writes no row. The partner-wide authority is gated where it is granted: minting/rotating a partner-wide flow\'s secret (services/flows/webhook/secret.ts, partner_wide_forbidden; test secret.test.ts) and enabling a partner-wide flow (services/flows/versions.ts canManagePartnerWidePolicies).',
   'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',

@@ -185,6 +185,7 @@ describe('addManualGroupMemberships', () => {
 
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [D1, D2],
     });
@@ -200,6 +201,7 @@ describe('addManualGroupMemberships', () => {
   it('does nothing for an empty deviceIds list', async () => {
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [],
     });
@@ -214,6 +216,7 @@ describe('addManualGroupMemberships', () => {
 
     const result = await addManualGroupMemberships({
       groupId: GROUP_ID,
+      group: { id: GROUP_ID, orgId: ORG_ID },
       orgId: ORG_ID,
       deviceIds: [D1, D1],
     });
@@ -240,7 +243,7 @@ describe('explicit membership executor', () => {
     };
     const executor = tx as unknown as NonNullable<Parameters<typeof addManualGroupMemberships>[1]>;
     expect(await validateManualMembershipDevices({ deviceIds: [D1], orgId: ORG_ID, siteId: SITE_ID }, executor)).toEqual({ ok: true });
-    expect(await addManualGroupMemberships({ deviceIds: [D1], orgId: ORG_ID, groupId: GROUP_ID }, executor)).toEqual({ added: [D1], skipped: 0 });
+    expect(await addManualGroupMemberships({ deviceIds: [D1], orgId: ORG_ID, groupId: GROUP_ID, group: { id: GROUP_ID, orgId: ORG_ID } }, executor)).toEqual({ added: [D1], skipped: 0 });
     expect(tx.select).toHaveBeenCalledTimes(2);
     expect(tx.insert).toHaveBeenCalledTimes(1);
     expect(mockSelect).not.toHaveBeenCalled();
