@@ -2019,19 +2019,17 @@
       "statusFilterLabel": "Durum"
     },
     "status": {
-      "pendingApproval": "Onay Bekleniyor",
-      "pending_approval": "onay bekleniyor",
-      "queued": "sıraya alındı",
-      "inProgress": "Devam Ediyor",
-      "in_progress": "devam ediyor",
-      "completed": "tamamlandı",
-      "failed": "başarısız oldu",
-      "cancelled": "iptal edildi"
+      "pending_approval": "Onay bekleniyor",
+      "queued": "Sırada",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
     },
     "approval": {
-      "pending": "beklemede",
-      "approved": "onaylandı",
-      "rejected": "reddedildi"
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi"
     },
     "actions": {
       "apply": "başvur",

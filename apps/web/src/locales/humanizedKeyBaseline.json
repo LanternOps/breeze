@@ -3295,8 +3295,6 @@
   "security.cisHardeningCisComplianceTab.table.failedChecks",
   "security.cisHardeningCisComplianceTab.table.lastScanned",
   "security.cisHardeningCisRemediationsTab.filters.allStatuses",
-  "security.cisHardeningCisRemediationsTab.status.inProgress",
-  "security.cisHardeningCisRemediationsTab.status.pendingApproval",
   "security.cisHardeningCisSummaryCards.activeBaselines",
   "security.cisHardeningCisSummaryCards.averageScore",
   "security.cisHardeningCisSummaryCards.failingDevices",

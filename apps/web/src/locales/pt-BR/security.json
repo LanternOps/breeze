@@ -2019,19 +2019,17 @@
       "statusFilterLabel": "Status da correção"
     },
     "status": {
-      "pendingApproval": "Aprovação pendente",
-      "pending_approval": "aprovação pendente",
-      "queued": "na fila",
-      "inProgress": "Em andamento",
-      "in_progress": "em andamento",
-      "completed": "concluído",
-      "failed": "falhou",
-      "cancelled": "cancelado"
+      "pending_approval": "Aprovação pendente",
+      "queued": "Na fila",
+      "in_progress": "Em andamento",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "cancelled": "Cancelado"
     },
     "approval": {
-      "pending": "pendente",
-      "approved": "aprovado",
-      "rejected": "rejeitado"
+      "pending": "Pendente",
+      "approved": "Aprovado",
+      "rejected": "Rejeitado"
     },
     "actions": {
       "apply": "aplicar",

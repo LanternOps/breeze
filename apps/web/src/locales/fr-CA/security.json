@@ -2019,14 +2019,12 @@
       "statusFilterLabel": "État"
     },
     "status": {
-      "pendingApproval": "En attente d’approbation",
       "pending_approval": "En attente d’approbation",
-      "queued": "en file d’attente",
-      "inProgress": "En cours",
+      "queued": "En file d’attente",
       "in_progress": "En cours",
-      "completed": "Achevé",
+      "completed": "Terminé",
       "failed": "Échec",
-      "cancelled": "annulé"
+      "cancelled": "Annulé"
     },
     "approval": {
       "pending": "En attente",

@@ -2019,19 +2019,17 @@
       "statusFilterLabel": "Status"
     },
     "status": {
-      "pendingApproval": "Pending Approval",
-      "pending_approval": "pending approval",
-      "queued": "queued",
-      "inProgress": "In Progress",
-      "in_progress": "in progress",
-      "completed": "completed",
-      "failed": "failed",
-      "cancelled": "cancelled"
+      "pending_approval": "Pending approval",
+      "queued": "Queued",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
     },
     "approval": {
-      "pending": "pending",
-      "approved": "approved",
-      "rejected": "rejected"
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected"
     },
     "actions": {
       "apply": "apply",

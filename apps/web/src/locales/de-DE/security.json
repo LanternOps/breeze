@@ -2019,19 +2019,17 @@
       "statusFilterLabel": "Behebungsstatus"
     },
     "status": {
-      "pendingApproval": "Ausstehende Genehmigung",
-      "pending_approval": "bis zur Genehmigung",
-      "queued": "in der Warteschlange",
-      "inProgress": "In Bearbeitung",
-      "in_progress": "in Bearbeitung",
-      "completed": "abgeschlossen",
-      "failed": "gescheitert",
-      "cancelled": "abgesagt"
+      "pending_approval": "Ausstehende Genehmigung",
+      "queued": "In der Warteschlange",
+      "in_progress": "In Bearbeitung",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
     },
     "approval": {
-      "pending": "ausstehend",
-      "approved": "genehmigt",
-      "rejected": "abgelehnt"
+      "pending": "Ausstehend",
+      "approved": "Genehmigt",
+      "rejected": "Abgelehnt"
     },
     "actions": {
       "apply": "anwenden",

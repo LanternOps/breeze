@@ -2019,19 +2019,17 @@
       "statusFilterLabel": "Stato"
     },
     "status": {
-      "pendingApproval": "Approvazione in sospeso",
-      "pending_approval": "approvazione in sospeso",
-      "queued": "in coda",
-      "inProgress": "In corso",
-      "in_progress": "in corso",
-      "completed": "completata",
-      "failed": "fallita",
-      "cancelled": "annullata"
+      "pending_approval": "Approvazione in sospeso",
+      "queued": "In coda",
+      "in_progress": "In corso",
+      "completed": "Completata",
+      "failed": "Non riuscita",
+      "cancelled": "Annullata"
     },
     "approval": {
-      "pending": "in sospeso",
-      "approved": "approvata",
-      "rejected": "rifiutata"
+      "pending": "In sospeso",
+      "approved": "Approvata",
+      "rejected": "Rifiutata"
     },
     "actions": {
       "apply": "applica",
