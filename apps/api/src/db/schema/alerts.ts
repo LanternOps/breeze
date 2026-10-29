@@ -153,8 +153,12 @@ export const alerts = pgTable('alerts', {
   triggeredAt: timestamp('triggered_at').defaultNow().notNull(),
   acknowledgedAt: timestamp('acknowledged_at'),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id),
+  // FK to partner_service_principals ON DELETE SET NULL, declared in SQL only (2027-01-12-400100), like monitorId.
+  acknowledgedByPrincipalId: uuid('acknowledged_by_principal_id'),
   resolvedAt: timestamp('resolved_at'),
   resolvedBy: uuid('resolved_by').references(() => users.id),
+  // FK to partner_service_principals ON DELETE SET NULL, declared in SQL only (2027-01-12-400100), like monitorId.
+  resolvedByPrincipalId: uuid('resolved_by_principal_id'),
   resolutionNote: text('resolution_note'),
   resolutionReason: varchar('resolution_reason', { length: 40 }).$type<AlertResolutionReason>(),
   suppressedUntil: timestamp('suppressed_until'),
@@ -189,6 +193,12 @@ export const alerts = pgTable('alerts', {
   openRuleDeviceSubjectUidx: uniqueIndex('alerts_open_rule_device_subject_uidx')
     .on(table.ruleId, table.deviceId, sql`COALESCE(${table.subjectKey}, '')`)
     .where(sql`${table.ruleId} IS NOT NULL AND ${table.status} IN ('active', 'acknowledged', 'suppressed')`),
+  acknowledgedByPrincipalIdx: index('idx_alerts_acknowledged_by_principal')
+    .on(table.acknowledgedByPrincipalId)
+    .where(sql`acknowledged_by_principal_id IS NOT NULL`),
+  resolvedByPrincipalIdx: index('idx_alerts_resolved_by_principal')
+    .on(table.resolvedByPrincipalId)
+    .where(sql`resolved_by_principal_id IS NOT NULL`),
   // Partner alerts feed keyset (2026-10-30-130100, built CONCURRENTLY).
   partnerFeedXidIdx: index('idx_alerts_partner_feed_xid').on(table.partnerFeedXid, table.id),
   topologyOwnerChk: check('alerts_topology_owner_chk', sql`(topology_site_id IS NULL) = (topology_source_key IS NULL) AND (topology_source_key IS NULL OR topology_source_key ~ '^topology:[a-f0-9]{64}$')`),

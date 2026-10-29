@@ -27,8 +27,8 @@ function webhook(events: string[]) {
   };
 }
 
-async function openEdit(events: string[]) {
-  const row = webhook(events);
+async function openEdit(events: string[], payloadVersion?: 1 | 2) {
+  const row = { ...webhook(events), ...(payloadVersion ? { payloadVersion } : {}) };
   fetchWithAuth.mockImplementation((rawUrl: unknown, init?: RequestInit) => {
     const url = String(rawUrl);
     if (init?.method === 'PATCH') return json(row);
@@ -49,11 +49,55 @@ async function save() {
   fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
   await waitFor(() => expect(patched()).toBe(true));
   const [, init] = fetchWithAuth.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')!;
-  return JSON.parse((init as RequestInit).body as string) as { events: string[] };
+  return JSON.parse((init as RequestInit).body as string) as { events: string[]; payloadVersion: number };
 }
 
 describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
   beforeEach(() => fetchWithAuth.mockReset());
+
+  it('edits a legacy webhook as v1 and includes the chosen version in PATCH', async () => {
+    await openEdit(['alert.triggered']);
+    expect((screen.getByTestId('webhook-payload-version-1') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId('webhook-payload-version-2'));
+    expect((await save()).payloadVersion).toBe(2);
+  });
+
+  it('keeps stored v2 when only the URL changes', async () => {
+    await openEdit(['alert.triggered'], 2);
+    expect((screen.getByTestId('webhook-payload-version-2') as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/b' } });
+    expect((await save()).payloadVersion).toBe(2);
+  });
+
+  it('marks never-delivered stored events and removes them on save', async () => {
+    await openEdit(['alert.escalated', 'alert.triggered']);
+    const chip = screen.getByTestId('webhook-never-delivered-chip');
+    expect(chip.textContent).toContain('Never delivered');
+    const explanation = screen.getByTestId('webhook-never-delivered-explanation');
+    expect(explanation).toBeVisible();
+    expect(explanation.textContent).toBe('Breeze never sends this event. It will be removed when you save this webhook.');
+    expect(explanation.id).not.toBe('');
+    expect(chip.getAttribute('aria-describedby')).toBe(explanation.id);
+    expect(chip.getAttribute('title')).toBe(explanation.textContent);
+    expect(screen.queryByTestId('webhook-never-delivered-banner')).toBeNull();
+    expect((await save()).events).toEqual(['alert.triggered']);
+  });
+
+  it('removes the explanation when the last never-delivered chip is removed', async () => {
+    await openEdit(['alert.escalated', 'custom.thing']);
+    expect(screen.getByTestId('webhook-never-delivered-explanation')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove alert.escalated' }));
+    expect(screen.queryByTestId('webhook-never-delivered-explanation')).toBeNull();
+    expect(document.querySelector('form')!.textContent).toContain('custom.thing');
+  });
+
+  it('warns when only never-delivered events are stored and requires another event', async () => {
+    await openEdit(['alert.escalated']);
+    expect(screen.getByTestId('webhook-never-delivered-banner').getAttribute('role')).toBe('alert');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/at least one event/i));
+    expect(patched()).toBe(false);
+  });
 
   it('keeps "*" in the PATCH when only the URL changes, and shows it as a chip', async () => {
     await openEdit(['*']);
@@ -112,6 +156,9 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     fireEvent.click((await screen.findAllByRole('button', { name: /New Webhook/ }))[0]!);
     const form = (await screen.findByRole('button', { name: 'Create Webhook' })).closest('form')!;
     expect(form.querySelector('fieldset')!.disabled).toBe(false);
+    expect((screen.getByTestId('webhook-payload-version-2') as HTMLInputElement).checked).toBe(true);
+    expect(form.querySelector('input[value="alert.acknowledged"]')).toBeTruthy();
+    expect(form.querySelector('input[value="alert.suppressed"]')).toBeTruthy();
     fireEvent.change(document.getElementById('webhook-name')!, { target: { value: 'N' } });
     fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/n' } });
     fireEvent.change(document.getElementById('webhook-secret')!, { target: { value: 'sekret' } });
@@ -123,7 +170,7 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create Webhook' }));
     await waitFor(() => expect(posted()).toBe(true));
     const [, init] = fetchWithAuth.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'POST')!;
-    expect(JSON.parse((init as RequestInit).body as string).events).toEqual(['device.online']);
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ events: ['device.online'], payloadVersion: 2 });
   });
 
   it('still requires at least one event after the last chip is removed', async () => {

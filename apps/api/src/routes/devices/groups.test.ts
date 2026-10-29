@@ -247,6 +247,25 @@ describe('Device Groups routes — multi-tenant isolation', () => {
     app = buildApp(makeAuth());
   });
 
+  it.each([
+    ['PATCH', '', { name: 'Changed' }],
+    ['DELETE', '', undefined],
+    ['POST', '/members', { deviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+    ['DELETE', '/members', { deviceIds: ['22222222-2222-4222-8222-222222222222'] }],
+  ])('legacy %s group%s refuses partner groups before persisting', async (method, suffix, body) => {
+    mockSelect.mockReturnValueOnce(chainSelect([{ id: GROUP_ID, orgId: null, partnerId: 'partner-1', siteId: null }]));
+    const res = await app.request(`/devices/groups/${GROUP_ID}${suffix}`, {
+      method: String(method), headers: { 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY' });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockDeleteDeviceGroup).not.toHaveBeenCalled();
+  });
+
   // ========================================================================
   // GET /devices/groups
   // ========================================================================

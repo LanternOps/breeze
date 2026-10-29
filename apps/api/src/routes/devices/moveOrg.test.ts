@@ -14,7 +14,9 @@ const {
   schedulePeripheralPolicyDeviceMock,
   propagateCancelledMock,
   invalidateDevicePolicyCachesMock,
+  requestDeviceGroupReevaluationAfterCommitMock,
 } = vi.hoisted(() => ({
+  requestDeviceGroupReevaluationAfterCommitMock: vi.fn(),
   invalidateDevicePolicyCachesMock: vi.fn(async () => undefined),
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock('../../services/businessCalendars/reresolve', () => ({
 }));
 vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
+}));
+
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestDeviceGroupReevaluationAfterCommitMock,
 }));
 
 vi.mock('../../services/devicePolicyCache', () => ({
@@ -288,6 +294,10 @@ let barrierMissingOrgIds = new Set<string>();
  * hand the route something to count.
  */
 let executeResultFor: ((stmtText: string) => unknown[] | null) | null = null;
+// The org the in-transaction device re-read reports (the concurrency guard in
+// moveDeviceOrgInTransaction compares it with the device's pre-read org).
+// Defaults to SOURCE_ORG; a test using different device ids sets it.
+let deviceBarrierOrgId: string = SOURCE_ORG;
 
 /**
  * What the in-transaction `SELECT id/type/payload FROM device_commands` (the
@@ -425,7 +435,7 @@ function rigTransactionSuccess(
         if (cols && 'orgId' in cols) {
           return { from: () => ({ where: () => ({ limit: () => ({ for: async (mode: string) => {
             statements.push(`SELECT devices FOR ${mode}`);
-            return [{ orgId: SOURCE_ORG }];
+            return [{ orgId: deviceBarrierOrgId }];
           } }) }) }) };
         }
         if (!cols && ticketRow) {
@@ -508,8 +518,10 @@ describe('POST /devices/:id/move-org', () => {
   beforeEach(() => {
     enable2faState.value = true;
     vi.clearAllMocks();
+    requestDeviceGroupReevaluationAfterCommitMock.mockReset();
     barrierMissingOrgIds = new Set<string>();
     executeResultFor = null;
+    deviceBarrierOrgId = SOURCE_ORG;
     pendingCommandRows = [];
     pinnedOccurrenceRows = [];
     guardMock.mockReset();
@@ -603,6 +615,33 @@ describe('POST /devices/:id/move-org', () => {
   });
 
   describe('happy path', () => {
+    it('requests a full group re-evaluation for the target org after commit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledTimes(1);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledWith({
+        deviceId: DEVICE_ID,
+        orgId: TARGET_ORG,
+        eventType: 'device.created',
+        reason: 'device_org_moved',
+      });
+    });
+
     it('moves the device and writes audit on both orgs', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({
@@ -1812,6 +1851,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
       expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
       expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
       expect(invalidateDevicePolicyCachesMock).not.toHaveBeenCalled();
@@ -2263,6 +2303,95 @@ describe('POST /devices/:id/move-org', () => {
         body: JSON.stringify({ orgId: 'not-a-uuid', siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
       });
       expect(res.status).toBe(400);
+    });
+  });
+
+  // ── #10119: uppercase uuids in the path AND the body ─────────────────────
+  describe('#10119 canonical ids', () => {
+    // Hex LETTERS throughout. The ids this file already defines are digit-only,
+    // so `toUpperCase()` on them is a no-op and a case test built on them would
+    // pass against unfixed code — the trap *Quality review* rule 7 names.
+    const HEX_DEVICE = 'abcdef12-3456-4789-8abc-def012345678';
+    const HEX_SOURCE_ORG = 'bcdef123-4567-4890-9bcd-ef0123456789';
+    const HEX_TARGET_ORG = 'cdef1234-5678-4901-abcd-f01234567890';
+    const HEX_TARGET_SITE = 'def12345-6789-4012-bcde-012345678901';
+
+    function rigHexMove() {
+      // The default mock only grants the digit-only orgs above.
+      setAuth({ canAccessOrg: (id: string) => id === HEX_SOURCE_ORG || id === HEX_TARGET_ORG });
+      deviceBarrierOrgId = HEX_SOURCE_ORG;
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+        ...SAMPLE_DEVICE,
+        id: HEX_DEVICE,
+        orgId: HEX_SOURCE_ORG,
+      } as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: HEX_SOURCE_ORG, partnerId: 'partner-1' },
+          { id: HEX_TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: HEX_TARGET_SITE },
+      });
+      return rigTransactionSuccess({
+        ...SAMPLE_DEVICE, id: HEX_DEVICE, orgId: HEX_TARGET_ORG, siteId: HEX_TARGET_SITE,
+      });
+    }
+
+    it('moves on an uppercase path id and uppercase body ids, binding and auditing the canonical ones', async () => {
+      const { deviceUpdateSets } = rigHexMove();
+
+      const res = await app.request(`/devices/${HEX_DEVICE.toUpperCase()}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId: HEX_TARGET_ORG.toUpperCase(),
+          siteId: HEX_TARGET_SITE.toUpperCase(),
+          stepUpGrant: GRANT_ID,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+
+      // The grant the console minted is bound to the canonical ids, so the
+      // route must hash those and not the caller's spelling.
+      const binding = expect.objectContaining({
+        resourceDigest: moveOrgResourceDigest({
+          deviceId: HEX_DEVICE,
+          targetOrgId: HEX_TARGET_ORG,
+          targetSiteId: HEX_TARGET_SITE,
+          acceptCurrencyMismatch: false,
+        }),
+      });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT_ID, binding);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT_ID, binding);
+
+      // The write, the post-commit work and the audit rows all use one spelling.
+      expect(deviceUpdateSets[0]).toMatchObject({ orgId: HEX_TARGET_ORG, siteId: HEX_TARGET_SITE });
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(HEX_DEVICE, 'device_org_changed');
+      const auditRows = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1] as any);
+      expect(auditRows).toHaveLength(2);
+      for (const row of auditRows) {
+        expect(row.resourceId).toBe(HEX_DEVICE);
+        expect(row.details).toMatchObject({ targetOrgId: HEX_TARGET_ORG, targetSiteId: HEX_TARGET_SITE });
+      }
+    });
+
+    it('still refuses a move to the device\'s own org when that org is spelled in upper case', async () => {
+      // The same-org guard is a JS `===` against `device.orgId`, so without
+      // canonicalising the body id an uppercase spelling of the source org
+      // walks straight past it.
+      rigHexMove();
+      const res = await app.request(`/devices/${HEX_DEVICE}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orgId: HEX_SOURCE_ORG.toUpperCase(),
+          siteId: HEX_TARGET_SITE,
+          stepUpGrant: GRANT_ID,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 

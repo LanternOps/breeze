@@ -58,6 +58,7 @@ import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePr
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
 import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 
 vi.mock('../../config/env', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../config/env')>();
@@ -1104,12 +1105,21 @@ describe('partner reconstruction export RLS traversal', () => {
     const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const serializationMigration = readFileSync(SERIALIZATION_MIGRATION_FILE, 'utf8');
     const bulkSerializationMigration = readFileSync(BULK_SERIALIZATION_MIGRATION_FILE, 'utf8');
-    await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
-    await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
-    await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
-    await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
+    try {
+      await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+      await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
+      await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
+      await expect(admin.execute(sql.raw(migration))).resolves.toBeDefined();
+      await expect(admin.execute(sql.raw(serializationMigration))).resolves.toBeDefined();
+      await expect(admin.execute(sql.raw(bulkSerializationMigration))).resolves.toBeDefined();
+    } finally {
+      // The bare replays above revert functions that later migrations redefine
+      // (2026-10-15-120001's owner_deletes; 2027-01-12-200200's partner
+      // device-group targets) for the rest of the shard. Replaying 07-30
+      // through replayMigration re-applies every later definer of its
+      // functions, which restores the fresh-migrate state.
+      await replayMigration('2026-07-30-serialize-bulk-config-assignment-target-moves.sql');
+    }
     await ensureAppRole();
 
     const [privileges] = await admin.execute<{ helpersPrivate: boolean }>(sql`
@@ -1273,7 +1283,9 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.sites.push(site);
   seed.devices.push(device);
   seed.fieldDefinitions.push({ id: fieldDefinition.id, orgId: org.id, fieldKey, value: fieldValue });
-  seed.groups.push(group);
+  expect(group.orgId).not.toBeNull();
+  if (group.orgId === null) throw new Error('expected an org-owned fixture group');
+  seed.groups.push({ ...group, orgId: group.orgId });
   seed.policies.push(policy);
   seed.assignments.push(assignment);
   seed.featureLinks.push(featureLink);

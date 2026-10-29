@@ -53,13 +53,16 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 	}
 
 	// The post succeeded. Parse the server's ingest decision from the body
-	// {"id":"<uuid>","status":"<status>"}. A malformed or empty body is not
-	// fatal — the request was accepted, so we return whatever parsed (possibly
-	// zero values) and ignore the unmarshal error.
+	// {"id":"<uuid>","status":"<status>","supportName"?:"<name>"}. A malformed
+	// or empty body is not fatal — the request was accepted, so we return
+	// whatever parsed (possibly zero values) and ignore the unmarshal error.
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var decoded struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
+		// SupportName (#8928) is optional and decoded separately: a malformed
+		// value must never cost the ingest decision that starts the PAM flow.
+		SupportName json.RawMessage `json:"supportName"`
 	}
 	if uerr := json.Unmarshal(respBody, &decoded); uerr != nil && len(bytes.TrimSpace(respBody)) > 0 {
 		// The request was accepted (2xx) but the ingest-decision body did not
@@ -69,5 +72,17 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 		log.Warn("elevation-requests: accepted but ingest-decision body unparseable; local PAM flow will be skipped",
 			"statusCode", resp.StatusCode, "error", uerr.Error())
 	}
-	return etwlua.ElevationOutcome{RequestID: decoded.ID, Status: etwlua.ElevationStatus(decoded.Status)}, nil
+	outcome := etwlua.ElevationOutcome{RequestID: decoded.ID, Status: etwlua.ElevationStatus(decoded.Status)}
+	if len(decoded.SupportName) > 0 {
+		var name string
+		if serr := json.Unmarshal(decoded.SupportName, &name); serr != nil {
+			log.Warn("elevation-requests: ignoring malformed supportName", "error", serr.Error())
+		} else {
+			outcome.SupportName = clampSupportName(name)
+		}
+	}
+	if outcome.SupportName != "" {
+		h.rememberSupportName(outcome.SupportName)
+	}
+	return outcome, nil
 }

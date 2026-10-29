@@ -1314,6 +1314,30 @@ describe('validateConfig', () => {
     },
   );
 
+  // #8313 W1 review finding 6.
+  it.each(['2e9', '2GiB', '2_147_483_648', '12abc', '0'])(
+    'warns at boot, naming the variable, when TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j is not a plain positive integer',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+        validateConfig();
+        const lines = warnSpy.mock.calls.map((args) => String(args[0])).filter((line) => line.includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'));
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain('2147483648');
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each(['2147483648', '52428800', ''])('does not warn about TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j', (value) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({ ...validEnv, TICKET_IMPORT_MAX_BYTES_PER_HOUR: value }, () => {
+      validateConfig();
+      expect(warnSpy.mock.calls.some((args) => String(args[0]).includes('TICKET_IMPORT_MAX_BYTES_PER_HOUR'))).toBe(false);
+    });
+    warnSpy.mockRestore();
+  });
+
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
       ...validEnv,

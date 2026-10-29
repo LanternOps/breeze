@@ -46,6 +46,9 @@ export const ERROR_CODES = {
   ASSIGNEE_PARTNER_MISMATCH: 'ASSIGNEE_PARTNER_MISMATCH',
   ACCESS_REVIEW_SELF_DECISION: 'ACCESS_REVIEW_SELF_DECISION',
   NO_UPDATES_PROVIDED: 'NO_UPDATES_PROVIDED',
+  // #10521: partner-owned device groups are not a target outside config policies, and are read-only here.
+  PARTNER_GROUP_TARGET_UNSUPPORTED: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+  PARTNER_GROUP_READ_ONLY: 'PARTNER_GROUP_READ_ONLY',
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_CODES;

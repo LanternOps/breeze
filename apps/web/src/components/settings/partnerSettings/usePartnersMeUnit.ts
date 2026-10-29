@@ -409,6 +409,8 @@ export function usePartnersMeUnit() {
   return {
     partner,
     state,
+    /** The saved form state the draft is compared against. */
+    baseline,
     update,
     setThresholdsRaw,
     patchPartnerSettings,

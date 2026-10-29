@@ -11,22 +11,23 @@
  *     heartbeat/enrollment/provision emit sites.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   mockUpdateDeviceMemberships,
-  mockEvaluateDeviceMembershipForGroup,
+  mockEvaluateDeviceGroupMemberships,
   mockRemoveDeviceFromAllGroups,
   mockSelect,
 } = vi.hoisted(() => ({
   mockUpdateDeviceMemberships: vi.fn().mockResolvedValue({ evaluatedGroups: 0, added: 0, removed: 0 }),
-  mockEvaluateDeviceMembershipForGroup: vi.fn().mockResolvedValue({ evaluatedGroups: 1, added: 0, removed: 0 }),
+  mockEvaluateDeviceGroupMemberships: vi.fn().mockResolvedValue({ evaluatedGroups: 1, added: 0, removed: 0 }),
   mockRemoveDeviceFromAllGroups: vi.fn().mockResolvedValue(undefined),
   mockSelect: vi.fn(),
 }));
 
 vi.mock('../services/groupMembership', () => ({
   updateDeviceMemberships: mockUpdateDeviceMemberships,
-  evaluateDeviceMembershipForGroup: mockEvaluateDeviceMembershipForGroup,
+  evaluateDeviceGroupMemberships: mockEvaluateDeviceGroupMemberships,
   removeDeviceFromAllGroups: mockRemoveDeviceFromAllGroups,
 }));
 
@@ -34,11 +35,10 @@ vi.mock('../db', () => ({
   db: { select: mockSelect },
 }));
 
-vi.mock('../db/schema', () => ({
-  deviceGroups: { id: 'id', orgId: 'orgId', type: 'type', filterConditions: 'filterConditions', filterFieldsUsed: 'filterFieldsUsed' },
-}));
+
 
 import {
+  getGroupsFilteringOnFields,
   createDeviceChangeEvent,
   emitDeviceChange,
   initializeDeviceEventHandlers,
@@ -113,13 +113,12 @@ describe('deviceEvents', () => {
     );
   });
 
-  it('wires device.created to evaluate every dynamic group with a filter in the org', async () => {
+  it('wires device.created to the shared all-groups evaluator', async () => {
     mockSelect.mockReturnValue(chainSelect([{ id: 'group-1' }, { id: 'group-2' }]));
 
     await emitDeviceChange(createDeviceChangeEvent('device.created', DEVICE_ID, ORG_ID, []));
 
-    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenCalledWith('group-1', DEVICE_ID);
-    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenCalledWith('group-2', DEVICE_ID);
+    expect(mockEvaluateDeviceGroupMemberships).toHaveBeenCalledExactlyOnceWith(DEVICE_ID, { all: true });
   });
 
   it('wires device.deleted to removeDeviceFromAllGroups', async () => {
@@ -245,14 +244,11 @@ describe('emitDeviceChange failure propagation (#5039)', () => {
   // deliberately continues past a failure. It must not SWALLOW them, or
   // emitDeviceChange's throw above is inert for the whole enrolment/provision
   // path — exactly where concurrent enrolments make a 40P01 most likely.
-  it('device.created evaluates every group and then rethrows the failures', async () => {
+  it('device.created propagates aggregated evaluation failures', async () => {
     initializeDeviceEventHandlers();
     mockSelect.mockReturnValue(chainSelect([{ id: 'group-1' }, { id: 'group-2' }, { id: 'group-3' }]));
     const deadlock = new Error('deadlock detected');
-    mockEvaluateDeviceMembershipForGroup
-      .mockResolvedValueOnce({ evaluatedGroups: 1, added: 0, removed: 0 })
-      .mockRejectedValueOnce(deadlock)
-      .mockResolvedValueOnce({ evaluatedGroups: 1, added: 1, removed: 0 });
+    mockEvaluateDeviceGroupMemberships.mockRejectedValueOnce(new AggregateError([deadlock], '1 of 3 dynamic group evaluations failed'));
 
     const original = console.error;
     console.error = () => {};
@@ -265,12 +261,8 @@ describe('emitDeviceChange failure propagation (#5039)', () => {
       console.error = original;
     }
 
-    // group-3 was still evaluated despite group-2 blowing up...
-    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenCalledTimes(3);
-    expect(mockEvaluateDeviceMembershipForGroup).toHaveBeenLastCalledWith('group-3', DEVICE_ID);
-    // ...and the failure reached the worker instead of vanishing into a log.
-    // emitDeviceChange wraps the handler's own aggregate, so the deadlock is
-    // one level down: emit-aggregate -> created-handler aggregate -> 40P01.
+    expect(mockEvaluateDeviceGroupMemberships).toHaveBeenCalledExactlyOnceWith(DEVICE_ID, { all: true });
+    // The shared evaluator's aggregate is wrapped by the event dispatcher.
     expect(raised).toBeInstanceOf(AggregateError);
     const handlerFailure = (raised as AggregateError).errors[0] as AggregateError;
     expect(handlerFailure).toBeInstanceOf(AggregateError);
@@ -321,5 +313,30 @@ describe('mapChangedFieldsToFilterFields', () => {
 
   it('leaves already-prefixed fields untouched', () => {
     expect(mapChangedFieldsToFilterFields(['hardware.cpuModel'], 'device')).toEqual(['hardware.cpuModel']);
+  });
+});
+
+
+describe('getGroupsFilteringOnFields ownership', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it('includes the eligible org partner and excludes Quick Support/holding orgs from that branch', async () => {
+    const orgWhere = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]) });
+    const groupsWhere = vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) });
+    mockSelect.mockReturnValueOnce({ from: () => ({ where: orgWhere }) })
+      .mockReturnValueOnce({ from: () => ({ where: groupsWhere }) });
+    await getGroupsFilteringOnFields(ORG_ID, ['hostname']);
+    const orgQuery = new PgDialect().sqlToQuery(orgWhere.mock.calls[0]?.[0]);
+    expect(orgQuery.params).toEqual([ORG_ID, 'quick_support', 'unassigned_pool']);
+    const groupsQuery = new PgDialect().sqlToQuery(groupsWhere.mock.calls[0]?.[0]);
+    expect(groupsQuery.sql).toContain('"device_groups"."org_id" is null');
+    expect(groupsQuery.sql).toContain('"device_groups"."partner_id" =');
+    expect(groupsQuery.params).toContain('partner-1');
+  });
+  it('does not include a partner branch for an excluded org', async () => {
+    const groupsWhere = vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([]) });
+    mockSelect.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) })
+      .mockReturnValueOnce({ from: () => ({ where: groupsWhere }) });
+    await getGroupsFilteringOnFields(ORG_ID, ['hostname']);
+    expect(new PgDialect().sqlToQuery(groupsWhere.mock.calls[0]?.[0]).sql).not.toContain('"device_groups"."partner_id"');
   });
 });

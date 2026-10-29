@@ -633,6 +633,22 @@ export const PARTNER_ALERT_SEVERITIES = ['critical', 'high', 'medium', 'low', 'i
 const nullableTimestamp = partnerExportTimestampSchema.nullable();
 const nullableUuid = z.string().uuid().nullable();
 
+/** alerts:write returns state only; alert content requires alerts:read. */
+export const partnerAlertWriteResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  changed: z.boolean(),
+  data: z.object({
+    id: z.string().uuid(),
+    orgId: z.string().uuid(),
+    status: z.enum(PARTNER_ALERT_STATUSES),
+    acknowledgedAt: nullableTimestamp,
+    resolvedAt: nullableTimestamp,
+    resolutionReason: z.string().nullable(),
+    acknowledgedByPrincipalId: nullableUuid,
+    resolvedByPrincipalId: nullableUuid,
+  }).strict(),
+}).strict();
+
 export const partnerAlertExportRecordSchema = z.object({
   id: z.string().uuid(),
   orgId: z.string().uuid(),

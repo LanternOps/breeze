@@ -395,6 +395,19 @@ export type NetworkOverviewDto =
 /** Mirrors alert_severity (apps/api/src/db/schema/alerts.ts); ranked critical > high > medium > low > info. */
 export type NetworkAssetAlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
+/**
+ * Customer-safe physical placement (CPEV-W1). Exact allowlist: no ids,
+ * timestamps, authority/link state or reconciliation outcome. `siteName` is the
+ * placement authority's live site, never stored on the placement.
+ */
+export interface PhysicalPlacementDto {
+  siteName: string;
+  room: string | null;
+  rack: string | null;
+  rackUnit: number | null;
+  heightU: number | null;
+}
+
 export interface NetworkAssetRowDto {
   id: string;
   hostname: string | null;
@@ -421,6 +434,12 @@ export interface NetworkAssetRowDto {
   highestAlertSeverity?: NetworkAssetAlertSeverity | null;
   /** Distinct non-terminal tickets linked (via ticket_alert_links) to this asset's active alerts. */
   openTicketCount?: number;
+  /**
+   * Present only when the org's enable_physical_placement flag is on AND the
+   * asset's placement authority holds a placement; omitted otherwise (never
+   * null-filled, no placeholder strings).
+   */
+  physicalPlacement?: PhysicalPlacementDto;
 }
 
 /** A site that has at least one portal-visible network asset (#7025). */

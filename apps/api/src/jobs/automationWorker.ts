@@ -9,6 +9,7 @@
 
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, or } from 'drizzle-orm';
+import { groupOwnerMatchesMembershipOrg } from '../services/deviceGroupOwnership';
 import * as dbModule from '../db';
 import {
   automationRuns,
@@ -852,7 +853,8 @@ async function processExecuteRun(data: ExecuteRunJobData): Promise<{ runId: stri
  * that resolves a SET of devices filters them out; the explicit device-level
  * branches are by-id lookups of an operator-chosen target and are left alone.
  */
-async function resolveDeviceIdsForAssignment(
+/** @internal exported for tests */
+export async function resolveDeviceIdsForAssignment(
   assignmentLevel: string,
   assignmentTargetId: string,
   // null for partner-owned library policies (#1724, #2280) — they have no
@@ -923,21 +925,9 @@ async function resolveDeviceIdsForAssignment(
     }
 
     case 'device_group': {
-      // #3182 — the group id arrives from an assignment row and is
-      // dereferenced through device_group_memberships, so BOTH joins carry an
-      // org-equality condition rather than a bare id match. Neither of the two
-      // clamps below is sufficient on its own:
-      //   * the partner branch joins organizations through the MEMBERSHIP's
-      //     org_id, so it only ever proved that the membership's own org sits
-      //     under the policy's partner — never that the group does;
-      //   * the org branch's `memberships.org_id = policyOrgId` proved the same
-      //     for the policy's org.
-      // A membership row was free to name a group in a different org until
-      // #3182's composite FK landed, and a cross-org device move produced
-      // exactly that shape, so an org A group could resolve an org B device.
-      // Requiring group.org_id = membership.org_id = device.org_id makes the
-      // query reject it independently of the constraint. This worker runs under
-      // a system DB context, so there is no RLS behind it to catch a miss.
+      // #3182: memberships and devices share an org. Org groups share that
+      // org; partner groups belong to the membership org's partner. Keep this
+      // owner check as well as the policy clamp in both system-context paths.
       // Execution-target field-provenance tiering — a device_group-level assignment
       // resolved here feeds `processTriggerConfigPolicySchedule`, which
       // dispatches an automation run: always execution-bearing, unlike the
@@ -961,7 +951,7 @@ async function resolveDeviceIdsForAssignment(
             deviceGroups,
             and(
               eq(deviceGroupMemberships.groupId, deviceGroups.id),
-              eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
+              groupOwnerMatchesMembershipOrg(),
             ),
           )
           .innerJoin(
@@ -992,7 +982,7 @@ async function resolveDeviceIdsForAssignment(
           deviceGroups,
           and(
             eq(deviceGroupMemberships.groupId, deviceGroups.id),
-            eq(deviceGroups.orgId, deviceGroupMemberships.orgId),
+            groupOwnerMatchesMembershipOrg(),
           ),
         )
         .innerJoin(

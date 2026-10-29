@@ -174,6 +174,29 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('catalog_item_org_pricing', 'partner_id', control.partnerId)).toBe(1);
   });
 
+  it('partner erasure removes partner webhooks and both event and test deliveries', async () => {
+    const testDb = getTestDb();
+    const ids: string[] = [];
+    for (const seed of [purge, control]) {
+      const rows = await testDb.execute(sql`
+        INSERT INTO webhooks (partner_id, org_id, name, url)
+        VALUES (${seed.partnerId}, NULL, 'Partner webhook', 'https://example.com/webhook') RETURNING id
+      `);
+      const id = String(rows[0]!.id);
+      ids.push(id);
+      await testDb.execute(sql`
+        INSERT INTO webhook_deliveries (webhook_id, org_id, event_type, event_id, payload)
+        VALUES (${id}, ${seed.orgId}, 'alert.triggered', ${crypto.randomUUID()}, '{}'::jsonb),
+               (${id}, NULL, 'alert.triggered', ${`test-${crypto.randomUUID()}`}, '{}'::jsonb)
+      `);
+    }
+    await cascadeDeletePartner(purge.partnerId, SENTINEL);
+    expect(await countById('webhooks', 'id', ids[0]!)).toBe(0);
+    expect(await countById('webhook_deliveries', 'webhook_id', ids[0]!)).toBe(0);
+    expect(await countById('webhooks', 'id', ids[1]!)).toBe(1);
+    expect(await countById('webhook_deliveries', 'webhook_id', ids[1]!)).toBe(2);
+  });
+
   it('purges a partner whose Service Management is bound to a partner-wide PSA connection (#5075 W04)', async () => {
     // partners.service_management_psa_connection_id -> psa_connections.id is
     // ON DELETE RESTRICT, and the partner-axis sweep deletes partner-wide

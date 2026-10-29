@@ -1142,6 +1142,8 @@
       "durationHelp": "1 - 1440 dakika (maks. 24 saat).",
       "reasonRecommended": "Sebep (önerilir)",
       "reasonOptional": "Sebep (isteğe bağlı)",
+      "reasonShownToUser": "Gerekçe (kullanıcıya gösterilir)",
+      "reasonShownToUserHint": "Son kullanıcı bunu bildiriminde görür (ilk 500 karakter).",
       "reasonPlaceholder": "Denetim takibine kaydedildi"
     },
     "actions": {

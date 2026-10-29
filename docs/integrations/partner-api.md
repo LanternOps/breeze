@@ -58,6 +58,7 @@ Weavestream delegation. They must be granted explicitly, per principal:
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
 | `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay with signed-in staff on the main API, under each person's own ticket permissions (moving a ticket between organizations and changing a ticket mailbox connection also require MFA). The principal acts as **itself**: comments and audit rows name the principal, never a person. |
+| `alerts:write` | Acknowledge and resolve alerts as the principal in accessible organizations. Opt-in, never a default or preset; does not imply `alerts:read` or grant suppress, dismiss, delete, bulk actions, or rules. |
 
 `tickets:read` is a further **opt-in read** scope, like `alerts:read`: ticket
 subjects, descriptions and comments are customer-authored data across every
@@ -132,6 +133,8 @@ See the MCP server documentation.
 | `GET /api/v1/partner-api/custom-fields` | `custom-fields:read` |
 | `GET /api/v1/partner-api/custom-field-values` | `custom-fields:read` |
 | `GET /api/v1/partner-api/alerts` | `alerts:read` (opt-in) |
+| `POST /api/v1/partner-api/alerts/<alert-uuid>/acknowledge` | `alerts:write` (opt-in) |
+| `POST /api/v1/partner-api/alerts/<alert-uuid>/resolve` | `alerts:write` (opt-in) |
 | `GET /api/v1/partner-api/tickets` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/ids` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
@@ -546,6 +549,72 @@ Guarantees and limits:
   itself is written again; reconcile blocked ids with a periodic full sync.
 - Checkpoints and cursors are signed, bound to the partner, filters and
   organization set, and cursors expire after 24 hours.
+
+## Alert write-back (`alerts:write`)
+
+`alerts:write` is an explicit opt-in scope, never part of a default scope set
+or preset. The granter must hold `alerts.write`. It grants only acknowledge
+and resolve, with the principal acting as itself; it does not imply
+`alerts:read` or grant suppress, dismiss, delete, bulk actions, or rule changes.
+
+| Endpoint | Body |
+|---|---|
+| `POST /api/v1/partner-api/alerts/<alertId>/acknowledge` | No body or `{}`. Any key is rejected. |
+| `POST /api/v1/partner-api/alerts/<alertId>/resolve` | No body, `{}`, or `{ "note": "Closed in the helpdesk" }`. The optional note is at most 2,000 characters, allows newlines and tabs but no other control characters, and is trimmed; an empty trimmed note is stored as no note. |
+
+Acknowledgment accepts an active alert. Resolution accepts active,
+acknowledged, or suppressed alerts. A repeated acknowledge on an acknowledged
+alert or resolve on a resolved alert returns `200` with `changed: false`,
+without another event or action audit. Concurrent requests use the same
+compare-and-set transition; only the request that changes the row emits an event.
+
+Both endpoints return `404 partner_alert_not_found` for an unknown alert or
+one outside the principal's accessible organizations, including another
+partner's alert or an alert in an organization that is not active. A missing
+`alerts:write` scope returns `403`.
+
+| Status | Code | Cause |
+|---|---|---|
+| `409` | `partner_alert_not_acknowledgeable` | The alert is resolved, dismissed, or suppressed, or a competing transition made it no longer acknowledgeable. `details.status` gives the current status. |
+| `409` | `partner_alert_not_resolvable` | The alert is dismissed, or a competing transition made it no longer resolvable. `details.status` gives the current status. |
+
+A successful response has this shape:
+
+```json
+{
+  "schemaVersion": "1",
+  "changed": true,
+  "data": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "orgId": "22222222-2222-4222-8222-222222222222",
+    "status": "resolved",
+    "acknowledgedAt": null,
+    "resolvedAt": "2027-01-12T12:00:00.000Z",
+    "resolutionReason": "manual",
+    "acknowledgedByPrincipalId": null,
+    "resolvedByPrincipalId": "33333333-3333-4333-8333-333333333333"
+  }
+}
+```
+
+Timestamps and the resolution reason are nullable. The response contains no
+alert content, resolution note, device, rule, or user ids. Grant `alerts:read`
+separately to read alert details.
+
+The alert records `acknowledgedByPrincipalId` or `resolvedByPrincipalId`, while
+its corresponding user attribution (`acknowledgedBy` or `resolvedBy`) is
+null. A principal resolve records `resolution_reason = 'manual'` and counts
+as a person's resolve, so it starts no automatic AI verdict run.
+
+v2 alert webhooks always carry both principal attribution keys, nullable when
+absent. V1 `alert.acknowledged` and `alert.resolved` data gains the corresponding
+principal key only when a principal acted, with `acknowledgedBy` or `resolvedBy`
+null; existing human and system payloads retain their shape. To suppress echoes,
+skip webhook events whose acknowledging or resolving principal id is your own.
+
+These endpoints use the default write budget of 120 requests per hour per
+principal and key, shared with provisioning writes on that key. Use a dedicated
+principal for write-back so provisioning traffic does not consume its budget.
 
 ## Tickets feed (`tickets:read`)
 

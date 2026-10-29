@@ -1142,6 +1142,8 @@
       "durationHelp": "1 bis 1440 Minuten (maximal 24 Stunden).",
       "reasonRecommended": "Grund (empfohlen)",
       "reasonOptional": "Grund (optional)",
+      "reasonShownToUser": "Grund (wird dem Benutzer angezeigt)",
+      "reasonShownToUserHint": "Die Endbenutzerin bzw. der Endbenutzer sieht dies in der Benachrichtigung (erste 500 Zeichen).",
       "reasonPlaceholder": "Im Audit Trail aufgezeichnet"
     },
     "actions": {

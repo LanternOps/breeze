@@ -181,6 +181,8 @@ describe('partner desired-configuration exports', () => {
     });
     const policyQuery = new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).sql.toLowerCase();
     expect(policyQuery).toContain('breeze_partner_export_effective_policy_settings');
+    expect(policyQuery).toMatch(/dg\.org_id = eo\.id or \(dg\.org_id is null and dg\.partner_id = \$\d+::uuid\)/);
+    expect(new PgDialect().sqlToQuery(mocks.execute.mock.calls[1]![0]).params).toContain(PARTNER_ID);
     // #5080: the parent id travels with the policy, and an unassigned baseline
     // is pulled into the export by the parent closure so an exported child's
     // parentPolicyId never dangles.

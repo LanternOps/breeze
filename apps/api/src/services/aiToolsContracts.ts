@@ -44,6 +44,12 @@ import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 import { stampedKeysErrorBody } from './contractHourBlockLocked';
 import { listContractHourPeriods } from './contractHourPeriodsRead';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+// Full-control W14 (#6784): read selectors on the existing reads (W14 plan fact 10 — no action multiplexer, so the
+// tools stay in TIER2_READONLY_TOOLS). Same services and permission as GET /contracts/:id/periods/:periodId/outcome
+// and GET /contracts/currency-mismatches (contracts:read).
+import { getPeriodOutcome } from './billingEvidence';
+import { listContractCurrencyMismatches } from './contractCurrencyReportService';
+import { bounded } from './aiToolsSoftwareShared';
 
 /**
  * Params each manage_contracts action requires, presence-checked BEFORE any
@@ -173,7 +179,7 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'list_contracts',
       description:
-        "List accessible recurring contracts newest first, filtered by org or status. Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
+        "List accessible recurring contracts newest first, filtered by org or status; view currency_mismatches lists contracts whose currency differs from their org's. Prices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -183,7 +189,9 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
             enum: ['draft', 'active', 'paused', 'cancelled', 'expired'],
             description: 'Filter by contract status'
           },
-          limit: { type: 'number', description: 'Max results (default 25, max 100)' }
+          limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          view: { type: 'string', enum: ['contracts', 'currency_mismatches'], description: 'contracts (default) or currency_mismatches' },
+          cursor: { type: 'string', description: 'currency_mismatches: nextCursor from the previous page' }
         },
         required: []
       }
@@ -193,6 +201,18 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       if (refusal) return refusal;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
+        if (input.view === 'currency_mismatches') {
+          const currencyMismatches = await listContractCurrencyMismatches(
+            {
+              ...(input.orgId ? { orgId: String(input.orgId) } : {}),
+              ...(input.status ? { status: String(input.status) as 'draft' | 'active' | 'paused' | 'cancelled' | 'expired' } : {}),
+              limit,
+              ...(input.cursor ? { cursor: String(input.cursor) } : {}),
+            },
+            actorFromAuth(auth)
+          );
+          return bounded({ currencyMismatches });
+        }
         const rows = await listContracts(
           {
             orgId: input.orgId ? String(input.orgId) : undefined,
@@ -225,11 +245,12 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'get_contract',
       description:
-        "Get a recurring contract header, lines, billing-period history and hour-block period history (hourPeriods, newest first, last 24). Line prices, period totals and generated invoices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
+        "Get a recurring contract header, lines, billing-period history and hour-block periods (last 24); with periodId, that period's outcome (devices billed, uncovered, flagged, overages). Prices use contract currencyCode; never sum across currencies; group by currencyCode for totals.",
       input_schema: {
         type: 'object' as const,
         properties: {
-          contractId: { type: 'string', description: 'Contract UUID' }
+          contractId: { type: 'string', description: 'Contract UUID' },
+          periodId: { type: 'string', description: 'Billing period UUID: return only that period\'s outcome' }
         },
         required: ['contractId']
       }
@@ -240,6 +261,11 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       try {
         const actor = actorFromAuth(auth);
         const contractId = String(input.contractId);
+        if (input.periodId) {
+          const periodId = String(input.periodId);
+          const { recorded, outcome } = await getPeriodOutcome(contractId, periodId, actor);
+          return bounded({ contractId, periodId, recorded, outcome });
+        }
         const result = await getContract(contractId, actor);
         // #4547 W03: same reader as GET /contracts/:id/hour-periods (routes/contracts/hourPeriods.ts).
         const { items: hourPeriods } = await listContractHourPeriods(contractId, { limit: 24 }, actor);

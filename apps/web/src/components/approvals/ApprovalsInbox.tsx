@@ -1226,8 +1226,24 @@ export default function ApprovalsInbox() {
                   value={denyReason}
                   placeholder={t('denyReasonPlaceholder')}
                   onChange={(event) => setDenyReason(event.target.value)}
+                  aria-describedby={
+                    approval.actionToolName === 'uac_intercept'
+                      ? `approval-deny-reason-hint-${approval.id}`
+                      : undefined
+                  }
                   data-testid={`approval-deny-reason-${approval.id}`}
                 />
+                {approval.actionToolName === 'uac_intercept' && (
+                  // PAM elevation: the web DTO carries no elevationRequestId,
+                  // so the tool name is the discriminant (as on mobile).
+                  <p
+                    id={`approval-deny-reason-hint-${approval.id}`}
+                    className="mt-1 text-xs text-muted-foreground"
+                    data-testid={`approval-deny-reason-hint-${approval.id}`}
+                  >
+                    {t('denyReasonShownToUserHint')}
+                  </p>
+                )}
                 <p
                   className="mt-1 text-right text-xs text-muted-foreground"
                   data-testid={`approval-deny-reason-count-${approval.id}`}

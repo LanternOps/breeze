@@ -243,6 +243,8 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/custom-fields` | `custom-fields:read` | Export custom field definitions |
 | `GET` | `/partner-api/custom-field-values` | `custom-fields:read` | Export custom field values |
 | `GET` | `/partner-api/alerts` | `alerts:read` | Latest-state alert feed with signed cursor and checkpoint |
+| `POST` | `/partner-api/alerts/:id/acknowledge` | `alerts:write` | Acknowledge an active alert as the principal. No body or `{}`; repeated acknowledgment returns `200` with `changed: false`. No alert content is returned. |
+| `POST` | `/partner-api/alerts/:id/resolve` | `alerts:write` | Resolve an active, acknowledged, or suppressed alert as the principal. Optional `note` (max 2,000 characters); repeated resolution returns `200` with `changed: false`. No alert content is returned. |
 | `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
 | `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
 | `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). Every ticket record, here and in the feed, carries `mergedIntoTicketId` and `mergedAt`: both are set when this ticket was merged into another, and the record is then read-only; both are `null` otherwise. |

@@ -74,7 +74,7 @@ export async function deleteDeviceGroup(groupId: string, orgId: string): Promise
       .from(deviceGroups)
       .where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, orgId)))
       .for('update');
-    if (!group) throw new DeviceGroupDeleteError('NOT_FOUND', 'Group not found');
+    if (!group || group.orgId === null) throw new DeviceGroupDeleteError('NOT_FOUND', 'Group not found');
 
     const [child] = await tx.select({ id: deviceGroups.id }).from(deviceGroups).where(eq(deviceGroups.parentId, groupId)).limit(1);
     if (child) throw new DeviceGroupDeleteError('HAS_CHILDREN', 'Cannot delete group with child groups');
@@ -109,6 +109,6 @@ export async function deleteDeviceGroup(groupId: string, orgId: string): Promise
     );
     await tx.delete(deviceGroups).where(eq(deviceGroups.id, groupId));
 
-    return { group, affectedDeviceIds: affected.map((a) => a.deviceId) };
+    return { group: { ...group, orgId: group.orgId }, affectedDeviceIds: affected.map((a) => a.deviceId) };
   });
 }

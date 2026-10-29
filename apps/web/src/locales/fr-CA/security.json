@@ -1142,6 +1142,8 @@
       "durationHelp": "1 à 1440 minutes (maximum 24h).",
       "reasonRecommended": "Raison (recommandé)",
       "reasonOptional": "Raison (optionnelle)",
+      "reasonShownToUser": "Raison (affichée à l’utilisateur)",
+      "reasonShownToUserHint": "L’utilisateur final voit ceci dans sa notification (500 premiers caractères).",
       "reasonPlaceholder": "Enregistré dans la trace d’audit"
     },
     "actions": {

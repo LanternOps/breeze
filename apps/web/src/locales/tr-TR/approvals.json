@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Bu isteği neden reddediyorsunuz? Gerekçe isteğe bağlıdır.",
   "denyReasonPlaceholder": "İsteğe bağlı — isteği yapan kişiyle paylaşılır",
+  "denyReasonShownToUserHint": "Son kullanıcı bunu bildiriminde görür (ilk 500 karakter).",
   "confirmDeny": "Reddi onayla",
   "cancel": "Vazgeç",
   "deny": "Reddet",

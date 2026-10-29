@@ -174,6 +174,12 @@ const lifecycleMocks = vi.hoisted(() => ({
 }));
 vi.mock('../services/pamActuationLifecycle', () => lifecycleMocks);
 
+// #8928: the deny path queues the end-user outcome notice in the decision tx.
+const notifyMocks = vi.hoisted(() => ({
+  enqueuePamRequestNotify: vi.fn(async () => 'queued' as const),
+}));
+vi.mock('../services/pamRequestNotify', () => notifyMocks);
+
 // Phase 2: the respond path now resolves assurance through assertApprovalAssurance
 // (verifies an optional browser proof). Default the no-proof L1 result; tests
 // override per-case. resolveElevationAssurance stays exported for any callers.
@@ -709,6 +715,54 @@ describe('POST /pam/elevation-requests/:id/respond', () => {
     expect(set.status).toBe('denied');
     expect(set.denialReason).toBe(expectedReason);
     expect(await res.json()).toMatchObject({ success: true, status: 'denied' });
+  });
+
+  describe('end-user outcome notice (#8928)', () => {
+    const respond = (body: Record<string, unknown>) => app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    it('queues one denied notice, on the decision transaction, with the raw reason', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      const res = await respond({ decision: 'deny', reason: 'Use the approved version\nfrom the portal' });
+      expect(res.status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(1);
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        expect.objectContaining({ insert: expect.any(Function) }),
+        { id: REQ_ID, deviceId: 'dev-1' },
+        'denied',
+        'Use the approved version\nfrom the portal',
+      );
+    });
+
+    it('passes no reason when the technician gave none (the stored placeholder is not shown)', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      await respond({ decision: 'deny' });
+      expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(
+        expect.anything(), { id: REQ_ID, deviceId: 'dev-1' }, 'denied', undefined,
+      );
+    });
+
+    it('does not notify on approve', async () => {
+      rigTransaction({ row: activeRow, casWins: true });
+      expect((await respond({ decision: 'approve' })).status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('does not notify when the CAS lost (0 rows)', async () => {
+      rigTransaction({ row: activeRow, casWins: false });
+      expect((await respond({ decision: 'deny', reason: 'x' })).status).toBe(409);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
+
+    it('does not notify for a request no end user is waiting on (not uac_intercept)', async () => {
+      rigTransaction({ row: { ...activeRow, flowType: 'tech_jit_admin' }, casWins: true });
+      vi.mocked(db.select).mockReturnValue({
+        from: () => ({ where: () => ({ limit: async () => [{ ...activeRow, flowType: 'tech_jit_admin' }] }) }),
+      } as any);
+      expect((await respond({ decision: 'deny', reason: 'x' })).status).toBe(200);
+      expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+    });
   });
 
   it('surfaces a refused decision intent (unverifiable target hash) as denied, not a stale "approved"', async () => {
@@ -3042,5 +3096,124 @@ describe('PAM routes require dedicated pam:approve / pam:manage_policy permissio
     expect(resRules.status).not.toBe(403);
     const resActive = await app().request('/pam/active');
     expect(resActive.status).not.toBe(403);
+  });
+});
+
+describe('withdrawn status surfaces (#8971)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setAuth();
+    busMocks.publishEvent.mockResolvedValue('evt');
+    resetAssuranceDefaults();
+  });
+
+  /**
+   * A respond transaction whose first read sees `firstStatus` and whose CAS
+   * matches nothing; a status-only re-read returns `rereadStatus`.
+   */
+  function rigLostCas(firstStatus: string, rereadStatus: string) {
+    const rereads: unknown[] = [];
+    // The approve path's pre-transaction grant read.
+    vi.mocked(db.select).mockReturnValue({
+      from: () => ({ where: () => ({ limit: async () => [{ orgId: ORG_ID, siteId: null, flowType: 'uac_intercept' }] }) }),
+    } as any);
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: vi.fn((fields: Record<string, unknown>) => {
+          const statusOnly = Object.keys(fields).length === 1 && 'status' in fields;
+          if (statusOnly) rereads.push(fields);
+          const result = statusOnly
+            ? [{ status: rereadStatus }]
+            : fields.id
+              ? [{ ...activeRow, status: firstStatus }]
+              : [{ orgId: ORG_ID, siteId: null }];
+          return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue(result) })) })) };
+        }),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) })) })),
+        })),
+        insert: vi.fn(() => ({ values: vi.fn(() => Promise.resolve()) })),
+        execute: vi.fn().mockResolvedValue({ rows: [] }),
+      };
+      return fn(tx);
+    });
+    return { rereads };
+  }
+
+  it('GET /pam/elevation-requests?status=withdrawn is accepted', async () => {
+    mockListSelect([], 0);
+
+    const res = await app().request('/pam/elevation-requests?status=withdrawn');
+
+    expect(res.status).toBe(200);
+  });
+
+  it('list rows carry withdrawnAt and withdrawnReason', async () => {
+    const withdrawnAt = new Date('2027-01-10T10:00:01.000Z');
+    mockListSelect([{
+      request: {
+        id: REQ_ID, orgId: ORG_ID, deviceId: 'dev-1', flowType: 'uac_intercept', status: 'withdrawn',
+        withdrawnAt, withdrawnReason: 'user_timeout',
+      },
+      deviceHostname: 'WS-ALPHA', siteName: 'HQ', approvedByName: null, deniedByName: null, revokedByName: null,
+      enforcementStatus: null, enforcementGeneration: null, enforcementReason: null, endpointObservedAt: null, cleanupReceivedAt: null,
+    }], 1);
+
+    const res = await app().request('/pam/elevation-requests?status=withdrawn');
+
+    const body = await res.json();
+    expect(body.requests[0]).toMatchObject({ status: 'withdrawn', withdrawnAt: withdrawnAt.toISOString(), withdrawnReason: 'user_timeout' });
+  });
+
+  it('rule preview statusBreakdown seeds withdrawn at 0', async () => {
+    vi.mocked(db.select).mockImplementation((() => {
+      const chain: any = Promise.resolve([]);
+      chain.from = vi.fn(() => chain);
+      chain.where = vi.fn(() => chain);
+      chain.orderBy = vi.fn(() => chain);
+      chain.limit = vi.fn(() => chain);
+      return chain;
+    }) as any);
+
+    const res = await app().request('/pam/rules/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matchSigner: 'acme corp', windowDays: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.statusBreakdown.withdrawn).toBe(0);
+  });
+
+  it('respond on a withdrawn row answers 409 with currentStatus withdrawn', async () => {
+    rigLostCas('withdrawn', 'withdrawn');
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ success: false, currentStatus: 'withdrawn' });
+    expect(busMocks.publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('respond losing its CAS to a concurrent withdraw reports the re-read status, not the stale pending one', async () => {
+    const { rereads } = rigLostCas('pending', 'withdrawn');
+
+    const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.currentStatus).toBe('withdrawn');
+    expect(body.error).toContain('withdrawn');
+    expect(rereads).toHaveLength(1);
+    expect(lifecycleMocks.createPamDecisionIntent).not.toHaveBeenCalled();
   });
 });

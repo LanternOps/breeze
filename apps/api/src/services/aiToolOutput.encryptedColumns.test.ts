@@ -54,8 +54,8 @@ vi.mock('../db', async (importOriginal) => {
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => 'event-1') }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitAlertStateFeedback: vi.fn(async () => undefined) }));
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: () => ({ queueDelivery: vi.fn(async () => undefined) }),
+vi.mock('../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: vi.fn(async () => undefined),
 }));
 vi.mock('./mlFeatureFlags', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./mlFeatureFlags')>()),
