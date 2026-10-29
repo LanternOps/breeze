@@ -16,8 +16,9 @@ import type {
   FilterPreviewResult,
   FilterPreviewDevice
 } from '@breeze/shared/types/filters';
-import { DEVICE_FUNCTION_KEYS } from '@breeze/shared/validators';
+import { DEVICE_FUNCTION_KEYS, softwareVersionValueSchema } from '@breeze/shared/validators';
 import { logShippingFailingPredicate } from './logShippingFailingPredicate';
+import { normalizeSoftwareVersion } from './softwareVersionCompare';
 export type {
   FilterOperator,
   FilterFieldCategory,
@@ -129,6 +130,8 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Software fields (EXISTS against software_inventory)
   { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains', 'equals', 'in', 'hasAny', 'hasAll'], description: 'Match devices with matching installed software' },
   { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains', 'equals', 'in', 'hasAny'], description: 'Match devices missing the named software' },
+  { key: 'software.version', label: 'Software Version', category: 'software', type: 'string', operators: ['below', 'atLeast', 'equals'], description: 'Match any install by exact name and numeric version; value is { name, version }' },
+  { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'], description: 'Match devices with software from a vendor' },
 
   // Device-state predicates (virtual EXISTS fields against related tables)
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
@@ -219,7 +222,7 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 // | osType/osVersion/osBuild/architecture | agent-reported OS facts (`heartbeat.ts`)                    | allowed           |
 // | hardware.*/network.*           | agent-reported inventory/network facts                          | allowed           |
 // | metrics.*                      | agent-reported metrics                                          | allowed           |
-// | software.installed/notInstalled | agent inventory scan (`software_inventory`) — self-reported; the agent supplies every entry (same shape as custom.*), unlike an OS/hardware fact the device cannot simply choose to misreport | refused |
+// | software.installed/notInstalled/version/vendor | agent inventory scan (`software_inventory`) — self-reported; the agent supplies every entry (same shape as custom.*), unlike an OS/hardware fact the device cannot simply choose to misreport | refused |
 // | hostsWorkloads/workloadRuntimes | agent-reported workload runtime detection (`devices.hosts_workloads` / `workload_runtimes`, denormalised from the agent's workload inventory report); the device supplies every value, so a fabricated "docker host" claim must not decide execution targeting | refused |
 // | status/watchdogStatus/isHeadless/uptimeSeconds/lastSeenIp | agent-reported device state         | allowed           |
 // | patches.pending/alerts.critical/system.rebootRequired | derived server-side signals, not a raw agent string | allowed |
@@ -259,6 +262,8 @@ const EXECUTION_REFUSED_AGENT_FIELDS: ReadonlySet<string> = new Set([
   // custom.* value does).
   'software.installed',
   'software.notInstalled',
+  'software.version',
+  'software.vendor',
   // agent-reported workload runtime detection (#8193) — fabricable by the device.
   'hostsWorkloads',
   'workloadRuntimes',
@@ -435,6 +440,18 @@ function getColumnForField(field: string): { table: 'devices' | 'hardware' | 'ne
   return { table: 'devices', column: field };
 }
 
+/**
+ * SQL mirror of normalizeSoftwareVersion: first capture is the complete numeric
+ * prefix (Postgres ARE supports the non-capturing inner group), then drop only
+ * whole trailing zero segments. numeric[] keeps long build numbers exact and
+ * compares lexicographically after that normalization. No prefix yields NULL.
+ * Trim the same whitespace as JS String.trim(), including tabs and Unicode.
+ */
+export function softwareVersionKeySql(expr: SQL<unknown>): SQL<unknown> {
+  const trimChars = sql.raw("'\u0009\u000A\u000B\u000C\u000D\u0020\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF'");
+  return sql`string_to_array(regexp_replace(substring(btrim(${expr}, ${trimChars}) from '^[vV]?([0-9]+(?:\\.[0-9]+)*)'), '(\\.0+)+$', ''), '.')::numeric[]`;
+}
+
 export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   const { field, operator, value } = condition;
 
@@ -481,6 +498,30 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   // populates (device_software is unused). `software.notInstalled` is the
   // negation of `software.installed`. Self-contained, so no outer join.
   if (fieldInfo.table === 'software') {
+    if (field === 'software.version') {
+      const parsed = softwareVersionValueSchema.safeParse(value);
+      if (!parsed.success) throw new FilterValueError('software.version requires a non-empty name and version');
+      const actual = softwareVersionKeySql(sql`${softwareInventory.version}`);
+      const expected = softwareVersionKeySql(sql`${parsed.data.version}::text`);
+      let comparison: SQL<unknown>;
+      switch (operator) {
+        case 'below': comparison = sql`${actual} < ${expected}`; break;
+        case 'atLeast': comparison = sql`${actual} >= ${expected}`; break;
+        case 'equals': comparison = sql`${actual} = ${expected}`; break;
+        default: throw new FilterValueError(`Unsupported software.version operator: ${operator}`);
+      }
+      return sql`EXISTS (SELECT 1 FROM ${softwareInventory} WHERE ${softwareInventory.deviceId} = ${devices.id} AND lower(${softwareInventory.name}) = lower(${parsed.data.name}) AND ${comparison})`;
+    }
+    if (field === 'software.vendor') {
+      if (typeof value !== 'string') throw new FilterValueError('software.vendor requires a string');
+      let match: SQL<unknown>;
+      switch (operator) {
+        case 'contains': match = sql`${softwareInventory.vendor} ILIKE ${'%' + escapeLikePattern(value) + '%'}`; break;
+        case 'equals': match = sql`lower(${softwareInventory.vendor}) = lower(${value})`; break;
+        default: throw new FilterValueError(`Unsupported software.vendor operator: ${operator}`);
+      }
+      return sql`EXISTS (SELECT 1 FROM ${softwareInventory} WHERE ${softwareInventory.deviceId} = ${devices.id} AND ${match})`;
+    }
     const positive = field === 'software.installed';
     let match: SQL<unknown>;
     switch (operator) {
@@ -1118,6 +1159,19 @@ export function validateFilter(filter: FilterConditionGroup | FilterCondition): 
     }
     if (fieldDef && !fieldDef.operators.includes(filter.operator)) {
       errors.push(`Operator ${filter.operator} not valid for field ${filter.field}`);
+    }
+    if (filter.field === 'software.version') {
+      const parsed = softwareVersionValueSchema.safeParse(filter.value);
+      if (!parsed.success) {
+        errors.push('software.version requires a non-empty name (max 500 characters) and version (max 100 characters)');
+      } else if (normalizeSoftwareVersion(parsed.data.version) === null) {
+        // A target with no numeric prefix normalises to NULL in SQL and would
+        // silently match nothing; refuse it so the rule author sees why.
+        errors.push('software.version version must start with a number, for example 10.0.5');
+      }
+    }
+    if (filter.field === 'software.vendor' && typeof filter.value !== 'string') {
+      errors.push('software.vendor requires a string');
     }
     if (
       filter.operator === 'matches' &&

@@ -169,7 +169,7 @@ Each member record includes:
 - tags and device role;
 - last user;
 - agent version and Helper version;
-- installed software (installed or not installed);
+- installed software (installed or not installed), software version and vendor;
 - any custom field.
 
 Such a group is skipped as a target of scripts, automations, software policies and update rings. It is also skipped by the automation, software, remote-access, PAM, maintenance, OneDrive and Assist policy features. Patch and backup assignments still resolve through it, and so does every non-execution use: listing members, filters, views and reports.
@@ -249,8 +249,10 @@ Fields are organized by category. Each field supports a specific set of operator
 <TabItem label="Software & Computed">
 | Field | Label | Type | Example operators |
 |---|---|---|---|
-| `software.installed` | Has Software Installed | string | `contains`, `notContains` |
-| `software.notInstalled` | Missing Software | string | `contains` |
+| `software.installed` | Has Software Installed | string or string array | `contains`, `notContains`, `equals`, `in`, `hasAny`, `hasAll` |
+| `software.notInstalled` | Missing Software | string or string array | `contains`, `equals`, `in`, `hasAny` |
+| `software.version` | Software Version | object (`name`, `version`) | `below`, `atLeast`, `equals` |
+| `software.vendor` | Software Vendor | string | `contains`, `equals` |
 | `daysSinceLastSeen` | Days Since Last Seen | number | `greaterThan`, `lessThan` |
 | `daysSinceEnrolled` | Days Since Enrolled | number | `greaterThan`, `lessThan` |
 </TabItem>
@@ -277,6 +279,8 @@ The rule builder lists your organization's and partner's custom fields under **C
 | `equals` / `notEquals` | All types | Exact match or negation |
 | `greaterThan` / `greaterThanOrEquals` | number, date | Numeric or date comparison |
 | `lessThan` / `lessThanOrEquals` | number, date | Numeric or date comparison |
+| `below` | software.version | Any install of the named software has a version below the supplied version |
+| `atLeast` | software.version | Any install of the named software has the supplied version or a newer version |
 | `contains` / `notContains` | string, array | Case-insensitive substring match (ILIKE) |
 | `startsWith` / `endsWith` | string | Prefix or suffix match |
 | `matches` | string | PostgreSQL regex match (`~`) |
@@ -287,6 +291,10 @@ The rule builder lists your organization's and partner's custom fields under **C
 | `before` / `after` | date, datetime | Date comparison |
 | `between` | number, date | Range check (value: `{ "from": ..., "to": ... }`) |
 | `withinLast` / `notWithinLast` | date, datetime | Relative time (value: `{ "amount": 7, "unit": "days" }`) |
+
+**Software versions** take a value such as `{ "name": "Example App", "version": "10.0.5" }`. The name matches exactly, ignoring case. Versions compare numeric segments, so `10.0.10` is newer than `10.0.5`, and `1.2` equals `1.2.0`. Surrounding whitespace and an optional leading `v` are removed; suffixes after the leading numeric version are ignored (`1.2.3-beta`, `1.2.3 (x64)` and `1.2.3+meta` all equal `1.2.3`). Missing versions and strings with no numeric prefix never match. Any matching install is enough, even if another install on the same device has a different version; devices missing the software never match `below`. Both `name` and `version` must be non-empty after trimming (maximum 500 and 100 characters respectively).
+
+**Software vendors** match any installed software row. `equals` matches the whole vendor name ignoring case, while `contains` matches a case-insensitive substring, treating `%` and `_` literally. Inventory changes to versions or vendors trigger dynamic membership re-evaluation even when installed software names stay the same.
 
 ### Previewing dynamic membership
 

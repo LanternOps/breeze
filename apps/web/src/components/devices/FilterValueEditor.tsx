@@ -50,6 +50,7 @@ export interface FilterValueEditorProps {
 }
 
 function defaultValueForOp(field: FilterFieldDefinition, op: FilterOperator): FilterValue {
+  if (field.key === 'software.version') return { name: '', version: '' };
   if (NO_VALUE_OPERATORS.includes(op)) return '';
   if (op === 'in' || op === 'notIn' || op === 'hasAny' || op === 'hasAll') return [];
   if (op === 'withinLast' || op === 'notWithinLast') return { amount: 7, unit: 'days' };
@@ -430,6 +431,8 @@ export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondit
     }
     display = display.map(val => CHIP_VALUE_DISPLAY_OVERRIDES[val] ?? val);
     v = display.length <= 2 ? display.join(', ') : `${display.length} values`;
+  } else if (typeof c.value === 'object' && c.value && 'name' in c.value && 'version' in c.value) {
+    v = `${c.value.name} ${c.value.version}`.trim();
   } else if (typeof c.value === 'object' && c.value && 'amount' in c.value) {
     const rd = c.value as { amount: number; unit: string };
     v = `${rd.amount} ${rd.unit}`;

@@ -51,6 +51,7 @@ import {
   getAgentReportedFieldsUsed,
   isExecutionRefusedFilterField,
   getExecutionRefusedFieldsUsed,
+  extractFieldsFromFilter,
 } from './filterEngine';
 
 describe('filterEngine input hardening (#1044)', () => {
@@ -83,6 +84,67 @@ describe('filterEngine input hardening (#1044)', () => {
 
 const dialect = new PgDialect();
 const render = (cond: FilterCondition): string => dialect.sqlToQuery(buildConditionSQL(cond)).sql;
+
+describe('software version and vendor predicates (#10539)', () => {
+  it.each([['below', '<'], ['atLeast', '>='], ['equals', '=']] as const)(
+    'compiles software.version %s as a parameterized numeric-array EXISTS', (operator, comparison) => {
+      const value = { name: "Example's App", version: '10.0.5 (x64)' };
+      const query = dialect.sqlToQuery(buildConditionSQL({ field: 'software.version', operator, value }));
+      expect(query.sql).toMatch(/EXISTS \(SELECT 1 FROM "software_inventory"/i);
+      expect(query.sql).toContain('"software_inventory"."device_id" = "devices"."id"');
+      expect(query.sql).toMatch(/lower\("software_inventory"\."name"\) = lower\(\$\d+\)/i);
+      expect(query.sql).toContain(`::numeric[] ${comparison} `);
+      expect(query.sql).toContain('substring(');
+      expect(query.params).toEqual([value.name, value.version]);
+      expect(query.sql).not.toContain(value.name);
+      expect(query.sql).not.toContain(value.version);
+      expect(validateFilter({ field: 'software.version', operator, value }).valid).toBe(true);
+    },
+  );
+
+  it.each(['contains', 'equals'] as const)('compiles software.vendor %s without inlining input', (operator) => {
+    const value = "Vendor's 100%_\\";
+    const query = dialect.sqlToQuery(buildConditionSQL({ field: 'software.vendor', operator, value }));
+    expect(query.sql).toMatch(/EXISTS \(SELECT 1 FROM "software_inventory"/i);
+    expect(query.sql).toContain('"software_inventory"."device_id" = "devices"."id"');
+    expect(query.sql).not.toContain(value);
+    if (operator === 'contains') {
+      expect(query.sql).toContain('"software_inventory"."vendor" ILIKE $1');
+      expect(query.params).toEqual(['%' + escapeLikePattern(value) + '%']);
+    } else {
+      expect(query.sql).toMatch(/lower\("software_inventory"\."vendor"\) = lower\(\$1\)/i);
+      expect(query.params).toEqual([value]);
+    }
+    expect(validateFilter({ field: 'software.vendor', operator, value }).valid).toBe(true);
+  });
+
+  it.each([
+    { field: 'hostname', operator: 'below', value: '1' },
+    { field: 'hostname', operator: 'atLeast', value: '1' },
+    { field: 'software.version', operator: 'contains', value: { name: 'App', version: '1' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App' } },
+    { field: 'software.version', operator: 'equals', value: { version: '1' } },
+    { field: 'software.version', operator: 'atLeast', value: { name: ' ', version: '1' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App', version: '' } },
+    { field: 'software.version', operator: 'below', value: { name: 'App', version: 'latest' } },
+    { field: 'software.version', operator: 'atLeast', value: { name: 'App', version: 'beta-2' } },
+    { field: 'software.vendor', operator: 'equals', value: { name: 'App', version: '1' } },
+  ])('rejects invalid software rule %j', (condition) => {
+    expect(validateFilter(condition as FilterCondition).valid).toBe(false);
+  });
+
+  it('extracts new keys for filter_fields_used, including nested conditions, and refuses execution targeting', () => {
+    expect(extractFieldsFromFilter({ operator: 'AND', conditions: [
+      { field: 'software.version', operator: 'below', value: { name: 'App', version: '2' } },
+      { operator: 'OR', conditions: [
+        { field: 'software.vendor', operator: 'equals', value: 'Vendor' },
+        { field: 'software.version', operator: 'equals', value: { name: 'App', version: '1' } },
+      ] },
+    ] })).toEqual(['software.version', 'software.vendor']);
+    expect(isExecutionRefusedFilterField('software.version')).toBe(true);
+    expect(isExecutionRefusedFilterField('software.vendor')).toBe(true);
+  });
+});
 
 describe('filterEngine deviceFunction field (Fleet Designer W02, #5652)', () => {
   it('validates deviceFunction as a core enum field over the shared SSOT keys', () => {
