@@ -100,7 +100,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'dynamic', filterConditions: SERVER_FILTER });
     await member(g.id, f.decomSrv, f.orgId);
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.srvA, f.srvB].sort());
     expect(r.matched.has(f.decomSrv)).toBe(false);
   });

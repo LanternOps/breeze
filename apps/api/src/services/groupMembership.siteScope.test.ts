@@ -234,7 +234,10 @@ describe('dynamic group membership excludes decommissioned devices (#9933)', () 
   it('per-device evaluation asks the engine to exclude decommissioned devices and drops a non-pinned row', async () => {
     mockSelect
       .mockReturnValueOnce(selectChain([dynamicGroup], true))
-      .mockReturnValueOnce(selectChain([{ orgId: 'org-1', siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true))
+      // membershipWriteGuard re-reads the device and the diff after the export lock.
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }], true))
       .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true));
     mockDeviceMatchesFilter.mockResolvedValue(false);
 
@@ -259,6 +262,7 @@ describe('dynamic group membership excludes decommissioned devices (#9933)', () 
 
   it('unpinning re-checks the filter with decommissioned devices excluded', async () => {
     mockSelect
+      .mockReturnValueOnce(selectChain([{ id: 'group-1', orgId: 'org-1' }], true))
       .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: true }], true))
       .mockReturnValueOnce(selectChain([{ id: 'group-1', type: 'dynamic', filterConditions: filter }], true));
     const update = vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
