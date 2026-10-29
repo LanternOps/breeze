@@ -107,6 +107,9 @@ describe('AutomationsPage — Move to Flows (#5221)', () => {
     expect((screen.getByTestId('automation-delete-a-2') as HTMLButtonElement).disabled).toBe(true);
     // An unswitched row stays editable.
     expect((screen.getByTestId('automation-edit-a-1') as HTMLButtonElement).disabled).toBe(false);
+    // The panel (and so Revert) is reachable from the switched row.
+    fireEvent.click(screen.getByTestId('automation-move-a-2'));
+    expect(window.location.hash).toBe('#convert-a-2');
   });
 
   it('with Flows on, New job opens Flows and the R1 banner shows', async () => {

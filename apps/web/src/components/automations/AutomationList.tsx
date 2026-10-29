@@ -399,14 +399,25 @@ export default function AutomationList({
                     {moveToFlows && (
                       <td className="px-4 py-3" data-testid={`automation-move-cell-${automation.id}`}>
                         {movedFlowId ? (
-                          <a
-                            href={`/flows/${movedFlowId}`}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                            data-testid={`automation-moved-link-${automation.id}`}
-                          >
-                            <ArrowRightLeft className="h-3 w-3" />
-                            {tf('conversion.state.switched')}
-                          </a>
+                          <div className="flex flex-col items-start gap-1">
+                            <a
+                              href={`/flows/${movedFlowId}`}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                              data-testid={`automation-moved-link-${automation.id}`}
+                            >
+                              <ArrowRightLeft className="h-3 w-3" />
+                              {tf('conversion.state.switched')}
+                            </a>
+                            {/* The panel holds Revert. */}
+                            <button
+                              type="button"
+                              onClick={() => moveToFlows.onOpen(automation)}
+                              className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                              data-testid={`automation-move-${automation.id}`}
+                            >
+                              {tf('conversion.column.view')}
+                            </button>
+                          </div>
                         ) : isManaged ? null : (
                           <div className="flex flex-col items-start gap-1">
                             {liveFidelity && (
