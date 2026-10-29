@@ -3934,8 +3934,6 @@
   "settings.mFASettings.phoneNumber",
   "settings.mFASettings.phoneNumberVerified",
   "settings.mFASettings.recoveryCodes",
-  "settings.mFASettings.regenerateCodes",
-  "settings.mFASettings.regenerateRecoveryCodes",
   "settings.mFASettings.sendCode",
   "settings.mFASettings.sendVerificationCode",
   "settings.mFASettings.setUpAuthenticator",

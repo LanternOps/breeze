@@ -34,7 +34,7 @@ vi.mock('../../stores/auth', () => ({
       sessionGeneration: 0,
       commitMfaEnrollmentIfCurrent: vi.fn(() => true),
       commitMfaDisableIfCurrent: vi.fn(() => true),
-      commitReissuedSessionIfCurrent: vi.fn(() => true),
+      commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true),
     }) },
   ),
 }));
@@ -253,7 +253,7 @@ describe('ProfilePage — passwordless SSO factor management (#4045)', () => {
       expect(screen.getByRole('dialog')).toHaveTextContent('YubiKey');
       expect(screen.getAllByText(/Verify with your identity provider before removing a passkey/i)).toHaveLength(1);
       expect(document.querySelector('#passkey-password')).toBeNull();
-      expect(screen.getByTestId('passkey-delete-confirm')).toBeDisabled();
+      expect(screen.getByTestId('passkey-delete-confirm')).toHaveAttribute('aria-disabled', 'true');
       expect(callsTo('/auth/passkeys/pk-1')).toHaveLength(0);
 
       const { assign, seen } = interceptNavigation();

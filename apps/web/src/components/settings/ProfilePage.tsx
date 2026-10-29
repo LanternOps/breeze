@@ -969,6 +969,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
    * re-display the previous set as though it were the new one.
    */
   const handleSendRecoveryStepUpCode = async (): Promise<boolean> => {
+    if (passkeyDialog?.kind === 'delete') {
+      setPasskeyError(undefined);
+      setPasskeySuccess(undefined);
+    } else {
+      setMfaError(undefined);
+      setMfaSuccess(undefined);
+    }
     try {
       // runaction-exempt: inline-feedback handler. Failures land in `mfaError` and the boolean
       // return withholds the code entry step.
@@ -979,12 +986,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           defaultValue: 'Failed to send verification code',
         }));
       }
-      setMfaSuccess(t('profilePage.verificationCodeSent', { defaultValue: 'Verification code sent' }));
+      if (passkeyDialog?.kind === 'delete') setPasskeySuccess(t('profilePage.verificationCodeSent', { defaultValue: 'Verification code sent' }));
+      else setMfaSuccess(t('profilePage.verificationCodeSent', { defaultValue: 'Verification code sent' }));
       return true;
     } catch (error) {
-      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToSendVerificationCode', {
-        defaultValue: 'Failed to send verification code',
-      }));
+      const message = error instanceof Error ? error.message : t('profilePage.failedToSendVerificationCode', { defaultValue: 'Failed to send verification code' });
+      if (passkeyDialog?.kind === 'delete') setPasskeyError(message);
+      else setMfaError(message);
       return false;
     }
   };
@@ -1428,8 +1436,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         }));
       }
 
-      // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above.
       deleteRequestPending = true;
+      // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above.
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'DELETE',
         body: JSON.stringify({ ...manageProof(passkeyPassword), stepUpGrantId })
@@ -1521,6 +1529,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const closePasskeyDialog = () => {
     if (isAddingPasskey || mutatingPasskeyId) return;
     setPasskeyDialog(null);
+    setPasskeyName('');
     setPasskeyPassword('');
     setPasskeyFactorCode('');
     setPasskeyStepUpCode('');
@@ -1986,7 +1995,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         </form>
       </Dialog>
       {passkeyDialog?.kind === 'recovery' && (
-        <Dialog open onClose={() => setPasskeyDialog(null)} title={t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' })} labelledBy="passkey-recovery-title" className="p-6">
+        <Dialog open onClose={() => {}} title={t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' })} labelledBy="passkey-recovery-title" className="p-6">
           <IssuedRecoveryCodes passkey codes={passkeyDialog.codes} onDone={() => setPasskeyDialog(null)} />
         </Dialog>
       )}
@@ -2000,7 +2009,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           confirmLabel={t('profilePage.delete')}
           confirmTestId="passkey-delete-confirm"
           isLoading={mutatingPasskeyId === passkeyDialog.passkey.id}
-          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant) || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery && !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(passkeyFactorCode.trim()))}
+          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant) || ((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && !passkeyFactorCode.trim()) || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery && !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(passkeyFactorCode.trim()))}
         >
           <div className="space-y-4">
             {!isPasswordless && (
@@ -2038,7 +2047,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 <label className="text-sm font-medium" htmlFor="passkey-factor-code">
                   {deletePasskeyMethod === 'passkey'
                     ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code' })
-                    : t('profilePage.currentMfaOrRecoveryCode', { defaultValue: 'Current MFA code or recovery code' })}
+                    : t('profilePage.factorProofLabel', { defaultValue: 'Current MFA code or recovery code' })}
                 </label>
                 {deletePasskeyMethod === 'passkey' && (
                   <p className="text-xs text-muted-foreground">
@@ -2076,6 +2085,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 {usePasskeyRecovery ? t('profilePage.usePasskeyVerification', { defaultValue: 'Use passkey verification instead' }) : t('profilePage.useRecoveryCode', { defaultValue: 'Can’t access your passkey? Use a recovery code' })}
               </button>
             )}
+            {passkeySuccess && <p role="status" className="text-sm text-emerald-600">{passkeySuccess}</p>}
             {passkeyError && <p role="alert" className="text-sm text-destructive">{passkeyError}</p>}
           </div>
         </ConfirmDialog>

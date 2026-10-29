@@ -13,7 +13,7 @@ vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: createPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitMfaEnrollmentIfCurrent: commitMfaEnrollmentIfCurrentMock, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitMfaEnrollmentIfCurrent: commitMfaEnrollmentIfCurrentMock, commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 
@@ -131,6 +131,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
         expect(body.stepUpGrantId).toBe(STEP_UP_GRANT);
         return makeJsonResponse({
           passkey: { id: 'credential-1', name: 'YubiKey' },
+          mfaEnabled: true, mfaMethod: 'passkey',
           tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
         });
       }
@@ -299,6 +300,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
         verifyBodies.push(init?.body ? JSON.parse(String(init.body)) : {});
         return makeJsonResponse({
           passkey: { id: 'credential-1', name: 'YubiKey' },
+          mfaEnabled: true, mfaMethod: 'passkey',
           tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
         });
       }
@@ -350,7 +352,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.querySelector('#passkey-password')).toBeNull();
     fireEvent.click(screen.getByTestId('passkey-add'));
-    expect(screen.getByLabelText(/Passkey name/i)).toHaveValue('YubiKey');
+    expect(screen.getByLabelText(/Passkey name/i)).toHaveValue('');
     expect(screen.getByTestId('passkey-add-confirm')).toBeDisabled();
     expect(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' })).toHaveValue('');
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);

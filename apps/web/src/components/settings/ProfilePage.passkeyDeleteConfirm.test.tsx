@@ -11,7 +11,7 @@ vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: createPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 
@@ -88,7 +88,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     });
 
     const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toMatch(/signs your other sessions out/i);
+    expect(dialog.textContent).toMatch(/signs out your other sessions/i);
     expect(dialog.textContent).toContain('MacBook Touch ID');
   });
 
@@ -96,7 +96,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     seedOnePasskey();
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }));
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ success: true, tokens: { accessToken: 'reissued', expiresInSeconds: 900 } }),
+      makeJsonResponse({ success: true, mfaEnabled: true, mfaMethod: 'totp', tokens: { accessToken: 'reissued', expiresInSeconds: 900 } }),
     );
     renderProfile();
 
@@ -136,7 +136,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     expect(dialog).toHaveTextContent('MacBook Touch ID');
     expect(dialog.contains(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }))).toBe(true);
     expect(dialog.contains(screen.getByTestId('passkey-factor-code'))).toBe(true);
-    expect(screen.getByTestId('passkey-delete-confirm')).toBeDisabled();
+    expect(screen.getByTestId('passkey-delete-confirm')).toHaveAttribute('aria-disabled', 'true');
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
   });
 
@@ -160,7 +160,7 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
       { id: 'second-key', name: 'Second key', lastUsedAt: null },
     ] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: 'bound-grant' }));
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true, mfaEnabled: true, mfaMethod: 'totp' }));
     renderProfile();
     await screen.findByText('First key');
     fireEvent.click(screen.getAllByTestId('passkey-delete')[0]);
@@ -180,6 +180,21 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     await screen.findByText('Passkey deleted. Sign in again to continue.');
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/auth/passkeys/second-key', expect.objectContaining({ method: 'DELETE' }));
     expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/auth/passkeys/first-key')).toBe(false);
+  });
+
+  it('replaces SMS send errors with the retry result inside the delete dialog', async () => {
+    seedOnePasskey();
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ error: 'SMS temporarily unavailable' }, false));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true }));
+    render(<ProfilePage initialUser={{ id: 'user-1', name: 'Casey Admin', email: 'casey@example.com', mfaEnabled: true, mfaMethod: 'sms' }} />);
+    await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByTestId('passkey-delete'));
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send code' }));
+    expect(await within(dialog).findByText('SMS temporarily unavailable')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send code' }));
+    expect(await within(dialog).findByText('Verification code sent')).toBeTruthy();
+    expect(within(dialog).queryByText('SMS temporarily unavailable')).toBeNull();
   });
 
 });

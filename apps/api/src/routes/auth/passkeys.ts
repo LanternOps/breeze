@@ -1032,6 +1032,10 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   );
   if ('error' in reauth) return reauth.error;
 
+  const eligibility = await checkPasskeyRemovalEligibility(c, auth, id);
+  if ('error' in eligibility) return eligibility.error;
+  const { factorState } = eligibility;
+
   const resourceDigest = passkeyRemovalResourceDigest(id);
   const stepUpError = await enforceExistingFactorStepUp(c, auth, stepUpGrantId, {
     consume: false,
@@ -1039,24 +1043,6 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     resourceDigest,
   });
   if (stepUpError) return stepUpError;
-
-  const [passkey] = await findOwnedPasskey(id, auth.user.id);
-  if (!passkey) {
-    return c.json({ error: 'Passkey not found' }, 404);
-  }
-
-  const factorState = await getMfaFactorState(auth);
-  const remainingFactorCount =
-    (factorState.allowedMethods.passkey ? Math.max(0, factorState.passkeyCount - 1) : 0)
-    + (factorState.allowedMethods.totp && factorState.hasTotp ? 1 : 0)
-    + (factorState.allowedMethods.sms && factorState.hasSms ? 1 : 0);
-
-  if (factorState.mfaRequired && remainingFactorCount === 0) {
-    return c.json({
-      error: 'Cannot remove the last MFA factor while your role or organization requires MFA',
-      code: 'last_mfa_factor_required',
-    }, 403);
-  }
 
   // #5038: removing a factor advances mfa_epoch and revokes every refresh
   // family so no OTHER live session survives the account's factor set changing
@@ -1221,6 +1207,32 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
   });
 });
+
+export async function checkPasskeyRemovalEligibility(
+  c: Context,
+  auth: AuthContext,
+  id: string,
+): Promise<{ error: Response } | { factorState: Awaited<ReturnType<typeof getMfaFactorState>> }> {
+  const [passkey] = await findOwnedPasskey(id, auth.user.id);
+  if (!passkey) {
+    return { error: c.json({ error: 'Passkey not found' }, 404) };
+  }
+
+  const factorState = await getMfaFactorState(auth);
+  const remainingFactorCount =
+    (factorState.allowedMethods.passkey ? Math.max(0, factorState.passkeyCount - 1) : 0)
+    + (factorState.allowedMethods.totp && factorState.hasTotp ? 1 : 0)
+    + (factorState.allowedMethods.sms && factorState.hasSms ? 1 : 0);
+
+  if (factorState.mfaRequired && remainingFactorCount === 0) {
+    return { error: c.json({
+      error: 'Cannot remove the last MFA factor while your role or organization requires MFA',
+      code: 'last_mfa_factor_required',
+    }, 403) };
+  }
+
+  return { factorState };
+}
 
 async function readPendingPasskeyMfa(tempToken: string): Promise<PendingMfaRecord | null> {
   const redis = getRedis();

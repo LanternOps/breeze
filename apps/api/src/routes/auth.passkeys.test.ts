@@ -1547,20 +1547,37 @@ describe('passkey MFA auth routes', () => {
     });
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
-      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ id: 'credential-1', userId: 'user-123' }],
       [{ passkeyCount: 1, hasTotp: false, hasSms: false }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
     );
 
     const res = await app.request('/auth/passkeys/credential-1', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
-      body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId: '10000000-0000-4000-8000-000000000009' }),
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
     });
 
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/last.*factor|requires mfa/i) });
+    expect(validateStepUpGrant).not.toHaveBeenCalled();
     expect(consumeStepUpGrant).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unowned passkey before requesting a current-factor grant', async () => {
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }], []);
+
+    const res = await app.request('/auth/passkeys/credential-1', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+      body: JSON.stringify({ currentPassword: 'correct-password' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'Passkey not found' });
+    expect(validateStepUpGrant).not.toHaveBeenCalled();
+    expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(beginAuthIssuance).not.toHaveBeenCalled();
   });
 
   it('requires an MFA-satisfied session before deleting a passkey', async () => {
@@ -1580,6 +1597,8 @@ describe('passkey MFA auth routes', () => {
   it('rejects password plus a historical MFA claim without a fresh current-factor grant', async () => {
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
+      [{ id: 'credential-1', userId: 'user-123' }],
+      [{ passkeyCount: 1, hasTotp: true, hasSms: false }],
       [{ mfaEnabled: true, passkeyCount: 1 }],
     );
 
@@ -1599,9 +1618,9 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
-      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ id: 'credential-1', userId: 'user-123' }],
       [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey', forceMfa: false }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ passkeyCount: 1, hasTotp: true, hasSms: false, currentMfaMethod: 'passkey' }],
     );
@@ -1995,9 +2014,9 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
-      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ id: 'credential-1', userId: 'user-123' }],
       [{ passkeyCount: 1, hasTotp: false, hasSms: true, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ passkeyCount: 1, hasTotp: false, hasSms: true, currentMfaMethod: 'passkey' }],
     );
@@ -2019,9 +2038,9 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],
-      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ id: 'credential-1', userId: 'user-123' }],
       [{ passkeyCount: 1, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey', forceMfa: false, orgRequiresMfa: false }],
+      [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ mfaEnabled: true, passkeyCount: 1 }],
       [{ passkeyCount: 1, hasTotp: false, hasSms: false, currentMfaMethod: 'passkey' }],
     );
@@ -2095,6 +2114,8 @@ describe('passkey MFA auth routes', () => {
       dbState.selectQueue.push(
         [{ passwordHash: null }],
         [{ mfaEnabled: true, passkeyCount: 2 }],
+        [{ id: 'credential-1', userId: 'user-123' }],
+        [{ passkeyCount: 2, hasTotp: true, hasSms: false }],
         [{ mfaEnabled: true, passkeyCount: 2 }],
       );
 

@@ -540,6 +540,7 @@ export default function MFASettings({
   if (view === 'phone-verify') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.verifyYourPhoneNumber')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -629,6 +630,7 @@ export default function MFASettings({
   if (view === 'sms-setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.enableSMSMFA')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -881,6 +883,7 @@ export default function MFASettings({
   if (view === 'confirm-password-setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">
             {isPasswordless
@@ -961,6 +964,7 @@ export default function MFASettings({
   if (view === 'setup') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-3">
           <h2 className="text-lg font-semibold">{t('mFASettings.setUpAuthenticator')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -1101,6 +1105,7 @@ export default function MFASettings({
   if (view === 'disable') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+        {children}
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('mFASettings.disableMFA')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -1169,7 +1174,8 @@ export default function MFASettings({
   if (view === 'recovery') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">{t('mFASettings.generateNewRecoveryCodes')}</h2>
+        {children}
+        <h2 className="text-lg font-semibold">{t('mFASettings.recoveryGenerationTitle')}</h2>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">

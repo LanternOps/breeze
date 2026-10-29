@@ -36,7 +36,7 @@ vi.mock('../../stores/auth', () => ({
         sessionGeneration: 0,
         commitMfaEnrollmentIfCurrent: vi.fn(() => true),
         commitMfaDisableIfCurrent: vi.fn(() => true),
-        commitReissuedSessionIfCurrent: vi.fn(() => true),
+        commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true),
       }),
     },
   ),
@@ -109,6 +109,7 @@ function routeFetch(overrides: Overrides = {}) {
     if (u === '/auth/passkeys/register/verify') {
       return makeJsonResponse({
         passkey: { id: 'credential-1', name: 'YubiKey' },
+          mfaEnabled: true, mfaMethod: 'passkey',
         tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 },
       });
     }
