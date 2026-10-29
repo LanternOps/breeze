@@ -56,7 +56,11 @@ const ORG_A: Organization = {
   createdAt: '2026-01-01T00:00:00Z',
 };
 
+const ORG_B: Organization = { ...ORG_A, id: 'org-b', name: 'Org B' };
+
 let requests: string[] = [];
+// When set, `/devices` page requests wait on it, holding a fetch in flight.
+let devicesGate: Promise<void> | null = null;
 function deviceRequests(): string[] {
   return requests.filter((u) => /\/devices(\?|$)/.test(u.split('#')[0]));
 }
@@ -90,11 +94,12 @@ function focusWindow(): void {
   });
 }
 
-async function renderLoaded(): Promise<void> {
-  render(<DevicesPage />);
+async function renderLoaded(): Promise<ReturnType<typeof render>> {
+  const view = render(<DevicesPage />);
   await waitFor(() => expect(deviceRequests().length).toBeGreaterThan(0));
   await settle();
   expect(deviceRequests()).toHaveLength(1);
+  return view;
 }
 
 beforeEach(() => {
@@ -110,8 +115,11 @@ beforeEach(() => {
     get: () => visibility,
   });
 
+  devicesGate = null;
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
-    requests.push(typeof input === 'string' ? input : input.toString());
+    const url = typeof input === 'string' ? input : input.toString();
+    requests.push(url);
+    if (devicesGate && /\/devices(\?|$)/.test(url.split('#')[0])) await devicesGate;
     return new Response(
       JSON.stringify({ data: [], pagination: { nextCursor: null, total: 0 } }),
       { status: 200, headers: { 'content-type': 'application/json' } },
@@ -201,11 +209,50 @@ describe('DevicesPage — re-sync when the user returns to the tab (#9936)', () 
     expect(deviceRequests()).toHaveLength(1);
   });
 
-  it('does not fire an unscoped fetch on return while the org context is still resolving (#4147)', async () => {
-    useOrgStore.setState({ currentOrgId: null, organizations: [], organizationsLoaded: false });
-    render(<DevicesPage />);
+  it('re-syncs the org currently selected, not the one the page mounted with', async () => {
+    useOrgStore.setState({ organizations: [ORG_A, ORG_B] });
+    await renderLoaded();
+
+    act(() => {
+      useOrgStore.setState({ currentOrgId: ORG_B.id });
+    });
+    await waitFor(() => expect(deviceRequests()).toHaveLength(2));
     await settle();
-    expect(deviceRequests()).toEqual([]);
+
+    setVisibility('hidden');
+    now += 60_000;
+    setVisibility('visible');
+
+    await waitFor(() => expect(deviceRequests()).toHaveLength(3));
+    expect(deviceRequests()[2]).toContain(`orgId=${ORG_B.id}`);
+    expect(deviceRequests()[2]).not.toContain(`orgId=${ORG_A.id}`);
+  });
+
+  it('does not supersede a foreground load still walking the fleet', async () => {
+    let release!: () => void;
+    devicesGate = new Promise<void>((resolve) => { release = resolve; });
+    render(<DevicesPage />);
+    await waitFor(() => expect(deviceRequests()).toHaveLength(1));
+
+    // The first load is older than the freshness window and still in flight.
+    now += 60_000;
+    setVisibility('hidden');
+    setVisibility('visible');
+    focusWindow();
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+
+    release();
+    devicesGate = null;
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+  });
+
+  it('removes its listeners on unmount', async () => {
+    const { unmount } = render(<DevicesPage />);
+    await waitFor(() => expect(deviceRequests()).toHaveLength(1));
+    await settle();
+    unmount();
 
     now += 60_000;
     setVisibility('hidden');
@@ -213,6 +260,46 @@ describe('DevicesPage — re-sync when the user returns to the tab (#9936)', () 
     focusWindow();
     await settle();
 
-    expect(deviceRequests()).toEqual([]);
+    expect(deviceRequests()).toHaveLength(1);
+  });
+
+  // Both org-gate cases start from a COMPLETED load, so `loading` is false and
+  // the in-flight guard cannot be what blocks the request: only the #4147 org
+  // gate stands between a return and an unscoped (fleet-wide) fetch.
+  it('does not fire an unscoped fetch on return after the org context has failed (#4147)', async () => {
+    const { findByTestId } = await renderLoaded();
+
+    act(() => {
+      useOrgStore.setState({ currentOrgId: null, error: 'Failed to fetch organizations' });
+    });
+    expect(await findByTestId('org-load-failed-state')).toBeInTheDocument();
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+
+    now += 60_000;
+    setVisibility('hidden');
+    setVisibility('visible');
+    focusWindow();
+    await settle();
+
+    expect(deviceRequests()).toHaveLength(1);
+  });
+
+  it('does not fire an unscoped fetch on return while the org context is re-resolving (#4147)', async () => {
+    await renderLoaded();
+
+    act(() => {
+      useOrgStore.setState({ currentOrgId: null, organizations: [], organizationsLoaded: false });
+    });
+    await settle();
+    expect(deviceRequests()).toHaveLength(1);
+
+    now += 60_000;
+    setVisibility('hidden');
+    setVisibility('visible');
+    focusWindow();
+    await settle();
+
+    expect(deviceRequests()).toHaveLength(1);
   });
 });

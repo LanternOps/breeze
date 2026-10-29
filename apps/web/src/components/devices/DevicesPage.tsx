@@ -1063,6 +1063,10 @@ export default function DevicesPage() {
     // Same #4147 gate as the mount effect: a return before the org scope
     // resolves must not issue an unscoped request.
     if (orgScopeResolving || orgContextFailed) return;
+    // A foreground load is still walking the fleet (a large fleet can take
+    // longer than the freshness window). Superseding it would discard its
+    // rows and clear `loading` early, flashing an empty list.
+    if (loading) return;
     const onReturn = () => {
       if (document.visibilityState !== 'visible') return;
       if (Date.now() - lastDeviceFetchStartedAt.current < RETURN_RESYNC_MIN_AGE_MS) return;
@@ -1074,7 +1078,7 @@ export default function DevicesPage() {
       document.removeEventListener('visibilitychange', onReturn);
       window.removeEventListener('focus', onReturn);
     };
-  }, [handleManualRefresh, orgScopeResolving, orgContextFailed]);
+  }, [handleManualRefresh, orgScopeResolving, orgContextFailed, loading]);
 
   // A failed advanced-filter preview (403 on a pinned orgId the caller can't
   // access, 500, network error) must never render as a silently unfiltered
