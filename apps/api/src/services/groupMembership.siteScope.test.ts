@@ -104,6 +104,7 @@ describe('evaluateGroupMembership persisted site scope', () => {
     expect(mockEvaluateFilter).toHaveBeenCalledWith(filter, {
       orgId: 'org-1',
       allowedSiteIds: ['site-1'],
+      excludeDecommissioned: true,
     });
   });
 
@@ -211,5 +212,62 @@ describe('partner-owned group billing and org-only entry points', () => {
     await expect(pending).rejects.toThrow('partner-owned device groups are read-only');
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+// #9933 — every dynamic-group filter evaluation leaves out removed devices, so
+// a device that is decommissioned drops out of the group on its next
+// evaluation (and a restored one comes back), matching what /devices shows.
+describe('dynamic group membership excludes decommissioned devices (#9933)', () => {
+  const filter = { operator: 'AND', conditions: [] };
+  const dynamicGroup = {
+    id: 'group-1', orgId: 'org-1', siteId: null, type: 'dynamic',
+    filterConditions: filter, filterFieldsUsed: ['osType'],
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDelete.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    mockInsert.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it('per-device evaluation asks the engine to exclude decommissioned devices and drops a non-pinned row', async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([dynamicGroup], true))
+      .mockReturnValueOnce(selectChain([{ orgId: 'org-1', siteId: 'site-1' }], true))
+      .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true));
+    mockDeviceMatchesFilter.mockResolvedValue(false);
+
+    const result = await evaluateDeviceMembershipForGroup('group-1', 'device-1');
+
+    expect(mockDeviceMatchesFilter).toHaveBeenCalledWith('device-1', filter, { excludeDecommissioned: true });
+    expect(result).toEqual({ evaluatedGroups: 1, added: 0, removed: 1 });
+  });
+
+  it('groupIncludesDevice (billing / coverage twin) asks the engine to exclude decommissioned devices', async () => {
+    mockSelect.mockReturnValueOnce(selectChain([], true));
+    mockDeviceMatchesFilter.mockResolvedValue(false);
+
+    const included = await groupIncludesDevice(
+      { id: 'group-1', orgId: 'org-1', siteId: null, type: 'dynamic', filterConditions: filter } as never,
+      { id: 'device-1', orgId: 'org-1', siteId: 'site-1', isEphemeral: false },
+    );
+
+    expect(included).toBe(false);
+    expect(mockDeviceMatchesFilter).toHaveBeenCalledWith('device-1', filter, { excludeDecommissioned: true });
+  });
+
+  it('unpinning re-checks the filter with decommissioned devices excluded', async () => {
+    mockSelect
+      .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: true }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'group-1', type: 'dynamic', filterConditions: filter }], true));
+    const update = vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
+    const { db } = await import('../db');
+    (db as unknown as { update: typeof update }).update = update;
+    mockDeviceMatchesFilter.mockResolvedValue(true);
+
+    await pinDeviceToGroup('group-1', 'device-1', false, 'org-1');
+
+    expect(mockDeviceMatchesFilter).toHaveBeenCalledWith('device-1', filter, { excludeDecommissioned: true });
   });
 });

@@ -36,6 +36,7 @@ import { eq, sql } from 'drizzle-orm';
 import { devices } from '../db/schema';
 import { lockTimeoutWasChanged, tightenLockTimeout } from '../db/lockTimeout';
 import { deleteDeviceCascade } from './deviceDeletion';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { findPolicyBackupLegalHoldInContext } from './erasureBackupLegalHold';
 import {
   admitPartnerDeviceCapacity,
@@ -219,6 +220,17 @@ export async function restoreRemovedDevice(
     .set({ status: 'offline', decommissionedAt: null, updatedAt: new Date() })
     .where(eq(devices.id, deviceId))
     .returning();
+
+  // #9933 — removed devices are left out of dynamic groups, and decommission
+  // re-evaluated them out (deviceDecommission.ts). Bring the device back into
+  // every dynamic group it matches once this commits. `authorized.orgId` is the
+  // locked row's org (checked above).
+  requestDeviceGroupReevaluationAfterCommit({
+    deviceId,
+    orgId: authorized.orgId,
+    eventType: 'device.created',
+    reason: 'device_restored',
+  });
 
   return { device, uninstallAlreadyDispatched: release.alreadyDispatched > 0 };
 }

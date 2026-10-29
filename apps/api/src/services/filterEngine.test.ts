@@ -8,12 +8,17 @@ const dbMock = vi.hoisted(() => ({
   executed: [] as unknown[],
   events: [] as Array<'execute' | 'query'>,
   queryError: undefined as Error | undefined,
+  wheres: [] as unknown[],
 }));
 vi.mock('../db', () => {
   // A chainable, awaitable stub for the drizzle query builder. Every builder
   // step returns the same object; awaiting it resolves to an empty row set.
   const chain: Record<string, unknown> = {};
-  for (const m of ['from', 'where', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  for (const m of ['from', 'limit', 'leftJoin', 'orderBy']) chain[m] = () => chain;
+  chain.where = (clause: unknown) => {
+    dbMock.wheres.push(clause);
+    return chain;
+  };
   (chain as { then: unknown }).then = (
     resolve: (rows: unknown[]) => unknown,
     reject: (error: Error) => unknown,
@@ -916,5 +921,49 @@ describe('filterEngine logShippingFailing (#8611)', () => {
     expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
     expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
     expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
+  });
+});
+
+/**
+ * #9933 — dynamic-group preview and membership must leave out removed
+ * (decommissioned) devices, exactly as /devices does. The exclusion is opt-in:
+ * the generic filter preview also drives the device list's "show removed" view
+ * and deployment targeting, whose populations are not this issue's to change.
+ */
+describe('filterEngine excludeDecommissioned option (#9933)', () => {
+  const dialect = new PgDialect();
+  const renderedWheres = () => dbMock.wheres.map((q) => dialect.sqlToQuery(q as never));
+  const filter: FilterConditionGroup = {
+    operator: 'AND',
+    conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }],
+  };
+  const excludesDecommissioned = (q: { sql: string; params: unknown[] }) =>
+    /"devices"\."status" <> \$\d+/.test(q.sql) && q.params.includes('decommissioned');
+
+  beforeEach(() => {
+    dbMock.wheres.length = 0;
+    dbMock.queryError = undefined;
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1', excludeDecommissioned: true })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5, excludeDecommissioned: true })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter, { excludeDecommissioned: true })],
+  ] as const)('%s excludes decommissioned devices from every query when asked', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(true);
+  });
+
+  it.each([
+    ['evaluateFilter', () => evaluateFilter(filter, { orgId: 'org-1' })],
+    ['evaluateFilterWithPreview', () => evaluateFilterWithPreview(filter, { orgId: 'org-1', previewLimit: 5 })],
+    ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', filter)],
+  ] as const)('%s keeps decommissioned devices by default', async (_name, run) => {
+    await run();
+    const wheres = renderedWheres();
+    expect(wheres.length).toBeGreaterThan(0);
+    for (const where of wheres) expect(excludesDecommissioned(where)).toBe(false);
   });
 });

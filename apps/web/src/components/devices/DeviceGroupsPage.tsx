@@ -255,6 +255,8 @@ export default function DeviceGroupsPage() {
     // or to the chosen owner org when creating.
     {
       enabled: true,
+      // Same population membership evaluation materializes (#9933).
+      excludeDecommissioned: true,
       orgId:
         (modalMode === "edit" ? selectedGroup?.orgId : undefined) ??
         (modalMode === "create" ? fleet.bodyOrgId : undefined),

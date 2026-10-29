@@ -79,4 +79,21 @@ describe('DeviceGroupsPage dynamic preview scope (#9262)', () => {
       expect(scoped).toBe(true);
     });
   });
+
+  // #9933: membership evaluation leaves out removed devices, so the preview of
+  // a dynamic group's rules must too, or it promises devices that never join.
+  it('asks the preview to leave out decommissioned devices', async () => {
+    const user = userEvent.setup();
+    render(<DeviceGroupsPage />);
+    await screen.findByText('QA Dyn not Macs');
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+
+    await waitFor(() => {
+      const excluding = previewSpy.mock.calls.some(
+        ([filter, opts]) => filter !== null && (opts as { excludeDecommissioned?: boolean })?.excludeDecommissioned === true,
+      );
+      expect(excluding).toBe(true);
+    });
+  });
 });
