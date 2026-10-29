@@ -826,14 +826,14 @@ export default function MFASettings({
                 setLocalError(undefined);
                 setLocalSuccess(undefined);
               }}
-              className="h-9 shrink-0 whitespace-nowrap rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+              className="h-9 shrink-0 whitespace-nowrap rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10"
             >
               {t('mFASettings.regenerateRecoveryCodes')}</button>
           </div>
         )}
 
         {typeof view === 'object' && (
-          <Dialog open onClose={() => {}} title={t('mFASettings.recoveryCodes')} className="p-6">
+          <Dialog open onClose={() => {}} title={t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' })} className="p-6">
             <IssuedRecoveryCodes
               modal
               codes={view.codes ?? recoveryCodes}
@@ -1169,20 +1169,7 @@ export default function MFASettings({
   if (view === 'recovery') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold">{t('mFASettings.recoveryCodes')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('mFASettings.saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou')}</p>
-        </div>
-
-        <div
-          data-testid="mfa-recovery-no-codes"
-          className="rounded-md border bg-muted/30 p-4 text-center text-sm text-muted-foreground"
-        >
-          {t('mFASettings.existingCodesCannotBeDisplayedAgainRegeneratingIssuesA')}</div>
-
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
-          {t('mFASettings.eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat')}</div>
+        <h2 className="text-lg font-semibold">{t('mFASettings.generateNewRecoveryCodes')}</h2>
 
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="mfa-recovery-factor-code">
@@ -1263,7 +1250,7 @@ export default function MFASettings({
               )}
               className="inline-flex h-10 items-center justify-center rounded-md border border-destructive/40 bg-destructive/10 px-4 text-sm font-medium text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateCodes')}
+              {isLoading ? t('mFASettings.generating') : t('mFASettings.regenerateRecoveryCodes')}
             </button>
           )}
         </div>
@@ -1272,9 +1259,9 @@ export default function MFASettings({
           open={confirmRegenerateOpen}
           onClose={() => setConfirmRegenerateOpen(false)}
           onConfirm={() => { void handleRegenerateCodes(); }}
-          title={t('mFASettings.regenerateRecoveryCodesQuestion')}
-          message={t('mFASettings.regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou')}
-          confirmLabel={t('mFASettings.regenerateCodes')}
+          title={t('mFASettings.generateNewCodesQuestion')}
+          message={<span className="mt-3 block rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-foreground">{t('mFASettings.generateNewCodesWarning')}</span>}
+          confirmLabel={t('mFASettings.regenerateRecoveryCodes')}
           variant="destructive"
           isLoading={isLoading}
           confirmTestId="confirm-regenerate-recovery-codes"
@@ -1315,9 +1302,9 @@ export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false, m
     <div className={passkey || modal ? 'space-y-6' : 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'}>
       <div className="space-y-1">
         {passkey && <p className="text-sm text-emerald-600">{t('profilePage.passkeyAdded')}</p>}
-        <h2 id={passkey ? 'passkey-recovery-title' : undefined} className="text-lg font-semibold">{passkey ? t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' }) : t('mFASettings.recoveryCodes')}</h2>
+        <h2 id={passkey ? 'passkey-recovery-title' : undefined} className="text-lg font-semibold">{passkey || modal ? t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' }) : t('mFASettings.recoveryCodes')}</h2>
         <p className="text-sm text-muted-foreground">
-          {passkey ? t('mFASettings.saveRecoveryCodesDescription', { defaultValue: 'Store these somewhere safe. Each code can be used once if you lose access to your sign-in factor. These codes cannot be shown again.' }) : t('mFASettings.recoveryCodesAreShownOnceAndCannotBeDisplayedAgain')}
+          {passkey ? t('mFASettings.saveRecoveryCodesDescription', { defaultValue: 'Store these somewhere safe. Each code can be used once if you lose access to your sign-in factor. These codes cannot be shown again.' }) : t('mFASettings.saveGeneratedRecoveryCodes')}
         </p>
       </div>
       {codes?.length ? (
