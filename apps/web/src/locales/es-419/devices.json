@@ -2950,8 +2950,10 @@
     "title": "Filtrar atajos"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Elige un valor para ver los dispositivos que coinciden",
     "counting": "…cálculo",
-    "matches": "~{{count}} los dispositivos coinciden",
+    "matches_one": "~{{count}} dispositivo coincide",
+    "matches_other": "~{{count}} dispositivos coinciden",
     "unavailable": "vista previa no disponible"
   },
   "filterSentenceBuilder": {

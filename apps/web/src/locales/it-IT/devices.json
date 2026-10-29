@@ -2950,8 +2950,10 @@
     "title": "Scorciatoie filtri"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Scegli un valore per vedere i dispositivi corrispondenti",
     "counting": "…conteggio in corso",
-    "matches": "~{{count}} dispositivi corrispondenti",
+    "matches_one": "~{{count}} dispositivo corrispondente",
+    "matches_other": "~{{count}} dispositivi corrispondenti",
     "unavailable": "anteprima non disponibile"
   },
   "filterSentenceBuilder": {

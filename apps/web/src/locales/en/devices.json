@@ -2950,8 +2950,10 @@
     "title": "Filter shortcuts"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Pick a value to see matching devices",
     "counting": "…counting",
-    "matches": "~{{count}} devices match",
+    "matches_one": "~{{count}} device matches",
+    "matches_other": "~{{count}} devices match",
     "unavailable": "preview unavailable"
   },
   "filterSentenceBuilder": {

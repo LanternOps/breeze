@@ -7,8 +7,31 @@
 // preview endpoint is live everywhere.
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { FilterConditionGroup } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+
+// Operators that take no value (mirrors FilterValueEditor's NO_VALUE_OPERATORS).
+const NO_VALUE_OPERATORS: ReadonlySet<FilterOperator> = new Set(['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty']);
+
+function isGroup(c: FilterCondition | FilterConditionGroup): c is FilterConditionGroup {
+  return 'conditions' in c;
+}
+
+function conditionAwaitingValue(c: FilterCondition): boolean {
+  if (NO_VALUE_OPERATORS.has(c.operator)) return false;
+  const v = c.value as unknown;
+  if (v === null || v === undefined) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'string') return v.trim() === '';
+  return false;
+}
+
+// True when any leaf condition still needs a value (e.g. a Site / Device Group
+// chip opened with nothing ticked yet). Previewing such a group returns a
+// meaningless "~0 devices match" (#9857), so the footer shows a hint instead.
+export function isAwaitingValue(group: FilterConditionGroup): boolean {
+  return group.conditions.some(c => (isGroup(c) ? isAwaitingValue(c) : conditionAwaitingValue(c)));
+}
 
 export interface FilterPreviewFooterProps {
   // Single-chip preview group. Caller wraps the in-flight chip into an
@@ -24,9 +47,14 @@ export function FilterPreviewFooter({ group }: FilterPreviewFooterProps) {
   const [skipped, setSkipped] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  const isEmpty = !group || group.conditions.length === 0;
+  const awaitingValue = !isEmpty && isAwaitingValue(group);
+
   useEffect(() => {
-    if (!group || group.conditions.length === 0) {
+    if (!group || group.conditions.length === 0 || isAwaitingValue(group)) {
+      abortRef.current?.abort();
       setCount(null);
+      setLoading(false);
       return;
     }
     if (skipped) return;
@@ -68,7 +96,14 @@ export function FilterPreviewFooter({ group }: FilterPreviewFooterProps) {
       </span>
     );
   }
-  if (!group || group.conditions.length === 0) return null;
+  if (isEmpty) return null;
+  if (awaitingValue) {
+    return (
+      <span data-testid="filter-preview-hint" className="text-xs text-muted-foreground">
+        {t('filterPreviewFooter.awaitingValue')}
+      </span>
+    );
+  }
   return (
     <span data-testid="filter-preview-count" className="text-xs text-muted-foreground">
       {loading ? t('filterPreviewFooter.counting') : count === null ? '' : t('filterPreviewFooter.matches', { count })}

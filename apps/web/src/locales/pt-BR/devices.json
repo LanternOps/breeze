@@ -2950,8 +2950,10 @@
     "title": "Atalhos de filtro"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Escolha um valor para ver os dispositivos correspondentes",
     "counting": "…contando",
-    "matches": "~{{count}} dispositivos correspondem",
+    "matches_one": "~{{count}} dispositivo corresponde",
+    "matches_other": "~{{count}} dispositivos correspondem",
     "unavailable": "prévia indisponível"
   },
   "filterSentenceBuilder": {

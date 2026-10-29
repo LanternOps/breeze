@@ -2950,8 +2950,10 @@
     "title": "Raccourcis de filtre"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Choisissez une valeur pour voir les appareils correspondants",
     "counting": "… Comptage",
-    "matches": "~{{count}} dispositifs correspondent",
+    "matches_one": "~{{count}} appareil correspond",
+    "matches_other": "~{{count}} appareils correspondent",
     "unavailable": "Aperçu indisponible"
   },
   "filterSentenceBuilder": {
