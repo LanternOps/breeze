@@ -132,7 +132,7 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	// quarantine stay excluded whatever the policy says.
 	options.ExcludePaths = append(options.ExcludePaths, s.Exclusions...)
 
-	scanCtx, cancel := context.WithTimeout(ctx, s.effectiveTimeout())
+	scanCtx, cancel := s.scanContext(ctx)
 	defer cancel()
 
 	started := time.Now()
@@ -386,6 +386,12 @@ const MaxScanTimeout = 720 * time.Minute
 // effectiveTimeout is the scan's deadline: the delivered budget, or
 // MaxScanTimeout when there is none (zero or negative) or it exceeds the
 // ceiling. A scan is never unbounded.
+// scanContext is the context the scan walks under: ctx bounded by
+// effectiveTimeout. Split out so a test can assert the deadline exists.
+func (s *SecurityScanner) scanContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, s.effectiveTimeout())
+}
+
 func (s *SecurityScanner) effectiveTimeout() time.Duration {
 	if s.Timeout <= 0 || s.Timeout > MaxScanTimeout {
 		return MaxScanTimeout

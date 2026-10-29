@@ -166,3 +166,19 @@ func TestEffectiveTimeoutDefaultsAndClampsToCeiling(t *testing.T) {
 		})
 	}
 }
+
+// #10057 — with no budget the scan context still carries a deadline at the
+// ceiling (it used to be context.Background(), i.e. none).
+func TestScanContextAlwaysHasDeadline(t *testing.T) {
+	s := &SecurityScanner{}
+	before := time.Now()
+	ctx, cancel := s.scanContext(context.Background())
+	defer cancel()
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("scan context has no deadline")
+	}
+	if got := dl.Sub(before); got < MaxScanTimeout-time.Second || got > MaxScanTimeout+time.Second {
+		t.Fatalf("deadline in %v, want ~%v", got, MaxScanTimeout)
+	}
+}
