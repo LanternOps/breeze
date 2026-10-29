@@ -18,10 +18,8 @@ import {
   ingestHuntressWebhookPayload,
   scheduleHuntressSync,
 } from '../jobs/huntressSync';
-import {
-  parseHuntressWebhookPayload,
-  verifyHuntressWebhookSignature,
-} from '../services/huntressClient';
+import { extractHuntressWebhookAccountId } from '../services/huntressClient';
+import { verifyHuntressWebhookRequest } from '../services/huntressWebhookSignature';
 import { ensureBuiltinPackage } from '../services/builtinDeploymentPackages';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -217,6 +215,15 @@ async function resolveWebhookIntegration(params: {
   return { ...lookup.integration, isActive: true };
 }
 
+function isHuntressTestDelivery(payload: unknown, webhookTestHeader: string | undefined): boolean {
+  if (webhookTestHeader?.trim().toLowerCase() === 'true') return true;
+  return Boolean(
+    payload
+    && typeof payload === 'object'
+    && (payload as Record<string, unknown>).event_type === 'test.event'
+  );
+}
+
 // Public webhook receiver (no user auth). Signature verification applied when webhook secret is configured.
 huntressRoutes.post('/webhook', async (c) => {
   const rawBody = await c.req.text();
@@ -228,13 +235,12 @@ huntressRoutes.post('/webhook', async (c) => {
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
-  const parsedPayload = parseHuntressWebhookPayload(payload);
   const integrationId = c.req.query('integrationId')
     ?? c.req.header('x-huntress-integration-id')
     ?? ((payload && typeof payload === 'object' && 'integrationId' in (payload as Record<string, unknown>))
       ? String((payload as Record<string, unknown>).integrationId)
       : null);
-  const accountId = c.req.header('x-huntress-account-id') ?? parsedPayload.accountId;
+  const accountId = c.req.header('x-huntress-account-id') ?? extractHuntressWebhookAccountId(payload);
 
   const integration = await resolveWebhookIntegration({
     integrationId: integrationId && integrationId !== 'undefined' && UUID_REGEX.test(integrationId)
@@ -256,14 +262,23 @@ huntressRoutes.post('/webhook', async (c) => {
     return c.json({ error: 'Webhook secret is not configured correctly' }, 401);
   }
 
-  const signatureCheck = verifyHuntressWebhookSignature({
+  // Standard Webhooks (what Huntress sends, via Svix) or the legacy
+  // x-huntress-signature pair; see services/huntressWebhookSignature.ts.
+  const signatureCheck = verifyHuntressWebhookRequest({
     secret: webhookSecret,
     payload: rawBody,
-    signatureHeader: c.req.header('x-huntress-signature') ?? c.req.header('x-signature'),
-    timestampHeader: c.req.header('x-huntress-timestamp') ?? c.req.header('x-timestamp'),
+    header: (name) => c.req.header(name),
   });
   if (!signatureCheck.ok) {
     return c.json({ error: signatureCheck.error }, 401);
+  }
+
+  // Huntress's "Send Test" (`webhook-test: true`, body
+  // `{"event_type":"test.event",...}`) proves the URL and secret work. It
+  // carries no agents or incidents, so acknowledge it without ingesting.
+  // Only reached once the signature has verified.
+  if (isHuntressTestDelivery(payload, c.req.header('webhook-test'))) {
+    return c.json({ accepted: true, test: true, integrationId: integration.id });
   }
 
   try {

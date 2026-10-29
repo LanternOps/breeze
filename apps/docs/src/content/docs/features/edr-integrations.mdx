@@ -71,7 +71,8 @@ You no longer need to hand-build the webhook URL. With your scope set to **All o
 
 <Steps>
 1. The exact, region-correct **Webhook URL** to paste into Huntress, with a **Copy** button. The URL includes an `integrationId` query parameter that tells Breeze which partner the events belong to — keep it in the URL.
-2. A **Webhook Secret** field with a **Generate** button. Click **Generate** to create a strong secret, copy it (it is shown only once), paste the same value into Huntress's webhook configuration, then **Save** to store it. Breeze keeps it encrypted and never displays it again.
+2. A **Webhook Secret** field. In Huntress, add the webhook with the Breeze URL, open **View Signing Secret**, and paste that whole value, including its `whsec_` prefix, into **Webhook Secret**. Then **Save**. Breeze keeps it encrypted and never displays it again. (The **Generate** button creates a secret for a sender that lets you choose your own; Huntress issues its own secret, so use Huntress's.)
+3. In Huntress, click **Send Test**. Once the secret matches, Breeze answers `200` and Huntress's delivery log shows the test as delivered. Test deliveries are acknowledged but not imported.
 </Steps>
 
 The webhook URL has the form:
@@ -80,14 +81,18 @@ The webhook URL has the form:
 POST https://your-breeze-instance.com/api/v1/huntress/webhook?integrationId=<id>
 ```
 
-Webhook payloads are verified using HMAC-SHA256 signature validation:
+Huntress delivers webhooks through Svix, using the [Standard Webhooks](https://www.standardwebhooks.com/) signing scheme. Breeze verifies each delivery like this:
 
-1. Breeze reads the **signature** from the `x-huntress-signature` header (fallback: `x-signature`).
-2. Breeze reads the **timestamp** from the `x-huntress-timestamp` header (fallback: `x-timestamp`).
-3. Breeze computes `HMAC-SHA256(secret, "{timestamp}.{body}")` and compares the result to the provided signature using a timing-safe comparison.
+1. Breeze reads the `webhook-id`, `webhook-timestamp` (Unix seconds) and `webhook-signature` headers. The `svix-id`, `svix-timestamp` and `svix-signature` spellings are accepted too.
+2. Breeze takes the key from the secret: it strips the `whsec_` prefix and base64-decodes the rest. A secret without the prefix is used as-is (its raw bytes).
+3. Breeze computes `base64(HMAC-SHA256(key, "{webhook-id}.{webhook-timestamp}.{body}"))` over the raw request body and compares it, using a timing-safe comparison, to each `v1,<signature>` value in `webhook-signature`. The header can carry several space-separated values while a secret is being rotated; a match on any one is accepted.
 4. The timestamp must be within **10 minutes** of the current server time, or the webhook is rejected as a potential replay.
 
-The expected signature format is `sha256={hex_digest}`.
+A delivery with `webhook-test: true` or an `event_type` of `test.event` (what Huntress's **Send Test** sends) is answered with `200` after its signature verifies, and is not imported.
+
+<Aside>
+  For senders already set up with Breeze's older scheme, Breeze still accepts `x-huntress-signature: sha256=<hex>` (fallback `x-signature`), where the value is `HMAC-SHA256(secret, "{timestamp}.{body}")` and the timestamp comes from `x-huntress-timestamp` (fallback `x-timestamp`), with the same 10-minute window. Breeze uses this scheme only when no Standard Webhooks headers are present.
+</Aside>
 
 <Aside type="caution">
   Webhook signature verification is mandatory. If no webhook secret is configured for the integration, all incoming webhooks are rejected with a 403 error. Always configure a webhook secret when enabling webhook ingestion.
@@ -518,7 +523,7 @@ API keys and tokens for both Huntress and SentinelOne are encrypted at rest usin
 
 ### Webhook Verification
 
-Huntress webhooks use HMAC signature verification. The webhook secret is encrypted at rest and decrypted only at verification time. Webhooks without a configured secret or with an invalid signature are rejected.
+Huntress webhooks are verified with Standard Webhooks HMAC-SHA256 signatures (or the older `x-huntress-signature` scheme; see [Webhook Configuration](#webhook-configuration)). The webhook secret is encrypted at rest and decrypted only at verification time. Webhooks without a configured secret, with an invalid signature, or with a timestamp more than 10 minutes off are rejected.
 
 ### Permission Requirements
 
@@ -540,7 +545,15 @@ Activate the integration by updating it with `isActive: true` before triggering 
 
 ### Huntress webhook returns 403 "Webhook secret not configured"
 
-You must configure a webhook secret on the integration before Breeze will accept webhook payloads. Update the integration with a `webhookSecret` value that matches what you configured in your Huntress dashboard.
+You must configure a webhook secret on the integration before Breeze will accept webhook payloads. Paste the signing secret from Huntress's **View Signing Secret** (it starts with `whsec_`) into **Webhook Secret** and save, or send it as the `webhookSecret` value when updating the integration through the API.
+
+### Huntress webhook returns 401
+
+The delivery reached Breeze but its signature did not verify. The response body says why:
+
+- **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
+- **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
+- **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
 
 ### Huntress webhook returns 409 "Multiple active integrations match"
 

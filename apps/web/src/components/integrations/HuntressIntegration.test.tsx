@@ -483,10 +483,21 @@ describe("HuntressIntegration", () => {
         "https://us.2breeze.app/api/v1/huntress/webhook?integrationId=huntress-1",
       ),
     ).toBeInTheDocument();
-    // Signing scheme is documented so the user can configure the Huntress side.
-    expect(
-      screen.getByText(/Signing scheme to configure on Huntress/),
-    ).toBeInTheDocument();
+    // Huntress signs deliveries with Standard Webhooks (Svix) and issues the
+    // secret itself (#10335): the copy must say so, not describe the legacy
+    // x-huntress-signature scheme Huntress never sends.
+    const verification = screen
+      .getByText("How Breeze verifies Huntress deliveries")
+      .closest("div") as HTMLElement;
+    expect(verification).not.toBeNull();
+    expect(verification.textContent).toContain("whsec_");
+    expect(verification.textContent).toContain("webhook-id");
+    expect(verification.textContent).toContain("webhook-timestamp");
+    expect(verification.textContent).toContain("webhook-signature");
+    expect(verification.textContent).toMatch(/10 minutes/);
+    expect(verification.textContent).toMatch(/Send Test/);
+    expect(verification.textContent).not.toContain("x-huntress-signature");
+    expect(verification.textContent).not.toContain("sha256=");
   });
 
   it("warns that inbound webhooks are rejected until a webhook secret is configured", async () => {
@@ -501,9 +512,10 @@ describe("HuntressIntegration", () => {
         screen.getByText("Inbound webhook (push from Huntress)"),
       ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText(/inbound webhooks are rejected with 403/i),
-    ).toBeInTheDocument();
+    const warning = screen.getByText(/inbound webhooks are rejected with 403/i);
+    expect(warning).toBeInTheDocument();
+    expect(warning.textContent).toMatch(/signing secret/i);
+    expect(warning.textContent).toContain("whsec_");
   });
 
   it("does not surface the partner webhook URL or Generate button for an org-scope token", async () => {
@@ -582,7 +594,7 @@ describe("HuntressIntegration", () => {
       screen.getByText(/Copy this webhook secret now/i),
     ).toBeInTheDocument();
     const secretInput = screen.getByPlaceholderText(
-      "Enter or generate a webhook secret",
+      "Paste the signing secret from Huntress (whsec_…)",
     ) as HTMLInputElement;
     expect(secretInput.value).toMatch(/^[0-9a-f]{64}$/);
     const generated = secretInput.value;
@@ -624,7 +636,7 @@ describe("HuntressIntegration", () => {
     // Typing into the secret field means the user is supplying their own value;
     // the "you just generated this, copy it now" banner no longer applies.
     await user.type(
-      screen.getByPlaceholderText("Enter or generate a webhook secret"),
+      screen.getByPlaceholderText("Paste the signing secret from Huntress (whsec_…)"),
       "x",
     );
     expect(

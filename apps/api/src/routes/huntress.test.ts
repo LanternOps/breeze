@@ -142,9 +142,46 @@ vi.mock('../services/permissions', () => ({
     !perms?.allowedSiteIds || perms.allowedSiteIds.includes(siteId),
 }));
 
+import { createHmac } from 'node:crypto';
 import { db } from '../db';
-import { findHuntressIntegrationByAccount } from '../jobs/huntressSync';
+import { findHuntressIntegrationByAccount, ingestHuntressWebhookPayload } from '../jobs/huntressSync';
+import { decryptForColumn } from '../services/secretCrypto';
+import { buildHuntressWebhookSignature } from '../services/huntressClient';
 import { huntressRoutes } from './huntress';
+
+const WEBHOOK_INTEGRATION_ID = '33333333-3333-4333-8333-333333333333';
+const SW_KEY = Buffer.from('huntress-standard-webhooks-key-32');
+const SW_SECRET = `whsec_${SW_KEY.toString('base64')}`;
+const TEST_EVENT_BODY = '{"event_type":"test.event","message":"Hello World"}';
+
+function mockWebhookIntegrationRow() {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(async () => [{
+          id: WEBHOOK_INTEGRATION_ID,
+          partnerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          accountId: 'acct-123',
+          webhookSecretEncrypted: 'enc:webhook',
+          isActive: true,
+        }]),
+      })),
+    })),
+  } as any);
+}
+
+/** Standard Webhooks (Svix) headers, signed the way Huntress signs a delivery. */
+function standardWebhookHeaders(body: string, key: Buffer = SW_KEY): Record<string, string> {
+  const id = 'msg_2pHuntressDelivery';
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64');
+  return {
+    'content-type': 'application/json',
+    'webhook-id': id,
+    'webhook-timestamp': timestamp,
+    'webhook-signature': `v1,${signature}`,
+  };
+}
 
 describe('huntress routes', () => {
   let app: Hono;
@@ -382,6 +419,136 @@ describe('huntress routes', () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(String(body.error)).toContain('account');
+  });
+
+  describe('POST /webhook Standard Webhooks deliveries (#10335)', () => {
+    const INCIDENT_BODY = JSON.stringify({
+      incident_reports: [{ id: 101, subject: 'Suspicious process', severity: 'high', sent_at: '2026-10-28T18:00:00Z' }],
+    });
+
+    it('accepts a Standard Webhooks-signed delivery and ingests it', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: standardWebhookHeaders(INCIDENT_BODY),
+        body: INCIDENT_BODY,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: true, integrationId: WEBHOOK_INTEGRATION_ID });
+      expect(ingestHuntressWebhookPayload).toHaveBeenCalledWith({
+        integrationId: WEBHOOK_INTEGRATION_ID,
+        payload: JSON.parse(INCIDENT_BODY),
+      });
+    });
+
+    it('rejects a Standard Webhooks delivery signed with another secret', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: standardWebhookHeaders(INCIDENT_BODY, Buffer.from('some-other-thirty-two-byte-key!!')),
+        body: INCIDENT_BODY,
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid Huntress webhook signature' });
+      expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
+    });
+
+    it('returns 200 for a signed Huntress Send Test without parsing it as incident data', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+          method: 'POST',
+          headers: { ...standardWebhookHeaders(TEST_EVENT_BODY), 'webhook-test': 'true' },
+          body: TEST_EVENT_BODY,
+        });
+
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ accepted: true, test: true, integrationId: WEBHOOK_INTEGRATION_ID });
+        expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
+        const warned = warn.mock.calls.map((args) => String(args[0]));
+        expect(warned.filter((line) => line.includes('Could not extract array'))).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('short-circuits event_type test.event even without the webhook-test header', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: standardWebhookHeaders(TEST_EVENT_BODY),
+        body: TEST_EVENT_BODY,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ accepted: true, test: true, integrationId: WEBHOOK_INTEGRATION_ID });
+      expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
+    });
+
+    // A test delivery that carries example data must not land in production tables.
+    it('does not ingest a body sent with webhook-test: true', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: { ...standardWebhookHeaders(INCIDENT_BODY), 'webhook-test': 'true' },
+        body: INCIDENT_BODY,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: true, test: true });
+      expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
+    });
+
+    // The short-circuit sits AFTER verification: an unsigned test event is still a 401.
+    it('rejects a test.event whose signature does not verify', async () => {
+      mockWebhookIntegrationRow();
+      vi.mocked(decryptForColumn).mockReturnValueOnce(SW_SECRET);
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: {
+          ...standardWebhookHeaders(TEST_EVENT_BODY, Buffer.from('some-other-thirty-two-byte-key!!')),
+          'webhook-test': 'true',
+        },
+        body: TEST_EVENT_BODY,
+      });
+
+      expect(res.status).toBe(401);
+      expect(ingestHuntressWebhookPayload).not.toHaveBeenCalled();
+    });
+
+    it('still accepts a legacy x-huntress-signature delivery', async () => {
+      mockWebhookIntegrationRow();
+      const timestamp = String(Math.floor(Date.now() / 1000));
+
+      const res = await app.request(`/huntress/webhook?integrationId=${WEBHOOK_INTEGRATION_ID}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          // decryptForColumn's default mock returns 'webhook-secret'.
+          'x-huntress-signature': buildHuntressWebhookSignature('webhook-secret', INCIDENT_BODY, timestamp),
+          'x-huntress-timestamp': timestamp,
+        },
+        body: INCIDENT_BODY,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: true, integrationId: WEBHOOK_INTEGRATION_ID });
+      expect(ingestHuntressWebhookPayload).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('GET /incidents site-scope narrowing', () => {
