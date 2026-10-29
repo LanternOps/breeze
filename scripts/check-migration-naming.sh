@@ -80,7 +80,9 @@
 #          shipped one (#10015 — #9997 renamed the shipped
 #          2027-01-04-110000-ticket-merge.sql to make this hook pass).
 #        - fail loudly on a staged/branch DELETION of a migration that exists
-#          on the base ref (a rename shows up as delete + add).
+#          on the base ref (a rename shows up as delete + add). A deliberate
+#          exception (undoing a mis-rename before release) names the file in
+#          BREEZE_ALLOW_MIGRATION_DELETE (space-separated basenames).
 #      Every remedy names the branch's own file and says outright that a file
 #      on origin/main is never the one to rename.
 #
@@ -143,10 +145,12 @@ committed_max_migration() {
   local ref
   [ "$#" -gt 0 ] || set -- HEAD
   for ref in "$@"; do
-    git ls-tree --name-only "$ref" "$MIGRATIONS_DIR/" 2>/dev/null
+    # `|| true`: an unborn HEAD or a tree with no migrations means "no max",
+    # not a silent pipefail exit before any message is printed.
+    git ls-tree --name-only "$ref" "$MIGRATIONS_DIR/" 2>/dev/null || true
   done \
     | sed 's#.*/##' \
-    | grep -E '^[0-9]{4}-.*\.sql$' \
+    | { grep -E '^[0-9]{4}-.*\.sql$' || true; } \
     | node -e '
         const names = require("fs").readFileSync(0, "utf8").split("\n").filter(Boolean);
         if (!names.length) process.exit(0);
@@ -205,7 +209,17 @@ print_rename_remedy() {
 }
 
 report_shipped_deletion() {
-  local base="$1" ref="$2"
+  local base="$1" ref="$2" allowed
+  # Deliberate escape hatch, e.g. undoing a wrongly renamed file before it
+  # ever reaches a release. Space-separated basenames. In CI it can only be
+  # set by editing ci.yml, so using it there is a reviewed, visible change.
+  for allowed in ${BREEZE_ALLOW_MIGRATION_DELETE:-}; do
+    if [ "$allowed" = "$base" ]; then
+      echo "  ALLOWED    $base — deleted/renamed although it exists on $ref" >&2
+      echo "             (BREEZE_ALLOW_MIGRATION_DELETE)." >&2
+      return 0
+    fi
+  done
   echo "  VIOLATION  $base — exists on $ref and is DELETED or RENAMED here." >&2
   echo "             A migration on $ref has shipped (or is about to); its" >&2
   echo "             breeze_migrations ledger row is keyed on this exact filename." >&2

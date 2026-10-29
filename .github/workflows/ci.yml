@@ -727,6 +727,7 @@ jobs:
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           base_ref="${MERGE_GROUP_BASE_SHA:-HEAD^1}"
+          echo "Base for this check: $base_ref = $(git rev-parse --short "$base_ref")"
           bash scripts/check-migration-naming.sh --against-ref "$base_ref"
 
       - name: Apply migrations against empty Postgres

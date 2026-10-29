@@ -37,13 +37,19 @@ function git(args: string[], cwd: string): string {
   return result.stdout;
 }
 
-function runGuard(cwd: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
+function runGuard(
+  cwd: string,
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): { status: number | null; stdout: string; stderr: string } {
   const env: NodeJS.ProcessEnv = { ...process.env, BREEZE_MIGRATIONS_DIR: 'migrations' };
   // A hook-invoked test run would otherwise point git at the outer repo.
   delete env.GIT_DIR;
   delete env.GIT_INDEX_FILE;
   delete env.GIT_WORK_TREE;
   delete env.BREEZE_MIGRATION_BASE_REF;
+  delete env.BREEZE_ALLOW_MIGRATION_DELETE;
+  Object.assign(env, extraEnv);
   const result = spawnSync('bash', [GUARD_SCRIPT, ...args], { cwd, encoding: 'utf8', env });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -297,6 +303,48 @@ describe('check-migration-naming --against-ref after merging main (#10015)', () 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('VIOLATION  2027-01-04-110000-ticket-merge.sql');
       expect(result.stderr).toContain('DELETED or RENAMED');
+
+      // Deliberate exception, named file by file.
+      const allowed = runGuard(repo.dir, ['--against-ref', 'origin/main'], {
+        BREEZE_ALLOW_MIGRATION_DELETE: '2027-01-04-110000-ticket-merge.sql',
+      });
+      expect(allowed.stderr).toContain('ALLOWED    2027-01-04-110000-ticket-merge.sql');
+      expect(allowed.stderr).not.toContain('VIOLATION  2027-01-04-110000-ticket-merge.sql');
+      // The branch's own 2027-01-02 file still sorts before main's newest; the
+      // escape hatch waives nothing else.
+      expect(allowed.status).toBe(1);
+      expect(allowed.stderr).toContain('VIOLATION  2027-01-02-100000-feature.sql');
+    } finally {
+      cleanup(repo);
+    }
+  });
+
+  // The CI shape: pull_request checks out a merge commit whose first parent is
+  // the base, and the step runs --against-ref HEAD^1.
+  it("CI shape (--against-ref HEAD^1 on a merge commit) judges only what the PR adds, never the base's files", () => {
+    const repo = makeRepo();
+    try {
+      advanceMain(repo, ['2027-01-04-110000-ticket-merge.sql', '2027-01-04-100300-install-scripts.sql']);
+      // Simulate refs/pull/N/merge: base merged with the PR head.
+      git(['checkout', '--detach', 'origin/main'], repo.dir);
+      git(['merge', '--no-ff', '--no-edit', 'feature'], repo.dir);
+
+      const result = runGuard(repo.dir, ['--against-ref', 'HEAD^1']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('VIOLATION  2027-01-02-100000-feature.sql');
+      expect(result.stderr).not.toContain('VIOLATION  2027-01-04-100300-install-scripts.sql');
+
+      // A PR whose own migration sorts last is clean.
+      git(['checkout', 'feature'], repo.dir);
+      git(
+        ['mv', mig('2027-01-02-100000-feature.sql'), mig('2027-01-05-100000-feature.sql')],
+        repo.dir,
+      );
+      commitAll(repo, 'rename own migration');
+      git(['checkout', '--detach', 'origin/main'], repo.dir);
+      git(['merge', '--no-ff', '--no-edit', 'feature'], repo.dir);
+      const clean = runGuard(repo.dir, ['--against-ref', 'HEAD^1']);
+      expect(clean.status, clean.stderr).toBe(0);
     } finally {
       cleanup(repo);
     }
