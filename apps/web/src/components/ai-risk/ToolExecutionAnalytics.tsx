@@ -23,6 +23,7 @@ const STATUS_COLORS: Record<string, string> = {
   completed: "#22c55e",
   failed: "#ef4444",
   rejected: "#f59e0b",
+  refused: "#64748b",
   pending: "#94a3b8",
   approved: "#3b82f6",
   executing: "#8b5cf6",
@@ -120,7 +121,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                   <Bar
                     dataKey="refused"
                     stackId="a"
-                    fill="#94a3b8"
+                    fill="#64748b"
                     name="Refused"
                   />
                 </BarChart>

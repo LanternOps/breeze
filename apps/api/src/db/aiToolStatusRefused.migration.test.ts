@@ -1,7 +1,7 @@
 // #10411: a call the platform refused (guardrail, RBAC, rate limit, input
 // validation, ceiling, intent-creation failure) is recorded as `refused`, so
 // `rejected` keeps meaning "the approval lifecycle ended without approval".
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { AiToolStatus } from '@breeze/shared';
 import { aiToolStatusEnum } from './schema/ai';
@@ -22,7 +22,6 @@ describe(FILE, () => {
   it('keeps the Drizzle enum and the shared type in step with the migration', () => {
     expect(aiToolStatusEnum.enumValues).toContain('refused');
     expect(aiToolStatusEnum.enumValues).toContain('rejected');
-    const refused: AiToolStatus = 'refused';
-    expect(refused).toBe('refused');
+    expectTypeOf<'refused'>().toMatchTypeOf<AiToolStatus>();
   });
 });
