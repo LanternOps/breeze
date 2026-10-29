@@ -603,6 +603,7 @@
     "cove": "Cove Data Protection",
     "nameLabel": "Bağlantı adı",
     "namePlaceholder": "Ana Cove hesabı",
+    "namePlaceholderDropsuite": "Ana NinjaOne SaaS Backup hesabı",
     "partnerNameLabel": "Cove iş ortağı adı",
     "usernameLabel": "Kullanıcı adı",
     "passwordLabel": "Parola",
