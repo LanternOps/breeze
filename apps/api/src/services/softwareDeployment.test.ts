@@ -994,7 +994,11 @@ describe('createSoftwareDeployment', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(result.message).toBe('All target devices failed installer variable resolution');
+    // #10307: every device failed for the same reason, so the toast names it.
+    expect(result.message).toBe(
+      'All target devices failed installer variable resolution: ' +
+        'Software deployment templates cannot use secret variable(s) {{var.alpha_secret}}, {{var.zeta_secret}}',
+    );
     expect(dispatchDeviceCommandMock).not.toHaveBeenCalled();
     // One failure row per device, all carrying the same sorted key list.
     const failureWrites = updateSetCalls.filter((c) => c.status === 'failed');
@@ -2689,6 +2693,27 @@ describe('buildAndDispatchSoftwareInstalls — install scripts, zip and agent ga
     expect(updateSetCalls.find((c) => c.status === 'failed')?.errorMessage).toBe(
       'Could not resolve installer variable(s): {{var.missing}}',
     );
+  });
+
+  it('(j2) the batch message names the variable failure when it is every device\'s only reason (#10307)', async () => {
+    mockDeviceReads([winDevice('dev-new', NEW)], []);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },
+      ['dev-new'],
+    );
+    expect(result.message).toBe(
+      'All target devices failed installer variable resolution: Could not resolve installer variable(s): {{var.missing}}',
+    );
+  });
+
+  it('(j3) the batch message stays generic when devices failed for different reasons (#10307)', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)], []);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },
+      ['dev-old', 'dev-new'],
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
   });
 
   it('(k) scripts are substituted even when downloadUrl and args contain no {{ (the template shortcut must not skip them)', async () => {

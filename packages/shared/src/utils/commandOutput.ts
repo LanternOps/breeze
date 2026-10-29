@@ -1,0 +1,66 @@
+// Display helpers for output captured from a device-side process (installer,
+// pre/post-install script, vendor CLI). Vendor tools such as ctrld colour their
+// log lines with ANSI escapes, which read as garbage outside a terminal
+// (#10307). These helpers return plain text only; callers must still render it
+// as text (a React text node, never innerHTML).
+
+// eslint-disable-next-line no-control-regex
+const OSC_SEQUENCE = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+// eslint-disable-next-line no-control-regex
+const CSI_SEQUENCE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g;
+// Any other two-byte escape (ESC followed by one final byte), e.g. ESC c, ESC =.
+// eslint-disable-next-line no-control-regex
+const OTHER_ESCAPE = /\u001b[@-Z\\-_]/g;
+// SGR written out in caret notation by a terminal capture ("^[[31m").
+const CARET_SGR = /\^\[\[[0-9;]*m/g;
+// C0/C1 controls other than \t and \n (\r is folded first).
+// eslint-disable-next-line no-control-regex
+const STRAY_CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+
+/** Remove ANSI/VT escape sequences and stray control characters. */
+export function stripAnsi(text: string): string {
+  return text
+    .replace(OSC_SEQUENCE, '')
+    .replace(CSI_SEQUENCE, '')
+    .replace(OTHER_ESCAPE, '')
+    .replace(CARET_SGR, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(STRAY_CONTROLS, '');
+}
+
+export interface CommandOutputExcerpt {
+  text: string;
+  /** True when lines or characters were dropped to fit the bounds. */
+  truncated: boolean;
+}
+
+export const COMMAND_OUTPUT_EXCERPT_MAX_LINES = 8;
+export const COMMAND_OUTPUT_EXCERPT_MAX_CHARS = 600;
+
+/**
+ * The tail of a process's output, ANSI-stripped and bounded, for showing
+ * beside an exit code. The tail because vendor tools print the failure reason
+ * last. Returns null when nothing printable remains.
+ */
+export function commandOutputExcerpt(
+  output: string | null | undefined,
+  opts: { maxLines?: number; maxChars?: number } = {},
+): CommandOutputExcerpt | null {
+  if (!output) return null;
+  const maxLines = Math.max(1, opts.maxLines ?? COMMAND_OUTPUT_EXCERPT_MAX_LINES);
+  const maxChars = Math.max(2, opts.maxChars ?? COMMAND_OUTPUT_EXCERPT_MAX_CHARS);
+
+  const lines = stripAnsi(output)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '');
+  if (lines.length === 0) return null;
+
+  let truncated = lines.length > maxLines;
+  let text = lines.slice(-maxLines).join('\n');
+  if (text.length > maxChars) {
+    truncated = true;
+    text = `…${text.slice(text.length - (maxChars - 1))}`;
+  }
+  return { text, truncated };
+}

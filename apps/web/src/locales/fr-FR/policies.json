@@ -1526,7 +1526,8 @@
       "devicesFinished": "{{finished}} appareils sur {{total}} terminés",
       "setupNeeded": "Configuration requise",
       "managerUnavailableSummary_one": "Le gestionnaire de paquets est absent sur {{count}} appareil. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
-      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera."
+      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
+      "deviceOutputTail": "Sortie de l’appareil (dernières lignes)"
     },
     "deploymentWizard": {
       "selectSoftware": "Logiciel sélectionné",

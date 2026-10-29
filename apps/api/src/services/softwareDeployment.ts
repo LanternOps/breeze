@@ -955,6 +955,13 @@ export async function buildAndDispatchSoftwareInstalls(
     }
   }
   let variableFailureCount = 0;
+  // Distinct per-device variable-failure messages (token names only, never
+  // values). When there is exactly one, the batch message repeats it (#10307).
+  const variableFailureReasons = new Set<string>();
+  const countVariableFailure = (reason: string) => {
+    variableFailureCount++;
+    variableFailureReasons.add(reason);
+  };
   // #6958 gates, counted apart so the batch message names the real cause.
   let agentVersionFailureCount = 0;
   let scriptOsFailureCount = 0;
@@ -1023,13 +1030,14 @@ export async function buildAndDispatchSoftwareInstalls(
       // deployment_results write + counter as an unresolvable token, so the
       // batch-level outcome below is unchanged. Keys only in the message.
       if (secretTemplateKeys.length > 0) {
+        const secretMessage =
+          'Software deployment templates cannot use secret variable(s) ' +
+          secretTemplateKeys.map(variableToken).join(', ');
         await db
           .update(deploymentResults)
           .set({
             status: 'failed',
-            errorMessage:
-              'Software deployment templates cannot use secret variable(s) ' +
-              secretTemplateKeys.map(variableToken).join(', '),
+            errorMessage: secretMessage,
             completedAt: new Date(),
           })
           .where(
@@ -1038,14 +1046,8 @@ export async function buildAndDispatchSoftwareInstalls(
               eq(deploymentResults.deviceId, device.id),
             ),
           );
-        variableFailureCount++;
-        const result = fanoutDeviceResult(
-          input,
-          device.id,
-          'failed',
-          null,
-          `Software deployment templates cannot use secret variable(s) ${secretTemplateKeys.map(variableToken).join(', ')}`,
-        );
+        countVariableFailure(secretMessage);
+        const result = fanoutDeviceResult(input, device.id, 'failed', null, secretMessage);
         if (result) deviceResults.push(result);
         continue;
       }
@@ -1060,11 +1062,12 @@ export async function buildAndDispatchSoftwareInstalls(
       };
       const resolved = resolveInstallerVariables(finalDownloadUrl, finalSilentInstallArgs, ctx);
       if (resolved.unresolved.length > 0) {
+        const unresolvedMessage = `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`;
         await db
           .update(deploymentResults)
           .set({
             status: 'failed',
-            errorMessage: `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
+            errorMessage: unresolvedMessage,
             completedAt: new Date(),
           })
           .where(
@@ -1073,14 +1076,8 @@ export async function buildAndDispatchSoftwareInstalls(
               eq(deploymentResults.deviceId, device.id),
             ),
           );
-        variableFailureCount++;
-        const result = fanoutDeviceResult(
-          input,
-          device.id,
-          'failed',
-          null,
-          `Could not resolve installer variable(s): ${resolved.unresolved.join(', ')}`,
-        );
+        countVariableFailure(unresolvedMessage);
+        const result = fanoutDeviceResult(input, device.id, 'failed', null, unresolvedMessage);
         if (result) deviceResults.push(result);
         continue;
       }
@@ -1121,8 +1118,9 @@ export async function buildAndDispatchSoftwareInstalls(
         ...(post && !post.ok ? post.unresolved : []),
       ];
       if (unresolved.length > 0) {
-        await failDevice(device.id, `Could not resolve installer variable(s): ${[...new Set(unresolved)].join(', ')}`);
-        variableFailureCount++;
+        const unresolvedMessage = `Could not resolve installer variable(s): ${[...new Set(unresolved)].join(', ')}`;
+        await failDevice(device.id, unresolvedMessage);
+        countVariableFailure(unresolvedMessage);
         continue;
       }
       preScriptPayload = pre && pre.ok ? pre.payload : null;
@@ -1269,7 +1267,11 @@ export async function buildAndDispatchSoftwareInstalls(
       status: 'failed',
       message:
         variableFailureCount > 0
-          ? 'All target devices failed installer variable resolution'
+          ? 'All target devices failed installer variable resolution' +
+            (variableFailureReasons.size === 1 &&
+            agentVersionFailureCount + scriptOsFailureCount + policyDenialCount + missingDeviceCount === 0
+              ? `: ${[...variableFailureReasons][0]}`
+              : '')
           : agentVersionFailureCount > 0 && scriptOsFailureCount === 0
             ? `No target device runs a new enough agent: ${agentUpdateRequiredInstallMessage()}`
           : scriptOsFailureCount > 0 && agentVersionFailureCount === 0

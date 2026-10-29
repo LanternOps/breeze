@@ -1526,7 +1526,8 @@
       "devicesFinished": "{{finished}} of {{total}} devices finished",
       "setupNeeded": "Setup needed",
       "managerUnavailableSummary_one": "{{count}} device is missing its package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) there; until then every package-manager deployment to it will fail.",
-      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail."
+      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail.",
+      "deviceOutputTail": "Device output (last lines)"
     },
     "deploymentWizard": {
       "selectSoftware": "Select Software",

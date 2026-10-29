@@ -1526,7 +1526,8 @@
       "devicesFinished": "{{finished}} de {{total}} dispositivos finalizados",
       "setupNeeded": "Requiere configuración",
       "managerUnavailableSummary_one": "A {{count}} dispositivo le falta su gestor de paquetes. Es una tarea de configuración única del dispositivo: instala winget (Windows) o Homebrew (macOS) allí; hasta entonces, todas las implementaciones con gestor de paquetes fallarán.",
-      "managerUnavailableSummary_other": "A {{count}} dispositivos les falta su gestor de paquetes. Es una tarea de configuración única del dispositivo: instala winget (Windows) o Homebrew (macOS) en ellos; hasta entonces, todas las implementaciones con gestor de paquetes fallarán."
+      "managerUnavailableSummary_other": "A {{count}} dispositivos les falta su gestor de paquetes. Es una tarea de configuración única del dispositivo: instala winget (Windows) o Homebrew (macOS) en ellos; hasta entonces, todas las implementaciones con gestor de paquetes fallarán.",
+      "deviceOutputTail": "Salida del dispositivo (últimas líneas)"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleccionar software",
