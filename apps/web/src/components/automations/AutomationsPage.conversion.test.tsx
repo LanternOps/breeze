@@ -22,6 +22,7 @@ vi.mock('@/lib/permissions', () => ({
 }));
 const conv = vi.hoisted(() => ({
   listConversions: vi.fn(),
+  createConversionsBulk: vi.fn(),
   previewConversion: vi.fn(),
   getConversion: vi.fn(),
 }));
@@ -112,6 +113,22 @@ describe('AutomationsPage — Move to Flows (#5221)', () => {
     render(<AutomationsPage />);
     expect(await screen.findByTestId('jobs-migration-banner')).toBeTruthy();
     expect(screen.getByTestId('automations-new').getAttribute('href')).toBe('/flows');
+  });
+
+  it('the bulk summary survives the list refresh (no full-page spinner on a background reload)', async () => {
+    conv.createConversionsBulk.mockResolvedValue({ created: 2, skipped: { deploy_software_unmapped: 1 } });
+    // A real network reload takes time: the list request after the first one resolves on a later task.
+    let listCalls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/automations' && ++listCalls > 1) await new Promise((r) => setTimeout(r, 30));
+      return json({ data: ROWS });
+    });
+    render(<AutomationsPage />);
+    fireEvent.click(await screen.findByTestId('jobs-migration-convert-all'));
+    await waitFor(() => expect(conv.createConversionsBulk).toHaveBeenCalled());
+    // The reload after the bulk call must not unmount the banner (and its summary).
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => u === '/automations').length).toBeGreaterThanOrEqual(2));
+    expect((await screen.findByTestId('jobs-migration-summary')).textContent).toMatch(/2.*1/);
   });
 
   it('no write permission hides actions', async () => {

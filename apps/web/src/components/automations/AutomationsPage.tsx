@@ -288,9 +288,11 @@ export default function AutomationsPage() {
     setConvertId(null);
   };
 
-  const fetchAutomations = useCallback(async () => {
+  // `background` reloads (after a conversion) keep the page mounted: the
+  // full-page spinner would unmount the banner and the open panel's state.
+  const fetchAutomations = useCallback(async (background = false) => {
     try {
-      setLoading(true);
+      if (!background) setLoading(true);
       setError(undefined);
       const response = await fetchWithAuth('/automations');
       if (!response.ok) {
@@ -502,7 +504,7 @@ export default function AutomationsPage() {
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchAutomations}
+          onClick={() => void fetchAutomations()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('common:actions.retry')}
@@ -534,7 +536,7 @@ export default function AutomationsPage() {
           canWrite={canWrite}
           orgId={currentOrgId}
           onConverted={() => {
-            void fetchAutomations();
+            void fetchAutomations(true);
             void fetchConversions();
           }}
         />
@@ -589,7 +591,7 @@ export default function AutomationsPage() {
           canWrite={canWrite}
           onClose={closeConversion}
           onChanged={() => {
-            void fetchAutomations();
+            void fetchAutomations(true);
             void fetchConversions();
           }}
         />
