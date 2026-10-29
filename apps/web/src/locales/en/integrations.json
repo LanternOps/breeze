@@ -575,7 +575,7 @@
   },
   "backupProviders": {
     "title": "Backup providers",
-    "subtitle": "Bring third-party backup status into Breeze. Cove Data Protection is supported today.",
+    "subtitle": "Bring third-party backup status into Breeze with Cove Data Protection and NinjaOne SaaS Backup (Dropsuite).",
     "partnerOnly": "Backup provider connections are available to partner accounts only.",
     "addConnection": "Add connection",
     "providerLabel": "Provider",
@@ -627,7 +627,19 @@
     "errorTest": "Could not test the backup connection",
     "errorSync": "Could not start a sync",
     "errorDelete": "Could not delete the backup connection",
-    "errorMap": "Could not update the mapping"
+    "errorMap": "Could not update the mapping",
+    "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "resellerTokenLabel": "Reseller token",
+    "authTokenLabel": "Authentication token",
+    "baseUrlLabel": "API URL",
+    "baseUrlHelp": "Shown as API URL on your NinjaOne SaaS Backup partner portal under Settings → API Settings",
+    "dropsuiteCredentialsHelp": "Read-only reseller access is enough. Tokens are stored encrypted.",
+    "dropsuiteReentryHelp": "Leave both tokens blank to keep the stored credentials, or enter both to replace them.",
+    "workloads": "Workloads",
+    "unmappedWorkloads": "Unmapped workloads",
+    "unmappedWorkloadsSummary": "{{customers}} unmapped customers, {{devices}} workloads",
+    "workloadMappingHelp": "Map each provider customer to a Breeze organization. Workloads under unmapped customers are counted but never stored.",
+    "deleteWorkloadsConfirm": "Delete \"{{name}}\"? Its synced workloads and history are removed from Breeze. The backup product itself is untouched."
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Could not load contracts for this organization. Close and retry.",

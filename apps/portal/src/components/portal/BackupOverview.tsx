@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { BackupHealth, BackupOverviewDto } from '@breeze/shared';
-import { formatDateTime } from '@/lib/utils';
-import { PageHeader, StatusMark, type MarkTone } from './ui';
+import { cn, formatDateTime, formatRelativeTime } from '@/lib/utils';
+import { CELL, ROW, TH, PageHeader, StatusMark, type MarkTone } from './ui';
 
 /**
  * Backups are a page of the Guest Ledger, not a wall of cards: the standing
@@ -30,6 +30,18 @@ const FIGURE = 'text-figures font-display text-lg font-semibold text-foreground'
 const QUIET = 'text-sm text-muted-foreground';
 /** A date is a figure column (tabular) but never a serif moment. */
 const WHEN = 'text-figures text-sm text-foreground';
+const PHONE_LABEL = `${LABEL} mb-0.5 block sm:hidden`;
+
+const WORKLOAD_LABELS: Record<string, string> = {
+  m365_mail: 'Microsoft 365 mail',
+  m365_exchange: 'Exchange',
+  m365_onedrive: 'OneDrive',
+  m365_sharepoint: 'SharePoint',
+  m365_teams: 'Teams',
+  gws_mail: 'Google Workspace mail',
+  gws_drive: 'Google Drive',
+  gws_shared_drive: 'Google shared drives',
+};
 
 /**
  * One backup-health verdict, one face, wherever it appears (this summary and the
@@ -123,8 +135,10 @@ export function BackupOverview({
   // the rows beneath it say, so any evidence of backups — protected devices, a
   // restore test, a restore point in the ledger — keeps it away, and the missing
   // verification is said plainly in its own summary row instead.
+  const saasWorkloads = overview.saasWorkloads ?? [];
   const hasBackups =
-    hasBackupActivity || (overview.protected ?? 0) > 0 || overview.lastTestRestoreAt !== null;
+    hasBackupActivity || (overview.protected ?? 0) > 0 || overview.lastTestRestoreAt !== null ||
+    saasWorkloads.length > 0;
   const status =
     overview.dataStatus === 'no_data' && hasBackups ? null : STATUS_COPY[overview.dataStatus];
 
@@ -231,6 +245,50 @@ export function BackupOverview({
           )}
         </LedgerRow>
       </dl>
+
+      {saasWorkloads.length > 0 && (
+        <section className="mt-10" data-testid="portal-backup-saas" aria-labelledby="portal-backup-saas-title">
+          <h2 id="portal-backup-saas-title" className="mb-4 font-display text-lg font-semibold text-foreground">
+            Microsoft 365 / Google Workspace backup
+          </h2>
+          <table className="block w-full sm:table">
+            <thead className="hidden border-b border-border sm:table-header-group">
+              <tr>
+                <th scope="col" className={cn(TH, 'text-left')}>Workload</th>
+                <th scope="col" className={cn(TH, 'text-left')}>Health</th>
+                <th scope="col" className={cn(TH, 'text-right')}>Last successful backup</th>
+                <th scope="col" className={cn(TH, 'text-right')}>Items</th>
+              </tr>
+            </thead>
+            <tbody className="block divide-y divide-border/70 sm:table-row-group">
+              {saasWorkloads.map((workload, index) => (
+                <tr key={`${workload.provider}-${workload.workload}-${index}`} className={ROW} data-testid="portal-backup-saas-row">
+                  <td className={cn(CELL, 'font-medium')}>
+                    {WORKLOAD_LABELS[workload.workload] ?? humanizeStatus(workload.workload)} backup
+                    {workload.providerLabel && <span className="mt-1 block text-xs font-normal text-muted-foreground">{workload.providerLabel}</span>}
+                  </td>
+                  <td className={CELL}>
+                    <span className={PHONE_LABEL}>Health</span>
+                    <StatusMark tone={HEALTH_TONE[workload.health]}>{HEALTH_LABEL[workload.health]}</StatusMark>
+                  </td>
+                  <td className={cn(CELL, 'sm:text-right')}>
+                    <span className={PHONE_LABEL}>Last successful backup</span>
+                    {workload.lastSuccessAt ? (
+                      <time className={WHEN} dateTime={workload.lastSuccessAt} title={formatDateTime(workload.lastSuccessAt, timezone, true)}>
+                        {formatRelativeTime(workload.lastSuccessAt)}
+                      </time>
+                    ) : <span className={QUIET}>No successful backup yet</span>}
+                  </td>
+                  <td className={cn(CELL, 'sm:text-right')} data-testid="portal-backup-saas-items">
+                    <span className={PHONE_LABEL}>Items</span>
+                    <span className={workload.itemCount === null ? QUIET : WHEN}>{workload.itemCount ?? 'Not available'}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {/* The register dates itself at the foot, the way a ledger page does. */}
       <p
