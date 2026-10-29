@@ -267,8 +267,8 @@ export async function enqueueAssessment(
 const NO_ENABLED_TRIAGE_AGENT_SKIPS: ReadonlySet<string> = new Set<AgentRunSkipReason>(['no_effective_agent', 'agent_disabled', 'mode_off']);
 const noAgentSignature = (orgId: string): string => `wisp-readiness:no-effective-agent:${orgId}`;
 const NO_AGENT_SUMMARY =
-  "Wisp can't check this organization yet — its checks run as your Triage agent, and no enabled Triage agent "
-  + 'applies here (other agent kinds don\'t count). Create or turn one on under Settings → AI Agents.';
+  "Wisp can't check this organization yet — its checks run as your Triage agent, and no Triage agent is set up "
+  + 'and switched on here (other agent kinds don\'t count). Create one, or check its status and mode, under Settings → AI Agents.';
 const NO_AGENT_HREF = '/settings/ai-agents';
 
 /** Upsert (keyed by signature, so once per org however many ticks skip). Best effort: never changes the skip. */
