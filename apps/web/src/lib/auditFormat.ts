@@ -20,6 +20,8 @@ export const DEFAULT_DASHBOARD_EXCLUDE_ACTIONS: readonly string[] = [
   'mcp.initialize',
   'api.post.events.ws-ticket',
   'api.get.events.ws-ticket',
+  // Written on every device-filter chip edit; reads ids, changes nothing (#9856).
+  'filter.preview',
 ];
 
 // Map raw audit action codes (dotted, machine-shaped) to human-readable
