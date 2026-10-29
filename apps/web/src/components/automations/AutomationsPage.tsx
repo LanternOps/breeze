@@ -10,11 +10,17 @@ import AutomationRunHistory, {
   type DeviceScriptResult,
 } from './AutomationRunHistory';
 import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/auth';
-import { runAction, handleActionError } from '@/lib/runAction';
+import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
-import { useHashTab } from '@/lib/useHashState';
-import type { TriggerFilter } from './AutomationList';
+import { useHashState, useHashTab } from '@/lib/useHashState';
+import type { MoveToFlowsColumn, TriggerFilter } from './AutomationList';
+import type { FlowConversionDto, FlowConversionState } from '@breeze/shared';
+import { useFlowsGate } from '../../stores/featuresStore';
+import { useOrgStore } from '../../stores/orgStore';
+import { ConversionPanel, parseConvertHash, CONVERT_HASH_PREFIX } from './conversion/ConversionPanel';
+import { JobsMigrationBanner } from './conversion/JobsMigrationBanner';
+import { conversionErrorMessage, listConversions } from './conversion/conversionApi';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -54,6 +60,18 @@ function asString(value: unknown): string | undefined {
 }
 
 type ScriptsT = TFunction<'scripts'>;
+
+const CONVERSION_STATES: readonly string[] = ['shadow', 'switched', 'reverted'];
+
+/** The additive `conversion` field on automation reads (#5221 Decision 9). */
+function toConversionSummary(raw: unknown): Automation['conversion'] {
+  if (!isPlainRecord(raw)) return null;
+  const id = asString(raw.id);
+  const flowId = asString(raw.flowId);
+  const state = asString(raw.state);
+  if (!id || !flowId || !state || !CONVERSION_STATES.includes(state)) return null;
+  return { id, flowId, state: state as FlowConversionState };
+}
 
 function toListAutomation(raw: unknown, t: ScriptsT): Automation {
   const item = isPlainRecord(raw) ? raw : {};
@@ -98,6 +116,7 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
       }))
       : [],
     enabled: Boolean(item.enabled),
+    conversion: toConversionSummary(item.conversion),
     lastRunAt: asString(item.lastRunAt),
     lastRunStatus: undefined,
     recentRuns: undefined,
@@ -238,7 +257,7 @@ function toDeviceRunResult(raw: unknown): DeviceRunResult | null {
 export default function AutomationsPage() {
   const { t } = useTranslation('scripts');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { permissions } = usePermissions();
+  const { permissions, can } = usePermissions();
   // #3262 — mirrors canManagePartnerWidePolicies(auth) server-side. UX only;
   // the cancel route re-checks this on every request.
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
@@ -253,6 +272,20 @@ export default function AutomationsPage() {
   const switchTab = (next: JobTab) => {
     window.location.hash = next;
     setTab(next);
+  };
+  // #5221 W06: "Move to Flows". The panel follows `#convert-<automationId>`.
+  const canWrite = can('automations', 'write');
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const { enabled: flowsOn } = useFlowsGate();
+  const [convertId, setConvertId] = useHashState<string | null>(null, parseConvertHash);
+  const [liveConversions, setLiveConversions] = useState<FlowConversionDto[]>([]);
+  const openConversion = (automation: Automation) => {
+    window.location.hash = `${CONVERT_HASH_PREFIX}${automation.id}`;
+    setConvertId(automation.id);
+  };
+  const closeConversion = () => {
+    window.location.hash = tab;
+    setConvertId(null);
   };
 
   const fetchAutomations = useCallback(async () => {
@@ -313,9 +346,31 @@ export default function AutomationsPage() {
     }
   }, []);
 
+  // Fidelity for the column: the live (shadow / switched) conversions. A 404
+  // means Flows are off here; the column is then not shown at all.
+  const fetchConversions = useCallback(async () => {
+    try {
+      const [shadow, switched] = await Promise.all([
+        listConversions({ state: 'shadow', limit: 100 }),
+        listConversions({ state: 'switched', limit: 100 }),
+      ]);
+      setLiveConversions([...shadow.conversions, ...switched.conversions]);
+    } catch (err) {
+      // The column still works without badges; the panel loads its own preview.
+      if (!(err instanceof ActionError) || err.status !== 404) {
+        console.warn('[AutomationsPage] could not load conversions', err);
+      }
+      setLiveConversions([]);
+    }
+  }, []);
+
   useEffect(() => {
     fetchAutomations();
   }, [fetchAutomations]);
+
+  useEffect(() => {
+    if (flowsOn) void fetchConversions();
+  }, [flowsOn, fetchConversions]);
 
   // Live progress: while the history modal is open and any run is still in
   // progress, re-poll the run list so counts/statuses update (#2023). Stops
@@ -352,6 +407,7 @@ export default function AutomationsPage() {
           }),
         errorFallback: t('automationsPage.errors.run'),
         onUnauthorized: handleSessionExpired,
+        friendly: conversionErrorMessage,
       });
       await fetchAutomations();
     } catch (err) {
@@ -372,6 +428,7 @@ export default function AutomationsPage() {
           }),
         errorFallback: fallback,
         onUnauthorized: handleSessionExpired,
+        friendly: conversionErrorMessage,
       });
       setAutomations(prev =>
         prev.map(a => (a.id === automation.id ? { ...a, enabled } : a))
@@ -405,6 +462,7 @@ export default function AutomationsPage() {
           }),
         errorFallback: t('automationsPage.errors.delete'),
         onUnauthorized: handleSessionExpired,
+        friendly: conversionErrorMessage,
       });
       await fetchAutomations();
       handleCloseModal();
@@ -416,6 +474,16 @@ export default function AutomationsPage() {
       setSubmitting(false);
     }
   };
+
+  const moveToFlows: MoveToFlowsColumn | undefined = flowsOn
+    ? {
+        fidelityByAutomation: new Map(
+          liveConversions.map((c) => [c.automationId, { fidelity: c.fidelity, findings: c.findings }]),
+        ),
+        onOpen: openConversion,
+      }
+    : undefined;
+  const panelAutomation = flowsOn && convertId ? automations.find((a) => a.id === convertId) ?? null : null;
 
   if (loading) {
     return (
@@ -450,14 +518,27 @@ export default function AutomationsPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t('automationsPage.title')}</h1>
           <p className="text-muted-foreground">{t('automationsPage.description')}</p>
         </div>
+        {/* R1 (#5221 Decision 8): with Flows on, "New job" opens Flows (POST /automations is 410). */}
         <a
-          href="/jobs/new"
+          href={flowsOn ? '/flows' : '/jobs/new'}
+          data-testid="automations-new"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
-          {t('automationsPage.actions.new')}
+          {flowsOn ? t('flows:jobs.migration.newJobOpensFlows') : t('automationsPage.actions.new')}
         </a>
       </div>
+
+      {flowsOn && (
+        <JobsMigrationBanner
+          canWrite={canWrite}
+          orgId={currentOrgId}
+          onConverted={() => {
+            void fetchAutomations();
+            void fetchConversions();
+          }}
+        />
+      )}
 
       {/* #7148: this row overflowed by 33px at 390px, clipping "Event rules"
           mid-word. It stayed a plain button row (not OverflowTabs) because an
@@ -497,7 +578,22 @@ export default function AutomationsPage() {
         onViewHistory={handleViewHistory}
         triggerFilter={triggerFilterForTab(tab)}
         onTriggerFilterChange={(value) => switchTab(FILTER_TO_TAB[value])}
+        moveToFlows={moveToFlows}
       />
+
+      {panelAutomation && (
+        <ConversionPanel
+          key={panelAutomation.id}
+          job={panelAutomation}
+          conversionId={panelAutomation.conversion?.id ?? null}
+          canWrite={canWrite}
+          onClose={closeConversion}
+          onChanged={() => {
+            void fetchAutomations();
+            void fetchConversions();
+          }}
+        />
+      )}
 
       {/* Delete Confirmation Modal */}
       {modalMode === 'delete' && selectedAutomation && (
