@@ -143,10 +143,11 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
 
     await screen.findByText(/No passkeys are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     // The step-up prompt must appear...
     const code = await screen.findByTestId('passkey-stepup-code');
@@ -155,7 +156,7 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(document.body.textContent).not.toMatch(/existing_factor_step_up_required/);
 
     fireEvent.change(code, { target: { value: '123456' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByText('Passkey added');
 
@@ -205,10 +206,11 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', replacementTokens);
 
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     expect(await screen.findByTestId('passkey-stepup-code')).toBeTruthy();
   });
@@ -231,10 +233,11 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     await screen.findByText(/Profile updated successfully/i);
 
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     expect(await screen.findByTestId('passkey-stepup-code')).toBeTruthy();
   });
@@ -253,10 +256,11 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
 
     await screen.findByText(/No passkeys are registered/i);
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByTestId('passkey-stepup-code');
     expect(document.body.textContent).not.toMatch(/existing_factor_step_up_required/);
@@ -325,36 +329,29 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     expect(verifyBodies).toEqual([expect.objectContaining({ ssoReauthGrantId: SSO_GRANT, stepUpGrantId: STEP_UP_GRANT })]);
   });
 
-  // Sweep paper cut #13: `#passkey-factor-code` ("Current MFA code") proves
-  // the DELETE flow only — handleAddPasskey never reads it — but it used to
-  // render unlabeled inside the "Add a passkey" card next to the Add button,
-  // so a code typed there looked required and did nothing. It must now be
-  // visually and textually scoped to deleting, not to adding.
-  it('scopes the delete-only MFA code field away from the Add passkey action', async () => {
-    fetchWithAuthMock.mockImplementation(async (url: string) => {
-      const u = String(url);
-      if (u === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
-      return makeJsonResponse({});
-    });
-
+  it('opens Add verification without exposing delete fields or starting registration', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ passkeys: [] }));
     render(<ProfilePage initialUser={mfaProtectedUser} />);
-
     await screen.findByText(/No passkeys are registered/i);
-
-    const factorCodeInput = screen.getByLabelText(/Current MFA code/i, { selector: '#passkey-factor-code' });
-    // The field must live under a heading that names DELETE, not ADD —
-    // proving it is no longer nested inside the "Add a passkey" card.
-    const deleteSection = factorCodeInput.closest('div.rounded-md.border');
-    expect(deleteSection?.textContent).toMatch(/delete/i);
-
-    // Filling it must have zero effect on the Add passkey button: it stays
-    // disabled/enabled purely on password + SR2-20 step-up state, which this
-    // fixture never triggers absent a submit.
-    fireEvent.change(factorCodeInput, { target: { value: '123456' } });
+    expect(document.querySelector('#passkey-password')).toBeNull();
+    expect(screen.queryByTestId('passkey-factor-code')).toBeNull();
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
+    expect(screen.getByRole('dialog', { name: 'Add passkey' })).toBeTruthy();
+    expect(screen.getByTestId('passkey-add-confirm')).toBeDisabled();
+    expect(screen.queryByTestId('passkey-factor-code')).toBeNull();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    expect(screen.getByTestId('passkey-add')).not.toBeDisabled();
+    expect(screen.getByTestId('passkey-add-confirm')).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.querySelector('#passkey-password')).toBeNull();
+    expect(screen.getByLabelText(/Passkey name/i)).toHaveValue('YubiKey');
+    fireEvent.click(screen.getByTestId('passkey-add'));
+    expect(screen.getByTestId('passkey-add-confirm')).toBeDisabled();
+    expect(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' })).toHaveValue('');
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
   });
 });

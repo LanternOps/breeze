@@ -24,6 +24,7 @@ import { formatNumber } from '@/lib/i18n/format';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { Dialog } from '../shared/Dialog';
 import {
   stashSsoReauthIntent,
   takeSsoReauthIntent,
@@ -210,9 +211,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
   const [editingPasskeyName, setEditingPasskeyName] = useState('');
   const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
-  // #5314: deleting a passkey removes an MFA factor and bumps `mfa_epoch`,
-  // signing the account's OTHER sessions out. Ask before doing that.
-  const [passkeyPendingDelete, setPasskeyPendingDelete] = useState<PasskeySummary | null>(null);
+  const [passkeyDialog, setPasskeyDialog] = useState<{ kind: 'add' } | { kind: 'delete'; passkey: PasskeySummary } | null>(null);
   const [passkeyDeleteRetryGrant, setPasskeyDeleteRetryGrant] = useState<{ passkeyId: string; grantId: string; sessionGeneration: number } | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
@@ -243,10 +242,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // hand and stays true for the rest of the flow: this fires the one-shot
   // "bring the card to the user" landing and then stops mattering.
   // #4045: 'delete' is the same landing for the delete-passkey action, which
-  // puts the user on the existing-factor code field instead of the name field.
+  // puts the user on a Delete action instead of the name field.
   const [passkeyReauthReturn, setPasskeyReauthReturn] = useState<'add' | 'delete' | null>(null);
   const passkeyNameRef = useRef<HTMLInputElement | null>(null);
-  const passkeyFactorCodeRef = useRef<HTMLInputElement | null>(null);
   // #4045: the management view (recovery codes / disable) the user left from
   // for the IdP, to be reopened on return.
   const [mfaResumeView, setMfaResumeView] = useState<'recovery' | 'disable' | undefined>();
@@ -706,7 +704,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // back at the TOP of a long settings page while the passkey card they left
   // from sits below the fold. Routing them back to it means actually taking
   // them there. Focus does the same job for keyboard and screen-reader users,
-  // and lands on the one field they still have to fill in.
+  // lands on the next action or field.
   //
   // A CALLBACK ref, keyed on the flag, rather than an effect over an object
   // ref. The real page is `<ProfilePage client:load />` with no `initialUser`,
@@ -723,7 +721,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     passkeyLandingDone.current = true;
     // jsdom has no layout and so no `scrollIntoView`; optional-call it.
     node.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-    (passkeyReauthReturn === 'delete' ? passkeyFactorCodeRef : passkeyNameRef).current?.focus?.();
+    if (passkeyReauthReturn === 'delete') (node.querySelector<HTMLButtonElement>('[data-testid="passkey-delete"]') ?? passkeyNameRef.current)?.focus();
+    else passkeyNameRef.current?.focus();
   }, [passkeyReauthReturn]);
 
   // Surface the callback's failure codes
@@ -1282,6 +1281,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // passkey added to an already-enrolled account. MFASettings reads this to
       // decide whether the recovery-codes panel below just became relevant.
       setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: prev.mfaMethod ?? 'passkey' } : null));
+      setPasskeyDialog(null);
       setPasskeyName('');
       setPasskeyPassword('');
       // register/verify is the terminal write that BURNS the grant. Drop it so
@@ -1452,6 +1452,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (deleteReplacementAdopted) {
         useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
       }
+      setPasskeyDialog(null);
       setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
       setPasskeyFactorCode('');
@@ -1464,6 +1465,56 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     } finally {
       setMutatingPasskeyId(null);
     }
+  };
+
+  const passkeyStepUpFields = (
+    <>
+      {passkeyStepUpNeeded && (
+        <div className="space-y-2 rounded-md border p-3" data-testid="passkey-stepup-section">
+          <p className="text-sm font-medium">{t('profilePage.passkeyStepUpHeading')}</p>
+          <p className="text-xs text-muted-foreground">
+            {t('profilePage.passkeyStepUpIntro')}
+          </p>
+          {passkeyStepUpTier === 'passkey' ? (
+            <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-passkey-note">
+              {t('stepUpPrompt.youWillConfirmWithYourPasskey')}
+            </p>
+          ) : passkeyStepUpTier === 'totp' ? (
+            <>
+              <label className="text-sm font-medium" htmlFor="passkey-stepup-code">
+                {t('stepUpPrompt.authenticatorCode')}
+              </label>
+              <input
+                id="passkey-stepup-code"
+                data-testid="passkey-stepup-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={passkeyStepUpCode}
+                onChange={event => setPasskeyStepUpCode(event.target.value.replace(/\D/g, ''))}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey}
+              />
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-no-factor">
+              {t('profilePage.passkeyStepUpNoUsableFactor')}
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  const closePasskeyDialog = () => {
+    if (isAddingPasskey || mutatingPasskeyId) return;
+    setPasskeyDialog(null);
+    setPasskeyPassword('');
+    setPasskeyFactorCode('');
+    setPasskeyStepUpCode('');
+    setPasskeyStepUpNeeded(false);
+    setPasskeyError(undefined);
   };
 
   if (isLoadingUser) {
@@ -1747,20 +1798,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                           {t('profilePage.rename')}</button>
                         <button
                           type="button"
+                          data-testid="passkey-delete"
                           onClick={() => {
                             setPasskeyError(undefined);
                             setPasskeySuccess(undefined);
-                            // Surface the missing-password error BEFORE the
-                            // confirmation rather than after it — otherwise the
-                            // user reads and accepts an alarming "other sessions
-                            // will be signed out" dialog only to be told the
-                            // password field is empty.
-                            const missing = deletePasskeyProofMissing();
-                            if (missing) {
-                              setPasskeyError(missing);
-                              return;
-                            }
-                            setPasskeyPendingDelete(passkey);
+                            setPasskeyPassword('');
+                            setPasskeyFactorCode('');
+                            setPasskeyDialog({ kind: 'delete', passkey });
                           }}
                           disabled={!!mutatingPasskeyId}
                           className="h-9 rounded-md border border-destructive/40 px-3 text-sm font-medium text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1779,96 +1823,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
-        {/* sweep paper cut #13: this field proves the account's existing MFA
-            factor for the DELETE flow only (see handleDeletePasskey) — it has
-            no effect whatsoever on handleAddPasskey / the Add passkey button
-            below, which is gated purely by `passkeyStepUpCode` in the
-            separate SR2-20 step-up block. Rendering it inside the "Add a
-            passkey" card made it look like part of that flow, so a code typed
-            here left Add permanently (and inexplicably) disabled. Giving it
-            its own section, clearly scoped to deleting, removes the
-            ambiguity without touching either ceremony. */}
-        {/* #4045: a passwordless account deletes too — its "password" is a fresh
-            IdP round-trip, offered here, and it still owes the same current MFA
-            code (or passkey assertion) as everyone else. */}
-        {((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') || (isPasswordless && passkeys.length > 0)) && (
-          <div className="space-y-2 rounded-md border p-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
-              {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && (
-                <p className="text-xs text-muted-foreground">
-                  {t('profilePage.deletePasskeyVerifyHint')}
-                </p>
-              )}
-            </div>
-            {isPasswordless && !hasSsoReauthGrant && (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">{t('profilePage.verifyWithIdpToDeletePasskey')}</p>
-                <button
-                  type="button"
-                  data-testid="passkey-delete-sso-reauth"
-                  onClick={() => { void handleSsoReauthStart('delete_passkey'); }}
-                  disabled={isAddingPasskey || isStartingSsoReauth || !!mutatingPasskeyId}
-                  className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {t('profilePage.deletePasskeySsoReauth')}
-                </button>
-              </div>
-            )}
-            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') && (
-            <>
-            <label className="text-sm font-medium" htmlFor="passkey-factor-code">
-              {deletePasskeyMethod === 'passkey'
-                ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code' })
-                : t('profilePage.currentMfaOrRecoveryCode', { defaultValue: 'Current MFA code or recovery code' })}
-            </label>
-            {deletePasskeyMethod === 'passkey' && (
-              <p className="text-xs text-muted-foreground">
-                {t('profilePage.passkeyRecoveryCodeHint', {
-                  defaultValue: 'Use an unused recovery code if you can’t access this passkey. Otherwise, leave blank.',
-                })}
-              </p>
-            )}
-            <div className="flex gap-2">
-              <input
-                id="passkey-factor-code"
-                data-testid="passkey-factor-code"
-                ref={passkeyFactorCodeRef}
-                inputMode="text"
-                autoComplete="one-time-code"
-                value={passkeyFactorCode}
-                onChange={event => setPasskeyFactorCode(event.target.value)}
-                className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-                disabled={isAddingPasskey || !!mutatingPasskeyId}
-              />
-              {deletePasskeyMethod === 'sms' && (
-                <button
-                  type="button"
-                  onClick={() => { void handleSendRecoveryStepUpCode(); }}
-                  disabled={isAddingPasskey || !!mutatingPasskeyId}
-                  className="h-10 rounded-md border px-3 text-sm font-medium"
-                >
-                  {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
-                </button>
-              )}
-            </div>
-            </>
-            )}
-          </div>
-        )}
-
         <div className="space-y-4 rounded-md border p-4">
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
-            <p className="text-xs text-muted-foreground">
-              {/* #4055: "re-verify BEFORE adding a passkey" is stale the moment
-                  the grant lands — saying it to someone who just completed the
-                  round-trip reads as a failed trip. */}
-              {isPasswordless
-                ? hasSsoReauthGrant
-                  ? t('profilePage.yourIdentityIsVerifiedNameThisPasskeyAndContinue')
-                  : t('profilePage.thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey')
-                : t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="passkey-name">
@@ -1884,64 +1841,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={isAddingPasskey}
             />
           </div>
-          {/* #4018: no password field for an account that has no password —
-              the proof is a fresh IdP round-trip instead. */}
-          {!isPasswordless && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="passkey-password">
-                {t('profilePage.currentPassword')}</label>
-              <input
-                id="passkey-password"
-                type="password"
-                autoComplete="current-password"
-                value={passkeyPassword}
-                onChange={event => setPasskeyPassword(event.target.value)}
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                disabled={isAddingPasskey}
-              />
-            </div>
-          )}
-          {/* SR2-20: revealed only once the FIRST submit 403s
-              existing_factor_step_up_required — an account with no existing
-              factor never sees this (paper cut G4-7). A locally-scoped prompt
-              rather than <StepUpPrompt>: ApproverDevicesSection below already
-              renders one on this same page, and that component's ids
-              (`approver-stepup-*`) are not unique per instance. */}
-          {passkeyStepUpNeeded && (
-            <div className="space-y-2 rounded-md border p-3" data-testid="passkey-stepup-section">
-              <p className="text-sm font-medium">{t('profilePage.passkeyStepUpHeading')}</p>
-              <p className="text-xs text-muted-foreground">
-                {t('profilePage.passkeyStepUpIntro')}
-              </p>
-              {passkeyStepUpTier === 'passkey' ? (
-                <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-passkey-note">
-                  {t('stepUpPrompt.youWillConfirmWithYourPasskey')}
-                </p>
-              ) : passkeyStepUpTier === 'totp' ? (
-                <>
-                  <label className="text-sm font-medium" htmlFor="passkey-stepup-code">
-                    {t('stepUpPrompt.authenticatorCode')}
-                  </label>
-                  <input
-                    id="passkey-stepup-code"
-                    data-testid="passkey-stepup-code"
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    value={passkeyStepUpCode}
-                    onChange={event => setPasskeyStepUpCode(event.target.value.replace(/\D/g, ''))}
-                    className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-                    disabled={isAddingPasskey}
-                  />
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground" data-testid="passkey-stepup-no-factor">
-                  {t('profilePage.passkeyStepUpNoUsableFactor')}
-                </p>
-              )}
-            </div>
-          )}
+          {isPasswordless && passkeyStepUpFields}
           {isPasswordless && !hasSsoReauthGrant ? (
             <button
               type="button"
@@ -1956,17 +1856,27 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             <button
               type="button"
               data-testid="passkey-add"
-              onClick={handleAddPasskey}
+              onClick={() => {
+                if (isPasswordless) {
+                  void handleAddPasskey();
+                  return;
+                }
+                setPasskeyPassword('');
+                setPasskeyError(undefined);
+                setPasskeySuccess(undefined);
+                setPasskeyDialog({ kind: 'add' });
+              }}
               disabled={
                 isAddingPasskey
-                || (!isPasswordless && !passkeyPassword)
-                || (passkeyStepUpNeeded
+                || !!mutatingPasskeyId
+                || (isPasswordless
+                  && passkeyStepUpNeeded
                   && (passkeyStepUpTier === 'password'
                     || (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)))
               }
-              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-60"
             >
-              {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
+              {t('profilePage.addPasskey')}
             </button>
           )}
         </div>
@@ -1976,7 +1886,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             {passkeySuccess}
           </div>
         )}
-        {passkeyError && (
+        {passkeyError && !passkeyDialog && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {passkeyError}
           </div>
@@ -2024,21 +1934,141 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           {t('profilePage.restartTour')}</button>
       </div>
 
-      <ConfirmDialog
-        open={passkeyPendingDelete !== null}
-        onClose={() => setPasskeyPendingDelete(null)}
-        onConfirm={() => {
-          const target = passkeyPendingDelete;
-          setPasskeyPendingDelete(null);
-          if (target) void handleDeletePasskey(target.id);
-        }}
-        title={t('profilePage.deletePasskeyConfirmTitle')}
-        message={t('profilePage.deletePasskeyConfirmMessage', {
-          name: passkeyPendingDelete?.name || 'Passkey',
-        })}
-        confirmLabel={t('profilePage.delete')}
-        confirmTestId="passkey-delete-confirm"
-      />
+      <Dialog
+        open={passkeyDialog?.kind === 'add'}
+        onClose={closePasskeyDialog}
+        title={t('profilePage.addPasskey')}
+        labelledBy="passkey-add-dialog-title"
+        className="space-y-4 p-6"
+      >
+        <h3 id="passkey-add-dialog-title" className="text-lg font-semibold">
+          {t('profilePage.addPasskey')}
+        </h3>
+        <form className="space-y-4" onSubmit={event => { event.preventDefault(); void handleAddPasskey(); }}>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="passkey-password">
+              {t('profilePage.currentPassword')}
+            </label>
+            <input
+              id="passkey-password"
+              type="password"
+              autoComplete="current-password"
+              value={passkeyPassword}
+              onChange={event => setPasskeyPassword(event.target.value)}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              disabled={isAddingPasskey}
+            />
+          </div>
+          {passkeyStepUpFields}
+          {passkeyError && <p role="alert" className="text-sm text-destructive">{passkeyError}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={closePasskeyDialog} disabled={isAddingPasskey} className="h-10 rounded-md border px-4 text-sm font-medium">
+              {t('common:actions.cancel')}
+            </button>
+            <button
+              type="submit"
+              data-testid="passkey-add-confirm"
+              disabled={
+                isAddingPasskey
+                || !passkeyPassword
+                || (passkeyStepUpNeeded
+                  && (passkeyStepUpTier === 'password'
+                    || (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)))
+              }
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
+            </button>
+          </div>
+        </form>
+      </Dialog>
+      {passkeyDialog?.kind === 'delete' && (
+        <ConfirmDialog
+          open
+          onClose={closePasskeyDialog}
+          onConfirm={() => { void handleDeletePasskey(passkeyDialog.passkey.id); }}
+          title={t('profilePage.deletePasskeyConfirmTitle')}
+          message={t('profilePage.deletePasskeyConfirmMessage', {
+            name: passkeyDialog.passkey.name || 'Passkey',
+          })}
+          confirmLabel={t('profilePage.delete')}
+          confirmTestId="passkey-delete-confirm"
+          isLoading={mutatingPasskeyId === passkeyDialog.passkey.id}
+          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant)}
+        >
+          <div className="space-y-4">
+            {!isPasswordless && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="passkey-password">
+                  {t('profilePage.currentPassword')}
+                </label>
+                <input
+                  id="passkey-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={passkeyPassword}
+                  onChange={event => setPasskeyPassword(event.target.value)}
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  disabled={!!mutatingPasskeyId}
+                />
+              </div>
+            )}
+            {isPasswordless && !hasSsoReauthGrant && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">{t('profilePage.verifyWithIdpToDeletePasskey')}</p>
+                <button
+                  type="button"
+                  data-testid="passkey-delete-sso-reauth"
+                  onClick={() => { void handleSsoReauthStart('delete_passkey'); }}
+                  disabled={isStartingSsoReauth || !!mutatingPasskeyId}
+                  className="h-9 rounded-md border px-3 text-sm font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {t('profilePage.deletePasskeySsoReauth')}
+                </button>
+              </div>
+            )}
+            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="passkey-factor-code">
+                  {deletePasskeyMethod === 'passkey'
+                    ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code' })
+                    : t('profilePage.currentMfaOrRecoveryCode', { defaultValue: 'Current MFA code or recovery code' })}
+                </label>
+                {deletePasskeyMethod === 'passkey' && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('profilePage.passkeyRecoveryCodeHint', {
+                      defaultValue: 'Use an unused recovery code if you can’t access this passkey. Otherwise, leave blank.',
+                    })}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    id="passkey-factor-code"
+                    data-testid="passkey-factor-code"
+                    inputMode="text"
+                    autoComplete="one-time-code"
+                    value={passkeyFactorCode}
+                    onChange={event => setPasskeyFactorCode(event.target.value)}
+                    className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+                    disabled={!!mutatingPasskeyId}
+                  />
+                  {deletePasskeyMethod === 'sms' && (
+                    <button
+                      type="button"
+                      onClick={() => { void handleSendRecoveryStepUpCode(); }}
+                      disabled={!!mutatingPasskeyId}
+                      className="h-10 rounded-md border px-3 text-sm font-medium"
+                    >
+                      {t('mFASettings.sendCode', { defaultValue: 'Send code' })}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {passkeyError && <p role="alert" className="text-sm text-destructive">{passkeyError}</p>}
+          </div>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

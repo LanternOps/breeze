@@ -80,10 +80,11 @@ const credential = { id: 'credential-2', rawId: 'credential-2', type: 'public-ke
 async function addPasskey() {
   await screen.findByLabelText(/Passkey name/i);
   fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iPhone' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
   fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
     target: { value: 'current-password' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+  fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 }
 
 describe('ProfilePage — passkey writes adopt the replacement session (#5038)', () => {
@@ -149,11 +150,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
@@ -177,11 +178,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
@@ -201,11 +202,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 

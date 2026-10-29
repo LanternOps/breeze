@@ -166,7 +166,7 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
     // The reported dead end: this used to be `passkey-sso-reauth`.
     expect(screen.getByTestId('passkey-add')).toBeTruthy();
     expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
-    expect(screen.getByText(/Your identity is verified/i)).toBeTruthy();
+    expect(document.querySelector('#passkey-password')).toBeNull();
     // Restoring the passkey road must not mint a TOTP secret either (#4055).
     expect(callTo('/auth/mfa/setup')).toHaveLength(0);
 

@@ -78,7 +78,7 @@ describe('ProfilePage passkey management', () => {
     globalThis.URL.revokeObjectURL = vi.fn();
   });
 
-  it('starts passkey registration with currentPassword and verifies the browser credential', async () => {
+  it.each([false, true])('registers a passkey with currentPassword when an existing passkey is present = %s', async (hasExistingPasskey) => {
     const registrationOptions = {
       challenge: 'register-challenge',
       rp: { name: 'Breeze' },
@@ -95,7 +95,7 @@ describe('ProfilePage passkey management', () => {
       },
     };
     fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: hasExistingPasskey ? [{ id: 'existing-key', name: 'Existing key', lastUsedAt: null }] : [] }))
       .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
       // #5038: register/verify now always returns a replacement session.
       .mockResolvedValueOnce(makeJsonResponse({
@@ -118,14 +118,16 @@ describe('ProfilePage passkey management', () => {
       />,
     );
 
-    await screen.findByText(/No passkeys are registered/i);
+    await screen.findByLabelText(/Passkey name/i);
+    if (hasExistingPasskey) await screen.findByText('Existing key');
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByText('Passkey added');
 
@@ -171,10 +173,11 @@ describe('ProfilePage passkey management', () => {
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
     await screen.findByText(/Passkey registration failed\. Please try again\./i);
     expect(screen.queryByText('Internal Server Error')).toBeNull();
@@ -206,13 +209,13 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), {
       target: { value: '123456' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // #5314: the passkey Delete now opens a confirmation first.
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
@@ -260,10 +263,10 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText('Security key');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
     await screen.findByText('Passkey deleted');
@@ -304,11 +307,11 @@ describe('ProfilePage passkey management', () => {
     }} />);
 
     await screen.findByText('Bitwarden passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
@@ -342,11 +345,11 @@ describe('ProfilePage passkey management', () => {
     }} />);
 
     await screen.findByText('Unavailable passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code or recovery code/i), { target: { value: 'ABCD-1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
@@ -377,18 +380,17 @@ describe('ProfilePage passkey management', () => {
     }} />);
 
     await screen.findByText('Lost passkey');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'wrong-password' },
     });
     fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Invalid credentials');
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'correct-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
@@ -421,10 +423,10 @@ describe('ProfilePage passkey management', () => {
     }} />);
 
     await screen.findByText('Security key');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
@@ -555,7 +557,7 @@ describe('ProfilePage passkey management', () => {
       // #4055: the OTHER half of the instruction ternary. Asserting only the
       // testids would let the two branches be swapped — telling a user with no
       // grant that their identity is already verified — without a red test.
-      expect(screen.getByText(/Re-verify with your provider before adding a passkey/i))
+      expect(screen.getByTestId('passkey-sso-reauth'))
         .toBeTruthy();
       expect(screen.queryByText(/Your identity is verified/i)).toBeNull();
 
@@ -611,6 +613,8 @@ describe('ProfilePage passkey management', () => {
       );
 
       await screen.findByText(/No passkeys are registered/i);
+      expect(document.querySelector('#passkey-password')).toBeNull();
+      fireEvent.click(screen.getByTestId('passkey-add'));
       expect(document.querySelector('#passkey-password')).toBeTruthy();
       expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
     });
@@ -775,7 +779,7 @@ describe('ProfilePage passkey management', () => {
         // they did exactly that reads as a failed round-trip.
         expect(screen.queryByText(/Re-verify with your provider before adding a passkey/i))
           .toBeNull();
-        expect(screen.getByText(/Your identity is verified/i)).toBeTruthy();
+        expect(screen.getByTestId('passkey-add')).toBeTruthy();
       });
 
       it('consumes the recorded intent so a later return cannot replay it', async () => {

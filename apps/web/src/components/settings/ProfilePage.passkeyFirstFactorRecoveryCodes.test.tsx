@@ -83,10 +83,11 @@ const RECOVERY_CODES = [
 async function addPasskey() {
   await screen.findByLabelText(/Passkey name/i);
   fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iPhone' } });
+    fireEvent.click(screen.getByTestId('passkey-add'));
   fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
     target: { value: 'current-password' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Add passkey' }));
+  fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 }
 
 describe('ProfilePage — first passkey enrollment surfaces its recovery codes (G4-14)', () => {

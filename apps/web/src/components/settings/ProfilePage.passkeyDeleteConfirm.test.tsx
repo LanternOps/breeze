@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { fetchWithAuthMock, createPasskeyCredentialMock } = vi.hoisted(() => ({
@@ -68,10 +68,10 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     renderProfile();
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
     expect(screen.getByTestId('passkey-delete-confirm')).toBeInTheDocument();
     expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).startsWith('/auth/passkeys/credential-1'))).toBe(false);
@@ -82,10 +82,10 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     renderProfile();
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toMatch(/signs your other sessions out/i);
@@ -101,11 +101,11 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     renderProfile();
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
     fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await screen.findByText('Passkey deleted');
@@ -125,17 +125,19 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     ]);
   });
 
-  it('blocks on the missing-password error instead of opening the dialog', async () => {
+  it('asks for the password and current factor inside the named delete dialog', async () => {
     seedOnePasskey();
     renderProfile();
-
     await screen.findByText('MacBook Touch ID');
-    // No password typed. The alarming sign-out warning must not be shown for a
-    // click that cannot succeed anyway.
+    expect(document.querySelector('#passkey-password')).toBeNull();
+    expect(screen.queryByTestId('passkey-factor-code')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-
-    expect(await screen.findByText('Current password is required to delete a passkey')).toBeTruthy();
-    expect(screen.queryByTestId('passkey-delete-confirm')).not.toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('MacBook Touch ID');
+    expect(dialog.contains(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }))).toBe(true);
+    expect(dialog.contains(screen.getByTestId('passkey-factor-code'))).toBe(true);
+    expect(screen.getByTestId('passkey-delete-confirm')).toBeDisabled();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
   });
 
   it('sends nothing when the confirmation is cancelled', async () => {
@@ -143,13 +145,41 @@ describe('ProfilePage passkey delete confirmation (#5314)', () => {
     renderProfile();
 
     await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
 
     await waitFor(() => expect(screen.queryByTestId('passkey-delete-confirm')).not.toBeInTheDocument());
     expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).startsWith('/auth/passkeys/credential-1'))).toBe(false);
   });
+  it('clears verification on cancel and binds a new dialog to the selected passkey', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ passkeys: [
+      { id: 'first-key', name: 'First key', lastUsedAt: null },
+      { id: 'second-key', name: 'Second key', lastUsedAt: null },
+    ] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: 'bound-grant' }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true }));
+    renderProfile();
+    await screen.findByText('First key');
+    fireEvent.click(screen.getAllByTestId('passkey-delete')[0]);
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), { target: { value: 'discarded-password' } });
+    fireEvent.change(screen.getByTestId('passkey-factor-code'), { target: { value: '111111' } });
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^Cancel$/i }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.querySelector('#passkey-password')).toBeNull();
+    fireEvent.click(screen.getAllByTestId('passkey-delete')[1]);
+    expect(screen.getByRole('dialog')).toHaveTextContent('Second key');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent('First key');
+    expect(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' })).toHaveValue('');
+    expect(screen.getByTestId('passkey-factor-code')).toHaveValue('');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), { target: { value: 'current-password' } });
+    fireEvent.change(screen.getByTestId('passkey-factor-code'), { target: { value: '222222' } });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+    await screen.findByText('Passkey deleted. Sign in again to continue.');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/auth/passkeys/second-key', expect.objectContaining({ method: 'DELETE' }));
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => url === '/auth/passkeys/first-key')).toBe(false);
+  });
+
 });

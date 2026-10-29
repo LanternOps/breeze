@@ -248,17 +248,12 @@ describe('ProfilePage — passwordless SSO factor management (#4045)', () => {
       render(<ProfilePage initialUser={PASSWORDLESS_TOTP_USER} />);
 
       await screen.findByText('YubiKey');
-      // The verify section explains the requirement up front...
-      expect(screen.getAllByText(/Verify with your identity provider before removing a passkey/i)).toHaveLength(1);
+      expect(screen.queryByTestId('passkey-delete-sso-reauth')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
-
-      // ...and pressing Delete anyway answers with the same actionable reason
-      // (never a silent no-op, never a request for a password).
-      await waitFor(() => {
-        expect(screen.getAllByText(/Verify with your identity provider before removing a passkey/i)).toHaveLength(2);
-      });
-      expect(screen.queryByText(/Current password is required/i)).toBeNull();
-      expect(screen.queryByTestId('passkey-delete-confirm')).toBeNull();
+      expect(screen.getByRole('dialog')).toHaveTextContent('YubiKey');
+      expect(screen.getAllByText(/Verify with your identity provider before removing a passkey/i)).toHaveLength(1);
+      expect(document.querySelector('#passkey-password')).toBeNull();
+      expect(screen.getByTestId('passkey-delete-confirm')).toBeDisabled();
       expect(callsTo('/auth/passkeys/pk-1')).toHaveLength(0);
 
       const { assign, seen } = interceptNavigation();
@@ -278,8 +273,8 @@ describe('ProfilePage — passwordless SSO factor management (#4045)', () => {
 
       expect(await screen.findByText(/Identity verified\. Choose Delete on the passkey/i)).toBeTruthy();
       expect(screen.queryByTestId('passkey-delete-sso-reauth')).toBeNull();
-      fireEvent.change(screen.getByTestId('passkey-factor-code'), { target: { value: '111222' } });
       fireEvent.click(screen.getByRole('button', { name: /^Delete$/i }));
+      fireEvent.change(screen.getByTestId('passkey-factor-code'), { target: { value: '111222' } });
       fireEvent.click(await screen.findByTestId('passkey-delete-confirm'));
 
       await waitFor(() => expect(callsTo('/auth/passkeys/pk-1')).toHaveLength(1));
