@@ -3,9 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { type ConnectionParams } from '../lib/protocol';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '../lib/api';
 import { scaleVideoCoords, isWebRTCSupported, AgentSessionError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '../lib/webrtc';
+import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '../lib/sessionEnd';
 import {
   startRevocationLeaseRenewal,
-  LEASE_REVOKED_MESSAGE,
   LEASE_LOST_MESSAGE,
 } from '../lib/revocationLease';
 import { connectWebRTC as connectWebRTCTransport, type WebRTCSessionWrapper } from '../lib/transports/webrtc';
@@ -113,23 +113,20 @@ const INPUT_CAPABILITIES_WAIT_MS = 500;
 // How long a paste-failure notice stays in the toolbar.
 const PASTE_NOTICE_TTL_MS = 8_000;
 
-// Shown when the server rejects (re)connection because the session has ended
-// (HTTP 401 'Session ended', Finding #5). The viewer holds a single-session
-// token and cannot create a new session, so this is a terminal state — the
-// operator must relaunch from the dashboard.
-const SESSION_ENDED_MESSAGE =
-  'This remote session has ended. Relaunch it from the Breeze dashboard.';
-
+// The server rejected (re)connection because the session has ended (HTTP 401
+// 'Session ended', Finding #5). The viewer holds a single-session token and
+// cannot create a new session, so this is a terminal state — the operator must
+// relaunch from the dashboard (enterSessionEnded adds that hint).
+//
 // #5300: a SessionEndedError carries a real server-provided reason (e.g. the
-// no-video watchdog's swallowed capture error) exactly when the caller found
-// one via fetchSessionEndedReason — SessionEndedError otherwise defaults to
-// SESSION_ENDED_DEFAULT_MESSAGE. Keep the relaunch call-to-action either way;
-// only the diagnostic clause changes.
-function sessionEndedDisplayMessage(err: SessionEndedError): string {
+// no-video watchdog's swallowed capture error, or a `revoked:<reason>` code)
+// exactly when the caller found one via fetchSessionEndedReason —
+// SessionEndedError otherwise defaults to SESSION_ENDED_DEFAULT_MESSAGE.
+function sessionEndedReasonText(err: SessionEndedError): string {
   if (err.message && err.message !== SESSION_ENDED_DEFAULT_MESSAGE) {
-    return `${err.message} Relaunch it from the Breeze dashboard.`;
+    return serverEndReasonText(err.message);
   }
-  return SESSION_ENDED_MESSAGE;
+  return SESSION_ENDED_DEFAULT_MESSAGE;
 }
 
 // Shown when the WebSocket upgrade was refused before it completed. The
@@ -312,6 +309,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const keyNameMode = keyNameModeFor(remoteOs);
   const [connectedAt, setConnectedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // #10421: an ended session is terminal (no Retry); any other error is not.
+  // Only enterSessionEnded sets 'session_ended'; leaving 'error' resets it.
+  const [errorKind, setErrorKind] = useState<ErrorCardKind>('error');
+  useEffect(() => {
+    if (status !== 'error') setErrorKind('error');
+  }, [status]);
   // #6818: the consent notice belongs to one connect attempt. Any status
   // change (connected, error, a reconnect attempt) ends that attempt.
   useEffect(() => {
@@ -942,6 +945,21 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     setReconnectSecondsLeft(0);
   }, []);
 
+  // #10421: the session is over for good — the agent said so on the control
+  // channel (idle timeout, max length, revoked lease) or the server 401'd a
+  // (re)connect. Stop the reconnect loop, suppress every auto-reconnect
+  // trigger, and show the reason on a card that offers Close, not Retry.
+  const enterSessionEnded = useCallback((reasonText: string) => {
+    userDisconnectRef.current = true;
+    stopReconnect();
+    setErrorKind('session_ended');
+    setStatus('error');
+    setConnectedAt(null);
+    const msg = sessionEndedCardMessage(reasonText);
+    setErrorMessage(msg);
+    onError(msg);
+  }, [stopReconnect, onError]);
+
   // releaseAllKeys is defined after sendInputFn; use ref to break TDZ
   const releaseAllKeysRef = useRef<() => void>(() => {});
 
@@ -1061,13 +1079,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // operator knows to relaunch from the dashboard instead of seeing an
       // opaque error or the loop hammering the dead endpoint (Finding #5, C2).
       if (err instanceof SessionEndedError) {
-        userDisconnectRef.current = true; // suppress further auto-reconnect triggers
-        stopReconnect();
-        setStatus('error');
-        setConnectedAt(null);
-        const msg = sessionEndedDisplayMessage(err);
-        setErrorMessage(msg);
-        onError(msg);
+        enterSessionEnded(sessionEndedReasonText(err));
         reconnectInFlightRef.current = false;
         return;
       }
@@ -1084,7 +1096,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     } finally {
       reconnectInFlightRef.current = false;
     }
-  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, remoteOs]);
+  }, [connectWebRTC, connectWebSocket, connectVncTransport, stopReconnect, enterSessionEnded, remoteOs]);
 
   const startReconnect = useCallback(() => {
     if (!authRef.current || userDisconnectRef.current) return;
@@ -1252,13 +1264,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // already ended/revoked — show the terminal message and don't let the
         // reconnect loop spin on a dead sessionId (Finding #5, C2).
         if (err instanceof SessionEndedError) {
-          userDisconnectRef.current = true;
-          stopReconnect();
-          setStatus('error');
-          const msg = sessionEndedDisplayMessage(err);
-          setErrorMessage(msg);
-          setConnectedAt(null);
-          onError(msg);
+          enterSessionEnded(sessionEndedReasonText(err));
           return;
         }
         const msg = err instanceof Error ? err.message : 'Connection failed';
@@ -1328,7 +1334,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	        });
 	      }
 	    };
-	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect]);
+	  }, [connectWebRTC, connectWebSocket, connectVncTransport, onError, params, stopReconnect, enterSessionEnded]);
 
   // Mark a window as "session active" only when fully connected.
   // Pass session_id so Rust can detect duplicate deep links for the same session.
@@ -1382,17 +1388,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
     const endSession = (message: string) => {
       userDisconnectRef.current = true; // no auto-reconnect onto a dead session
-      stopReconnect();
       webrtcAttemptsRef.current.invalidate();
       const prevRtc = webrtcRef.current;
       webrtcRef.current = null;
       prevRtc?.close();
       wsCleanupRef.current?.();
       wsCleanupRef.current = null;
-      setStatus('error');
-      setConnectedAt(null);
-      setErrorMessage(message);
-      onError(message);
+      // Terminal: Retry would only replay the revoked session (#10421).
+      enterSessionEnded(message);
     };
 
     return startRevocationLeaseRenewal(
@@ -1402,12 +1405,12 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         accessToken: auth.accessToken,
       },
       {
-        onRevoked: () => endSession(LEASE_REVOKED_MESSAGE),
+        onRevoked: (reason) => endSession(sessionEndingText({ reason: 'revoked', detail: reason })),
         onLost: () => endSession(LEASE_LOST_MESSAGE),
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, params.mode, stopReconnect, onError]);
+  }, [status, params.mode, enterSessionEnded]);
 
   // Count WebRTC video frames for the FPS readout. See lib/frameCounter.ts
   // for the rVFC-with-watchdog-fallback strategy: some WebViews (notably
@@ -1544,6 +1547,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
               blockLocalInputTimerRef.current = null;
             }
             setBlockLocalInput(state => applyBlockLocalInputResult(state, result));
+            break;
+          }
+          // #10421: the agent is about to stop this session on purpose. Go
+          // terminal now, so the peer drop that follows is not mistaken for a
+          // network blip and fed to the reconnect loop.
+          case 'session_ending': {
+            const notice = parseSessionEndingMessage(msg);
+            if (notice) enterSessionEnded(sessionEndingText(notice));
             break;
           }
           case 'input_capabilities':
@@ -2821,6 +2832,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // click on the toolbar silently goes nowhere.
   const focusRing = inputFocused ? 'ring-1 ring-inset ring-accent-soft/60' : '';
 
+  const errorCard = errorCardFor(errorKind);
+
   return (
     <div className="flex flex-col h-screen bg-gray-900">
       <ViewerToolbar
@@ -3066,13 +3079,14 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         {status === 'error' && (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
             <div className="text-center">
-              <p className="text-red-400 mb-2">Connection Error</p>
-              {errorMessage && <p className="text-gray-400 text-sm mb-4">{errorMessage}</p>}
+              <p className={errorCard.showRetry ? 'text-red-400 mb-2' : 'text-gray-200 font-medium mb-2'}>{errorCard.title}</p>
+              {errorMessage && <p className="text-gray-400 text-sm mb-4 max-w-md">{errorMessage}</p>}
               <div className="flex items-center justify-center gap-2">
                 {/* A refused handshake is recoverable: retrying re-enters the
                     connect path, which always mints a brand new one-time
-                    ticket rather than replaying the rejected URL. */}
-                <button
+                    ticket rather than replaying the rejected URL. An ended
+                    session is not (#10421): the token cannot reconnect it. */}
+                {errorCard.showRetry && <button
                   onClick={() => {
                     setErrorMessage(null);
                     userDisconnectRef.current = false;
@@ -3081,7 +3095,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
                   className="px-4 py-2 bg-accent hover:bg-accent-hover rounded text-white"
                 >
                   Retry
-                </button>
+                </button>}
                 <button
                   onClick={onDisconnect}
                   className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white"

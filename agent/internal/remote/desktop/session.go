@@ -214,6 +214,10 @@ type SessionManager struct {
 	// while a watchdog is running would be a data race.
 	clock *watchdogClock
 
+	// notifyEnding, when set, replaces the watchdog's session_ending send
+	// (#10421). Test-only, with the same set-before-start rule as clock.
+	notifyEnding func(session *Session, body map[string]any)
+
 	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
 	// revocation lease for a session. Set by the layer that owns the agent's
 	// command WebSocket (the heartbeat), because this package has no transport
