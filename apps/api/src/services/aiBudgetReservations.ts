@@ -1051,7 +1051,9 @@ export async function attestUnboundRate(input: {
  * primary or the refusal-fallback snapshot, or (W05) a carried snapshot for its
  * own model key. One exception, from the W05 spike:
  * the CLI can switch a turn to a model the binding never named (its own
- * refusal fallback). That row is accepted only when flagged fallbackUsed and
+ * refusal fallback), and bills its own background call under a model the
+ * binding never named (#10413). That row is accepted only when flagged
+ * fallbackUsed or model_role 'background', and
  * priced at exactly that model's CURRENT rate for the turn's funding, re-read
  * here inside the transaction: on a platform turn its platform row; on a BYOK
  * turn (#7773) its enabled, priced offering on the binding's own connection,
@@ -1084,14 +1086,18 @@ async function assertInvocationsMatchBinding(
     // requestedModel: toNewInvocations stores the usage key there.
     const carried = binding.carriedRates?.find((c) => c.wireModel === row.requestedModel);
     if (carried && sameJson(rate, carried.rateSnapshot)) continue;
-    if (row.fallbackUsed && binding.funding === 'platform' && !boundModels.has(row.requestedModel)
+    // #10413: the CLI's background call is priced by the same unbound-model
+    // path as a fallback, but labelled model_role 'background' (fallback_used
+    // false), so either label admits the exception below.
+    const unboundLabelled = row.fallbackUsed === true || row.modelRole === 'background';
+    if (unboundLabelled && binding.funding === 'platform' && !boundModels.has(row.requestedModel)
         && (rate as { source?: unknown } | null)?.source === 'platform') {
       const platform = await getPlatformModelByModelId(row.requestedModel);
       const current = platform ? platformRateSnapshot(platform) : null;
       if (current && sameJson(rate, current)) continue;
     }
     const rateSource = (rate as { source?: unknown } | null)?.source;
-    if (row.fallbackUsed && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
+    if (unboundLabelled && binding.funding === 'partner_key' && !boundModels.has(row.requestedModel)
         && (rateSource === 'offering' || rateSource === 'linked_platform')) {
       const attested = binding.connectionId ? attestedUnboundRate(attestations, binding.connectionId, row.requestedModel) : null;
       // An attestation is the turn's decision and is authoritative: a row

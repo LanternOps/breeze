@@ -461,6 +461,90 @@ describe('priceUsage: carried rates across a switch (W05 spike constraint 4)', (
   });
 });
 
+describe('#10413 follow-up: the CLI background call is attributed as background, never as a fallback', () => {
+  // A haiku id the binding never named (B.refusalFallback is the undated alias).
+  const BG = 'claude-haiku-4-5-20251001';
+  const BG_RATE = { inputCentsPerM: 80, outputCentsPerM: 400, cacheReadCentsPerM: 8, cacheWriteCentsPerM: 100 };
+  const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
+  const roles = (rows: ReturnType<typeof toNewInvocations>) => rows.map((r) => [r.requestedModel, r.modelRole, r.fallbackUsed]);
+
+  it('a two-key agent-run hop: one primary row + one background row, fallback_used false on both, total unchanged', async () => {
+    const { sdkTurnUsage, newSdkTurnObservation } = await import('./invocationUsage');
+    const MAIN = { input: 100, output: 80, cacheRead: 1500, cacheWrite: 10 };
+    const BGT = { input: 900, output: 15, cacheRead: 0, cacheWrite: 0 };
+    const mu = (t: typeof MAIN) => ({
+      inputTokens: t.input, outputTokens: t.output, cacheReadInputTokens: t.cacheRead,
+      cacheCreationInputTokens: t.cacheWrite, webSearchRequests: 0, costUSD: 0,
+    });
+    const turn = sdkTurnUsage({
+      binding: B, observation: newSdkTurnObservation(), previousSnapshot: null, queryStartedAtZero: true,
+      result: {
+        type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn',
+        usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 1500, cache_creation_input_tokens: 10 },
+        modelUsage: { 'claude-sonnet-5-5': mu(MAIN), [BG]: mu(BGT) },
+      } as never,
+    });
+    expect(turn.usage.map((u) => u.model)).toEqual(['claude-sonnet-5-5', BG]);
+    m.getPlatformModelByModelId.mockResolvedValue({ rates: BG_RATE, optionRates: null });
+    await settleInvocation(base({ agentRunId: 'run-1', usage: turn.usage, outcome: turn.outcome }));
+    const rows = m.settleDurably.mock.calls[0]![0].invocations as ReturnType<typeof toNewInvocations>;
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      [BG, 'background', false],
+    ]);
+    expect(rows.map((r) => r.refusalCategory)).toEqual([null, null]);
+    // Attribution only: each row keeps its own rate, and the total is both keys billed.
+    const expected = priceInvocation({ source: 'platform', standard: STD }, MAIN, {})
+      + priceInvocation({ source: 'platform', standard: BG_RATE }, BGT, {});
+    expect(rows.reduce((s, r) => s + (r.costCents ?? 0), 0)).toBeCloseTo(expected, 6);
+    expect(rows[1]!.rateSnapshot).toEqual({ source: 'platform', standard: BG_RATE });
+  });
+
+  it('a refusal swap with the background call: refused leg primary, the fallback model fallback, the helper background', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5'), use(BG)],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-haiku-4-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-haiku-4-5', 'fallback', true],
+      [BG, 'background', false],
+    ]);
+    expect(rows.map((r) => r.stopReason)).toEqual(['refusal', 'end_turn', 'end_turn']);
+  });
+
+  it('a failed hop whose only usage is the background call (#7786): background, not a fallback', () => {
+    const rows = rowsOf(base({ usage: [use(BG)], outcome: { ...OK, stopReason: 'error', servedModel: 'claude-sonnet-5-5' } }));
+    expect(roles(rows)).toEqual([[BG, 'background', false]]);
+  });
+
+  it('a CLI swap to an unbound model that SERVED the turn stays a fallback', () => {
+    const rows = rowsOf(base({ usage: [use('claude-sonnet-4-6')], outcome: { ...OK, fallbackUsed: true, servedModel: 'claude-sonnet-4-6' } }));
+    expect(roles(rows)).toEqual([['claude-sonnet-4-6', 'fallback', true]]);
+  });
+
+  it('a refusal swap the turn could not attribute to a key keeps every unbound key a fallback (conservative)', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5'), use('claude-sonnet-4-6'), use(BG)],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-sonnet-5-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-sonnet-4-6', 'fallback', true],
+      [BG, 'fallback', true],
+    ]);
+  });
+
+  it('a carried model\'s late delta is primary, not background', () => {
+    const binding = withCarriedRates(B, [{ wireModel: 'claude-opus-4-8', rateSnapshot: { source: 'platform', standard: OTHER } }]);
+    const rows = rowsOf(base({ binding, usage: [use('claude-sonnet-5-5'), use('claude-opus-4-8')] }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      ['claude-opus-4-8', 'primary', false],
+    ]);
+  });
+});
+
 describe('W11 prompt provenance', () => {
   const input = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
     binding: { ...B, promptProfile: 'claude-standard' }, orgId: 'org-1', userId: null, sessionId: 's1', agentRunId: null,
