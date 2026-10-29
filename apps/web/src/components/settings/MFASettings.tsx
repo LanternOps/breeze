@@ -191,7 +191,6 @@ export default function MFASettings({
     if (ssoResumeView) setView(ssoResumeView);
   }, [ssoResumeView]);
 
-  // Acknowledge only displayed prop codes so a later passkey issuance can open.
   const acknowledgedCodesRef = useRef(recoveryCodes);
   useEffect(() => {
     if (recoveryCodes?.length && recoveryCodes !== acknowledgedCodesRef.current
@@ -1163,7 +1162,6 @@ export default function MFASettings({
     );
   }
 
-  // Recovery code management
   if (view === 'recovery') {
     return (
       <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
