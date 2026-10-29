@@ -4,7 +4,7 @@ import { db, getCurrentDbAccessContext, hasDbAccessContext, runAfterDbContextCom
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, organizations } from '../db/schema';
 import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './filterEngine';
 import { acquirePartnerGroupRowLocks, acquireGroupOrgMembershipLocks, acquireMembershipExportOrgLock } from './deviceGroupOwnership';
-import { UNASSIGNED_POOL_ORG_TYPE } from './unassignedPool/orgType';
+import { isHiddenOrgType } from './unassignedPool/visibility';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 
 type MembershipAction = 'added' | 'removed';
@@ -300,8 +300,9 @@ async function readEvaluationDevice(deviceId: string): Promise<EvaluationDevice 
   return device;
 }
 
+/** Quick Support and holding-org devices never join a partner-wide group. */
 function canJoinPartnerGroups(device: EvaluationDevice): boolean {
-  return device.orgType !== 'quick_support' && device.orgType !== UNASSIGNED_POOL_ORG_TYPE;
+  return !isHiddenOrgType(device.orgType);
 }
 
 function ownsDevice(group: GroupForResolution, device: EvaluationDevice): boolean {

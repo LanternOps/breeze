@@ -196,12 +196,13 @@ describe('partner group evaluation jobs', () => {
     expect(mocks.add).toHaveBeenCalledOnce();
   });
 
-  it('replaces only its sweep repeatable and schedules the six-hour sweep with initial jitter', async () => {
+  it('replaces only its sweep repeatable and schedules the six-hour sweep on its registry cron slot', async () => {
     mocks.repeatables.mockResolvedValue([{ name: 'partner-group-sweep', key: 'old' }, { name: 'unrelated', key: 'keep' }]);
-    await schedulePartnerGroupEvaluationSweep(() => 0.5);
+    await schedulePartnerGroupEvaluationSweep();
     expect(mocks.removeRepeatable.mock.calls).toEqual([['old']]);
+    // A cron slot, never `every`: BullMQ anchors `every` to the epoch (scheduleRegistry.ts).
     expect(mocks.add).toHaveBeenCalledWith('partner-group-sweep', expect.any(Object), expect.objectContaining({
-      repeat: { every: 21600000 }, delay: 10800000, attempts: 3, backoff: { type: 'exponential', delay: 60000 },
+      repeat: { pattern: '24 5,11,17,23 * * *' }, attempts: 3, backoff: { type: 'exponential', delay: 60000 },
     }));
   });
 

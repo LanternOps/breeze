@@ -13,8 +13,10 @@ import {
 } from '../services/partnerGroupEvaluation';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 export const PARTNER_GROUP_EVALUATION_QUEUE = 'partner-group-evaluation';
+/** Nominal sweep period; the schedule itself is the `partner-group-evaluation-sweep` cron slot. */
 export const PARTNER_GROUP_SWEEP_INTERVAL_MS = 21_600_000;
 export const PARTNER_GROUP_SWEEP_JITTER_MS = 900_000;
 const SWEEP_QUEUE = 'partner-group-evaluation-sweep';
@@ -207,14 +209,15 @@ export async function runPartnerGroupSweep(deps: PartnerGroupSweepDeps = {}): Pr
   return { partnerGroups: partnerGroups.length, orgGroups: orgGroups.length };
 }
 
-export async function schedulePartnerGroupEvaluationSweep(random: () => number = Math.random): Promise<void> {
+export async function schedulePartnerGroupEvaluationSweep(): Promise<void> {
   const target = getSweepQueue();
   for (const job of await target.getRepeatableJobs()) {
     if (job.name === 'partner-group-sweep') await target.removeRepeatableByKey(job.key);
   }
   await target.add('partner-group-sweep', { queuedAt: new Date().toISOString() }, {
-    jobId: 'partner-group-sweep', repeat: { every: PARTNER_GROUP_SWEEP_INTERVAL_MS },
-    delay: Math.floor(random() * PARTNER_GROUP_SWEEP_INTERVAL_MS),
+    // A registry cron slot, not `every`: BullMQ anchors `every` to the epoch
+    // (see jobs/scheduleRegistry.ts). Per-group jitter is applied when heads are enqueued.
+    jobId: 'partner-group-sweep', repeat: { pattern: jobSchedule('partner-group-evaluation-sweep') },
     attempts: 3, backoff: { type: 'exponential', delay: 60_000 },
     removeOnComplete: { count: 20 }, removeOnFail: { count: 50 },
   });
