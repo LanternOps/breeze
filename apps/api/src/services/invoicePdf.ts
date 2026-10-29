@@ -22,7 +22,7 @@
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
 import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets } from '../db/schema';
 import { isPartnerOnlinePaymentAvailable, isPartnerOnlinePaymentAvailableOnCallerConnection } from './partnerStripe';
@@ -376,9 +376,37 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
   return { lines: [...byLine.values()], omitted };
 }
 
+/**
+ * The partner-axis inputs of a render, read by a caller that cannot see them on its own
+ * connection (the org-scoped portal) BEFORE it opens the transaction the render runs in
+ * (#9585): the partner row and whether the partner can take online payment.
+ */
+export interface RenderPartnerContext {
+  partner: typeof partners.$inferSelect | null;
+  onlinePaymentAvailable: boolean;
+}
+
+/**
+ * Read a RenderPartnerContext in one short system context of its own. Call it with NO
+ * transaction open: inside one it takes a second pooled connection, the #9446/#9454
+ * lock-queue stall. `partnerId` must come from an invoice row the caller is already
+ * authorized for. Errors propagate, like the loader's own partner read: the issued PDF
+ * is persisted and frozen, so a transient fault must fail the render, not bake in a
+ * brand-less or pay-line-less copy.
+ */
+export async function loadInvoiceRenderPartnerContext(partnerId: string): Promise<RenderPartnerContext> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [partner] = await db.select().from(partners).where(eq(partners.id, partnerId)).limit(1);
+    const onlinePaymentAvailable = await isPartnerOnlinePaymentAvailableOnCallerConnection(partnerId);
+    return { partner: partner ?? null, onlinePaymentAvailable };
+  }));
+}
+
 /** Load the invoice and its render context (branding, footer, appendix). The lines come from the
- *  customer-document assembler (`renderInvoicePdf`), the one place they are projected. */
-export async function loadInvoiceForRender(invoiceId: string): Promise<{
+ *  customer-document assembler (`renderInvoicePdf`), the one place they are projected.
+ *  `partnerContext`: the partner-axis inputs the caller preloaded (see RenderPartnerContext);
+ *  without it they are read on the caller's connection. */
+export async function loadInvoiceForRender(invoiceId: string, partnerContext?: RenderPartnerContext): Promise<{
   invoice: InvoiceRow;
   branding: InvoiceBranding;
   /** The partner/branding rows this loader read on the CALLER's connection, for the assembler. */
@@ -394,7 +422,12 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
 } | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
-  const [partner] = await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  if (partnerContext?.partner && partnerContext.partner.id !== invoice.partnerId) {
+    throw new Error(`Preloaded partner ${partnerContext.partner.id} is not invoice ${invoiceId}'s partner`);
+  }
+  const [partner] = partnerContext
+    ? [partnerContext.partner ?? undefined]
+    : await db.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   // #3205 W07 decision 14a: the renderer reads the STAMP, never the partner row —
   // a change to the partner default cannot alter what an issued invoice renders.
   // A DRAFT has no stamp yet (device_appendix is still the raw override, NULL =
@@ -438,9 +471,12 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
   // stripe_connect_accounts is gated on the same breeze_has_partner_access, so a caller that
   // can see one sees the other; an org-scoped caller cannot, and keeps the system read.
   // Issued only: a draft never prints the pay-online line.
-  const onlinePaymentAvailable = partner && invoice.status !== 'draft'
-    ? await isPartnerOnlinePaymentAvailableOnCallerConnection(invoice.partnerId)
-    : undefined;
+  // #9585: a caller that preloaded the partner context already holds the answer.
+  const onlinePaymentAvailable = invoice.status === 'draft'
+    ? undefined
+    : partnerContext
+      ? partnerContext.onlinePaymentAvailable
+      : partner ? await isPartnerOnlinePaymentAvailableOnCallerConnection(invoice.partnerId) : undefined;
   const documentBrand = resolveDocumentBrand(branding, partner?.settings);
   return {
     invoice,
@@ -449,9 +485,11 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
     onlinePaymentAvailable,
     // Only when the partner row was visible: an org-scoped caller (the portal) reads 0 partner rows
     // under partner-axis RLS (#1375 class), and then the assembler's own system-context read must run.
-    preloaded: partner
+    // A preloaded partner context counts as read even when it found no row: the assembler
+    // must not open its own system-context read under the caller's transaction (#9585).
+    preloaded: partner || partnerContext
       ? {
-          partner: { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings },
+          partner: partner ? { name: partner.name, billingEmail: partner.billingEmail, documentTheme: partner.documentTheme, documentPageSize: partner.documentPageSize, settings: partner.settings } : null,
           brand: branding ? { logoUrl: branding.logoUrl ?? null, primaryColor: branding.primaryColor ?? null } : null,
         }
       : undefined,
@@ -498,8 +536,13 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
  * artifact. So for a draft we render and return the bytes for the preview but do
  * NOT persist or stamp anything — `documentId` is null to signal that.
  */
-export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId: string | null; sha256: string; pdf: Buffer }> {
-  const loaded = await loadInvoiceForRender(invoiceId);
+export async function renderInvoicePdf(
+  invoiceId: string,
+  /** `partnerContext`: preloaded by a caller that cannot see the partner rows on its own
+   *  connection, so no read here opens a second one (#9585; see loadInvoiceRenderPartnerContext). */
+  opts: { partnerContext?: RenderPartnerContext } = {},
+): Promise<{ documentId: string | null; sha256: string; pdf: Buffer }> {
+  const loaded = await loadInvoiceForRender(invoiceId, opts.partnerContext);
   if (!loaded) throw new Error(`Invoice ${invoiceId} not found for PDF render`);
   // Print the public view-and-pay link on issued documents (never drafts — no
   // link should exist for a document that hasn't been issued). Mint-or-reproduce

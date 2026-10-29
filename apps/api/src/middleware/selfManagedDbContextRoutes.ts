@@ -124,6 +124,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // asserts no DB context is held across that call.
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/autopay-confirmation\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/public\/[^/]+\/autopay-confirmation\/?$/ },
+  // #9585: customer-portal invoice detail and PDF. Branding, online-payment
+  // availability, the autopay offers and an on-demand render's partner row are
+  // partner-axis reads, each in a system context of its own; under the portal
+  // request transaction each took a SECOND pooled connection while the first sat
+  // idle (the #9446/#9454 lock-queue stall). The handlers open their own org
+  // transactions with the middleware's exact scope (portalOrgDbAccessContext) and
+  // run the system reads with none open. HEAD runs the GET handler (Hono), so it
+  // must opt out with it.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/?$/ },
+  { method: 'HEAD', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pdf\/?$/ },
+  { method: 'HEAD', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pdf\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
