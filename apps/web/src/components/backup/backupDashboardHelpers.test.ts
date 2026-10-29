@@ -33,6 +33,12 @@ describe('formatBytes — the one backup byte formatter (#9931)', () => {
     expect(formatBytes(1023)).toBe('1,023 B');
   });
 
+  it('promotes to the next unit when rounding reaches 1024 instead of printing "1,024 KB"', () => {
+    expect(formatBytes(1023.6)).toBe('1.00 KB');
+    expect(formatBytes(1024 * 1023.99)).toBe('1.00 MB');
+    expect(formatBytes(1024 ** 3 * 1023.7)).toBe('1.00 TB');
+  });
+
   it('caps at TB rather than inventing a unit', () => {
     expect(formatBytes(2 * 1024 ** 5)).toBe('2,048 TB');
   });
