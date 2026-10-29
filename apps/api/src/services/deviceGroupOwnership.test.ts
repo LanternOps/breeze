@@ -4,11 +4,13 @@ import type { SQL } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
   db: { select: vi.fn() },
-  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization' })),
+  getCurrentDbAccessContext: vi.fn(() => ({
+    scope: 'organization', orgId: 'org-a', accessibleOrgIds: ['org-a'], accessiblePartnerIds: [], currentPartnerId: null,
+  })),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   findPartnerOwnedGroupIds, groupOwnerMatchesMembershipOrg, isPartnerOwnedGroup,
   partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY,
@@ -39,9 +41,32 @@ describe('deviceGroupOwnership', () => {
       .toEqual(['partner-group']);
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    // The partner pinning (no cross-partner existence oracle) is proven against
+    // real Postgres in partnerDeviceGroupFanout.integration.test.ts.
+  });
+
+  it('returns [] without querying when the context names no partner and no org', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({
+      scope: 'organization', orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [], currentPartnerId: null,
+    } as never);
+    expect(await findPartnerOwnedGroupIds(['partner-group'])).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('reads unconstrained without a second connection when already in system scope', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({ scope: 'system', orgId: null, accessibleOrgIds: null } as never);
+    const where = vi.fn().mockResolvedValue([{ id: 'partner-group' }]);
+    vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
+    expect(await findPartnerOwnedGroupIds(['partner-group'])).toEqual(['partner-group']);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
     const query = dialect.sqlToQuery(where.mock.calls[0]![0] as SQL);
-    expect(query.params).toEqual(['partner-group', 'org-group', 'unknown']);
     expect(query.sql).toContain('"device_groups"."org_id" is null');
+  });
+
+  it('returns [] without querying when there is no ambient DB context to scope by', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce(undefined);
+    expect(await findPartnerOwnedGroupIds(['partner-group'])).toEqual([]);
+    expect(db.select).not.toHaveBeenCalled();
   });
 
   it('does not query for empty input', async () => {

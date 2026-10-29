@@ -147,4 +147,30 @@ describe('partner device group fanout (#10521 W2a)', () => {
     }, () => findPartnerOwnedGroupIds([f.groupId, f.a.deviceId]));
     expect(found).toEqual([f.groupId]);
   });
+
+  runDb('another partner\'s group is indistinguishable from an unknown id (no cross-tenant existence oracle)', async () => {
+    const f = await fixture();
+    const [foreign] = await query<{ id: string }>(sql`
+      INSERT INTO device_groups (org_id, partner_id, name, type)
+      VALUES (NULL, ${f.otherPartnerId}, 'Other partner group', 'dynamic') RETURNING id
+    `);
+    if (!foreign) throw new Error('foreign group fixture missing');
+    const orgSession = {
+      scope: 'organization' as const, orgId: f.a.orgId, accessibleOrgIds: [f.a.orgId],
+      accessiblePartnerIds: [], currentPartnerId: null, userId: null,
+    };
+    const partnerSession = {
+      scope: 'partner' as const, orgId: null, accessibleOrgIds: [f.a.orgId, f.b.orgId],
+      accessiblePartnerIds: [f.partnerId], currentPartnerId: f.partnerId, userId: null,
+    };
+    for (const ctx of [orgSession, partnerSession]) {
+      const foreignResult = await withDbAccessContext(ctx, () => findPartnerOwnedGroupIds([foreign.id]));
+      const unknownResult = await withDbAccessContext(ctx, () => findPartnerOwnedGroupIds([randomUUID()]));
+      expect(foreignResult).toEqual([]);
+      expect(foreignResult).toEqual(unknownResult);
+      // Own partner's group is still detected in the same call.
+      expect(await withDbAccessContext(ctx, () => findPartnerOwnedGroupIds([foreign.id, f.groupId])))
+        .toEqual([f.groupId]);
+    }
+  });
 });

@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@breeze/shared';
-import { and, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, organizations } from '../db/schema';
 
@@ -22,23 +22,52 @@ export function groupOwnerMatchesMembershipOrg(): SQL {
 /**
  * Which of `ids` name a partner-owned group, ignoring unknown ids and repeats.
  *
- * Reads in SYSTEM scope on purpose. Organization-session JWTs carry no
- * partner id (`middleware/auth.ts`), so under the caller's RLS a partner group
- * is invisible to an org user and a request-scoped read would return [] — the
- * write would then store the id silently. The query returns only the ids the
- * caller already sent, filtered to `org_id IS NULL`; no row data leaves it.
+ * Why not the caller's RLS: organization-session JWTs carry no partner id
+ * (`middleware/auth.ts`), so the SELECT-only partner branch never matches and a
+ * request-scoped read returns [] for an org user — the write would then store
+ * the id silently.
+ *
+ * So the read runs in system scope, but is pinned to the CALLER's own
+ * partner(s): the context's partner ids plus the partners of its orgs. A group
+ * of another partner is filtered out exactly like an unknown id (same []), so
+ * the helper is no cross-tenant existence oracle. Only the caller's own ids
+ * come back; no row data leaves the query. A system-scope caller (worker) is
+ * unconstrained; a call with no ambient context cannot be scoped and returns [].
  */
 export async function findPartnerOwnedGroupIds(ids: readonly string[]): Promise<string[]> {
   const uniqueIds = [...new Set(ids)];
   if (uniqueIds.length === 0) return [];
-  const read = async () => db.select({ id: deviceGroups.id })
-    .from(deviceGroups)
-    .where(and(inArray(deviceGroups.id, uniqueIds), isNull(deviceGroups.orgId)));
-  // Already system-scoped (worker): read straight through rather than open a
-  // second pooled connection. Otherwise leave the request context first.
-  const rows = getCurrentDbAccessContext()?.scope === 'system'
-    ? await read()
-    : await runOutsideDbContext(() => withSystemDbAccessContext(read));
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx) return [];
+
+  const base = and(inArray(deviceGroups.id, uniqueIds), isNull(deviceGroups.orgId));
+  if (ctx.scope === 'system') {
+    // Already system-scoped: read straight through (no second pooled connection).
+    const rows = await db.select({ id: deviceGroups.id }).from(deviceGroups).where(base);
+    return [...new Set(rows.map((row) => row.id))];
+  }
+
+  const partnerIds = [...new Set([
+    ...(ctx.accessiblePartnerIds ?? []),
+    ...(ctx.currentPartnerId ? [ctx.currentPartnerId] : []),
+  ])];
+  const orgIds = [...new Set([
+    ...(ctx.accessibleOrgIds ?? []),
+    ...(ctx.orgId ? [ctx.orgId] : []),
+  ])];
+  if (partnerIds.length === 0 && orgIds.length === 0) return [];
+
+  const ownPartner = or(
+    partnerIds.length > 0 ? inArray(deviceGroups.partnerId, partnerIds) : undefined,
+    orgIds.length > 0
+      ? inArray(
+        deviceGroups.partnerId,
+        db.select({ partnerId: organizations.partnerId }).from(organizations).where(inArray(organizations.id, orgIds)),
+      )
+      : undefined,
+  );
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select({ id: deviceGroups.id }).from(deviceGroups).where(and(base, ownPartner))));
   return [...new Set(rows.map((row) => row.id))];
 }
 
