@@ -742,13 +742,20 @@ async function deliverInvoiceEmail(
   // in this path ever invited them to one). Minted/reproduced at the top of
   // this function; `portalLink` holds the portal fallback if that failed.
   // "View & pay" only when the page will actually offer payment: payable
-  // status with a balance, and the partner has a Stripe key on file. This read
-  // runs in the caller's context — the send routes are partner/system scoped,
-  // both of which can see the partner-axis stripe_connect_accounts row.
+  // status with a balance, and the partner has a Stripe key on file.
+  // #9585: on the caller's connection when the partner row read above was visible.
+  // Every caller holds a transaction open here (the staff send/resend requests, and
+  // the accepted-quote auto-email's system transaction), and the partnerStripe
+  // default opens a SECOND connection that can queue behind a pending ACCESS
+  // EXCLUSIVE lock while this one waits on it. stripe_connect_accounts is gated on
+  // the same breeze_has_partner_access as partners, so a caller that sees one sees
+  // the other; a caller that cannot keeps the system-context read.
   let payEnabled = false;
   if (publicLinked && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0) {
     try {
-      payEnabled = await isPartnerOnlinePaymentAvailable(invoice.partnerId);
+      payEnabled = partner
+        ? await isPartnerOnlinePaymentAvailableOnCallerConnection(invoice.partnerId)
+        : await isPartnerOnlinePaymentAvailable(invoice.partnerId);
     } catch (err) { console.error('[invoicePdf] online-payment availability lookup failed — sending with the View label', err); /* label-only — never fail the send over it */ }
   }
   // This IS the "Request balance payment" action for deposit invoices: the money
