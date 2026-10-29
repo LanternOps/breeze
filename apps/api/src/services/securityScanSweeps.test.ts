@@ -677,6 +677,10 @@ describe('reads', () => {
 
     respondForReads({ sweeps: [sweepRow()] });
     expect((await getSweep(auth(), SWEEP_ID))?.paths).toBeNull();
+
+    // Only a custom sweep carries paths, even if a non-custom row somehow has them.
+    respondForReads({ sweeps: [sweepRow({ scanType: 'quick', paths: ['/x'] })] });
+    expect((await getSweep(auth(), SWEEP_ID))?.paths).toBeNull();
   });
 
   it("restricted caller's aggregates cover only reachable devices", async () => {
