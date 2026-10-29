@@ -30,6 +30,7 @@ import {
   useAuthStore,
   waitForPendingRefresh,
   validateCfTerminalNavigationUrl,
+  ensureSessionPermissions,
 } from './auth';
 
 vi.mock('@simplewebauthn/browser', () => ({
@@ -2792,5 +2793,115 @@ describe('logout resets the entitlements cache (#9907)', () => {
     useAuthStore.getState().logout();
     expect(entitlementsCache.value).toBeNull();
     expect(entitlementsCache.generation).toBe(generation + 1);
+  });
+});
+
+// #9927 / #9586: a persisted (or freshly auto-logged-in) user object without
+// `permissions` hid every permission-gated nav item, and nothing re-read
+// /users/me until the next login-page sign-in. The shell now asks for them.
+describe('ensureSessionPermissions (#9927)', () => {
+  const ME = {
+    id: 'user-1',
+    email: 'user@example.com',
+    name: 'User One',
+    preferences: {},
+    partnerDefaultLocale: null,
+    permissions: [{ resource: 'devices', action: 'read' }],
+    isPlatformAdmin: false,
+    canManagePartnerWide: true,
+  };
+  const meCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([url]) => String(url).includes('/users/me')).length;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.removeItem('breeze-auth');
+    useAuthStore.setState({
+      user: null,
+      tokens: null,
+      isAuthenticated: false,
+      isLoading: false,
+      mfaPending: false,
+      mfaTempToken: null
+    });
+  });
+
+  it('fetches /users/me and applies permissions when the session user has none', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(ME));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    await ensureSessionPermissions();
+
+    expect(meCalls(fetchMock)).toBe(1);
+    expect(useAuthStore.getState().user?.permissions).toEqual(ME.permissions);
+    expect(useAuthStore.getState().user?.canManagePartnerWide).toBe(true);
+  });
+
+  it('does nothing when permissions are already known (an empty list is known)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(ME));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login({ ...baseUser, permissions: [] }, baseTokens);
+
+    await ensureSessionPermissions();
+
+    expect(meCalls(fetchMock)).toBe(0);
+    expect(useAuthStore.getState().user?.permissions).toEqual([]);
+  });
+
+  it('waits for an access token instead of racing the cookie restore', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(ME));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.setState({ user: baseUser, isAuthenticated: true, tokens: null });
+
+    await ensureSessionPermissions();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does nothing without a signed-in session', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(ME));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await ensureSessionPermissions();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('asks at most once per session, even when /users/me fails, and again after a new login', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'boom' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    await ensureSessionPermissions();
+    await ensureSessionPermissions();
+    expect(meCalls(fetchMock)).toBe(1);
+    // A failed read leaves the gate closed: missing permissions never mean "allow".
+    expect(useAuthStore.getState().user?.permissions).toBeUndefined();
+
+    useAuthStore.getState().login(baseUser, baseTokens);
+    await ensureSessionPermissions();
+    expect(meCalls(fetchMock)).toBe(2);
+  });
+
+  it('drops a /users/me answer that lands after the session changed hands', async () => {
+    let resolveMe: (r: Response) => void = () => {};
+    const fetchMock = vi.fn().mockImplementation(
+      () => new Promise<Response>((resolve) => { resolveMe = resolve; })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const pending = ensureSessionPermissions();
+    // Same-document sign-out, then a different account signs in on the tab.
+    useAuthStore.getState().logout();
+    useAuthStore.getState().login({ ...baseUser, id: 'user-2', email: 'other@example.com' }, baseTokens);
+    resolveMe(makeResponse(ME));
+    await pending;
+
+    expect(useAuthStore.getState().user?.id).toBe('user-2');
+    expect(useAuthStore.getState().user?.permissions).toBeUndefined();
+    expect(useAuthStore.getState().user?.canManagePartnerWide).toBeUndefined();
   });
 });

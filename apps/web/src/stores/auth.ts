@@ -2031,7 +2031,41 @@ export async function apiPrepareCfTerminalLogout(
   return outcome;
 }
 
+/**
+ * Session generation that `ensureSessionPermissions` last asked /users/me for.
+ * Keyed on `sessionGeneration`, so every login / logout / user switch re-arms it
+ * without a logout hook, and a failed read is not retried in a loop.
+ */
+let permissionsSelfHealGeneration: number | null = null;
+
+/**
+ * #9927 / #9586: the sidebar gates every permission-gated item on
+ * `user.permissions` and treats `undefined` as hidden. Some sessions reach the
+ * dashboard with a user object that never carried the field — the signup
+ * auto-login (`/auth/verify-email` returns a bare user), the forced-MFA
+ * hand-off, or a `breeze-auth` blob persisted before /users/me resolved — and
+ * nothing re-read /users/me until the next login-page sign-in.
+ *
+ * Called from the dashboard shell (AuthOverlay). Once the session has an access
+ * token and its user still has no permission list, pull /users/me once for this
+ * session generation. Missing permissions stay "hidden" until the server
+ * answers (a failed read leaves the nav closed); the API still enforces every
+ * permission server-side, so this only fixes what the nav shows.
+ */
+export function ensureSessionPermissions(): Promise<void> {
+  const { user, isAuthenticated, tokens, sessionGeneration } = useAuthStore.getState();
+  if (!isAuthenticated || !user || !tokens?.accessToken) return Promise.resolve();
+  if (Array.isArray(user.permissions)) return Promise.resolve();
+  if (permissionsSelfHealGeneration === sessionGeneration) return Promise.resolve();
+  permissionsSelfHealGeneration = sessionGeneration;
+  return fetchAndApplyPreferences();
+}
+
 export async function fetchAndApplyPreferences(): Promise<void> {
+  // Fence on the session: a same-document sign-out followed by another
+  // account's sign-in must never receive the previous account's /users/me
+  // (permissions, platform-admin flag, preferences, locale).
+  const generation = useAuthStore.getState().sessionGeneration;
   try {
     const response = await fetchWithAuth('/users/me');
     if (!response.ok) {
@@ -2042,6 +2076,10 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     }
 
     const data = await response.json();
+    if (useAuthStore.getState().sessionGeneration !== generation) {
+      console.warn('[fetchAndApplyPreferences] session changed while /users/me was in flight; response dropped');
+      return;
+    }
     // isPlatformAdmin rides along with this refresh: fresh logins carry it in
     // the login payload, but sessions persisted before the field existed only
     // learn it here — without the merge, the platform-admin nav stays hidden
