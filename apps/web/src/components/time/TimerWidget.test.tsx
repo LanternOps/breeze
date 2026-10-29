@@ -2,8 +2,14 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 
 let canManageBilling = true;
-vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canManageBilling }) }));
-beforeEach(() => { canManageBilling = true; jwtScope = 'partner'; });
+let canReadTime = true;
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({
+    can: (resource: string, action: string) =>
+      resource === 'time_entries' && action === 'read' ? canReadTime : canManageBilling,
+  }),
+}));
+beforeEach(() => { canManageBilling = true; canReadTime = true; jwtScope = 'partner'; });
 let jwtScope: 'partner' | 'organization' | null = 'partner';
 vi.mock('../../lib/authScope', () => ({
   useJwtClaims: () =>
@@ -35,6 +41,14 @@ describe('TimerWidget', () => {
     render(<TimerWidget />);
     await act(async () => { await Promise.resolve(); });
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('does not call /time-entries/running for a partner role without time_entries:read (#10295)', async () => {
+    canReadTime = false;
+    const { container } = render(<TimerWidget />);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="timer-widget"]')).toBeNull();
   });
 
   it('waits for the token (unresolved scope) before fetching the running timer (#7498)', async () => {
