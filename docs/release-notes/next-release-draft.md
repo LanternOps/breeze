@@ -46,6 +46,7 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 - **Legacy restart box defaults to Postpone (W05, P8).** On Windows, the restart Yes/No box (used when the restart kinds are not enabled) now makes **No — the postponement — the default button**, so Enter no longer restarts the machine. A box left unanswered still means no decision.
 - **Restart decisions are audited (W05).** Agents report the person's last decision in `rebootStatus.lastUserAction`; the server writes `device.reboot.user_postponed` or `device.reboot.user_restart_now` once per decision, with the renderer (`assist`, `native` or `headless`). The patch policy editor previews the restart card.
 - **Remote consent card and a clickable session pill (W06).** With `remote.consent` enabled, Breeze Assist asks for remote-session consent on the branded prompt card: the technician the server allows it to show, Allow / Deny with Deny focused and on Esc, and a countdown that states what happens if no one answers. With `remote.session` enabled, the "remote session in progress" indicator becomes a pill the user can click to see who is connected and since when, to end the session (after a confirmation; remote access policy `allow_user_end_session`, default on; technicians see "Ended by the user") and to report a problem, which opens Assist's Request Support chat with the session id filled in. Both kinds are opt-in through `PROMPT_HOST_ENABLED_KINDS`; without them, consent and the banner work exactly as today. Needs Breeze Assist 0.1.3.
+- **Elevation request cards (W07, #10178, #10180).** With `elevation.request` enabled, a standard user who sends an elevation request to IT sees a stateful Breeze Assist card instead of toasts: **Waiting for your IT support team** with the time IT has to answer (the server's pending expiry), **Cancel request** (withdraws it on the server as `user_cancelled`) and **Hide**; then **approved** (naming the technician only when the remote access policy's technician identity level allows it), **denied** (with the technician's reason), **expired**, **failed** or **cancelled**. When UAC is not on the secure desktop, the first question ("Send request" / "Cancel", Cancel is the default) is asked on Assist too; on the secure desktop the SYSTEM helper still asks natively. Opt-in through `PROMPT_HOST_ENABLED_KINDS`; without it, elevation works exactly as today. Needs Breeze Assist 0.1.4, and the API migration `2027-01-15-100000-pam-withdrawn-reason-user-cancelled.sql` deployed before the agent.
 
 ### Flows — Jobs conversion (#5215 W06)
 
@@ -152,6 +153,12 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 ### Device group software rules
 
 Dynamic device groups can now match software versions below, at least, or equal to a chosen version, and match software vendors by name or substring. Version rules compare numeric segments and ignore suffixes such as “(x64)” or “-beta”, so 1.2 and 1.2.0 match equally. Membership updates when installed versions or vendors change, even when software names stay the same.
+### Event logs
+
+- Agent event-log uploads are now validated per row (#10494). Previously one invalid event made the API reject the whole upload with 400, and every event in that collection window was lost.
+- An empty or whitespace-only event message is stored as `(no message text)`; the event's source, ID and level are kept. Rows that still fail validation (for example a message over 2000 characters or `details` over 64 KB) are dropped individually, and the other rows are stored.
+- Response bodies gain `invalidDropped` and `emptyMessageCoerced` counts, and the API logs one `[EventLogs]` warning per affected upload. An upload where every row is invalid returns 200 with `count: 0`.
+- No migration, environment variable or setting. Existing agents benefit without an update.
 
 ### Device groups (partner-owned) — W3 API
 
