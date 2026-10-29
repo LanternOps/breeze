@@ -2093,6 +2093,7 @@
       "title": "Bu fatura gönderilsin mi?",
       "message": "{{amount}} tutarındaki fatura {{customer}} adresine e-postayla gönderilir."
     },
+    "sourceHeldForHourBlock": "Bu taslaktaki sürenin bir kısmı bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak. Bu satırları kaldırın, ardından faturayı kesin.",
     "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },

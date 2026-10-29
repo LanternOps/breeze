@@ -2093,6 +2093,7 @@
       "title": "Enviar esta fatura?",
       "message": "A fatura de {{amount}} será enviada por e-mail para {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte do tempo deste rascunho está reservada para um banco de horas e será faturada no fechamento do período do banco. Remova essas linhas e depois emita a fatura.",
     "unsavedHint": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva.",
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },

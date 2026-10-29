@@ -2093,6 +2093,7 @@
       "title": "Send this invoice?",
       "message": "This emails the invoice to {{customer}} for {{amount}}."
     },
+    "sourceHeldForHourBlock": "Some time on this draft is held for this organization's block hours and will be billed when the block period closes. Remove those lines, then Issue.",
     "unsavedHint": "“{{field}}” has an unsaved change — Issue unlocks once it saves.",
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
