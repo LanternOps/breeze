@@ -12,6 +12,15 @@ interface PartnerGroupPreviewOptions {
   evaluate?: typeof evaluateFilterWithPreview;
 }
 
+interface PartnerGroupPreviewResult {
+  devices: Array<FilterPreviewDevice & { orgId: string }>;
+  total: number;
+  partial: boolean;
+  partialReason: 'timeout' | 'budget' | null;
+  evaluatedOrgs: number;
+  totalOrgs: number;
+}
+
 /** Read-only fan-out: discovery excludes Quick Support/holding orgs; evaluations
  * retain the caller's request context and explicit accessible-org intersection. */
 export async function previewPartnerGroup(
@@ -19,13 +28,7 @@ export async function previewPartnerGroup(
   auth: Pick<AuthContext, 'scope' | 'accessibleOrgIds'>,
   { budgetMs = 5000, limit, now = () => performance.now(), listOrgIds = listPartnerGroupEvaluationOrgIds,
     evaluate = evaluateFilterWithPreview }: PartnerGroupPreviewOptions,
-): Promise<{
-  devices: Array<FilterPreviewDevice & { orgId: string }>;
-  total: number;
-  partial: boolean;
-  evaluatedOrgs: number;
-  totalOrgs: number;
-}> {
+): Promise<PartnerGroupPreviewResult> {
   const started = now();
   const orgIds: string[] = [];
   const accessible = new Set(auth.accessibleOrgIds ?? []);
@@ -40,12 +43,13 @@ export async function previewPartnerGroup(
   }
 
   const devices: Array<FilterPreviewDevice & { orgId: string }> = [];
-  const result = { devices, total: 0,
-    partial: false, evaluatedOrgs: 0, totalOrgs: orgIds.length };
+  const result: PartnerGroupPreviewResult = { devices, total: 0,
+    partial: false, partialReason: null, evaluatedOrgs: 0, totalOrgs: orgIds.length };
   const previewLimit = Math.max(0, limit);
   for (const orgId of orgIds) {
     if (now() - started >= budgetMs) {
       result.partial = true;
+      result.partialReason = 'budget';
       break;
     }
     try {
@@ -59,6 +63,7 @@ export async function previewPartnerGroup(
       if (!(error instanceof FilterQueryTimeoutError)) throw error;
       reportFilterPreviewTimeout(orgId);
       result.partial = true;
+      result.partialReason = 'timeout';
       break;
     }
   }

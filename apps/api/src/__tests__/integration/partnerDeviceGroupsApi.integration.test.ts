@@ -213,6 +213,106 @@ describe('partner-owned device group REST API (#10521 W3)', () => {
     await assertStatus(await request(app, selected, `/groups/${group.id}`, 'DELETE'), 403);
   });
 
+  runDb('partner preview evaluates selected orgs only for P-sel and both orgs for P-all', async () => {
+    const { env, group, otherOrg, ownDeviceId, otherDeviceId } = await populatedFixture();
+    const app = makeApp();
+    const selected = await tokenFor(env.partner.id, { orgAccess: 'selected', orgIds: [env.organization.id] });
+    const all = await tokenFor(env.partner.id);
+    const selectedResponse = await request(app, selected, `/groups/${group.id}/preview`, 'POST', {});
+    const selectedRaw = await selectedResponse.text();
+    expect(selectedResponse.status, selectedRaw).toBe(200);
+    const selectedPreview = JSON.parse(selectedRaw).data;
+    expect(selectedPreview).toMatchObject({ totalCount: 1, partial: false, evaluatedOrgs: 1, totalOrgs: 1 });
+    expect(selectedPreview.devices).toEqual([
+      expect.objectContaining({ id: ownDeviceId, orgId: env.organization.id }),
+    ]);
+    expect(selectedRaw).not.toContain(otherDeviceId);
+    expect(selectedRaw).not.toContain(otherOrg.id);
+
+    const allPreview = await assertStatus(await request(app, all, `/groups/${group.id}/preview`, 'POST', {}), 200);
+    expect(allPreview.data).toMatchObject({ totalCount: 2, partial: false, evaluatedOrgs: 2, totalOrgs: 2 });
+    expect(allPreview.data.devices).toHaveLength(2);
+    expect(allPreview.data.devices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: ownDeviceId, orgId: env.organization.id }),
+      expect.objectContaining({ id: otherDeviceId, orgId: otherOrg.id }),
+    ]));
+  });
+
+  runDb('P-other cannot distinguish a partner group from an unknown id on any read or write surface', async () => {
+    const { group } = await populatedFixture();
+    const foreign = await setupTestEnvironment({ scope: 'partner' });
+    const foreignGroup = await seedGroup(foreign.partner.id, FILTER);
+    const foreignToken = await tokenFor(foreign.partner.id);
+    const app = makeApp();
+    const before = await withSystemDbAccessContext(() => db.select().from(deviceGroups)
+      .where(eq(deviceGroups.id, group.id)));
+    expect(before).toHaveLength(1);
+    const unknownId = randomUUID();
+    for (const [method, suffix, body] of [
+      ['GET', '', undefined], ['GET', '/devices', undefined],
+      ['GET', '/membership-log', undefined], ['POST', '/preview', {}],
+      ['PATCH', '', { name: 'Cross-partner change denied' }], ['DELETE', '', undefined],
+    ] satisfies Array<[string, string, unknown]>) {
+      const known = await request(app, foreignToken, `/groups/${group.id}${suffix}`, method, body);
+      const unknown = await request(app, foreignToken, `/groups/${unknownId}${suffix}`, method, body);
+      const knownBody = await known.text();
+      const unknownBody = await unknown.text();
+      expect(known.status, `${method} ${suffix}: ${knownBody}`).toBe(404);
+      expect(known.status).toBe(unknown.status);
+      expect(knownBody).toBe(unknownBody);
+      expect(knownBody).toBe(JSON.stringify({ error: 'Group not found' }));
+    }
+    for (const ownerScope of ['partner', 'all']) {
+      const listResponse = await request(app, foreignToken, `/groups?ownerScope=${ownerScope}`);
+      const rawList = await listResponse.text();
+      expect(listResponse.status, rawList).toBe(200);
+      expect(rawList).not.toContain(group.id);
+      expect(JSON.parse(rawList).data).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: foreignGroup.id }),
+      ]));
+    }
+    const after = await withSystemDbAccessContext(() => db.select().from(deviceGroups)
+      .where(eq(deviceGroups.id, group.id)));
+    expect(after).toEqual(before);
+  });
+
+  runDb('a read-only P-all user cannot PATCH or DELETE a readable partner group', async () => {
+    const { env, group } = await populatedFixture();
+    const reader = await tokenFor(env.partner.id, { orgAccess: 'all', readOnly: true });
+    const app = makeApp();
+    const before = await withSystemDbAccessContext(() => db.select().from(deviceGroups)
+      .where(eq(deviceGroups.id, group.id)));
+    expect(before).toHaveLength(1);
+    const readable = await assertStatus(await request(app, reader, `/groups/${group.id}`), 200);
+    expect(readable.data.id).toBe(group.id);
+    const patch = await request(app, reader, `/groups/${group.id}`, 'PATCH', { name: 'Read-only change denied' });
+    expect(patch.status, await patch.text()).toBe(403);
+    const deleted = await request(app, reader, `/groups/${group.id}`, 'DELETE');
+    expect(deleted.status, await deleted.text()).toBe(403);
+    const after = await withSystemDbAccessContext(() => db.select().from(deviceGroups)
+      .where(eq(deviceGroups.id, group.id)));
+    expect(after).toEqual(before);
+  });
+
+  runDb('a partner-B policy targeting partner A’s group is indistinguishable from an unknown target and creates no assignment', async () => {
+    const { group } = await populatedFixture();
+    const foreign = await setupTestEnvironment({ scope: 'partner' });
+    const foreignPolicy = await seedPolicy({ partnerId: foreign.partner.id });
+    const foreignToken = await tokenFor(foreign.partner.id);
+    const app = makeApp();
+    const path = `/configuration-policies/${foreignPolicy.id}/assignments`;
+    const known = await request(app, foreignToken, path, 'POST', { level: 'device_group', targetId: group.id });
+    const unknown = await request(app, foreignToken, path, 'POST', { level: 'device_group', targetId: randomUUID() });
+    const knownBody = await known.text();
+    const unknownBody = await unknown.text();
+    expect(known.status, knownBody).toBe(403);
+    expect(known.status).toBe(unknown.status);
+    expect(knownBody).toBe(unknownBody);
+    const assignments = await withSystemDbAccessContext(() => db.select().from(configPolicyAssignments)
+      .where(eq(configPolicyAssignments.configPolicyId, foreignPolicy.id)));
+    expect(assignments).toHaveLength(0);
+  });
+
   runDb('deletes five member orgs including a suspended org, with a lower UUID non-member org and three assignments, atomically', async () => {
     const env = await setupTestEnvironment({ scope: 'partner' });
     const lowOrgId = `00000000-0000-4000-8000-${randomUUID().slice(-12)}`;
@@ -309,7 +409,10 @@ describe('partner-owned device group REST API (#10521 W3)', () => {
     const refused = await assertStatus(await request(app, all,
       `/configuration-policies/${orgPolicy.id}/assignments`, 'POST',
       { level: 'device_group', targetId: group.id }), 400);
-    expect(refused).toEqual({ error: 'Partner-wide device groups can only be targeted by partner-wide policies' });
+    expect(refused).toEqual({
+      error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+      code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+    });
   });
 
   runDb('org-group PATCH refuses filter references to a partner group', async () => {

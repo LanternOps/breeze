@@ -137,3 +137,8 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Partner-owned configuration policies can target their partner's groups, using device-group assignment precedence.
 - Unsupported group filter references return `PARTNER_GROUP_FILTER_UNSUPPORTED`; manual membership changes and pinning remain unavailable for partner groups.
 - No migration, setting, or environment variable is required for this wave.
+
+#### Review fixes
+
+- Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
+- Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.

@@ -31,7 +31,7 @@ describe('previewPartnerGroup', () => {
       return { totalCount: 3, devices: [device], evaluatedAt: new Date() };
     });
     const result = await previewPartnerGroup(group, auth, { limit: 10, now: () => clock, listOrgIds, evaluate });
-    expect(result).toMatchObject({ total: 3, partial: true, evaluatedOrgs: 1, totalOrgs: 2 });
+    expect(result).toMatchObject({ total: 3, partial: true, partialReason: 'budget', evaluatedOrgs: 1, totalOrgs: 2 });
     expect(result.devices).toEqual([{ ...device, orgId: 'org-a' }]);
     expect(evaluate).toHaveBeenCalledTimes(1);
   });
@@ -45,7 +45,7 @@ describe('previewPartnerGroup', () => {
       { orgId: 'org-b', allowedSiteIds: null, previewLimit: 1 },
       { orgId: 'org-c', allowedSiteIds: null, previewLimit: 0 },
     ]);
-    expect(result).toMatchObject({ total: 2, partial: false, evaluatedOrgs: 2, totalOrgs: 2 });
+    expect(result).toMatchObject({ total: 2, partial: false, partialReason: null, evaluatedOrgs: 2, totalOrgs: 2 });
     expect(result.devices).toHaveLength(1);
   });
 
@@ -55,14 +55,36 @@ describe('previewPartnerGroup', () => {
     const result = await previewPartnerGroup(group, { scope: 'system', accessibleOrgIds: null }, { limit: 5 });
     expect(listPartnerGroupEvaluationOrgIds).toHaveBeenCalledWith('partner', null, 2);
     expect(evaluateFilterWithPreview).toHaveBeenCalledWith(filter, { orgId: 'org-a', allowedSiteIds: null, previewLimit: 5 });
-    expect(result).toMatchObject({ partial: false, totalOrgs: 1 });
+    expect(result).toMatchObject({ partial: false, partialReason: null, totalOrgs: 1 });
   });
 
-  it('reports a per-org filter timeout as partial instead of throwing', async () => {
+  it('marks a first-org filter timeout as timeout with no evaluated orgs', async () => {
     const evaluate = vi.fn<typeof evaluateFilterWithPreview>().mockRejectedValue(new FilterQueryTimeoutError());
     const result = await previewPartnerGroup(group, auth, { limit: 10, listOrgIds: vi.fn().mockResolvedValue(['org-a']), evaluate });
-    expect(result).toMatchObject({ total: 0, partial: true, evaluatedOrgs: 0, totalOrgs: 1 });
+    expect(result).toMatchObject({ total: 0, partial: true, partialReason: 'timeout', evaluatedOrgs: 0, totalOrgs: 1 });
     expect(reportFilterPreviewTimeout).toHaveBeenCalledWith('org-a');
+  });
+
+  it('retains successful progress when a later org times out', async () => {
+    const listOrgIds = vi.fn().mockResolvedValueOnce(['org-a', 'org-b']).mockResolvedValueOnce(['org-c']);
+    const evaluate = vi.fn<typeof evaluateFilterWithPreview>()
+      .mockResolvedValueOnce({ totalCount: 3, devices: [device], evaluatedAt: new Date() })
+      .mockRejectedValueOnce(new FilterQueryTimeoutError());
+    const result = await previewPartnerGroup(group, auth, { limit: 10, listOrgIds, evaluate });
+    expect(result).toEqual({ devices: [{ ...device, orgId: 'org-a' }], total: 3,
+      partial: true, partialReason: 'timeout', evaluatedOrgs: 1, totalOrgs: 3 });
+    expect(evaluate.mock.calls.map(([, options]) => options.orgId)).toEqual(['org-a', 'org-b']);
+    expect(reportFilterPreviewTimeout).toHaveBeenCalledExactlyOnceWith('org-b');
+  });
+
+  it('distinguishes budget exhaustion before the first org from a query timeout', async () => {
+    const evaluate = vi.fn<typeof evaluateFilterWithPreview>();
+    const result = await previewPartnerGroup(group, auth, {
+      limit: 10, budgetMs: 0, now: () => 0, listOrgIds: vi.fn().mockResolvedValue(['org-a']), evaluate,
+    });
+    expect(result).toEqual({ devices: [], total: 0, partial: true, partialReason: 'budget', evaluatedOrgs: 0, totalOrgs: 1 });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(reportFilterPreviewTimeout).not.toHaveBeenCalled();
   });
 
   it('rethrows other errors', async () => {
@@ -72,7 +94,7 @@ describe('previewPartnerGroup', () => {
 
   it('fails closed with an empty accessible-org set', async () => {
     const evaluate = vi.fn();
-    expect(await previewPartnerGroup(group, { scope: 'partner', accessibleOrgIds: [] }, { limit: 5, listOrgIds: vi.fn().mockResolvedValue(['org-a']), evaluate })).toMatchObject({ total: 0, totalOrgs: 0, evaluatedOrgs: 0, partial: false });
+    expect(await previewPartnerGroup(group, { scope: 'partner', accessibleOrgIds: [] }, { limit: 5, listOrgIds: vi.fn().mockResolvedValue(['org-a']), evaluate })).toMatchObject({ total: 0, totalOrgs: 0, evaluatedOrgs: 0, partial: false, partialReason: null });
     expect(evaluate).not.toHaveBeenCalled();
   });
 });

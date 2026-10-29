@@ -34,6 +34,17 @@ export const groupRoutes = new Hono<GroupRouteEnv>();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireGroupWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
+async function parseGroupRequestBody(request: { json(): Promise<unknown> }): Promise<
+  { ok: true; body: unknown } | { ok: false; error: string }
+> {
+  try {
+    return { ok: true, body: await request.json() };
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return { ok: false, error: 'Malformed JSON in request body' };
+  }
+}
+
 /**
  * Site-scope gate: partner-scope users restricted via `allowedSiteIds` must
  * not add/remove/pin a device in a site they cannot access, even when the
@@ -607,8 +618,10 @@ groupRoutes.post(
   requireMfa(),
   async (c) => {
     const auth = c.get('auth');
-    const raw = await c.req.json().catch(() => null);
-    if (raw?.ownerScope === 'partner') {
+    const body = await parseGroupRequestBody(c.req);
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const raw = body.body;
+    if (raw && typeof raw === 'object' && 'ownerScope' in raw && raw.ownerScope === 'partner') {
       if (auth.scope === 'system') return c.json({ error: 'Partner-wide device groups must be created by a partner user' }, 400);
       if (auth.scope !== 'partner' || !canManagePartnerWidePolicies(auth) || !auth.partnerId)
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
@@ -846,7 +859,9 @@ groupRoutes.patch(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     if (group.orgId === null && !groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined))
       return c.json({ error: 'Access to this site denied' }, 403);
-    const parsed = updateGroupSchema.safeParse(await c.req.json().catch(() => null));
+    const body = await parseGroupRequestBody(c.req);
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const parsed = updateGroupSchema.safeParse(body.body);
     if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
     const payload = parsed.data;
     if (group.orgId === null) {
@@ -864,7 +879,12 @@ groupRoutes.patch(
         updates.filterRevision = sql`${deviceGroups.filterRevision} + 1`;
       }
       const [updated] = await db.update(deviceGroups).set(updates).where(eq(deviceGroups.id, id)).returning();
-      if (!updated) return c.json({ error: 'Failed to update group' }, 500);
+      if (!updated) {
+        console.error('[groups] partner group update returned no row', {
+          groupId: id, scope: auth.scope, partnerId: auth.partnerId,
+        });
+        return c.json({ error: 'Group not found' }, 404);
+      }
       writeRouteAudit(c, { orgId: null, action: 'device_group.update', resourceType: 'device_group', resourceId: id, resourceName: updated.name, details: { changedFields: Object.keys(payload) } });
       if (payload.filterConditions !== undefined) requestPartnerGroupEvaluationAfterCommit(id, 'filter_updated');
       return c.json({ data: mapGroupRow(updated, await getDeviceCountForGroup(id, auth), false) });
@@ -1064,12 +1084,21 @@ groupRoutes.delete(
       throw err;
     }
 
+    let peripheralReconciliationFailed = 0;
+    let firstError: unknown;
     for (let offset = 0; offset < result.affectedDeviceIds.length; offset += 100) {
-    await Promise.all(result.affectedDeviceIds.slice(offset, offset + 100).map((deviceId) =>
-      schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
-        console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
-      })
-    ));
+      await Promise.all(result.affectedDeviceIds.slice(offset, offset + 100).map((deviceId) =>
+        schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error: unknown) => {
+          if (peripheralReconciliationFailed === 0) firstError = error;
+          peripheralReconciliationFailed++;
+        })
+      ));
+    }
+    if (peripheralReconciliationFailed > 0) {
+      console.error('[groups] failed to schedule peripheral reconciliation after group deletion', {
+        groupId: id, partnerId: group.partnerId, orgId: group.orgId,
+        failureCount: peripheralReconciliationFailed, firstError,
+      });
     }
 
     writeRouteAudit(c, {
@@ -1077,7 +1106,8 @@ groupRoutes.delete(
       action: 'device_group.delete',
       resourceType: 'device_group',
       resourceId: group.id,
-      resourceName: group.name
+      resourceName: group.name,
+      details: { peripheralReconciliationFailed },
     });
 
     return c.json({ data: mapGroupRow(group, 0, redactPartnerGroup(group, auth)) });
@@ -1167,7 +1197,9 @@ groupRoutes.post(
 
     const group = c.get('resolvedGroup');
     if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
-    const parsed = addDevicesSchema.safeParse(await c.req.json().catch(() => null));
+    const body = await parseGroupRequestBody(c.req);
+    if (!body.ok) return c.json({ error: body.error }, 400);
+    const parsed = addDevicesSchema.safeParse(body.body);
     if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
     const payload = parsed.data;
 
@@ -1335,8 +1367,11 @@ groupRoutes.post(
     if (group.orgId === null) {
       if (!group.partnerId) return c.json({ error: 'Group not found' }, 404);
       const preview = await previewPartnerGroup({ id, partnerId: group.partnerId, filterConditions: filter }, auth, { limit });
+      if (preview.partial && preview.evaluatedOrgs === 0 && preview.partialReason === 'timeout') {
+        return c.json(FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS);
+      }
       return c.json({ data: { totalCount: preview.total, devices: preview.devices,
-        evaluatedAt: new Date().toISOString(), partial: preview.partial,
+        evaluatedAt: new Date().toISOString(), partial: preview.partial, partialReason: preview.partialReason,
         evaluatedOrgs: preview.evaluatedOrgs, totalOrgs: preview.totalOrgs } });
     }
     let preview;

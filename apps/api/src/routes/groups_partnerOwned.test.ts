@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { Hono } from 'hono';
 import { groupRoutes } from './groups';
@@ -66,8 +66,8 @@ vi.mock('../db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn()
-  }
-,
+  },
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'partner', currentPartnerId: '33333333-3333-3333-3333-333333333333' })),
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -163,6 +163,10 @@ import { previewPartnerGroup } from '../services/partnerGroupPreview';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { deleteDeviceGroup } from '../services/deviceGroupDelete';
 import { evaluateGroupMembership } from '../services/groupMembership';
+import { FILTER_PREVIEW_TIMEOUT_BODY, FILTER_PREVIEW_TIMEOUT_STATUS } from '../services/filterPreviewTimeout';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+
+afterEach(() => vi.restoreAllMocks());
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -274,6 +278,7 @@ describe('partner-owned groups W3', () => {
       setScope(scope,access); vi.mocked(db.select).mockReturnValueOnce(query([makeGroup({partnerId:owner})]) as never);
       const res=await request(method,'/'+GROUP_ID,{}); expect(res.status).toBe(status);
       if(status===404) expect(await res.json()).toEqual({error:'Group not found'});
+      else expect(await res.json()).toEqual({error:PARTNER_WIDE_WRITE_DENIED_MESSAGE});
     }
   });
   it.each([false,true])('PATCH filter changed=%s bumps only filter edits', async changed => {
@@ -323,10 +328,19 @@ describe('partner-owned groups W3', () => {
     vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
     const res=await request('GET','?ownerScope=partner');expect(res.status).toBe(200);expect((await res.json()).data[0]).toMatchObject({ownerScope:'partner',evaluation:{state:'pending',failedOrgs:0}});
   });
-  it.each(['POST', 'PATCH'])('%s malformed JSON returns 400', async method => {
-    if (method === 'PATCH') vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
-    const res = await app.request('/groups' + (method === 'PATCH' ? '/' + GROUP_ID : ''), {method, headers:{'Content-Type':'application/json'},body:'{'});
+  it.each([
+    {method:'POST', suffix:''},
+    {method:'PATCH', suffix:'/'+GROUP_ID},
+    {method:'POST', suffix:'/'+GROUP_ID+'/devices'},
+  ])('$method $suffix reports malformed JSON explicitly', async ({method, suffix}) => {
+    if (suffix) vi.mocked(db.select).mockReturnValueOnce(query([makeGroup(
+      suffix.endsWith('/devices') ? {orgId:ORG_ID,partnerId:null,type:'static'} : {},
+    )]) as never);
+    const res = await app.request('/groups'+suffix, {method, headers:{'Content-Type':'application/json'},body:'{'});
     expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({error:'Malformed JSON in request body'});
+    expect(db.insert).not.toHaveBeenCalled();expect(db.update).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
   it('unreadable manual add returns unknown-id before body validation', async () => {
     setScope('organization'); vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
@@ -386,8 +400,13 @@ describe('partner-owned groups W3', () => {
   });
   it.each(['all','selected'])('preview %s returns partial progress',async access=>{
     setScope('partner',access);vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
-    vi.mocked(previewPartnerGroup).mockResolvedValue({devices:[],total:2,partial:true,evaluatedOrgs:1,totalOrgs:2});
-    const res=await request('POST','/'+GROUP_ID+'/preview');expect(res.status).toBe(200);expect((await res.json()).data).toMatchObject({totalCount:2,partial:true,evaluatedOrgs:1,totalOrgs:2});
+    vi.mocked(previewPartnerGroup).mockResolvedValue({devices:[],total:2,partial:true,partialReason:'budget',evaluatedOrgs:1,totalOrgs:2});
+    const res=await request('POST','/'+GROUP_ID+'/preview');expect(res.status).toBe(200);expect((await res.json()).data).toMatchObject({totalCount:2,partial:true,partialReason:'budget',evaluatedOrgs:1,totalOrgs:2});
+    expect(previewPartnerGroup).toHaveBeenCalledWith(
+      {id:GROUP_ID,partnerId:PARTNER_ID,filterConditions:makeGroup().filterConditions},
+      expect.objectContaining({scope:'partner',accessibleOrgIds:[ORG_ID],partnerOrgAccess:access}),
+      {limit:10},
+    );
   });
   it.each(['POST','PATCH'])('org %s refuses own-partner group filter reference',async method=>{
     setScope('organization');if(method==='PATCH')vi.mocked(db.select).mockReturnValueOnce(query([makeGroup({orgId:ORG_ID,partnerId:null})]) as never);
@@ -401,6 +420,73 @@ describe('partner-owned groups W3', () => {
     vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
     const res=await request(method,'/'+GROUP_ID+suffix,{});
     expect(res.status).toBe(404);expect(await res.json()).toEqual({error:'Group not found'});
+  });
+
+  it.each(['groupId','orgId'])('PATCH rejects nested %s filters before any writes', async field => {
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    const res = await request('PATCH','/'+GROUP_ID,{filterConditions:{operator:'AND',conditions:[{operator:'OR',conditions:[{field,operator:'equals',value:ORG_ID}]}]}});
+    expect(res.status).toBe(400);expect(await res.json()).toMatchObject({code:'PARTNER_GROUP_FILTER_UNSUPPORTED'});
+    expect(db.update).not.toHaveBeenCalled();expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(requestPartnerGroupEvaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  it.each([[SITE_ID], []])('DELETE denies site-restricted partner with %j', async (...allowedSiteIds) => {
+    setScope('partner','all',PARTNER_ID,allowedSiteIds);
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    const res = await request('DELETE','/'+GROUP_ID);
+    expect(res.status).toBe(403);expect(await res.json()).toEqual({error:'Access to this site denied'});
+    expect(deleteDeviceGroup).not.toHaveBeenCalled();
+  });
+
+  it('preview timeout before any completed org uses the shared timeout response', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    vi.mocked(previewPartnerGroup).mockResolvedValue({devices:[],total:0,partial:true,partialReason:'timeout',evaluatedOrgs:0,totalOrgs:2});
+    const res = await request('POST','/'+GROUP_ID+'/preview');
+    expect(res.status).toBe(FILTER_PREVIEW_TIMEOUT_STATUS);
+    expect(await res.json()).toEqual(FILTER_PREVIEW_TIMEOUT_BODY);
+  });
+
+  it.each([
+    {partial:true,partialReason:'budget',evaluatedOrgs:0},
+    {partial:true,partialReason:'timeout',evaluatedOrgs:1},
+    {partial:false,partialReason:null,evaluatedOrgs:2},
+  ] as const)('preview preserves progress and reason $partialReason/$evaluatedOrgs',async progress => {
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    vi.mocked(previewPartnerGroup).mockResolvedValue({devices:[],total:progress.evaluatedOrgs,totalOrgs:2,...progress});
+    const res = await request('POST','/'+GROUP_ID+'/preview');
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject(progress);
+  });
+
+  it.each(['partner','system'] as const)('PATCH missing returning row logs %s caller and answers unknown-id', async scope => {
+    const partnerId = scope === 'system' ? null : PARTNER_ID;
+    setScope(scope,'all',partnerId);
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    vi.mocked(db.update).mockReturnValue({set:vi.fn().mockReturnValue({where:vi.fn().mockReturnValue({returning:vi.fn().mockResolvedValue([])})})} as never);
+    const errorLog = vi.spyOn(console,'error').mockImplementation(() => {});
+    const res = await request('PATCH','/'+GROUP_ID,{name:'Changed'});
+    expect(res.status).toBe(404);expect(await res.json()).toEqual({error:'Group not found'});
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(expect.any(String),{groupId:GROUP_ID,scope,partnerId});
+    expect(writeRouteAudit).not.toHaveBeenCalled();expect(requestPartnerGroupEvaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  it.each(['partner','organization'] as const)('DELETE aggregates %s peripheral scheduling failures into one log and audit',async owner => {
+    const group = makeGroup(owner === 'organization' ? {orgId:ORG_ID,partnerId:null} : {});
+    vi.mocked(db.select).mockReturnValueOnce(query([group]) as never);
+    vi.mocked(deleteDeviceGroup).mockResolvedValue({group,affectedDeviceIds:[DEVICE_ID,DEVICE_ID_2,GROUP_ID_2]} as never);
+    const firstError = new Error('queue unavailable');
+    vi.mocked(schedulePeripheralPolicyDevice).mockRejectedValueOnce(firstError).mockResolvedValueOnce('job').mockRejectedValueOnce(new Error('still unavailable'));
+    const errorLog = vi.spyOn(console,'error').mockImplementation(() => {});
+    const res=await request('DELETE','/'+GROUP_ID);
+    expect(res.status).toBe(200);expect(schedulePeripheralPolicyDevice).toHaveBeenCalledTimes(3);
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(expect.any(String),{
+      groupId:GROUP_ID,orgId:group.orgId,partnerId:group.partnerId,failureCount:2,firstError,
+    });
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({
+      action:'device_group.delete',details:{peripheralReconciliationFailed:2},
+    }));
   });
 
 });

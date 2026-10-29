@@ -118,7 +118,7 @@ assignmentRoutes.post(
     );
     if (!targetValidation.valid) {
       const status = targetValidation.code === 'PARTNER_GROUP_TARGET_UNSUPPORTED' ? targetValidation.status : 403;
-      return c.json({ error: targetValidation.error }, status);
+      return c.json({ error: targetValidation.error, code: targetValidation.code }, status);
     }
 
     // Site sub-axis (SR5-07): RLS does not enforce the site allowlist, so a

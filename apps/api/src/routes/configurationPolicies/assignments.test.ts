@@ -251,7 +251,7 @@ describe('configurationPolicies assignment routes', () => {
       body: JSON.stringify({ level: 'device_group', targetId: DEVICE_ID }),
     });
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error });
+    expect(await res.json()).toEqual({ error, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED' });
     expect(assignPolicyMock).not.toHaveBeenCalled();
   });
 

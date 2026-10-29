@@ -1,7 +1,7 @@
 import { ERROR_CODES } from '@breeze/shared';
 import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { and, eq, isNotNull } from 'drizzle-orm';
-import { db } from '../db';
+import { db, getCurrentDbAccessContext } from '../db';
 import { deviceGroups } from '../db/schema';
 
 // #9179: dynamic groups can now exclude other groups (groupId notEquals /
@@ -92,5 +92,12 @@ export function partnerGroupFilterRefusal(filter: unknown): {
 
 /** The owner helper pins this lookup to the caller's own partner(s), avoiding an existence oracle. */
 export async function findPartnerGroupRefs(filter: unknown): Promise<string[]> {
-  return findPartnerOwnedGroupIds([...collectGroupRefs(filter)]);
+  const refs = [...collectGroupRefs(filter)];
+  if (refs.length === 0) return [];
+  // This is a write-time guard: absence of context must not turn a required
+  // ownership check into an empty result and silently permit the reference.
+  if (!getCurrentDbAccessContext()) {
+    throw new Error('Group filter reference validation requires a database access context');
+  }
+  return findPartnerOwnedGroupIds(refs);
 }
