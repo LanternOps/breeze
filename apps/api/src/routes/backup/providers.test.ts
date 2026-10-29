@@ -233,18 +233,24 @@ vi.mock('../../services/permissions', () => ({
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 
 vi.mock('../../services/backupProviders/registry', () => ({
-  BACKUP_PROVIDER_KEYS: ['cove'],
+  BACKUP_PROVIDER_KEYS: ['cove', 'dropsuite'],
   getBackupProvider: vi.fn((key: string) => {
-    if (key !== 'cove') throw new Error(`Unknown backup provider "${key}" (registered: cove)`);
+    if (key !== 'cove' && key !== 'dropsuite') throw new Error(`Unknown backup provider "${key}" (registered: cove)`);
     return {
-      key: 'cove',
-      label: 'Cove Data Protection',
+      key,
+      label: key === 'cove' ? 'Cove Data Protection' : 'NinjaOne SaaS Backup (Dropsuite)',
+      defaultBaseUrl: key === 'cove' ? 'https://api.backup.management/jsonapi' : undefined,
+      defaultSyncIntervalMinutes: key === 'cove' ? 30 : 60,
+      validateBaseUrl: key === 'dropsuite'
+        ? (url: string) => new URL(url).hostname === 'backup.dropsuite.com' ? null : 'Host is not allowed'
+        : undefined,
       credentialsSchema: {
         safeParse: (v: unknown) => {
-          const ok = !!v && typeof v === 'object'
-            && typeof (v as any).partnerName === 'string'
-            && typeof (v as any).username === 'string'
-            && typeof (v as any).password === 'string';
+          const ok = !!v && typeof v === 'object' && (key === 'dropsuite'
+            ? typeof (v as any).resellerToken === 'string' && typeof (v as any).authToken === 'string'
+            : typeof (v as any).partnerName === 'string'
+              && typeof (v as any).username === 'string'
+              && typeof (v as any).password === 'string');
           return ok ? { success: true, data: v } : { success: false, error: { message: 'bad creds' } };
         },
       },
@@ -253,7 +259,7 @@ vi.mock('../../services/backupProviders/registry', () => ({
         return adapterState.test;
       }),
       listCustomers: vi.fn(async () => []),
-      listDevices: vi.fn(async () => []),
+      listDevices: vi.fn(async () => ({ devices: [], failedCustomerIds: [] })),
     };
   }),
 }));
@@ -395,6 +401,55 @@ describe('backup provider connection routes', () => {
       const payload = await res.json();
       expect(payload.data.hasCredentials).toBe(true);
       expect(JSON.stringify(payload)).not.toContain(CREDS.password);
+    });
+
+    it('keeps the Cove base URL and 30-minute sync defaults', async () => {
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(201);
+      expect(dbState.inserted[0]).toMatchObject({
+        baseUrl: 'https://api.backup.management/jsonapi', syncIntervalMinutes: 30,
+      });
+    });
+
+    const dropsuiteBody = {
+      provider: 'dropsuite', name: 'Example SaaS Backup', baseUrl: 'https://backup.dropsuite.com/api/',
+      credentials: { resellerToken: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', authToken: 'synthetic-admin' },
+    };
+
+    it('uses the Dropsuite supplied base URL and 60-minute sync default', async () => {
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(dropsuiteBody),
+      });
+      expect(res.status).toBe(201);
+      expect(dbState.inserted[0]).toMatchObject({
+        provider: 'dropsuite', baseUrl: dropsuiteBody.baseUrl, syncIntervalMinutes: 60,
+      });
+    });
+
+    it('preserves an explicit Dropsuite sync interval', async () => {
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...dropsuiteBody, syncIntervalMinutes: 120 }),
+      });
+      expect(res.status).toBe(201);
+      expect(dbState.inserted[0]?.syncIntervalMinutes).toBe(120);
+    });
+
+    it.each([
+      ['missing base URL', undefined],
+      ['non-allowlisted host', 'https://untrusted.example/api/'],
+    ])('rejects Dropsuite %s before calling the vendor or persisting credentials', async (_name, baseUrl) => {
+      adapterState.onTest = vi.fn();
+      const res = await app.request('/backup/providers/connections', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...dropsuiteBody, baseUrl }),
+      });
+      expect(res.status).toBe(400);
+      expect(adapterState.onTest).not.toHaveBeenCalled();
+      expect(dbState.inserted).toHaveLength(0);
+      expect(encryptMock).not.toHaveBeenCalled();
     });
 
     it('refuses with 422 and does NOT store anything when the vendor test fails', async () => {

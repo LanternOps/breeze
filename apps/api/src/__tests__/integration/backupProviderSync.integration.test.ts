@@ -159,7 +159,7 @@ describe('backup provider sync (real Postgres + Redis)', () => {
 
     // ---- poll 1 -------------------------------------------------------
     listCustomers.mockResolvedValue([customer(fixture.orgId)]);
-    listDevices.mockResolvedValue([vendorDevice({ name: deviceName })]);
+    listDevices.mockResolvedValue({ devices: [vendorDevice({ name: deviceName })], failedCustomerIds: [] });
     await syncConnectionById(fixture.connectionId);
 
     const afterFirst = await withSystemDbAccessContext(async () => {
@@ -258,10 +258,10 @@ describe('backup provider sync (real Postgres + Redis)', () => {
     expect(capturedEvents).toHaveLength(0);
 
     // ---- poll 4: condition clears -> resolve + recovered ----------------
-    listDevices.mockResolvedValue([vendorDevice({
+    listDevices.mockResolvedValue({ devices: [vendorDevice({
       name: deviceName, status: 'completed', vendorStatusCode: 5,
       lastSuccessAt: new Date(), lastCompletedAt: new Date(), errorsCount: 0,
-    })]);
+    })], failedCustomerIds: [] });
     await syncConnectionById(fixture.connectionId);
 
     const afterFourth = await withSystemDbAccessContext(async () => {
@@ -285,7 +285,7 @@ describe('backup provider sync (real Postgres + Redis)', () => {
     const deviceName = `srv-${unique}`;
 
     listCustomers.mockResolvedValue([customer(fixture.orgId)]);
-    listDevices.mockResolvedValue([vendorDevice({ name: deviceName })]);
+    listDevices.mockResolvedValue({ devices: [vendorDevice({ name: deviceName })], failedCustomerIds: [] });
     await syncConnectionById(fixture.connectionId);
 
     const before = await withSystemDbAccessContext(async () => {
@@ -345,7 +345,7 @@ describe('backup provider sync (real Postgres + Redis)', () => {
       vendorCustomerId: 'vc-9', name: 'Nobody In Breeze', parentId: '1000',
       level: 'EndCustomer', externalCode: null,
     }]);
-    listDevices.mockResolvedValue([vendorDevice({ vendorCustomerId: 'vc-9', vendorDeviceId: 'vd-9' })]);
+    listDevices.mockResolvedValue({ devices: [vendorDevice({ vendorCustomerId: 'vc-9', vendorDeviceId: 'vd-9' })], failedCustomerIds: [] });
     await syncConnectionById(fixture.connectionId);
 
     const result = await withSystemDbAccessContext(async () => {

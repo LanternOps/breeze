@@ -197,8 +197,9 @@ connectionRoutes.post(
       return c.json({ error: `Invalid ${adapter.label} credentials` }, 400);
     }
 
-    const baseUrl = body.baseUrl ?? 'https://api.backup.management/jsonapi';
-    const urlError = assertHttpsBaseUrl(baseUrl);
+    const baseUrl = body.baseUrl ?? adapter.defaultBaseUrl;
+    if (!baseUrl) return c.json({ error: `Base URL is required for ${adapter.label}` }, 400);
+    const urlError = assertHttpsBaseUrl(baseUrl) ?? adapter.validateBaseUrl?.(baseUrl);
     if (urlError) return c.json({ error: urlError }, 400);
 
     // The row id is generated HERE, not defaulted by the database: the
@@ -230,7 +231,7 @@ connectionRoutes.post(
             vendorRootName: test.rootName,
             isActive: true,
             status: 'connected',
-            syncIntervalMinutes: body.syncIntervalMinutes ?? 30,
+            syncIntervalMinutes: body.syncIntervalMinutes ?? adapter.defaultSyncIntervalMinutes ?? 30,
             showProviderNameInPortal: body.showProviderNameInPortal ?? false,
             createdBy: auth.user?.id ?? null,
           })

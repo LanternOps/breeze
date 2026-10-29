@@ -31,7 +31,7 @@ export interface VendorDevice {
   clientVersion: string | null;
   /** Lower-case, colon-separated, de-duplicated. */
   macAddresses: string[];
-  accountType: 'backup_manager' | 'm365' | 'unknown';
+  accountType: 'backup_manager' | 'm365' | 'gws' | 'unknown';
   /** Normalized source names: files, system_state, mssql, hyperv, vmware, m365_*, bare_metal, … */
   dataSources: string[];
   status: ExternalBackupStatus;
@@ -70,6 +70,12 @@ export class ProviderRequestError extends Error {
   }
 }
 
+export interface VendorDeviceList {
+  devices: VendorDevice[];
+  /** Vendor customer IDs whose complete inventory could not be fetched. Keep their stored rows untouched. */
+  failedCustomerIds: string[];
+}
+
 export type ProviderTestResult =
   | { ok: true; rootId: string; rootName: string; customerCount: number }
   | { ok: false; error: string; reauth: boolean };
@@ -79,19 +85,22 @@ export type ProviderTestResult =
  * and one line in `registry.ts` — nothing above this interface knows Cove
  * exists.
  *
- * `listDevices` must be ALL-OR-NOTHING: it returns only when every page
- * succeeded, and throws `ProviderRequestError` otherwise. The sync job deletes
- * rows whose vendor device vanished, so a partial enumeration that looked like
- * a success would silently delete a customer's whole backup inventory.
+ * `listDevices` must be complete for each customer. A classified customer-level
+ * failure may be returned in `failedCustomerIds`, with all of that customer's
+ * devices omitted. Other failures throw `ProviderRequestError`. Persistence
+ * keeps failed customers' inventory instead of treating omitted rows as gone.
  */
 export interface BackupProviderAdapter {
   readonly key: string;
   readonly label: string;
   /** Validates the credential blob BEFORE it is encrypted and stored. */
   readonly credentialsSchema: z.ZodTypeAny;
+  readonly defaultBaseUrl?: string;
+  validateBaseUrl?(url: string): string | null;
+  readonly defaultSyncIntervalMinutes?: number;
   testConnection(creds: unknown, baseUrl: string): Promise<ProviderTestResult>;
   /** The whole subtree under `rootId`, flattened. */
   listCustomers(creds: unknown, baseUrl: string, rootId: string): Promise<VendorCustomer[]>;
-  /** The whole subtree under `rootId`. Throws `ProviderRequestError` if ANY page fails. */
-  listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDevice[]>;
+  /** Complete inventory except for explicitly identified failed customers. */
+  listDevices(creds: unknown, baseUrl: string, rootId: string): Promise<VendorDeviceList>;
 }

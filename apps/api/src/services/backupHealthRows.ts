@@ -77,7 +77,7 @@ export interface ProviderLegRow {
   name: string;
   computerName: string | null;
   osType: 'workstation' | 'server' | 'unknown';
-  accountType: 'backup_manager' | 'm365' | 'unknown';
+  accountType: 'backup_manager' | 'm365' | 'gws' | 'unknown';
   dataSources: string[];
   status: ExternalBackupStatus;
   lastSessionAt: Date | string | null;
