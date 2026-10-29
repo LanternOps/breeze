@@ -515,12 +515,12 @@ describe('portalApi.getTicket — merged tombstone envelope', () => {
   };
 
   it('returns the merged result when the survivor is readable', async () => {
-    stub({ merged: true, mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' }, mergedAt: '2026-10-20T12:00:00.000Z' });
+    stub({ merged: true, mergedInto: { id: 'surv-1', ticketNumber: 'HD0XTUGGVV' }, mergedAt: '2026-10-20T12:00:00.000Z' });
     const result = await portalApi.getTicket('tomb-1');
     expect(result.statusCode).toBe(200);
     expect(result.data).toEqual({
       merged: true,
-      mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' },
+      mergedInto: { id: 'surv-1', ticketNumber: 'HD0XTUGGVV' },
       mergedAt: '2026-10-20T12:00:00.000Z',
       survivorDeleted: false,
     });

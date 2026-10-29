@@ -407,7 +407,7 @@ describe('TicketDetails — ticket type (#8596)', () => {
 describe('TicketDetails — merged request (#8972)', () => {
   const merged = (over: Partial<PortalMergedTicket> = {}): PortalMergedTicket => ({
     merged: true,
-    mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' },
+    mergedInto: { id: 'surv-1', ticketNumber: 'HD0XTUGGVV' },
     mergedAt: '2026-10-20T12:00:00.000Z',
     survivorDeleted: false,
     ...over,
@@ -416,8 +416,11 @@ describe('TicketDetails — merged request (#8972)', () => {
   it('shows the banner with a link to the ticket it was merged into', () => {
     render(<TicketDetails ticket={merged()} />);
     const banner = screen.getByTestId('portal-ticket-merged-banner');
-    expect(banner.textContent).toContain('This request was merged into T-2026-0002.');
+    // #10072: the survivor is named the way the tickets list and header name
+    // it (`#<ticketNumber>`), not by the staff-side internal number.
+    expect(banner.textContent).toContain('This request was merged into #HD0XTUGGVV.');
     const link = screen.getByTestId('portal-ticket-merged-link');
+    expect(link.textContent).toBe('Open #HD0XTUGGVV');
     expect(link.getAttribute('href')).toMatch(/\/tickets\/surv-1$/);
     // A tombstone takes no replies and has no status of its own to report.
     expect(screen.queryByTestId('ticket-reply-form')).toBeNull();

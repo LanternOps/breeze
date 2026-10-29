@@ -429,7 +429,7 @@ export interface TicketDetails extends TicketSummary {
  */
 export interface PortalMergedTicket {
   merged: true;
-  mergedInto: { id: string; internalNumber: string | null } | null;
+  mergedInto: { id: string; ticketNumber: string } | null;
   mergedAt: string | null;
   survivorDeleted: boolean;
 }
