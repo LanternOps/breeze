@@ -119,6 +119,9 @@ describe('PamAuditTab', () => {
     );
     render(<PamAuditTab liveTick={0} />);
     await waitFor(() => screen.getByTestId('pam-audit-filter-status'));
+    // #8971: auditors can filter to requests the device user withdrew.
+    const statusFilter = screen.getByTestId('pam-audit-filter-status') as HTMLSelectElement;
+    expect(Array.from(statusFilter.options).map((o) => o.value)).toContain('withdrawn');
     fireEvent.change(screen.getByTestId('pam-audit-filter-status'), {
       target: { value: 'denied' },
     });

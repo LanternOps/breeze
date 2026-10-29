@@ -969,7 +969,7 @@
     "withdrawnConflict": "L'utente ha ritirato questa richiesta sul dispositivo."
   },
   "pamWithdrawReason": {
-    "dialog_error": "Richiesta non riuscita sul dispositivo",
+    "dialog_error": "Finestra di dialogo non riuscita sul dispositivo",
     "user_denied": "Rifiutata dall'utente",
     "user_timeout": "Nessuna risposta sul dispositivo"
   },

@@ -969,7 +969,7 @@
     "withdrawnConflict": "Der Benutzer hat diese Anfrage auf dem Gerät zurückgezogen."
   },
   "pamWithdrawReason": {
-    "dialog_error": "Eingabeaufforderung auf dem Gerät fehlgeschlagen",
+    "dialog_error": "Abfrage auf dem Gerät fehlgeschlagen",
     "user_denied": "Vom Benutzer abgelehnt",
     "user_timeout": "Keine Antwort auf dem Gerät"
   },

@@ -694,6 +694,9 @@ describe('PamRespondModal withdrawn conflict (#8971)', () => {
       ),
     );
     expect(screen.getByTestId('pam-respond-submit')).toBeDisabled();
+    // One message for one event: the inline alert, not also the server's
+    // generic "not pending" error toast.
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     // Dismissing refreshes the list so the row shows its real status.
     expect(onActioned).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId('pam-respond-cancel'));

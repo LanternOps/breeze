@@ -358,6 +358,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         <div
                           className="mt-0.5 max-w-[180px] truncate text-xs text-muted-foreground"
                           data-testid={`pam-withdraw-reason-${r.id}`}
+                          title={withdrawReasonLabel(t, r.withdrawnReason) ?? undefined}
                         >
                           {withdrawReasonLabel(t, r.withdrawnReason)}
                         </div>
@@ -366,6 +367,7 @@ export default function PamRequestsTab({ liveTick }: { liveTick: number }) {
                         <div
                           className="mt-0.5 max-w-[180px] truncate text-xs text-destructive"
                           data-testid={`pam-enforcement-reason-${r.id}`}
+                          title={userDecisionEnforcementLabel(t, r.status, r.enforcementReason) ?? undefined}
                         >
                           {userDecisionEnforcementLabel(t, r.status, r.enforcementReason)}
                         </div>

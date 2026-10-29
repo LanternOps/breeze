@@ -238,6 +238,10 @@ export default function PamRespondModal({
           defaultValue: 'Failed to {{decision}} request',
           decision,
         }),
+        // #8971: a withdrawn 409 gets its own inline message below; the
+        // server's generic "not pending" toast on top would say it twice.
+        suppressErrorToast: (status, _code, data) =>
+          status === 409 && conflictStatus(data) === 'withdrawn',
         // No success toast for a 200 that recorded a different outcome — the
         // error for it is raised below, once runAction has returned.
         successMessage: (data) =>
