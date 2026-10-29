@@ -54,7 +54,7 @@ describe('issueInvoice re-checks block-of-hours hold windows (real DB) #8970', (
     const draft = await seedDraft(f, [held]);
 
     await expect(sys(() => issueInvoice(draft.id, actorOf(f))))
-      .rejects.toMatchObject({ status: 409, code: 'SOURCE_HELD_FOR_HOUR_BLOCK' });
+      .rejects.toMatchObject({ status: 409, code: 'SOURCE_HELD_FOR_HOUR_BLOCK', details: { heldEntryIds: [held] } });
     expect(await entryState(held)).toEqual({ billingStatus: 'not_billed', contractLineId: null });
     const [inv] = await sys(() => db.select({ status: invoices.status, number: invoices.invoiceNumber }).from(invoices).where(eq(invoices.id, draft.id)));
     expect(inv).toEqual({ status: 'draft', number: null });
