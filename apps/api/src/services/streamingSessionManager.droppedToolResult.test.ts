@@ -86,6 +86,12 @@ vi.mock('./aiToolOutput', () => ({
   redactSensitiveToolInput: (input: Record<string, unknown>) => input,
 }));
 vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
+// A registered tool the CLI still calls unknown (e.g. removed from this
+// session by a grant ceiling) is a real gap, so it must stay a red failure.
+vi.mock('./aiToolNames', async (orig) => ({
+  ...(await orig<typeof import('./aiToolNames')>()),
+  hasCoreAiToolName: (name: string) => name === 'list_services',
+}));
 
 import { StreamingSessionManager } from './streamingSessionManager';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
@@ -264,6 +270,26 @@ describe('dropped tool_result fallback (#3094)', () => {
     expect(event).toMatchObject({ toolUseId: id, isError: true, output: { unknownTool: true } });
     // Still flagged: an invented tool name is a model-quality signal for review.
     expect(updateCalls.filter((u) => typeof u.flagReason === 'string')).toHaveLength(1);
+  });
+
+  it('does not mark a registered tool the session lacks as unknownTool', async () => {
+    const id = 'toolu_unavailable_01';
+    const name = 'mcp__breeze__list_services';
+    mockSdkQuery([
+      toolUseStreamEvent(id, name),
+      assistantToolUseMessage(id, name, {}),
+      userToolResultMessage(id, `<tool_use_error>Error: No such tool available: ${name}</tool_use_error>`),
+      RESULT_MSG,
+    ]);
+
+    const session = await manager.getOrCreate(
+      'sess-unavailable', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
+    );
+    await session.processorPromise;
+
+    const output = insertedRows.find((r) => r.role === 'tool_result')!.toolOutput as Record<string, unknown>;
+    expect(output).toMatchObject({ droppedBeforeExecution: true });
+    expect(output).not.toHaveProperty('unknownTool');
   });
 
   it('does not mark an input-validation drop as unknownTool', async () => {

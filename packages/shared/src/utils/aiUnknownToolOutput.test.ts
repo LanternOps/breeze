@@ -6,6 +6,9 @@ describe('unknown-tool drop (#9855)', () => {
     expect(isUnknownToolErrorText('<tool_use_error>Error: No such tool available: mcp__breeze__list_processes_placeholder</tool_use_error>')).toBe(true);
     expect(isUnknownToolErrorText('MCP error -32602: Input validation error: Invalid arguments for tool set_device_context')).toBe(false);
     expect(isUnknownToolErrorText('')).toBe(false);
+    // A validation error that echoes model input carrying the phrase is a real failure.
+    expect(isUnknownToolErrorText('MCP error -32602: Invalid arguments (input contained "No such tool available: x")')).toBe(false);
+    expect(isUnknownToolErrorText('No such tool available: mcp__breeze__nope')).toBe(true);
   });
 
   it('accepts only the server-written dropped-call shape', () => {

@@ -9,11 +9,14 @@
  * instead of a red Failed card. Only that server path writes the shape, and
  * only for a call no tool handler ran, so no tool output can produce it.
  */
-const UNKNOWN_TOOL_ERROR_TEXT = 'No such tool available:';
+// Anchored at the start: an MCP validation error (`MCP error -32602: ...`)
+// can echo model-supplied input, so the phrase anywhere else in the text must
+// not turn a real failure into a neutral note.
+const UNKNOWN_TOOL_ERROR = /^(?:<tool_use_error>)?(?:Error: )?No such tool available: \S/;
 
 /** True for the Agent SDK CLI's own error for a nonexistent tool name. */
 export function isUnknownToolErrorText(text: string): boolean {
-  return text.includes(UNKNOWN_TOOL_ERROR_TEXT);
+  return UNKNOWN_TOOL_ERROR.test(text.trimStart());
 }
 
 export interface AiUnknownToolOutput {

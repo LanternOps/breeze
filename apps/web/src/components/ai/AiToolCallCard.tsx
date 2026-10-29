@@ -129,11 +129,11 @@ export default function AiToolCallCard({
           ? () => <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400" />
           : isUnknownTool
             ? () => <Wrench className="h-3.5 w-3.5 text-gray-400" />
-          : isError
-            ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
-            : output !== undefined
-              ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
-              : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
+            : isError
+              ? () => <XCircle className="h-3.5 w-3.5 text-red-400" />
+              : output !== undefined
+                ? () => <CheckCircle className="h-3.5 w-3.5 text-green-400" />
+                : () => <Wrench className="h-3.5 w-3.5 text-gray-400" />;
 
   return (
     <div className="my-1 rounded-md border border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/50">

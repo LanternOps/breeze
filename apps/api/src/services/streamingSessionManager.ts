@@ -60,6 +60,7 @@ import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isUnknownToolErrorText } from '@breeze/shared';
+import { hasCoreAiToolName } from './aiToolNames';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
@@ -2375,8 +2376,10 @@ export class StreamingSessionManager {
     // #9855: the CLI's own "No such tool available" answer for a name that is
     // not a tool. Marked so the sidebar shows a neutral note (the model
     // retries with a real tool) rather than a red Failed card. Read from the
-    // raw text: redaction must not decide which card the user sees.
-    const output = isUnknownToolErrorText(rawText)
+    // raw text: redaction must not decide which card the user sees. A
+    // registered name the CLI calls unknown (e.g. withheld from this session)
+    // is a real capability gap and stays a red failure.
+    const output = isUnknownToolErrorText(rawText) && !hasCoreAiToolName(toolName)
       ? { error: errorText, droppedBeforeExecution: true, unknownTool: true }
       : { error: errorText, droppedBeforeExecution: true };
 

@@ -81,6 +81,16 @@ describe('chat system prompt names only real tools (#9855)', () => {
   const vocabulary = schemaEnumVocabulary();
   const texts = chatPromptTexts();
 
+  it('is not vacuous: every prompt piece renders and the scan sees real tool names', () => {
+    for (const [source, text] of texts.filter(([source]) => !source.startsWith('page:'))) {
+      expect(text.length, source).toBeGreaterThan(0);
+    }
+    const all = tokensOf(texts.map(([, text]) => text).join('\n'));
+    expect(all).toContain('execute_command');
+    expect(all).toContain('get_device_context');
+    expect(renderPageContextToolBlocks('device', listChatSurfaceToolNames()).length).toBeGreaterThan(0);
+  });
+
   it('every tool-shaped token is a registered tool, a schema enum value or a reviewed non-tool term', () => {
     const unknown = new Set<string>();
     for (const [source, text] of texts) {
