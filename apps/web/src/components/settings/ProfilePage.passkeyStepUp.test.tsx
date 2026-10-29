@@ -142,8 +142,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     render(<ProfilePage initialUser={mfaProtectedUser} />);
 
     await screen.findByText(/No passkeys are registered/i);
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -205,8 +205,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     await screen.findByText(/Multi-factor authentication enabled successfully/i);
     expect(commitMfaEnrollmentIfCurrentMock).toHaveBeenCalledWith(0, 'totp', replacementTokens);
 
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -232,8 +232,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
     await screen.findByText(/Profile updated successfully/i);
 
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -255,8 +255,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     render(<ProfilePage initialUser={mfaProtectedUser} />);
 
     await screen.findByText(/No passkeys are registered/i);
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -314,10 +314,11 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     );
 
     await screen.findByText('Laptop');
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
     await waitFor(() => expect(optionsCallCount).toBe(1));
-    fireEvent.click(await screen.findByTestId('passkey-add'));
+    fireEvent.click(await screen.findByTestId('passkey-add-confirm'));
 
     await screen.findByText('Passkey added');
 
@@ -335,8 +336,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     await screen.findByText(/No passkeys are registered/i);
     expect(document.querySelector('#passkey-password')).toBeNull();
     expect(screen.queryByTestId('passkey-factor-code')).toBeNull();
-    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
     expect(screen.getByRole('dialog', { name: 'Add passkey' })).toBeTruthy();
     expect(screen.getByTestId('passkey-add-confirm')).toBeDisabled();
     expect(screen.queryByTestId('passkey-factor-code')).toBeNull();
@@ -348,8 +349,8 @@ describe('ProfilePage passkey existing-factor step-up (sweep G4-7)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.querySelector('#passkey-password')).toBeNull();
-    expect(screen.getByLabelText(/Passkey name/i)).toHaveValue('YubiKey');
     fireEvent.click(screen.getByTestId('passkey-add'));
+    expect(screen.getByLabelText(/Passkey name/i)).toHaveValue('YubiKey');
     expect(screen.getByTestId('passkey-add-confirm')).toBeDisabled();
     expect(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' })).toHaveValue('');
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);

@@ -171,7 +171,7 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
     expect(callTo('/auth/mfa/setup')).toHaveLength(0);
 
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
     await screen.findByText('Passkey added');
 
     expect(JSON.parse(String(callTo('/auth/passkeys/register/options')[0][1]?.body)).ssoReauthGrantId).toBe(GRANT);
@@ -185,7 +185,7 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
 
     const first = await mountPage();
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
     await screen.findByText('Passkey added');
 
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
@@ -240,7 +240,7 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
 
     const first = await mountPage();
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
     expect(await screen.findByTestId('passkey-sso-reauth')).toBeTruthy();
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
 
@@ -257,7 +257,7 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
 
     const first = await mountPage();
     fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
+    fireEvent.click(screen.getByTestId('passkey-add-confirm'));
     await screen.findByText(/canceled or timed out/i);
 
     await remount(first);

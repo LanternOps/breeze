@@ -118,12 +118,13 @@ describe('ProfilePage passkey management', () => {
       />,
     );
 
-    await screen.findByLabelText(/Passkey name/i);
+    await screen.findByTestId('passkey-add');
+    expect(screen.queryByLabelText(/Passkey name/i)).toBeNull();
     if (hasExistingPasskey) await screen.findByText('Existing key');
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -170,10 +171,10 @@ describe('ProfilePage passkey management', () => {
     );
 
     await screen.findByText(/No passkeys are registered/i);
+    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Passkey name/i), {
       target: { value: 'MacBook Touch ID' },
     });
-    fireEvent.click(screen.getByTestId('passkey-add'));
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
@@ -509,8 +510,9 @@ describe('ProfilePage passkey management', () => {
       // No password field at all for an account that has no password.
       expect(document.querySelector('#passkey-password')).toBeNull();
 
-      fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
       fireEvent.click(screen.getByTestId('passkey-add'));
+      fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'YubiKey' } });
+      fireEvent.click(screen.getByTestId('passkey-add-confirm'));
 
       await screen.findByText('Passkey added');
 
@@ -684,6 +686,8 @@ describe('ProfilePage passkey management', () => {
 
         // The grant landed and the card is armed: the submit replaces the CTA.
         expect(screen.getByTestId('passkey-add')).toBeTruthy();
+        expect(await screen.findByLabelText(/Passkey name/i)).toBeTruthy();
+        expect(document.querySelector('#passkey-password')).toBeNull();
         expect(screen.queryByTestId('passkey-sso-reauth')).toBeNull();
 
         // And the user is NOT dropped on the TOTP enrollment screen.
@@ -722,6 +726,7 @@ describe('ProfilePage passkey management', () => {
           await waitFor(() => {
             expect(document.activeElement).toBe(document.querySelector('#passkey-name'));
           });
+          expect(document.querySelector('#passkey-password')).toBeNull();
         } finally {
           Element.prototype.scrollIntoView = realScroll;
         }

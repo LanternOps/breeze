@@ -684,6 +684,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // on register/options + register/verify, which the card below already
       // knows how to do once `hasSsoReauthGrant` is true.
       setPasskeyReauthReturn('add');
+      setPasskeyName('');
+      setPasskeyDialog({ kind: 'add' });
       return;
     }
     // `null` (nothing recorded — storage blocked, or a link from before #4055)
@@ -706,24 +708,23 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // them there. Focus does the same job for keyboard and screen-reader users,
   // lands on the next action or field.
   //
-  // A CALLBACK ref, keyed on the flag, rather than an effect over an object
-  // ref. The real page is `<ProfilePage client:load />` with no `initialUser`,
-  // so the component sits behind the `isLoadingUser` early return below while
-  // GET /users/me is in flight — the card does not exist in the DOM at the
-  // moment the mount effect sets the flag, and an effect keyed only on the flag
-  // would find a null ref and never run again. React re-invokes a callback ref
-  // whose identity changed, so this fires whichever way the race lands: card
-  // already mounted (identity change re-invokes it) or card mounted later (the
-  // attach invokes it). Child refs attach before parents, so the name input is
-  // already populated by the time this runs. The latch keeps it one-shot.
+  // The callback ref handles scroll/focus whether the profile card mounts
+  // before or after the SSO return state arrives.
   const passkeyCardRef = useCallback((node: HTMLDivElement | null) => {
     if (!node || !passkeyReauthReturn || passkeyLandingDone.current) return;
     passkeyLandingDone.current = true;
     // jsdom has no layout and so no `scrollIntoView`; optional-call it.
     node.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-    if (passkeyReauthReturn === 'delete') (node.querySelector<HTMLButtonElement>('[data-testid="passkey-delete"]') ?? passkeyNameRef.current)?.focus();
-    else passkeyNameRef.current?.focus();
+    if (passkeyReauthReturn === 'delete') {
+      node.querySelector<HTMLButtonElement>('[data-testid="passkey-delete"]')?.focus();
+    }
   }, [passkeyReauthReturn]);
+
+  useEffect(() => {
+    if (passkeyDialog?.kind === 'add' && passkeyReauthReturn === 'add') {
+      passkeyNameRef.current?.focus();
+    }
+  }, [passkeyDialog, passkeyReauthReturn]);
 
   // Surface the callback's failure codes
   // (`/settings/profile?ssoReauthError=<code>`), exactly once.
@@ -1827,21 +1828,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
           </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-name">
-              {t('profilePage.passkeyName')}</label>
-            <input
-              id="passkey-name"
-              ref={passkeyNameRef}
-              type="text"
-              value={passkeyName}
-              onChange={event => setPasskeyName(event.target.value)}
-              placeholder={t('profilePage.macBookTouchID')}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              disabled={isAddingPasskey}
-            />
-          </div>
-          {isPasswordless && passkeyStepUpFields}
           {isPasswordless && !hasSsoReauthGrant ? (
             <button
               type="button"
@@ -1857,10 +1843,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               type="button"
               data-testid="passkey-add"
               onClick={() => {
-                if (isPasswordless) {
-                  void handleAddPasskey();
-                  return;
-                }
                 setPasskeyPassword('');
                 setPasskeyError(undefined);
                 setPasskeySuccess(undefined);
@@ -1869,10 +1851,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={
                 isAddingPasskey
                 || !!mutatingPasskeyId
-                || (isPasswordless
-                  && passkeyStepUpNeeded
-                  && (passkeyStepUpTier === 'password'
-                    || (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)))
               }
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-60"
             >
@@ -1946,19 +1924,36 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         </h3>
         <form className="space-y-4" onSubmit={event => { event.preventDefault(); void handleAddPasskey(); }}>
           <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-password">
-              {t('profilePage.currentPassword')}
+            <label className="text-sm font-medium" htmlFor="passkey-name">
+              {t('profilePage.passkeyName')}
             </label>
             <input
-              id="passkey-password"
-              type="password"
-              autoComplete="current-password"
-              value={passkeyPassword}
-              onChange={event => setPasskeyPassword(event.target.value)}
+              id="passkey-name"
+              ref={passkeyNameRef}
+              type="text"
+              value={passkeyName}
+              onChange={event => setPasskeyName(event.target.value)}
+              placeholder={t('profilePage.macBookTouchID')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
               disabled={isAddingPasskey}
             />
           </div>
+          {!isPasswordless && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="passkey-password">
+                {t('profilePage.currentPassword')}
+              </label>
+              <input
+                id="passkey-password"
+                type="password"
+                autoComplete="current-password"
+                value={passkeyPassword}
+                onChange={event => setPasskeyPassword(event.target.value)}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey}
+              />
+            </div>
+          )}
           {passkeyStepUpFields}
           {passkeyError && <p role="alert" className="text-sm text-destructive">{passkeyError}</p>}
           <div className="flex justify-end gap-2">
@@ -1970,7 +1965,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               data-testid="passkey-add-confirm"
               disabled={
                 isAddingPasskey
-                || !passkeyPassword
+                || (!isPasswordless && !passkeyPassword)
                 || (passkeyStepUpNeeded
                   && (passkeyStepUpTier === 'password'
                     || (passkeyStepUpTier === 'totp' && passkeyStepUpCode.length !== 6)))

@@ -81,9 +81,9 @@ const RECOVERY_CODES = [
 ];
 
 async function addPasskey() {
-  await screen.findByLabelText(/Passkey name/i);
+  await screen.findByTestId('passkey-add');
+  fireEvent.click(screen.getByTestId('passkey-add'));
   fireEvent.change(screen.getByLabelText(/Passkey name/i), { target: { value: 'iPhone' } });
-    fireEvent.click(screen.getByTestId('passkey-add'));
   fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
     target: { value: 'current-password' },
   });
