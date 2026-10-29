@@ -262,7 +262,7 @@ export function BackupOverview({
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {saasWorkloads.map((workload, index) => (
-                <tr key={`${workload.provider}-${workload.workload}-${index}`} className={ROW} data-testid="portal-backup-saas-row">
+                <tr key={`${workload.workload}-${index}`} className={ROW} data-testid="portal-backup-saas-row">
                   <td className={cn(CELL, 'font-medium')}>
                     {WORKLOAD_LABELS[workload.workload] ?? humanizeStatus(workload.workload)} backup
                     {workload.providerLabel && <span className="mt-1 block text-xs font-normal text-muted-foreground">{workload.providerLabel}</span>}

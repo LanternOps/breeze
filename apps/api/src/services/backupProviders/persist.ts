@@ -54,6 +54,7 @@ export interface PersistConnection {
   partnerId: string;
   provider: string;
   showProviderNameInPortal: boolean;
+  inventoryKind?: 'endpoint' | 'saas';
 }
 
 /** Spec: rows older than 60 days are pruned per connection. */
@@ -106,6 +107,9 @@ export async function persistVendorSnapshot(
   options: { now?: Date } = {},
 ): Promise<SyncCounters> {
   const now = options.now ?? new Date();
+  const isSaasInventory = connection.inventoryKind === 'saas';
+  const countsTowardInventory = (accountType: unknown): boolean =>
+    (accountType === 'm365' || accountType === 'gws') === isSaasInventory;
   const failedCustomerIds = new Set(snapshot.failedCustomerIds ?? []);
   const devices = snapshot.devices.filter((device) => !failedCustomerIds.has(device.vendorCustomerId));
 
@@ -127,7 +131,7 @@ export async function persistVendorSnapshot(
 
   const deviceCountByVendorCustomer = new Map<string, number>();
   for (const device of devices) {
-    if (device.accountType === 'm365' || device.accountType === 'gws') continue;
+    if (!countsTowardInventory(device.accountType)) continue;
     deviceCountByVendorCustomer.set(
       device.vendorCustomerId,
       (deviceCountByVendorCustomer.get(device.vendorCustomerId) ?? 0) + 1,
@@ -144,8 +148,8 @@ export async function persistVendorSnapshot(
       vendorParentId: customer.parentId?.slice(0, 128) ?? null,
       vendorLevel: customer.level?.slice(0, 40) ?? null,
       vendorExternalCode: customer.externalCode?.slice(0, 255) ?? null,
-      // device_count counts ALL devices under the customer, mapped or not — it is
-      // what the "N customers / M devices unmapped" summary is built from.
+      // Counts all inventory under the customer, mapped or not. The adapter
+      // determines whether the connection card shows endpoints or workloads.
       deviceCount: deviceCountByVendorCustomer.get(customer.vendorCustomerId) ?? 0,
       lastSeenAt: now,
       updatedAt: now,
@@ -220,7 +224,7 @@ export async function persistVendorSnapshot(
   for (const device of devices) {
     const mapping = mappedByVendorId.get(device.vendorCustomerId);
     if (!mapping) {
-      if (device.accountType !== 'm365' && device.accountType !== 'gws') unmappedDevices += 1;
+      if (countsTowardInventory(device.accountType)) unmappedDevices += 1;
       continue;
     }
     deviceValues.push({
@@ -406,12 +410,12 @@ export async function persistVendorSnapshot(
   return {
     customers: upsertedCustomers.length + failedCustomerRowIds.size,
     unmappedCustomers,
-    // Retained rows for failed customers still count, but SaaS workloads never do.
-    devices: deviceValues.filter((row) => row.accountType !== 'm365' && row.accountType !== 'gws').length
+    // Retained rows count in the same units as fresh inventory.
+    devices: deviceValues.filter((row) => countsTowardInventory(row.accountType)).length
       + existingDevices.filter((row) => failedCustomerRowIds.has(row.customerId)
-        && row.accountType !== 'm365' && row.accountType !== 'gws').length,
+        && countsTowardInventory(row.accountType)).length,
     unmappedDevices,
-    linked,
-    ambiguous,
+    linked: isSaasInventory ? 0 : linked,
+    ambiguous: isSaasInventory ? 0 : ambiguous,
   };
 }

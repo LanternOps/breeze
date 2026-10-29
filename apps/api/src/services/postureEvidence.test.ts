@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('./backupConnectionFreshness', () => ({ loadBackupConnectionFreshness: vi.fn() }));
 vi.mock('./securityComplianceReportVulnerabilities', () => ({ loadOpenVulnerabilityCounts: vi.fn(async () => new Map()) }));
 vi.mock('./securityComplianceReportBackupProviders', () => ({ loadBackupProviderEvidence: vi.fn(async () => ({ evidence: [], coveredDeviceCount: 0 })) }));
 vi.mock('./authenticatorPolicy', async (orig) => ({ ...(await orig<typeof import('./authenticatorPolicy')>()), loadPartnerPolicy: vi.fn(async () => null) }));
 
 import { db } from '../db';
+import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadPostureEvidence, postureEvidencePolicyFromReportConfig, TRUST_PAGE_EVIDENCE_POLICY } from './postureEvidence';
 import { securityCompliancePostureConfigSchema } from './reportConfigSchemas';
 
@@ -49,7 +51,13 @@ function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrS
 }
 
 describe('loadPostureEvidence', () => {
-  beforeEach(() => mockQueries());
+  beforeEach(() => {
+    mockQueries();
+    vi.mocked(loadBackupConnectionFreshness).mockResolvedValue(new Map([
+      ['connection-1', { isActive: true, lastSyncAt: AS_OF, syncIntervalMinutes: 30 }],
+      ['connection-2', { isActive: true, lastSyncAt: AS_OF, syncIntervalMinutes: 30 }],
+    ]));
+  });
 
   it('counts eligible/assessed/passing per control from the same facts the report uses', async () => {
     const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
@@ -84,7 +92,7 @@ describe('loadPostureEvidence', () => {
   it('includes healthy org-mapped SaaS workloads as products without endpoint coverage', async () => {
     mockQueries({ 9: [{ status: 'active', provider: 'm365' }] });
     const saas = (accountType: string, dataSource: string, overrides = {}) => ({
-      orgId: ORG, provider: 'dropsuite', accountType, dataSources: [dataSource],
+      orgId: ORG, provider: 'dropsuite', portalShowProviderName: true, connectionId: 'connection-1', accountType, dataSources: [dataSource],
       status: 'completed', lastSuccessAt: recent, errorsCount: 0, ...overrides,
     });
     vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
@@ -105,6 +113,57 @@ describe('loadPostureEvidence', () => {
     expect(ev.report.productEvidence).toContainEqual({ product: 'SaaS backup (m365)', category: 'backup', active: true, lastSyncStatus: null });
     expect(ev.report.backupProviders.coveredDeviceCount).toBe(0);
     expect(ev.deviceCount).toBe(3);
+  });
+
+  it.each([
+    { hidden: false, expected: 'NinjaOne SaaS Backup (Dropsuite)' },
+    { hidden: true, expected: 'Managed cloud backup' },
+  ])('groups SaaS evidence with D5 labels (hidden=$hidden)', async ({ hidden, expected }) => {
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? [
+        { orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true, accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: recent, errorsCount: 0 },
+        { orgId: ORG, provider: 'dropsuite', connectionId: 'connection-2', portalShowProviderName: !hidden, accountType: 'm365', dataSources: ['m365_onedrive'], status: 'completed', lastSuccessAt: recent, errorsCount: 0 },
+      ] : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([{
+      product: `${expected} — Microsoft 365 OneDrive, Microsoft 365 mail`,
+      category: 'backup', active: true, lastSyncStatus: null,
+    }]);
+    if (hidden) expect(JSON.stringify(ev.report.productEvidence)).not.toMatch(/dropsuite|ninjaone/i);
+  });
+
+  it('excludes unknown SaaS health but keeps healthy and warning evidence', async () => {
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? ['completed', 'completed_with_errors', 'unknown'].map((status, i) => ({
+        orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true,
+        accountType: 'm365', dataSources: [['m365_mail', 'm365_onedrive', 'm365_teams'][i]],
+        status, lastSuccessAt: recent, errorsCount: 0,
+      })) : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([{
+      product: 'NinjaOne SaaS Backup (Dropsuite) — Microsoft 365 OneDrive, Microsoft 365 mail',
+      category: 'backup', active: true, lastSyncStatus: null,
+    }]);
+  });
+
+  it.each([
+    { reason: 'stale', freshness: { isActive: true, lastSyncAt: recent, syncIntervalMinutes: 30 } },
+    { reason: 'inactive', freshness: { isActive: false, lastSyncAt: AS_OF, syncIntervalMinutes: 30 } },
+    { reason: 'missing', freshness: undefined },
+  ])('excludes SaaS evidence from a $reason connection', async ({ freshness }) => {
+    vi.mocked(loadBackupConnectionFreshness).mockResolvedValue(
+      freshness ? new Map([['connection-1', freshness]]) : new Map(),
+    );
+    vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(
+      selection?.accountType ? [{
+        orgId: ORG, provider: 'dropsuite', connectionId: 'connection-1', portalShowProviderName: true,
+        accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: recent, errorsCount: 0,
+      }] : [],
+    )) as never);
+    const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+    expect(ev.report.orgWide?.providerSaasBackups).toEqual([]);
   });
 
   it('the trust-page policy IS the report default configuration', () => {

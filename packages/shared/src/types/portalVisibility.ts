@@ -233,7 +233,6 @@ export interface BackupOverviewDto {
 }
 
 export interface BackupSaasWorkloadDto {
-  provider: string;
   /** D5-resolved: null unless the MSP chose to name the vendor in the portal. */
   providerLabel: string | null;
   /** Data-source key, e.g. `m365_mail`, `gws_drive`. */

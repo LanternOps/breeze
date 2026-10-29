@@ -199,7 +199,7 @@ describe('buildPortalPreview (#9350)', () => {
 
   it('includes the safe SaaS projection in the backup preview', async () => {
     m.brandingRow.mockResolvedValue([{ ...allOn, ...BRANDED }]);
-    const workloads = [{ provider: 'dropsuite', providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 5 }];
+    const workloads = [{ providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 5 }];
     m.backupSaasWorkloads.mockResolvedValue(workloads);
     const out = await buildPortalPreview({ orgId: ORG, portalUser: null, can: ALLOW_ALL });
     expect(out.sections.find((section) => section.key === 'backups')?.data).toEqual({ dataStatus: 'ok', saasWorkloads: workloads });

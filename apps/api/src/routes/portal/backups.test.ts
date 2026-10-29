@@ -186,7 +186,7 @@ describe('index.ts backup mount wiring and strict gate', () => {
 
 
 it('includes SaaS workloads separately while preserving device counts and session org scope', async () => {
-  const workloads = [{ provider: 'dropsuite', providerLabel: null, workload: 'gws_mail', accountType: 'gws', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 12 }];
+  const workloads = [{ providerLabel: null, workload: 'gws_mail', accountType: 'gws', health: 'healthy', status: 'completed', lastSuccessAt: null, itemCount: 12 }];
   mocks.overview.mockResolvedValue({ protected: 2, total: 3 });
   mocks.saasWorkloads.mockResolvedValue(workloads);
   const response = await app().request('/backups/overview');

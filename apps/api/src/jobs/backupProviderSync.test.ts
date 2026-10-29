@@ -86,7 +86,7 @@ listDevices.mockImplementation(async () => { fetchDepths.push(contextDepth); ret
 
 vi.mock('../services/backupProviders/types', () => ({ ProviderRequestError: FakeProviderRequestError }));
 vi.mock('../services/backupProviders/registry', () => ({
-  getBackupProvider: () => ({ key: 'cove', label: 'Cove Data Protection', listCustomers, listDevices }),
+  getBackupProvider: (key: string) => ({ key, inventoryKind: key === 'dropsuite' ? 'saas' : undefined, label: key, listCustomers, listDevices }),
 }));
 vi.mock('../services/backupProviders/credentials', () => ({
   decryptProviderCredentials: vi.fn(() => ({ partnerName: 'p', username: 'u', password: 'x' })),
@@ -183,6 +183,18 @@ describe('syncConnectionById — phase boundaries', () => {
     const dbm = await import('../db');
     await dbm.withSystemDbAccessContext(async () => { await syncConnectionById(CONNECTION_ID); });
     expect(fetchDepths).toEqual([0, 0]);
+  });
+
+  it('passes Dropsuite SaaS inventory semantics through the sync and publishes three workloads', async () => {
+    connectionRow.provider = 'dropsuite';
+    persistVendorSnapshot.mockResolvedValue({ customers: 1, unmappedCustomers: 0, devices: 3, unmappedDevices: 0, linked: 0, ambiguous: 0 });
+    await syncConnectionById(CONNECTION_ID);
+    expect(persistVendorSnapshot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      provider: 'dropsuite', inventoryKind: 'saas',
+    }), expect.anything());
+    expect(updatePayloads.find(u => u.payload.lastSyncStatus === 'success')?.payload).toMatchObject({
+      lastSyncDevices: 3, lastSyncUnmappedDevices: 0, lastSyncLinkedDevices: 0, lastSyncAmbiguousDevices: 0,
+    });
   });
 
   it('marks the connection running before fetching and successful after persisting', async () => {

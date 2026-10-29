@@ -245,8 +245,31 @@ runDb('keeps endpoint counts unchanged with M365 SaaS rows and isolates SaaS det
   expect(await read()).toEqual(before);
   const workloads = await withDbAccessContext(a.portalContext, () => backupSaasWorkloads(a.org.id, { now: NOW }));
   expect(workloads).toHaveLength(2);
-  expect(workloads).toContainEqual({ provider: 'cove', providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: RECENT.toISOString(), itemCount: 10 });
-  expect(workloads).toContainEqual({ provider: 'cove', providerLabel: 'Cove Data Protection', workload: 'm365_sharepoint', accountType, health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null });
-  expect(JSON.stringify(workloads)).not.toMatch(/private|secret|failingItems|other org/);
+  expect(workloads).toContainEqual({ providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: RECENT.toISOString(), itemCount: 10 });
+  expect(workloads).toContainEqual({ providerLabel: 'Cove Data Protection', workload: 'm365_sharepoint', accountType, health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null });
+  expect(JSON.stringify(workloads)).not.toMatch(/private|secret|failingItems|other org|"provider":/);
+  expect(JSON.stringify(workloads.find((row) => row.providerLabel === null))).not.toMatch(/cove|dropsuite/i);
   expect(await withDbAccessContext(a.portalContext, () => backupSaasWorkloads(b.org.id, { now: NOW }))).toEqual([]);
+});
+
+runDb.each([
+  ['fresh', true, NOW, 'healthy'],
+  ['inactive', false, NOW, 'unknown'],
+  ['stale', true, new Date(NOW.getTime() - 3 * 60 * 60 * 1000), 'unknown'],
+] as const)('uses %s connection freshness even when portal RLS hides the connection', async (_label, isActive, lastSyncAt, health) => {
+  const { a } = await seed();
+  await withSystemDbAccessContext(async () => {
+    await db.update(backupProviderConnections).set({ isActive, lastSyncAt, syncIntervalMinutes: 60 }).where(eq(backupProviderConnections.id, a.connection.id));
+    await db.insert(backupProviderDevices).values({
+      ...a.base, vendorDeviceId: 'saas-freshness', vendorDeviceName: 'Private', accountType: 'm365',
+      dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: RECENT,
+    });
+  });
+  await withDbAccessContext(a.portalContext, async () => {
+    expect(await db.select({ id: backupProviderConnections.id }).from(backupProviderConnections).where(eq(backupProviderConnections.id, a.connection.id))).toEqual([]);
+    const workloads = await backupSaasWorkloads(a.org.id, { now: NOW });
+    expect(workloads).toHaveLength(1);
+    expect(workloads[0]?.health).toBe(health);
+    expect(JSON.stringify(workloads)).not.toMatch(/"provider":|cove/i);
+  });
 });

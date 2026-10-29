@@ -151,6 +151,7 @@ export function rollupWorkload(customer: RecordData, workload: Workload, payload
 }
 
 export const dropsuiteAdapter: BackupProviderAdapter = {
+  inventoryKind: 'saas',
   key: 'dropsuite', label: 'NinjaOne SaaS Backup (Dropsuite)',
   credentialsSchema: dropsuiteCredentialsSchema,
   validateBaseUrl, defaultSyncIntervalMinutes: 60, rootContinuity: 'customer_overlap',

@@ -13,7 +13,8 @@ import {
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { deriveBackupHealth } from '@breeze/shared';
-import { providerLabelFor } from '../backupHealthRows';
+import { isConnectionStale, providerLabelFor } from '../backupHealthRows';
+import { loadBackupConnectionFreshness } from '../backupConnectionFreshness';
 import type {
   BackupDeviceRow,
   BackupDevicesDto,
@@ -215,6 +216,7 @@ async function loadPortalProviderRows(orgId: string, now: Date): Promise<BackupH
  * readable under portal org RLS even when the partner connection is hidden. */
 export async function backupSaasWorkloads(orgId: string, args: { now: Date }): Promise<BackupSaasWorkloadDto[]> {
   const rows = await db.select({
+    connectionId: backupProviderDevices.connectionId,
     provider: backupProviderDevices.provider,
     portalShowProviderName: backupProviderDevices.portalShowProviderName,
     accountType: backupProviderDevices.accountType,
@@ -228,17 +230,19 @@ export async function backupSaasWorkloads(orgId: string, args: { now: Date }): P
     inArray(backupProviderDevices.accountType, ['m365', 'gws']),
   )).orderBy(asc(backupProviderDevices.provider), asc(backupProviderDevices.vendorDeviceId));
 
+  const connections = await loadBackupConnectionFreshness(rows.map((row) => row.connectionId));
   return rows.flatMap((row) => {
     if (row.accountType !== 'm365' && row.accountType !== 'gws') return [];
     const itemCount = row.vendorRaw?.itemCount;
+    const connection = connections.get(row.connectionId);
+    const stale = !connection || isConnectionStale(connection, args.now);
     return [{
-      provider: row.provider,
       providerLabel: row.portalShowProviderName
         ? providerLabelFor(row.provider, { portalShowProviderName: true, labels: 'portal' })
         : null,
       workload: row.dataSources?.[0] ?? row.accountType,
       accountType: row.accountType,
-      health: deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount, now: args.now }).health,
+      health: stale ? 'unknown' as const : deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount, now: args.now }).health,
       status: row.status,
       lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
       itemCount: typeof itemCount === 'number' && Number.isSafeInteger(itemCount) && itemCount >= 0 ? itemCount : null,

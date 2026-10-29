@@ -52,8 +52,8 @@ describe('BackupOverview', () => {
     render(<BackupOverview overview={{
       ...configuredOverview,
       saasWorkloads: [
-        { provider: 'dropsuite', providerLabel: 'NinjaOne SaaS Backup (Dropsuite)', workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:30:00Z', itemCount: 42 },
-        { provider: 'dropsuite', providerLabel: null, workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null },
+        { providerLabel: 'NinjaOne SaaS Backup (Dropsuite)', workload: 'm365_mail', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:30:00Z', itemCount: 42 },
+        { providerLabel: null, workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: null },
       ],
     }} />);
 
@@ -87,7 +87,7 @@ describe('BackupOverview', () => {
     render(<BackupOverview overview={{
       ...configuredOverview,
       saasWorkloads: labels.map(([workload]) => ({
-        provider: 'cove', providerLabel: null, workload,
+        providerLabel: null, workload,
         accountType: workload.startsWith('gws') ? 'gws' : 'm365',
         health: 'unknown', status: 'unknown', lastSuccessAt: null, itemCount: 0,
       })),
@@ -103,7 +103,7 @@ describe('BackupOverview', () => {
   it('does not claim no backup data when only SaaS workloads are present', () => {
     render(<BackupOverview overview={{
       ...emptyOverview,
-      saasWorkloads: [{ provider: 'cove', providerLabel: null, workload: 'm365_exchange', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:00:00Z', itemCount: null }],
+      saasWorkloads: [{ providerLabel: null, workload: 'm365_exchange', accountType: 'm365', health: 'healthy', status: 'completed', lastSuccessAt: '2026-09-02T11:00:00Z', itemCount: null }],
     }} />);
 
     expect(screen.getByTestId('portal-backup-saas')).not.toBeNull();

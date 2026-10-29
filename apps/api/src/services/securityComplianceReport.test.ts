@@ -5,6 +5,9 @@ const vulnerabilityMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
+vi.mock('./backupConnectionFreshness', () => ({ loadBackupConnectionFreshness: vi.fn(async () => new Map([
+  ['connection-1', { isActive: true, lastSyncAt: new Date(), syncIntervalMinutes: 30 }],
+])) }));
 vi.mock('./securityComplianceReportVulnerabilities', () => vulnerabilityMocks);
 // Third-party backup evidence (#6012) has its own module + suite
 // (securityComplianceReportBackupProviders.test.ts); here it is a seam, so the
@@ -136,16 +139,16 @@ describe('generateSecurityCompliancePostureReport', () => {
     );
   });
 
-  it('does not treat SaaS-only native backup as configured endpoint backup', async () => {
+  it('preserves backupConfigured for an org with only native C2C backup', async () => {
     mockGeneratorQueries({ 8: [], 9: [{ status: 'active', provider: 'm365' }] });
     const result = await generateSecurityCompliancePostureReport(ORG, {});
-    expect((result.summary as any).controls.backupConfigured).toBe(false);
+    expect((result.summary as any).controls.backupConfigured).toBe(true);
   });
 
   it('keeps endpoint backup unconfigured with provider SaaS evidence alone', async () => {
     mockGeneratorQueries({ 8: [] });
     vi.mocked(db.select).mockImplementation(((selection: Record<string, unknown>) => selectChain(selection?.accountType ? [{
-      orgId: ORG, provider: 'dropsuite', accountType: 'm365', dataSources: ['m365_mail'],
+      orgId: ORG, provider: 'dropsuite', portalShowProviderName: true, connectionId: 'connection-1', accountType: 'm365', dataSources: ['m365_mail'],
       status: 'completed', lastSuccessAt: new Date(), errorsCount: 0,
     }] : [])) as never);
     const result = await generateSecurityCompliancePostureReport(ORG, {});

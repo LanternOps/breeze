@@ -219,7 +219,7 @@ export async function generateSecurityCompliancePostureReport(
           identityProviderConnected: Boolean(w.m365 || w.google),
           // A third party counts once it has at least one fresh successful
           // backup on an in-scope device (#6012).
-          backupConfigured: Boolean(w.backup || evidence.report.backupProviders.coveredDeviceCount > 0),
+          backupConfigured: Boolean(w.backup || w.c2c || evidence.report.backupProviders.coveredDeviceCount > 0),
           backupEncrypted: w.backup ? Boolean(w.backup.encryption) : null,
           dnsFilteringActive: dnsActive,
           dnsFilteringSyncStatus: dnsSyncStatus,

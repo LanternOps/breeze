@@ -19,6 +19,8 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('../../db', () => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
   db: {
     select: vi.fn((selection: Record<string, unknown>) => {
       state.selections.push(selection);
@@ -712,16 +714,36 @@ describe('SaaS workloads are separate from devices', () => {
     expect(overview.byHealth).toEqual({ healthy: 0, warning: 0, critical: 0, unknown: 0 });
   });
   it('projects only safe SaaS fields with portal label permission and shared health rules', async () => {
-    rows('backup_provider_devices:accountType,dataSources,errorsCount,lastSuccessAt,portalShowProviderName,provider,status,vendorRaw', [
-      { provider: 'cove', portalShowProviderName: false, accountType: 'm365', dataSources: ['m365_mail'], status: 'failed', lastSuccessAt: null, errorsCount: 1, vendorRaw: { itemCount: 5, failingItems: [{ name: 'private@example.com', error: 'private error' }] } },
-      { provider: 'cove', portalShowProviderName: true, accountType: 'gws', dataSources: ['gws_drive'], status: 'completed', lastSuccessAt: new Date('2026-08-01'), errorsCount: 0, vendorRaw: {} },
+    rows('backup_provider_devices:accountType,connectionId,dataSources,errorsCount,lastSuccessAt,portalShowProviderName,provider,status,vendorRaw', [
+      { connectionId: 'connection-1', provider: 'cove', portalShowProviderName: false, accountType: 'm365', dataSources: ['m365_mail'], status: 'failed', lastSuccessAt: null, errorsCount: 1, vendorRaw: { itemCount: 5, failingItems: [{ name: 'private@example.com', error: 'private error' }] } },
+      { connectionId: 'connection-1', provider: 'cove', portalShowProviderName: true, accountType: 'gws', dataSources: ['gws_drive'], status: 'completed', lastSuccessAt: new Date('2026-08-01'), errorsCount: 0, vendorRaw: {} },
+    ]);
+    rows('backup_provider_connections:id,isActive,lastSyncAt,syncIntervalMinutes', [
+      { id: 'connection-1', isActive: true, lastSyncAt: NOW, syncIntervalMinutes: 60 },
     ]);
     const workloads = await backupSaasWorkloads(ORG_ID, { now: NOW });
     expect(workloads).toEqual([
-      { provider: 'cove', providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: 5 },
-      { provider: 'cove', providerLabel: 'Cove Data Protection', workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'completed', lastSuccessAt: '2026-08-01T00:00:00.000Z', itemCount: null },
+      { providerLabel: null, workload: 'm365_mail', accountType: 'm365', health: 'critical', status: 'failed', lastSuccessAt: null, itemCount: 5 },
+      { providerLabel: 'Cove Data Protection', workload: 'gws_drive', accountType: 'gws', health: 'critical', status: 'completed', lastSuccessAt: '2026-08-01T00:00:00.000Z', itemCount: null },
     ]);
-    expect(JSON.stringify(workloads)).not.toMatch(/private|failingItems|errorsCount/);
+    expect(JSON.stringify(workloads)).not.toMatch(/private|failingItems|errorsCount|"provider":/);
+    expect(JSON.stringify(workloads[0])).not.toContain('cove');
     expect(compiledWheres()[0]!.params).toEqual([ORG_ID, 'm365', 'gws']);
   });
+  it.each([
+    ['inactive', false, NOW],
+    ['stale', true, new Date('2026-08-01')],
+    ['never synced', true, null],
+  ])('marks %s connection workloads unknown despite recent successful backups', async (_label, isActive, lastSyncAt) => {
+    rows('backup_provider_devices:accountType,connectionId,dataSources,errorsCount,lastSuccessAt,portalShowProviderName,provider,status,vendorRaw', [
+      { connectionId: 'connection-1', provider: 'dropsuite', portalShowProviderName: false, accountType: 'm365', dataSources: ['m365_mail'], status: 'completed', lastSuccessAt: NOW, errorsCount: 0, vendorRaw: {} },
+    ]);
+    rows('backup_provider_connections:id,isActive,lastSyncAt,syncIntervalMinutes', [
+      { id: 'connection-1', isActive, lastSyncAt, syncIntervalMinutes: 60 },
+    ]);
+    const workloads = await backupSaasWorkloads(ORG_ID, { now: NOW });
+    expect(workloads[0]?.health).toBe('unknown');
+    expect(JSON.stringify(workloads)).not.toMatch(/"provider":|dropsuite/);
+  });
+
 });

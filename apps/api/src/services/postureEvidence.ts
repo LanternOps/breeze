@@ -43,7 +43,8 @@ import {
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupsVerifiedEvidence, loadM365MfaEvidence } from './postureEvidenceNetNew';
-import { providerLabelFor } from './backupHealthRows';
+import { isConnectionStale, providerLabelFor } from './backupHealthRows';
+import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
@@ -827,6 +828,8 @@ async function loadProviderSaasEvidence(orgId: string, asOf: Date): Promise<Secu
   const rows = await db.select({
     orgId: backupProviderDevices.orgId,
     provider: backupProviderDevices.provider,
+    portalShowProviderName: backupProviderDevices.portalShowProviderName,
+    connectionId: backupProviderDevices.connectionId,
     accountType: backupProviderDevices.accountType,
     dataSources: backupProviderDevices.dataSources,
     status: backupProviderDevices.status,
@@ -836,11 +839,20 @@ async function loadProviderSaasEvidence(orgId: string, asOf: Date): Promise<Secu
     eq(backupProviderDevices.orgId, orgId),
     inArray(backupProviderDevices.accountType, ['m365', 'gws']),
   ));
+  const scopedRows = rows.filter((row) => row.orgId === orgId && (row.accountType === 'm365' || row.accountType === 'gws'));
+  // One hidden connection hides the provider name for the entire provider group,
+  // including when that connection currently contributes no healthy evidence.
+  const hiddenProviders = new Set(scopedRows.filter((row) => !row.portalShowProviderName).map((row) => row.provider));
+  const freshness = await loadBackupConnectionFreshness(scopedRows.map((row) => row.connectionId));
   const byProvider = new Map<string, Set<string>>();
-  for (const row of rows) {
-    if (row.orgId !== orgId || (row.accountType !== 'm365' && row.accountType !== 'gws')) continue;
-    if (deriveBackupHealth({ ...row, now: asOf }).health === 'critical') continue;
-    const label = providerLabelFor(row.provider, { labels: 'vendor', portalShowProviderName: true });
+  for (const row of scopedRows) {
+    const connection = freshness.get(row.connectionId);
+    if (!connection || isConnectionStale(connection, asOf)) continue;
+    const health = deriveBackupHealth({ ...row, now: asOf }).health;
+    if (health !== 'healthy' && health !== 'warning') continue;
+    const label = providerLabelFor(row.provider, {
+      labels: 'portal', portalShowProviderName: row.portalShowProviderName && !hiddenProviders.has(row.provider),
+    });
     if (!label) continue;
     const workloads = byProvider.get(label) ?? new Set<string>();
     for (const source of row.dataSources) workloads.add(saasWorkloadLabel(source));
