@@ -278,6 +278,8 @@ export function getCommandTimeoutMs(
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return WHOLE_MACHINE_RESTORE_TIMEOUT_MS;
   if (commandType === CommandTypes.BACKUP_RUN) return BACKUP_JOB_ABSOLUTE_TIMEOUT_MS;
   if (commandType === CommandTypes.CALLER_VERIFY) return CALLER_VERIFY_TIMEOUT_MS;
+  // #8928: showing a toast is quick; an unanswered notice is noise, not work.
+  if (commandType === CommandTypes.PAM_REQUEST_NOTIFY) return 2 * 60 * 1000;
   // Disk Cleanup v2: a native run's real budget is per-selection and lives on
   // the row; this is the ceiling that keeps the reaper from terminalising a
   // command whose run is still inside it.

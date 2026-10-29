@@ -17,7 +17,7 @@ import {
   checkGuardrails, resolveApprovalScope, isInputAwareTier3, AGENT_HUMAN_ONLY_TOOLS,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
-import { AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
+import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
 import { toolInputSchemas } from './aiToolSchemas';
 import { ExtensionContributionRegistry } from '../extensions/contributionRegistry';
@@ -160,7 +160,7 @@ describe('tier-3 approval scope classification', () => {
       'edr_endpoint_action', 'manage_ai_agents',
       // W03 (#6757): whole-tool supervised backstop; all six power actions classified.
       // W04 (#6758): whole-tool supervised backstops; every action classified.
-      'manage_browser_policy', 'manage_hyperv_vm', 'manage_peripheral_policy',
+      'manage_browser_policy', 'manage_device_software', 'manage_hyperv_vm', 'manage_peripheral_policy',
       'manage_services', 'manage_software_policy', 'manage_startup_items',
       // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
       'manage_ticket_routing_rules',
@@ -872,6 +872,100 @@ describe('W04 class rows (#6758)', () => {
   });
 });
 
+// ── W13 class rows (#6783, PR A; W13 plan class review) ───────────────────
+const W13_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_device_function: { get: 't1', set: 'supervised' },
+  manage_device_links: { list: 't1', get: 't1', for_device: 't1', create: 't2', update: 't2', dissolve: 't2' },
+  manage_manual_assets: { list: 't1', create: 't2', update: 't2', link: 't2', unlink: 't2', delete: 'supervised' },
+  manage_device_warranty: { get: 't1', expiring: 't1', refresh: 'supervised' },
+  // W13 PR B (#6783).
+  browse_device_event_log: { list_logs: 't2', query: 'supervised', get_event: 'supervised' },
+  manage_tenant_variables: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_support_sessions: { list: 't1', get: 't1', end: 'supervised' },
+};
+const W13_WHOLE_TOOL: Record<string, W02Class> = {
+  get_device_events: 't1',
+  get_device_health: 't1',
+  get_process_samples: 't1',
+  get_management_posture: 't1',
+};
+
+describe('W13 class rows (#6783)', () => {
+  it.each(Object.keys(W13_EXPECTED))('%s: W13_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W13_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W13_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W13_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe(cls);
+  });
+
+  it('search_agent_logs stays tier 1 with the W13 source filter', () => {
+    expect(classOf('search_agent_logs', { source: 'watchdog' })).toBe('t1');
+  });
+});
+
+// ── W14 class rows (#6784, PR A; W14 plan class review + quorum) ──────────
+const W14_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_billing_profiles: {
+    list: 't1', get: 't1', list_work_types: 't1', get_org_profile: 't1',
+    create: 'supervised', update: 'supervised', archive: 'supervised', set_rows: 'supervised', clone: 'supervised',
+    create_work_type: 'supervised', update_work_type: 'supervised',
+    set_org_profile: 'supervised', clear_org_profile: 'supervised',
+  },
+  manage_billing_settings: {
+    get_partner: 't1', get_org: 't1', currency_impact: 't1', reporting_totals: 't1',
+    update_partner: 'supervised', update_org: 'supervised',
+  },
+  manage_contract_templates: {
+    list: 't1', get: 't1', get_version: 't1', usage: 't1',
+    // Org-owned (no / 'organization' ownerScope); the partner-wide arm is pinned below.
+    create: 't2', update: 't2',
+    create_version: 'supervised', publish: 'supervised', archive: 'supervised',
+  },
+  manage_contract_documents: { list: 't1', link: 'supervised' },
+};
+
+describe('W14 class rows (#6784)', () => {
+  it.each(Object.keys(W14_EXPECTED))('%s: W14_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W14_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W14_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(['create', 'update'])('manage_contract_templates:%s is supervised when it asserts a partner-wide template, t2 for an org one', (action) => {
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'partner' })).toBe('supervised');
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'organization' })).toBe('t2');
+    // A non-literal value cannot address a partner-wide template (the handler compares it to the row).
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'PARTNER' })).toBe('t2');
+  });
+
+  it('get_device_billing (whole tool) is t1 and has no action enum', () => {
+    expect(toolActionEnum('get_device_billing') ?? []).toEqual([]);
+    expect(classOf('get_device_billing', { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe('t1');
+  });
+
+  it('the read selectors leave get_contract / list_contracts / get_invoice wholly read-only tier 2', () => {
+    expect(classOf('get_contract', { contractId: 'c', periodId: 'p' })).toBe('t2');
+    expect(classOf('list_contracts', { view: 'currency_mismatches' })).toBe('t2');
+    expect(classOf('get_invoice', { invoiceId: 'i', lineId: 'l' })).toBe('t2');
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have
@@ -1436,5 +1530,109 @@ describe('W10 class rows (#6780)', () => {
     for (const tool of ['get_device_ai_activity', 'list_ai_agent_schedules', 'list_fleet_designs', 'get_fleet_design']) {
       expect(AGENT_DENIED_READ_TOOLS.has(tool), tool).toBe(false);
     }
+  });
+});
+
+// ── W11 class rows (#6781, spec checklist item 3) ──────────────────────────
+// Copied from the W11 plan's class review table (after the codex quorum), NOT derived from the guardrail tables.
+// Every action-enum member has a row, so a new action reds here until someone classifies it. The two input-aware
+// actions are pinned on the input that resolves their CHEAPER class here and on every branch below.
+const W11_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_security_recommendations: { list: 't1', complete: 't2', dismiss: 't2' },
+  // create has no delete or cancel (QW6); decide_item only records, completion (human-only) revokes.
+  manage_access_reviews: { list: 't1', get: 't1', create: 'supervised', decide_item: 't2' },
+  // create arms the daily collect_audit_policy sweep (QW3); request_apply writes one pending row a second person approves.
+  manage_audit_baselines: { list: 't1', compliance: 't1', device_results: 't1', create: 'supervised', request_apply: 't2' },
+  manage_compliance_policies: { deactivate: 'supervised' },
+  manage_security_policies: { list: 't1', create: 'supervised', update: 'supervised' },
+  manage_recovery_keys: { list: 't1', rotate: 'supervised', collect: 'supervised' },
+  manage_pam_rules: {
+    list_rules: 't1', get_config: 't1', list_signer_groups: 't1',
+    create_rule: 'supervised', update_rule: 'supervised', delete_rule: 'supervised', set_config: 'supervised',
+    create_signer_group: 'supervised', update_signer_group: 'supervised', delete_signer_group: 'supervised',
+  },
+};
+const W11_WHOLE_TOOL: Record<string, W02Class> = { get_security_compliance: 't1' };
+/** The inputs each W11 multiplexer row is pinned with (the cheaper input-aware branch). */
+const W11_ROW_INPUT: Record<string, Record<string, unknown>> = {
+  'manage_compliance_policies:deactivate': { ownerScope: 'organization' },
+  'manage_security_policies:create': { ownerScope: 'organization' },
+};
+
+describe('W11 class rows (#6781)', () => {
+  it('covers the eight W11 tools exactly once', () => {
+    expect([...Object.keys(W11_EXPECTED), ...Object.keys(W11_WHOLE_TOOL)].sort()).toEqual([
+      'get_security_compliance', 'manage_access_reviews', 'manage_audit_baselines', 'manage_compliance_policies',
+      'manage_pam_rules', 'manage_recovery_keys', 'manage_security_policies', 'manage_security_recommendations',
+    ]);
+  });
+
+  it.each(Object.keys(W11_EXPECTED))('%s: W11_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W11_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W11_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action, ...(W11_ROW_INPUT[`${tool}:${action}`] ?? {}) })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W11_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, { view: 'dashboard' })).toBe(cls);
+  });
+
+  it('registry tiers: compliance deactivate is 3, the other seven start at 1', () => {
+    expect(getToolTier('manage_compliance_policies')).toBe(3);
+    for (const tool of [...Object.keys(W11_EXPECTED), ...Object.keys(W11_WHOLE_TOOL)].filter((t) => t !== 'manage_compliance_policies')) {
+      expect(getToolTier(tool), tool).toBe(1);
+    }
+  });
+
+  it('the human-only actions are not classified anywhere (they do not exist)', () => {
+    const all = [TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TIER3_SUPERVISED_ACTIONS, TIER3_FOUR_EYES_ACTIONS];
+    for (const map of all) {
+      expect(map.manage_access_reviews ?? [], 'access review complete').not.toContain('complete');
+      expect(map.manage_audit_baselines ?? [], 'apply-request decision').not.toContain('decision');
+      expect(map.manage_recovery_keys ?? [], 'recovery key reveal').not.toContain('reveal');
+    }
+  });
+
+  it('agent exposure: access reviews and PAM are human-only tools; the audit-baseline writes are human-only actions', () => {
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_access_reviews')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('manage_pam_rules')).toBe(true);
+    for (const tool of ['get_security_compliance', 'manage_security_recommendations', 'manage_audit_baselines',
+      'manage_compliance_policies', 'manage_security_policies', 'manage_recovery_keys']) {
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool), tool).toBe(false);
+    }
+    expect(AGENT_HUMAN_ONLY_ACTIONS.has('manage_audit_baselines:create')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_ACTIONS.has('manage_audit_baselines:request_apply')).toBe(true);
+    expect(AGENT_HUMAN_ONLY_ACTIONS.has('manage_audit_baselines:list')).toBe(false);
+  });
+});
+
+describe('W11 input-aware owner scopes (#6781, W11-D4 / W11-D13)', () => {
+  it.each([
+    ['manage_compliance_policies', 'deactivate', { ownerScope: 'organization' }, 'supervised'],
+    ['manage_compliance_policies', 'deactivate', { ownerScope: 'partner' }, 'four_eyes'],
+    ['manage_compliance_policies', 'deactivate', {}, 'four_eyes'],
+    ['manage_compliance_policies', 'deactivate', { ownerScope: 'ORGANIZATION' }, 'four_eyes'],
+    ['manage_compliance_policies', 'deactivate', { ownerScope: ['organization'] }, 'four_eyes'],
+    ['manage_security_policies', 'create', {}, 'supervised'],
+    ['manage_security_policies', 'create', { ownerScope: 'organization' }, 'supervised'],
+    ['manage_security_policies', 'create', { ownerScope: 'partner' }, 'four_eyes'],
+  ] as const)('%s:%s %j → %s', (tool, action, extra, cls) => {
+    expect(classOf(tool, { action, ...extra })).toBe(cls);
+    expect(resolveApprovalScope(tool, action, { ...extra })).toBe(cls);
+  });
+
+  it('both are input-aware pairs and pick their scope from ownerScope only', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_compliance_policies:deactivate')).toBe(true);
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_security_policies:create')).toBe(true);
+    // An update never changes ownership: static supervised, not input-aware.
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_security_policies:update')).toBe(false);
+    expect(classOf('manage_security_policies', { action: 'update', ownerScope: 'partner' })).toBe('supervised');
   });
 });

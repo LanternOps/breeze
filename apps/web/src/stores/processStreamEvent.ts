@@ -312,11 +312,17 @@ export function processStreamEvent(
       return currentAssistantId;
 
     case 'title_updated':
-      set((s) => ({
-        sessions: s.sessions.map((sess) =>
-          sess.id === s.sessionId ? { ...sess, title: event.title } : sess
-        )
-      }));
+      // Only the side panel keeps a sessions list. A workspace tab's state has
+      // none (its title lives on the tab), and the first turn of a conversation
+      // replays title_updated first: mapping an absent list threw and dropped
+      // the whole attach (#9840 lab, row A2).
+      set((s) => (Array.isArray(s.sessions)
+        ? {
+            sessions: s.sessions.map((sess) =>
+              sess.id === s.sessionId ? { ...sess, title: event.title } : sess
+            ),
+          }
+        : {}));
       return currentAssistantId;
 
     case 'message_end': {

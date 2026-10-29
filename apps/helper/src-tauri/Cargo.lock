@@ -159,8 +159,9 @@ dependencies = [
 
 [[package]]
 name = "breeze-helper"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "futures-util",
  "hex",
@@ -171,6 +172,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "sha2 0.11.1",
+ "sys-locale",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
@@ -3369,6 +3371,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "sys-locale"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

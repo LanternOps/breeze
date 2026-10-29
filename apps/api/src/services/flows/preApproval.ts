@@ -21,7 +21,7 @@
  * interactive user and stored on the publication.
  */
 import { createHash } from 'crypto';
-import type { FlowDocumentV1, PreApprovalEligibility } from '@breeze/shared';
+import { FLEET_MAX_TARGETS, type FlowDocumentV1, type PreApprovalEligibility } from '@breeze/shared';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { canonicalizeArguments } from '../actionIntents/canonicalize';
 import {
@@ -33,14 +33,26 @@ import { containsTemplate, type FlowStepPin } from '../flowValidator';
 import { loadTenantVariableScope } from '../tenantVariableResolution';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 import { findOwnedScriptIds } from './ownedReferences';
+import { FLEET_TOOL, type FleetBindingV1 } from './fleetBindingSchema';
+import { loadDynamicGroupDefinitions } from './fleetGroups';
+import {
+  buildFleetBinding,
+  fleetPreApprovalEligibility,
+  fleetScriptMaterialFromSnapshot,
+  fleetSelectorGroupIds,
+} from './fleetPreApproval';
 
-export interface FlowPreApprovalBinding {
+/** W04 act-asset binding (core run_script, one device). */
+export interface ActAssetPreApprovalBinding {
   stepId: string;
   lane: 'act_asset';
   assetKind: 'script';
   scriptId: string;
   contentDigest: string;
 }
+
+/** A stored pre-approval binding: the W04 act-asset lane, or the W06 fleet lane (`fleet_v1`). */
+export type FlowPreApprovalBinding = ActAssetPreApprovalBinding | FleetBindingV1;
 
 export type PreApprovalIneligibleReason = Extract<PreApprovalEligibility, { eligible: false }>['reason'];
 
@@ -157,6 +169,12 @@ export async function scriptPreApprovalMaterial(
   scriptId: string,
   stepInput: Record<string, unknown>,
 ): Promise<ScriptPreApprovalMaterial | null> {
+  const snapshot = await deviceLessSnapshot(scriptId);
+  return snapshot ? preApprovalMaterialFromSnapshot(snapshot, stepInput) : null;
+}
+
+/** The script's snapshot against one placeholder device (see above); null when the script is gone. */
+async function deviceLessSnapshot(scriptId: string): Promise<RunScriptSnapshot | null> {
   const built = await inSystemContext(
     () => buildRunScriptSnapshot({ scriptId, deviceIds: [PLACEHOLDER_DEVICE_ID] }, db, {
       loadScope: (orgIds, database) => loadTenantVariableScope(orgIds, { database }),
@@ -164,8 +182,14 @@ export async function scriptPreApprovalMaterial(
     }),
     'flows.scriptPreApprovalMaterial',
   );
-  if (built.kind !== 'snapshot') return null;
-  return preApprovalMaterialFromSnapshot(built.snapshot, stepInput);
+  return built.kind === 'snapshot' ? built.snapshot : null;
+}
+
+export interface PreApprovalAssessOptions {
+  /** The publication being created (enable only): fleet bindings bind to it. */
+  publicationId?: string;
+  /** W6: the user-confirmed `maxTargets` of each requested fleet step. */
+  fleetMaxTargets?: Record<string, number>;
 }
 
 export interface PreApprovalAssessment {
@@ -186,6 +210,7 @@ export async function assessPreApprovals(
   pins: FlowStepPin[],
   owner: ToolOwnerRef,
   requestedStepIds: Iterable<string> = [],
+  opts: PreApprovalAssessOptions = {},
 ): Promise<PreApprovalAssessment> {
   const requested = new Set(requestedStepIds);
   const pinById = new Map(pins.map((p) => [p.stepId, p]));
@@ -193,8 +218,23 @@ export async function assessPreApprovals(
   const bindings: Record<string, FlowPreApprovalBinding> = {};
   const candidates: Array<{ step: FlowDocumentV1['steps'][number]; scriptId: string }> = [];
 
+  // W6 (#5221, Decision 5): run_script_on_targets steps take the fleet lane,
+  // in document order (a fromStep selector may chain only onto an EARLIER
+  // eligible fleet step).
+  const eligibleFleet = new Set<string>();
   for (const step of doc.steps) {
     const pin = pinById.get(step.id);
+    if (!pin || step.tool !== FLEET_TOOL) continue;
+    if (pin.tier !== 3 && !requested.has(step.id)) continue;
+    const e = await assessFleetStep(step, pin, owner, eligibleFleet, requested.has(step.id), opts);
+    eligibility[step.id] = e.eligibility;
+    if (e.eligibility.eligible) eligibleFleet.add(step.id);
+    if (e.binding) bindings[step.id] = e.binding;
+  }
+
+  for (const step of doc.steps) {
+    const pin = pinById.get(step.id);
+    if (step.tool === FLEET_TOOL) continue;
     if (!pin || (pin.tier !== 3 && !requested.has(step.id))) continue;
     const e = preApprovalEligibility(step, pin);
     if (!e.eligible) {
@@ -224,4 +264,42 @@ export async function assessPreApprovals(
     bindings[step.id] = { stepId: step.id, lane: 'act_asset', assetKind: 'script', scriptId, contentDigest: material.contentDigest };
   }
   return { eligibility, bindings };
+}
+
+/**
+ * One fleet step (W6): the static lane checks, the owner's script, its
+ * device-independent material (an EFFECTIVE elevated run context or a tenant
+ * variable reference is ineligible), and — when the step is requested — the
+ * user's `maxTargets`. With a publication id the binding is built, including
+ * the definition digest of every dynamic group the selector names.
+ */
+async function assessFleetStep(
+  step: FlowDocumentV1['steps'][number],
+  pin: FlowStepPin,
+  owner: ToolOwnerRef,
+  eligibleEarlier: ReadonlySet<string>,
+  isRequested: boolean,
+  opts: PreApprovalAssessOptions,
+): Promise<{ eligibility: PreApprovalEligibility; binding?: FleetBindingV1 }> {
+  const staticCheck = fleetPreApprovalEligibility(step, pin, eligibleEarlier);
+  if (!staticCheck.eligible) return { eligibility: staticCheck };
+  const scriptId = step.input.scriptId as string;
+  const owned = await findOwnedScriptIds(owner, [scriptId]);
+  if (!owned.has(scriptId)) return { eligibility: ineligible('script_not_found') };
+  const snapshot = await deviceLessSnapshot(scriptId);
+  if (!snapshot) return { eligibility: ineligible('script_not_found') };
+  const material = fleetScriptMaterialFromSnapshot(snapshot, step.input);
+  if (material.effectiveRunAs === 'elevated') return { eligibility: ineligible('run_as_elevated') };
+  if (material.variableDependent) return { eligibility: ineligible('variable_dependent') };
+  if (!isRequested) return { eligibility: { eligible: true } };
+  const maxTargets = opts.fleetMaxTargets?.[step.id];
+  if (typeof maxTargets !== 'number' || !Number.isInteger(maxTargets) || maxTargets < 1 || maxTargets > FLEET_MAX_TARGETS) {
+    return { eligibility: ineligible('max_targets_invalid') };
+  }
+  if (!opts.publicationId) return { eligibility: { eligible: true } };
+  const groupDefinitions = await loadDynamicGroupDefinitions(owner.orgId, fleetSelectorGroupIds(step.input));
+  return {
+    eligibility: { eligible: true },
+    binding: buildFleetBinding({ publicationId: opts.publicationId, step, owner, material, maxTargets, groupDefinitions }),
+  };
 }

@@ -25,6 +25,7 @@ import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { PamActuationNotFoundError, requestPamCleanup } from '../services/pamActuationLifecycle';
+import { enqueuePamRequestNotify } from '../services/pamRequestNotify';
 import { envInt } from '../utils/envInt';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -237,6 +238,13 @@ export async function expireStaleRequests(): Promise<number> {
         details: { cause: 'stale', prior_status: row.prior_status },
         occurredAt: new Date(),
       })));
+      // #8928: tell each end user still waiting on IT that the request
+      // expired. Only uac_intercept rows have a user on the device; each
+      // enqueue is savepointed and best-effort, so it never undoes the expiry.
+      for (const row of expired) {
+        if (row.flow_type !== 'uac_intercept') continue;
+        await enqueuePamRequestNotify(tx, { id: row.id, deviceId: row.device_id }, 'expired');
+      }
     }
     return expired;
   });

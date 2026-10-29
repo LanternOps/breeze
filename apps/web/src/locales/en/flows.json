@@ -57,7 +57,24 @@
       "tenant": "Tool source",
       "builtin": "Built-in"
     },
-    "preApprovedBadge": "Pre-approved"
+    "preApprovedBadge": "Pre-approved",
+    "builtin": {
+      "notify": "Send a notice",
+      "http_request": "Call an outside API",
+      "ai": "Ask the AI"
+    },
+    "notify": {
+      "channel": "Channel: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonymous (no credentials)"
+    },
+    "ai": {
+      "tools": "Tools: {{tools}}",
+      "noTools": "No tools",
+      "output": "Result fields: {{fields}}"
+    }
   },
   "issues": {
     "title": "Validation",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Overview",
-    "runs": "Runs"
+    "runs": "Runs",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Enable",
@@ -103,7 +121,11 @@
       "variable_dependent": "This step depends on values that are only known at run time.",
       "script_not_found": "The script this step uses could not be found.",
       "four_eyes": "This action always needs a second person to approve it.",
-      "tenant_tool": "Custom tool sources cannot be pre-approved."
+      "tenant_tool": "Custom tool sources cannot be pre-approved.",
+      "for_each": "Steps that repeat for each item cannot be pre-approved.",
+      "run_as_elevated": "This script runs elevated, so it cannot be pre-approved.",
+      "selector_not_literal": "The devices are chosen at run time, so this step cannot be pre-approved.",
+      "max_targets_invalid": "Set how many devices this step may run on (1–500) to pre-approve it."
     },
     "eventScope": "Event flows react to platform events whatever caused them, including actions taken by people, other flows, or automations. Check the trigger filter before you enable it.",
     "missingPermissions": "You are missing permissions that this flow's steps need:",
@@ -121,7 +143,10 @@
     "partnerWideForbidden": "You do not have permission to enable flows for all organizations.",
     "interactiveRequired": "Flows can only be enabled from a signed-in browser session.",
     "slugUnavailable": "Another flow in this scope already uses this identifier.",
-    "generic": "Could not enable the flow."
+    "generic": "Could not enable the flow.",
+    "webhookSecretMissing": "Create a webhook secret before you enable this flow.",
+    "aiBudgetUnavailable": "This organization has no AI budget to spend, so a flow with an AI step cannot be enabled.",
+    "webhookSecretInvalidated": "Enabling this version cleared the webhook secret, because the secret was created for an older draft. Every request is refused until you create a new secret and give it to the sender."
   },
   "run": {
     "title": "Run flow",
@@ -145,6 +170,7 @@
   },
   "runs": {
     "empty": "No runs yet.",
+    "emptyFiltered": "No runs match this filter.",
     "status": {
       "queued": "Queued",
       "running": "Running",
@@ -216,7 +242,11 @@
       "notify_failed": "The notice could not be sent.",
       "ai_budget_exhausted": "The organization's AI budget is used up.",
       "ai_output_invalid": "The AI result did not match the expected shape.",
-      "ai_token_cap_reached": "The run reached its AI token limit."
+      "ai_token_cap_reached": "The run reached its AI token limit.",
+      "targets_over_cap": "The step targeted more devices than a flow step may run on (500).",
+      "targets_unresolvable": "The step's device target could not be resolved.",
+      "alert_create_failed": "The alert could not be created.",
+      "script_dispatch_failed": "The script could not be sent to one or more devices."
     },
     "step": {
       "status": {
@@ -246,7 +276,9 @@
       "loading": "Loading...",
       "loadFailed": "Could not load step details.",
       "pruned": "Details were removed by the retention policy.",
-      "redacted": "Step details aren't available with your access."
+      "redacted": "Step details aren't available with your access.",
+      "aiUsage": "AI: {{input}} in, {{output}} out tokens, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Run not found.",
     "alreadyTerminal": "This run has already finished.",
@@ -258,7 +290,11 @@
     "queuedNote": "Queued. Waiting for a free run slot.",
     "paused": "Live updates paused.",
     "lastUpdated": "Last updated {{time}}",
-    "timeline": "Steps"
+    "timeline": "Steps",
+    "agentRun": "Started by an AI agent run",
+    "openAgentRun": "Open agent run",
+    "aiTokensUsed": "AI tokens used: {{count}}",
+    "parallel": "{{count}} items ran in parallel"
   },
   "toast": {
     "enabled": "Flow enabled",
@@ -269,5 +305,142 @@
   "disable": {
     "title": "Disable flow",
     "message": "Disabling stops new runs and cancels runs that are in progress. You can enable the flow again later."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "Webhook URL",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Could not copy automatically. Select the value and copy it by hand.",
+    "authMode": {
+      "label": "Authentication",
+      "hmac": "Signed request (HMAC-SHA256)",
+      "token": "Secret in a header"
+    },
+    "authHelp": {
+      "hmac": "The sender signs each request with the secret. Breeze refuses requests that are unsigned, wrongly signed or more than five minutes old, and runs a replayed request only once.",
+      "token": "The sender puts the secret itself in a header. This is weaker than signing: anyone who sees one request can send more. Use it only for senders that cannot sign."
+    },
+    "signing": {
+      "title": "How to send a request",
+      "hmac": "Send a JSON object as the body. Compute HMAC-SHA256 over <timestamp>.<raw body> with the secret, and send these headers:",
+      "token": "Send a JSON object as the body, with the secret in this header:",
+      "deliveryId": "Optional: send a unique {{header}} so a retry of the same delivery runs only once."
+    },
+    "secret": {
+      "label": "Secret",
+      "create": "Create secret",
+      "rotate": "Rotate secret",
+      "none": "No secret yet. Every request is refused until you create one.",
+      "fingerprint": "Fingerprint",
+      "rotatedAt": "Created",
+      "dialogTitle": "Webhook secret",
+      "warning": "Copy this secret now. It will not be shown again.",
+      "done": "Done",
+      "rotateTitle": "Rotate the webhook secret?",
+      "rotateMessage": "The current secret stops working immediately. The sender gets refused until it uses the new secret.",
+      "failed": "Could not create the webhook secret.",
+      "draftUnresolvable": "The draft's steps no longer resolve, so a secret cannot be created for it. Fix the draft first.",
+      "notWebhook": "This flow is not started by a webhook."
+    },
+    "lastFailure": {
+      "label": "Last refused request",
+      "none": "None",
+      "missing_signature": "The request was not signed.",
+      "bad_signature": "The signature did not match.",
+      "stale_timestamp": "The timestamp was missing or more than five minutes off.",
+      "missing_token": "The secret header was missing.",
+      "bad_token": "The secret in the header was wrong.",
+      "bad_delivery_id": "The delivery ID was not valid."
+    },
+    "orgResolver": {
+      "label": "Organization",
+      "externalId": "Matched by {{path}} against external IDs of type {{system}}",
+      "breezeOrgId": "Read from {{path}} as a Breeze organization ID",
+      "orgFlow": "Runs in this flow's organization"
+    }
+  },
+  "deliveries": {
+    "title": "Recent deliveries",
+    "empty": "No deliveries yet.",
+    "loadFailed": "Could not load deliveries.",
+    "loadMore": "Load more",
+    "hidden": "Delivery IDs and organization values are hidden with your access.",
+    "columns": {
+      "received": "Received",
+      "status": "Status",
+      "org": "Organization",
+      "run": "Run",
+      "attempts": "Attempts",
+      "detail": "Detail"
+    },
+    "status": {
+      "accepted": "Accepted",
+      "org_unresolved": "No matching organization",
+      "refused": "Refused",
+      "invalid_body": "Invalid body"
+    },
+    "resolverValue": "Value: {{value}}",
+    "deliveryId": "Delivery ID: {{id}}",
+    "openRun": "Open run"
+  },
+  "usage": {
+    "title": "Runs this month",
+    "period": "{{period}} (UTC)",
+    "flowCap": "This flow",
+    "ownerCap": "All flows of this owner",
+    "count": "{{used}} of {{cap}}",
+    "limitsLink": "Flow limits",
+    "refused": {
+      "flow_queue_full": "Too many runs are waiting.",
+      "flow_monthly_cap_reached": "This flow reached its monthly run limit.",
+      "owner_monthly_cap_reached": "The owner reached its monthly run limit for all flows."
+    },
+    "refusedBanner": "Runs are being refused. {{reason}} Last refused {{time}}. The flow stays enabled and runs again when the month resets or the limit is raised.",
+    "refusedBadge": "Runs refused"
+  },
+  "limits": {
+    "title": "Flow limits",
+    "subtitle": "Monthly run limits and the AI token limit for each run. Set a default for your partner, and lower it for an organization when needed.",
+    "level": {
+      "label": "Level",
+      "partner": "Partner default",
+      "org": "Organization"
+    },
+    "selectOrg": "Select an organization",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Runs per month, all flows",
+        "help": "The most runs all flows of one owner can start in a calendar month (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Runs per month, per flow",
+        "help": "The most runs one flow can start in a calendar month (UTC). A flow can set a lower limit of its own."
+      },
+      "aiTokensPerRun": {
+        "label": "AI tokens per run",
+        "help": "The most AI tokens the AI steps of one run can use."
+      }
+    },
+    "inherited": "Inherited: {{value}} ({{source}})",
+    "source": {
+      "default": "platform default",
+      "partner": "partner default",
+      "org": "this organization"
+    },
+    "ceilingNote": "Organizations can only lower this. The partner value is {{value}}.",
+    "aboveCeiling": "The stored value {{value}} is above the partner value, so it does not apply.",
+    "aboveCeilingError": "Must be {{value}} or lower (the partner value).",
+    "range": "Enter a whole number from 1 to {{max}}.",
+    "placeholder": "Inherit",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Flow limits saved",
+    "saveFailed": "Could not save the flow limits.",
+    "loadFailed": "Could not load the flow limits.",
+    "orgNotFound": "This organization was not found or you no longer have access to it.",
+    "readOnly": "You can view these limits but not change them.",
+    "partnerWideForbidden": "Changing the partner default needs access to all organizations.",
+    "orgScopeReadOnly": "Organization limits are set by your service provider."
   }
 }

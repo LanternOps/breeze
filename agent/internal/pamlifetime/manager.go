@@ -110,6 +110,7 @@ type lifecycleManager struct {
 	available     bool
 	accountAbsent bool // positive account-absence proof from the latest reconciliation
 	unresolved    map[string]uint64
+	declines      DeclineChecker
 }
 
 func newLifecycleManager(store lifetimeStore, windows windowsPrimitives, account accountLifecycle, observe func(Result)) *lifecycleManager {
@@ -143,6 +144,24 @@ func (m *lifecycleManager) setAccountAbsent(absent bool) {
 	m.accountAbsent = absent
 }
 
+// SetDeclineChecker installs the end user's decision record (#8971). nil
+// disables the check.
+func (m *lifecycleManager) SetDeclineChecker(checker DeclineChecker) {
+	m.mu.Lock()
+	m.declines = checker
+	m.mu.Unlock()
+}
+
+func (m *lifecycleManager) declineRefusal(requestID string) (bool, string) {
+	m.mu.Lock()
+	checker := m.declines
+	m.mu.Unlock()
+	if checker == nil {
+		return false, ""
+	}
+	return checker.Check(requestID)
+}
+
 func (m *lifecycleManager) Apply(ctx context.Context, cmd ApplyCommand) Result {
 	return m.apply(ctx, cmd, nil)
 }
@@ -163,6 +182,15 @@ func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff 
 	bootID, err := m.currentBootID(ctx)
 	if err != nil {
 		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "boot_id_unavailable")
+	}
+	// #8971: the end user declined this request on the device (or has not
+	// answered, or the record of their answer is untrusted). Refuse before
+	// admission, PinTarget, PrepareApply and the received handoff, so nothing
+	// but this failed result exists for it. The handler already waited
+	// (bounded, outside this lock) for an open dialog; this re-check is the
+	// non-blocking one under the operation.
+	if refuse, code := m.declineRefusal(cmd.RequestID); refuse {
+		return m.failed(cmd.ActuationID, cmd.Generation, bootID, code)
 	}
 	m.mu.Lock()
 	admissionOpen := m.admissionOpen

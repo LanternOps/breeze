@@ -66,6 +66,8 @@ import {
 import type { AiToolDomain } from '@breeze/shared';
 import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
+import { isFlowToolName } from '../services/flows/toolNames';
+import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
@@ -257,6 +259,9 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (body.method !== 'tools/call') return false;
     const name = body.params?.name;
     if (typeof name !== 'string') return false;
+    // Also true for a flow tool (`flow__<slug>` has the tenant shape), on
+    // purpose: handleFlowToolCall's reads and the run insert open their own
+    // system contexts, exactly like the tenant path (W5 PR C, #5220).
     if (isTenantToolName(name)) return true;
     const input = body.params?.arguments;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
@@ -1964,8 +1969,29 @@ async function handleToolsList(
     console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
   }
 
+  // W5 PR C (#5220): flow tools (`flow__<slug>`), listed only when callable
+  // right now (tier 1; tier 2 with ai:write; tier 3 never) under the domain
+  // the flow tools live in. Same degrade-to-none rule as tenant tools.
+  // listMcpFlowTools answers [] with FLOWS_ENABLED off before any read.
+  let flowResult: typeof tenantResult = [];
+  try {
+    const flowDomain = mcpToolDomain('list_flows');
+    if (isDomainGranted(domainGrant, flowDomain)) {
+      const flowTools = await listMcpFlowTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}), { hasWrite });
+      flowResult = flowTools.map((t) => ({
+        ...buildMcpToolPresentation({ name: t.name, input_schema: t.inputSchema }, t.tier, flowDomain),
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
+    }
+  } catch (err) {
+    console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
+    flowResult = [];
+  }
+
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
-  const all = [...result.sort(byName), ...tenantResult.sort(byName)];
+  const all = [...result.sort(byName), ...tenantResult.sort(byName), ...flowResult.sort(byName)];
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
 
@@ -2079,6 +2105,13 @@ async function handleToolsCall(
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
   const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
+
+  // W5 PR C (#5220): flow tools FIRST — `isTenantToolName('flow__x')` is true
+  // (the name parses as tenant slug `flow`), so a flow tool must never fall
+  // into the tenant branch below.
+  if (isFlowToolName(requestedToolName)) {
+    return handleFlowToolCall(id, requestedToolName, toolInput, auth, scopes, domainGrant, apiKey, c, correlation);
+  }
 
   // Tenant (BYO MCP) tools — Task A10. Named `<slug>__<name>` (never true of
   // any core registry name — asserted by aiToolsRegistryParity.test.ts), so
@@ -3044,6 +3077,101 @@ async function handleTenantToolCall(
     ...(structured ? { structuredContent: structured } : {}),
     ...(isError ? { isError: true } : {}),
   });
+}
+
+/**
+ * W5 PR C (#5220): a `flow__<slug>` call (services/flows/mcpFlowTools.ts owns
+ * the live resolution, the tier gate and the run start; this maps it to
+ * JSON-RPC). Flag off / unknown / invisible ⇒ exactly the unknown-tool error
+ * (no existence oracle). Tier 3 ⇒ the standard approval-required result,
+ * never lifted by MCP_UNATTENDED_TIER3_PRINCIPALS. RBAC (automations
+ * read/write) and run_flow's rate-limit counter apply before any run exists.
+ */
+async function handleFlowToolCall(
+  id: string | number,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  domainGrant: McpDomainGrant,
+  apiKey: McpApiKeyContext | undefined,
+  c: Context | undefined,
+  correlation: McpRequestCorrelation,
+): Promise<JsonRpcResponse> {
+  const unknown = () => jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  if (isToolEnvGatedOff(toolName)) return unknown();
+  const domain = mcpToolDomain('list_flows');
+  if (!isDomainGranted(domainGrant, domain)) {
+    const denial = buildDomainNotGrantedError(toolName, domain);
+    return jsonRpcError(id, denial.code, denial.message, denial.data);
+  }
+
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth,
+      apiKey: apiKey ?? null,
+      toolName,
+      toolInput,
+      deviceArgsForTool: async () => undefined,
+    }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) return jsonRpcError(id, -32602, 'Invalid params');
+    console.error('[MCP] Failed to resolve execution org for flow tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+
+  const startTime = Date.now();
+  let outcome: Awaited<ReturnType<typeof callMcpFlowTool>>;
+  try {
+    outcome = await callMcpFlowTool(toolName, toolInput, auth, scopes, executionOrgId, async (tier) => {
+      const permError = await checkPermissionRequirements(auth, [{ resource: 'automations', action: tier === 1 ? 'read' : 'write' }]);
+      if (permError) return permError;
+      return checkToolRateLimit('run_flow', toolRateLimitIdentity(auth), {
+        orgId: apiKey?.orgId ?? auth.orgId ?? null,
+        partnerId: apiKey?.partnerId ?? auth.partnerId ?? null,
+      });
+    });
+  } catch (err) {
+    console.error('[MCP] Flow tool call failed:', toolName, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_site: 'mcp.flow_tool_call', ...(executionOrgId ? { org_id: executionOrgId } : {}) }, { fingerprint: ['flow', 'mcp.flow_tool_call'] });
+    return jsonRpcError(id, -32000, 'Unable to start the flow');
+  }
+
+  switch (outcome.kind) {
+    case 'unknown':
+      return unknown();
+    case 'approval_required':
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+        isError: true,
+      });
+    case 'scope_required':
+      return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+    case 'refused':
+      return jsonRpcError(id, -32603, outcome.message);
+    case 'result': {
+      writeMcpToolAuditEvent(requestAuditSink(c), {
+        principal: apiKey,
+        auth,
+        correlation,
+        orgId: executionOrgId,
+        toolName,
+        tier: outcome.tier,
+        toolInput,
+        durationMs: Date.now() - startTime,
+        status: outcome.isError ? 'failure' : 'success',
+        result: outcome.text,
+      });
+      const structured = outcome.isError ? undefined : structuredFromSafeText(outcome.text);
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: outcome.text }],
+        ...(structured ? { structuredContent: structured } : {}),
+        ...(outcome.isError ? { isError: true } : {}),
+      });
+    }
+  }
 }
 
 /**

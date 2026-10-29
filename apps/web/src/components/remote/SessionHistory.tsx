@@ -52,6 +52,7 @@ export type RemoteSession = {
   durationSeconds?: number;
   bytesTransferred?: number;
   recordingUrl?: string;
+  endReason?: 'ended_by_user' | null;
   createdAt: string;
 };
 
@@ -190,6 +191,7 @@ export function normalizeRemoteSession(session: RemoteSessionApi): RemoteSession
     durationSeconds: session.durationSeconds ?? undefined,
     bytesTransferred: session.bytesTransferred ?? undefined,
     recordingUrl: session.recordingUrl ?? undefined,
+    endReason: session.endReason ?? null,
     createdAt: session.createdAt
   };
 }
@@ -523,6 +525,9 @@ export default function SessionHistory({
                       )}>
                         {t(/* i18n-dynamic */ sessionStatusBadge(session).labelKey)}
                       </span>
+                      {session.endReason === 'ended_by_user' && (
+                        <p className="mt-1 text-xs text-muted-foreground">{t('sessionHistory.status.endedByUser')}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end">

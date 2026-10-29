@@ -57,7 +57,24 @@
       "tenant": "Fuente de herramientas",
       "builtin": "Integrada"
     },
-    "preApprovedBadge": "Preaprobado"
+    "preApprovedBadge": "Preaprobado",
+    "builtin": {
+      "notify": "Enviar un aviso",
+      "http_request": "Llamar a una API externa",
+      "ai": "Consultar a la IA"
+    },
+    "notify": {
+      "channel": "Canal: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anónimo (sin credenciales)"
+    },
+    "ai": {
+      "tools": "Herramientas: {{tools}}",
+      "noTools": "Sin herramientas",
+      "output": "Campos de resultado: {{fields}}"
+    }
   },
   "issues": {
     "title": "Validación",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Resumen",
-    "runs": "Ejecuciones"
+    "runs": "Ejecuciones",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Habilitar",
@@ -103,7 +121,11 @@
       "variable_dependent": "Este paso depende de valores que solo se conocen al ejecutar.",
       "script_not_found": "No se encontró el script que usa este paso.",
       "four_eyes": "Esta acción siempre necesita la aprobación de una segunda persona.",
-      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar."
+      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar.",
+      "for_each": "Los pasos que se repiten para cada elemento no se pueden aprobar por adelantado.",
+      "run_as_elevated": "Este script se ejecuta con privilegios elevados, por lo que no se puede aprobar por adelantado.",
+      "selector_not_literal": "Los dispositivos se eligen en tiempo de ejecución, por lo que este paso no se puede aprobar por adelantado.",
+      "max_targets_invalid": "Indica en cuántos dispositivos puede ejecutarse este paso (1–500) para aprobarlo por adelantado."
     },
     "eventScope": "Los flujos por evento reaccionan a los eventos de la plataforma sin importar qué los causó, incluidas acciones de personas, de otros flujos o de automatizaciones. Revise el filtro del disparador antes de habilitar.",
     "missingPermissions": "Le faltan permisos que necesitan los pasos de este flujo:",
@@ -121,7 +143,10 @@
     "partnerWideForbidden": "No tiene permiso para activar flujos para todas las organizaciones.",
     "interactiveRequired": "Los flujos solo se pueden activar desde una sesión de navegador iniciada.",
     "slugUnavailable": "Otro flujo de este ámbito ya usa este identificador.",
-    "generic": "No se pudo activar el flujo."
+    "generic": "No se pudo activar el flujo.",
+    "webhookSecretMissing": "Crea un secreto de webhook antes de activar este flujo.",
+    "aiBudgetUnavailable": "Esta organización no tiene presupuesto de IA, por lo que no se puede activar un flujo con un paso de IA.",
+    "webhookSecretInvalidated": "Al activar esta versión se borró el secreto del webhook, porque se creó para un borrador anterior. Se rechazarán todas las solicitudes hasta que crees un secreto nuevo y se lo entregues al remitente."
   },
   "run": {
     "title": "Ejecutar flujo",
@@ -145,6 +170,7 @@
   },
   "runs": {
     "empty": "Aún no hay ejecuciones.",
+    "emptyFiltered": "Ninguna ejecución coincide con este filtro.",
     "status": {
       "queued": "En cola",
       "running": "En ejecución",
@@ -216,7 +242,11 @@
       "notify_failed": "No se pudo enviar el aviso.",
       "ai_budget_exhausted": "Se agotó el presupuesto de IA de la organización.",
       "ai_output_invalid": "El resultado de la IA no coincide con el formato esperado.",
-      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA."
+      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA.",
+      "targets_over_cap": "El paso apuntó a más dispositivos de los que un paso de flujo puede usar (500).",
+      "targets_unresolvable": "No se pudo resolver el destino de dispositivos del paso.",
+      "alert_create_failed": "No se pudo crear la alerta.",
+      "script_dispatch_failed": "No se pudo enviar el script a uno o más dispositivos."
     },
     "step": {
       "status": {
@@ -246,7 +276,9 @@
       "loading": "Cargando...",
       "loadFailed": "No se pudieron cargar los detalles del paso.",
       "pruned": "La política de retención eliminó los detalles.",
-      "redacted": "Los detalles del paso no están disponibles con su nivel de acceso."
+      "redacted": "Los detalles del paso no están disponibles con su nivel de acceso.",
+      "aiUsage": "IA: {{input}} de entrada, {{output}} de salida (tokens), {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Ejecución no encontrada.",
     "alreadyTerminal": "Esta ejecución ya terminó.",
@@ -258,7 +290,11 @@
     "queuedNote": "En cola. Esperando un espacio de ejecución libre.",
     "paused": "Actualizaciones en vivo en pausa.",
     "lastUpdated": "Última actualización {{time}}",
-    "timeline": "Pasos"
+    "timeline": "Pasos",
+    "agentRun": "Iniciado por la ejecución de un agente de IA",
+    "openAgentRun": "Abrir ejecución del agente",
+    "aiTokensUsed": "Tokens de IA utilizados: {{count}}",
+    "parallel": "{{count}} elementos se ejecutaron en paralelo"
   },
   "toast": {
     "enabled": "Flujo habilitado",
@@ -269,5 +305,142 @@
   "disable": {
     "title": "Desactivar flujo",
     "message": "Al desactivarlo se detienen las nuevas ejecuciones y se cancelan las que están en curso. Puede volver a activar el flujo más tarde."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "URL del webhook",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "No se pudo copiar automáticamente. Selecciona el valor y cópialo manualmente.",
+    "authMode": {
+      "label": "Autenticación",
+      "hmac": "Solicitud firmada (HMAC-SHA256)",
+      "token": "Secreto en un encabezado"
+    },
+    "authHelp": {
+      "hmac": "El remitente firma cada solicitud con el secreto. Breeze rechaza las solicitudes sin firma, con firma incorrecta o de más de cinco minutos, y ejecuta una solicitud repetida una sola vez.",
+      "token": "El remitente coloca el secreto mismo en un encabezado. Es más débil que firmar: cualquiera que vea una solicitud puede enviar más. Úsalo solo con remitentes que no pueden firmar."
+    },
+    "signing": {
+      "title": "Cómo enviar una solicitud",
+      "hmac": "Envía un objeto JSON como cuerpo. Calcula HMAC-SHA256 sobre <timestamp>.<raw body> con el secreto y envía estos encabezados:",
+      "token": "Envía un objeto JSON como cuerpo, con el secreto en este encabezado:",
+      "deliveryId": "Opcional: envía un {{header}} único para que un reintento de la misma entrega se ejecute una sola vez."
+    },
+    "secret": {
+      "label": "Secreto",
+      "create": "Crear secreto",
+      "rotate": "Rotar secreto",
+      "none": "Aún no hay un secreto. Se rechazarán todas las solicitudes hasta que crees uno.",
+      "fingerprint": "Huella digital",
+      "rotatedAt": "Creado",
+      "dialogTitle": "Secreto del webhook",
+      "warning": "Copia este secreto ahora. No se volverá a mostrar.",
+      "done": "Listo",
+      "rotateTitle": "¿Rotar el secreto del webhook?",
+      "rotateMessage": "El secreto actual deja de funcionar de inmediato. El remitente será rechazado hasta que use el secreto nuevo.",
+      "failed": "No se pudo crear el secreto del webhook.",
+      "draftUnresolvable": "Los pasos del borrador ya no se pueden resolver, por lo que no se puede crear un secreto para él. Corrige primero el borrador.",
+      "notWebhook": "Este flujo no se inicia con un webhook."
+    },
+    "lastFailure": {
+      "label": "Última solicitud rechazada",
+      "none": "Ninguna",
+      "missing_signature": "La solicitud no estaba firmada.",
+      "bad_signature": "La firma no coincidía.",
+      "stale_timestamp": "Faltaba la marca de tiempo o difería en más de cinco minutos.",
+      "missing_token": "Faltaba el encabezado del secreto.",
+      "bad_token": "El secreto del encabezado era incorrecto.",
+      "bad_delivery_id": "El ID de entrega no era válido."
+    },
+    "orgResolver": {
+      "label": "Organización",
+      "externalId": "Se asocia por {{path}} con los ID externos de tipo {{system}}",
+      "breezeOrgId": "Se lee de {{path}} como ID de organización de Breeze",
+      "orgFlow": "Se ejecuta en la organización de este flujo"
+    }
+  },
+  "deliveries": {
+    "title": "Entregas recientes",
+    "empty": "Aún no hay entregas.",
+    "loadFailed": "No se pudieron cargar las entregas.",
+    "loadMore": "Cargar más",
+    "hidden": "Los ID de entrega y los valores de organización están ocultos con tu nivel de acceso.",
+    "columns": {
+      "received": "Recibida",
+      "status": "Estado",
+      "org": "Organización",
+      "run": "Ejecución",
+      "attempts": "Intentos",
+      "detail": "Detalle"
+    },
+    "status": {
+      "accepted": "Aceptada",
+      "org_unresolved": "Sin organización coincidente",
+      "refused": "Rechazada",
+      "invalid_body": "Cuerpo no válido"
+    },
+    "resolverValue": "Valor: {{value}}",
+    "deliveryId": "ID de entrega: {{id}}",
+    "openRun": "Abrir ejecución"
+  },
+  "usage": {
+    "title": "Ejecuciones de este mes",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Este flujo",
+    "ownerCap": "Todos los flujos de este propietario",
+    "count": "{{used}} de {{cap}}",
+    "limitsLink": "Límites de flujos",
+    "refused": {
+      "flow_queue_full": "Hay demasiadas ejecuciones en espera.",
+      "flow_monthly_cap_reached": "Este flujo alcanzó su límite mensual de ejecuciones.",
+      "owner_monthly_cap_reached": "El propietario alcanzó su límite mensual de ejecuciones para todos los flujos."
+    },
+    "refusedBanner": "Se están rechazando ejecuciones. {{reason}} Último rechazo: {{time}}. El flujo sigue activado y se ejecutará de nuevo cuando se reinicie el mes o se aumente el límite.",
+    "refusedBadge": "Ejecuciones rechazadas"
+  },
+  "limits": {
+    "title": "Límites de flujos",
+    "subtitle": "Límites mensuales de ejecuciones y límite de tokens de IA para cada ejecución. Define un valor predeterminado para tu partner y redúcelo para una organización cuando sea necesario.",
+    "level": {
+      "label": "Nivel",
+      "partner": "Predeterminado del partner",
+      "org": "Organización"
+    },
+    "selectOrg": "Selecciona una organización",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Ejecuciones por mes, todos los flujos",
+        "help": "El máximo de ejecuciones que pueden iniciar todos los flujos de un propietario en un mes calendario (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Ejecuciones por mes, por flujo",
+        "help": "El máximo de ejecuciones que puede iniciar un flujo en un mes calendario (UTC). Un flujo puede definir su propio límite más bajo."
+      },
+      "aiTokensPerRun": {
+        "label": "Tokens de IA por ejecución",
+        "help": "El máximo de tokens de IA que pueden usar los pasos de IA de una ejecución."
+      }
+    },
+    "inherited": "Heredado: {{value}} ({{source}})",
+    "source": {
+      "default": "predeterminado de la plataforma",
+      "partner": "predeterminado del partner",
+      "org": "esta organización"
+    },
+    "ceilingNote": "Las organizaciones solo pueden reducirlo. El valor del partner es {{value}}.",
+    "aboveCeiling": "El valor almacenado {{value}} supera el valor del partner, por lo que no se aplica.",
+    "aboveCeilingError": "Debe ser {{value}} o menos (el valor del partner).",
+    "range": "Ingresa un número entero de 1 a {{max}}.",
+    "placeholder": "Heredar",
+    "save": "Guardar",
+    "saving": "Guardando...",
+    "saved": "Límites de flujos guardados",
+    "saveFailed": "No se pudieron guardar los límites de flujos.",
+    "loadFailed": "No se pudieron cargar los límites de flujos.",
+    "orgNotFound": "No se encontró esta organización o ya no tienes acceso a ella.",
+    "readOnly": "Puedes ver estos límites, pero no cambiarlos.",
+    "partnerWideForbidden": "Cambiar el valor predeterminado del partner requiere acceso a todas las organizaciones.",
+    "orgScopeReadOnly": "Los límites de la organización los define tu proveedor de servicios."
   }
 }

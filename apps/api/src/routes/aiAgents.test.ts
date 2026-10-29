@@ -217,6 +217,9 @@ const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError, Supervise
   },
 }));
 
+// W5 PR C (#5220): the save-time flow-tool warning reads flows; stubbed here.
+vi.mock('../services/flows/agentFlowTools', () => ({ unknownFlowToolNames: vi.fn(async () => []) }));
+
 vi.mock('../services/aiAgents/agentService', () => ({
   AgentInvariantError: class AgentInvariantError extends Error {},
   // Faithful to the real class: `mapError` reads `.code` off it, so a stub
@@ -5039,6 +5042,32 @@ describe('POST /ai-agents (create)', () => {
       expect(JSON.stringify(await res.json())).toContain('offeringId');
     }
     expect(vi.mocked(createAgent)).not.toHaveBeenCalled();
+  });
+
+  // W5 PR C (#5220, Decision 9): an allowlisted `flow__<slug>` with no such
+  // enabled manual flow for the agent's owner is saved (the TOOL_REF regex
+  // admits it; the flow may be enabled later) but the response warns.
+  it('agent save with an unknown flow__ name warns, not errors', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    vi.mocked(createAgent).mockResolvedValueOnce(agentRow({ toolAllowlist: ['flow__nope', 'flow__report', 'query_devices'] }) as never);
+    vi.mocked(unknownFlowToolNames).mockResolvedValueOnce(['flow__nope']);
+
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage', toolAllowlist: ['flow__nope', 'flow__report', 'query_devices'] });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).warnings).toEqual([{ code: 'flow_tool_unknown', tools: ['flow__nope'] }]);
+    expect(vi.mocked(unknownFlowToolNames)).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: null }, ['flow__nope', 'flow__report', 'query_devices']);
+  });
+
+  it('a save whose flow tools all exist carries no warnings key', async () => {
+    const { createAgent } = await import('../services/aiAgents/agentService');
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    vi.mocked(createAgent).mockResolvedValueOnce(agentRow({ toolAllowlist: ['flow__report'] }) as never);
+    vi.mocked(unknownFlowToolNames).mockResolvedValueOnce([]);
+    const res = await createAgentRequest(buildApp(), { kind: 'triage', name: 'Triage', toolAllowlist: ['flow__report'] });
+    expect(res.status).toBe(201);
+    expect(await res.json()).not.toHaveProperty('warnings');
   });
 
   it('answers a site-restricted create refusal with 403 and the standard message, not a 404', async () => {

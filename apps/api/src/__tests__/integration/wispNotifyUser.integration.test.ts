@@ -53,7 +53,7 @@ beforeEach(() => {
   h.dispatch.mockReset();
   h.dispatch.mockImplementation(async (tokens: unknown[]) => ({ tokensFound: tokens.length, dispatched: tokens.length, errors: 0 }));
 });
-afterEach(() => { vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 async function seedGrant(partnerId: string, grantorUserId: string, orgIds: string[], o: { status?: 'active' | 'paused'; pausedReason?: string } = {}) {
   return withSystemDbAccessContext(async () => {
@@ -291,6 +291,9 @@ describe('W06 readers — real SQL', () => {
     vi.stubEnv('IS_HOSTED', 'true');
     vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
     vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+    // #10297: the real wall clock decides whether the "expired" grant is expired against the
+    // sweep's pinned 23:00Z `now`; run the test late in the UTC day to prove it does not.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-26T23:30:00Z') });
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const users = await Promise.all([0, 1, 2].map((i) => createUser({ partnerId: partner.id, email: `wisp-brief-skip-${i}-${randomUUID()}@wisp.test` })));
@@ -298,9 +301,10 @@ describe('W06 readers — real SQL', () => {
     const revoked = await seedGrant(partner.id, users[1]!.id, [org.id]);
     await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, revoked)));
     const expired = await seedGrant(partner.id, users[2]!.id, [org.id], { status: 'paused', pausedReason: 'budget_exhausted' });
-    await withSystemDbAccessContext(() => db.update(wispGrants).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(wispGrants.id, expired)));
     const now = new Date();
     now.setUTCHours(23, 0, 0, 0);
+    // Expired relative to the sweep's `now`, not the wall clock (#10297).
+    await withSystemDbAccessContext(() => db.update(wispGrants).set({ expiresAt: new Date(now.getTime() - 60_000) }).where(eq(wispGrants.id, expired)));
     await runMorningBriefs(now);
     for (const u of users) expect(await notificationsFor(u.id)).toHaveLength(0);
   });

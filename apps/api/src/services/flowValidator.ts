@@ -28,7 +28,6 @@ import { z } from 'zod';
 import {
   checkFlowStructure,
   FLOW_BUILTIN_STEPS,
-  flowBuiltinTierFor,
   FLOW_LIMITS,
   FLOW_STEP_ID_RE,
   flowDocumentV1Schema,
@@ -44,11 +43,25 @@ import { checkGuardrails, tierDecidingInputKeys } from './aiGuardrails';
 import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
-import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalogEntry } from './flows/catalog';
+import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
 import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
+import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
+import {
+  containsTemplate,
+  escapePointerSegment,
+  issue,
+  templateKindAt,
+  toPointer,
+  utf8Bytes,
+  zodInputIssues,
+} from './flows/validationIssues';
 import { guardrailCheckForTenantTool } from './toolSources/guardrails';
 import type { ToolOwnerRef } from './toolSources/resolver';
-import type { FlowPreApprovalBinding } from './flows/preApproval';
+import type { ActAssetPreApprovalBinding, FlowPreApprovalBinding } from './flows/preApproval';
+import { fleetBindingV1Schema } from './flows/fleetBindingSchema';
+
+// Re-exported: preApproval.ts and callers import it from here.
+export { containsTemplate };
 
 export interface FlowValidationContext {
   /** Only ever produced by resolveFlowOwnerForCaller or read from a stored flows row. */
@@ -62,61 +75,6 @@ type StepTier = 1 | 2 | 3 | null;
 const PRE_APPROVAL_MESSAGE = 'Pre-approval is set on the Flows page when the flow is enabled.';
 const TOOL_NOT_FOUND_MESSAGE = (tool: string) => `Tool '${tool}' is not available to this flow's owner.`;
 
-// ── issue helpers ──────────────────────────────────────────────────────────
-
-function issue(
-  code: FlowIssue['code'],
-  message: string,
-  extra: { stepId?: string; pointer?: string; severity?: FlowIssue['severity'] } = {},
-): FlowIssue {
-  return {
-    code,
-    severity: extra.severity ?? 'error',
-    message,
-    ...(extra.stepId !== undefined ? { stepId: extra.stepId } : {}),
-    ...(extra.pointer !== undefined ? { pointer: extra.pointer } : {}),
-  };
-}
-
-function escapePointerSegment(seg: string | number): string {
-  return String(seg).replace(/~/g, '~0').replace(/\//g, '~1');
-}
-
-function toPointer(path: ReadonlyArray<PropertyKey>): string {
-  return path.map((s) => `/${escapePointerSegment(typeof s === 'symbol' ? s.toString() : (s as string | number))}`).join('');
-}
-
-type LeafKinds = ReadonlyMap<string, 'exact' | 'partial'>;
-
-/**
- * Which templated leaf, if any, an issue at `pointer` sits under. An exact
- * leaf can render to any JSON type, so it covers its descendants too; a
- * partial leaf always renders to a string, which has none.
- */
-function templateKindAt(pointer: string, kinds: LeafKinds): 'exact' | 'partial' | null {
-  const own = kinds.get(pointer);
-  if (own) return own;
-  for (const [t, kind] of kinds) {
-    if (kind === 'exact' && pointer.startsWith(`${t}/`)) return 'exact';
-  }
-  return null;
-}
-
-export function containsTemplate(value: unknown): boolean {
-  const stack: unknown[] = [value];
-  while (stack.length > 0) {
-    const v = stack.pop();
-    if (typeof v === 'string') {
-      if (v.includes('{{')) return true;
-    } else if (Array.isArray(v)) {
-      stack.push(...v);
-    } else if (v && typeof v === 'object') {
-      stack.push(...Object.values(v));
-    }
-  }
-  return false;
-}
-
 /** Literal (non-templated) string values of a string or string[] input field. */
 function literalStrings(value: unknown): Array<{ value: string; index?: number }> {
   if (typeof value === 'string') return value.includes('{{') ? [] : [{ value }];
@@ -126,25 +84,7 @@ function literalStrings(value: unknown): Array<{ value: string; index?: number }
   return [];
 }
 
-function utf8Bytes(value: unknown): number {
-  try {
-    return new TextEncoder().encode(JSON.stringify(value) ?? '').length;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
-}
-
-// ── rule 2: template-aware partial validation ──────────────────────────────
-
-/**
- * Zod 4 codes that describe a VALUE (a templated leaf's runtime value can
- * satisfy them). Structural codes — `custom` (refinements such as run_script's
- * exactly-one-of rules), `unrecognized_keys`, a missing required key (an
- * `invalid_type` at a path no template occupies) — are never masked.
- */
-const MASKABLE_ZOD_CODES: ReadonlySet<string> = new Set([
-  'invalid_type', 'invalid_format', 'invalid_value', 'invalid_union', 'too_small', 'too_big', 'not_multiple_of',
-]);
+// ── rule 2: template-aware partial validation (the Zod half is in flows/validationIssues.ts) ──
 
 const MASKABLE_AJV_KEYWORDS: ReadonlySet<string> = new Set([
   'type', 'format', 'pattern', 'enum', 'const', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
@@ -153,134 +93,6 @@ const MASKABLE_AJV_KEYWORDS: ReadonlySet<string> = new Set([
 
 /** Under a PARTIAL template (always a string at run time) only string-level checks are unknown. */
 const PARTIAL_MASKABLE_AJV_KEYWORDS: ReadonlySet<string> = new Set(['format', 'pattern', 'enum', 'const', 'minLength', 'maxLength']);
-
-function zodIssueMasked(zi: LooseZodIssue, kind: 'exact' | 'partial' | null): boolean {
-  if (kind === 'exact') return MASKABLE_ZOD_CODES.has(zi.code);
-  if (kind !== 'partial') return false;
-  switch (zi.code) {
-    case 'invalid_format': return true;
-    case 'invalid_value': return Array.isArray(zi.values) && zi.values.some((v) => typeof v === 'string');
-    case 'too_small':
-    case 'too_big': return zi.origin === 'string';
-    default: return false;
-  }
-}
-
-const FORMAT_PLACEHOLDERS: Readonly<Record<string, string>> = {
-  uuid: '00000000-0000-4000-8000-000000000000',
-  guid: '00000000-0000-4000-8000-000000000000',
-  email: 'placeholder@example.com',
-  url: 'https://example.com/',
-  datetime: '2026-01-01T00:00:00Z',
-  date: '2026-01-01',
-  time: '00:00:00',
-  ipv4: '192.0.2.1',
-  ipv6: '2001:db8::1',
-};
-
-type LooseZodIssue = z.core.$ZodIssue & {
-  expected?: string;
-  format?: string;
-  values?: unknown[];
-  origin?: string;
-  minimum?: number | bigint;
-  maximum?: number | bigint;
-  inclusive?: boolean;
-  divisor?: number;
-  errors?: LooseZodIssue[][];
-};
-
-/**
- * A value that satisfies the failing check, used ONLY to re-parse so that
- * refinements Zod skipped after an aborting issue at a templated leaf still
- * run (Zod 4 does not run an object's refinements once a child aborted).
- * Never stored; the masked check itself is re-run on the rendered value at
- * run time (W04).
- */
-function placeholderFor(i: LooseZodIssue): { ok: true; value: unknown } | { ok: false } {
-  switch (i.code) {
-    case 'invalid_type':
-      switch (i.expected) {
-        case 'string': return { ok: true, value: 'x' };
-        case 'number': case 'int': return { ok: true, value: 0 };
-        case 'boolean': return { ok: true, value: false };
-        case 'array': return { ok: true, value: [] };
-        case 'object': case 'record': return { ok: true, value: {} };
-        case 'null': return { ok: true, value: null };
-        default: return { ok: false };
-      }
-    case 'invalid_format': {
-      const v = i.format ? FORMAT_PLACEHOLDERS[i.format] : undefined;
-      return v ? { ok: true, value: v } : { ok: false };
-    }
-    case 'invalid_value':
-      return Array.isArray(i.values) && i.values.length > 0 ? { ok: true, value: i.values[0] } : { ok: false };
-    case 'too_small':
-      if (i.origin === 'number' && typeof i.minimum === 'number') return { ok: true, value: i.inclusive === false ? i.minimum + 1 : i.minimum };
-      if (i.origin === 'string' && typeof i.minimum === 'number') return { ok: true, value: 'x'.repeat(Math.min(i.minimum, 1024)) };
-      return { ok: false };
-    case 'too_big':
-      if (i.origin === 'number' && typeof i.maximum === 'number') return { ok: true, value: i.inclusive === false ? i.maximum - 1 : i.maximum };
-      if (i.origin === 'string') return { ok: true, value: '' };
-      return { ok: false };
-    case 'invalid_union': {
-      const first = i.errors?.[0]?.[0];
-      return first ? placeholderFor(first) : { ok: false };
-    }
-    default:
-      return { ok: false };
-  }
-}
-
-function setAtPath(root: Record<string, unknown>, path: ReadonlyArray<PropertyKey>, value: unknown): boolean {
-  if (path.length === 0) return false;
-  let cur: unknown = root;
-  for (let k = 0; k < path.length - 1; k++) {
-    if (!cur || typeof cur !== 'object') return false;
-    cur = (cur as Record<PropertyKey, unknown>)[path[k]!];
-  }
-  if (!cur || typeof cur !== 'object') return false;
-  (cur as Record<PropertyKey, unknown>)[path[path.length - 1]!] = value;
-  return true;
-}
-
-function zodInputIssues(schema: z.ZodType, input: Record<string, unknown>, stepId: string, base: string): FlowIssue[] {
-  const kinds = templateLeafKinds(input);
-  const seen = new Set<string>();
-  const out: FlowIssue[] = [];
-  const collect = (issues: LooseZodIssue[]): LooseZodIssue[] => {
-    const masked: LooseZodIssue[] = [];
-    for (const zi of issues) {
-      const pointer = toPointer(zi.path);
-      if (zodIssueMasked(zi, templateKindAt(pointer, kinds))) {
-        masked.push(zi);
-        continue;
-      }
-      const key = `${zi.code}|${pointer}|${zi.message}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(issue('input_invalid', `${pointer || '/'}: ${zi.message}`, { stepId, pointer: `${base}${pointer}` }));
-    }
-    return masked;
-  };
-
-  // A deep copy, so placeholders never leak into the caller's document. The
-  // input is parsed JSON, so structuredClone cannot fail on it.
-  const working: Record<string, unknown> = structuredClone(input);
-  let parsed = schema.safeParse(working);
-  let masked = parsed.success ? [] : collect(parsed.error.issues as LooseZodIssue[]);
-  for (let round = 0; round < 5 && masked.length > 0; round++) {
-    let changed = false;
-    for (const zi of masked) {
-      const p = placeholderFor(zi);
-      if (p.ok && setAtPath(working, zi.path, p.value)) changed = true;
-    }
-    if (!changed) break;
-    parsed = schema.safeParse(working);
-    masked = parsed.success ? [] : collect(parsed.error.issues as LooseZodIssue[]);
-  }
-  return out;
-}
 
 function ajvInputIssues(entry: Extract<FlowCatalogEntry, { source: 'tenant' }>, input: Record<string, unknown>, stepId: string, base: string): FlowIssue[] {
   const kinds = templateLeafKinds(input);
@@ -414,7 +226,13 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   // 3. Trigger.
   const trigger = document.trigger;
   if (trigger.type === 'webhook') {
-    issues.push(issue('trigger_not_available', 'Webhook triggers are not available yet.', { pointer: '/trigger/type' }));
+    // W5 (#5220, Decision 5): a partner-wide flow names how a delivery picks
+    // its org; an org flow always runs in its own org.
+    if (!ctx.owner.orgId && !trigger.orgResolver) {
+      issues.push(issue('webhook_org_resolver_required', 'A partner-wide webhook flow must say which body field names the customer organization.', { pointer: '/trigger/orgResolver' }));
+    } else if (ctx.owner.orgId && trigger.orgResolver) {
+      issues.push(issue('webhook_org_resolver_not_allowed', 'An organization\'s webhook flow always runs in that organization; remove the org resolver.', { pointer: '/trigger/orgResolver' }));
+    }
   } else if (trigger.type === 'event') {
     if (!KNOWN_EVENTS.has(trigger.event)) {
       issues.push(issue('event_unknown', `Event '${trigger.event}' is not a known event type.`, { pointer: '/trigger/event' }));
@@ -435,17 +253,20 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   const groupRefs: Array<{ id: string; stepId: string; pointer: string }> = [];
   const deviceRefs: Array<{ id: string; stepId: string; pointer: string }> = [];
 
-  document.steps.forEach((step, i) => {
+  if (document.notices) issues.push(...await validateNoticesChannel(document.notices.channelId, owner));
+
+  for (const [i, step] of document.steps.entries()) {
     const base = `/steps/${i}/input`;
     const input = step.input;
-    const entry = catalog.get(step.tool);
+    // W5 (Decision 7): a flow tool is never a step of another flow. Checked
+    // before the catalog, whose tenant branch would parse `flow__x` as slug `flow`.
+    const entry = isFlowToolName(step.tool) ? undefined : catalog.get(step.tool);
     let tier: StepTier = null;
     let source: FlowStepSummary['source'] = inferredSource(step.tool);
 
     if (!entry) {
-      if (isFlowBuiltin(step.tool)) {
-        // A shared built-in outside the API catalog (FLOW_EXECUTABLE_BUILTINS) — W5 PR B wires it.
-        issues.push(issue('builtin_not_available', `Built-in step '${step.tool}' is not available yet.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
+      if (isFlowToolName(step.tool)) {
+        issues.push(issue('flow_step_not_supported', 'A flow cannot run another flow as a step; use a flow.run.completed event trigger to chain flows.', { stepId: step.id, pointer: `/steps/${i}/tool` }));
       } else if (!step.tool.includes('__') && isRegisteredCoreTool(step.tool)) {
         issues.push(issue('tool_not_allowed', `Tool '${step.tool}' cannot be used in a flow.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
       } else {
@@ -454,8 +275,8 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';
-      issues.push(...zodInputIssues(FLOW_BUILTIN_STEPS[entry.name].inputSchema, input, step.id, base));
-      tier = flowBuiltinTierFor(entry.name, input);
+      issues.push(...await validateBuiltinStep(step, i, { owner, catalog, earlierSteps: document.steps.slice(0, i) }));
+      tier = builtinStepTier(step, catalog);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
       issues.push(...ajvInputIssues(entry, input, step.id, base));
@@ -472,7 +293,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       if (!schema) {
         issues.push(issue('tool_not_allowed', `Tool '${step.tool}' cannot be used in a flow.`, { stepId: step.id, pointer: `/steps/${i}/tool` }));
         summaries.push({ id: step.id, tool: step.tool, source: 'core', tier: null, approval: step.approval });
-        return;
+        continue;
       }
       issues.push(...zodInputIssues(schema, input, step.id, base));
       const t = coreStepTier(step.tool, input, step.id, base);
@@ -501,7 +322,7 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
     }
 
     summaries.push({ id: step.id, tool: step.tool, source, tier, approval: step.approval });
-  });
+  }
 
   // 8. Rule 6 — ownership, independent of approval mode. One message for
   // foreign and nonexistent alike.
@@ -577,13 +398,16 @@ export const flowStepPinSchema: z.ZodType<FlowStepPin> = z.union([
   }).strict(),
 ]);
 
-export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.object({
+const actAssetPreApprovalBindingSchema: z.ZodType<ActAssetPreApprovalBinding> = z.object({
   stepId: pinStepIdSchema,
   lane: z.literal('act_asset'),
   assetKind: z.literal('script'),
   scriptId: z.string().uuid(),
   contentDigest: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict();
+
+/** A stored binding: W04 act-asset, or the W06 fleet lane (`fleet_v1`, #5221). */
+export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.union([actAssetPreApprovalBindingSchema, fleetBindingV1Schema]);
 
 /** Thrown by `stepPinsFor` for a step that does not resolve — only reachable for a document that is not valid. */
 export class FlowStepPinError extends Error {
@@ -593,10 +417,13 @@ export class FlowStepPinError extends Error {
   }
 }
 
-function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEntry | undefined): FlowStepPin {
+function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEntry | undefined, catalog: FlowCatalog): FlowStepPin {
   if (!entry) throw new FlowStepPinError(step.id);
   if (entry.source === 'builtin') {
-    return { stepId: step.id, tool: step.tool, source: 'builtin', tier: flowBuiltinTierFor(entry.name, step.input), approvalScope: null };
+    // W5 (#5220, Decision 12): a Tier-3 built-in (an http_request write) parks
+    // for one supervised approval, like a Tier-3 tenant tool.
+    const tier = builtinStepTier(step, catalog);
+    return { stepId: step.id, tool: step.tool, source: 'builtin', tier, approvalScope: tier === 3 ? builtinApprovalScope(step.tool, step.input) : null };
   }
   if (entry.source === 'tenant') {
     const tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
@@ -621,7 +448,7 @@ function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEn
  */
 export async function stepPinsFor(doc: FlowDocumentV1, ctx: FlowValidationContext): Promise<FlowStepPin[]> {
   const catalog = await loadFlowCatalog(ctx.owner);
-  return doc.steps.map((step) => pinForEntry(step, catalog.get(step.tool)));
+  return doc.steps.map((step) => pinForEntry(step, isFlowToolName(step.tool) ? undefined : catalog.get(step.tool), catalog));
 }
 
 export type RenderedStepCheck =
@@ -675,10 +502,12 @@ export async function revalidateRenderedStep(
   let approvalScope: 'supervised' | 'four_eyes' | null;
 
   if (entry.source === 'builtin') {
+    // W5 (#5220, Decision 12): the rendered input, unmasked, and the LIVE tier
+    // (for `ai`, its tools' live tiers) — a rise is drift, never a silent run.
     const parsed = FLOW_BUILTIN_STEPS[entry.name].inputSchema.safeParse(rendered);
     if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
-    tier = flowBuiltinTierFor(entry.name, parsed.data);
-    approvalScope = null;
+    tier = builtinStepTier({ tool: entry.name, input: parsed.data as Record<string, unknown> }, catalog);
+    approvalScope = tier === 3 ? builtinApprovalScope(entry.name, parsed.data as Record<string, unknown>) : null;
   } else if (entry.source === 'tenant') {
     if (pin.source !== 'tenant' || entry.descriptor.id !== pin.tenantToolId || entry.descriptor.revision !== pin.tenantRevision) {
       return { ok: false, code: 'drift', message: 'This step\'s external tool changed since the flow was enabled.' };
@@ -709,14 +538,23 @@ export async function revalidateRenderedStep(
     return { ok: false, code: 'drift', message: 'This step\'s approval requirement changed since the flow was enabled.' };
   }
 
-  if (entry.source === 'core') {
+  if (entry.source === 'core' || entry.source === 'builtin') {
     const scriptIds: string[] = [];
     const groupIds: string[] = [];
     const deviceIds: string[] = [];
-    for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
-      (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+    if (entry.source === 'core') {
+      for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
+        (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+      }
+      for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
+    } else {
+      // W6 (#5221): the fleet built-ins list their own references; groups and
+      // devices belong to the RUN org, the script to the owner.
+      for (const r of fleetBuiltinReferences(pin.tool, rendered)) {
+        if (typeof r.value !== 'string') continue;
+        (r.kind === 'script' ? scriptIds : r.kind === 'group' ? groupIds : deviceIds).push(r.value);
+      }
     }
-    for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
 
     const anyNotOwned = async (ids: string[], find: (ids: string[]) => Promise<Set<string>>): Promise<boolean> => {
       if (ids.length === 0) return false;

@@ -53,6 +53,11 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   // this outer guard must sit ABOVE it or it would cancel a legitimate step
   // at 60s, orphaning a sandbox process the run is still paying for.
   workspace_run: 660_000,
+  // Tool Catalog W06 (#5221): a human-approved fleet release dispatches up to
+  // 500 devices (batches of 5, each a DB transaction plus an agent send). It
+  // only dispatches — it never waits for the scripts — and it stops at the run
+  // fence once the run is terminal, so this bounds when the worker gives up.
+  run_script_on_targets: 600_000,
   // Staging and collecting stream up to 64 MiB per file through the worker.
   workspace_stage: 180_000,
   workspace_collect: 180_000,

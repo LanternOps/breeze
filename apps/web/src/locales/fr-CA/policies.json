@@ -899,7 +899,17 @@
         "ringInvalidBody": "Les correctifs de cette politique sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
         "ringDetailsNoHold": "Ordre de déploiement {{order}} · aucun délai avant l’approbation",
         "ringDetailsWithHold_one": "Ordre de déploiement {{order}} · délai de {{count}} jour avant l’approbation",
-        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation"
+        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation",
+        "rebootPreviewHeading": "Aperçu",
+        "rebootPreviewDescription": "Ce que voit la personne devant l’ordinateur si un redémarrage est planifié maintenant. Les heures sont des exemples.",
+        "rebootPreviewDefaultMarker": "Par défaut",
+        "rebootPreviewDefaultTitle": "Redémarrage requis pour terminer l'installation des mises à jour",
+        "rebootPreviewDefaultBody": "Votre équipe de soutien informatique doit redémarrer cet ordinateur pour terminer l'installation des mises à jour.",
+        "rebootPreviewConsequence": "Si vous ne faites rien, cet ordinateur redémarrera à {{time}}. Enregistrez votre travail avant.",
+        "rebootPreviewRestartNow": "Redémarrer maintenant",
+        "rebootPreviewPostponeUntil": "Reporter à {{time}}",
+        "rebootPreviewDeadline": "Reporter ne repousse jamais le redémarrage après {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",
@@ -986,6 +996,9 @@
         "showIndicatorHelp": "Afficher le bandeau à l'écran pendant qu'un technicien est connecté.",
         "notifyOnEnd": "Avis de fin de session",
         "notifyOnEndHelp": "Avertir l'utilisateur final à la fin de la session.",
+        "allowUserEnd": "Permettre à l’utilisateur de mettre fin à la session",
+        "allowUserEndHelp": "La personne devant l’appareil peut mettre fin à la session depuis l’indicateur à l’écran, après confirmation. Le technicien voit « Terminée par l’utilisateur ».",
+        "allowUserEndNeedsIndicator": "Activez l’indicateur de session active pour permettre aux utilisateurs de mettre fin à une session.",
         "identityLevel": "Identité du technicien",
         "identityLevelHelp": "La part de l'identité du technicien visible par l'utilisateur final. Le nom du MSP est toujours affiché.",
         "identityNameEmail": "Nom et courriel",

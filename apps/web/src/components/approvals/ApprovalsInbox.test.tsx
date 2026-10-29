@@ -1974,3 +1974,32 @@ describe('ApprovalsInbox — expiry roll-up (sweep G2-10)', () => {
     expect(screen.queryByTestId(/^approval-operator-plan-/)).toBeNull();
   });
 });
+
+describe('ApprovalsInbox deny reason disclosure (#8928)', () => {
+  it('tells the approver the reason is shown to the end user on a PAM (uac_intercept) card', async () => {
+    fetchMock.mockResolvedValue(
+      response({
+        approvals: [{ ...pendingApproval, actionToolName: 'uac_intercept', intentId: null }],
+        nextCursor: null,
+      }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-deny-approval-1'));
+    const hint = screen.getByTestId('approval-deny-reason-hint-approval-1');
+    expect(hint).toHaveTextContent(
+      'The end user sees this in their notification (first 500 characters).',
+    );
+    expect(screen.getByTestId('approval-deny-reason-approval-1').getAttribute('aria-describedby'))
+      .toContain(hint.id);
+  });
+
+  it('does not show the end-user hint on a non-PAM card', async () => {
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-deny-approval-1'));
+    expect(screen.queryByTestId('approval-deny-reason-hint-approval-1')).toBeNull();
+  });
+});

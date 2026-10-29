@@ -8,9 +8,9 @@
  * owns; the caller reports every other id with ONE message whether it is
  * foreign or nonexistent (no existence oracle).
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceGroups, devices, scripts } from '../../db/schema';
+import { deviceGroups, devices, notificationChannels, scripts } from '../../db/schema';
 import { scriptOwnershipCondition, type AutomationReferenceOwner } from '../automationReferenceAuthorization';
 import type { ToolOwnerRef } from '../toolSources/resolver';
 
@@ -68,4 +68,43 @@ export async function findOwnedDeviceIds(orgId: string, ids: Iterable<string>): 
     'flowValidator.devices',
   );
   return new Set(rows.map((r) => r.id));
+}
+
+/** A notification channel a flow owner may send to (W5 #5220, Decision 14). */
+export interface OwnedNotificationChannel {
+  id: string;
+  type: string;
+  orgId: string | null;
+  partnerId: string | null;
+  enabled: boolean;
+}
+
+/**
+ * Rule 6 for notification channels (W5 #5220, Decision 14): an org flow may
+ * use its org's channels and its partner's partner-wide channels; a
+ * partner-wide flow only its partner's partner-wide channels (an org channel
+ * would send one customer's notices from every customer's runs). Null for
+ * foreign and nonexistent alike.
+ */
+export async function findOwnedNotificationChannel(owner: ToolOwnerRef, channelId: string): Promise<OwnedNotificationChannel | null> {
+  if (!UUID_RE.test(channelId)) return null;
+  const partnerWide = and(isNull(notificationChannels.orgId), eq(notificationChannels.partnerId, owner.partnerId));
+  const [row] = await system(
+    async () => db
+      .select({
+        id: notificationChannels.id,
+        type: notificationChannels.type,
+        orgId: notificationChannels.orgId,
+        partnerId: notificationChannels.partnerId,
+        enabled: notificationChannels.enabled,
+      })
+      .from(notificationChannels)
+      .where(and(
+        eq(notificationChannels.id, channelId),
+        owner.orgId ? or(eq(notificationChannels.orgId, owner.orgId), partnerWide) : partnerWide,
+      ))
+      .limit(1),
+    'flowValidator.notificationChannel',
+  );
+  return row ? { ...row, type: String(row.type) } : null;
 }

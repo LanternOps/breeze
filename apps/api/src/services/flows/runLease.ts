@@ -98,6 +98,26 @@ export async function checkpoint(
 }
 
 /**
+ * W5 (#5220, Decision 13, quorum Q3): the per-run AI token ceiling is
+ * admission, not accounting. Before each model call the `ai` step reserves
+ * its worst case (input estimate + max output) with one lease-fenced
+ * conditional increment — false when it would cross `cap` or the lease moved —
+ * and settles to the real usage after. A reservation that could never fit is
+ * refused without a write.
+ */
+export async function reserveRunAiTokens(runId: string, token: string, n: number, cap: number): Promise<boolean> {
+  if (!Number.isInteger(n) || n <= 0 || n > cap) return false;
+  return inSystemTx(() => store.casReserveRunAiTokens(runId, token, n, cap), 'flows.runLease.reserveAiTokens');
+}
+
+/** Settle a reservation to the real usage (actual − reserved), same fence. */
+export async function settleRunAiTokens(runId: string, token: string, reserved: number, actual: number): Promise<void> {
+  const delta = actual - reserved;
+  if (delta === 0) return;
+  await inSystemTx(() => store.settleRunAiTokensSql(runId, token, delta), 'flows.runLease.settleAiTokens');
+}
+
+/**
  * Consecutive THROWN renewals tolerated before the slice is declared lost
  * (review finding 7). The lease runs 6 minutes and renews every 60 s, so two
  * missed renewals still leave it live; a transient DB error must not discard

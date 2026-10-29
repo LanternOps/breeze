@@ -17,6 +17,7 @@
  * material). `pauseFlow` and `assertDelegatorAuthority` are system paths for
  * the runner, reconciler and dispatch claim.
  */
+import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type {
   FlowDocumentV1,
@@ -31,7 +32,6 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { sqlTimestamptz } from '../../db/sqlValues';
 import { actionIntents, flowRuns, flows, flowVersions, users, type FlowRow, type FlowVersionRow } from '../../db/schema';
 import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
-import { checkToolPermissionForResolvedUser, resolveToolPermissionRequirements } from '../aiGuardrails';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import {
@@ -49,6 +49,8 @@ import { hasSiteCeiling } from '../siteCeilingAccess';
 import { latestCronOccurrence } from '../aiAgents/sweepOccurrence';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import type { ToolOwnerRef } from '../toolSources/resolver';
+import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
+import { builtinPermissionMisses, corePermissionMisses } from './builtins/permissions';
 import { sendFlowNotice } from './notices';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
@@ -59,6 +61,7 @@ export type EnableFlowResult =
   | { ok: false; error: 'invalid'; validation: FlowValidationResult }
   | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> }
   | { ok: false; error: 'pre_approval_not_eligible'; stepId: string; reason: Extract<PreApprovalEligibility, { eligible: false }>['reason'] }
+  | { ok: false; error: 'ai_budget_unavailable'; message: string }
   | {
       ok: false;
       error: 'flow_not_found' | 'version_conflict' | 'already_enabled' | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available'
@@ -109,21 +112,20 @@ export function missingPermissionsFor(
   const pinById = new Map(pins.map((p) => [p.stepId, p]));
   for (const step of doc.steps) {
     const pin = pinById.get(step.id);
-    if (!pin || pin.source === 'builtin') continue;
+    if (!pin) continue;
+    if (pin.source === 'builtin') {
+      // W5 (#5220, Decision 12): built-ins are covered by rule 7 too.
+      for (const permission of builtinPermissionMisses(step, perms)) missing.push({ stepId: step.id, permission });
+      continue;
+    }
     if (pin.source === 'tenant') {
       const req = tenantToolPermissionRequirement(pin.tier);
       if (!hasPermission(perms, req.resource, req.action)) missing.push({ stepId: step.id, permission: `${req.resource}.${req.action}` });
       continue;
     }
-    const input = literalGuardInput(step.tool, step.input);
-    const denial = checkToolPermissionForResolvedUser(step.tool, input, perms);
-    if (!denial) continue;
-    const resolution = resolveToolPermissionRequirements(step.tool, input);
-    const unmet = resolution.ok
-      ? resolution.requirements.filter((r) => !hasPermission(perms, r.resource, r.action)).map((r) => `${r.resource}.${r.action}`)
-      : [];
-    if (unmet.length === 0) missing.push({ stepId: step.id, permission: denial });
-    for (const permission of unmet) missing.push({ stepId: step.id, permission });
+    for (const permission of corePermissionMisses(step.tool, literalGuardInput(step.tool, step.input), perms)) {
+      missing.push({ stepId: step.id, permission });
+    }
   }
   return missing;
 }
@@ -288,6 +290,12 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   }
   const missing = missingPermissionsFor(document, pins, perms);
   if (missing.length > 0) return { ok: false, error: 'permission_missing', missing };
+  // W5 (#5220, Decision 13): an org flow's `ai` step needs an AI budget that
+  // can ever be spent; a partner-wide flow is checked per run org at run time.
+  if (owner.orgId && document.steps.some((s) => s.tool === 'ai')) {
+    const denial = await aiStepPermanentBudgetDenial(owner.orgId, owner.partnerId);
+    if (denial) return { ok: false, error: 'ai_budget_unavailable', message: denial.message };
+  }
 
   const requested = [...new Set(req.preApprovedStepIds ?? [])];
   const stepIds = new Set(document.steps.map((s) => s.id));
@@ -309,7 +317,12 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
       },
     };
   }
-  const assessment = await assessPreApprovals(document, pins, owner, requested);
+  // W6 (#5221): fleet bindings bind THIS publication (its id is chosen here) and the user's maxTargets.
+  const publicationId = randomUUID();
+  const assessment = await assessPreApprovals(document, pins, owner, requested, {
+    publicationId,
+    fleetMaxTargets: req.fleetMaxTargets ?? {},
+  });
   const bindings: FlowPreApprovalBinding[] = [];
   for (const stepId of requested) {
     const e = assessment.eligibility[stepId];
@@ -377,6 +390,7 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   const [publication] = await db
     .insert(flowVersions)
     .values({
+      id: publicationId,
       flowId,
       orgId: row.orgId,
       partnerId: row.orgId ? null : row.partnerId,

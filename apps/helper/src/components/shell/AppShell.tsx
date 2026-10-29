@@ -6,6 +6,9 @@ import type { SessionSummary, PendingApproval, PendingApprovalScriptProposal, De
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import WorkspacePanel from '../workspace/WorkspacePanel';
 import { SegmentedControl } from '../ui/SegmentedControl';
+import { NotificationsTab, useNotificationList } from '../../prompt/NotificationsTab';
+import { chromeString } from '../../prompt/chrome';
+import { usePromptIdentity } from '../../prompt/identity';
 import ChatView from './ChatView';
 
 const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.includes('Macintosh');
@@ -13,7 +16,9 @@ const isMacOS = navigator.platform.startsWith('Mac') || navigator.userAgent.incl
 // The shell's single main region shows one of these at a time. Files/Chat/
 // History are reachable from the nav; device-info arrives only via the tray
 // menu. The shell header persists across every value — none of these unmount it.
-export type MainView = 'files' | 'chat' | 'history' | 'device-info';
+// Notifications (#10190) is reachable from the nav while the list has entries,
+// and from the tray's "Notifications (N)" item.
+export type MainView = 'files' | 'chat' | 'history' | 'device-info' | 'notifications';
 
 // At or above this inner width the chat rides as a right-side panel next to the
 // main region; below it there's no room, so the chat toggle full-swaps the main
@@ -395,6 +400,17 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * The session prompt's locale and the remote session id in
+ * `#request-support/<locale>/<sessionId>` (#10190 W06), or null. Both must
+ * be of the shapes Rust checked before setting the hash
+ * (`request_support_script`); anything else is ignored.
+ */
+export function parseRequestSupportHash(hash: string): { locale: string; sessionId: string } | null {
+  const m = /^#request-support\/([a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)\/([A-Za-z0-9._:-]{1,200})$/.exec(hash);
+  return m ? { locale: m[1]!, sessionId: m[2]! } : null;
+}
+
 // The persistent files-first shell: ONE header (drag region + traffic-light
 // spacer + status dot + title + a Files/Chat/History SegmentedControl + the
 // chat-scoped Flag/New actions) over a single main region that swaps on
@@ -411,6 +427,12 @@ export default function AppShell() {
     flagSession,
   } = useChatStore();
   const workspaceAvailable = useWorkspaceStore((s) => s.available);
+  // The one notification list (#10190: prompts and, since W04, message
+  // cards), kept by Rust; empty outside Tauri.
+  const prompts = useNotificationList();
+  // Only the locale is used here (#10190 W03): the list chrome follows the
+  // last branding sync, like the tray entry.
+  const promptLocale = usePromptIdentity(undefined, undefined, undefined, { decodeLogo: false }).locale;
 
   // Files when the capability is known-available at first render, else chat.
   // The probe may still be pending (null) here, so an effect below promotes to
@@ -487,10 +509,47 @@ export default function AppShell() {
     return () => { unlisten?.(); };
   }, []);
 
+  // Tray menu "Notifications (N)" click (#10190); the tray shows the window.
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    listen('show-notifications', () => {
+      enter('notifications');
+    }).then((fn: () => void) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // "Report a problem" on the remote-session pill (#10190 W06, OD-6 (b)):
+  // after the agent accepted it, Rust (lib.rs `open_request_support`) sets
+  // `#request-support/<locale>/<sessionId>` and shows this window. Open
+  // Request Support (the chat) with a draft naming the session, in the
+  // session prompt's locale (shared catalog), then clear the hash so a reload
+  // does not repeat it. Read on mount too: the hash may be set before the
+  // shell is up (connecting, username prompt).
+  useEffect(() => {
+    const take = () => {
+      const req = parseRequestSupportHash(window.location.hash);
+      if (!req) return;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setChatPanelOpen(false);
+      enter('chat');
+      const prefill = `${chromeString('chrome.remoteReportDraft', req.locale, { sessionId: req.sessionId })} `;
+      setDraft((cur) => (cur.trim() ? `${prefill}${cur}` : prefill));
+    };
+    take();
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
+  }, []);
+
+  // The tab exists only while there is something in the list (or the user is
+  // on it), so a build that advertises no prompt kind looks unchanged (W02).
+  const showNotifications =
+    prompts.entries.length > 0 || prompts.messages.length > 0 || mainView === 'notifications';
   const navOptions = [
     ...(workspaceAvailable === true ? [{ key: 'files', label: 'Files' }] : []),
     { key: 'chat', label: 'Chat' },
     { key: 'history', label: 'History' },
+    ...(showNotifications ? [{ key: 'notifications', label: chromeString('chrome.notifications', promptLocale) }] : []),
   ];
 
   // The chat toggle only makes sense from Files (the one primary view that can
@@ -609,6 +668,14 @@ export default function AppShell() {
           />
         ) : mainView === 'device-info' ? (
           <DeviceInfoView onClose={goBack} />
+        ) : mainView === 'notifications' ? (
+          <NotificationsTab
+            entries={prompts.entries}
+            messages={prompts.messages}
+            onAction={prompts.act}
+            error={prompts.error}
+            locale={promptLocale}
+          />
         ) : mainView === 'files' && workspaceAvailable === true ? (
           <WorkspacePanel embedded onClose={goBack} />
         ) : (

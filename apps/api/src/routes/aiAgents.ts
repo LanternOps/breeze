@@ -160,6 +160,25 @@ function uuidParam(c: Context, name: string): string | null {
  * that governs agent authority. Naming AiAgentDto (from @breeze/shared, which
  * the web client also imports) is what keeps the two ends from drifting.
  */
+/**
+ * W5 PR C (#5220, Decision 9): an allowlisted `flow__<slug>` with no enabled
+ * manual flow for the agent's owner is saved (the flow may be enabled later;
+ * every agent call is gated live) but the response says so. Best-effort: a
+ * failed read never fails the save.
+ */
+async function flowToolSaveWarnings(row: AiAgentRow): Promise<{ warnings?: Array<{ code: 'flow_tool_unknown'; tools: string[] }> }> {
+  const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist : [];
+  if (!allowlist.some((t) => typeof t === 'string' && t.startsWith('flow__'))) return {};
+  try {
+    const { unknownFlowToolNames } = await import('../services/flows/agentFlowTools');
+    const unknown = await unknownFlowToolNames({ orgId: row.orgId ?? null, partnerId: row.partnerId ?? null }, allowlist);
+    return unknown.length > 0 ? { warnings: [{ code: 'flow_tool_unknown', tools: unknown }] } : {};
+  } catch (err) {
+    console.error('[aiAgents] flow tool save warning could not be computed', err);
+    return {};
+  }
+}
+
 function mapRow(row: AiAgentRow): AiAgentDto {
   return {
     id: row.id,
@@ -2198,7 +2217,7 @@ aiAgentsRoutes.post(
 
     try {
       const row = await createAgent(auth, owner, body);
-      return c.json({ data: mapRow(row) }, 201);
+      return c.json({ data: mapRow(row), ...(await flowToolSaveWarnings(row)) }, 201);
     } catch (err) {
       return mapError(c, err);
     }
@@ -2218,7 +2237,7 @@ aiAgentsRoutes.patch(
     if (!id) return c.json({ error: 'Agent not found' }, 404);
     try {
       const row = await updateAgent(auth, id, body);
-      return c.json({ data: mapRow(row) });
+      return c.json({ data: mapRow(row), ...(await flowToolSaveWarnings(row)) });
     } catch (err) {
       return mapError(c, err);
     }

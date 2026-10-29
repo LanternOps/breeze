@@ -146,7 +146,7 @@ describe('POST /endpoint-messages (#8741)', () => {
     h.resolveTargetsDetailed.mockImplementation(async () => ({ groups: h.groups, denied: h.denied }));
     h.queue.mockImplementation(async (deviceId: string) => ({ command: { id: `cmd-${deviceId}`, status: 'sent' }, delivery: 'delivered' }));
     h.flag.mockResolvedValue({ endpointMessaging: { enabled: true } });
-    h.branding.mockResolvedValue({ partnerId: PARTNER, branding: { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#112233' } });
+    h.branding.mockResolvedValue({ partnerId: PARTNER, senderIdentity: 'partner', branding: { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#112233' } });
     h.supports.mockReturnValue(true);
     h.actorLimit.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
     h.partnerLimit.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
@@ -414,6 +414,42 @@ describe('POST /endpoint-messages (#8741)', () => {
     const { json } = await post(baseBody());
     expect(json.results[0]).toMatchObject({ status: 'failed', errorCode: 'queue_failed' });
     expect(h.queue).not.toHaveBeenCalled();
+  });
+
+  it('a partner whose name sanitized away sends under the generic identity, and the audit row says so with a reason code only (#10190 W04)', async () => {
+    h.groups = [group(ORG_A, [1]), group(ORG_B, [2])];
+    const GENERIC = 'Your IT support team';
+    h.branding.mockImplementation(async (orgId: string) => (orgId === ORG_A
+      ? { partnerId: PARTNER, senderIdentity: 'generic', branding: { companyName: GENERIC, displayName: GENERIC, accent: '#112233' } }
+      : { partnerId: PARTNER, senderIdentity: 'partner', branding: { companyName: 'Acme IT', displayName: 'Acme IT', accent: '#112233' } }));
+    const { json } = await post(baseBody({ targets: { deviceIds: [dev(1), dev(2)] } }));
+    expect(json.results.map((r: { status: string }) => r.status)).toEqual(['queued', 'queued']);
+    const payloadA = h.queue.mock.calls.find((c) => c[0] === dev(1))![2];
+    expect(payloadA.branding).toMatchObject({ companyName: GENERIC, displayName: GENERIC });
+    const rows = h.audit.mock.calls.map((c) => (c as unknown as [unknown, Record<string, any>])[1]);
+    const rowA = rows.find((r) => r.orgId === ORG_A)!;
+    const rowB = rows.find((r) => r.orgId === ORG_B)!;
+    // Exact row: the flag and a reason code, nothing else new (no name can ride along).
+    const body = baseBody();
+    expect(rowA.details).toEqual({
+      batchId: json.batchId,
+      messageId: MSG,
+      targetMode: 'devices',
+      deviceCount: 1,
+      queued: 1,
+      failed: 0,
+      failedByCode: {},
+      severity: 'warning',
+      requiresAck: true,
+      expiresInMinutes: 60,
+      bodySha256: createHash('sha256').update(body.body as string).digest('hex'),
+      bodyLength: (body.body as string).length,
+      titleLength: (body.title as string).length,
+      senderIdentity: 'generic',
+      senderIdentityReason: 'partner_name_sanitized_empty',
+    });
+    expect(rowB.details).not.toHaveProperty('senderIdentity');
+    expect(rowB.details).not.toHaveProperty('senderIdentityReason');
   });
 
   it('resolves branding once per org, from the org (never the body)', async () => {

@@ -153,6 +153,29 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
     }
   });
 
+  // #9790 W4 (spec §5.1): the per-tab "enforced" banner is gone from every tab.
+  it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('no enforced banner on %s', async (_key, hash, labelKey) => {
+    await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
+    expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
+  });
+
+  // #9790 W4: a badge's meaning is its visible text (not colour or icon), and
+  // its explanation sits behind a named help trigger.
+  it.each(['defaults', 'security', 'ai-budgets', 'remote-access'])('every badge has a text equivalent on #%s', async (hash) => {
+    const tab = panelTabs.find(t => t.hash === hash)!;
+    await mountTab(hash, i18n.t(tab.label, { ns: 'settings' }));
+    const badges = Array.from(document.querySelectorAll('[data-testid^="partner-settings-badge-"]'))
+      .filter(el => el.getAttribute('data-testid') !== 'partner-settings-badge-legend');
+    expect(badges.length).toBeGreaterThan(0);
+    for (const badge of badges) {
+      expect(badge.textContent?.trim()).not.toBe('');
+      const help = badge.parentElement!.querySelector('button');
+      expect(help, `${badge.getAttribute('data-testid')} has no help trigger`).not.toBeNull();
+      const name = help!.getAttribute('aria-label') ?? '';
+      expect(name.startsWith(`About “${badge.textContent!.trim()}” (`) && name.endsWith(')'), name).toBe(true);
+    }
+  });
+
   it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('no card inside a card on %s', async (_key, hash, labelKey) => {
     await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
     const nested = Array.from(document.querySelectorAll('section .rounded-lg.border .rounded-lg.border')).filter(

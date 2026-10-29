@@ -1129,6 +1129,8 @@
       "durationHelp": "1 to 1440 minutes (24h max).",
       "reasonRecommended": "Reason (recommended)",
       "reasonOptional": "Reason (optional)",
+      "reasonShownToUser": "Reason (shown to the user)",
+      "reasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
       "reasonPlaceholder": "Recorded in the audit trail"
     },
     "actions": {

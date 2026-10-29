@@ -131,6 +131,18 @@ Failover keeps the device manageable even when the agent process is completely d
   If a device shows `watchdog_status: failover` in the dashboard, it means the agent on that device has crashed and could not be automatically recovered. Use the **Restart Agent** action from the device detail page — the watchdog will receive and execute this command.
 </Aside>
 
+### Restarting the agent from the device page
+
+**Restart agent** is in the device page's action menu. It asks the watchdog, not the agent, to restart the agent, so it works when the agent itself has stopped responding.
+
+1. Open the device and choose **Restart agent** from the actions menu.
+2. The confirmation names the host and shows when the watchdog last reported. If the watchdog has not reported in the last 10 minutes, or never has, the dialog says the request will be refused.
+3. Confirm with MFA. Breeze queues the request and says it was *requested*; the watchdog picks it up on its next poll, usually within about 30 seconds.
+
+Only one restart can be waiting per device. The action needs the `devices:recover_agent` permission; the upgrade to v0.125.0 grants it to the built-in roles that hold `devices:execute` (Org Admin, Org Technician and Partner Technician; Partner Admin has every permission). Add it to custom roles that should use the action. Each request is recorded in the device's event log and the audit log. It is not offered for decommissioned devices.
+
+The watchdog reports only while it is in **Failover**, so on a device whose agent is healthy the request is refused with "Watchdog is not reporting". That is expected: the action is for an agent that has stopped.
+
 ---
 
 ## Agent-Silent Detection

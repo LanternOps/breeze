@@ -100,7 +100,7 @@ export function FlowRunsTab({ flowId, ownerScope }: { flowId: string; ownerScope
 
       {runs !== null && rows.length === 0 && !failed ? (
         <p className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground" data-testid="flow-runs-empty">
-          {t('runs.empty')}
+          {status ? t('runs.emptyFiltered') : t('runs.empty')}
         </p>
       ) : (
         <ResponsiveTable

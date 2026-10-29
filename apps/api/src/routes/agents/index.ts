@@ -8,6 +8,7 @@ import { commandsRoutes } from './commands';
 import { pamObservationRoutes } from './pamObservations';
 import { pamReconciliationRoutes } from './pamReconciliation';
 import { pamElevationUnableRoutes } from './pamElevationUnable';
+import { elevationWithdrawRoutes } from './elevationWithdraw';
 import { agentSecurityRoutes } from './security';
 import { agentYaraRuleSetRoutes } from './yaraRuleSets';
 import { agentRecoveryKeysRoutes } from './recoveryKeys';
@@ -35,6 +36,7 @@ import { topologyAdjacencyRoutes } from './topologyAdjacency';
 import { wingetBootstrapRoutes } from './wingetBootstrap';
 import { agentStorageSessionRoutes } from './storageSessions';
 import { rebindRoutes } from './rebind';
+import { promptIdentityLogoRoutes } from './promptIdentityLogo';
 
 export const agentRoutes = new Hono();
 
@@ -92,6 +94,7 @@ agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', pamObservationRoutes);
 agentRoutes.route('/', pamReconciliationRoutes);
 agentRoutes.route('/', pamElevationUnableRoutes);
+agentRoutes.route('/', elevationWithdrawRoutes);
 agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', agentYaraRuleSetRoutes);
 agentRoutes.route('/', agentRecoveryKeysRoutes);
@@ -117,3 +120,5 @@ agentRoutes.route('/', unifiTelemetryRoutes);
 agentRoutes.route('/', topologyAdjacencyRoutes);
 agentRoutes.route('/', wingetBootstrapRoutes);
 agentRoutes.route('/', agentStorageSessionRoutes);
+// #10190 W03: the MSP logo for device prompts (read-only, self-managed context).
+agentRoutes.route('/', promptIdentityLogoRoutes);

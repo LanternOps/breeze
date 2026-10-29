@@ -166,7 +166,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
   // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
@@ -190,7 +189,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
-  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
+  'services/softwareInventoryPolicy.ts': 'software_policies/configurationPolicies writes here (lifted from routes/softwareInventory.ts) are always org-scoped — resolveOrgId always resolves a concrete org id, so these writes can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance in the route (an AI caller must apply the same gate)',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
@@ -349,6 +348,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offeringVerificationStore.ts': 'W06 (#7604) Task 12: worker-only writer of a gateway offering\'s verification record (capabilities), run by the ai-model-discovery verify-offering job under system scope for the job\'s (offeringId, partnerId); the route that queues it (routes/aiModels/offerings.ts /verify) is gated BILLING_MANAGE + MFA + requirePartnerWide. Never enables, never takes caller-supplied capabilities',
   'services/aiModels/connectionSettings.ts':'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
+  // Tool Catalog W06 (#5221): the create_alert writer, moved verbatim out of
+  // automationRuntime.ts and shared with the flow `create_alert` built-in.
+  'services/alertCreation.ts': 'ORG-axis only by construction: ensureAutomationAlertRule(orgId: string) inserts the per-org template and rule with org_id = that org, target org, and never sets partner_id (pinned in alertCreation.test.ts). Callers pass the device\'s org (automationRuntime.ts) or the flow run\'s org (flow_runs.org_id NOT NULL, shape 1), so a partner-owned flow or automation never writes partner-wide alert config',
   'services/builtinDeploymentPackages.ts': 'ensureBuiltinPackage: routes/huntress.ts + routes/sentinelOne.ts behind requirePartnerManager; ensurePinnedBuiltinPackage: routes/softwareBuiltinPackages.ts behind canManagePartnerWidePolicies + devices.execute + MFA (#6958 D2); refreshPinnedBuiltinPackages: boot task, no caller',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',

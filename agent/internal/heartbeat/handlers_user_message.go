@@ -158,7 +158,7 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 		// we wait for message_presented must find the message, or it is lost
 		// and the card would be replayed after it was acknowledged.
 		stored := false
-		if err := store.Put(show, time.Now()); errors.Is(err, errMessageRetracted) {
+		if err := store.PutFor(show, messageStoreOwner(s), time.Now()); errors.Is(err, errMessageRetracted) {
 			return retractedResult()
 		} else if err != nil {
 			log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())

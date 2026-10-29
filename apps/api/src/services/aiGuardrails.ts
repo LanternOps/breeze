@@ -21,6 +21,7 @@ import { getRedis } from './redis';
 import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
+import { isFlowToolName } from './flows/toolNames';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal, isFlowPrincipal } from '../middleware/principalKind';
 import { envFlag } from '../config/env';
@@ -165,6 +166,35 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // the removed row). probe_network_asset and trigger_unifi_sync are tier 2 as whole tools (TOOL_TIERS).
   manage_snmp_templates: ['create', 'update', 'delete'],
   manage_known_guests: ['add', 'delete'],
+  // Full-control W11 (#6781): reversible, tenant-internal bookkeeping. A recommendation status is one audit row
+  // (reopen undoes it); an access-review item decision is recorded only (completing the review, which revokes,
+  // is human-only and absent from the tool); an audit-baseline apply request is one pending row a different
+  // person must approve. Every other W11 write is tier 3 (TIER3_ACTIONS).
+  manage_security_recommendations: ['complete', 'dismiss'],
+  manage_access_reviews: ['decide_item'],
+  manage_audit_baselines: ['request_apply'],
+  // Full-control W12 (#6782): tenant-internal, reversible. A new catalog item is inert until something references it;
+  // a metadata edit changes no install target; cancel stops pending installs (create/retry redo them); a fleet-finding
+  // status is undone by reopen; an org custom-field definition create/edit is undone by another edit. A PARTNER-WIDE
+  // catalog item or definition create is supervised (input-aware, quorum QW1); the tool never edits an existing
+  // partner-wide row (W12-D10). Install-target edits, deploys, inventory policy writes and value writes are tier 3.
+  manage_software_catalog: ['create', 'update', 'import_package'],
+  manage_software_deployments: ['cancel'],
+  manage_fleet_findings: ['acknowledge', 'dismiss', 'reopen'],
+  manage_custom_fields: ['create_definition', 'update_definition'],
+  // Full-control W13 (#6783, plan class review): tenant-internal and reversible. A link group only changes how the
+  // device list renders its members (nothing targets or alerts by it) and is undone by linking again — dissolve
+  // included (members keep their data). A manual asset is one hand-entered inventory row; link / unlink attach it to
+  // a device or a discovered asset for de-duplication. Its hard delete is tier 3.
+  manage_device_links: ['create', 'update', 'dissolve'],
+  // Full-control W13 PR B (#6783): listing a device's event-log channels runs a live agent command (devices:execute,
+  // like execute_command event_logs_list) and returns names and sizes only — read-only, see TIER2_READONLY_ACTIONS.
+  browse_device_event_log: ['list_logs'],
+  manage_manual_assets: ['create', 'update', 'link', 'unlink'],
+  // Full-control W14 (#6784, W14 plan): an ORG-OWNED agreement template's create / rename is tenant-internal and
+  // reversible (archive hides a new one) and pins nowhere until a version is published. A call that asserts
+  // ownerScope 'partner' escalates to supervised (isInputAwareTier3).
+  manage_contract_templates: ['create', 'update'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -279,6 +309,8 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
+  // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3.
+  browse_device_event_log: ['list_logs'],
   file_operations: ['list'],
   manage_processes: ['list'],
   manage_scheduled_tasks: ['list'],
@@ -397,6 +429,30 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   get_snmp_metrics: ['history', 'dashboard'],
   manage_known_guests: ['list'],
   get_unifi_status: ['status', 'hosts', 'collectors', 'mappings', 'telemetry', 'sync_runs', 'controller_sites'],
+  // Full-control W11 (#6781): the security-policy reads.
+  manage_security_recommendations: ['list'],
+  manage_access_reviews: ['list', 'get'],
+  manage_audit_baselines: ['list', 'compliance', 'device_results'],
+  manage_security_policies: ['list'],
+  manage_recovery_keys: ['list'],
+  manage_pam_rules: ['list_rules', 'get_config', 'list_signer_groups'],
+  // Full-control W12 (#6782): the software reads.
+  manage_software_catalog: ['list', 'get'],
+  manage_software_deployments: ['list', 'get', 'summary', 'results'],
+  manage_software_inventory: ['list', 'names', 'devices'],
+  // Full-control W13 (#6783): the device-record reads.
+  manage_device_function: ['get'],
+  manage_device_links: ['list', 'get', 'for_device'],
+  manage_manual_assets: ['list'],
+  manage_device_warranty: ['get', 'expiring'],
+  // Full-control W13 PR B (#6783).
+  manage_tenant_variables: ['list'],
+  manage_support_sessions: ['list', 'get'],
+  // Full-control W14 (#6784).
+  manage_billing_profiles: ['list', 'get', 'list_work_types', 'get_org_profile'],
+  manage_billing_settings: ['get_partner', 'get_org', 'currency_impact', 'reporting_totals'],
+  manage_contract_templates: ['list', 'get', 'get_version', 'usage'],
+  manage_contract_documents: ['list'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -572,6 +628,40 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Full-control W08 (#6778): see TIER3_SUPERVISED_ACTIONS.
   manage_topology_templates: ['publish_version', 'revoke_template'],
   apply_topology_template: ['apply'],
+  // Full-control W11 (#6781): see TIER3_SUPERVISED_ACTIONS; manage_security_policies:create is input-aware.
+  manage_access_reviews: ['create'],
+  manage_audit_baselines: ['create'],
+  manage_security_policies: ['create', 'update'],
+  manage_recovery_keys: ['rotate', 'collect'],
+  manage_pam_rules: [
+    'create_rule', 'update_rule', 'delete_rule', 'set_config',
+    'create_signer_group', 'update_signer_group', 'delete_signer_group',
+  ],
+  // Full-control W12 (#6782): see TIER3_SUPERVISED_ACTIONS.
+  manage_software_catalog: [
+    'archive', 'add_version', 'update_version', 'promote_version',
+    'add_install_method', 'update_install_method', 'delete_install_method',
+  ],
+  manage_software_deployments: ['create', 'retry'],
+  manage_device_software: ['update', 'uninstall'],
+  manage_software_inventory: ['approve', 'deny', 'clear'],
+  manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783): see TIER3_SUPERVISED_ACTIONS.
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
+  // Full-control W13 PR B (#6783): see TIER3_SUPERVISED_ACTIONS.
+  browse_device_event_log: ['query', 'get_event'],
+  manage_tenant_variables: ['create', 'update', 'delete'],
+  manage_support_sessions: ['end'],
+  // Full-control W14 (#6784): see TIER3_SUPERVISED_ACTIONS.
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -886,6 +976,72 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // monitoring configuration of every previewed site. One approver (the requester).
   manage_topology_templates: ['publish_version', 'revoke_template'],
   apply_topology_template: ['apply'],
+  // Full-control W11 (#6781, plan class review + quorum). One approver (the requester):
+  // - access-review create has no delete or cancel (QW6); audit-baseline create arms the daily
+  //   collect_audit_policy sweep on the org's devices of that OS (QW3);
+  // - a security-policy update edits AV/EDR settings (no endpoint reads them today, plan fact 5; kept
+  //   supervised); create is input-aware (partner-wide is four-eyes, resolveApprovalScope);
+  // - recovery-key rotate invalidates the current key (irreversible, one device); collect re-escrows keys;
+  // - PAM writes decide who gets local admin. They cannot write auto_approve, and in an org with an
+  //   auto-approve rule only non-widening changes are allowed (W11-D3), so none grants standing elevation.
+  manage_access_reviews: ['create'],
+  manage_audit_baselines: ['create'],
+  manage_security_policies: ['update'],
+  manage_recovery_keys: ['rotate', 'collect'],
+  manage_pam_rules: [
+    'create_rule', 'update_rule', 'delete_rule', 'set_config',
+    'create_signer_group', 'update_signer_group', 'delete_signer_group',
+  ],
+  // Full-control W12 (#6782, plan class review). One approver (the requester):
+  // - catalog install-target edits (a version added — auto-promoted —, edited or promoted; an install method added,
+  //   edited or deleted) change what armed auto-install policies, automations and `latest` deployments install on
+  //   customer machines with no further approval (plan fact 1); archive has no restore route;
+  // - deployment create/retry dispatch software_install; device-software update/uninstall queue a device command;
+  // - inventory approve/deny/clear append to (or remove from) the org's default allow/blocklist, which with an
+  //   enforcing policy drives auto-uninstall (plan fact 5);
+  // - a custom-field definition delete cascades every device's value (irreversible); a value write changes installer
+  //   arguments and dynamic-group targeting (quorum QW1; set_values returns the previous values).
+  manage_software_catalog: [
+    'archive', 'add_version', 'update_version', 'promote_version',
+    'add_install_method', 'update_install_method', 'delete_install_method',
+  ],
+  manage_software_deployments: ['create', 'retry'],
+  manage_device_software: ['update', 'uninstall'],
+  manage_software_inventory: ['approve', 'deny', 'clear'],
+  manage_custom_fields: ['delete_definition', 'set_values'],
+  // Full-control W13 (#6783, plan class review). One approver (the requester):
+  // - a device function is an ALLOWED execution-targeting filter (filterEngine.ts field table): setting or clearing it
+  //   changes which devices dynamic groups select for scripts, deployments and policy (plan fact 1);
+  // - a manual-asset delete is a hard delete with no restore (retiredAt is the soft path);
+  // - a warranty refresh sends the device's serial number to the manufacturer's warranty API now (spec class rule:
+  //   nothing that leaves the tenant may be tier 2).
+  manage_device_function: ['set'],
+  manage_manual_assets: ['delete'],
+  manage_device_warranty: ['refresh'],
+  // Full-control W13 PR B (#6783, plan class review + quorum QW1/QW2/QW6). One approver (the requester):
+  // - an event-log query / event read returns event TEXT from any channel (Security / Application logs can carry
+  //   credentials and PII) — the execute_command event_logs_query base class, without its chat-only exemption;
+  // - a tenant-variable value is substituted into every script dispatched to the org's devices ({{var.<key>}}), and
+  //   a delete loses the value (the tool never touches secrets or existing partner-wide rows, W13-D7/D13);
+  // - ending a support session self-destructs the temporary client and decommissions it (irreversible).
+  browse_device_event_log: ['query', 'get_event'],
+  manage_tenant_variables: ['create', 'update', 'delete'],
+  manage_support_sessions: ['end'],
+  // Full-control W14 (#6784, W14 plan class review + quorum QW2/QW3/QW5). One approver (the requester):
+  // - rate cards and work types are partner-wide by construction and price every org's time entries; an org's
+  //   rate-card assignment picks what that org is billed (the manage_billing_catalog:set_org_price precedent);
+  // - partner billing settings rewrite every org's invoice defaults and customer-facing text; org billing settings
+  //   change one org's tax, terms and the contact its invoices are emailed to;
+  // - an org-owned agreement template's draft versions are append-only, and publish / archive cannot be undone
+  //   (the partner-wide ones are refused in the handler, W14-D5); filing a signed agreement cannot be undone.
+  // Every write's result and audit row carries the previous values (QW3).
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -936,6 +1092,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
   'manage_software_policy', 'manage_browser_policy',
+  // Full-control W12 (#6782): bootstrap_homebrew has no action (whole tool); manage_device_software's two actions are
+  // enumerated in TIER3_SUPERVISED_ACTIONS — this is the backstop.
+  'bootstrap_homebrew', 'manage_device_software',
   // Monitor definitions (#5289 Task 8): ordinary config-object CRUD (create/
   // update/delete/enable/disable/attach/detach), same class as the software/
   // browser/peripheral policy tools above — no identity, tenant-destruction,
@@ -1017,6 +1176,22 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // W06 (#6776): a partner-wide checklist template is supervised; an org-owned one stays at
   // the base tier 2. Only the create INPUT (`data.ownerScope`) says which.
   'manage_ticket_checklist_templates:create',
+  // Full-control W12 (#6782, quorum QW1): a partner-wide catalog item or custom-field definition (`ownerScope:
+  // 'partner'`) is supervised; an org-owned one stays at the base tier 2.
+  'manage_software_catalog:create',
+  'manage_custom_fields:create_definition',
+  // Full-control W14 (#6784, W14-D5): an agreement template that is partner-wide (`ownerScope: 'partner'`) is
+  // supervised on create / update; an org-owned one stays at tier 2. Ownership is immutable DB state, so the call
+  // ASSERTS it and the handler refuses a mismatch at call time and again at release.
+  'manage_contract_templates:create',
+  'manage_contract_templates:update',
+  // Full-control W11 (#6781, W11-D4): deactivation is irreversible in the product; an org row is supervised, a
+  // partner-wide row (every org) four-eyes. Ownership is DB state, so the call ASSERTS it in `ownerScope` and
+  // the handler refuses a mismatch; only the literal 'organization' resolves supervised.
+  'manage_compliance_policies:deactivate',
+  // Full-control W11 (#6781, W11-D13): a security policy has no delete; an org create is supervised, a
+  // partner-wide create (`ownerScope: 'partner'`, every org) four-eyes. Only the create INPUT says which.
+  'manage_security_policies:create',
 ]);
 
 /**
@@ -1101,6 +1276,18 @@ export function isInputAwareTier3(
     return typeof data === 'object' && data !== null && !Array.isArray(data)
       && (data as Record<string, unknown>).ownerScope === 'partner';
   }
+  if (toolName === 'manage_software_catalog' || toolName === 'manage_custom_fields') {
+    // Full-control W12 (#6782, quorum QW1): mirrors both handlers — only the literal ownerScope 'partner' creates a
+    // partner-wide row (every org of the partner); anything else is org-owned at the base tier 2.
+    const create = toolName === 'manage_software_catalog' ? 'create' : 'create_definition';
+    return action === create && input.ownerScope === 'partner';
+  }
+  if (toolName === 'manage_contract_templates') {
+    // Full-control W14 (#6784, W14-D5): mirrors the handler — only the literal ownerScope 'partner' addresses a
+    // partner-wide template (every org of the partner); absent or 'organization' is an org-owned one at tier 2, and
+    // the handler refuses an assertion that does not match the row.
+    return (action === 'create' || action === 'update') && input.ownerScope === 'partner';
+  }
   if (toolName === 'manage_backup_profiles') {
     // Mirrors the handler (aiToolsPolicyPrereqs.ts create branch): only the
     // literal 'partner' creates a partner-wide row; anything else is an
@@ -1130,6 +1317,9 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
   // run_script { proposalId }: scope comes from the proposal's REVIEWED risk
   // tier, handed in through GuardrailContext (AI script authoring, spec §4.5).
   'run_script',
+  // Full-control W11 (#6781, W11-D4): base tier 3; its one action's scope comes from the asserted `ownerScope`
+  // (resolveApprovalScope): supervised for an org-owned policy, four-eyes otherwise.
+  'manage_compliance_policies',
 ]);
 
 /**
@@ -1165,6 +1355,15 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   manage_backup_profiles: ['ownerScope'],
   // isInputAwareTier3: create with data.ownerScope === 'partner' is supervised (W06, #6776).
   manage_ticket_checklist_templates: ['data'],
+  // isInputAwareTier3: create / create_definition with ownerScope === 'partner' is supervised (W12, #6782).
+  manage_software_catalog: ['ownerScope'],
+  manage_custom_fields: ['ownerScope'],
+  // isInputAwareTier3: template create / update with ownerScope === 'partner' is supervised (W14, #6784).
+  manage_contract_templates: ['ownerScope'],
+  // resolveApprovalScope: deactivate is supervised only for ownerScope === 'organization' (W11, #6781).
+  manage_compliance_policies: ['ownerScope'],
+  // resolveApprovalScope: create with ownerScope === 'partner' is four-eyes (W11, #6781).
+  manage_security_policies: ['ownerScope'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -1246,6 +1445,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'manage_compliance_policies' && action === 'deactivate') {
+    // W11-D4 (#6781): only an asserted org-owned row is supervised; a partner-wide row, or an assertion that is
+    // missing or not the literal 'organization', is four-eyes. The handler refuses an assertion that does not
+    // match the row, so the cheaper scope never reaches a partner-wide policy.
+    return input.ownerScope === 'organization' ? 'supervised' : 'four_eyes';
+  }
+  if (toolName === 'manage_security_policies' && action === 'create') {
+    // W11-D13 (#6781): mirrors the handler (createPolicySchema defaults ownerScope to 'organization'): only the
+    // literal 'partner' creates a partner-wide row, which cannot be deleted and applies to every org.
+    return input.ownerScope === 'partner' ? 'four_eyes' : 'supervised';
   }
   if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
     // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
@@ -2403,6 +2613,175 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_ai_agent_schedules: { resource: 'ai_agents', action: 'read' },
   list_fleet_designs: { resource: 'ai_agents', action: 'read' },
   get_fleet_design: { resource: 'ai_agents', action: 'read' },
+  // Full-control W11 (#6781) — each floor is read from its route by the W11 rows of
+  // aiGuardrails.routeBinding.contract.test.ts (the security read routes behind requireSecurityReadAccess
+  // are devices:read too, routes/security/readAuthorization.ts).
+  get_security_compliance: { resource: 'devices', action: 'read' },
+  manage_security_recommendations: {
+    list: { resource: 'devices', action: 'read' },
+    complete: { resource: 'devices', action: 'write' },
+    dismiss: { resource: 'devices', action: 'write' },
+  },
+  manage_access_reviews: {
+    list: { resource: 'users', action: 'read' },
+    get: { resource: 'users', action: 'read' },
+    create: { resource: 'users', action: 'write' },
+    decide_item: { resource: 'users', action: 'write' },
+  },
+  manage_audit_baselines: {
+    list: { resource: 'audit', action: 'read' },
+    compliance: { resource: 'audit', action: 'read' },
+    device_results: { resource: 'audit', action: 'read' },
+    create: { resource: 'organizations', action: 'write' },
+    request_apply: { resource: 'devices', action: 'write' },
+  },
+  manage_compliance_policies: { resource: 'devices', action: 'write' },
+  manage_security_policies: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+  },
+  manage_recovery_keys: {
+    list: { resource: 'devices', action: 'read' },
+    rotate: { resource: 'devices', action: 'execute' },
+    collect: { resource: 'devices', action: 'execute' },
+  },
+  manage_pam_rules: {
+    list_rules: { resource: 'devices', action: 'read' },
+    get_config: { resource: 'devices', action: 'read' },
+    list_signer_groups: { resource: 'devices', action: 'read' },
+    create_rule: { resource: 'pam', action: 'manage_policy' },
+    update_rule: { resource: 'pam', action: 'manage_policy' },
+    delete_rule: { resource: 'pam', action: 'manage_policy' },
+    set_config: { resource: 'pam', action: 'manage_policy' },
+    create_signer_group: { resource: 'pam', action: 'manage_policy' },
+    update_signer_group: { resource: 'pam', action: 'manage_policy' },
+    delete_signer_group: { resource: 'pam', action: 'manage_policy' },
+  },
+  // Full-control W12 (#6782) — each floor is read from its route by the W12 rows of
+  // aiGuardrails.routeBinding.contract.test.ts.
+  manage_software_catalog: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    archive: { resource: 'devices', action: 'write' },
+    add_version: { resource: 'devices', action: 'write' },
+    update_version: { resource: 'devices', action: 'write' },
+    promote_version: { resource: 'devices', action: 'write' },
+    add_install_method: { resource: 'devices', action: 'write' },
+    update_install_method: { resource: 'devices', action: 'write' },
+    delete_install_method: { resource: 'devices', action: 'write' },
+    import_package: { resource: 'devices', action: 'write' },
+  },
+  search_packages: { resource: 'devices', action: 'read' },
+  manage_software_deployments: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    summary: { resource: 'devices', action: 'read' },
+    results: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'execute' },
+    cancel: { resource: 'devices', action: 'execute' },
+    retry: { resource: 'devices', action: 'execute' },
+  },
+  get_device_software: { resource: 'devices', action: 'read' },
+  manage_device_software: { resource: 'devices', action: 'execute' },
+  bootstrap_homebrew: { resource: 'devices', action: 'execute' },
+  manage_software_inventory: {
+    list: { resource: 'devices', action: 'read' },
+    names: { resource: 'devices', action: 'read' },
+    devices: { resource: 'devices', action: 'read' },
+    approve: { resource: 'devices', action: 'write' },
+    deny: { resource: 'devices', action: 'write' },
+    clear: { resource: 'devices', action: 'write' },
+  },
+  manage_fleet_findings: { resource: 'devices', action: 'write' },
+  manage_custom_fields: { resource: 'devices', action: 'write' },
+  // Full-control W13 (#6783, PR A) — each floor is read from its route by the W13 rows of
+  // aiGuardrails.routeBinding.contract.test.ts.
+  get_device_events: { resource: 'devices', action: 'read' },
+  get_device_health: { resource: 'devices', action: 'read' },
+  get_process_samples: { resource: 'devices', action: 'read' },
+  get_management_posture: { resource: 'devices', action: 'read' },
+  manage_device_function: {
+    get: { resource: 'devices', action: 'read' },
+    set: { resource: 'devices', action: 'write' },
+  },
+  manage_device_links: {
+    list: { resource: 'devices', action: 'read' },
+    get: { resource: 'devices', action: 'read' },
+    for_device: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    dissolve: { resource: 'devices', action: 'delete' },
+  },
+  manage_manual_assets: {
+    list: { resource: 'devices', action: 'read' },
+    create: { resource: 'devices', action: 'write' },
+    update: { resource: 'devices', action: 'write' },
+    delete: { resource: 'devices', action: 'delete' },
+    link: { resource: 'devices', action: 'write' },
+    unlink: { resource: 'devices', action: 'write' },
+  },
+  manage_device_warranty: {
+    get: { resource: 'devices', action: 'read' },
+    expiring: { resource: 'devices', action: 'read' },
+    refresh: { resource: 'devices', action: 'write' },
+  },
+  // Full-control W13 PR B (#6783): the system-tools router (devices:execute), routes/tenantVariables.ts
+  // (variables:read / variables:manage) and the remote router (remote:access).
+  browse_device_event_log: { resource: 'devices', action: 'execute' },
+  manage_tenant_variables: {
+    list: { resource: 'variables', action: 'read' },
+    create: { resource: 'variables', action: 'manage' },
+    update: { resource: 'variables', action: 'manage' },
+    delete: { resource: 'variables', action: 'manage' },
+  },
+  manage_support_sessions: { resource: 'remote', action: 'access' },
+  // Full-control W14 (#6784): routes/billingProfiles.ts + orgBillingProfile.ts (billing_profiles:*),
+  // routes/invoices/settings.ts (invoices:write; reporting totals has no grant at REST, the tool requires
+  // invoices:read) and the settings read routes GET /orgs/partners/me, /orgs/organizations/:id (organizations:read,
+  // quorum QW6), routes/contracts/templates.ts + documents.ts (agreements:*), routes/devices/billing.ts
+  // (devices:read + contracts:read, the second in TOOL_EXTRA_PERMISSIONS).
+  manage_billing_profiles: {
+    list: { resource: 'billing_profiles', action: 'read' },
+    get: { resource: 'billing_profiles', action: 'read' },
+    list_work_types: { resource: 'billing_profiles', action: 'read' },
+    get_org_profile: { resource: 'billing_profiles', action: 'read' },
+    create: { resource: 'billing_profiles', action: 'write' },
+    update: { resource: 'billing_profiles', action: 'write' },
+    archive: { resource: 'billing_profiles', action: 'write' },
+    set_rows: { resource: 'billing_profiles', action: 'write' },
+    clone: { resource: 'billing_profiles', action: 'write' },
+    create_work_type: { resource: 'billing_profiles', action: 'write' },
+    update_work_type: { resource: 'billing_profiles', action: 'write' },
+    set_org_profile: { resource: 'billing_profiles', action: 'write' },
+    clear_org_profile: { resource: 'billing_profiles', action: 'write' },
+  },
+  manage_billing_settings: {
+    get_partner: { resource: 'organizations', action: 'read' },
+    get_org: { resource: 'organizations', action: 'read' },
+    currency_impact: { resource: 'invoices', action: 'write' },
+    reporting_totals: { resource: 'invoices', action: 'read' },
+    update_partner: { resource: 'invoices', action: 'write' },
+    update_org: { resource: 'invoices', action: 'write' },
+  },
+  manage_contract_templates: {
+    list: { resource: 'agreements', action: 'read' },
+    get: { resource: 'agreements', action: 'read' },
+    get_version: { resource: 'agreements', action: 'read' },
+    usage: { resource: 'agreements', action: 'read' },
+    create: { resource: 'agreements', action: 'write' },
+    update: { resource: 'agreements', action: 'write' },
+    create_version: { resource: 'agreements', action: 'write' },
+    publish: { resource: 'agreements', action: 'write' },
+    archive: { resource: 'agreements', action: 'write' },
+  },
+  manage_contract_documents: {
+    list: { resource: 'agreements', action: 'read' },
+    link: { resource: 'agreements', action: 'write' },
+  },
+  get_device_billing: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -2477,6 +2856,9 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   manage_topology_monitoring: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   manage_topology_templates: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   apply_topology_template: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  // Full-control W14 (#6784): GET /devices/:id/billing requires devices:read AND contracts:read (contract-line
+  // descriptions carry rates).
+  get_device_billing: [{ resource: 'contracts', action: 'read' }],
 };
 
 /**
@@ -3218,11 +3600,23 @@ export function checkAgentGuardrails(
   input: Record<string, unknown>,
   policy: AgentGuardrailPolicy | null | undefined,
   context?: GuardrailContext,
+  /**
+   * W5 PR C (#5220, Decision 9): the LIVE invocation tier of a flow tool
+   * (`flow__<slug>`), which has no `TOOL_TIERS` entry. Agents may start
+   * Tier-1 flows only, so only `1` is accepted, and only for a flow tool name
+   * — any other name is classified by `checkGuardrails` as before (an unknown
+   * name stays tier 4 / denied). Every other gate below (env flag, kill
+   * switch, policy, enabled, mode) still applies; the agent path also
+   * requires the allowlist (services/flows/agentFlowTools.ts).
+   */
+  opts: { resolvedTier?: 1 } = {},
 ): AgentGuardrailCheck {
   // #7906: the chat-session opt-in is never honored for an agent run, even if
   // a caller hands it in — headless principals keep event_logs_query at Tier 3.
   const agentContext = context?.chatSession ? { ...context, chatSession: undefined } : context;
-  const base = checkGuardrails(toolName, input, agentContext);
+  const base: GuardrailCheck = opts.resolvedTier === 1 && isFlowToolName(toolName)
+    ? { tier: 1, allowed: true, requiresApproval: false, readOnly: true, description: `Run ${toolName}` }
+    : checkGuardrails(toolName, input, agentContext);
   const deny = (reason: string): AgentGuardrailCheck =>
     ({ ...base, allowed: false, requiresApproval: false, disposition: 'deny', reason });
 

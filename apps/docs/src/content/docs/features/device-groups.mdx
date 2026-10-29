@@ -24,6 +24,12 @@ Static groups have a fixed membership list. You add or remove devices explicitly
 - Devices can be removed individually.
 - No filter conditions are evaluated.
 
+### Default group for new devices
+
+Each organization can name one static group that newly enrolled devices join automatically. Set it under the organization's settings, **Defaults** tab, **Default device group**; the picker lists the organization's static groups, and **None** turns it off. A device is added once, when it enrolls; devices already enrolled are not moved. If the group has been deleted or turned dynamic, enrollment still succeeds and the device is simply not added.
+
+There is no partner-wide default group, because a group belongs to one organization.
+
 ### Dynamic groups
 
 Dynamic groups use a `filterConditions` object to define membership rules. When a dynamic group is created or its filter is updated, the system evaluates the filter against all devices in the organization and automatically adds or removes members.

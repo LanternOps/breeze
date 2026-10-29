@@ -438,6 +438,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PRE_ASSIGNMENT_ENROLLMENT_ENABLED: 'pre-assignment enrollment rollout flag',
   // PROCESS_*
   PROCESS_SAMPLE_RETENTION_DAYS: 'data retention window',
+  // PROMPT_*
+  PROMPT_HOST_ENABLED_KINDS: 'on-device prompt kinds rollout flag / kill switch (#10190)',
   // PROVISION_*
   PROVISION_HANDLE_TTL_MINUTES: 'timing knob',
   // PUBLIC_*
@@ -561,6 +563,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

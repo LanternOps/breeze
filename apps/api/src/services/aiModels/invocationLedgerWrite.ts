@@ -19,6 +19,8 @@ export interface NewInvocation {
   userId?: string | null;
   sessionId?: string | null;
   agentRunId?: string | null;
+  /** W5 (#5220): the flow run an `ai` step call belongs to. */
+  flowRunId?: string | null;
   sourceRef?: string | null;
   offeringId?: string | null;
   connectionId?: string | null;
@@ -70,6 +72,7 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     userId: row.userId ?? null,
     sessionId: row.sessionId ?? null,
     agentRunId: row.agentRunId ?? null,
+    flowRunId: row.flowRunId ?? null,
     sourceRef: row.sourceRef ?? null,
     offeringId: row.offeringId ?? null,
     connectionId: row.connectionId ?? null,

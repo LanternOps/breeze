@@ -15,7 +15,25 @@ import {
   type UpdateTicketFieldsInput,
   updateTicketFields,
 } from '../ticketService';
+import { selectBackend } from '../ticketAttachmentStorage';
 import type { OpenWindow, TicketWriteMode } from '../ticketWriteMode';
+import {
+  hasAttachments,
+  NO_CHUNK_FILES,
+  prepareChunkAttachments,
+  type ChunkFiles,
+} from './chunkAttachments';
+import {
+  deleteSkippedReservations,
+  importAttachmentStates,
+  isReservationPending,
+  markReservationStored,
+  reservationRowExists,
+  reserveImportAttachments,
+  withAttachmentSkipNote,
+  type ImportAttachmentSkip,
+} from './importAttachments';
+import { readInIdSlices } from './idSlices';
 import { parseImportedTicket, type ImportedComment, type ImportedTicket } from './importedTicket';
 import {
   importedCommentsOf,
@@ -24,8 +42,11 @@ import {
   storedCommentContent,
   type SourceChanges,
 } from './sourceChanges';
-import { chargeWindowThroughput } from './throughput';
+import { deleteObjectsOfDeletedReservations, type FetchImportAttachment } from './storeAttachments';
+import { chargeWindowBytes, chargeWindowThroughput, refundWindowBytes } from './throughput';
 export type { CommentChangedInSource, SourceChanges } from './sourceChanges';
+export type { ImportAttachmentSkip, ImportAttachmentSkipReason } from './importAttachments';
+export { ImportAttachmentFetchError, type FetchImportAttachment } from './storeAttachments';
 import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type WindowDescriptor } from './windowLock';
 
 /**
@@ -63,6 +84,13 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * Any other ref that resolves to a ticket this principal did not import (a
  * live ticket, merged or not, or another principal's import) is refused,
  * never resumed.
+ *
+ * Attachments (#8313 W1; spec 2026-10-19 §4): the files of each comment chunk
+ * are reserved (pending rows, one unit each, at most 100 per transaction),
+ * then fetched and stored with no DB context, then claimed by their comments
+ * in the chunk's own transaction (chunkAttachments.ts, importAttachments.ts).
+ * Object storage only: a ticket with files to write and no S3 is refused
+ * before anything is written.
  *
  * Must be called with no ambient DB context: it opens its own transactions,
  * and the throughput charge is a Redis round trip that must not hold one.
@@ -102,6 +130,19 @@ export type ImportTicketResult = {
   statusSkipped: boolean;
   /** Why, when `statusSkipped` is true (absent otherwise): see `StatusSkip`. */
   statusSkip?: StatusSkip;
+  /** Files claimed by the comments this run wrote (spec 2026-10-19 §5.3 item 1). */
+  attachmentsWritten: number;
+  /**
+   * Files of the comments this run wrote that were not imported with them,
+   * and why, in the source's order: the four permanent reasons (a later pass
+   * skips them again; each is also named in the note appended to its
+   * comment), and `present_elsewhere` (already in Breeze; not in the note).
+   * `attachmentsWritten` + this list's length is the source's file count of
+   * those comments.
+   */
+  attachmentsSkipped: ImportAttachmentSkip[];
+  /** Bytes of the files claimed (`attachmentsWritten`). */
+  attachmentBytes: number;
 } & SourceChanges;
 
 /**
@@ -158,6 +199,13 @@ export type ImportTicketOptions = {
    * (a merge in the source), which is not deleted either.
    */
   isSourceArticleId?: (sourceId: string) => boolean;
+  /**
+   * Reads one source file (spec 2026-10-19 §5.3 item 1, §4.3 step 2): the
+   * original bytes, at most `maxBytes`. Its failures say whether they are
+   * permanent (`ImportAttachmentFetchError`, see `FetchImportAttachment`).
+   * Required when a comment to write carries attachments.
+   */
+  fetchAttachment?: FetchImportAttachment;
 };
 
 type WriteScope = {
@@ -230,6 +278,11 @@ function inUse(sourceId: string, details: Record<string, unknown> = {}): Migrati
 
 function isImportSourceConflict(err: unknown): boolean {
   return isPgUniqueViolation(err) && pgErrorConstraint(err) === 'ticket_comments_import_source_uq';
+}
+
+/** addTicketComment's 409 ATTACHMENT_NOT_CLAIMABLE (a TicketServiceError, matched by its code). */
+function isClaimShortfall(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'ATTACHMENT_NOT_CLAIMABLE';
 }
 
 function normalizedSubject(t: ImportedTicket): string {
@@ -357,16 +410,11 @@ function writtenByImport(row: FeedAuthor, principalId: string): boolean {
  * another ticket (a merge in the source moved it) is skipped, not duplicated.
  */
 async function presentCommentSourceIds(principalId: string, sourceIds: readonly string[]): Promise<Set<string>> {
-  const present = new Set<string>();
-  for (let i = 0; i < sourceIds.length; i += 500) {
-    const slice = sourceIds.slice(i, i + 500);
-    const rows = await db
-      .select({ sourceId: ticketComments.importSourceId })
-      .from(ticketComments)
-      .where(and(eq(ticketComments.originPrincipalId, principalId), inArray(ticketComments.importSourceId, slice)));
-    for (const row of rows) if (row.sourceId) present.add(row.sourceId);
-  }
-  return present;
+  const rows = await readInIdSlices(sourceIds, (slice) => db
+    .select({ sourceId: ticketComments.importSourceId })
+    .from(ticketComments)
+    .where(and(eq(ticketComments.originPrincipalId, principalId), inArray(ticketComments.importSourceId, slice))));
+  return new Set(rows.flatMap((row) => (row.sourceId ? [row.sourceId] : [])));
 }
 
 /**
@@ -591,43 +639,81 @@ async function inImportTransaction<T>(
   });
 }
 
+type ChunkCounts = {
+  written: number;
+  skipped: number;
+  attachmentsWritten: number;
+  attachmentBytes: number;
+  attachmentsSkipped: ImportAttachmentSkip[];
+};
+
+/**
+ * The comments of one chunk, each with the files `files` holds for it: the
+ * stored ones claimed in the comment's own insert (addTicketComment's import
+ * claim), the skipped ones named in a note appended to its text. A comment
+ * skipped here (already imported) leaves its stored files pending, for the
+ * run that imported it or for the reaper.
+ */
 async function writeComments(
   scope: WriteScope,
   ticketId: string,
   chunk: readonly ImportedComment[],
-): Promise<{ written: number; skipped: number }> {
-  let written = 0;
-  let skipped = 0;
+  files: ChunkFiles,
+): Promise<ChunkCounts> {
+  const counts: ChunkCounts = { written: 0, skipped: 0, attachmentsWritten: 0, attachmentBytes: 0, attachmentsSkipped: [] };
   // Re-checked under the lock: a concurrent run may have written some.
   const present = await presentCommentSourceIds(scope.window.principalId, chunk.map((c) => c.sourceId));
   for (const comment of chunk) {
     if (present.has(comment.sourceId)) {
-      skipped += 1;
+      counts.skipped += 1;
       continue;
     }
+    const own = files.byComment.get(comment.sourceId);
     try {
       await addTicketComment(
         ticketId,
         {
-          content: storedCommentContent(comment),
+          content: withAttachmentSkipNote(storedCommentContent(comment), own?.skips ?? []),
           isPublic: comment.isPublic,
-          imported: { sourceId: comment.sourceId, author: comment.author },
+          imported: {
+            sourceId: comment.sourceId,
+            author: comment.author,
+            ...(own && own.claims.length > 0 ? { attachments: own.claims } : {}),
+          },
         },
         scope.actor,
         scope.at(comment.createdAt),
       );
-      written += 1;
+      counts.written += 1;
+      if (own) {
+        counts.attachmentsWritten += own.claims.length;
+        counts.attachmentBytes += own.claims.reduce((sum, c) => sum + c.byteSize, 0);
+        counts.attachmentsSkipped.push(...own.skips.map(({ sourceId, reason }) => ({ sourceId, reason })));
+      }
     } catch (err) {
       // Held by a ticket outside the window (RLS hides it from the check
       // above), or written by a concurrent run since: the comment is already
       // imported. addTicketComment's own transaction is a savepoint inside
       // this one, so the conflict undoes only that insert and the chunk goes
       // on (pinned by ticketImport.integration.test.ts).
+      if (isClaimShortfall(err)) {
+        // A reservation this pass stored was claimed or reaped by something
+        // else since (another run of the same ticket; W4's one active run per
+        // source makes it rare). Transient: the chunk rolls back, and the next
+        // pass reserves again.
+        throw new MigrationWindowError(
+          'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE',
+          'An attachment could not be claimed by its comment; the ticket is retried on the next run',
+          503,
+          { sourceId: comment.sourceId, stage: 'claim' },
+          { cause: err },
+        );
+      }
       if (!isImportSourceConflict(err)) throw err;
-      skipped += 1;
+      counts.skipped += 1;
     }
   }
-  return { written, skipped };
+  return counts;
 }
 
 /**
@@ -665,11 +751,20 @@ function inSourceOrder(comments: readonly ImportedComment[]): ImportedComment[] 
     .map((entry) => entry.comment);
 }
 
+type RunCounts = {
+  commentsWritten: number;
+  commentsSkipped: number;
+  fieldsUpdated: number;
+  attachmentsWritten: number;
+  attachmentsSkipped: ImportAttachmentSkip[];
+  attachmentBytes: number;
+};
+
 /** The result of a source ticket merged in Breeze (`ImportSkip`). */
 function mergedInBreeze(
   ticketId: string,
   mergedIntoTicketId: string,
-  counts: { commentsWritten: number; commentsSkipped: number; fieldsUpdated: number },
+  counts: RunCounts,
 ): ImportTicketResult {
   return {
     ticketId,
@@ -727,13 +822,15 @@ export async function importTicket(
     if (stored.windowPrincipalId !== principalId) {
       throw inUse(t.sourceId, { reason: 'other_principal_ticket', ticketId: ref.ticketId });
     }
+    // The window's orgs before anything else about the ticket, so no answer
+    // (merged included) ever rests on the window's RLS alone (#10034 review).
+    if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     // Merged in Breeze (#8972): this import's ticket is a tombstone, and the
     // ref is still on it.
     if (stored.mergedIntoTicketId) {
       return { kind: 'merged' as const, ticketId: stored.id, mergedIntoTicketId: stored.mergedIntoTicketId };
     }
     if (stored.deletedAt) throw inUse(t.sourceId, { reason: 'deleted', ticketId: stored.id });
-    if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     // Present: on this ticket (the read the report also uses), or imported by
     // this principal onto another ticket, which is asked only for the rest.
     const storedComments = await importedCommentsOf(stored.id, principalId, t.comments.map((c) => c.sourceId));
@@ -761,7 +858,25 @@ export async function importTicket(
   });
 
   if (plan.kind === 'merged') {
-    return mergedInBreeze(plan.ticketId, plan.mergedIntoTicketId, { commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0 });
+    return mergedInBreeze(plan.ticketId, plan.mergedIntoTicketId, {
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0,
+    });
+  }
+
+  // Attachments (§4.1): object storage only, refused before anything is
+  // written. A module that sends files must say how to read them.
+  if (hasAttachments(plan.missing)) {
+    if (selectBackend() !== 's3') {
+      throw new MigrationWindowError(
+        'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED',
+        'Importing attachments needs object storage (S3)',
+        409,
+        { sourceId: t.sourceId },
+      );
+    }
+    if (!options.fetchAttachment) {
+      throw new MigrationWindowError('MIGRATION_IMPORT_INVALID', 'Comments with attachments need fetchAttachment', 400, { sourceId: t.sourceId });
+    }
   }
 
   if (plan.kind === 'create' && !descriptor.orgIds.includes(t.orgId)) {
@@ -779,9 +894,14 @@ export async function importTicket(
     ? finalStatusSteps(t.assigneeUserId ? 'open' : 'new', t).length
     : plan.statusCost;
   let ticketId = plan.kind === 'create' ? '' : plan.stored.id;
-  let fieldsUpdated = 0;
-  let commentsWritten = 0;
-  let commentsSkipped = plan.present;
+  const counts: RunCounts = {
+    commentsWritten: 0,
+    commentsSkipped: plan.present,
+    fieldsUpdated: 0,
+    attachmentsWritten: 0,
+    attachmentsSkipped: [],
+    attachmentBytes: 0,
+  };
   // Which answer is reported (#8884 review, finding 4). When a transaction
   // runs, the last one decides the status again under the lock, and its
   // answer is reported; a transaction that fails throws, so a rolled-back
@@ -848,26 +968,66 @@ export async function importTicket(
       return { fieldsUpdated: changes.fieldNames.length + (changes.assign ? 1 : 0), merged: null };
     });
     if (header.merged) {
-      return mergedInBreeze(ticketId, header.merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
+      return mergedInBreeze(ticketId, header.merged.mergedIntoTicketId, counts);
     }
-    fieldsUpdated = header.fieldsUpdated;
+    counts.fieldsUpdated = header.fieldsUpdated;
   }
 
   for (const [index, chunk] of chunks.entries()) {
     const last = index === chunks.length - 1;
+    // §4.3 steps 1 and 2: reserve the chunk's files (each reservation
+    // transaction locks the ticket first and charges one unit per new file),
+    // then fetch and store them with no DB context, marking each stored in a
+    // short transaction of its own (no unit: an update of the same row).
+    const prepared = hasAttachments(chunk)
+      ? await prepareChunkAttachments({
+        chunk,
+        readStates: (sourceIds) => withDbAccessContext(context, () => importAttachmentStates(principalId, sourceIds)),
+        reserve: (files, cost) => inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+          const merged = await lockImportedTicket(ticketId, t.sourceId);
+          if (merged) return { merged };
+          const reserved = await reserveImportAttachments({ ticketId, windowId: scope.window.id, principalId: scope.window.principalId, files });
+          return { merged: null, reserved };
+        }),
+        markStored: (claim) => inImportTransaction(descriptor, context, orgId, 0, async (scope) => {
+          // A merge since the reservation: the chunk transaction answers it.
+          if (await lockImportedTicket(ticketId, t.sourceId)) return false;
+          return markReservationStored(ticketId, scope.window.principalId, claim);
+        }),
+        stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
+        reservationExists: (id) => reservationRowExists(id),
+        fetchAttachment: options.fetchAttachment!,
+        chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
+        refundBytes: (bytes) => refundWindowBytes(descriptor, bytes),
+      })
+      : { merged: null, files: NO_CHUNK_FILES };
+    if (prepared.merged) return mergedInBreeze(ticketId, prepared.merged.mergedIntoTicketId, counts);
+    const files = prepared.files;
+
+    // Step 3: the comments claim their stored files; the reservations of
+    // files skipped after they were reserved go, rows first, in this
+    // transaction (only those still unstored: a run that stored one meanwhile
+    // keeps it). Their objects go after the commit, with no DB context, and
+    // only for the rows deleted: an earlier pass may have put one and died
+    // before marking it stored (deleteSkippedReservations has the ordering).
     const cost = chunk.length + (last ? statusCost : 0);
     const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
       const merged = await lockImportedTicket(ticketId, t.sourceId);
-      if (merged) return { written: 0, skipped: 0, merged };
-      const counts = await writeComments(scope, ticketId, chunk);
+      if (merged) return { merged };
+      const deletedSkips = await deleteSkippedReservations(ticketId, principalId, files.skippedReservations);
+      const written = await writeComments(scope, ticketId, chunk, files);
       if (last) await finalStatus(scope, ticketId);
-      return { ...counts, merged: null };
+      return { ...written, deletedSkips, merged: null };
     });
     if (result.merged) {
-      return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
+      return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, counts);
     }
-    commentsWritten += result.written;
-    commentsSkipped += result.skipped;
+    await deleteObjectsOfDeletedReservations(result.deletedSkips);
+    counts.commentsWritten += result.written;
+    counts.commentsSkipped += result.skipped;
+    counts.attachmentsWritten += result.attachmentsWritten;
+    counts.attachmentBytes += result.attachmentBytes;
+    counts.attachmentsSkipped.push(...result.attachmentsSkipped);
   }
 
   // A resume with nothing but a status change still needs its transaction. A
@@ -878,15 +1038,13 @@ export async function importTicket(
       if (!tombstone) await finalStatus(scope, ticketId);
       return tombstone;
     });
-    if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
+    if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, counts);
   }
 
   return {
     ticketId,
     outcome: plan.kind === 'create' ? 'created' : 'resumed',
-    commentsWritten,
-    commentsSkipped,
-    fieldsUpdated,
+    ...counts,
     statusSkipped: statusSkip !== null,
     ...(statusSkip ? { statusSkip } : {}),
     ...(plan.kind === 'resume' ? plan.sourceChanges : noSourceChanges()),

@@ -57,7 +57,24 @@
       "tenant": "Origine strumenti",
       "builtin": "Integrato"
     },
-    "preApprovedBadge": "Pre-approvato"
+    "preApprovedBadge": "Pre-approvato",
+    "builtin": {
+      "notify": "Invia una notifica",
+      "http_request": "Chiama un’API esterna",
+      "ai": "Chiedi all’IA"
+    },
+    "notify": {
+      "channel": "Canale: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonimo (nessuna credenziale)"
+    },
+    "ai": {
+      "tools": "Strumenti: {{tools}}",
+      "noTools": "Nessuno strumento",
+      "output": "Campi del risultato: {{fields}}"
+    }
   },
   "issues": {
     "title": "Convalida",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Panoramica",
-    "runs": "Esecuzioni"
+    "runs": "Esecuzioni",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Abilita",
@@ -103,7 +121,11 @@
       "variable_dependent": "Questo passaggio dipende da valori noti solo durante l'esecuzione.",
       "script_not_found": "Lo script usato da questo passaggio non è stato trovato.",
       "four_eyes": "Questa azione richiede sempre l'approvazione di una seconda persona.",
-      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate."
+      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate.",
+      "for_each": "I passaggi che si ripetono per ogni elemento non possono essere pre-approvati.",
+      "run_as_elevated": "Questo script viene eseguito con privilegi elevati, quindi non può essere pre-approvato.",
+      "selector_not_literal": "I dispositivi vengono scelti al momento dell'esecuzione, quindi questo passaggio non può essere pre-approvato.",
+      "max_targets_invalid": "Imposta su quanti dispositivi può essere eseguito questo passaggio (1–500) per pre-approvarlo."
     },
     "eventScope": "I flussi a evento reagiscono agli eventi della piattaforma qualunque ne sia la causa, comprese le azioni di persone, di altri flussi o di automazioni. Controlla il filtro del trigger prima di abilitare.",
     "missingPermissions": "Ti mancano permessi necessari ai passaggi di questo flusso:",
@@ -121,7 +143,10 @@
     "partnerWideForbidden": "Non hai l’autorizzazione per attivare flussi per tutte le organizzazioni.",
     "interactiveRequired": "I flussi possono essere attivati solo da una sessione del browser autenticata.",
     "slugUnavailable": "Un altro flusso in questo ambito usa già questo identificatore.",
-    "generic": "Impossibile attivare il flusso."
+    "generic": "Impossibile attivare il flusso.",
+    "webhookSecretMissing": "Crea un segreto del webhook prima di attivare questo flusso.",
+    "aiBudgetUnavailable": "Questa organizzazione non ha budget IA, quindi un flusso con un passaggio IA non può essere attivato.",
+    "webhookSecretInvalidated": "L’attivazione di questa versione ha cancellato il segreto del webhook, perché era stato creato per una bozza precedente. Tutte le richieste vengono rifiutate finché non crei un nuovo segreto e lo consegni al mittente."
   },
   "run": {
     "title": "Esegui flusso",
@@ -145,6 +170,7 @@
   },
   "runs": {
     "empty": "Ancora nessuna esecuzione.",
+    "emptyFiltered": "Nessuna esecuzione corrisponde a questo filtro.",
     "status": {
       "queued": "In coda",
       "running": "In esecuzione",
@@ -216,7 +242,11 @@
       "notify_failed": "Non è stato possibile inviare l'avviso.",
       "ai_budget_exhausted": "Il budget IA dell'organizzazione è esaurito.",
       "ai_output_invalid": "Il risultato dell'IA non corrispondeva al formato previsto.",
-      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA."
+      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA.",
+      "targets_over_cap": "Il passaggio puntava a più dispositivi di quanti un passaggio di flusso ne possa gestire (500).",
+      "targets_unresolvable": "Non è stato possibile risolvere il target di dispositivi del passaggio.",
+      "alert_create_failed": "Non è stato possibile creare l'avviso.",
+      "script_dispatch_failed": "Non è stato possibile inviare lo script a uno o più dispositivi."
     },
     "step": {
       "status": {
@@ -246,7 +276,9 @@
       "loading": "Caricamento...",
       "loadFailed": "Impossibile caricare i dettagli del passaggio.",
       "pruned": "I dettagli sono stati rimossi dalla politica di conservazione.",
-      "redacted": "I dettagli del passaggio non sono disponibili con il tuo livello di accesso."
+      "redacted": "I dettagli del passaggio non sono disponibili con il tuo livello di accesso.",
+      "aiUsage": "IA: {{input}} token in ingresso, {{output}} in uscita, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Esecuzione non trovata.",
     "alreadyTerminal": "Questa esecuzione è già terminata.",
@@ -258,7 +290,11 @@
     "queuedNote": "In coda. In attesa di uno slot di esecuzione libero.",
     "paused": "Aggiornamenti in tempo reale sospesi.",
     "lastUpdated": "Ultimo aggiornamento {{time}}",
-    "timeline": "Passaggi"
+    "timeline": "Passaggi",
+    "agentRun": "Avviato dall’esecuzione di un agente IA",
+    "openAgentRun": "Apri esecuzione dell’agente",
+    "aiTokensUsed": "Token IA utilizzati: {{count}}",
+    "parallel": "{{count}} elementi eseguiti in parallelo"
   },
   "toast": {
     "enabled": "Flusso abilitato",
@@ -269,5 +305,142 @@
   "disable": {
     "title": "Disattiva flusso",
     "message": "La disattivazione interrompe le nuove esecuzioni e annulla quelle in corso. Potrai riattivare il flusso in seguito."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "URL del webhook",
+    "copy": "Copia",
+    "copied": "Copiato",
+    "copyFailed": "Impossibile copiare automaticamente. Seleziona il valore e copialo manualmente.",
+    "authMode": {
+      "label": "Autenticazione",
+      "hmac": "Richiesta firmata (HMAC-SHA256)",
+      "token": "Segreto in un’intestazione"
+    },
+    "authHelp": {
+      "hmac": "Il mittente firma ogni richiesta con il segreto. Breeze rifiuta le richieste non firmate, firmate in modo errato o più vecchie di cinque minuti, ed esegue una richiesta ripetuta una sola volta.",
+      "token": "Il mittente inserisce il segreto stesso in un’intestazione. È meno sicuro della firma: chiunque veda una richiesta può inviarne altre. Usalo solo per mittenti che non possono firmare."
+    },
+    "signing": {
+      "title": "Come inviare una richiesta",
+      "hmac": "Invia un oggetto JSON come corpo. Calcola HMAC-SHA256 su <timestamp>.<raw body> con il segreto e invia queste intestazioni:",
+      "token": "Invia un oggetto JSON come corpo, con il segreto in questa intestazione:",
+      "deliveryId": "Facoltativo: invia un {{header}} univoco così che un nuovo tentativo della stessa consegna venga eseguito una sola volta."
+    },
+    "secret": {
+      "label": "Segreto",
+      "create": "Crea segreto",
+      "rotate": "Ruota segreto",
+      "none": "Nessun segreto per ora. Tutte le richieste vengono rifiutate finché non ne crei uno.",
+      "fingerprint": "Impronta",
+      "rotatedAt": "Creato",
+      "dialogTitle": "Segreto del webhook",
+      "warning": "Copia subito questo segreto. Non verrà mostrato di nuovo.",
+      "done": "Fine",
+      "rotateTitle": "Ruotare il segreto del webhook?",
+      "rotateMessage": "Il segreto attuale smette di funzionare immediatamente. Il mittente viene rifiutato finché non usa il nuovo segreto.",
+      "failed": "Impossibile creare il segreto del webhook.",
+      "draftUnresolvable": "I passaggi della bozza non possono più essere risolti, quindi non è possibile creare un segreto per essa. Correggi prima la bozza.",
+      "notWebhook": "Questo flusso non viene avviato da un webhook."
+    },
+    "lastFailure": {
+      "label": "Ultima richiesta rifiutata",
+      "none": "Nessuna",
+      "missing_signature": "La richiesta non era firmata.",
+      "bad_signature": "La firma non corrispondeva.",
+      "stale_timestamp": "Il timestamp mancava o differiva di oltre cinque minuti.",
+      "missing_token": "L’intestazione del segreto mancava.",
+      "bad_token": "Il segreto nell’intestazione era errato.",
+      "bad_delivery_id": "L’ID di consegna non era valido."
+    },
+    "orgResolver": {
+      "label": "Organizzazione",
+      "externalId": "Associata tramite {{path}} agli ID esterni di tipo {{system}}",
+      "breezeOrgId": "Letta da {{path}} come ID organizzazione Breeze",
+      "orgFlow": "Viene eseguito nell’organizzazione di questo flusso"
+    }
+  },
+  "deliveries": {
+    "title": "Consegne recenti",
+    "empty": "Ancora nessuna consegna.",
+    "loadFailed": "Impossibile caricare le consegne.",
+    "loadMore": "Carica altro",
+    "hidden": "Gli ID di consegna e i valori dell’organizzazione sono nascosti con il tuo livello di accesso.",
+    "columns": {
+      "received": "Ricevuta",
+      "status": "Stato",
+      "org": "Organizzazione",
+      "run": "Esecuzione",
+      "attempts": "Tentativi",
+      "detail": "Dettaglio"
+    },
+    "status": {
+      "accepted": "Accettata",
+      "org_unresolved": "Nessuna organizzazione corrispondente",
+      "refused": "Rifiutata",
+      "invalid_body": "Corpo non valido"
+    },
+    "resolverValue": "Valore: {{value}}",
+    "deliveryId": "ID di consegna: {{id}}",
+    "openRun": "Apri esecuzione"
+  },
+  "usage": {
+    "title": "Esecuzioni di questo mese",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Questo flusso",
+    "ownerCap": "Tutti i flussi di questo proprietario",
+    "count": "{{used}} su {{cap}}",
+    "limitsLink": "Limiti dei flussi",
+    "refused": {
+      "flow_queue_full": "Ci sono troppe esecuzioni in attesa.",
+      "flow_monthly_cap_reached": "Questo flusso ha raggiunto il limite mensile di esecuzioni.",
+      "owner_monthly_cap_reached": "Il proprietario ha raggiunto il limite mensile di esecuzioni per tutti i flussi."
+    },
+    "refusedBanner": "Le esecuzioni vengono rifiutate. {{reason}} Ultimo rifiuto: {{time}}. Il flusso resta attivato e riparte quando il mese si azzera o il limite viene aumentato.",
+    "refusedBadge": "Esecuzioni rifiutate"
+  },
+  "limits": {
+    "title": "Limiti dei flussi",
+    "subtitle": "Limiti mensili di esecuzioni e limite di token IA per ogni esecuzione. Imposta un valore predefinito per il tuo partner e abbassalo per un’organizzazione quando serve.",
+    "level": {
+      "label": "Livello",
+      "partner": "Predefinito del partner",
+      "org": "Organizzazione"
+    },
+    "selectOrg": "Seleziona un’organizzazione",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Esecuzioni al mese, tutti i flussi",
+        "help": "Il numero massimo di esecuzioni che tutti i flussi di un proprietario possono avviare in un mese di calendario (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Esecuzioni al mese, per flusso",
+        "help": "Il numero massimo di esecuzioni che un flusso può avviare in un mese di calendario (UTC). Un flusso può impostare un proprio limite più basso."
+      },
+      "aiTokensPerRun": {
+        "label": "Token IA per esecuzione",
+        "help": "Il numero massimo di token IA che i passaggi IA di una singola esecuzione possono usare."
+      }
+    },
+    "inherited": "Ereditato: {{value}} ({{source}})",
+    "source": {
+      "default": "predefinito della piattaforma",
+      "partner": "predefinito del partner",
+      "org": "questa organizzazione"
+    },
+    "ceilingNote": "Le organizzazioni possono solo abbassarlo. Il valore del partner è {{value}}.",
+    "aboveCeiling": "Il valore memorizzato {{value}} supera il valore del partner, quindi non viene applicato.",
+    "aboveCeilingError": "Deve essere {{value}} o inferiore (il valore del partner).",
+    "range": "Inserisci un numero intero da 1 a {{max}}.",
+    "placeholder": "Eredita",
+    "save": "Salva",
+    "saving": "Salvataggio...",
+    "saved": "Limiti dei flussi salvati",
+    "saveFailed": "Impossibile salvare i limiti dei flussi.",
+    "loadFailed": "Impossibile caricare i limiti dei flussi.",
+    "orgNotFound": "Questa organizzazione non è stata trovata oppure non hai più accesso.",
+    "readOnly": "Puoi visualizzare questi limiti ma non modificarli.",
+    "partnerWideForbidden": "Modificare il valore predefinito del partner richiede l’accesso a tutte le organizzazioni.",
+    "orgScopeReadOnly": "I limiti dell’organizzazione sono impostati dal tuo fornitore di servizi."
   }
 }

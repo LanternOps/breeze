@@ -57,7 +57,24 @@
       "tenant": "Werkzeugquelle",
       "builtin": "Integriert"
     },
-    "preApprovedBadge": "Vorab genehmigt"
+    "preApprovedBadge": "Vorab genehmigt",
+    "builtin": {
+      "notify": "Benachrichtigung senden",
+      "http_request": "Externe API aufrufen",
+      "ai": "KI fragen"
+    },
+    "notify": {
+      "channel": "Kanal: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonym (keine Anmeldedaten)"
+    },
+    "ai": {
+      "tools": "Werkzeuge: {{tools}}",
+      "noTools": "Keine Werkzeuge",
+      "output": "Ergebnisfelder: {{fields}}"
+    }
   },
   "issues": {
     "title": "Validierung",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Übersicht",
-    "runs": "Ausführungen"
+    "runs": "Ausführungen",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Aktivieren",
@@ -103,7 +121,11 @@
       "variable_dependent": "Dieser Schritt hängt von Werten ab, die erst zur Laufzeit bekannt sind.",
       "script_not_found": "Das Skript dieses Schritts wurde nicht gefunden.",
       "four_eyes": "Für diese Aktion ist immer die Freigabe einer zweiten Person nötig.",
-      "tenant_tool": "Eigene Werkzeugquellen können nicht vorab freigegeben werden."
+      "tenant_tool": "Eigene Werkzeugquellen können nicht vorab freigegeben werden.",
+      "for_each": "Schritte, die sich für jedes Element wiederholen, können nicht vorab genehmigt werden.",
+      "run_as_elevated": "Dieses Skript läuft mit erhöhten Rechten und kann daher nicht vorab genehmigt werden.",
+      "selector_not_literal": "Die Geräte werden erst zur Laufzeit gewählt, daher kann dieser Schritt nicht vorab genehmigt werden.",
+      "max_targets_invalid": "Legen Sie fest, auf wie vielen Geräten dieser Schritt laufen darf (1–500), um ihn vorab zu genehmigen."
     },
     "eventScope": "Ereignisabläufe reagieren auf Plattformereignisse, ganz gleich, was sie ausgelöst hat, auch Aktionen von Personen, anderen Abläufen oder Automatisierungen. Prüfen Sie den Auslöserfilter, bevor Sie aktivieren.",
     "missingPermissions": "Ihnen fehlen Berechtigungen, die die Schritte dieses Ablaufs brauchen:",
@@ -121,7 +143,10 @@
     "partnerWideForbidden": "Sie haben keine Berechtigung, Flows für alle Organisationen zu aktivieren.",
     "interactiveRequired": "Flows können nur in einer angemeldeten Browsersitzung aktiviert werden.",
     "slugUnavailable": "Ein anderer Flow in diesem Bereich verwendet diese Kennung bereits.",
-    "generic": "Der Flow konnte nicht aktiviert werden."
+    "generic": "Der Flow konnte nicht aktiviert werden.",
+    "webhookSecretMissing": "Erstellen Sie ein Webhook-Geheimnis, bevor Sie diesen Ablauf aktivieren.",
+    "aiBudgetUnavailable": "Diese Organisation hat kein KI-Budget, daher kann ein Ablauf mit einem KI-Schritt nicht aktiviert werden.",
+    "webhookSecretInvalidated": "Durch das Aktivieren dieser Version wurde das Webhook-Geheimnis gelöscht, weil es für einen älteren Entwurf erstellt wurde. Alle Anfragen werden abgelehnt, bis Sie ein neues Geheimnis erstellen und dem Absender übergeben."
   },
   "run": {
     "title": "Ablauf ausführen",
@@ -145,6 +170,7 @@
   },
   "runs": {
     "empty": "Noch keine Ausführungen.",
+    "emptyFiltered": "Keine Ausführungen entsprechen diesem Filter.",
     "status": {
       "queued": "In der Warteschlange",
       "running": "Läuft",
@@ -216,7 +242,11 @@
       "notify_failed": "Die Benachrichtigung konnte nicht gesendet werden.",
       "ai_budget_exhausted": "Das KI-Budget der Organisation ist aufgebraucht.",
       "ai_output_invalid": "Das KI-Ergebnis entsprach nicht dem erwarteten Format.",
-      "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht."
+      "ai_token_cap_reached": "Die Ausführung hat ihr KI-Token-Limit erreicht.",
+      "targets_over_cap": "Der Schritt zielte auf mehr Geräte, als ein Flow-Schritt ausführen darf (500).",
+      "targets_unresolvable": "Das Geräteziel des Schritts konnte nicht aufgelöst werden.",
+      "alert_create_failed": "Die Warnung konnte nicht erstellt werden.",
+      "script_dispatch_failed": "Das Skript konnte an ein oder mehrere Geräte nicht gesendet werden."
     },
     "step": {
       "status": {
@@ -246,7 +276,9 @@
       "loading": "Wird geladen...",
       "loadFailed": "Schrittdetails konnten nicht geladen werden.",
       "pruned": "Die Details wurden durch die Aufbewahrungsrichtlinie entfernt.",
-      "redacted": "Die Schrittdetails sind mit Ihrem Zugriff nicht verfügbar."
+      "redacted": "Die Schrittdetails sind mit Ihrem Zugriff nicht verfügbar.",
+      "aiUsage": "KI: {{input}} Eingabe-, {{output}} Ausgabe-Tokens, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Ausführung nicht gefunden.",
     "alreadyTerminal": "Diese Ausführung ist bereits beendet.",
@@ -258,7 +290,11 @@
     "queuedNote": "In der Warteschlange. Wartet auf einen freien Ausführungsplatz.",
     "paused": "Live-Aktualisierungen pausiert.",
     "lastUpdated": "Zuletzt aktualisiert {{time}}",
-    "timeline": "Schritte"
+    "timeline": "Schritte",
+    "agentRun": "Gestartet durch eine Ausführung eines KI-Agenten",
+    "openAgentRun": "Agentenausführung öffnen",
+    "aiTokensUsed": "Verbrauchte KI-Tokens: {{count}}",
+    "parallel": "{{count}} Elemente wurden parallel ausgeführt"
   },
   "toast": {
     "enabled": "Ablauf aktiviert",
@@ -269,5 +305,142 @@
   "disable": {
     "title": "Flow deaktivieren",
     "message": "Beim Deaktivieren starten keine neuen Läufe mehr und laufende Läufe werden abgebrochen. Sie können den Flow später wieder aktivieren."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "Webhook-URL",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "copyFailed": "Automatisches Kopieren nicht möglich. Markieren Sie den Wert und kopieren Sie ihn manuell.",
+    "authMode": {
+      "label": "Authentifizierung",
+      "hmac": "Signierte Anfrage (HMAC-SHA256)",
+      "token": "Geheimnis in einem Header"
+    },
+    "authHelp": {
+      "hmac": "Der Absender signiert jede Anfrage mit dem Geheimnis. Breeze lehnt Anfragen ab, die nicht signiert, falsch signiert oder älter als fünf Minuten sind, und führt eine wiederholte Anfrage nur einmal aus.",
+      "token": "Der Absender legt das Geheimnis selbst in einen Header. Das ist schwächer als eine Signatur: Jeder, der eine Anfrage sieht, kann weitere senden. Verwenden Sie dies nur für Absender, die nicht signieren können."
+    },
+    "signing": {
+      "title": "So senden Sie eine Anfrage",
+      "hmac": "Senden Sie ein JSON-Objekt als Body. Berechnen Sie mit dem Geheimnis HMAC-SHA256 über <timestamp>.<raw body> und senden Sie diese Header:",
+      "token": "Senden Sie ein JSON-Objekt als Body, mit dem Geheimnis in diesem Header:",
+      "deliveryId": "Optional: Senden Sie eine eindeutige {{header}}, damit ein erneuter Versuch derselben Zustellung nur einmal ausgeführt wird."
+    },
+    "secret": {
+      "label": "Geheimnis",
+      "create": "Geheimnis erstellen",
+      "rotate": "Geheimnis rotieren",
+      "none": "Noch kein Geheimnis. Alle Anfragen werden abgelehnt, bis Sie eines erstellen.",
+      "fingerprint": "Fingerabdruck",
+      "rotatedAt": "Erstellt",
+      "dialogTitle": "Webhook-Geheimnis",
+      "warning": "Kopieren Sie dieses Geheimnis jetzt. Es wird nicht erneut angezeigt.",
+      "done": "Fertig",
+      "rotateTitle": "Webhook-Geheimnis rotieren?",
+      "rotateMessage": "Das aktuelle Geheimnis funktioniert sofort nicht mehr. Der Absender wird abgelehnt, bis er das neue Geheimnis verwendet.",
+      "failed": "Das Webhook-Geheimnis konnte nicht erstellt werden.",
+      "draftUnresolvable": "Die Schritte des Entwurfs lassen sich nicht mehr auflösen, daher kann dafür kein Geheimnis erstellt werden. Korrigieren Sie zuerst den Entwurf.",
+      "notWebhook": "Dieser Ablauf wird nicht durch einen Webhook gestartet."
+    },
+    "lastFailure": {
+      "label": "Zuletzt abgelehnte Anfrage",
+      "none": "Keine",
+      "missing_signature": "Die Anfrage war nicht signiert.",
+      "bad_signature": "Die Signatur stimmte nicht überein.",
+      "stale_timestamp": "Der Zeitstempel fehlte oder wich um mehr als fünf Minuten ab.",
+      "missing_token": "Der Header mit dem Geheimnis fehlte.",
+      "bad_token": "Das Geheimnis im Header war falsch.",
+      "bad_delivery_id": "Die Zustell-ID war ungültig."
+    },
+    "orgResolver": {
+      "label": "Organisation",
+      "externalId": "Zugeordnet über {{path}} anhand externer IDs vom Typ {{system}}",
+      "breezeOrgId": "Aus {{path}} als Breeze-Organisations-ID gelesen",
+      "orgFlow": "Läuft in der Organisation dieses Ablaufs"
+    }
+  },
+  "deliveries": {
+    "title": "Letzte Zustellungen",
+    "empty": "Noch keine Zustellungen.",
+    "loadFailed": "Zustellungen konnten nicht geladen werden.",
+    "loadMore": "Mehr laden",
+    "hidden": "Zustell-IDs und Organisationswerte sind mit Ihrem Zugriff ausgeblendet.",
+    "columns": {
+      "received": "Empfangen",
+      "status": "Status",
+      "org": "Organisation",
+      "run": "Ausführung",
+      "attempts": "Versuche",
+      "detail": "Details"
+    },
+    "status": {
+      "accepted": "Angenommen",
+      "org_unresolved": "Keine passende Organisation",
+      "refused": "Abgelehnt",
+      "invalid_body": "Ungültiger Body"
+    },
+    "resolverValue": "Wert: {{value}}",
+    "deliveryId": "Zustell-ID: {{id}}",
+    "openRun": "Ausführung öffnen"
+  },
+  "usage": {
+    "title": "Ausführungen in diesem Monat",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Dieser Ablauf",
+    "ownerCap": "Alle Abläufe dieses Eigentümers",
+    "count": "{{used}} von {{cap}}",
+    "limitsLink": "Ablauflimits",
+    "refused": {
+      "flow_queue_full": "Zu viele Ausführungen warten.",
+      "flow_monthly_cap_reached": "Dieser Ablauf hat sein monatliches Ausführungslimit erreicht.",
+      "owner_monthly_cap_reached": "Der Eigentümer hat sein monatliches Ausführungslimit für alle Abläufe erreicht."
+    },
+    "refusedBanner": "Ausführungen werden abgelehnt. {{reason}} Zuletzt abgelehnt {{time}}. Der Ablauf bleibt aktiviert und läuft wieder, sobald der Monat wechselt oder das Limit erhöht wird.",
+    "refusedBadge": "Ausführungen abgelehnt"
+  },
+  "limits": {
+    "title": "Ablauflimits",
+    "subtitle": "Monatliche Ausführungslimits und das KI-Token-Limit für jede Ausführung. Legen Sie einen Standardwert für Ihren Partner fest und senken Sie ihn bei Bedarf für eine Organisation.",
+    "level": {
+      "label": "Ebene",
+      "partner": "Partner-Standard",
+      "org": "Organisation"
+    },
+    "selectOrg": "Organisation auswählen",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Ausführungen pro Monat, alle Abläufe",
+        "help": "Die maximale Anzahl an Ausführungen, die alle Abläufe eines Eigentümers in einem Kalendermonat (UTC) starten können."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Ausführungen pro Monat, pro Ablauf",
+        "help": "Die maximale Anzahl an Ausführungen, die ein Ablauf in einem Kalendermonat (UTC) starten kann. Ein Ablauf kann ein eigenes, niedrigeres Limit festlegen."
+      },
+      "aiTokensPerRun": {
+        "label": "KI-Tokens pro Ausführung",
+        "help": "Die maximale Anzahl an KI-Tokens, die die KI-Schritte einer Ausführung verbrauchen dürfen."
+      }
+    },
+    "inherited": "Geerbt: {{value}} ({{source}})",
+    "source": {
+      "default": "Plattform-Standard",
+      "partner": "Partner-Standard",
+      "org": "diese Organisation"
+    },
+    "ceilingNote": "Organisationen können den Wert nur senken. Der Partnerwert ist {{value}}.",
+    "aboveCeiling": "Der gespeicherte Wert {{value}} liegt über dem Partnerwert und wird daher nicht angewendet.",
+    "aboveCeilingError": "Muss {{value}} oder niedriger sein (der Partnerwert).",
+    "range": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
+    "placeholder": "Erben",
+    "save": "Speichern",
+    "saving": "Wird gespeichert...",
+    "saved": "Ablauflimits gespeichert",
+    "saveFailed": "Die Ablauflimits konnten nicht gespeichert werden.",
+    "loadFailed": "Die Ablauflimits konnten nicht geladen werden.",
+    "orgNotFound": "Diese Organisation wurde nicht gefunden, oder Sie haben keinen Zugriff mehr darauf.",
+    "readOnly": "Sie können diese Limits ansehen, aber nicht ändern.",
+    "partnerWideForbidden": "Zum Ändern des Partner-Standards ist Zugriff auf alle Organisationen erforderlich.",
+    "orgScopeReadOnly": "Die Limits der Organisation legt Ihr Dienstleister fest."
   }
 }

@@ -309,7 +309,7 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           .where(eq(deviceMemoryModules.deviceId, deviceId))
           .orderBy(asc(deviceMemoryModules.slotIndex), asc(deviceMemoryModules.id)),
         // #8134: room / rack / rack unit / height U, or null when not recorded.
-        readPlacement('device', deviceId),
+        readPlacement('device', deviceId, device.orgId),
       ]);
 
       // Get site name

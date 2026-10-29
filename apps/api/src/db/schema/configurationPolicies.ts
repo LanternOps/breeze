@@ -543,6 +543,9 @@ export const configPolicyRemoteAccessSettings = pgTable('config_policy_remote_ac
   notifyOnSessionEnd: boolean('notify_on_session_end').notNull().default(true),
   showActiveIndicator: boolean('show_active_indicator').notNull().default(true),
   technicianIdentityLevel: text('technician_identity_level').notNull().default('name_email'),
+  // #10190 W06 (OD-5 (c)): the person at the keyboard may end the session from
+  // the on-screen indicator (with confirmation; audited remote.session.ended_by_user).
+  allowUserEndSession: boolean('allow_user_end_session').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

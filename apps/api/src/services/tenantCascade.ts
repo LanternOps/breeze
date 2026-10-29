@@ -437,6 +437,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'audit_policy_states',
   'audit_retention_policies',
   'automation_action_results',
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): automation-wide occurrence
+  // claims; org XOR partner (partner-wide rows, org_id NULL, are untouched by
+  // an org erasure). automation_id -> automations is ON DELETE CASCADE.
+  'automation_occurrence_claims',
   'automation_policies',
   'automation_resource_bindings',
   'automation_run_device_results',
@@ -707,6 +711,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // flow_webhook_deliveries both cascade from flows and carry org_id (nullable:
   // partner-wide flows). flow_webhook_deliveries(run_id, org_id) -> flow_runs is
   // a composite FK; the runtime order is computed topologically.
+  // Tool Catalog W06 (#5221, 2027-01-09-100000): the conversion ledger, org XOR
+  // partner; automation_id -> automations and flow_id -> flows are ON DELETE
+  // CASCADE, so the runtime order is computed topologically.
+  'flow_automation_conversions',
   'flow_run_steps',
   'flow_runs',
   'flow_usage_counters',

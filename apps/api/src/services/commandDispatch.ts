@@ -353,6 +353,7 @@ export async function claimPendingCommandsForDevice(
     rollbackProtocolVersion?: number;
     pamLifetimeProtocolVersion?: number;
     pamReconciliationResetProtocolVersion?: number;
+    pamUserNotifyProtocolVersion?: number;
   },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
@@ -409,6 +410,11 @@ export async function claimPendingCommandsForDevice(
     // but only builds implementing the evidence-preserving reset may claim it.
     if (targetRole === 'agent' && capabilities?.pamReconciliationResetProtocolVersion !== 1) {
       unsupportedProtocolTypes.push('pam_reconcile_v2');
+    }
+    // #8928: outcome notices need an agent that tracks the request and can
+    // render them. Unsupported rows stay pending and expire at their deliverBy.
+    if (targetRole === 'agent' && capabilities?.pamUserNotifyProtocolVersion !== 1) {
+      unsupportedProtocolTypes.push('pam_request_notify');
     }
 
     // A device parked in a holding org is claimed under the removal allowlist

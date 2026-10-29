@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { softwareInventoryReportSchema, type RestorePointOutcome } from '@breeze/shared';
+import { promptHostTelemetrySchema } from '@breeze/shared/promptHost';
 import { redactSecretsFromOutput } from '../../services/secretRedaction';
 import { MAX_AGENT_WARRANTY_ENTITLEMENTS } from '../../services/warrantyDataSources';
 
@@ -236,6 +237,12 @@ export const heartbeatSchema = z.object({
   helperCapabilities: z.object({
     callerVerify: z.boolean(),
     usernames: z.array(z.string().min(1).max(255)).max(32),
+    // #10190 W02 — what the console session's renderer advertised at its live
+    // IPC auth (`kinds` may be [], a W02 renderer advertises none). The
+    // shared contract schema (non-strict, so a newer agent's additive key is
+    // stripped, not fatal). Telemetry only: a malformed block drops to
+    // absent on its own, never the readiness beside it or the beat.
+    promptHost: promptHostTelemetrySchema.optional().catch(undefined),
   }).optional().catch(undefined),
   // #8869 — Encrypted Client Hello telemetry. Both are informational counters
   // only (no DB column): a malformed value drops to absent, never a 400.
@@ -316,6 +323,17 @@ export const heartbeatSchema = z.object({
     // change, not a migration.
     deferralsUsed: z.number().int().min(0).max(10).optional().catch(undefined),
     maxDeferrals: z.number().int().min(0).max(10).optional().catch(undefined),
+    // #10190 W05 — the most recent decision the person at the keyboard made
+    // on the restart prompt. The agent re-sends it on every beat while the
+    // restart stays scheduled, so it is an audit INPUT (deduped per
+    // atUnixMs in services/rebootUserActionAudit.ts), never a stored column.
+    // A malformed value degrades to undefined on its own: it must never fail
+    // the heartbeat or drop the schedule it rides on.
+    lastUserAction: z.object({
+      action: z.enum(['postponed', 'restart_now']),
+      atUnixMs: z.number().int().nonnegative(),
+      renderer: z.enum(['assist', 'native', 'headless']),
+    }).optional().catch(undefined),
   }).nullish().catch(undefined),
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
@@ -414,6 +432,8 @@ export const heartbeatSchema = z.object({
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
     pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliationResetProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8928: PAM outcome notices (pam_request_notify). Same tolerant contract.
+    pamUserNotifyProtocolVersion: z.number().int().optional().catch(undefined),
     // Revocation lease (fail-closed desktop session revalidation). Same
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".
@@ -439,6 +459,11 @@ export const heartbeatSchema = z.object({
     // (never persisted): the beat being answered is the only source of truth.
     // Same tolerant contract; anything but exactly 1 gets the legacy payload.
     retainStateProtocolVersion: z.number().int().optional().catch(undefined),
+    // #10190 W03 — the agent caches the response's `promptIdentity` block (the
+    // MSP name, colour and logo metadata drawn on every device prompt) and
+    // fetches the logo from GET /:id/prompt-identity/logo. Parse-only, never
+    // persisted; anything but exactly 1 gets no block.
+    promptIdentityProtocolVersion: z.number().int().optional().catch(undefined),
     // #8318 wave 1b — the bounded rebind (reinstall reattach, §6.2). Recorded
     // non-sticky on every main and parked beat; 1 makes the device eligible to
     // be the source of a reattach and to receive the signed `rebind`

@@ -57,7 +57,24 @@
       "tenant": "Source d’outils",
       "builtin": "Intégré"
     },
-    "preApprovedBadge": "Préapprouvé"
+    "preApprovedBadge": "Préapprouvé",
+    "builtin": {
+      "notify": "Envoyer une notification",
+      "http_request": "Appeler une API externe",
+      "ai": "Interroger l’IA"
+    },
+    "notify": {
+      "channel": "Canal : {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonyme (sans identifiants)"
+    },
+    "ai": {
+      "tools": "Outils : {{tools}}",
+      "noTools": "Aucun outil",
+      "output": "Champs de résultat : {{fields}}"
+    }
   },
   "issues": {
     "title": "Validation",
@@ -80,7 +97,8 @@
   },
   "tabs": {
     "overview": "Vue d'ensemble",
-    "runs": "Exécutions"
+    "runs": "Exécutions",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Activer",
@@ -103,7 +121,11 @@
       "variable_dependent": "Cette étape dépend de valeurs qui ne sont connues qu'à l'exécution.",
       "script_not_found": "Le script utilisé par cette étape est introuvable.",
       "four_eyes": "Cette action exige toujours l'approbation d'une seconde personne.",
-      "tenant_tool": "Les sources d'outils personnalisées ne peuvent pas être préapprouvées."
+      "tenant_tool": "Les sources d'outils personnalisées ne peuvent pas être préapprouvées.",
+      "for_each": "Les étapes qui se répètent pour chaque élément ne peuvent pas être pré-approuvées.",
+      "run_as_elevated": "Ce script s'exécute avec des privilèges élevés ; il ne peut donc pas être pré-approuvé.",
+      "selector_not_literal": "Les appareils sont choisis à l'exécution ; cette étape ne peut donc pas être pré-approuvée.",
+      "max_targets_invalid": "Indiquez sur combien d'appareils cette étape peut s'exécuter (1–500) pour la pré-approuver."
     },
     "eventScope": "Les flux par événement réagissent aux événements de la plateforme, quelle qu'en soit la cause : actions de personnes, d'autres flux ou d'automatisations. Vérifiez le filtre du déclencheur avant d'activer.",
     "missingPermissions": "Il vous manque des autorisations dont les étapes de ce flux ont besoin :",
@@ -121,7 +143,10 @@
     "partnerWideForbidden": "Vous n’avez pas l’autorisation d’activer des flux pour toutes les organisations.",
     "interactiveRequired": "Les flux ne peuvent être activés que depuis une session de navigateur ouverte.",
     "slugUnavailable": "Un autre flux de cette portée utilise déjà cet identifiant.",
-    "generic": "Impossible d’activer le flux."
+    "generic": "Impossible d’activer le flux.",
+    "webhookSecretMissing": "Créez un secret de webhook avant d’activer ce flux.",
+    "aiBudgetUnavailable": "Cette organisation n’a aucun budget d’IA, donc un flux comportant une étape d’IA ne peut pas être activé.",
+    "webhookSecretInvalidated": "L’activation de cette version a effacé le secret du webhook, car il avait été créé pour un brouillon plus ancien. Toutes les requêtes sont refusées tant que vous n’avez pas créé un nouveau secret et ne l’avez pas transmis à l’expéditeur."
   },
   "run": {
     "title": "Exécuter le flux",
@@ -145,6 +170,7 @@
   },
   "runs": {
     "empty": "Aucune exécution pour l'instant.",
+    "emptyFiltered": "Aucune exécution ne correspond à ce filtre.",
     "status": {
       "queued": "En file d'attente",
       "running": "En cours",
@@ -216,7 +242,11 @@
       "notify_failed": "La notification n'a pas pu être envoyée.",
       "ai_budget_exhausted": "Le budget d'IA de l'organisation est épuisé.",
       "ai_output_invalid": "Le résultat de l'IA ne correspondait pas au format attendu.",
-      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA."
+      "ai_token_cap_reached": "L'exécution a atteint sa limite de jetons d'IA.",
+      "targets_over_cap": "L'étape visait plus d'appareils qu'une étape de flux ne peut en traiter (500).",
+      "targets_unresolvable": "La cible d'appareils de l'étape n'a pas pu être résolue.",
+      "alert_create_failed": "L'alerte n'a pas pu être créée.",
+      "script_dispatch_failed": "Le script n'a pas pu être envoyé à un ou plusieurs appareils."
     },
     "step": {
       "status": {
@@ -246,7 +276,9 @@
       "loading": "Chargement...",
       "loadFailed": "Impossible de charger les détails de l’étape.",
       "pruned": "Les détails ont été supprimés par la politique de rétention.",
-      "redacted": "Les détails de l’étape ne sont pas disponibles avec votre niveau d’accès."
+      "redacted": "Les détails de l’étape ne sont pas disponibles avec votre niveau d’accès.",
+      "aiUsage": "IA : {{input}} jetons en entrée, {{output}} en sortie, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Exécution introuvable.",
     "alreadyTerminal": "Cette exécution est déjà terminée.",
@@ -258,7 +290,11 @@
     "queuedNote": "En file d’attente. En attente d’un emplacement d’exécution libre.",
     "paused": "Mises à jour en direct suspendues.",
     "lastUpdated": "Dernière mise à jour {{time}}",
-    "timeline": "Étapes"
+    "timeline": "Étapes",
+    "agentRun": "Démarré par l’exécution d’un agent IA",
+    "openAgentRun": "Ouvrir l’exécution de l’agent",
+    "aiTokensUsed": "Jetons d’IA utilisés : {{count}}",
+    "parallel": "{{count}} éléments exécutés en parallèle"
   },
   "toast": {
     "enabled": "Flux activé",
@@ -269,5 +305,142 @@
   "disable": {
     "title": "Désactiver le flux",
     "message": "La désactivation arrête les nouvelles exécutions et annule celles en cours. Vous pourrez réactiver le flux plus tard."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "URL du webhook",
+    "copy": "Copier",
+    "copied": "Copié",
+    "copyFailed": "Impossible de copier automatiquement. Sélectionnez la valeur et copiez-la manuellement.",
+    "authMode": {
+      "label": "Authentification",
+      "hmac": "Requête signée (HMAC-SHA256)",
+      "token": "Secret dans un en-tête"
+    },
+    "authHelp": {
+      "hmac": "L’expéditeur signe chaque requête avec le secret. Breeze refuse les requêtes non signées, mal signées ou vieilles de plus de cinq minutes, et n’exécute qu’une seule fois une requête rejouée.",
+      "token": "L’expéditeur place le secret lui-même dans un en-tête. C’est moins sûr qu’une signature : quiconque voit une requête peut en envoyer d’autres. À utiliser uniquement pour les expéditeurs qui ne peuvent pas signer."
+    },
+    "signing": {
+      "title": "Comment envoyer une requête",
+      "hmac": "Envoyez un objet JSON comme corps. Calculez HMAC-SHA256 sur <timestamp>.<raw body> avec le secret, puis envoyez ces en-têtes :",
+      "token": "Envoyez un objet JSON comme corps, avec le secret dans cet en-tête :",
+      "deliveryId": "Facultatif : envoyez un {{header}} unique afin qu’une nouvelle tentative de la même livraison ne s’exécute qu’une seule fois."
+    },
+    "secret": {
+      "label": "Secret",
+      "create": "Créer un secret",
+      "rotate": "Renouveler le secret",
+      "none": "Aucun secret pour le moment. Toutes les requêtes sont refusées tant que vous n’en avez pas créé un.",
+      "fingerprint": "Empreinte",
+      "rotatedAt": "Créé",
+      "dialogTitle": "Secret du webhook",
+      "warning": "Copiez ce secret maintenant. Il ne sera plus affiché.",
+      "done": "Terminé",
+      "rotateTitle": "Renouveler le secret du webhook ?",
+      "rotateMessage": "Le secret actuel cesse de fonctionner immédiatement. L’expéditeur est refusé tant qu’il n’utilise pas le nouveau secret.",
+      "failed": "Impossible de créer le secret du webhook.",
+      "draftUnresolvable": "Les étapes du brouillon ne peuvent plus être résolues ; il est donc impossible de créer un secret pour celui-ci. Corrigez d’abord le brouillon.",
+      "notWebhook": "Ce flux n’est pas démarré par un webhook."
+    },
+    "lastFailure": {
+      "label": "Dernière requête refusée",
+      "none": "Aucune",
+      "missing_signature": "La requête n’était pas signée.",
+      "bad_signature": "La signature ne correspondait pas.",
+      "stale_timestamp": "L’horodatage était absent ou décalé de plus de cinq minutes.",
+      "missing_token": "L’en-tête du secret était absent.",
+      "bad_token": "Le secret dans l’en-tête était incorrect.",
+      "bad_delivery_id": "L’ID de livraison n’était pas valide."
+    },
+    "orgResolver": {
+      "label": "Organisation",
+      "externalId": "Mise en correspondance par {{path}} avec les ID externes de type {{system}}",
+      "breezeOrgId": "Lu depuis {{path}} comme ID d’organisation Breeze",
+      "orgFlow": "S’exécute dans l’organisation de ce flux"
+    }
+  },
+  "deliveries": {
+    "title": "Livraisons récentes",
+    "empty": "Aucune livraison pour le moment.",
+    "loadFailed": "Impossible de charger les livraisons.",
+    "loadMore": "Charger plus",
+    "hidden": "Les ID de livraison et les valeurs d’organisation sont masqués avec votre niveau d’accès.",
+    "columns": {
+      "received": "Reçue",
+      "status": "Statut",
+      "org": "Organisation",
+      "run": "Exécution",
+      "attempts": "Tentatives",
+      "detail": "Détail"
+    },
+    "status": {
+      "accepted": "Acceptée",
+      "org_unresolved": "Aucune organisation correspondante",
+      "refused": "Refusée",
+      "invalid_body": "Corps non valide"
+    },
+    "resolverValue": "Valeur : {{value}}",
+    "deliveryId": "ID de livraison : {{id}}",
+    "openRun": "Ouvrir l’exécution"
+  },
+  "usage": {
+    "title": "Exécutions ce mois-ci",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Ce flux",
+    "ownerCap": "Tous les flux de ce propriétaire",
+    "count": "{{used}} sur {{cap}}",
+    "limitsLink": "Limites des flux",
+    "refused": {
+      "flow_queue_full": "Trop d’exécutions sont en attente.",
+      "flow_monthly_cap_reached": "Ce flux a atteint sa limite mensuelle d’exécutions.",
+      "owner_monthly_cap_reached": "Le propriétaire a atteint sa limite mensuelle d’exécutions pour tous les flux."
+    },
+    "refusedBanner": "Les exécutions sont refusées. {{reason}} Dernier refus : {{time}}. Le flux reste activé et reprendra lorsque le mois sera réinitialisé ou que la limite sera augmentée.",
+    "refusedBadge": "Exécutions refusées"
+  },
+  "limits": {
+    "title": "Limites des flux",
+    "subtitle": "Limites mensuelles d’exécutions et limite de jetons d’IA pour chaque exécution. Définissez une valeur par défaut pour votre partenaire, puis réduisez-la pour une organisation si nécessaire.",
+    "level": {
+      "label": "Niveau",
+      "partner": "Valeur par défaut du partenaire",
+      "org": "Organisation"
+    },
+    "selectOrg": "Sélectionnez une organisation",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Exécutions par mois, tous les flux",
+        "help": "Le nombre maximal d’exécutions que tous les flux d’un propriétaire peuvent démarrer au cours d’un mois civil (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Exécutions par mois, par flux",
+        "help": "Le nombre maximal d’exécutions qu’un flux peut démarrer au cours d’un mois civil (UTC). Un flux peut définir sa propre limite, plus basse."
+      },
+      "aiTokensPerRun": {
+        "label": "Jetons d’IA par exécution",
+        "help": "Le nombre maximal de jetons d’IA que les étapes d’IA d’une exécution peuvent utiliser."
+      }
+    },
+    "inherited": "Hérité : {{value}} ({{source}})",
+    "source": {
+      "default": "valeur par défaut de la plateforme",
+      "partner": "valeur par défaut du partenaire",
+      "org": "cette organisation"
+    },
+    "ceilingNote": "Les organisations peuvent seulement la réduire. La valeur du partenaire est {{value}}.",
+    "aboveCeiling": "La valeur enregistrée {{value}} dépasse la valeur du partenaire ; elle ne s’applique donc pas.",
+    "aboveCeilingError": "Doit être {{value}} ou moins (la valeur du partenaire).",
+    "range": "Saisissez un nombre entier de 1 à {{max}}.",
+    "placeholder": "Hériter",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Limites des flux enregistrées",
+    "saveFailed": "Impossible d’enregistrer les limites des flux.",
+    "loadFailed": "Impossible de charger les limites des flux.",
+    "orgNotFound": "Cette organisation est introuvable ou vous n’y avez plus accès.",
+    "readOnly": "Vous pouvez consulter ces limites, mais pas les modifier.",
+    "partnerWideForbidden": "Modifier la valeur par défaut du partenaire nécessite l’accès à toutes les organisations.",
+    "orgScopeReadOnly": "Les limites de l’organisation sont définies par votre fournisseur de services."
   }
 }
