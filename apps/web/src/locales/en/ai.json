@@ -144,9 +144,9 @@
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msgs",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msgs",
+    "messageCount": "{{count}} msgs this month",
+    "messageCount_one": "{{count}} msg this month",
+    "messageCount_other": "{{count}} msgs this month",
     "thisMonth": "{{amount}} this month",
     "credits_one": "{{formatted}} credit",
     "credits_other": "{{formatted}} credits"

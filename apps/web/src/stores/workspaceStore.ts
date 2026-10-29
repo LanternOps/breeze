@@ -851,11 +851,18 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 dropBubble({ isStreaming: false, error: CHOOSE_MODEL_IN_PANEL, errorAction: 'continue_in_panel' });
                 return;
               }
-              if (res.status === 409) {
-                dropBubble({ error: extractApiError(data, 'Another response is still in progress.') });
-                return;
-              }
-              throw new Error(extractApiError(data, 'Failed to send message'));
+              // Any other refusal (e.g. 503 ai_not_configured) came before the
+              // turn ran, so the server never stored the message: drop the
+              // bubble and give the text back to the composer (#10108).
+              dropBubble({
+                isStreaming: false,
+                composerDraft: trimmed,
+                error: extractApiError(
+                  data,
+                  res.status === 409 ? 'Another response is still in progress.' : 'Failed to send message',
+                ),
+              });
+              return;
             }
 
             reader = res.body?.getReader();

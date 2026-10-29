@@ -144,9 +144,9 @@
     "dashboard": "Tableau de bord"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} MSGS",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} MSGS",
+    "messageCount": "{{count}} messages ce mois-ci",
+    "messageCount_one": "{{count}} message ce mois-ci",
+    "messageCount_other": "{{count}} messages ce mois-ci",
     "thisMonth": "{{amount}} ce mois-ci",
     "credits_one": "{{formatted}} crédit",
     "credits_other": "{{formatted}} crédits"

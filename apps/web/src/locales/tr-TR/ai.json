@@ -144,9 +144,9 @@
     "dashboard": "Kontrol Paneli"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msjlar",
-    "messageCount_one": "{{count}} msj",
-    "messageCount_other": "{{count}} msjlar",
+    "messageCount": "Bu ay {{count}} mesaj",
+    "messageCount_one": "Bu ay {{count}} mesaj",
+    "messageCount_other": "Bu ay {{count}} mesaj",
     "thisMonth": "Bu ay {{amount}}",
     "credits_one": "{{formatted}} kredi",
     "credits_other": "{{formatted}} kredi"

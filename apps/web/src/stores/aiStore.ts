@@ -1059,9 +1059,19 @@ export const useAiStore = create<AiState>()(
         }
 
         // refusal === 'error': the generic failure path (#9428 slots its
-        // classifyHttpFailure in here).
-        set({ errorCode: code });
-        throw new Error(extractApiError(data, 'Failed to send message'));
+        // classifyHttpFailure in here). The server refused the turn before it
+        // ran (e.g. 503 ai_not_configured), so it never stored the message:
+        // drop the optimistic bubble and give the text back to the composer
+        // (#10108), keeping the error banner.
+        if (!ownsStream()) return;
+        set((s) => ({
+          messages: s.messages.filter((m) => m.id !== userMsgId),
+          composerDraft: trimmedContent,
+          error: extractApiError(data, 'Failed to send message'),
+          errorCode: code,
+          isStreaming: false,
+        }));
+        return;
       }
 
       const reader = res.body?.getReader();
