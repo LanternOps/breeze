@@ -2,6 +2,7 @@ package updater
 
 import (
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -15,8 +16,12 @@ import (
 // unsatisfiable and the fleet retried about once a minute (up to 2,282
 // attempts per device in 8 hours), which saturated the US API.
 //
-// The wait doubles per consecutive failure of the SAME target, from
-// TargetBackoffBase up to TargetBackoffMax. It is not a permanent stop, because
+// The wait uses decorrelated jitter per consecutive failure of the SAME
+// target: each delay is drawn uniformly from [TargetBackoffBase,
+// min(TargetBackoffMax, 3 * previous delay)], starting from a previous delay
+// of TargetBackoffBase. Waits therefore grow on average, never drop below the
+// base, never exceed the cap, and a fleet that fails on the same deploy does
+// not retry in lockstep. It is not a permanent stop, because
 // the operator can fix the server side without changing the version (by
 // redeploying matching binaries), and the device must then recover on its own.
 // A different target version is never held back. When the operator promotes
@@ -33,6 +38,9 @@ const (
 type TargetBackoff struct {
 	// Now is the clock; nil means time.Now. A test seam.
 	Now func() time.Time
+	// Rand returns a uniform value in [0, n) for n > 0; nil means
+	// math/rand/v2. A test seam that pins the jitter.
+	Rand func(n int64) int64
 
 	mu      sync.Mutex
 	entries map[string]targetBackoffEntry
@@ -41,6 +49,7 @@ type TargetBackoff struct {
 type targetBackoffEntry struct {
 	version  string
 	failures int
+	delay    time.Duration // the last delay applied; seeds the next draw
 	until    time.Time
 }
 
@@ -81,7 +90,8 @@ func (b *TargetBackoff) NoteFailure(component, version string) (int, time.Durati
 		e = targetBackoffEntry{version: version}
 	}
 	e.failures++
-	delay := targetBackoffDelay(e.failures)
+	delay := b.nextDelay(e.delay)
+	e.delay = delay
 	e.until = b.now().Add(delay)
 	b.entries[component] = e
 	return e.failures, delay
@@ -94,15 +104,29 @@ func (b *TargetBackoff) Clear(component string) {
 	delete(b.entries, component)
 }
 
-func targetBackoffDelay(failures int) time.Duration {
-	delay := TargetBackoffBase
-	for i := 1; i < failures; i++ {
-		delay *= 2
-		if delay >= TargetBackoffMax {
-			return TargetBackoffMax
-		}
+// nextDelay draws the next decorrelated-jitter delay from the previous one (0
+// at the start of a streak): uniform in [base, min(cap, 3*prev)].
+func (b *TargetBackoff) nextDelay(prev time.Duration) time.Duration {
+	if prev < TargetBackoffBase {
+		prev = TargetBackoffBase
 	}
-	return delay
+	upper := TargetBackoffMax
+	if prev < TargetBackoffMax/3 {
+		upper = 3 * prev
+	}
+	span := int64(upper - TargetBackoffBase)
+	if span <= 0 {
+		return TargetBackoffBase
+	}
+	randN := b.Rand
+	if randN == nil {
+		randN = rand.Int64N
+	}
+	r := randN(span)
+	if r < 0 || r >= span {
+		r = 0 // a misbehaving seam must not break the bounds
+	}
+	return TargetBackoffBase + time.Duration(r)
 }
 
 // IsDeterministicArtifactFailure reports whether err means the artifact the

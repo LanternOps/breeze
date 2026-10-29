@@ -32,18 +32,20 @@ type testClock struct{ t time.Time }
 func (c *testClock) now() time.Time          { return c.t }
 func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
+// withTestClock pins the backoff clock and pins the jitter to the bottom of
+// its range, so every delay is exactly updater.TargetBackoffBase unless a test
+// overrides h.artifactBackoff.Rand.
 func withTestClock(h *Heartbeat) *testClock {
 	clk := &testClock{t: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)}
 	h.artifactBackoff.Now = clk.now
+	h.artifactBackoff.Rand = func(int64) int64 { return 0 }
 	return clk
 }
 
-// The incident, replayed: 8 hours of heartbeats at ~60 s, all offering the same
-// unsatisfiable target. Before #7516 every beat attempted (480 attempts).
-func TestAgentUpgradeChecksumFailure_BacksOffAcrossHeartbeats(t *testing.T) {
-	h := &Heartbeat{}
-	clk := withTestClock(h)
-
+// replayIncident counts upgrade attempts over 8 h of ~60 s heartbeats that all
+// offer the same unsatisfiable target.
+func replayIncident(t *testing.T, h *Heartbeat, clk *testClock) int {
+	t.Helper()
 	attempts := 0
 	for beat := 0; beat < 8*60; beat++ {
 		if !h.upgradeDeferredByArtifactBackoff("0.118.1") {
@@ -54,9 +56,35 @@ func TestAgentUpgradeChecksumFailure_BacksOffAcrossHeartbeats(t *testing.T) {
 		}
 		clk.advance(time.Minute)
 	}
-	// 0, 5, 15, 35, 75, 155, 275, 395 min → 8 attempts.
-	if attempts != 8 {
-		t.Fatalf("expected 8 attempts over 8 h of heartbeats with exponential backoff, got %d", attempts)
+	return attempts
+}
+
+// The incident, replayed: 8 hours of heartbeats at ~60 s, all offering the same
+// unsatisfiable target. Before #7516 every beat attempted (480 attempts).
+func TestAgentUpgradeChecksumFailure_BacksOffAcrossHeartbeats(t *testing.T) {
+	// Jitter at the top of its range: waits of ~15 m, ~45 m, then the 2 h cap.
+	// Attempts at 0, 15, 60, 180, 300, 420 min → 6.
+	h := &Heartbeat{}
+	clk := withTestClock(h)
+	h.artifactBackoff.Rand = func(n int64) int64 { return n - 1 }
+	if got := replayIncident(t, h, clk); got != 6 {
+		t.Fatalf("expected 6 attempts over 8 h with the jitter at its top, got %d", got)
+	}
+
+	// Jitter at the bottom of its range never retries sooner than the 5 m
+	// floor: at most 96 attempts in 8 h (was 480).
+	h = &Heartbeat{}
+	clk = withTestClock(h)
+	if got := replayIncident(t, h, clk); got != 96 {
+		t.Fatalf("expected 96 attempts over 8 h with the jitter at its floor, got %d", got)
+	}
+
+	// The real random source lands in between.
+	h = &Heartbeat{}
+	clk = withTestClock(h)
+	h.artifactBackoff.Rand = nil
+	if got := replayIncident(t, h, clk); got < 6 || got > 96 {
+		t.Fatalf("expected 6..96 attempts over 8 h with real jitter, got %d", got)
 	}
 }
 
@@ -241,6 +269,7 @@ func TestWatchdogUpgradeChecksumFailure_BacksOffBeyondTheCooldown(t *testing.T) 
 		},
 	}
 	clk := withTestClock(h)
+	h.artifactBackoff.Rand = func(n int64) int64 { return n - 1 } // ~15 m, then ~45 m
 	expireCooldown := func() {
 		h.watchdogUpgradeMu.Lock()
 		h.watchdogLastAttemptAt = time.Now().Add(-2 * watchdogUpgradeRetryCooldown)
@@ -248,23 +277,23 @@ func TestWatchdogUpgradeChecksumFailure_BacksOffBeyondTheCooldown(t *testing.T) 
 	}
 
 	// Drive the streak until its backoff exceeds the 30-minute cooldown.
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		h.handleWatchdogUpgrade("0.118.1")
 		clk.advance(watchdogUpgradeRetryCooldown)
 		expireCooldown()
 	}
-	if calls.Load() != 4 {
-		t.Fatalf("setup: expected 4 attempts, got %d", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("setup: expected 2 attempts, got %d", calls.Load())
 	}
-	// The 4th failure set a 40-minute backoff; 30 minutes in, the flat
+	// The 2nd failure set a ~45-minute backoff; 30 minutes in, the flat
 	// cooldown alone would retry — the backoff must not.
 	h.handleWatchdogUpgrade("0.118.1")
-	if calls.Load() != 4 {
+	if calls.Load() != 2 {
 		t.Fatal("the watchdog target must stay backed off past the flat cooldown")
 	}
 	// A new watchdog target is tried at once.
 	h.handleWatchdogUpgrade("0.118.2")
-	if calls.Load() != 5 {
+	if calls.Load() != 3 {
 		t.Fatalf("a new watchdog target must be attempted immediately, calls = %d", calls.Load())
 	}
 }

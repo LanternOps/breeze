@@ -19,7 +19,11 @@ func TestRunHeartbeatUpgrade_DeterministicFailureBacksOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
-	b := &updater.TargetBackoff{Now: func() time.Time { return now }}
+	// Jitter pinned to the top of its range: waits of ~15 m, then ~45 m.
+	b := &updater.TargetBackoff{
+		Now:  func() time.Time { return now },
+		Rand: func(n int64) int64 { return n - 1 },
+	}
 
 	calls := 0
 	failing := func() error {
@@ -32,19 +36,19 @@ func TestRunHeartbeatUpgrade_DeterministicFailureBacksOff(t *testing.T) {
 		runHeartbeatUpgrade(b, journal, "agent", "0.118.1", failing)
 		now = now.Add(30 * time.Second)
 	}
-	// 0, 5, 15, 35 min → 4 attempts (was 120).
-	if calls != 4 {
-		t.Fatalf("expected 4 attempts in an hour of failover polls, got %d", calls)
+	// 0 and 15 min → 2 attempts (was 120).
+	if calls != 2 {
+		t.Fatalf("expected 2 attempts in an hour of failover polls, got %d", calls)
 	}
 
 	runHeartbeatUpgrade(b, journal, "agent", "0.118.2", failing)
-	if calls != 5 {
+	if calls != 3 {
 		t.Fatal("a new target must be attempted on the next poll")
 	}
 
 	// Components are independent: the agent streak does not hold the watchdog.
 	runHeartbeatUpgrade(b, journal, "watchdog", "0.118.1", failing)
-	if calls != 6 {
+	if calls != 4 {
 		t.Fatal("the watchdog target must not inherit the agent's backoff")
 	}
 }
