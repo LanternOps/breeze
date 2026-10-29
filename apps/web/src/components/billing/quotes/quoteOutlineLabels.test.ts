@@ -21,6 +21,12 @@ describe('quoteOutlineLabels (#9867)', () => {
     expect(blockContentLabel(blk('a', 'image', { imageId: 'x', caption: '   ' }))).toBe('');
   });
 
+  it('keeps plain-text captions verbatim (no HTML parsing)', () => {
+    expect(blockContentLabel(blk('a', 'table', { caption: 'Q1 <Hardware> & R&amp;D', columns: [], rows: [] })))
+      .toBe('Q1 <Hardware> & R&amp;D');
+    expect(blockContentLabel(blk('a', 'image', { imageId: 'x', caption: 'A <b> c' }))).toBe('A <b> c');
+  });
+
   it('uses a callout title, then its body', () => {
     expect(blockContentLabel(blk('a', 'callout', { variant: 'info', title: 'Heads up', html: '<p>Body</p>' }))).toBe('Heads up');
     expect(blockContentLabel(blk('a', 'callout', { variant: 'info', html: '<p>Body text</p>' }))).toBe('Body text');

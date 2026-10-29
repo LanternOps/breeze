@@ -49,7 +49,8 @@ export function blockContentLabel(block: QuoteBlock): string {
     case 'image':
       return textExcerpt(str(c.caption));
     case 'table':
-      return htmlExcerpt(str(c.caption));
+      // Plain text from an <input>, rendered as a text node — never parse it.
+      return textExcerpt(str(c.caption));
     case 'callout':
       return textExcerpt(str(c.title)) || htmlExcerpt(str(c.html));
     default:
