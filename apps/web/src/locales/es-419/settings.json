@@ -1886,6 +1886,11 @@
     "description": "Ajuste las políticas predeterminadas y el comportamiento de inscripción para {{organization}}.",
     "save": "Guardar valores predeterminados",
     "managedByPartner": "Gestionado por socio",
+    "inheritance": {
+      "inherited": "Valor predeterminado heredado",
+      "overridden": "Definido para esta organización",
+      "reset": "Restablecer al valor predeterminado"
+    },
     "policies": {
       "title": "Políticas predeterminadas",
       "fields": {

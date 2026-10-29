@@ -1886,6 +1886,11 @@
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
     "managedByPartner": "Managed by partner",
+    "inheritance": {
+      "inherited": "Inherited default",
+      "overridden": "Set for this organization",
+      "reset": "Reset to default"
+    },
     "policies": {
       "title": "Default policies",
       "fields": {

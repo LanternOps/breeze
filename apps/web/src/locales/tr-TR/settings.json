@@ -1886,6 +1886,11 @@
     "description": "{{organization}} için varsayılan politikaları ve kayıt davranışını ayarlayın.",
     "save": "Varsayılanları kaydet",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
+    "inheritance": {
+      "inherited": "Devralınan varsayılan",
+      "overridden": "Bu kuruluş için ayarlandı",
+      "reset": "Varsayılana sıfırla"
+    },
     "policies": {
       "title": "Varsayılan politikalar",
       "fields": {

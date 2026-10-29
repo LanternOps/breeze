@@ -1886,6 +1886,11 @@
     "description": "Ajustez les politiques par défaut et le comportement d’inscription pour {{organization}}.",
     "save": "Enregistrer les paramètres par défaut",
     "managedByPartner": "Géré par un partenaire",
+    "inheritance": {
+      "inherited": "Valeur par défaut héritée",
+      "overridden": "Défini pour cette organisation",
+      "reset": "Rétablir la valeur par défaut"
+    },
     "policies": {
       "title": "Politiques par défaut",
       "fields": {
