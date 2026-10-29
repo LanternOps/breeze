@@ -5,8 +5,8 @@
  * DELETE-only sweep removes TERMINAL rows (`delivered`, `failed`) whose
  * `created_at` is past the retention window.
  *
- * Deliberately never touches `pending` / `retrying`: those are owned by
- * `webhookDeliveryRecovery`, which re-queues them.
+ * Deliberately never touches `pending` / `scheduled` / `retrying`: recovery re-drives
+ * pending and scheduled rows and resolves abandoned in-flight attempts.
  *
  * The connection-health webhook source (services/connectionHealth/sources/
  * webhook.ts) has two reads: the broken scan (failed rows in the last

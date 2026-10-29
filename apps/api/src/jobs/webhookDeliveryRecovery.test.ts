@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -18,14 +20,15 @@ interface UpdateCall {
 
 const state = vi.hoisted(() => ({
   candidates: [] as Record<string, unknown>[],
+  scheduledCandidates: [] as Record<string, unknown>[],
+  selectCount: 0,
   updateCalls: [] as UpdateCall[],
   /** Queued FIFO of `.returning()` results, one per update. An Error rejects. */
   updateResults: [] as Array<Record<string, unknown>[] | Error>,
-  queueDelivery: null as ReturnType<typeof vi.fn> | null
 }));
 
 const captureExceptionMock = vi.hoisted(() => vi.fn());
-const queueDeliveryMock = vi.hoisted(() => vi.fn());
+const enqueueWebhookAttemptMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../db', () => ({
   db: {
@@ -34,7 +37,7 @@ vi.mock('../db', () => ({
         innerJoin: () => ({
           where: () => ({
             orderBy: () => ({
-              limit: async () => state.candidates
+              limit: async () => state.selectCount++ === 0 ? state.candidates : state.scheduledCandidates
             })
           })
         })
@@ -68,9 +71,7 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
 
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: () => ({ queueDelivery: queueDeliveryMock })
-}));
+vi.mock('./webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: enqueueWebhookAttemptMock }));
 
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 
@@ -94,6 +95,7 @@ function orphan(overrides: Record<string, unknown> = {}) {
     eventType: 'alert.triggered',
     payload: { alertId: 'a-1' },
     status: 'pending',
+    attempts: 0,
     payloadVersion: 1, eventTimestamp: null, replayRootEventId: null,
     recoveryAttempts: 0,
     createdAt: new Date(NOW.getTime() - STALE_PENDING_MS - 60_000),
@@ -128,10 +130,12 @@ describe('webhook delivery recovery sweep', () => {
 
   beforeEach(() => {
     state.candidates = [];
+    state.scheduledCandidates = [];
+    state.selectCount = 0;
     state.updateCalls = [];
     state.updateResults = [];
-    queueDeliveryMock.mockReset();
-    queueDeliveryMock.mockResolvedValue('delivery-1');
+    enqueueWebhookAttemptMock.mockReset();
+    enqueueWebhookAttemptMock.mockResolvedValue('delivery-1');
     captureExceptionMock.mockReset();
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -142,47 +146,43 @@ describe('webhook delivery recovery sweep', () => {
     vi.restoreAllMocks();
   });
 
-  it('re-queues an orphan under its ORIGINAL delivery id and event id', async () => {
-    state.candidates = [orphan()];
+  it('re-drives a pending row by ids with its persisted attempt count', async () => {
+    state.candidates = [orphan({ attempts: 2 })];
     state.updateResults = [claimWon(1)];
-
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
-
-    expect(summary).toMatchObject({ scanned: 1, requeued: 1, exhausted: 0, raced: 0 });
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-
-    const [webhookId, generation, event, deliveryId] = queueDeliveryMock.mock.calls[0]!;
-    // The SAME row is driven, not a new one: the delivery callback updates by
-    // this id, and `event.id` goes out as the customer's X-Breeze-Event-Id
-    // idempotency key. Site-ceiling gate contract §7E: the sweep enqueues by
-    // webhookId + the row's CURRENT approval_generation — no decrypted config
-    // is ever built on this path; the worker resolves and decrypts at send
-    // time.
-    expect(deliveryId).toBe('delivery-1');
-    expect((event as { id: string }).id).toBe('event-1');
-    expect((event as { type: string }).type).toBe('alert.triggered');
-    expect((event as { orgId: string }).orgId).toBe('org-1');
-    expect((event as { payload: unknown }).payload).toEqual({ alertId: 'a-1' });
-    expect(webhookId).toBe('webhook-1');
-    expect(generation).toBe(1);
+    expect(summary).toMatchObject({ scanned: 1, requeued: 1 });
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledExactlyOnceWith({ deliveryId: 'delivery-1', webhookId: 'webhook-1', generation: 1, attemptsMade: 2 }, NOW);
   });
 
-  it.each([new Date('2026-09-11T11:00:00.000Z'), null])('restores stored wire identity with timestamp %s', async eventTimestamp => {
-    const candidate = orphan({ eventTimestamp, payloadVersion: 2, replayRootEventId: 'root-event' });
-    state.candidates = [candidate];
-    state.updateResults = [claimWon(1)];
-    await runWebhookDeliveryRecoverySweep(NOW);
-    expect(queueDeliveryMock).toHaveBeenCalledWith('webhook-1', 1, expect.objectContaining({
-      payload: candidate.payload, metadata: { timestamp: (eventTimestamp ?? candidate.createdAt).toISOString() }
-    }), 'delivery-1', { payloadVersion: 2, replayOf: 'root-event' });
+  it('re-drives scheduled rows without stamping a lease, even for inactive webhooks', async () => {
+    state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 3, webhookStatus: 'disabled' })];
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ scheduledScanned: 1, scheduledRedriven: 1 });
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledExactlyOnceWith({ deliveryId: 'delivery-1', webhookId: 'webhook-1', generation: 1, attemptsMade: 3 }, NOW);
+    expect(state.updateCalls).toEqual([]);
   });
 
-  it.each([[1, 1], [2, 2], [3, 1]])('normalizes stored payload version %s to %s with no replay root', async (stored, expected) => {
-    state.candidates = [orphan({ payloadVersion: stored, replayRootEventId: null })];
-    state.updateResults = [claimWon(1)];
-    await runWebhookDeliveryRecoverySweep(NOW);
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-    expect(queueDeliveryMock.mock.calls[0]![4]).toEqual({ payloadVersion: expected, replayOf: null });
+  it.each([true, false])('resolves too-old scheduled rows by status and attempts CAS (landed=%s)', async landed => {
+    state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 3, createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 1) })];
+    state.updateResults = [landed ? [{ id: 'delivery-1' }] : []];
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ tooOld: landed ? 1 : 0, terminalWriteLost: landed ? 0 : 1, scheduledRedriven: 0 });
+    expect(state.updateCalls).toHaveLength(1);
+    expect(state.updateCalls[0]!.set).toEqual({ status: 'failed', nextRetryAt: null, errorMessage: 'Retry was not sent before the delivery became too old; abandoned without delivery' });
+    const compiled = new PgDialect().sqlToQuery(state.updateCalls[0]!.where as SQL);
+    expect(compiled.sql).toContain('"status" =');
+    expect(compiled.sql).toContain('"attempts" =');
+    expect(compiled.params).toEqual(['delivery-1', 'scheduled', 3]);
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
+  });
+
+  it('counts a scheduled enqueue failure without writing the row', async () => {
+    state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 2 })];
+    enqueueWebhookAttemptMock.mockRejectedValueOnce(new Error('Redis down'));
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ enqueueFailed: 1, scheduledRedriven: 0 });
+    expect(state.updateCalls).toEqual([]);
+    structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED');
   });
 
   it('leases the row it claimed so a concurrent sweep cannot re-queue it', async () => {
@@ -208,7 +208,7 @@ describe('webhook delivery recovery sweep', () => {
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     // The whole point of the CAS: N API pods sweep, exactly one POSTs.
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ scanned: 1, requeued: 0, raced: 1 });
 
     // Losing the race is an ORDINARY outcome, so it must be a clean skip — not
@@ -246,7 +246,7 @@ describe('webhook delivery recovery sweep', () => {
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ exhausted: 1, requeued: 0 });
 
     // `failed` specifically: it is the only status the existing per-delivery
@@ -267,7 +267,7 @@ describe('webhook delivery recovery sweep', () => {
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ undeliverable: 1 });
     expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
     const payload = structured(consoleLines(warnSpy), 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE');
@@ -277,7 +277,7 @@ describe('webhook delivery recovery sweep', () => {
   it('leaves the row recoverable when the re-enqueue itself fails', async () => {
     state.candidates = [orphan()];
     state.updateResults = [claimWon(1), [{ id: 'delivery-1' }]];
-    queueDeliveryMock.mockRejectedValueOnce(new Error('LPUSH failed again'));
+    enqueueWebhookAttemptMock.mockRejectedValueOnce(new Error('enqueue failed again'));
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
@@ -297,7 +297,7 @@ describe('webhook delivery recovery sweep', () => {
     // charging infrastructure downtime against the customer's delivery.
     state.candidates = [orphan({ recoveryAttempts: 2 })];
     state.updateResults = [claimWon(3), [{ id: 'delivery-1' }]];
-    queueDeliveryMock.mockRejectedValueOnce(new Error('Redis down'));
+    enqueueWebhookAttemptMock.mockRejectedValueOnce(new Error('Redis down'));
 
     await runWebhookDeliveryRecoverySweep(NOW);
 
@@ -322,7 +322,7 @@ describe('webhook delivery recovery sweep', () => {
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ tooOld: 1, requeued: 0 });
     expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
     expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('too old');
@@ -339,7 +339,7 @@ describe('webhook delivery recovery sweep', () => {
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     expect(summary).toMatchObject({ requeued: 1, tooOld: 0 });
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledTimes(1);
   });
 
   it('one poisonous row does not abort the rest of the batch', async () => {
@@ -349,7 +349,7 @@ describe('webhook delivery recovery sweep', () => {
     ];
     // claim(1) -> enqueue throws -> attempt REFUND -> claim(2).
     state.updateResults = [claimWon(1), [{ id: 'delivery-1' }], claimWon(1)];
-    queueDeliveryMock
+    enqueueWebhookAttemptMock
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce('delivery-2');
 
@@ -357,8 +357,8 @@ describe('webhook delivery recovery sweep', () => {
 
     expect(summary.scanned).toBe(2);
     expect(summary.requeued).toBe(1);
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
-    expect(queueDeliveryMock.mock.calls[1]![3]).toBe('delivery-2');
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledTimes(2);
+    expect(enqueueWebhookAttemptMock.mock.calls[1]![0].deliveryId).toBe('delivery-2');
   });
 
   // The former "marks a row terminal when the webhook credentials will not
@@ -380,7 +380,7 @@ describe('webhook delivery recovery sweep', () => {
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     expect(summary).toMatchObject({ abandonedInFlight: 1, requeued: 0 });
     expect(state.updateCalls[1]!.set).toMatchObject({ status: 'failed' });
     expect(String(state.updateCalls[1]!.set.errorMessage)).toContain('outcome unknown');
@@ -415,7 +415,7 @@ describe('webhook delivery recovery sweep', () => {
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     expect(summary).toMatchObject({ requeued: 1, exhausted: 0 });
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports a terminal write that lost the lease instead of counting it resolved', async () => {
@@ -451,8 +451,8 @@ describe('webhook delivery recovery sweep', () => {
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     expect(summary).toMatchObject({ scanned: 2, requeued: 1 });
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-    expect(queueDeliveryMock.mock.calls[0]![3]).toBe('delivery-2');
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledTimes(1);
+    expect(enqueueWebhookAttemptMock.mock.calls[0]![0].deliveryId).toBe('delivery-2');
     const payload = structured(
       consoleLines(errorSpy),
       'WEBHOOK_DELIVERY_RECOVERY_CANDIDATE_FAILED'
@@ -463,11 +463,13 @@ describe('webhook delivery recovery sweep', () => {
 
   it('says nothing and does nothing when there is no orphan', async () => {
     state.candidates = [];
+    state.scheduledCandidates = [];
+    state.selectCount = 0;
 
     const summary = await runWebhookDeliveryRecoverySweep(NOW);
 
     expect(summary).toMatchObject({ scanned: 0, requeued: 0 });
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
     // The healthy steady state is silent: this ticks every 5 minutes forever.
     expect(consoleLines(logSpy, warnSpy, errorSpy)).toHaveLength(0);
   });

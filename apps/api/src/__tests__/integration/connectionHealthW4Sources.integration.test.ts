@@ -62,7 +62,7 @@ describe('webhook source (terminal delivery failures)', () => {
       webhook(o), webhook(o), webhook(o), webhook(o), webhook(o),
     ]);
     await delivery(terminal, { errorMessage: 'HTTP 503 from https://hooks.example.test/in?token=abc', responseStatus: 503 });
-    await delivery(midRetry, { attempts: 2 });
+    await delivery(midRetry, { status: 'scheduled', attempts: 2, nextRetryAt: new Date(NOW.getTime() + 60_000) });
     await delivery(superseded, { errorMessage: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued' });
     await delivery(sweep, { attempts: 0, errorMessage: 'Delivery was claimed by a worker that stopped before reporting a result; outcome unknown' });
     await delivery(old, { createdAt: minAgo(120) });
@@ -80,13 +80,6 @@ describe('webhook source (terminal delivery failures)', () => {
     await delivery(w, { attempts: 1, errorMessage: 'superseded_by_edit: webhook credentials could not be decrypted' });
     expect((await observe(webhookSource)).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken', condition: 'delivery_failed' });
     expect((await observe(webhookSource, [w])).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
-  });
-
-  it('honours a custom retry budget', async () => {
-    const { o } = await org();
-    const w = await webhook(o, { retryPolicy: { maxRetries: 2, backoffMultiplier: 2, initialDelayMs: 1000, maxDelayMs: 5000 } });
-    await delivery(w, { attempts: 2 });
-    expect(ids(await observe(webhookSource))).toContain(w);
   });
 
   it('tracked: a later success recovers; an old failure without success stays broken; disabled retires; deleted is absent', async () => {

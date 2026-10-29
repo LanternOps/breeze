@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -13,6 +15,7 @@ interface UpdateCall { table: string; set: Record<string, unknown>; where: unkno
 
 const state = vi.hoisted(() => ({
   insert: vi.fn(),
+  select: vi.fn(),
   updateCalls: [] as UpdateCall[],
   updateResults: [] as Record<string, unknown>[][]
 }));
@@ -37,13 +40,13 @@ vi.mock('../db', () => {
     })
   });
   return {
-    db: { update: makeUpdate, insert: state.insert },
+    db: { update: makeUpdate, insert: state.insert, select: state.select },
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     runOutsideDbContext: (fn: () => unknown) => fn()
   };
 });
 
-import { recordDeliveryOutcome, recordWebhookDelivery } from './webhookDeliveryRecord';
+import { claimDeliveryForExecution, recordDeliveryOutcome, recordWebhookDelivery } from './webhookDeliveryRecord';
 
 const RESULT = {
   deliveryId: 'delivery-1',
@@ -82,7 +85,7 @@ describe('recordDeliveryOutcome', () => {
   it('writes the outcome and clears the execution lease', async () => {
     state.updateResults = [[{ id: 'delivery-1' }], []];
 
-    await recordDeliveryOutcome({ ...RESULT } as never);
+    expect(await recordDeliveryOutcome({ ...RESULT } as never)).toBe(true);
 
     expect(state.updateCalls[0]!.set).toMatchObject({
       status: 'delivered',
@@ -96,7 +99,7 @@ describe('recordDeliveryOutcome', () => {
   it('warns when the write matches nothing — someone else resolved the row', async () => {
     state.updateResults = [[], []];
 
-    await recordDeliveryOutcome({ ...RESULT, success: false } as never);
+    expect(await recordDeliveryOutcome({ ...RESULT, success: false } as never)).toBe(false);
 
     const payload = structured(lines(warnSpy), 'WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED');
     expect(payload).toMatchObject({
@@ -105,35 +108,40 @@ describe('recordDeliveryOutcome', () => {
     });
   });
 
-  it('skips the row write for a DLQ replay, which has no row, and says so', async () => {
-    // Without this branch the zero-row warning fires on EVERY routine replay
-    // with a stated cause that is untrue — voiding the warning for the real
-    // race it exists to catch.
-    state.updateResults = [[]];
-
-    await recordDeliveryOutcome({ ...RESULT, hasDeliveryRow: false } as never);
-
-    // Only the aggregate write ran; no attempt was made against a row that
-    // does not exist.
-    expect(state.updateCalls).toHaveLength(1);
-    expect(warnSpy).not.toHaveBeenCalled();
-
-    const payload = structured(lines(logSpy), 'WEBHOOK_DLQ_REPLAY_COMPLETED');
-    expect(payload).toMatchObject({
-      deliveryId: 'delivery-1',
-      delivered: true,
-      responseStatus: 200
-    });
+  it('persists the next attempt as scheduled and still counts a failure', async () => {
+    const nextAttemptAt = new Date('2026-09-11T12:01:00Z');
+    state.updateResults = [[{ id: 'delivery-1' }], []];
+    expect(await recordDeliveryOutcome({ ...RESULT, success: false, nextAttemptAt })).toBe(true);
+    expect(state.updateCalls[0]!.set).toMatchObject({ status: 'scheduled', nextRetryAt: nextAttemptAt });
+    expect(state.updateCalls[1]!.set).toHaveProperty('failureCount');
   });
 
-  it('still moves the webhook aggregates for a DLQ replay — the POST happened', async () => {
-    state.updateResults = [[]];
-
-    await recordDeliveryOutcome({ ...RESULT, hasDeliveryRow: false } as never);
-
-    expect(state.updateCalls).toHaveLength(1);
-    expect(Object.keys(state.updateCalls[0]!.set)).toContain('successCount');
+  it('persists terminal failures with no next attempt', async () => {
+    state.updateResults = [[{ id: 'delivery-1' }], []];
+    expect(await recordDeliveryOutcome({ ...RESULT, success: false, nextAttemptAt: null })).toBe(true);
+    expect(state.updateCalls[0]!.set).toMatchObject({ status: 'failed', nextRetryAt: null });
   });
+
+  it('returns the claimed persisted delivery and stamps an execution lease', async () => {
+    const delivery = { id: 'delivery-1', webhookId: 'webhook-1', attempts: 3, payloadVersion: 1 };
+    state.updateResults = [[delivery]];
+    expect(await claimDeliveryForExecution({ deliveryId: 'delivery-1', attemptsMade: 3 })).toEqual({ claimed: true, delivery });
+    expect(state.updateCalls[0]!.set).toMatchObject({ status: 'retrying', nextRetryAt: expect.any(Date) });
+  });
+
+  it.each([
+    [{ status: 'scheduled', attempts: 3, dueInMs: '90000' }, { observedStatus: 'scheduled', observedAttempts: 3, dueInMs: 90000 }],
+    [{ status: 'pending', attempts: 0, dueInMs: null }, { observedStatus: 'pending', observedAttempts: 0, dueInMs: null }],
+    [undefined, { observedStatus: null, observedAttempts: null, dueInMs: null }]
+  ])('reads the lost claim once and coerces its DB-clock delay', async (row, observed) => {
+    state.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => row ? [row] : [] }) }) });
+    expect(await claimDeliveryForExecution({ deliveryId: 'delivery-1', attemptsMade: 3 })).toEqual({ claimed: false, ...observed });
+    const delaySql = state.select.mock.calls.at(-1)![0].dueInMs as SQL;
+    expect(new PgDialect().sqlToQuery(delaySql).sql).toBe(
+      `CEIL(EXTRACT(EPOCH FROM ("webhook_deliveries"."next_retry_at" - (now() AT TIME ZONE 'UTC'))) * 1000)::float8`
+    );
+  });
+
 });
 
 describe('recordWebhookDelivery wire identity', () => {

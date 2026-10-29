@@ -10,7 +10,6 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   DECRYPT_FAILED_MESSAGE,
-  DEFAULT_MAX_RETRIES,
   TERMINAL_FAILURE_WINDOW_MS,
   webhookObservation,
   webhookSource,
@@ -81,15 +80,24 @@ describe('webhook source', () => {
     const q = new PgDialect().sqlToQuery(webhookSource.brokenQuery(NOW) as SQL);
     // Literal so the planner can match webhook_deliveries_failed_recent_idx.
     expect(q.sql).toContain(`d.status = 'failed'`);
+    expect(q.sql).not.toMatch(/retry_policy|maxRetries|JOIN webhooks w ON/);
+    expect(q.sql).toContain('((d.attempts > 0 AND');
+    expect(q.sql).toContain(`OR d.error_message = '${DECRYPT_FAILED_MESSAGE}'`);
     expect(q.sql).toContain(`NOT LIKE 'superseded\\_by\\_edit:%'`);
     expect(q.params).toContain(new Date(NOW.getTime() - TERMINAL_FAILURE_WINDOW_MS).toISOString());
     expect(TERMINAL_FAILURE_WINDOW_MS).toBe(60 * 60 * 1000);
   });
 
-  it('stays in step with the delivery worker it reads (retry budget, decrypt-failure message)', () => {
+  it('stays in step with the delivery worker decrypt-failure message', () => {
     const worker = readFileSync(path.resolve(__dirname, '../../../workers/webhookDelivery.ts'), 'utf8');
-    expect(worker).toContain(`const MAX_RETRIES = ${DEFAULT_MAX_RETRIES};`);
+
     expect(worker).toContain(`'${DECRYPT_FAILED_MESSAGE}'`);
+  });
+
+  it('scheduled rows cannot open an incident because only failed rows are selected', () => {
+    const q = new PgDialect().sqlToQuery(webhookSource.brokenQuery(NOW) as SQL);
+    expect(q.sql).toContain("WHERE d.status = 'failed'");
+    expect(q.sql).not.toContain("'scheduled'");
   });
 
   it('counts an undecryptable-credentials delivery as terminal although it is written as superseded', () => {

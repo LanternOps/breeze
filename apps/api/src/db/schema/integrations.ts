@@ -7,7 +7,7 @@ import { devices } from './devices';
 
 export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', 'error', 'installing']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
-export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
+export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying', 'scheduled']);
 // The DB enum is intentionally WIDER than the implemented provider list
 // (PSA_PROVIDERS in @breeze/shared): 'halo', 'syncro', 'kaseya' and 'other'
 // are DEAD values — no adapter exists and the route-level zod gate
@@ -133,6 +133,11 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   unresolvedIdx: index('webhook_deliveries_unresolved_idx')
     .on(table.createdAt)
     .where(sql`${table.status} IN ('pending', 'retrying')`),
+  // Scheduled retries live for about 21 hours, so keep their due-time scan
+  // separate from the short-lived pending/retrying created-at index.
+  scheduledDueIdx: index('webhook_deliveries_scheduled_due_idx')
+    .on(table.nextRetryAt)
+    .where(sql`${table.status} = 'scheduled'`),
   // Connection health W4 webhook source (2026-12-30-120100): failed rows only,
   // so both grow with failures, not with traffic.
   failedRecentIdx: index('webhook_deliveries_failed_recent_idx')

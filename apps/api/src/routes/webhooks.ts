@@ -3,12 +3,12 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { redactUrlForLogs, validateWebhookUrlSafetyWithDns } from '../services/notificationSenders/webhookSender';
-import { getWebhookWorker, type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
+import { type WebhookConfig as WorkerWebhookConfig } from '../workers/webhookDelivery';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -21,6 +21,8 @@ import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders } from '../s
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { bumpApprovalGeneration } from '../services/approvalGeneration';
+import { enqueueWebhookAttempt } from '../jobs/webhookDeliveryQueue';
+import { captureException } from '../services/sentry';
 import { EVENT_TYPES } from '../services/eventBus';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
@@ -29,7 +31,7 @@ export const webhookRoutes = new Hono();
 
 type ApiWebhookStatus = 'active' | 'paused' | 'failed';
 type DbWebhookStatus = 'active' | 'disabled' | 'error';
-type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying';
+type WebhookDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'retrying' | 'scheduled';
 
 type WebhookHeaders = Array<{ key: string; value: unknown }>;
 
@@ -312,14 +314,15 @@ async function getDeliveryStats(webhookId: string) {
     pending: 0,
     delivered: 0,
     failed: 0,
-    retrying: 0
+    retrying: 0,
+    scheduled: 0
   };
 
   for (const row of counts) {
     stats[row.status as WebhookDeliveryStatus] = Number(row.count ?? 0);
   }
 
-  const total = stats.pending + stats.delivered + stats.failed + stats.retrying;
+  const total = stats.pending + stats.delivered + stats.failed + stats.retrying + stats.scheduled;
 
   return {
     total,
@@ -433,7 +436,7 @@ const updateWebhookSchema = z.object({
 const listDeliveriesSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
-  status: z.enum(['pending', 'delivered', 'failed', 'retrying']).optional()
+  status: z.enum(['pending', 'delivered', 'failed', 'retrying', 'scheduled']).optional()
 });
 
 const testWebhookSchema = z.object({
@@ -917,41 +920,20 @@ webhookRoutes.post(
       return c.json({ error: 'Failed to create delivery record' }, 500);
     }
 
-    const event = {
-      id: eventId,
-      type: eventType,
-      orgId: webhook.orgId,
-      source: 'webhook.test',
-      priority: 'normal',
-      payload,
-      metadata: {
-        timestamp: now.toISOString(),
-        userId: auth.user.id
-      }
-    };
-
-    try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
-        payloadVersion: webhook.payloadVersion === 2 ? 2 : 1,
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-      const [failedDelivery] = await db
-        .update(webhookDeliveries)
-        .set({
-          status: 'failed',
-          attempts: 1,
-          errorMessage,
-          deliveredAt: new Date()
-        })
-        .where(eq(webhookDeliveries.id, delivery.id))
-        .returning();
-
-      return c.json({
-        error: 'Failed to queue webhook delivery',
-        delivery: mapDelivery(failedDelivery ?? delivery, webhook.orgId)
-      }, 503);
-    }
+    // A worker must not see the job before this request's delivery row commits.
+    runAfterDbContextCommit('webhook.test', () => enqueueWebhookAttempt({
+      deliveryId: delivery.id,
+      webhookId: webhook.id,
+      generation: webhook.approvalGeneration,
+      attemptsMade: 0,
+    }, new Date()).catch((error) => {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      console.error(`[webhooks] enqueue-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
+        deliveryId: delivery.id,
+        webhookId: webhook.id,
+      })}`);
+    }));
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
@@ -1041,42 +1023,20 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
       return c.json({ error: 'Failed to create retry delivery record' }, 500);
     }
 
-    const retryEvent = {
-      id: retryEventId,
-      type: delivery.eventType,
-      orgId: webhook.orgId,
-      source: 'webhook.retry',
-      priority: 'normal',
-      payload: delivery.payload,
-      metadata: {
-        timestamp: now.toISOString(),
-        userId: auth.user.id
-      }
-    };
-
-    try {
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id, {
-        payloadVersion: delivery.payloadVersion === 2 ? 2 : 1,
-        replayOf: replayRootEventId,
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-      const [failedRetry] = await db
-        .update(webhookDeliveries)
-        .set({
-          status: 'failed',
-          attempts: 1,
-          errorMessage,
-          deliveredAt: new Date()
-        })
-        .where(eq(webhookDeliveries.id, retryDelivery.id))
-        .returning();
-
-      return c.json({
-        error: 'Failed to queue retry delivery',
-        delivery: mapDelivery(failedRetry ?? retryDelivery, webhook.orgId)
-      }, 503);
-    }
+    // A worker must not see the job before this request's delivery row commits.
+    runAfterDbContextCommit('webhook.retry', () => enqueueWebhookAttempt({
+      deliveryId: retryDelivery.id,
+      webhookId: webhook.id,
+      generation: webhook.approvalGeneration,
+      attemptsMade: 0,
+    }, new Date()).catch((error) => {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      console.error(`[webhooks] enqueue-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
+        deliveryId: retryDelivery.id,
+        webhookId: webhook.id,
+      })}`);
+    }));
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,

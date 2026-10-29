@@ -13,8 +13,8 @@ import {
  * Both are safety-critical and neither is covered by a behavioural suite:
  *
  *   - the execution claim is what stops one delivery, present twice on a
- *     queue with no job identity, from POSTing to the customer TWICE. Losing
- *     `status = 'pending'` from it turns the claim into an unconditional
+ *     duplicated queue wake-up, from POSTing to the customer TWICE. Losing
+ *     the status guard from it turns the claim into an unconditional
  *     success and every duplicate delivers;
  *   - the dedupe read-back names the row a skip deferred to. Losing the
  *     `webhook_id` conjunct makes it report ANOTHER webhook's delivery status
@@ -24,13 +24,14 @@ import {
 describe('webhook delivery record predicates (compiled SQL)', () => {
   const dialect = new PgDialect();
 
-  it('execution claim is an AND of the delivery id and a pending marker', () => {
-    const { sql, params } = dialect.sqlToQuery(buildExecutionClaimCas('delivery-1'));
-
+  it('claims exactly one attempt, ignoring pending leases but honoring scheduled due time in UTC', () => {
+    const { sql, params } = dialect.sqlToQuery(buildExecutionClaimCas('delivery-1', 3));
     expect(sql).toBe(
-      '("webhook_deliveries"."id" = $1 and "webhook_deliveries"."status" = $2)'
+      '("webhook_deliveries"."id" = $1 and "webhook_deliveries"."attempts" = $2 and '
+      + '("webhook_deliveries"."status" = $3 or ("webhook_deliveries"."status" = $4 and '
+      + `("webhook_deliveries"."next_retry_at" is null or "webhook_deliveries"."next_retry_at" <= (now() AT TIME ZONE 'UTC')))))`
     );
-    expect(params).toEqual(['delivery-1', 'pending']);
+    expect(params).toEqual(['delivery-1', 3, 'pending', 'scheduled']);
   });
 
   it('outcome write refuses to overwrite a recorded success', () => {

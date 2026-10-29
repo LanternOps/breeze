@@ -1,53 +1,27 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-const setDeliveryClaimCallbackMock = vi.hoisted(() => vi.fn());
-const setDeliveryCallbackMock = vi.hoisted(() => vi.fn());
-const stopMock = vi.hoisted(() => vi.fn());
-const getWebhookWorkerMock = vi.hoisted(() =>
-  vi.fn(() => ({
-    setDeliveryClaimCallback: setDeliveryClaimCallbackMock,
-    setDeliveryCallback: setDeliveryCallbackMock,
-    stop: stopMock,
-  })),
-);
-const initializeWebhookDeliveryMock = vi.hoisted(() => vi.fn(async () => {}));
-const claimDeliveryForExecutionMock = vi.hoisted(() => vi.fn());
-const recordDeliveryOutcomeMock = vi.hoisted(() => vi.fn());
-
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: getWebhookWorkerMock,
-  initializeWebhookDelivery: initializeWebhookDeliveryMock,
-}));
-
-vi.mock('./webhookDeliveryRecord', () => ({
-  claimDeliveryForExecution: claimDeliveryForExecutionMock,
-  recordDeliveryOutcome: recordDeliveryOutcomeMock,
-}));
-
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+const m = vi.hoisted(() => ({ configure: vi.fn(), initialize: vi.fn(), shutdown: vi.fn(), claim: vi.fn(), outcome: vi.fn(), cutover: vi.fn(), capture: vi.fn() }));
+vi.mock('../workers/webhookDelivery', () => ({ configureWebhookDeliveryExecution: m.configure, initializeWebhookDelivery: m.initialize, shutdownWebhookDelivery: m.shutdown }));
+vi.mock('./webhookDeliveryRecord', () => ({ claimDeliveryForExecution: m.claim, recordDeliveryOutcome: m.outcome }));
+vi.mock('../jobs/webhookLegacyQueueCutover', () => ({ drainLegacyWebhookQueues: m.cutover }));
+vi.mock('./sentry', () => ({ captureException: m.capture }));
 import { initializeWebhookDeliveryWorker, shutdownWebhookDeliveryWorker } from './webhookDeliveryInit';
-
+beforeEach(() => { vi.clearAllMocks(); m.cutover.mockResolvedValue({}); });
 describe('webhookDeliveryInit', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('wires the claim and outcome callbacks before starting the drain loop', async () => {
+  it('wires execution before initialize, then drains the retired queues', async () => {
     await initializeWebhookDeliveryWorker();
-
-    expect(getWebhookWorkerMock).toHaveBeenCalled();
-    expect(setDeliveryClaimCallbackMock).toHaveBeenCalledWith(claimDeliveryForExecutionMock);
-    expect(setDeliveryCallbackMock).toHaveBeenCalledWith(recordDeliveryOutcomeMock);
-    expect(initializeWebhookDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(m.configure).toHaveBeenCalledExactlyOnceWith({ claim: m.claim, recordOutcome: m.outcome });
+    expect(m.initialize).toHaveBeenCalledTimes(1); expect(m.cutover).toHaveBeenCalledTimes(1);
+    expect(m.configure.mock.invocationCallOrder[0]).toBeLessThan(m.initialize.mock.invocationCallOrder[0]!);
+    expect(m.initialize.mock.invocationCallOrder[0]).toBeLessThan(m.cutover.mock.invocationCallOrder[0]!);
   });
-
-  it('shutdown stops the singleton worker', async () => {
-    await shutdownWebhookDeliveryWorker();
-    expect(stopMock).toHaveBeenCalledTimes(1);
+  it('captures and swallows a cut-over failure', async () => {
+    const error = new Error('redis offline'); m.cutover.mockRejectedValue(error);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(initializeWebhookDeliveryWorker()).resolves.toBeUndefined();
+    expect(m.capture).toHaveBeenCalledWith(error); expect(log).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_LEGACY_QUEUE_CUTOVER_FAILED'));
+    log.mockRestore();
   });
-
-  it('shutdown is idempotent across repeated calls (mirrors index.ts calling stop() in its own preamble)', async () => {
-    await expect(shutdownWebhookDeliveryWorker()).resolves.toBeUndefined();
-    await expect(shutdownWebhookDeliveryWorker()).resolves.toBeUndefined();
-    expect(stopMock).toHaveBeenCalledTimes(2);
+  it('shutdown closes the BullMQ worker and queue through its owning module', async () => {
+    await shutdownWebhookDeliveryWorker(); expect(m.shutdown).toHaveBeenCalledTimes(1);
   });
 });

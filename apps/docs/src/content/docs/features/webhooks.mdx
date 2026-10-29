@@ -210,15 +210,15 @@ Integration events report the health of an organization's own connections: an in
 When an event is emitted on the Breeze event bus, the webhook delivery system routes it to all active webhooks in the same organization that are subscribed to that event type. Each delivery follows this sequence:
 
 <Steps>
-1. The event bus fires the event. The `initializeWebhookDelivery` subscriber matches the event type against all configured webhooks for the organization.
+1. The event bus fires the event. The webhook subscriber matches the event type against all configured webhooks for the organization.
 
 2. A delivery record is created in the `webhook_deliveries` table with status `pending` and `attempts` set to `0`.
 
-3. The delivery job is queued onto the Redis list `breeze:webhooks:delivery`.
+3. A BullMQ job carrying only the delivery and webhook ids, generation, and attempt count is queued on `webhook-delivery`.
 
-4. The `WebhookDeliveryWorker` picks up the job, validates the destination URL (including DNS resolution to block SSRF), and sends an HTTP POST with the signed payload.
+4. The worker claims the delivery row as `retrying`, validates the destination URL (including DNS resolution to block SSRF), and sends an HTTP POST with the signed payload.
 
-5. If the response status is `2xx`, the delivery is marked `delivered`. Otherwise, the retry logic takes over.
+5. A `2xx` response marks the row `delivered`. A failure marks it `scheduled` with the next attempt time, or `failed` after the last attempt.
 </Steps>
 
 ### Payload Format
@@ -431,48 +431,25 @@ Any custom headers configured on the webhook are merged into the request after t
 
 ## Retry Logic
 
-Failed deliveries are retried automatically using exponential backoff. The default retry policy is:
+Every non-2xx response, timeout, or transport error is retried on this fixed schedule. Each request has a **30-second timeout**.
 
-| Parameter | Default Value |
-|-----------|---------------|
-| Maximum retries | 5 |
-| Initial delay | 1,000 ms (1 second) |
-| Backoff multiplier | 2x |
-| Maximum delay | 300,000 ms (5 minutes) |
-| Delivery timeout | 30,000 ms (30 seconds) |
+| Attempt | Delay after the previous attempt |
+|---------|----------------------------------|
+| 1 | Immediately |
+| 2 | 1 minute |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
+| 6 | 6 hours |
+| 7 | 12 hours |
 
-The delay between retries follows the formula:
+Each delay has **±20% jitter**. The base schedule spans about **21 hours** from the first attempt to the last; a seventh failure leaves the delivery `failed`. The per-webhook `retry_policy` is ignored.
 
-```
-delay = min(initialDelay * (multiplier ^ attempt), maxDelay)
-```
+Retry state lives in Postgres, with BullMQ delayed jobs waking each attempt. A Redis restart loses no retries: the recovery sweep re-drives deliveries more than 15 minutes overdue. Each attempt is claimed before sending, so two workers cannot send the same attempt. If a worker stops mid-request, recovery marks the delivery `failed` with an unknown outcome instead of re-sending a potentially delivered request.
 
-This produces the following schedule for the default policy:
+Editing or disabling a webhook stops its scheduled retries. When each next attempt comes due, the worker marks it `failed` with a `superseded_by_edit:` message; replay it manually if needed. Retries always use the payload version recorded on the delivery, even if the webhook's version has changed.
 
-| Attempt | Delay |
-|---------|-------|
-| 1st retry | 1 second |
-| 2nd retry | 2 seconds |
-| 3rd retry | 4 seconds |
-| 4th retry | 8 seconds |
-| 5th retry | 16 seconds |
-
-### Custom Retry Policy
-
-You can override the default retry policy per webhook by setting the `retryPolicy` field in the database. There is no dashboard control or API field for this today -- creating and updating a webhook through the API or the dashboard does not accept a `retryPolicy` value, so this requires direct database access (self-hosted operators, or Breeze support on hosted accounts). The policy object accepts:
-
-```json
-{
-  "maxRetries": 10,
-  "initialDelayMs": 2000,
-  "backoffMultiplier": 3,
-  "maxDelayMs": 600000
-}
-```
-
-### Dead Letter Queue
-
-After all retries are exhausted, the delivery job is moved to a dead letter queue (Redis key `breeze:webhooks:dlq`). Jobs in the DLQ can be inspected and retried through the worker API.
+The Redis dead-letter queue is retired. On first start after upgrading, Breeze drains the old Redis delivery list and DLQ: queued deliveries are re-driven, and DLQ entries become `failed` deliveries available for manual replay.
 
 <Aside type="caution">
   Redirects are rejected (`redirect: "error"`). If your endpoint returns a 3xx redirect, the delivery will be treated as a failure and retried.
@@ -587,7 +564,7 @@ This outline uses a low-code automation platform such as Rewst between Breeze an
 
 Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
-From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose retries are exhausted with no later success also opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
+From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending, scheduled or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose delivery ends `failed` after its last attempt, with no later success, opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
 
 ### Listing Deliveries
 
@@ -601,7 +578,7 @@ All query parameters are optional. Results are ordered by most recent first.
 |-----------|------|-------------|
 | `page` | integer | Page number (default: 1) |
 | `limit` | integer | Results per page (default: 50, max: 100) |
-| `status` | string | Filter by delivery status: `pending`, `delivered`, `failed`, `retrying` |
+| `status` | string | Filter by delivery status: `pending`, `scheduled`, `delivered`, `failed`, `retrying` |
 
 Response:
 
@@ -646,6 +623,7 @@ When you fetch a single webhook via `GET /webhooks/:id`, the response includes a
     "delivered": 1250,
     "failed": 30,
     "retrying": 2,
+    "scheduled": 0,
     "lastDeliveredAt": "2026-02-18T12:34:57.123Z"
   }
 }
@@ -824,7 +802,7 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `payload_version` | smallint | `1` or `2`, enforced by a CHECK; existing webhooks stay on `1`, new webhooks default to `2` |
 | `headers` | JSONB | Custom headers sent with each delivery |
 | `status` | enum | `active`, `disabled`, or `error` |
-| `retry_policy` | JSONB | Optional custom retry policy override |
+| `retry_policy` | JSONB | Retired; ignored by the fixed retry schedule |
 | `success_count` | integer | Cumulative successful deliveries |
 | `failure_count` | integer | Cumulative failed deliveries |
 | `last_delivery_at` | timestamp | Timestamp of the most recent delivery attempt |
@@ -845,9 +823,9 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `payload_version` | smallint | Recorded payload version; default `1` for legacy rows. A NOT VALID CHECK permits only `1` or `2` for new or updated rows without scanning the existing table |
 | `event_timestamp` | timestamptz, nullable | Stored wire event timestamp; legacy null values fall back to delivery creation time |
 | `replay_root_event_id` | varchar(100), nullable | Original event id for manual replays; null for original deliveries |
-| `status` | enum | `pending`, `delivered`, `failed`, or `retrying` |
+| `status` | enum | `pending` (awaiting first attempt), `scheduled` (awaiting retry), `retrying` (in flight), `delivered`, or `failed` |
 | `attempts` | integer | Number of delivery attempts made |
-| `next_retry_at` | timestamp | Scheduled time for the next retry (if retrying) |
+| `next_retry_at` | timestamp | Next attempt time (`scheduled`) or execution lease (`retrying`) |
 | `response_status` | integer | HTTP response status code from the endpoint |
 | `response_body` | text | Response body (truncated to 1,000 characters) |
 | `response_time_ms` | integer | Round-trip time in milliseconds |
@@ -865,8 +843,8 @@ On hosted Breeze, the URL must use HTTPS and must not resolve to a private, loop
 **Webhook is not receiving events.**
 Check the webhook status -- if it is `paused` or `failed`, deliveries are not processed. Verify that the `events` array includes the event types you expect. Use `POST /webhooks/:id/test` to confirm the endpoint is reachable.
 
-**Deliveries are stuck in `retrying` status.**
-The worker retries failed deliveries using exponential backoff. Check the `nextAttemptAt` field on the delivery to see when the next attempt is scheduled. If retries have been exhausted (default: 5 attempts), the delivery moves to `failed` and the job enters the dead letter queue.
+**Deliveries remain in `scheduled` status.**
+Check `nextAttemptAt`: retries wait 1 minute, 5 minutes, 30 minutes, 2 hours, 6 hours, then 12 hours, each with ±20% jitter. The recovery sweep re-drives deliveries more than 15 minutes overdue. After the seventh failed attempt the delivery becomes `failed`; use manual retry once the endpoint is repaired.
 
 **Signature verification fails on my endpoint.**
 Ensure you are computing the HMAC over the correct input: the raw `X-Breeze-Signature-Timestamp` header value, followed by a dot (`.`), followed by the raw request body. Use the `X-Breeze-Signature-Timestamp` header (not `X-Breeze-Timestamp`) as the timestamp component. The signature uses SHA-256 and is hex-encoded.
@@ -875,7 +853,7 @@ Ensure you are computing the HMAC over the correct input: the raw `X-Breeze-Sign
 The worker re-validates the URL before each delivery attempt. On hosted Breeze, if your DNS records have changed and the hostname now resolves to a private IP range, deliveries will fail — update the webhook URL to point to a publicly routable address. On self-hosted deployments, private targets are deliverable; only metadata/loopback/link-local resolutions fail.
 
 **"Only failed deliveries can be retried" error.**
-The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `retrying`, or already `delivered` cannot be retried through this endpoint.
+The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `scheduled`, `retrying`, or already `delivered` cannot be retried through this endpoint.
 
 **"Organization context required" error.**
 Webhook routes require an organization scope. If you are authenticated with a partner or system scope, pass the `orgId` query parameter (for list) or include it in the request body (for create) to specify which organization's webhooks you are managing.

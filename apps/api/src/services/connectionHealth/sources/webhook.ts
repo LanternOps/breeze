@@ -9,15 +9,18 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 // Outbound webhooks (spec §3, W4). Org-owned, one incident per webhook.
 //
 // What counts as a terminal failure: a webhook_deliveries row in `failed` whose
-// `attempts` reached the webhook's retry budget. The delivery worker writes
-// `failed` after EVERY failed attempt (the next retry is a Redis job, not a row
-// state), so `failed` alone is not terminal. Excluded:
+// endpoint attempt ended terminally. Between attempts the row is `scheduled`;
+// only the final failure is `failed`. Excluded:
 //   - superseded deliveries (webhook edited or disabled after enqueue,
 //     workers/webhookDelivery.ts; error_message `superseded_by_edit:`), which
 //     were never attempted against the endpoint (the exception is
 //     DECRYPT_FAILED_MESSAGE below: undecryptable credentials are a break);
-//   - rows the recovery sweep resolved (jobs/webhookDeliveryRecovery.ts), which
-//     carry attempts 0: a Breeze-side failure, not the endpoint's.
+//   - rows recovery resolved before any endpoint attempt
+//     (jobs/webhookDeliveryRecovery.ts), which carry attempts 0: a Breeze-side
+//     failure, not the endpoint's.
+// A retry whose worker stopped mid-request (recovery resolves it `failed`,
+// outcome unknown, attempts > 0) does count: the endpoint had already failed
+// and the delivery ended undelivered without a manual replay.
 // Recovery is affirmative: webhooks.last_success_at after the latest terminal
 // failure. A webhook whose endpoint died and that receives no more events stays
 // open until a delivery succeeds or the webhook is disabled (retired).
@@ -27,7 +30,8 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 //   tracked: webhook_deliveries_failed_webhook_idx (webhook_id, created_at)
 //            WHERE status = 'failed' AND attempts > 0
 // The tracked index's extra `attempts > 0` is deliberate: only the tracked
-// lookup states it literally, so the broken query cannot be planned onto the
+// lookup states it unconditionally. The broken query's terminal OR also admits
+// decrypt failures without that condition, so it cannot be planned onto the
 // per-webhook index (whose webhook_id order would turn the one-hour window
 // into a scan of every failed row).
 const ATTEMPTED = sql.raw(`d.attempts > 0`);
@@ -35,12 +39,10 @@ const ATTEMPTED = sql.raw(`d.attempts > 0`);
 const FIX_HREF = '/integrations#webhooks';
 /** Spec §3: terminal failures inside this window open an incident. */
 export const TERMINAL_FAILURE_WINDOW_MS = 60 * 60 * 1000;
-/** The worker's default retry budget (workers/webhookDelivery.ts MAX_RETRIES; webhook.test.ts pins the two together). */
-export const DEFAULT_MAX_RETRIES = 5;
 /**
  * The worker writes this for a delivery dropped because the webhook's stored
  * credentials cannot be decrypted. It carries the superseded prefix and is
- * never retried (attempts stays 1), but unlike an edit or a disable it is a
+ * never retried, but unlike an edit or a disable it is a
  * break someone must repair (re-save the webhook), so it counts as terminal.
  * webhook.test.ts pins it to the worker's literal.
  */
@@ -50,15 +52,8 @@ export const DECRYPT_FAILED_MESSAGE = 'superseded_by_edit: webhook credentials c
 // match the partial indexes. `_` is escaped so LIKE does not treat it as a wildcard.
 const FAILED = sql.raw(`'failed'`);
 const NOT_SUPERSEDED = sql.raw(`(d.error_message IS NULL OR d.error_message NOT LIKE 'superseded\\_by\\_edit:%')`);
-// The worker treats attempt N as the last when N >= retryPolicy.maxRetries
-// (default 5, and at least one attempt always happens). A malformed value falls
-// back to the default rather than failing the cast.
-const TERMINAL_ATTEMPTS = sql.raw(
-  `GREATEST(1, CASE WHEN (w.retry_policy->>'maxRetries') ~ '^[0-9]{1,6}$' `
-  + `THEN (w.retry_policy->>'maxRetries')::int ELSE ${DEFAULT_MAX_RETRIES} END)`,
-);
-/** A terminal failure: the retry budget is used up, or the credentials are undecryptable. */
-const TERMINAL = sql`((d.attempts >= ${TERMINAL_ATTEMPTS} AND ${NOT_SUPERSEDED}) OR d.error_message = ${sql.raw(`'${DECRYPT_FAILED_MESSAGE}'`)})`;
+/** A terminal endpoint failure, or credentials that must be repaired before delivery. */
+const TERMINAL = sql`((d.attempts > 0 AND ${NOT_SUPERSEDED}) OR d.error_message = ${sql.raw(`'${DECRYPT_FAILED_MESSAGE}'`)})`;
 
 export type WebhookRow = {
   id: string;
@@ -107,7 +102,6 @@ function brokenWebhooksQuery(now: Date): SQL {
       AND wh.id IN (
         SELECT d.webhook_id
         FROM webhook_deliveries d
-        JOIN webhooks w ON w.id = d.webhook_id
         WHERE d.status = ${FAILED}
           AND d.created_at >= ${windowStart(now)}::timestamp
           AND ${TERMINAL}
