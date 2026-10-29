@@ -7,9 +7,16 @@
  *
  * One read per source table across every org (`org_id IN (...)`), never one
  * per org. Serviceable rules, in `WATCH_KINDS` terms:
- *   - backup_health     an active `backup_configs` row for the org, OR a
- *                       backup-vendor customer mapped to the org under an
- *                       active `backup_provider_connections` row.
+ *   - backup_health     an active `backup_configs` row for the org, OR at
+ *                       least one synced `backup_provider_devices` row for the
+ *                       org under an active `backup_provider_connections` row.
+ *                       These are exactly what `get_backup_status` reports
+ *                       (aiToolsBackup.ts: Breeze configs/jobs, and the
+ *                       provider leg of backupHealthReadModel). A vendor
+ *                       customer that is mapped but has no synced devices is
+ *                       NOT serviceable — the tool would report nothing — and
+ *                       gets its own reason instead of "no integration"
+ *                       (#10404).
  *   - security_findings `device_vulnerabilities` detected or updated in the
  *                       last 30 days, OR `edr_detections` updated in 30 days,
  *                       OR `edr_endpoints` seen/updated in 30 days (an EDR
@@ -32,7 +39,9 @@
  *
  * `missingIntegrations` names only the gaps an external integration would fill:
  * 'backup' (backup_health) and 'edr/vulnerability' (security_findings). Patch
- * policy, tickets and monitors are configuration, not integrations.
+ * policy, tickets and monitors are configuration, not integrations. An org
+ * with a mapped backup vendor is not missing the integration, even while it
+ * has nothing synced yet.
  */
 import { and, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { WATCH_KINDS, type WatchKind } from '@breeze/shared';
@@ -41,7 +50,11 @@ import { wispEnabled } from '../../config/env';
 import { organizations, sites } from '../../db/schema/orgs';
 import { deviceGroups, devices } from '../../db/schema/devices';
 import { backupConfigs } from '../../db/schema/backup';
-import { backupProviderConnections, backupProviderCustomers } from '../../db/schema/backupProviders';
+import {
+  backupProviderConnections,
+  backupProviderCustomers,
+  backupProviderDevices,
+} from '../../db/schema/backupProviders';
 import { deviceVulnerabilities } from '../../db/schema/vulnerabilityManagement';
 import { edrDetections, edrEndpoints } from '../../db/schema/edrProviders';
 import {
@@ -64,6 +77,14 @@ export const READINESS_SECURITY_WINDOW_DAYS = 30;
 export const READINESS_TICKET_WINDOW_DAYS = 90;
 
 type CheckKey = 'backup' | 'security' | 'patch' | 'tickets' | 'alerts';
+
+/** backup_health reason when a vendor is mapped but nothing has synced (#10404). */
+const BACKUP_VENDOR_NOT_SYNCED_REASON = 'backup vendor mapped but no devices synced yet';
+
+type Coverage = Record<CheckKey, Set<string>> & {
+  /** Orgs with a backup-vendor customer mapped under an active connection. */
+  backupVendorMapped: Set<string>;
+};
 
 const KIND_RULE: Record<WatchKind, { key: CheckKey | null; reason: string | null }> = {
   ticket_waiting: { key: 'tickets', reason: 'no tickets in 90 days' },
@@ -102,13 +123,13 @@ function coveredOrgs(rows: readonly OwnedRow[], orgs: readonly OrgRef[]): Set<st
   return new Set(orgs.filter((o) => direct.has(o.id) || partners.has(o.partnerId)).map((o) => o.id));
 }
 
-async function readCoverage(orgs: readonly OrgRef[], now: Date): Promise<Record<CheckKey, Set<string>>> {
+async function readCoverage(orgs: readonly OrgRef[], now: Date): Promise<Coverage> {
   const orgIds = orgs.map((o) => o.id);
   const partnerIds = [...new Set(orgs.map((o) => o.partnerId))];
   const securitySince = new Date(now.getTime() - READINESS_SECURITY_WINDOW_DAYS * DAY_MS);
   const ticketsSince = new Date(now.getTime() - READINESS_TICKET_WINDOW_DAYS * DAY_MS);
 
-  // backup_health
+  // backup_health — see the file header for the rule.
   const backupConfigRows = await db
     .selectDistinct({ orgId: backupConfigs.orgId })
     .from(backupConfigs)
@@ -124,6 +145,17 @@ async function readCoverage(orgs: readonly OrgRef[], now: Date): Promise<Record<
       ),
     )
     .where(inArray(backupProviderCustomers.orgId, orgIds));
+  const backupVendorDeviceRows = await db
+    .selectDistinct({ orgId: backupProviderDevices.orgId })
+    .from(backupProviderDevices)
+    .innerJoin(
+      backupProviderConnections,
+      and(
+        eq(backupProviderConnections.id, backupProviderDevices.connectionId),
+        eq(backupProviderConnections.isActive, true),
+      ),
+    )
+    .where(inArray(backupProviderDevices.orgId, orgIds));
 
   // security_findings
   const vulnRows = await db
@@ -216,7 +248,8 @@ async function readCoverage(orgs: readonly OrgRef[], now: Date): Promise<Record<
     ));
 
   return {
-    backup: coveredOrgs([...backupConfigRows, ...backupVendorRows], orgs),
+    backup: coveredOrgs([...backupConfigRows, ...backupVendorDeviceRows], orgs),
+    backupVendorMapped: coveredOrgs(backupVendorRows, orgs),
     security: coveredOrgs([...vulnRows, ...edrDetectionRows, ...edrEndpointRows], orgs),
     patch: coveredOrgs(patchRows, orgs),
     tickets: coveredOrgs(ticketRows, orgs),
@@ -254,11 +287,14 @@ export async function readinessInventory(ceiling: GrantCeiling, opts?: { orgIds?
         const rule = KIND_RULE[watchKind];
         if (rule.key === null) return { watchKind, serviceable: true, reason: null };
         const serviceable = coverage[rule.key].has(org.id);
-        if (!serviceable) gaps.add(rule.key);
-        return { watchKind, serviceable, reason: serviceable ? null : rule.reason };
+        if (serviceable) return { watchKind, serviceable, reason: null };
+        gaps.add(rule.key);
+        const vendorMappedOnly = rule.key === 'backup' && coverage.backupVendorMapped.has(org.id);
+        return { watchKind, serviceable, reason: vendorMappedOnly ? BACKUP_VENDOR_NOT_SYNCED_REASON : rule.reason };
       });
       const missingIntegrations = (['backup', 'security'] as const)
         .filter((k) => gaps.has(k))
+        .filter((k) => !(k === 'backup' && coverage.backupVendorMapped.has(org.id)))
         .map((k) => MISSING_INTEGRATION[k])
         .filter((v): v is string => typeof v === 'string');
       return { orgId: org.id, orgName: org.name, checks, missingIntegrations };

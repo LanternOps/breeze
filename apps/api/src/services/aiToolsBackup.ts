@@ -37,6 +37,11 @@ import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { sumStoredSnapshotBytes } from './backupStoredBytes';
+import {
+  getProviderAttentionItems,
+  getProviderCoverageForDevices,
+  summarizeBackupHealth,
+} from './backupHealthReadModel';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -50,6 +55,34 @@ function getOrgId(auth: AuthContext): string | null {
 
 function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any): SQL | undefined {
   return auth.orgCondition(orgIdCol) ?? undefined;
+}
+
+/** Vendor rows needing attention listed in get_backup_status (single-org scope). */
+const VENDOR_ATTENTION_LIMIT = 10;
+
+/**
+ * Third-party (vendor) backup health for get_backup_status's org summary,
+ * from the unified backup read model's provider leg — the same rows Wisp
+ * readiness counts when it says backups are watchable (#10404). Returns null
+ * when the caller has no finite org list (system scope), so the tool says it
+ * did not read vendors instead of implying there are none.
+ */
+async function vendorBackupSummary(auth: AuthContext) {
+  const orgIds = auth.orgId ? [auth.orgId] : auth.accessibleOrgIds;
+  if (!orgIds) return null;
+  const summary = await summarizeBackupHealth({ orgIds }, { sources: ['provider'] });
+  // Attention items are read per org; only fetched for a single-org scope so a
+  // partner-wide call does not fan out one query per customer.
+  const attention = orgIds.length === 1
+    ? await getProviderAttentionItems(orgIds[0]!, { allowedDeviceIds: null, limit: VENDOR_ATTENTION_LIMIT })
+    : [];
+  return {
+    endpoints: summary.endpoints,
+    byHealth: summary.byHealth,
+    byStatus: summary.byStatus,
+    byRecency: summary.byRecency,
+    needsAttention: attention.map((a) => ({ title: a.title, description: a.description })),
+  };
 }
 
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
@@ -308,7 +341,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_backup_status',
-      description: 'Get backup health summary for a device or the entire organization.',
+      description: 'Get backup health summary for a device or the entire organization, covering Breeze backups and synced third-party backup vendors.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -341,7 +374,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         const deviceConditions: SQL[] = [eq(devices.id, deviceId), notParkedDeviceCondition()];
         const dc = orgWhere(auth, devices.orgId);
         if (dc) deviceConditions.push(dc);
-        const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
+        const [device] = await db.select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId }).from(devices)
           .where(and(...deviceConditions)).limit(1);
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
@@ -384,12 +417,17 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           and(eq(backupSnapshots.deviceId, deviceId), ...(snapOrgCond ? [snapOrgCond] : [])),
         );
 
+        // Third-party backup coverage for this device (#10404). The device
+        // passed the org and site checks above, so its own org is the scope.
+        const vendorCoverage = await getProviderCoverageForDevices(device.orgId, [deviceId]);
+
         return JSON.stringify({
           deviceId,
           latestJob: latestJob ?? null,
           lastSuccessfulBackup: lastSuccess?.completedAt ?? null,
           snapshotCount: snapshotStats.count,
           totalBackupSize: snapshotStats.totalBytes,
+          vendorBackup: vendorCoverage.get(deviceId) ?? null,
         });
       }
 
@@ -432,6 +470,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         snapshotConditions.length > 0 ? and(...snapshotConditions) : undefined,
       );
 
+      const vendorBackups = await vendorBackupSummary(auth);
+
       return JSON.stringify({
         configs: {
           total: configStats?.total ?? 0,
@@ -442,6 +482,9 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           snapshotCount: storageStats.count,
           totalBytes: storageStats.totalBytes,
         },
+        // Third-party backup vendors (e.g. Cove) synced into Breeze (#10404).
+        vendorBackups,
+        ...(vendorBackups ? {} : { vendorBackupsNote: 'Vendor backups were not read: this caller has no finite organization list.' }),
       });
     }),
   });

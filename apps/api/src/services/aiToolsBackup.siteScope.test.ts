@@ -27,6 +27,13 @@ vi.mock('../jobs/backupEnqueue', () => ({ enqueueBackupDispatch: vi.fn() }));
 vi.mock('./backupStoredBytes', () => ({
   sumStoredSnapshotBytes: vi.fn(async () => ({ totalBytes: 0, count: 0 })),
 }));
+// The vendor-backup leg (#10404) reads the unified backup read model, whose
+// SQL is covered by its own tests; stubbed empty here.
+vi.mock('./backupHealthReadModel', () => ({
+  summarizeBackupHealth: vi.fn(async () => ({ endpoints: { total: 0, covered: 0, uncovered: 0 }, byHealth: {}, byStatus: {}, byRecency: {} })),
+  getProviderAttentionItems: vi.fn(async () => []),
+  getProviderCoverageForDevices: vi.fn(async () => new Map()),
+}));
 
 import { db } from '../db';
 import { registerBackupTools } from './aiToolsBackup';
