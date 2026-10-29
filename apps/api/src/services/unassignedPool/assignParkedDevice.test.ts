@@ -258,7 +258,7 @@ describe('assignParkedDevice', () => {
   it('after commit: re-evaluates groups, drops both device-count caches, disconnects the agent, audits the target org', async () => {
     await single();
     expect(requestDeviceGroupReevaluation).toHaveBeenCalledWith({
-      deviceId: DEVICE, orgId: TARGET_ORG, eventType: 'device.updated', reason: 'parked_device_assigned',
+      deviceId: DEVICE, orgId: TARGET_ORG, eventType: 'device.created', reason: 'parked_device_assigned',
     });
     expect(vi.mocked(invalidateOrgDeviceCount).mock.calls.map((c) => c[1]).sort()).toEqual([HOLDING_ORG, TARGET_ORG].sort());
     // #8257: the holding org's cached heartbeat policy config is dropped.

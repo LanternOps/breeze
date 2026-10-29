@@ -9,15 +9,18 @@ const { mockSelect, mockInsert, mockDelete, mockEvaluateFilter, mockDeviceMatche
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => work(),
   db: {
     select: mockSelect,
     insert: mockInsert,
     update: vi.fn(),
     delete: mockDelete,
+    execute: vi.fn().mockResolvedValue([]),
   },
 }));
 
 vi.mock('../db/schema', () => ({
+  organizations: { id: 'org.id', partnerId: 'org.partnerId', type: 'org.type' },
   deviceGroups: {
     id: 'group.id',
     type: 'group.type',
@@ -47,23 +50,21 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 import {
+  resolveEffectiveGroupMembers,
+  groupIncludesDevice,
+  pinDeviceToGroup,
+  addManualGroupMemberships,
   evaluateDeviceMembershipForGroup,
   evaluateGroupMembership,
   pruneGroupMembershipsOutsideSite,
   updateDeviceMembership,
 } from './groupMembership';
 
-function selectChain(rows: unknown[], withLimit = false) {
-  // `updateDeviceMembership`'s group SELECT now ends in
-  // `.orderBy(deviceGroups.id)` — a lock-order contract, #4630 review finding 2
-  // — so the non-limit terminal must be thenable AND carry `orderBy`.
-  const terminal = withLimit
-    ? { limit: vi.fn().mockResolvedValue(rows) }
-    : {
-      orderBy: vi.fn().mockResolvedValue(rows),
-      then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve),
-    };
-  return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(terminal) }) };
+function selectChain(rows: unknown[], _withLimit = false) {
+  const terminal = { limit: vi.fn().mockResolvedValue(rows), orderBy: vi.fn().mockResolvedValue(rows),
+    then: (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve) };
+  const from = { where: vi.fn().mockReturnValue(terminal), innerJoin: vi.fn(() => from) };
+  return { from: vi.fn().mockReturnValue(from) };
 }
 
 function membershipJoinChain(rows: unknown[]) {
@@ -117,7 +118,7 @@ describe('evaluateGroupMembership persisted site scope', () => {
         filterConditions: filter,
         filterFieldsUsed: ['osType'],
       }], true))
-      .mockReturnValueOnce(selectChain([{ orgId: 'org-1', siteId: 'site-2' }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-2' }], true))
       .mockReturnValueOnce(selectChain([], true));
     mockDeviceMatchesFilter.mockResolvedValue(false);
 
@@ -134,7 +135,9 @@ describe('evaluateGroupMembership persisted site scope', () => {
         id: 'group-1', orgId: 'org-1', siteId: 'site-1', type: 'dynamic',
         filterConditions: filter, filterFieldsUsed: ['osType'],
       }], true))
-      .mockReturnValueOnce(selectChain([{ orgId: 'org-1', siteId: 'site-2' }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-2' }], true))
+      .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-2' }], true))
       .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true));
 
     const result = await evaluateDeviceMembershipForGroup('group-1', 'device-1');
@@ -147,14 +150,13 @@ describe('evaluateGroupMembership persisted site scope', () => {
   it('reevaluates site-scoped dynamic groups when the device site changes', async () => {
     const filter = { operator: 'AND', conditions: [] };
     mockSelect
-      .mockReturnValueOnce(selectChain([{
-        id: 'group-1', siteId: 'site-1', filterConditions: filter, filterFieldsUsed: ['osType'],
-      }]))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-2' }], true))
       .mockReturnValueOnce(selectChain([{
         id: 'group-1', orgId: 'org-1', siteId: 'site-1', type: 'dynamic',
         filterConditions: filter, filterFieldsUsed: ['osType'],
-      }], true))
-      .mockReturnValueOnce(selectChain([{ orgId: 'org-1', siteId: 'site-2' }], true))
+      }]))
+      .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true))
+      .mockReturnValueOnce(selectChain([{ id: 'device-1', orgId: 'org-1', siteId: 'site-2' }], true))
       .mockReturnValueOnce(selectChain([{ deviceId: 'device-1', isPinned: false }], true));
 
     const result = await updateDeviceMembership('device-1', ['siteId'], 'org-1');
@@ -163,7 +165,8 @@ describe('evaluateGroupMembership persisted site scope', () => {
   });
 
   it('prunes pinned and dynamic memberships outside a reassigned group site', async () => {
-    mockSelect.mockReturnValueOnce(membershipJoinChain([
+    mockSelect.mockReturnValueOnce(selectChain([{ id: 'group-1', orgId: 'org-1' }], true))
+      .mockReturnValueOnce(membershipJoinChain([
       { deviceId: 'pinned-old-site', siteId: 'site-1', isPinned: true },
       { deviceId: 'dynamic-old-site', siteId: 'site-1', isPinned: false },
       { deviceId: 'new-site-member', siteId: 'site-2', isPinned: false },
@@ -174,5 +177,39 @@ describe('evaluateGroupMembership persisted site scope', () => {
     expect(result).toEqual({ removed: 2 });
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockInsert).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('partner-owned group billing and org-only entry points', () => {
+  const group = { id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null, type: 'dynamic' as const, filterConditions: { operator: 'AND', conditions: [] } };
+  beforeEach(() => vi.resetAllMocks());
+
+  it('org groups cannot resolve in a different evaluation org', async () => {
+    await expect(resolveEffectiveGroupMembers({ ...group, orgId: 'org-1', partnerId: null }, 'org-2'))
+      .rejects.toMatchObject({ reason: 'unsupported_owner' });
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it('the org-only whole-group entry point rejects partner groups', async () => {
+    mockSelect.mockReturnValueOnce(selectChain([group], true));
+    await expect(evaluateGroupMembership(group.id)).rejects.toMatchObject({ reason: 'unsupported_owner' });
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('groupIncludesDevice returns false for partner groups without querying', async () => {
+    expect(await groupIncludesDevice(group, { id: 'device-1', orgId: 'org-1', siteId: null, isEphemeral: false })).toBe(false);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it.each(['prune', 'pin', 'manual'])('%s refuses an internally requested partner-group membership write', async (kind) => {
+    mockSelect.mockReturnValueOnce(selectChain([group], true));
+    const pending = kind === 'prune' ? pruneGroupMembershipsOutsideSite(group.id, 'site-1', 'org-1')
+      : kind === 'pin' ? pinDeviceToGroup(group.id, 'device-1', true, 'org-1')
+      : addManualGroupMemberships({ groupId: group.id, orgId: 'org-1', deviceIds: ['device-1'] });
+    await expect(pending).rejects.toThrow('partner-owned device groups are read-only');
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

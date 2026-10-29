@@ -309,6 +309,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },
   'alerts/alerts.ts': { tools: ['manage_alerts'] },
+  'alerts/alertExternalTickets.ts': { tools: ['manage_alerts'] },
   'alerts/channels.ts': { tools: ['manage_notification_channels'] },
   'alerts/correlations.ts': { tools: ['get_alert_correlations', 'manage_alert_correlations'] }, // W07 (#6777)
   'alerts/delivery.ts': { tools: ['manage_delivery'] },
@@ -602,6 +603,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
+  'partnerApi/alertWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API alert acknowledge and resolve for service principals; in-product alert writes already have tools (manage_alerts).' },
   'partnerApi/ticketWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API ticket writes for service principals; in-product ticket writes already have tools (manage_tickets).' },
   'partnerApi/audit.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'partnerApi/configuration.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
@@ -800,6 +802,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templates.ts': { tools: ['manage_topology_templates'] }, // W08 (#6778): templates, versions, publish (supervised), site options
   'flows.ts': { tools: ['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run'] }, // Tool Catalog W03/W04 (#5218/#5219): list/detail + run/runs/cancel; drafts via draft_flow, enable/disable are UI-only.
   'flowLimits.ts': { exempt: 'tool_in_later_wave', note: 'Flow limits settings (partner default / org lower-only override, Tool Catalog W05 #5220); no MCP tool planned yet — caps are read through get_flow usage.' },
+  'flowConversions.ts': { exempt: 'tool_in_later_wave', note: 'Legacy Job → flow conversions (preview, create, bulk, list/get; Tool Catalog W06 #5221). Converting is an interactive-session action; manage_automations list/get/history report each Job\'s conversion.' },
   'flowWebhooks.ts': { exempt: 'inbound_integration', note: 'Public flow webhook ingress (Tool Catalog W05); HMAC/token authenticated, not an operator surface.' },
   'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },

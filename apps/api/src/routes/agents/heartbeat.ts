@@ -401,6 +401,19 @@ export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
 }
 
 /**
+ * #8928 — normalize the PAM user-notify protocol (pam_request_notify outcome
+ * notices).
+ *   1 — the agent tracks a request handed to IT and shows outcome notices.
+ *   2 — #10190 W07: also decodes `decidedBy` on pam_apply_v2 (whose decoder
+ *       rejects unknown fields, so the apply worker adds it only at >= 2) and
+ *       draws the elevation prompt states.
+ * Anything else means "not capable" (0).
+ */
+export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 | 2 {
+  return value === 1 || value === 2 ? value : 0;
+}
+
+/**
  * Normalize the only revocation-lease protocol version implemented here.
  * Anything other than exactly 1 — absent, malformed, or a future version this
  * server does not speak — is capability 0, and every desktop-start dispatch
@@ -1164,6 +1177,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
     pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+    pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+      data.securityCapabilities?.pamUserNotifyProtocolVersion,
+    ),
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -2002,6 +2018,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
       pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+      pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+        data.securityCapabilities?.pamUserNotifyProtocolVersion,
+      ),
     },
   );
 

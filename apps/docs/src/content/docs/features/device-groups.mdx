@@ -459,8 +459,8 @@ All group endpoints require authentication and one of the following scopes: `org
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | List groups. Query params: `siteId`, `type`, `parentId`, `search` |
-| `POST` | `/` | Create a group |
+| `GET` | `/` | List groups. Query params: `ownerScope` (`organization`, `partner`, `all`; default `organization`), `orgId`, `siteId`, `type`, `parentId`, `search` |
+| `POST` | `/` | Create a group. Body: `ownerScope` (`organization` or `partner`; default `organization`) |
 | `GET` | `/:id` | Get a single group |
 | `PATCH` | `/:id` | Update a group |
 | `DELETE` | `/:id` | Delete a group (fails if it has child groups) |
@@ -471,6 +471,38 @@ All group endpoints require authentication and one of the following scopes: `org
 | `POST` | `/:id/devices/:deviceId/pin` | Pin a device in a dynamic group |
 | `DELETE` | `/:id/devices/:deviceId/pin` | Unpin a device from a dynamic group |
 | `GET` | `/:id/membership-log` | Query the membership change audit log |
+
+### Partner ownership and visibility
+
+Partner users with access to all organizations can create, edit, and delete their partner's groups through the primary endpoints. Partner ownership is chosen only on creation; `PATCH` cannot change it. The API derives `partnerId` from the authenticated partner user. System users can edit and delete partner groups, but creating one requires a partner user.
+
+Partner groups must be dynamic and supply `filterConditions`. Creation rejects body `orgId`, `siteId`, `parentId`, `deviceIds`, and legacy `rules`; query `orgId` does not change the owner. Partner groups cannot have a site or parent, use legacy rules, become static, or clear their filter. Filters may use `siteId`, but `orgId` and `groupId` conditions are rejected anywhere in a partner filter. Organization-group filters also cannot reference a partner group.
+
+`GET /?ownerScope=all` combines organization and partner groups. `orgId` narrows the organization groups and partner membership counts. `siteId` or `parentId` excludes partner groups; `type` and `search` apply to both owner kinds. Partner users with selected organization access can read their partner's definitions, but counts, members, logs, and previews include only accessible organizations. Partner users with no organization access see no partner groups.
+
+Organization users can list and get their own partner's groups and list their own organization's members. Their group DTO carries the name and the All orgs badge fields (`ownerScope: "partner"`, `orgId: null`, `partnerId`), with `filterConditions: null`, `rules: null`, `filterFieldsUsed: []`, `evaluation: null`, and no `policy`. Counts are restricted to their own organization. These users cannot preview, edit, delete, or read membership logs for a partner group. Site-restricted organization users see no partner groups in lists; direct group and member reads return 403 because partner groups have no site.
+
+Group DTOs include `orgId`, `partnerId`, `ownerScope`, and `evaluation`. Organization groups have `partnerId: null` and `evaluation: null`. For partner users and system users, a partner group's `evaluation` is:
+
+```json
+{
+  "state": "pending",
+  "evaluatedAt": null,
+  "failedOrgs": 0
+}
+```
+
+`state` is `pending` while the evaluated revision trails the filter revision, `partial` when that revision is evaluated but some organizations failed, and `current` otherwise. `evaluatedAt` is an ISO timestamp or `null`. Create and filter edits enqueue membership evaluation. Partner previews evaluate eligible organizations sequentially within a 5-second budget, exclude Quick Support and holding organizations, and return `partial`, `evaluatedOrgs`, and `totalOrgs` alongside `totalCount`, `devices`, and `evaluatedAt`. Device rows include `orgId`.
+
+Partner-owned configuration policies may target their own partner's groups. These assignments use device-group precedence (priority 4), above organization- and site-level assignments. Organization-owned policies cannot target partner groups.
+
+| Refusal | Response |
+|---|---|
+| Partner-group add/remove devices or pin/unpin | 400 `PARTNER_GROUP_READ_ONLY` |
+| Unsupported filter reference (`orgId`/`groupId` in a partner filter, or a partner-group reference in an organization filter) | 400 `PARTNER_GROUP_FILTER_UNSUPPORTED` |
+| Partner group used on an unsupported target surface | 400 `PARTNER_GROUP_TARGET_UNSUPPORTED` |
+| Readable partner group edited or deleted by a partner user without all-organization access | 403 |
+| Partner group outside the caller's read scope, or an organization session using a closed partner-group endpoint | 404, identical to an unknown group |
 
 ### Device-scoped group endpoints (`/api/v1/devices/groups`)
 
@@ -492,7 +524,8 @@ The feature uses three tables:
 | Column | Type | Description |
 |---|---|---|
 | `id` | uuid (PK) | Auto-generated group ID |
-| `org_id` | uuid (FK) | Organization the group belongs to |
+| `org_id` | uuid (FK, nullable) | Owning organization; null for a partner-owned group |
+| `partner_id` | uuid (FK, nullable) | Owning partner; exactly one of `org_id` and `partner_id` is set |
 | `site_id` | uuid (FK, nullable) | Optional site scope |
 | `name` | varchar(255) | Group name |
 | `type` | enum | `static` or `dynamic` |

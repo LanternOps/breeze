@@ -6,6 +6,9 @@
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
+import { ERROR_CODES } from '@breeze/shared';
+import { findPartnerGroupRefs } from './groupFilterRefs';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -136,6 +139,7 @@ import {
   managedAutomationOwnerIsLive,
 } from './aiAgents/managedAutomation';
 import { MANAGED_BY_MONITOR_ERROR } from './monitors/managedRowGuard';
+import { conversionSummariesFor } from './flows/conversion/ledger';
 import type {
   FleetFindingKind,
   FleetFindingSeverity,
@@ -1686,6 +1690,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_groups', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+      const canReadPartnerGroups = auth.scope === 'partner' && !!auth.partnerId && auth.partnerOrgAccess !== 'none';
+      const groupReadCondition = auth.scope === 'system' ? undefined : or(
+        and(isNotNull(deviceGroups.orgId), orgWhere(auth, deviceGroups.orgId)),
+        canReadPartnerGroups && auth.partnerId
+          ? and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, auth.partnerId))
+          : undefined,
+      );
+      const groupReadable = (group: { orgId: string | null; partnerId: string | null }): boolean =>
+        group.orgId !== null || auth.scope === 'system'
+        || (canReadPartnerGroups && group.partnerId === auth.partnerId);
 
       // Device groups are SITE-shaped, so read paths gate on the group's site.
       // update and delete are not read paths: delete removes every member's
@@ -1707,7 +1721,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'list') {
         const conditions: SQL[] = [];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
         if (typeof input.type === 'string') conditions.push(eq(deviceGroups.type, input.type as 'static' | 'dynamic'));
         if (typeof input.siteId === 'string') conditions.push(eq(deviceGroups.siteId, input.siteId as string));
@@ -1725,6 +1739,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const limit = Math.min(Math.max(1, Number(input.limit) || 25), 200);
         const rows = await db.select({
           id: deviceGroups.id,
+          orgId: deviceGroups.orgId,
+          partnerId: deviceGroups.partnerId,
           name: deviceGroups.name,
           type: deviceGroups.type,
           siteId: deviceGroups.siteId,
@@ -1740,17 +1756,18 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'get') {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, group.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
         const members = await db.select({
           deviceId: deviceGroupMemberships.deviceId,
+          orgId: deviceGroupMemberships.orgId,
           hostname: devices.hostname,
           status: devices.status,
           osType: devices.osType,
@@ -1758,7 +1775,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           addedAt: deviceGroupMemberships.addedAt,
         }).from(deviceGroupMemberships)
           .leftJoin(devices, eq(deviceGroupMemberships.deviceId, devices.id))
-          .where(eq(deviceGroupMemberships.groupId, group.id))
+          .where(and(eq(deviceGroupMemberships.groupId, group.id),
+            group.orgId === null && auth.scope !== 'system'
+              ? inArray(deviceGroupMemberships.orgId, auth.accessibleOrgIds ?? []) : undefined,
+          ))
           .limit(limit);
 
         // Exact-device axis (#6096): the GROUP may be in the caller's site, but
@@ -1805,24 +1825,28 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'membership_log') {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, group.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
         const rows = await db.select({
           deviceId: groupMembershipLog.deviceId,
+          orgId: groupMembershipLog.orgId,
           hostname: devices.hostname,
           action: groupMembershipLog.action,
           reason: groupMembershipLog.reason,
           createdAt: groupMembershipLog.createdAt,
         }).from(groupMembershipLog)
           .leftJoin(devices, eq(groupMembershipLog.deviceId, devices.id))
-          .where(eq(groupMembershipLog.groupId, group.id))
+          .where(and(eq(groupMembershipLog.groupId, group.id),
+            group.orgId === null && auth.scope !== 'system'
+              ? inArray(groupMembershipLog.orgId, auth.accessibleOrgIds ?? []) : undefined,
+          ))
           .orderBy(desc(groupMembershipLog.createdAt))
           .limit(limit);
 
@@ -1843,6 +1867,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (deviceSiteDenied(auth, (input.siteId as string) ?? null)) {
           return JSON.stringify({ error: 'Access denied: cannot create a group in a site outside your access' });
         }
+        if ((await findPartnerGroupRefs(input.filterConditions)).length > 0) {
+          return JSON.stringify({ error: 'Organization groups cannot reference partner-wide device groups',
+            code: ERROR_CODES.PARTNER_GROUP_FILTER_UNSUPPORTED });
+        }
         const [group] = await db.insert(deviceGroups).values({
           orgId: groupOrgId,
           name: input.name as string,
@@ -1857,11 +1885,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'update') {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!existing || !groupReadable(existing)) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Exact-device axis, beside the site check and never inside it (#6096 I2).
@@ -1873,6 +1902,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: DEVICE_SCOPE_FLEET_DENIED_MESSAGE });
         }
 
+        if ((await findPartnerGroupRefs(input.filterConditions)).length > 0) {
+          return JSON.stringify({ error: 'Organization groups cannot reference partner-wide device groups',
+            code: ERROR_CODES.PARTNER_GROUP_FILTER_UNSUPPORTED });
+        }
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (input.filterConditions) updates.filterConditions = input.filterConditions;
@@ -1884,11 +1917,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       if (action === 'delete') {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!existing || !groupReadable(existing)) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Exact-device axis (#6096 I2): the delete unmembers every device in the
@@ -1899,7 +1933,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
         try {
-          result = await deleteDeviceGroup(existing.id, existing.orgId);
+          result = await deleteDeviceGroup(existing.id, { orgId: existing.orgId });
         } catch (err) {
           if (err instanceof DeviceGroupDeleteError) return JSON.stringify({ error: err.message, code: err.code });
           throw err;
@@ -1912,12 +1946,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         if (!Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'deviceIds is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
 
+        const orgId = group.orgId;
         const deviceIdList = (input.deviceIds as string[]).slice(0, 100);
         // Only add devices that belong to the group's org AND are in the caller's
         // site scope. Site is an app-layer axis (RLS does NOT enforce it), so
@@ -1935,7 +1971,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .values(insertableIds.map((deviceId) => ({
             groupId: group.id,
             deviceId,
-            orgId: group.orgId,
+            orgId,
             addedBy: 'manual' as const,
           })))
           .onConflictDoNothing()
@@ -1951,11 +1987,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!input.groupId) return JSON.stringify({ error: 'groupId is required' });
         if (!Array.isArray(input.deviceIds)) return JSON.stringify({ error: 'deviceIds is required' });
         const conditions: SQL[] = [eq(deviceGroups.id, input.groupId as string)];
-        const oc = orgWhere(auth, deviceGroups.orgId);
+        const oc = groupReadCondition;
         if (oc) conditions.push(oc);
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
-        if (!group) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
+        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
 
         const requestedIds = (input.deviceIds as string[]).slice(0, 100);
         // Only remove devices in the caller's site scope. Site is an app-layer
@@ -2030,6 +2067,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_maintenance_windows', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update') {
+        const partnerGroupIds = await findPartnerOwnedGroupIds((input.groupIds as string[] | undefined) ?? []);
+        if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
+      }
 
       // NOTE (#3654): the create/update/delete blocks further down are dead —
       // this guard and the `action` enum both exclude them. If they are ever
@@ -2391,6 +2433,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .limit(limit);
         }
 
+        // W06 (#5221, Decision 9): each row carries its conversion ({ id, state, flowId } | null).
+        const conversions = await conversionSummariesFor(visible.map((a: { id: string }) => a.id));
+        visible = visible.map((a: { id: string }) => ({ ...a, conversion: conversions.get(a.id) ?? null }));
         return JSON.stringify({ automations: visible, showing: visible.length });
       }
 
@@ -2406,11 +2451,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
         if (isScopeNarrowedCaller(auth)) {
           const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
-          return JSON.stringify({ automation: restricted });
+          return JSON.stringify({ automation: { ...restricted, conversion } });
         }
-        return JSON.stringify({ automation: auto });
+        return JSON.stringify({ automation: { ...auto, conversion } });
       }
 
       if (action === 'history') {
@@ -2438,7 +2484,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             limit,
           })).rows;
 
-        return JSON.stringify({ automationId: auto.id, runs: page, showing: page.length });
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
+        return JSON.stringify({ automationId: auto.id, conversion, runs: page, showing: page.length });
       }
 
       if (action === 'create') {
@@ -2534,6 +2581,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): a switched Job is frozen; its flow runs it now.
+        if (existing.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: existing.convertedToFlowId });
+        }
         if (isManagedAutomation(existing)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
         }
@@ -2554,9 +2605,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (toggleDenied) return JSON.stringify({ error: toggleDenied });
 
         const enabled = action === 'enable';
-        await db.update(automations)
+        // Re-checked after any lock wait: a switch that committed since the read above wins (#10685).
+        const toggled = await db.update(automations)
           .set({ enabled, updatedAt: new Date() })
-          .where(eq(automations.id, existing.id));
+          .where(and(eq(automations.id, existing.id), isNull(automations.convertedToFlowId)))
+          .returning({ id: automations.id });
+        if (toggled.length === 0) {
+          const [now] = await db.select({ flowId: automations.convertedToFlowId }).from(automations).where(eq(automations.id, existing.id)).limit(1);
+          return JSON.stringify(now?.flowId ? { error: 'automation_converted', flowId: now.flowId } : { error: 'Automation not found or access denied' });
+        }
 
         return JSON.stringify({ success: true, message: `Automation "${existing.name}" ${enabled ? 'enabled' : 'disabled'}` });
       }
@@ -2569,6 +2626,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): see the enable/disable branch above.
+        if (auto.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: auto.convertedToFlowId });
+        }
         if (isManagedAutomation(auto)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: auto.managedByAgentId });
         }

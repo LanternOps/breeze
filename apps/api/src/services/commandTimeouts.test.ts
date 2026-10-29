@@ -12,6 +12,16 @@ import { CommandTypes } from './commandQueue';
 import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
 
 describe('command timeouts', () => {
+  it('gives pam_request_notify an explicit 2-minute timeout without the unknown-type warning (#8928)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(getCommandTimeoutMs(CommandTypes.PAM_REQUEST_NOTIFY)).toBe(2 * 60 * 1000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('times caller_verify out just past the longest prompt the helper can show (#6354 W02)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

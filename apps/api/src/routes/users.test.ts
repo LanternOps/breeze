@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ERROR_CODES } from '@breeze/shared';
 import { Hono } from 'hono';
@@ -347,6 +352,21 @@ function joinChain(rows: unknown[]): any {
 }
 
 describe('user routes', () => {
+  it.each(['POST'])('refuses partner group user scope on invite without persisting (%s)', async (method) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+
+    const res = await app.request('/users/invite', {
+      method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({email:'tech@example.com',name:'Tech',roleId:groupId,deviceGroupIds:[groupId]}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   let app: Hono;
 
   function authAsSystem() {

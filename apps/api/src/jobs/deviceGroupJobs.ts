@@ -83,9 +83,11 @@ export const DEVICE_GROUP_REEVALUATION_QUEUE = 'device-group-reevaluation';
 const JOB_NAME = 'group-reevaluation';
 
 /**
- * Only the two event types a request path can produce. `device.deleted` is
- * handled synchronously by the cascade, and the hardware/network/software
- * variants have no wired producer yet (see the PR body's unwired list).
+ * Only two event types: `device.created` evaluates every dynamic group in the
+ * device's org (enrolment, provisioning, and org moves); `device.updated`
+ * evaluates only groups whose `filter_fields_used` overlap the changed fields.
+ * Hardware and software producers send `device.updated` with dotted fields:
+ * `hardware.health`, `software.installed`, and `software.notInstalled`.
  */
 export type DeviceGroupReevaluationEventType = 'device.created' | 'device.updated';
 
@@ -273,9 +275,10 @@ const afterCommitEnqueueChains = new Map<string, Promise<unknown>>();
  * delay alone does not close the commit race: the job would run against the
  * pre-import snapshot, "succeed", and never retry. Deferring the enqueue to
  * after commit makes the delay irrelevant. Producers: PATCH /devices/:id, the
- * `manage_tags` AI tool, and `persistDeviceCustomFieldValues` (which covers
- * every application-level custom-field value writer). With no DB context held
- * the enqueue starts immediately.
+ * `manage_tags` AI tool, `persistDeviceCustomFieldValues` (all application-level
+ * custom-field value writers), device site moves, fleet-design role apply and
+ * rollback, POST /devices/:id/move-org, and `ingestSoftwareInventoryReport`.
+ * With no DB context held the enqueue starts immediately.
  *
  * Enqueues for one device are SERIALIZED in-process. A single PATCH that
  * edits tags and a custom field registers two of these, and both start on the
@@ -336,16 +339,18 @@ export async function processDeviceGroupReevaluation(
     // Without the delay this branch would also swallow "committing right now",
     // silently dropping the evaluation with no error and no retry.
     //
-    // EXCEPT on device.created: that row must exist, and the one way it can be
-    // missing after the delay is an enrolment transaction still open past 5s
-    // (hosted `issueMtlsCertForDevice` is an unbounded Cloudflare fetch) or
-    // rolled back. Completing here would drop the device's first-ever
-    // evaluation with nothing to rescue it later, so throw: `attempts` retries
-    // with backoff, and a genuine rollback ends in removeOnFail retention
-    // where it is visible — never a silent no-op (#5039 round-3 review).
+    // EXCEPT on device.created: the row may be missing because an enrolment
+    // transaction is still open past 5s (hosted `issueMtlsCertForDevice` is an
+    // unbounded Cloudflare fetch) or rolled back. Org moves and parked-device
+    // assignment use this event too, so a device deleted after its move also
+    // lands here. Completing would risk dropping an enrolling device's
+    // first-ever evaluation with nothing to rescue it later, so throw:
+    // `attempts` retries with backoff, and a genuine rollback (or deletion)
+    // ends in removeOnFail retention where it is visible — never a silent
+    // no-op (#5039 round-3 review).
     if (data.eventType === 'device.created') {
       throw new Error(
-        `device.created re-evaluation found no row for device ${data.deviceId}; retrying (enrolment not yet committed?)`,
+        `device.created re-evaluation (reason ${data.reason}) found no row for device ${data.deviceId}; retrying (enrolment not yet committed, or the device was deleted after a move?)`,
       );
     }
     return { evaluated: false, orgId: null };
