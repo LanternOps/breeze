@@ -1017,6 +1017,16 @@ export default function PatchesPage() {
               )}
             </div>
           )}
+          {/* An empty ring has no device reports of its own, so device-derived
+              severity reads Unrated until devices are assigned (#9930). */}
+          {selectedRingId && rings.find((r) => r.id === selectedRingId)?.deviceCount === 0 && (
+            <div
+              data-testid="patches-empty-ring-notice"
+              className="mt-4 rounded-md border border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground"
+            >
+              {t('patchesPage.emptyRingSeverityNotice')}
+            </div>
+          )}
           <PatchList
             patches={sourceFilter === 'all' ? patches : patches.filter((p) => p.source === sourceFilter)}
             loading={patchesLoading}
