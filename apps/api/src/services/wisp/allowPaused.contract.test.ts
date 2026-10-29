@@ -62,4 +62,14 @@ describe('allowPaused ceiling reads (W02a, #10104)', () => {
       { verb: 'get', path: '/:id' },
     ]);
   });
+
+  it('assertReadWithinCeiling (no status gate) is used only by the activity read belt', () => {
+    const users = walk(SRC)
+      .filter((p) => p.endsWith('.ts') && !p.endsWith('.test.ts'))
+      .filter((p) => /\bassertReadWithinCeiling\b/.test(readFileSync(p, 'utf8')))
+      .map((p) => relative(SRC, p).replace(/\\/g, '/'))
+      .sort();
+    // Defined in grantAuthority; any new user is a read path by definition and must be added here deliberately.
+    expect(users).toEqual(['services/wisp/activity.ts', 'services/wisp/grantAuthority.ts']);
+  });
 });
