@@ -172,6 +172,12 @@ export const CommandTypes = {
   // while; registering it here is what makes it queueable. Partner-trust gated
   // (GATED_COMMAND_TYPES), never a lifecycle type: it carries operator content.
   NOTIFY_USER: 'notify_user',
+  // PAM outcome notice (#8928): tells the user who handed an elevation request
+  // to IT that it was denied (with the technician's reason) or expired.
+  // Fire-and-forget; no result handler. Partner-trust GATED like notify_user,
+  // because the deny reason is technician free text. Claimable only by agents
+  // reporting pamUserNotifyProtocolVersion 1 (commandDispatch claim gate).
+  PAM_REQUEST_NOTIFY: 'pam_request_notify',
   // Endpoint messaging W02 (#8742): withdraw a message already on screen.
   // Carries no operator content (only the message id), so it is a lifecycle
   // type: a restricted partner can still take a message down.

@@ -666,3 +666,53 @@ describe('PamRespondModal non-success outcomes on a 200', () => {
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+describe('PamRespondModal deny reason disclosure (#8928)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    respondRecordsRequestedDecision();
+  });
+
+  it('tells the technician the deny reason is shown to the end user, linked by aria-describedby', () => {
+    render(
+      <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />,
+    );
+    fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+
+    const textarea = screen.getByTestId('pam-respond-reason');
+    expect(screen.getByLabelText('Reason (shown to the user)')).toBe(textarea);
+    const hint = screen.getByTestId('pam-respond-reason-hint');
+    expect(hint).toHaveTextContent(
+      'The end user sees this in their notification (first 500 characters).',
+    );
+    expect(textarea.getAttribute('aria-describedby')).toBe(hint.id);
+    expect(textarea).toHaveAttribute('maxlength', '2000');
+  });
+
+  // The server sends the end-user notice only for uac_intercept (pam.ts), so
+  // for the other flows the reason is audit-only and must not claim otherwise.
+  it.each(['tech_jit_admin', 'ai_tool_action'] as const)(
+    'keeps the optional label and no end-user hint when denying a %s request',
+    (flowType) => {
+      render(
+        <PamRespondModal request={requestFixture({ flowType })} onClose={() => {}} onActioned={() => {}} />,
+      );
+      fireEvent.click(screen.getByTestId('pam-respond-deny-toggle'));
+
+      expect(screen.getByLabelText('Reason (optional)')).toBe(screen.getByTestId('pam-respond-reason'));
+      expect(screen.queryByText('Reason (shown to the user)')).toBeNull();
+      expect(screen.queryByTestId('pam-respond-reason-hint')).toBeNull();
+      expect(screen.getByTestId('pam-respond-reason')).not.toHaveAttribute('aria-describedby');
+    },
+  );
+
+  it('keeps the optional label and no end-user hint on approve', () => {
+    render(
+      <PamRespondModal request={requestFixture()} onClose={() => {}} onActioned={() => {}} />,
+    );
+
+    expect(screen.getByLabelText('Reason (optional)')).toBe(screen.getByTestId('pam-respond-reason'));
+    expect(screen.queryByTestId('pam-respond-reason-hint')).toBeNull();
+    expect(screen.getByTestId('pam-respond-reason')).not.toHaveAttribute('aria-describedby');
+  });
+});

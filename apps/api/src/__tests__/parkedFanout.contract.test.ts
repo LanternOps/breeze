@@ -393,6 +393,7 @@ const EXEMPT: Record<string, string> = {
   'services/officeAddin/emailContext.ts': 'request path: human tech-auth path; every org lookup filtered by tech.canAccessOrg/accessibleOrgIds',
   'services/offlineAlertEffects.ts': 'derived: acts on an alert-plan effect, which offlineEffectsStore never writes for a parked device',
   'services/pamActuationLifecycle.ts': 'derived: locks the one device named by an elevation request the caller already holds; selects no work',
+  'services/pamRequestNotify.ts': 'derived: reads the capability of the one device named by an elevation request the caller just denied or expired; selects no work (#8928)',
   'services/pamActuationResult.ts': 'agent self-service: agent posts result for its own deviceId/agentId/commandId only',
   'services/pamToolActionGovernance.ts': 'agent self-service: helper on one device drives its own tool-action elevation request',
   'services/partnerTrust.repo.ts': 'derived: single id lookups (partnerId/orgId/deviceId) supplied by caller, no enumeration',

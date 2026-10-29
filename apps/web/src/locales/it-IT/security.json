@@ -1129,6 +1129,8 @@
       "durationHelp": "Da 1 a 1440 minuti (max 24h).",
       "reasonRecommended": "Motivo (consigliato)",
       "reasonOptional": "Motivo (facoltativo)",
+      "reasonShownToUser": "Motivo (mostrato all’utente)",
+      "reasonShownToUserHint": "L’utente finale lo vede nella sua notifica (primi 500 caratteri).",
       "reasonPlaceholder": "Registrato nel registro di controllo"
     },
     "actions": {

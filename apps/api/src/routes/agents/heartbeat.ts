@@ -401,6 +401,14 @@ export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
 }
 
 /**
+ * #8928 — normalize the PAM user-notify protocol (pam_request_notify outcome
+ * notices). Anything other than exactly 1 means "not capable".
+ */
+export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/**
  * Normalize the only revocation-lease protocol version implemented here.
  * Anything other than exactly 1 — absent, malformed, or a future version this
  * server does not speak — is capability 0, and every desktop-start dispatch
@@ -1164,6 +1172,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
     pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+    pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+      data.securityCapabilities?.pamUserNotifyProtocolVersion,
+    ),
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -2002,6 +2013,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
       pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+      pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+        data.securityCapabilities?.pamUserNotifyProtocolVersion,
+      ),
     },
   );
 
