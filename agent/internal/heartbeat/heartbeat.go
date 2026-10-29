@@ -3907,6 +3907,7 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 		providersRaw, providersPresent = m["applicationProviders"]
 	}
 	var providers []string
+	var rejectedNonStrings []string
 	providersArray := false
 	switch values := providersRaw.(type) {
 	case []any:
@@ -3914,20 +3915,26 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 		for _, value := range values {
 			if name, ok := value.(string); ok {
 				providers = append(providers, name)
+			} else {
+				rejectedNonStrings = append(rejectedNonStrings, fmt.Sprint(value))
 			}
 		}
 	case []string:
 		providersArray = true
 		providers = values
 	}
+	if providersPresent && !providersArray {
+		log.Warn("event log application_providers is not an array; keeping current list", "type", fmt.Sprintf("%T", providersRaw))
+	}
 	if providersPresent && providersArray {
 		changed, rejected := h.eventLogCol.UpdateApplicationProviders(providers)
+		rejected = append(rejected, rejectedNonStrings...)
 		h.mu.Lock()
 		warnRejected := len(rejected) > 0 && (changed || !slices.Equal(h.eventLogRejectedProviders, rejected))
 		h.eventLogRejectedProviders = append([]string(nil), rejected...)
 		h.mu.Unlock()
 		if warnRejected {
-			log.Warn("rejected invalid event log application providers", "providers", rejected)
+			log.Warn("rejected event log application providers (invalid name or over the 20-provider limit)", "providers", rejected)
 		}
 		if changed {
 			log.Info("applied event log application providers", "applicationProviders", h.eventLogCol.ApplicationProviders())

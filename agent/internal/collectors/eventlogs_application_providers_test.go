@@ -69,10 +69,12 @@ func TestApplicationProviderInjectionPipeline(t *testing.T) {
 	bad := []string{"bad'name", `bad"name`, "bad[name", "bad]name", "bad<name", "bad&name", "bad`name", "bad;name"}
 	c := NewEventLogCollector()
 	c.UpdateApplicationProviders(append(bad, "MSSQL$SQLEXPRESS"))
+	matched := 0
 	for _, stream := range windowsEventStreams([]string{"application"}, effectiveApplicationProviders(c.ApplicationProviders())) {
 		if stream.key != "application-providers" {
 			continue
 		}
+		matched++
 		now := time.Now()
 		xpath, _ := buildWinEventXPath(stream.selection, nil, now, now)
 		command := buildWinEventCommand(stream.logName, xpath)
@@ -87,6 +89,13 @@ func TestApplicationProviderInjectionPipeline(t *testing.T) {
 		if !strings.Contains(command, "-FilterXPath "+psSingleQuote(xpath)+" -Oldest") {
 			t.Fatalf("XPath not one quoted literal: %s", command)
 		}
+	}
+	if matched != 1 {
+		t.Fatalf("matched %d application-providers streams, want exactly 1", matched)
+	}
+	selection := applicationProviderSelection([]string{"bad'name", "a]b", "UPS"})
+	if selection != "Provider[@Name='UPS'] and (Level=3 or Level=4)" {
+		t.Fatalf("unsafe provider selection: %s", selection)
 	}
 }
 

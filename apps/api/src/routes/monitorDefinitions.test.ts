@@ -164,6 +164,8 @@ function selectChain<T>(rows: T) {
 
 vi.mock('../db', () => ({
   db: { select: selectMock },
+  hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 import { monitorDefinitionRoutes } from './monitorDefinitions';

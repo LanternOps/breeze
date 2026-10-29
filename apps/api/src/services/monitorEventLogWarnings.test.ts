@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { loadPolicyApplicationProviders, captureException } = vi.hoisted(() => ({
+const { loadPolicyApplicationProviders, captureException, hasDbAccessContext, withDbTransaction } = vi.hoisted(() => ({
   loadPolicyApplicationProviders: vi.fn(),
   captureException: vi.fn(),
+  hasDbAccessContext: vi.fn(() => true),
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('./eventLogPolicyProviders', () => ({ loadPolicyApplicationProviders }));
 vi.mock('./sentry', () => ({ captureException }));
+vi.mock('../db', () => ({ hasDbAccessContext, withDbTransaction }));
 
 import { policyAwareMonitorEventLogWarnings } from './monitorEventLogWarnings';
 
@@ -17,7 +20,10 @@ const dellRule = {
   partnerId: null,
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  hasDbAccessContext.mockReturnValue(true);
+});
 
 describe('policyAwareMonitorEventLogWarnings', () => {
   it('skips the policy lookup for monitors without an event_log condition', async () => {
@@ -36,5 +42,17 @@ describe('policyAwareMonitorEventLogWarnings', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('Dell UPS');
     expect(captureException).toHaveBeenCalled();
+  });
+
+  it('runs the lookup in a savepoint so a failed query cannot abort the request transaction that holds the saved monitor', async () => {
+    loadPolicyApplicationProviders.mockResolvedValue([]);
+    await policyAwareMonitorEventLogWarnings(dellRule);
+    expect(withDbTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the lookup outside a DB access context (built-in check only)', async () => {
+    hasDbAccessContext.mockReturnValue(false);
+    expect(await policyAwareMonitorEventLogWarnings(dellRule)).toHaveLength(1);
+    expect(loadPolicyApplicationProviders).not.toHaveBeenCalled();
   });
 });

@@ -683,6 +683,7 @@
         "removeProvider": "Kaldır",
         "removeProviderNamed": "{{provider}} sağlayıcısını kaldır",
         "providerNameInvalid": "Bir harf veya rakamla başlayan 1–{{max}} karakter kullanın. İzin verilenler: harfler, rakamlar, boşluklar, noktalar, alt çizgiler, dolar işaretleri, parantezler ve kısa çizgiler.",
+        "providerLimitReached": "En fazla {{max}} ek sağlayıcı ekleyebilirsiniz. Başka bir sağlayıcı eklemek için birini kaldırın.",
         "providerAlreadyListed": "Bu sağlayıcı zaten listede.",
         "providerLimit": "{{max}} ek sağlayıcıdan {{total}} tanesi"
       },

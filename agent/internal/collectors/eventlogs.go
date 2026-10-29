@@ -60,6 +60,7 @@ type EventLogCollector struct {
 	minimumLevel                      string
 	intervalMinutes                   int
 	policyApplicationProviders        []string
+	applicationProvidersConfigured    bool
 	applicationProviderReanchorLogged []string
 }
 

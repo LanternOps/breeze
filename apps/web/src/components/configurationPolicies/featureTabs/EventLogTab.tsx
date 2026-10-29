@@ -165,7 +165,10 @@ export default function EventLogTab({
       setProviderError(i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerAlreadyListed"));
       return;
     }
-    if (settings.applicationProviders.length >= MAX_POLICY_APPLICATION_PROVIDERS) return;
+    if (settings.applicationProviders.length >= MAX_POLICY_APPLICATION_PROVIDERS) {
+      setProviderError(i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerLimitReached", { max: MAX_POLICY_APPLICATION_PROVIDERS }));
+      return;
+    }
     update("applicationProviders", [...settings.applicationProviders, name]);
     setProviderInput("");
     setProviderError("");

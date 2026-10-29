@@ -683,6 +683,7 @@
         "removeProvider": "Entfernen",
         "removeProviderNamed": "{{provider}} entfernen",
         "providerNameInvalid": "Verwenden Sie 1–{{max}} Zeichen, beginnend mit einem Buchstaben oder einer Ziffer. Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkte, Unterstriche, Dollarzeichen, runde Klammern und Bindestriche.",
+        "providerLimitReached": "Sie können bis zu {{max}} zusätzliche Anbieter auflisten. Entfernen Sie einen, um einen weiteren hinzuzufügen.",
         "providerAlreadyListed": "Dieser Anbieter ist bereits aufgeführt.",
         "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },

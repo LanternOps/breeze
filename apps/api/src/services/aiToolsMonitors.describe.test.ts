@@ -6,6 +6,8 @@ vi.mock('./eventLogPolicyProviders', () => ({ loadPolicyApplicationProviders: lo
 vi.mock('../db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db')>()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(), transaction: vi.fn() },
+  hasDbAccessContext: () => true,
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('./monitors/monitorService', async (importOriginal) => ({

@@ -683,6 +683,7 @@
         "removeProvider": "Quitar",
         "removeProviderNamed": "Quitar {{provider}}",
         "providerNameInvalid": "Use entre 1 y {{max}} caracteres, comenzando con una letra o un dígito. Se permiten letras, dígitos, espacios, puntos, guiones bajos, signos de dólar, paréntesis y guiones.",
+        "providerLimitReached": "Puedes agregar hasta {{max}} proveedores adicionales. Elimina uno para agregar otro.",
         "providerAlreadyListed": "Este proveedor ya está en la lista.",
         "providerLimit": "{{total}} de {{max}} proveedores adicionales"
       },

@@ -72,6 +72,7 @@ func effectiveApplicationProviders(policy []string) []string {
 func (c *EventLogCollector) UpdateApplicationProviders(providers []string) (changed bool, rejected []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.applicationProvidersConfigured = true
 	var accepted []string
 	seen := make(map[string]bool)
 	for _, raw := range providers {

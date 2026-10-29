@@ -1,7 +1,10 @@
 package heartbeat
 
 import (
+	"bytes"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -30,5 +33,60 @@ func TestApplyEventLogApplicationProviders(t *testing.T) {
 				t.Fatalf("providers=%v want=%v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestApplyEventLogApplicationProvidersWarnsOnNonArray(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		value    any
+		wantType string
+	}{
+		{"string", "Wrong", "string"},
+		{"null", nil, "<nil>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := log
+			log = slog.New(slog.NewTextHandler(&logs, nil))
+			t.Cleanup(func() { log = previous })
+			h := &Heartbeat{eventLogCol: collectors.NewEventLogCollector()}
+			h.eventLogCol.UpdateApplicationProviders([]string{"Existing"})
+			h.applyEventLogConfig(map[string]any{"application_providers": tc.value})
+			if got := h.eventLogCol.ApplicationProviders(); !reflect.DeepEqual(got, []string{"Existing"}) {
+				t.Fatalf("providers=%v; want unchanged Existing", got)
+			}
+			for _, want := range []string{"level=WARN", "event log application_providers is not an array; keeping current list", "type=" + tc.wantType} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs=%q; want %q", logs.String(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyEventLogApplicationProvidersRejectsNonStrings(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log
+	log = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() { log = previous })
+	h := &Heartbeat{eventLogCol: collectors.NewEventLogCollector()}
+	payload := map[string]any{"application_providers": []any{"UPS", "bad'name", 42, true, nil}}
+	h.applyEventLogConfig(payload)
+	if got := h.eventLogCol.ApplicationProviders(); !reflect.DeepEqual(got, []string{"UPS"}) {
+		t.Fatalf("providers=%v; want only UPS", got)
+	}
+	if got, want := h.eventLogRejectedProviders, []string{"bad'name", "42", "true", "<nil>"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("rejected=%v; want %v", got, want)
+	}
+	for _, want := range []string{"level=WARN", "rejected event log application providers (invalid name or over the 20-provider limit)", "bad'name 42 true <nil>"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs=%q; want %q", logs.String(), want)
+		}
+	}
+	logs.Reset()
+	h.applyEventLogConfig(payload)
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("unchanged rejected values warned again: %q", logs.String())
 	}
 }

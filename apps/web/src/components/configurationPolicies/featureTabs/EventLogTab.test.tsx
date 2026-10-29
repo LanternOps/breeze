@@ -186,6 +186,18 @@ describe('EventLogTab application providers', () => {
     expect((screen.getByTestId('event-log-app-providers-add') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('shows a limit error when Enter is pressed at 20 providers', () => {
+    mount(Array.from({ length: 20 }, (_, i) => `Provider${i}`));
+    const input = screen.getByTestId('event-log-app-providers-input');
+    fireEvent.change(input, { target: { value: 'UPS' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.getByTestId('event-log-app-providers-error').textContent)
+      .toBe('You can list up to 20 additional providers. Remove one to add another.');
+    expect(screen.getAllByTestId('event-log-app-providers-item')).toHaveLength(20);
+    expect((input as HTMLInputElement).value).toBe('UPS');
+  });
+
   it('normalizes legacy non-array data to an empty list in the save payload', async () => {
     mount('legacy');
     fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));

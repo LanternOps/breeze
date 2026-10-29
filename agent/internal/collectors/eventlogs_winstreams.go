@@ -169,7 +169,16 @@ func (c *EventLogCollector) snapshotWindowsStreams(now time.Time) windowsEventPa
 		maxEvents:  c.maxEvents,
 		previous:   make(map[string]eventLogBookmark),
 	}
-	snapshot.applicationProviders = effectiveApplicationProviders(c.policyApplicationProviders)
+	policyProviders := c.policyApplicationProviders
+	if !c.applicationProvidersConfigured {
+		// Preserve coverage across restarts until the heartbeat supplies settings.
+		// Older servers never send this key, so they retain the stored list from
+		// the last newer server configuration instead of silently dropping it.
+		if stored := c.bookmarks["application-providers"].Providers; stored != nil {
+			policyProviders = stored
+		}
+	}
+	snapshot.applicationProviders = effectiveApplicationProviders(policyProviders)
 	snapshot.streams = windowsEventStreams(snapshot.categories, snapshot.applicationProviders)
 	snapshot.xpaths = make([]string, len(snapshot.streams))
 	for i, stream := range snapshot.streams {
