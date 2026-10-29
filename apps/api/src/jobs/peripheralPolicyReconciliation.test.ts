@@ -218,6 +218,38 @@ describe('schedulePeripheralPolicyDevice', () => {
     expect(reconcile.mock.calls).toEqual([['device-1', 'periodic_drift']]);
   });
 
+  it('advances the keyset cursor past trust-denied rows, including a fully denied page', async () => {
+    trustModeMock.mockReturnValue('enforce');
+    const loadPage = vi.fn()
+      .mockResolvedValueOnce([
+        { id: 'device-1', partnerId: 'partner-trusted', trustState: 'trusted' },
+        { id: 'device-2', partnerId: 'partner-probation', trustState: 'probation' },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'device-3', partnerId: 'partner-probation', trustState: 'probation' },
+        // Unresolved trust row: denied in enforce, like the gate's partner_unresolved.
+        { id: 'device-4', partnerId: null, trustState: null },
+      ])
+      .mockResolvedValueOnce([]);
+    const reconcile = vi.fn().mockResolvedValue('coalesced');
+
+    await expect(processPeripheralPolicyReconciliationSweep({ pageSize: 2, loadPage, reconcile }))
+      .resolves.toEqual({ scanned: 4, queued: 0, coalesced: 1, incompatible: 0, trustDenied: 3 });
+    expect(loadPage.mock.calls).toEqual([[null, 2], ['device-2', 2], ['device-4', 2]]);
+    expect(reconcile.mock.calls).toEqual([['device-1', 'periodic_drift']]);
+  });
+
+  it('never trust-skips in off mode, whatever the trust state', async () => {
+    trustModeMock.mockReturnValue('off');
+    const loadPage = vi.fn().mockResolvedValueOnce([
+      { id: 'device-1', partnerId: 'partner-restricted', trustState: 'restricted' },
+    ]);
+    const reconcile = vi.fn().mockResolvedValue('queued');
+
+    await expect(processPeripheralPolicyReconciliationSweep({ pageSize: 10, loadPage, reconcile }))
+      .resolves.toEqual({ scanned: 1, queued: 1, coalesced: 0, incompatible: 0, trustDenied: 0 });
+  });
+
   it('still reconciles non-trusted partners in shadow mode (gate allows, audits once, then coalesces)', async () => {
     trustModeMock.mockReturnValue('shadow');
     const loadPage = vi.fn().mockResolvedValueOnce([

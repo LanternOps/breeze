@@ -47,6 +47,8 @@ import type {
   PeripheralPolicyV2,
 } from './peripheralEffectivePolicy';
 import { TrustDeniedError } from './partnerTrust.commands';
+import { eq } from 'drizzle-orm';
+import { devices, organizations, partners } from '../db/schema';
 
 const identity: PeripheralDeviceIdentity = {
   deviceId: '00000000-0000-4000-8000-000000000001',
@@ -324,6 +326,22 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
     expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
     expect(txMock.insert).not.toHaveBeenCalled();
     expect(txMock.update).not.toHaveBeenCalled();
+  });
+
+  it('locks only the device row while joining its org and partner', async () => {
+    const forMock = vi.fn().mockResolvedValue([]);
+    const where = vi.fn().mockReturnValue({ limit: () => ({ for: forMock }) });
+    const secondJoin = vi.fn().mockReturnValue({ where });
+    const firstJoin = vi.fn().mockReturnValue({ innerJoin: secondJoin });
+    txMock.select.mockReset();
+    txMock.select.mockReturnValueOnce({ from: () => ({ innerJoin: firstJoin }) });
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'periodic_drift'))
+      .resolves.toBe('incompatible');
+
+    expect(firstJoin).toHaveBeenCalledWith(organizations, eq(organizations.id, devices.orgId));
+    expect(secondJoin).toHaveBeenCalledWith(partners, eq(partners.id, organizations.partnerId));
+    expect(forMock).toHaveBeenCalledWith('update', { of: devices });
   });
 
   it('reconciles a device of a trial org of an active partner', async () => {
