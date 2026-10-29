@@ -14,6 +14,8 @@ import {
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import { parseTunnelOriginConfig } from './tunnelOrigin';
+import { isAllAddressesCidr, normalizeInternalApiHost } from '../services/requestTransport';
+import { isValidIpOrCidr } from '../services/ipMatch';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -361,6 +363,43 @@ function validateLiveAuthorizationRolloutConfig(
   }
 }
 
+/**
+ * #9700: INTERNAL_SERVICE_CIDRS grants the FORCE_HTTPS exemption to socket
+ * peers in range, so it must name a private network. A public or all-addresses
+ * range would hand the exemption to internet clients. Enforced in every
+ * environment: a bad value is a security bug wherever it runs.
+ */
+function validateInternalServiceExemption(
+  cidrsRaw: string | undefined,
+  hostsRaw: string | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  const cidrs = (cidrsRaw ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const entry of cidrs) {
+    const network = entry.split('/')[0] ?? '';
+    if (!isValidIpOrCidr(entry) || isAllAddressesCidr(entry) || !isPrivateOrLocalProxyNetwork(network)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['INTERNAL_SERVICE_CIDRS'],
+        message:
+          `INTERNAL_SERVICE_CIDRS entry ${entry} must be a valid private-network IP or CIDR (e.g. the compose `
+          + 'bridge subnet, BREEZE_DOCKER_SUBNET). Public and all-address ranges are refused.',
+      });
+    }
+  }
+
+  const hosts = (hostsRaw ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const entry of hosts) {
+    if (!normalizeInternalApiHost(entry)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['INTERNAL_API_HOSTS'],
+        message: `INTERNAL_API_HOSTS entry ${entry} must be a bare host[:port], e.g. api:3001.`,
+      });
+    }
+  }
+}
+
 function validateTrustedProxyCidrsForProduction(value: string | undefined, ctx: z.RefinementCtx): void {
   const entries = (value ?? '')
     .split(',')
@@ -589,6 +628,11 @@ const envObjectSchema = z
     // trust is on and this is off (SR2-16).
     TRUST_CF_CONNECTING_IP: z.string().optional(),
     TRUSTED_PROXY_CIDRS: z.string().optional(),
+    // #9700: socket-peer range of in-cluster callers (portal/web SSR) whose
+    // plain-HTTP hop to INTERNAL_API_HOSTS is exempt from FORCE_HTTPS. Empty
+    // disables the exemption. Validated in the superRefine below.
+    INTERNAL_SERVICE_CIDRS: z.string().optional(),
+    INTERNAL_API_HOSTS: z.string().optional(),
     AGENT_ENROLLMENT_SECRET: z.string().optional(),
     ENROLLMENT_KEY_PEPPER: z.string().optional(),
     // Read at issuance through positiveIntEnv (services/installerBootstrapToken.ts),
@@ -1186,6 +1230,8 @@ const envSchema = envObjectSchema
   // --- Cross-field refinements (insecure defaults for required secrets) -------
   .superRefine((data, ctx) => {
     const isProduction = data.NODE_ENV === 'production';
+
+    validateInternalServiceExemption(data.INTERNAL_SERVICE_CIDRS, data.INTERNAL_API_HOSTS, ctx);
 
     if (
       isProduction
