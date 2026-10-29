@@ -237,3 +237,36 @@ func TestApplyFeatureUpdateConfig_LogsInfoOnlyOnChange(t *testing.T) {
 		t.Errorf("applyTargetRelease called %d times, want %d (one per heartbeat)", calls, 8+3+4+3)
 	}
 }
+
+// An admin-owned GPO pin is left as-found; its version lives only in Reason,
+// so a change to it must still be reported at INFO.
+func TestApplyFeatureUpdateConfig_AdminGPOChangeLogsInfo(t *testing.T) {
+	buf := &syncBuffer{}
+	logging.Init("text", "debug", buf)
+	t.Cleanup(func() { logging.Init("text", "info", nil) })
+
+	orig := applyTargetRelease
+	t.Cleanup(func() { applyTargetRelease = orig })
+	adminVersion := "24H2"
+	applyTargetRelease = func(*winupdate.TargetRelease) (winupdate.Result, error) {
+		return winupdate.Result{Supported: true, Enforced: true,
+			Reason: "pre-existing Windows Update target-release policy detected (TargetReleaseVersion " + adminVersion + " set by another GPO); left as-found, not managed by Breeze"}, nil
+	}
+
+	h := &Heartbeat{config: config.Default()}
+	block := map[string]any{"feature_update_settings": map[string]any{"mode": "pin", "product": "windows-11", "targetVersion": "26H1"}}
+	countInfo := func() int {
+		return strings.Count(buf.String(), `level=INFO msg="applied Windows feature-update policy"`)
+	}
+	h.applyConfigUpdate(block)
+	h.applyConfigUpdate(block)
+	if got := countInfo(); got != 1 {
+		t.Fatalf("steady admin GPO: %d INFO lines, want 1\n%s", got, buf.String())
+	}
+	adminVersion = "25H2"
+	h.applyConfigUpdate(block)
+	h.applyConfigUpdate(block)
+	if got := countInfo(); got != 2 {
+		t.Fatalf("admin GPO version change: %d INFO lines total, want 2\n%s", got, buf.String())
+	}
+}

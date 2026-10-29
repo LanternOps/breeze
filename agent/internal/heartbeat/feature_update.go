@@ -8,16 +8,18 @@ import (
 )
 
 // featureUpdateOutcome is the part of an applied feature-update policy that
-// decides whether the log line is news. Result.Reason is deliberately left
-// out: it flips from "pinned" to "already pinned (re-asserted …)" on the beat
-// after a pin lands without anything having changed.
+// decides whether the log line is news. For a Breeze-managed pin,
+// Result.Reason is deliberately left out: it flips from "pinned" to "already
+// pinned (re-asserted …)" on the beat after a pin lands without anything
+// having changed.
 type featureUpdateOutcome struct {
-	mode          patching.FeatureUpdateMode
-	product       string
-	targetVersion string
-	managed       bool
-	enforced      bool
-	reverted      bool
+	mode            patching.FeatureUpdateMode
+	product         string
+	targetVersion   string
+	managed         bool
+	enforced        bool
+	reverted        bool
+	unmanagedReason string
 }
 
 // featureUpdateLogState remembers the last outcome logged at INFO. The policy
@@ -119,6 +121,11 @@ func (h *Heartbeat) applyFeatureUpdateConfig(raw any) {
 		managed:       res.Managed,
 		enforced:      res.Enforced,
 		reverted:      res.Reverted,
+	}
+	if !res.Managed {
+		// Unmanaged reasons are stable per state, and the admin-owned GPO
+		// case carries the admin's target version only in Reason.
+		outcome.unmanagedReason = res.Reason
 	}
 	logFn := log.Debug
 	if h.featureUpdateLog.changed(outcome) {
