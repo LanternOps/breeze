@@ -3676,6 +3676,38 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         }
       }
     },
+    '/alerts/{id}/external-tickets': {
+      get: {
+        operationId: 'listAlertExternalTickets',
+        tags: ['Alerts'],
+        summary: 'List external ticket references and PSA mappings for an alert',
+        description: 'Requires alerts.read and access to the alert organization and site. Returns current references from every integration principal and visible PSA connections.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'External tickets in deterministic source and creation order',
+            content: { 'application/json': { schema: {
+              type: 'object', required: ['data'], additionalProperties: false,
+              properties: { data: { type: 'array', items: {
+                type: 'object', additionalProperties: false,
+                required: ['source', 'partnerServicePrincipalId', 'externalId', 'externalUrl', 'externalNumber', 'state', 'createdAt', 'updatedAt'],
+                properties: {
+                  source: { type: 'string', enum: ['partner_api', 'psa'] },
+                  partnerServicePrincipalId: { type: 'string', format: 'uuid', nullable: true },
+                  externalId: { type: 'string' },
+                  externalUrl: { type: 'string', nullable: true },
+                  externalNumber: { type: 'string', nullable: true },
+                  state: { type: 'string', nullable: true },
+                  createdAt: { type: 'string', format: 'date-time' },
+                  updatedAt: { type: 'string', format: 'date-time', nullable: true },
+                },
+              } } },
+            } } },
+          },
+          '404': { description: 'Alert not found or outside the caller’s reach' },
+        },
+      },
+    },
     '/alerts/{id}/acknowledge': {
       post: {
         operationId: 'acknowledgeAlert',

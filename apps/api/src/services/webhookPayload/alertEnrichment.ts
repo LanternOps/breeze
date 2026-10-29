@@ -4,6 +4,7 @@ import * as dbModule from '../../db';
 import { alerts, devices, organizations, organizationExternalLinks, sites } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { captureException } from '../sentry';
+import { listAlertExternalTickets } from '../alertExternalTickets';
 import { alertWebhookDataV2Schema, type AlertWebhookDataV2, type AlertWebhookDataV2Partner } from './alertV2';
 
 const { db } = dbModule;
@@ -89,7 +90,13 @@ async function readEnrichment(event: BreezeEvent) {
       .where(and(eq(organizationExternalLinks.orgId, event.orgId), eq(organizationExternalLinks.partnerId, row.partnerId)))
       .orderBy(asc(organizationExternalLinks.system), asc(organizationExternalLinks.externalId))
     : [];
-  return { row, orgExternalIds };
+  // Pin each reference query to the event org without locking the alert.
+  // Publishers can await fan-out while holding their own uncommitted alert
+  // update on another connection; a row lock here could deadlock that flow.
+  const externalTickets = row?.alertId
+    ? (await listAlertExternalTickets(row.alertId, row.partnerId, { orgId: event.orgId })).map(({ source, externalId, externalUrl, externalNumber }) => ({ source, externalId, externalUrl, externalNumber }))
+    : [];
+  return { row, orgExternalIds, externalTickets };
 }
 
 type EnrichmentRow = Awaited<ReturnType<typeof readEnrichment>>['row'];
@@ -143,9 +150,10 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
 }> {
   let row: EnrichmentRow;
   let orgExternalIds: { system: string; externalId: string }[] = [];
+  let externalTickets: AlertWebhookDataV2['externalTickets'] = [];
   let readFailed = false;
   try {
-    ({ row, orgExternalIds } = await runWithSystemDbAccess(() => readEnrichment(event)));
+    ({ row, orgExternalIds, externalTickets } = await runWithSystemDbAccess(() => readEnrichment(event)));
   } catch (error) {
     const context = { errorId: 'WEBHOOK_ALERT_ENRICHMENT_FAILED', eventId: event.id, orgId: event.orgId, eventType: event.type };
     readFailed = true;
@@ -167,6 +175,6 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
       errorId: 'WEBHOOK_ALERT_ENRICHMENT_INCOMPLETE', eventId: event.id, orgId: event.orgId, eventType: event.type, reason,
     })}`);
   }
-  const data = project(event, row, readFailed || reason !== null);
+  const data = { ...project(event, row, readFailed || reason !== null), externalTickets };
   return { org: frozenCopy(data), partner: frozenCopy({ ...data, orgExternalIds }) };
 }

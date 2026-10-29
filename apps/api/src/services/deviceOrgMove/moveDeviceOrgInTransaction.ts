@@ -545,6 +545,17 @@ export async function moveDeviceOrgInTransaction(
         WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
   );
 
+  // alerts.org_id is restamped INSIDE the device UPDATE by the database;
+  // its composite FK then cascades alert_external_refs.org_id. Discard refs
+  // pinned to another partner BEFORE that flip or the immediate org/partner
+  // FK would abort it. Within one partner this deletes nothing; the FK alone
+  // restamps refs (no application-level rewrite).
+  await tx.execute(
+    sql`DELETE FROM alert_external_refs
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
+          AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx

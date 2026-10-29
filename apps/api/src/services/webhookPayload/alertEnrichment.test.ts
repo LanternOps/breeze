@@ -6,9 +6,11 @@ import type { BreezeEvent } from '../eventBus';
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
   captureException: vi.fn(),
+  listExternalTickets: vi.fn(),
   withSystem: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('../../db', () => ({ db: { select: mocks.select }, withSystemDbAccessContext: mocks.withSystem }));
+vi.mock('../alertExternalTickets', () => ({ listAlertExternalTickets: mocks.listExternalTickets }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 
 import { buildAlertWebhookProjections, alertWebhookUrl, __resetAlertUrlWarningForTests } from './alertEnrichment';
@@ -31,9 +33,9 @@ const row = {
 function event(type: BreezeEvent['type'] = 'alert.triggered', payload: Record<string, unknown> = {}): BreezeEvent {
   return { id: 'event-1', type, orgId: ORG, source: 'test', priority: 'normal', metadata: { timestamp: NOW }, payload: { alertId: ALERT, deviceId: DEVICE, ...payload } };
 }
-const queries: { from?: unknown; joins: unknown[][]; where?: unknown; order?: unknown[]; selection?: unknown }[] = [];
+const queries: { from?: unknown; joins: unknown[][]; where?: unknown; order?: unknown[]; selection?: unknown; lock?: string }[] = [];
 function rows(first: unknown[] = [row], links: unknown[] = [{ system: 'connectwise', externalId: 'company-7' }]) {
-  const results = [first, links];
+  const results = [first, ...((first[0] as { partnerId?: string } | undefined)?.partnerId ? [links] : [])];
   mocks.select.mockImplementation((selection: unknown) => {
     const query: typeof queries[number] = { joins: [], selection };
     queries.push(query);
@@ -43,6 +45,7 @@ function rows(first: unknown[] = [row], links: unknown[] = [{ system: 'connectwi
       leftJoin: (...args: unknown[]) => { query.joins.push(args); return chain; },
       where: (predicate: unknown) => { query.where = predicate; return chain; },
       limit: () => chain,
+      for: (strength: string) => { query.lock = strength; return chain; },
       orderBy: (...args: unknown[]) => { query.order = args; return chain; },
       then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve),
     };
@@ -52,6 +55,7 @@ function rows(first: unknown[] = [row], links: unknown[] = [{ system: 'connectwi
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.listExternalTickets.mockResolvedValue([]);
   queries.length = 0;
   vi.stubEnv('DASHBOARD_URL', 'https://app.example.com/');
   vi.stubEnv('PUBLIC_APP_URL', '');
@@ -67,6 +71,46 @@ describe('alert webhook enrichment', () => {
     ['alert.resolved', 'resolved'], ['alert.suppressed', 'suppressed'],
   ] as const)('derives %s status from the event, never the row', async (type, status) => {
     expect((await buildAlertWebhookProjections(event(type))).org.status).toBe(status);
+  });
+
+  it('fills the frozen v2 ticket shape from refs present at enrichment time', async () => {
+    mocks.listExternalTickets.mockResolvedValue([
+      { source: 'partner_api', partnerServicePrincipalId: SITE, externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42', state: null, createdAt: NOW, updatedAt: NOW },
+      { source: 'psa', partnerServicePrincipalId: null, externalId: '99', externalUrl: null, externalNumber: null, state: 'open', createdAt: NOW, updatedAt: NOW },
+    ]);
+    const { org, partner } = await buildAlertWebhookProjections(event());
+    expect(mocks.listExternalTickets).toHaveBeenCalledWith(ALERT, PARTNER, { orgId: ORG });
+    expect(org.externalTickets).toEqual([
+      { source: 'partner_api', externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42' },
+      { source: 'psa', externalId: '99', externalUrl: null, externalNumber: null },
+    ]);
+    expect(partner.externalTickets).toEqual(org.externalTickets);
+    expect(Object.isFrozen(org.externalTickets[0])).toBe(true);
+  });
+
+  it.each(['alert.acknowledged', 'alert.resolved'] as const)('uses non-blocking MVCC reads for %s enrichment', async (type) => {
+    const { org } = await buildAlertWebhookProjections(event(type));
+    expect(org.enrichmentIncomplete).toBe(false);
+    expect(queries.every(query => query.lock === undefined), 'enrichment must not lock the publisher’s alert row').toBe(true);
+    expect(mocks.select).toHaveBeenCalledTimes(2); // Org/alert snapshot and org links only.
+    expect(mocks.listExternalTickets).toHaveBeenCalledWith(ALERT, PARTNER, { orgId: ORG });
+  });
+
+  it('does not leak refs when the alert moved org after the initial enrichment read', async () => {
+    // Initial join saw the event org; subsequent reference reads see a ref
+    // restamped to another org. Enrichment must constrain those reads itself.
+    const foreign = { orgId: SITE, source: 'partner_api', externalId: 'org-B-secret', externalUrl: null, externalNumber: null };
+    mocks.listExternalTickets.mockImplementation(async (_alert, _partner, opts?: { orgId?: string }) =>
+      opts?.orgId && opts.orgId !== foreign.orgId ? [] : [foreign]);
+    const { org } = await buildAlertWebhookProjections(event());
+    expect(org.externalTickets).toEqual([]);
+    expect(mocks.listExternalTickets).toHaveBeenCalledWith(ALERT, PARTNER, { orgId: ORG });
+  });
+
+  it('does not read refs for an alert absent from its event organization', async () => {
+    rows([{ ...row, alertId: null }]);
+    expect((await buildAlertWebhookProjections(event())).org.externalTickets).toEqual([]);
+    expect(mocks.listExternalTickets).not.toHaveBeenCalled();
   });
 
   it('prefers payload values and timestamps over a stale row', async () => {

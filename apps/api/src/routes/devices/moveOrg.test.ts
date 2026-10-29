@@ -1701,7 +1701,9 @@ describe('POST /devices/:id/move-org', () => {
       // flip (the flip's trigger restamps security_scans.org_id; the sweep row
       // stays in the source org).
       expect(collapseStmt(statements[23]!)).toContain('UPDATE security_scans SET');
-      expect(statements[24]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[24]!)).toContain('DELETE FROM alert_external_refs');
+      expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
+      expect(statements[25]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

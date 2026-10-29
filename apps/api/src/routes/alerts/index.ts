@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
 import { rulesRoutes } from './rules';
 import { alertsRoutes } from './alerts';
+import { alertExternalTicketRoutes } from './alertExternalTickets';
 import { channelsRoutes } from './channels';
 import { policiesRoutes } from './policies';
 import { routingRoutes } from './routing';
@@ -22,5 +23,6 @@ alertRoutes.route('/', routingRoutes);
 alertRoutes.route('/', alertCorrelationRoutes);
 alertRoutes.route('/', deliveryRailsRoutes);
 alertRoutes.route('/', deliveryRoutes);
+alertRoutes.route('/', alertExternalTicketRoutes);
 alertRoutes.route('/', alertsRoutes);
 

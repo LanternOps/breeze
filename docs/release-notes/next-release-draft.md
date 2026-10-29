@@ -115,3 +115,12 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Still dark: no partner-owned group can be created yet. No migration, environment variable or setting.
 - Config-policy and automation-schedule expansion of a `device_group` assignment now resolves a partner-owned group to its members in every org of the partner.
 - Every other target surface (maintenance windows, backup SLAs, script runs, software deployments, automations, endpoint messages, AI agent triggers, peripheral policies, the enrollment default group, user device-group scope) answers a partner-owned group id with `400 PARTNER_GROUP_TARGET_UNSUPPORTED`. The groups API and the AI `manage_groups` tool treat partner-owned groups as read-only (`400 PARTNER_GROUP_READ_ONLY`).
+
+### Partner API external ticket refs
+
+- **Three alert reference routes (#10533, part of #10528).** `PUT` and `DELETE /api/v1/partner-api/alerts/<id>/external-ticket` require `alerts:write` and manage only the caller's principal-namespaced reference. PUT accepts an HTTPS URL and uses full replacement; identical PUTs and repeated DELETEs are idempotent. `GET /api/v1/partner-api/alerts/<id>/external-tickets` requires `alerts:read` and lists every principal's references plus eligible PSA mappings.
+- **Create a ticket from an alert.** Partner API ticket creation accepts `alertId` and atomically writes a `created_from` link. Unknown or inaccessible alerts return 404; a different accessible org returns 422; reusing an idempotency key with a different alert id returns 409.
+- **Organization exports include `externalLinks`.** Link insert, exported-field update, and deletion advance the org export watermark, including removal of the last link.
+- **Alert pages show read-only External tickets chips,** using the ticket number when available and linking only HTTPS URLs.
+- **V2 alert webhook `externalTickets` now includes references present at enrichment time.** Use the GET route for current state. V1 payloads are unchanged.
+- **Migrations:** `2027-01-14-110000-alerts-id-org-unique.sql` builds `alerts_id_org_uq` concurrently on the hot alerts table; `2027-01-14-110100-alert-external-refs.sql` creates the tenant-isolated reference table, constraints, indexes and RLS policies; `2027-01-14-110200-org-external-links-export-watermark.sql` adds the link-change watermark triggers. DDL/trigger definitions only: the migrations write no rows. No new environment variables.

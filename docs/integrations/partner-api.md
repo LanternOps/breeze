@@ -58,7 +58,7 @@ Weavestream delegation. They must be granted explicitly, per principal:
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
 | `tickets:write` | Create, update, change status, assign and comment on tickets in any accessible organization (the `/api/v1/partner-api/tickets` surface). Does not grant delete, restore, move-org, bulk actions, attachments, time entries, AI drafts or the mailbox — those stay with signed-in staff on the main API, under each person's own ticket permissions (moving a ticket between organizations and changing a ticket mailbox connection also require MFA). The principal acts as **itself**: comments and audit rows name the principal, never a person. |
-| `alerts:write` | Acknowledge and resolve alerts as the principal in accessible organizations. Opt-in, never a default or preset; does not imply `alerts:read` or grant suppress, dismiss, delete, bulk actions, or rules. |
+| `alerts:write` | Acknowledge and resolve alerts, and set or delete the principal's external ticket references, in accessible organizations. Opt-in, never a default or preset; does not imply `alerts:read` or grant alert suppression, dismissal, deletion, bulk actions, or rules. |
 
 `tickets:read` is a further **opt-in read** scope, like `alerts:read`: ticket
 subjects, descriptions and comments are customer-authored data across every
@@ -135,6 +135,9 @@ See the MCP server documentation.
 | `GET /api/v1/partner-api/alerts` | `alerts:read` (opt-in) |
 | `POST /api/v1/partner-api/alerts/<alert-uuid>/acknowledge` | `alerts:write` (opt-in) |
 | `POST /api/v1/partner-api/alerts/<alert-uuid>/resolve` | `alerts:write` (opt-in) |
+| `PUT /api/v1/partner-api/alerts/<alert-uuid>/external-ticket` | `alerts:write` (opt-in) |
+| `DELETE /api/v1/partner-api/alerts/<alert-uuid>/external-ticket` | `alerts:write` (opt-in) |
+| `GET /api/v1/partner-api/alerts/<alert-uuid>/external-tickets` | `alerts:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/ids` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
@@ -370,6 +373,15 @@ Every signed v1 cursor binds the traversal to its exact material filters. The si
 
 Organizations, sites, devices, and device hardware maintain a dedicated millisecond-precision `partner_export_updated_at` watermark. The columns are database-owned and direct caller updates are ignored. Only durable fields projected by the partner DTO advance them; volatile heartbeat, online/offline, health, and last-seen changes do not. Device group membership changes advance the owning device watermark. Device hardware identity is folded into the effective device watermark, and deleting hardware advances the parent device so the null identity is emitted incrementally.
 
+Organization records include `externalLinks`, an array of
+`{ system: string, externalId: string, label: string | null }` objects, ordered
+by `system` then `externalId`. Only links owned by the exporting partner are
+included; an organization without links has `externalLinks: []`. Link inserts,
+changes to exported link fields (including `label`), and deletes advance the
+organization's export watermark. The organization therefore reappears in the
+next incremental `since` traversal, including when its last link is deleted.
+Links and the organization record are read in the same locked snapshot.
+
 Foundational exports use transaction-scoped PostgreSQL advisory locks. The fixed hierarchy is:
 
 1. Partner discovery/intent — namespace `1000202`, keyed by the partner UUID hash.
@@ -553,9 +565,10 @@ Guarantees and limits:
 ## Alert write-back (`alerts:write`)
 
 `alerts:write` is an explicit opt-in scope, never part of a default scope set
-or preset. The granter must hold `alerts.write`. It grants only acknowledge
-and resolve, with the principal acting as itself; it does not imply
-`alerts:read` or grant suppress, dismiss, delete, bulk actions, or rule changes.
+or preset. The granter must hold `alerts.write`. It grants acknowledge,
+resolve, and management of the principal's external ticket reference, with the
+principal acting as itself; it does not imply
+`alerts:read` or grant alert suppression, dismissal, deletion, bulk actions, or rule changes.
 
 | Endpoint | Body |
 |---|---|
@@ -615,6 +628,54 @@ skip webhook events whose acknowledging or resolving principal id is your own.
 These endpoints use the default write budget of 120 requests per hour per
 principal and key, shared with provisioning writes on that key. Use a dedicated
 principal for write-back so provisioning traffic does not consume its budget.
+
+## Alert external ticket references
+
+These routes attach an existing external helpdesk ticket to a Breeze alert;
+they do not create a ticket in the external system.
+
+| Endpoint | Scope | Body and result |
+|---|---|---|
+| `PUT /api/v1/partner-api/alerts/<alertId>/external-ticket` | `alerts:write` | `{ "externalId": "CW-123", "externalUrl": "https://helpdesk.example.com/tickets/123", "externalNumber": "123" }`; creates with `201`, replaces with `200`. |
+| `DELETE /api/v1/partner-api/alerts/<alertId>/external-ticket` | `alerts:write` | No body; `200 { "schemaVersion": "1", "deleted": true }`, or `deleted: false` when the caller has no reference. |
+| `GET /api/v1/partner-api/alerts/<alertId>/external-tickets` | `alerts:read` | `200 { "schemaVersion": "1", "data": [...] }`; all principals' references plus eligible PSA mappings. |
+
+`externalId` is required, trimmed, and 1–255 characters. `externalNumber`
+is optional or null; when present it is trimmed and 1–255 characters. Both
+fields reject control characters other than newlines and tabs. `externalUrl` is optional or null, must be
+an HTTPS URL, and is limited to 2,048 characters. HTTP and other schemes,
+unknown body keys, and invalid values return `400`.
+
+Each principal owns one reference per alert. PUT and DELETE affect only that
+principal's row; rotating its key preserves ownership. Multiple alerts may
+reference the same external ticket. PUT is full replacement: omitting
+`externalUrl` or `externalNumber` clears it to null. A successful PUT returns
+`{ schemaVersion: "1", changed, data }`, where `data` contains `alertId`,
+`orgId`, `partnerServicePrincipalId`, `externalId`, `externalUrl`,
+`externalNumber`, `createdAt`, and `updatedAt`. Timestamps are ISO 8601 strings.
+Repeating an identical PUT returns `200` with `changed: false` and preserves
+the timestamps; it makes no write or action audit. DELETE is also idempotent.
+These operations do not require an `X-Idempotency-Key`. Real changes are audited
+as `alert.external_ticket.set` or `alert.external_ticket.delete`, attributed
+to the caller's principal. URL query strings are not included in the audit.
+
+GET items contain `source` (`partner_api` or `psa`),
+`partnerServicePrincipalId` (null for PSA mappings), `externalId`,
+`externalUrl`, `externalNumber`, `state`, `createdAt`, and nullable `updatedAt`.
+`externalUrl`, `externalNumber`, and `state` are nullable. Readers can see other
+principals' references on an alert they can read. PSA mappings are limited to
+connections owned by the viewing partner or the alert's organization; another
+partner's connection is never included. Staff use
+`GET /api/v1/alerts/<alertId>/external-tickets` under the alert's usual
+permission, organization, and site restrictions. The alert page displays these
+references as read-only chips, linking only HTTPS URLs.
+
+All three Partner API routes return `404 partner_alert_not_found` for an
+unknown alert or one outside the principal's accessible organizations, and
+`403` without the route's required scope. PUT and DELETE use the default
+partner write budget (120 requests per hour per principal and key). V2
+webhooks include the references present at enrichment time; use GET for their
+current state.
 
 ## Tickets feed (`tickets:read`)
 
@@ -783,7 +844,7 @@ partner, Service Management must be on, and the status FSM is enforced.
 
 | Route | Body | Notes |
 |---|---|---|
-| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `ticketType?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `ticketType` defaults to `incident`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
+| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `ticketType?`, `dueDate?`, `deviceId?`, `alertId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `ticketType` defaults to `incident`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
 | `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `ticketType`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
 | `POST /tickets/<id>/status` | exactly one of `status` (core value) or `statusId` (a custom status of the partner); `resolutionNote` (required when resolving), `pendingReason?` | Same coherence rules as the staff route, without AI drafts. Invalid transitions → `400 INVALID_TRANSITION`. |
 | `POST /tickets/<id>/assign` | `assigneeId` (a technician of the partner, or `null` to unassign) | Assigning a `new` ticket opens it. |
@@ -800,6 +861,16 @@ Every write answers with `{ schemaVersion, id, orgId, data }` (comments add
 text; the ids are always present. A ticket in another partner, outside the
 principal's organizations, or soft-deleted is a `404 partner_ticket_not_found`
 on every by-id route.
+
+**Create from an alert.** `POST /tickets` accepts an optional UUID `alertId`.
+The alert must be reachable by the principal and belong to `orgId`. An unknown
+or out-of-reach alert returns `404 partner_alert_not_found`; an alert in a
+different accessible organization returns `422 partner_ticket_alert_org_mismatch`.
+Success creates one `ticket_alert_links` row with `link_type = created_from`
+in the same transaction as the ticket, external reference, and idempotency
+claim. A linking failure rolls the entire create back. `alertId` is included
+in the request fingerprint: reusing an `X-Idempotency-Key` with a different
+`alertId` returns `409 partner_tickets_idempotency_key_reused`.
 
 **Attribution.** On the Partner API a partner service principal acts as
 itself, identified by the principal id (stable across key rotations):

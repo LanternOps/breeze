@@ -321,6 +321,13 @@ The AI suppression tool publishes this event. The REST suppress route does not p
 
 Every key below is always present. A value that does not apply or is unavailable is `null`. The status comes from the event type, even if the alert has since changed. Valid payload values take precedence over the current alert row.
 
+`externalTickets` is also captured when the delivery is first enriched. A
+reference written afterward is absent from that stored payload, and retries do
+not refresh it. For current state, call
+`GET /api/v1/partner-api/alerts/<alertId>/external-tickets` with `alerts:read`
+(or the staff `GET /api/v1/alerts/<alertId>/external-tickets` route). V1 payloads
+are unchanged.
+
 Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means the alert row could not be read (it was not yet committed, the id was invalid, or the enrichment query failed), so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site leaves its fields `null` without setting the flag.
 
 | Field | Type | Meaning |
@@ -342,7 +349,7 @@ Hostname, site, and organization name are read when the delivery is first record
 | `siteName` | string or null | Site name |
 | `orgName` | string or null | Organization name |
 | `alertUrl` | string | Dashboard link to the alert, or `/alerts` when the alert id is unavailable; relative when no dashboard base URL is configured |
-| `externalTickets` | array of objects | Each object has string `source` and `externalId`, plus nullable string `externalUrl` and `externalNumber`. Always `[]` until a later release fills it |
+| `externalTickets` | array of objects | References and eligible PSA mappings present at enrichment time. Each object has exactly `source` (`partner_api` or `psa`), `externalId`, nullable `externalUrl`, and nullable `externalNumber`; empty when none exist |
 | `acknowledgedByPrincipalId` | string or null | Partner API service principal that acknowledged the alert; null when absent |
 | `resolvedByPrincipalId` | string or null | Partner API service principal that resolved the alert; null when absent. A principal resolution counts as a person's resolve and starts no automatic AI verdict run |
 | `enrichmentIncomplete` | boolean | The alert row could not be read or the enrichment query failed; missing device or site alone does not set it |

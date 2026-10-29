@@ -108,6 +108,7 @@ export const partnerOrganizationExportRecordSchema = strictPartnerExportRecordSc
   name: z.string().min(1).max(255),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']),
+  externalLinks: z.array(z.object({ system: z.string(), externalId: z.string(), label: z.string().nullable() }).strict()),
 });
 export const organizationExportEnvelopeSchema = createPartnerExportEnvelopeSchema(
   partnerOrganizationExportRecordSchema,
@@ -971,4 +972,35 @@ export const partnerTicketCommentWriteResponseSchema = z.object({
   data: partnerTicketCommentExportRecordSchema.nullable(),
   blocked: z.array(partnerExportBlockedRecordSchema).max(1).optional(),
   idempotencyReplay: z.literal(true).optional(),
+}).strict();
+
+/** Current external-ticket read model, shared by refs and PSA mappings. */
+export const partnerAlertExternalTicketRecordSchema = z.object({
+  source: z.enum(['partner_api', 'psa']),
+  partnerServicePrincipalId: nullableUuid,
+  externalId: z.string(),
+  externalUrl: z.string().nullable(),
+  externalNumber: z.string().nullable(),
+  state: z.string().nullable(),
+  createdAt: partnerExportTimestampSchema,
+  updatedAt: nullableTimestamp,
+}).strict();
+
+export const partnerAlertExternalTicketsResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  data: z.array(partnerAlertExternalTicketRecordSchema),
+}).strict();
+
+export const partnerAlertExternalTicketPutResponseSchema = z.object({
+  schemaVersion: z.literal('1'),
+  changed: z.boolean(),
+  data: z.object({
+    alertId: z.string().uuid(), orgId: z.string().uuid(), partnerServicePrincipalId: z.string().uuid(),
+    externalId: z.string(), externalUrl: z.string().nullable(), externalNumber: z.string().nullable(),
+    createdAt: partnerExportTimestampSchema, updatedAt: partnerExportTimestampSchema,
+  }).strict(),
+}).strict();
+
+export const partnerAlertExternalTicketDeleteResponseSchema = z.object({
+  schemaVersion: z.literal('1'), deleted: z.boolean(),
 }).strict();
