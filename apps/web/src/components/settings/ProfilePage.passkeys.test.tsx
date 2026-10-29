@@ -288,6 +288,44 @@ describe('ProfilePage passkey management', () => {
     ]);
   });
 
+  it('uses a recovery code to delete a passkey whose authenticator is unavailable', async () => {
+    const passkeyId = '70000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Bitwarden passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '80000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+    }} />);
+
+    await screen.findByText('Bitwarden passkey');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+    expect(fetchWithAuthMock.mock.calls[2]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    ]);
+    expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
+  });
+
   it('uses an available passkey to delete one after TOTP has been disabled', async () => {
     const passkeyId = '50000000-0000-4000-8000-000000000009';
     const assertion = { id: 'browser-credential', response: { signature: 'sig' } };

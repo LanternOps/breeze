@@ -5032,6 +5032,34 @@ describe('auth routes', () => {
 			}));
 		});
 
+		it('allows a one-time recovery code only to mint a passkey deletion grant', async () => {
+			vi.mocked(consumeRecoveryCode).mockResolvedValueOnce({ hash: 'recovery-hash' });
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-passkey-delete');
+			const passkeyId = '10000000-0000-4000-8000-000000000009';
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+			});
+			expect(res.status).toBe(200);
+			expect(consumeRecoveryCode).toHaveBeenCalledWith(expect.anything(), 'user-123', 'ABCD-1234');
+			expect(mintStepUpGrant).toHaveBeenCalledWith(expect.objectContaining({
+				operation: 'delete_passkey',
+				resourceDigest: 'sha256:passkey-credential-row',
+			}));
+		});
+
+		it('rejects recovery-code step-up for operations other than passkey deletion', async () => {
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'add_factor' }),
+			});
+			expect(res.status).toBe(400);
+			expect(consumeRecoveryCode).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
 		it('rejects delete_passkey before factor verification when passkeyId is absent', async () => {
 			const res = await app.request('/auth/mfa/step-up', {
 				method: 'POST',
