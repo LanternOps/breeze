@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   complianceInlineSettingsSchema,
   complianceItemName,
+  COMPLIANCE_RULE_SET_NAME_MAX_LENGTH,
   COMPLIANCE_RULE_TYPES,
   duplicateComplianceItemNames,
+  overlongComplianceItemNames,
 } from './index';
 
 // Field names here are the ones policyEvaluationService.ts reads (evaluateRule
@@ -145,5 +147,24 @@ describe('compliance rule set names', () => {
   it('accepts distinct names', () => {
     const r = complianceInlineSettingsSchema.safeParse({ items: [{ name: 'A', rules }, { name: 'B', rules }, { rules }] });
     expect(r.success, JSON.stringify(r.error?.issues)).toBe(true);
+  });
+
+  // The name is copied into the compliance state, alert and automation-run
+  // columns, which hold 200 characters.
+  it('caps a rule set name at 200 characters', () => {
+    expect(COMPLIANCE_RULE_SET_NAME_MAX_LENGTH).toBe(200);
+    const at = complianceInlineSettingsSchema.safeParse({ items: [{ name: 'x'.repeat(200), rules }] });
+    expect(at.success, JSON.stringify(at.error?.issues)).toBe(true);
+    const over = complianceInlineSettingsSchema.safeParse({ items: [{ name: 'x'.repeat(201), rules }] });
+    expect(over.success).toBe(false);
+    expect(over.error?.issues.map((i) => i.path.join('.'))).toContain('items.0.name');
+  });
+
+  it('finds over-long names, counting characters as the database does', () => {
+    const long = 'x'.repeat(201);
+    expect(overlongComplianceItemNames([{ name: long }, { name: 'ok' }, {}])).toEqual([long]);
+    // 200 astral characters are 400 UTF-16 code units but 200 characters.
+    expect(overlongComplianceItemNames([{ name: '\u{1F642}'.repeat(200) }])).toEqual([]);
+    expect(overlongComplianceItemNames(undefined)).toEqual([]);
   });
 });

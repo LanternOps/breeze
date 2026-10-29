@@ -150,9 +150,18 @@ export const complianceRuleSchema = z.discriminatedUnion('type', [
   configCheckRuleSchema,
 ]);
 
+/**
+ * A rule set's name is copied into automation_policy_compliance,
+ * alerts and automation_runs (config_item_name), which hold 200 characters, so
+ * a name is capped there rather than at the rule table's own 255. Rows saved
+ * before the cap keep loading; the compliance scan isolates each rule set, so
+ * one whose name does not fit fails alone.
+ */
+export const COMPLIANCE_RULE_SET_NAME_MAX_LENGTH = 200;
+
 const complianceItemSchema = z
   .object({
-    name: z.string().max(255).optional(),
+    name: z.string().max(COMPLIANCE_RULE_SET_NAME_MAX_LENGTH).optional(),
     enforcementLevel: z.enum(['monitor', 'warn', 'enforce']).optional(),
     checkIntervalMinutes: z.number().int().min(1).max(10080).optional(),
     remediationScriptId: z.string().uuid().nullable().optional(),
@@ -193,6 +202,23 @@ export function duplicateComplianceItemNames(items: ReadonlyArray<{ name?: unkno
 
 export function duplicateComplianceItemNameMessage(name: string): string {
   return `More than one rule set is named "${name}". Each rule set in a policy needs its own name.`;
+}
+
+/**
+ * Names longer than COMPLIANCE_RULE_SET_NAME_MAX_LENGTH, counted in characters
+ * (code points) as varchar counts them, not UTF-16 code units.
+ */
+export function overlongComplianceItemNames(items: ReadonlyArray<{ name?: unknown }> | null | undefined): string[] {
+  const overlong: string[] = [];
+  (items ?? []).forEach((item, index) => {
+    const name = complianceItemName(item, index);
+    if ([...name].length > COMPLIANCE_RULE_SET_NAME_MAX_LENGTH) overlong.push(name);
+  });
+  return overlong;
+}
+
+export function overlongComplianceItemNameMessage(): string {
+  return `A rule set name can be at most ${COMPLIANCE_RULE_SET_NAME_MAX_LENGTH} characters.`;
 }
 
 export const complianceInlineSettingsSchema = z
