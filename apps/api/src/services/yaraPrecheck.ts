@@ -306,8 +306,30 @@ export async function yaracVersion(): Promise<YaracVersion | null> {
   return versionMemo;
 }
 
+// ---- availability ----------------------------------------------------------
+
+/** How long a failed availability probe is trusted before probing again. */
+export const YARAC_UNAVAILABLE_RECHECK_MS = 60_000;
+let unavailableUntil = 0;
+
+/**
+ * Can this server run the pre-check at all (#10306)? Read paths use it to
+ * tell a set that is unpublished because the compiler is missing apart from
+ * one whose rules have errors. A success is memoized by `yaracVersion`; a
+ * failure is cached for YARAC_UNAVAILABLE_RECHECK_MS so a list of stale sets
+ * does not spawn a child per request, yet an installed binary is noticed.
+ */
+export async function yaracAvailable(): Promise<boolean> {
+  if (versionMemo) return true;
+  if (Date.now() < unavailableUntil) return false;
+  if (await yaracVersion()) return true;
+  unavailableUntil = Date.now() + YARAC_UNAVAILABLE_RECHECK_MS;
+  return false;
+}
+
 export function __resetYaracForTests(): void {
   versionMemo = null;
+  unavailableUntil = 0;
   active = 0;
   waiters.length = 0;
 }

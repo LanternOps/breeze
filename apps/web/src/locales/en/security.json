@@ -2543,6 +2543,7 @@
       "builtin": "Built-in",
       "allOrgs": "All orgs",
       "errors": "Has errors",
+      "checkerUnavailable": "Compiler unavailable",
       "unpublished": "Not published",
       "disabled": "Disabled"
     },
@@ -2599,7 +2600,7 @@
       "autoQuarantineOnly": "Auto-quarantine is off on devices now. Your other changes are not live yet.",
       "published": "Saved and published as version {{version}}",
       "savedDisabled": "Saved. The set is disabled, so devices do not use it.",
-      "checkerUnavailable": "Saved, not published: the rule checker is unavailable. {{devices}}",
+      "checkerUnavailable": "Saved, not published: the YARA compiler is unavailable on this server, so the rules could not be checked. {{devices}}",
       "compileErrors_one": "Saved, not published: {{count}} rule has errors. {{devices}}",
       "compileErrors_other": "Saved, not published: {{count}} rules have errors. {{devices}}",
       "setErrors": "Saved, not published: {{message}}. {{devices}}",
@@ -2608,7 +2609,8 @@
       "devicesKeep": "Devices keep version {{version}}.",
       "neverPublished": "This set has not been published yet, so devices do not use it.",
       "setDisabled": "The set is disabled, so devices do not use it.",
-      "staleBanner": "Not published: fix the errors below. {{devices}}"
+      "staleBanner": "Not published: fix the errors below. {{devices}}",
+      "staleCheckerUnavailable": "Not published: the YARA compiler is unavailable on this server, so rule changes cannot be checked or published. {{devices}}"
     },
     "editor": {
       "tabs": {

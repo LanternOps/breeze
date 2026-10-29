@@ -2543,6 +2543,7 @@
       "builtin": "Integrato",
       "allOrgs": "Tutte le organizzazioni",
       "errors": "Con errori",
+      "checkerUnavailable": "Compilatore non disponibile",
       "unpublished": "Non pubblicato",
       "disabled": "Disattivato"
     },
@@ -2599,7 +2600,7 @@
       "autoQuarantineOnly": "La quarantena automatica ora è disattivata sui dispositivi. Le altre modifiche non sono ancora attive.",
       "published": "Salvato e pubblicato come versione {{version}}",
       "savedDisabled": "Salvato. Il set è disattivato, quindi i dispositivi non lo usano.",
-      "checkerUnavailable": "Salvato, non pubblicato: il controllo delle regole non è disponibile. {{devices}}",
+      "checkerUnavailable": "Salvato, non pubblicato: il compilatore YARA non è disponibile su questo server, quindi non è stato possibile controllare le regole. {{devices}}",
       "compileErrors_one": "Salvato, non pubblicato: {{count}} regola contiene errori. {{devices}}",
       "compileErrors_other": "Salvato, non pubblicato: {{count}} regole contengono errori. {{devices}}",
       "setErrors": "Salvato, non pubblicato: {{message}}. {{devices}}",
@@ -2608,7 +2609,8 @@
       "devicesKeep": "I dispositivi mantengono la versione {{version}}.",
       "neverPublished": "Questo set non è ancora stato pubblicato, quindi i dispositivi non lo usano.",
       "setDisabled": "Il set è disattivato, quindi i dispositivi non lo usano.",
-      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}"
+      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}",
+      "staleCheckerUnavailable": "Non pubblicato: il compilatore YARA non è disponibile su questo server, quindi le modifiche alle regole non possono essere controllate né pubblicate. {{devices}}"
     },
     "editor": {
       "tabs": {

@@ -2543,6 +2543,7 @@
       "builtin": "Integrado",
       "allOrgs": "Todas as organizações",
       "errors": "Com erros",
+      "checkerUnavailable": "Compilador indisponível",
       "unpublished": "Não publicado",
       "disabled": "Desativado"
     },
@@ -2599,7 +2600,7 @@
       "autoQuarantineOnly": "A quarentena automática agora está desativada nos dispositivos. Suas outras alterações ainda não estão ativas.",
       "published": "Salvo e publicado como versão {{version}}",
       "savedDisabled": "Salvo. O conjunto está desativado, então os dispositivos não o usam.",
-      "checkerUnavailable": "Salvo, não publicado: o verificador de regras está indisponível. {{devices}}",
+      "checkerUnavailable": "Salvo, não publicado: o compilador YARA está indisponível neste servidor, então não foi possível verificar as regras. {{devices}}",
       "compileErrors_one": "Salvo, não publicado: {{count}} regra tem erros. {{devices}}",
       "compileErrors_other": "Salvo, não publicado: {{count}} regras têm erros. {{devices}}",
       "setErrors": "Salvo, não publicado: {{message}}. {{devices}}",
@@ -2608,7 +2609,8 @@
       "devicesKeep": "Os dispositivos mantêm a versão {{version}}.",
       "neverPublished": "Este conjunto ainda não foi publicado, então os dispositivos não o usam.",
       "setDisabled": "O conjunto está desativado, então os dispositivos não o usam.",
-      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}"
+      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}",
+      "staleCheckerUnavailable": "Não publicado: o compilador YARA está indisponível neste servidor, então as alterações nas regras não podem ser verificadas nem publicadas. {{devices}}"
     },
     "editor": {
       "tabs": {
