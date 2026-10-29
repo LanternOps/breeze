@@ -1808,9 +1808,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             <>
             <label className="text-sm font-medium" htmlFor="passkey-factor-code">
               {deletePasskeyMethod === 'passkey'
-                ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code (optional)' })
+                ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code' })
                 : t('profilePage.currentMfaOrRecoveryCode', { defaultValue: 'Current MFA code or recovery code' })}
             </label>
+            {deletePasskeyMethod === 'passkey' && (
+              <p className="text-xs text-muted-foreground">
+                {t('profilePage.passkeyRecoveryCodeHint', {
+                  defaultValue: 'Use an unused recovery code if you can’t access this passkey. Otherwise, leave blank.',
+                })}
+              </p>
+            )}
             <div className="flex gap-2">
               <input
                 id="passkey-factor-code"
