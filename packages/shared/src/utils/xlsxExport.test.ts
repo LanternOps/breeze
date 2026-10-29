@@ -121,11 +121,54 @@ describe('rowsToXlsx', () => {
     expect(xml).toContain('<row r="4"><c r="A4" t="inlineStr"><is><t xml:space="preserve">h3</t>');
   });
 
-  it('writes integers past 2^53 as text so Excel does not round away digits', () => {
-    const xml = sheet(rowsToXlsx([{ big: 2 ** 53 + 2, safe: 2 ** 53 - 1, frac: 0.1 }]));
-    expect(xml).toContain('<c r="A2" t="inlineStr"><is><t xml:space="preserve">9007199254740994</t></is></c>');
-    expect(xml).toContain('<c r="B2"><v>9007199254740991</v></c>');
-    expect(xml).toContain('<c r="C2"><v>0.1</v></c>');
+  describe('numbers Excel would lose precision on (15 significant digits)', () => {
+    /** Read one cell's type attribute and stored value out of the unzipped sheet. */
+    function cell(bytes: Uint8Array, ref: string): { type: string | null; value: string } {
+      const match = new RegExp(`<c r="${ref}"(?: t="([^"]+)")?>(.*?)</c>`).exec(sheet(bytes));
+      if (!match) throw new Error(`cell ${ref} missing`);
+      const inner = match[2] ?? '';
+      const value = /<v>([^<]*)<\/v>/.exec(inner)?.[1]
+        ?? /<t xml:space="preserve">([^<]*)<\/t>/.exec(inner)?.[1]
+        ?? '';
+      return { type: match[1] ?? null, value };
+    }
+
+    const bytes = rowsToXlsx([{
+      id16: 1234567890123456,
+      negId16: -1234567890123456,
+      maxSafe: Number.MAX_SAFE_INTEGER,
+      pastSafe: 2 ** 53 + 2,
+      huge: 1e21,
+      id15: 123456789012345,
+      negId15: -123456789012345,
+      frac: 0.1,
+      small: 42,
+      zip: '00123',
+      serial: '0012345678901234567',
+      bigintId: 12345678901234567890n,
+    }]);
+
+    it.each([
+      ['A2', '16-digit integer id', '1234567890123456'],
+      ['B2', 'negative 16-digit integer', '-1234567890123456'],
+      ['C2', 'Number.MAX_SAFE_INTEGER (16 digits)', '9007199254740991'],
+      ['D2', 'integer past MAX_SAFE_INTEGER', '9007199254740994'],
+      ['E2', '1e21', '1e+21'],
+      ['J2', 'leading-zero numeric string', '00123'],
+      ['K2', 'leading-zero 19-digit serial string', '0012345678901234567'],
+      ['L2', 'bigint', '12345678901234567890'],
+    ])('writes %s (%s) as a text cell with the exact digits', (ref, _label, expected) => {
+      expect(cell(bytes, ref)).toEqual({ type: 'inlineStr', value: expected });
+    });
+
+    it.each([
+      ['F2', '15-digit integer', '123456789012345'],
+      ['G2', 'negative 15-digit integer', '-123456789012345'],
+      ['H2', 'fraction', '0.1'],
+      ['I2', 'small integer', '42'],
+    ])('keeps %s (%s) as a numeric cell', (ref, _label, expected) => {
+      expect(cell(bytes, ref)).toEqual({ type: null, value: expected });
+    });
   });
 
   it('returns a valid workbook with an empty sheet for empty input', () => {

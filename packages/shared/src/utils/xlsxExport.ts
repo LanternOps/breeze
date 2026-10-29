@@ -77,13 +77,20 @@ function truncateCellText(value: string): string {
   return value.slice(0, XLSX_MAX_CELL_CHARS);
 }
 
+/** Smallest integer magnitude with 16 digits; Excel keeps only 15 significant digits. */
+const EXCEL_MIN_16_DIGIT_INTEGER = 1e15;
+
 /**
  * A number Excel can store without changing it. Excel keeps 15 significant
- * digits, so an integer past 2^53 (a numeric ID, a nanosecond timestamp) is
- * written as text to keep the exact digits CSV would have shown.
+ * digits, so an integer of 16 or more digits (a numeric ID or serial, a
+ * nanosecond timestamp, anything past 2^53) is written as text to keep the
+ * exact digits CSV would have shown. Fractions stay numeric. Strings
+ * (leading-zero serials included) and bigints never reach here: they are
+ * always written as text.
  */
 function isExcelSafeNumber(value: number): boolean {
-  return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
+  if (!Number.isFinite(value)) return false;
+  return !Number.isInteger(value) || Math.abs(value) < EXCEL_MIN_16_DIGIT_INTEGER;
 }
 
 function cellXml(ref: string, value: unknown): string {
