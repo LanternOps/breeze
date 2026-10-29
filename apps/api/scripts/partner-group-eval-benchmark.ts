@@ -67,9 +67,9 @@ async function seed(partnerId: string): Promise<Fleet> {
   // Set-based org/site/device/software generation; each device-writing
   // transaction touches ONE org, preserving the export advisory-lock order.
   await query(sql`
-    INSERT INTO organizations (partner_id, name, slug, type, status, settings)
+    INSERT INTO organizations (partner_id, name, slug, type, status, settings, currency_code)
     SELECT ${partnerId}::uuid, ${TAG} || '-org-' || n, 'benchmark-org-' || n, 'customer', 'active',
-      jsonb_build_object('benchmark', ${TAG}::text, 'ordinal', n)
+      jsonb_build_object('benchmark', ${TAG}::text, 'ordinal', n), 'USD'
     FROM generate_series(0, 199) n
   `);
   const orgs = await query<{ id: string; ordinal: number }>(sql`
@@ -305,6 +305,10 @@ async function main(): Promise<void> {
     const cold = await withProbe(() => evaluateJobs([head(groupId)]));
     const coldEvalSeconds = (performance.now() - coldStarted) / 1000;
     if (cold.length !== 200) throw new Error(`cold evaluation covered ${cold.length} orgs, expected 200`);
+    // Every 10th device carries the group-0 target: 199 × 4 + 200 = 996 members.
+    const coldAdded = cold.reduce((count, org) => count + org.added, 0);
+    console.log(`[${TAG}] cold evaluation materialized ${coldAdded} memberships`);
+    if (coldAdded !== 996) throw new Error(`cold evaluation added ${coldAdded} memberships, expected 996`);
     const steadyStarted = performance.now();
     const steady = await evaluateJobs([head(groupId)]);
     const steadyStateSeconds = (performance.now() - steadyStarted) / 1000;
