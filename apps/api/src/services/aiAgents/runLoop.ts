@@ -1647,7 +1647,9 @@ export function createAgentRunPostToolUse(args: {
 
     if (executionId) {
       try {
-        await completeToolExecution({ executionId, isError, durationMs });
+        // A failed call's result rides along so the row keeps WHY it failed
+        // (#10411); the ledger reads only its `error` string, never stores it.
+        await completeToolExecution({ executionId, isError, durationMs, ...(isError ? { output } : {}) });
       } catch (error) {
         console.error('[aiAgentRunLoop] failed to complete execution-ledger row (non-fatal)', {
           toolName, executionId, error,

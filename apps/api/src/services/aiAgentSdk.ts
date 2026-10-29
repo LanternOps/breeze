@@ -106,6 +106,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
+import { PRE_HOOK_THREW_REFUSAL, recordPreHookRefusal, takeLedgeredRefusal } from './aiChatRefusalLedger';
 import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
@@ -1036,9 +1037,14 @@ async function specialistPreApprovalGate(
  */
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   const gated = createGatedSessionPreToolUse(session);
-  return async (toolName, input, mcpToolName) => {
+  const decide = async (
+    ledger: PreHookLedgerState,
+    toolName: string,
+    input: Record<string, unknown>,
+    mcpToolName: string | undefined,
+  ): ReturnType<PreToolUseCallback> => {
     const wispCall: { current: WispCallState | null } = { current: null };
-    const result = await gated(wispCall, toolName, input, mcpToolName);
+    const result = await gated(wispCall, ledger, toolName, input, mcpToolName);
     if (!result.allowed || !session.wispGrant) return result;
     if (!wispCall.current) {
       captureException(new Error(`Wisp session ${session.breezeSessionId} reached an allowed exit for '${toolName}' without the ceiling gate`));
@@ -1047,11 +1053,37 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     const { ceiling, permissionKeys, narrow } = wispCall.current;
     return { ...result, toolAuth: narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys) };
   };
+  // #10411: every refusal leaves exactly one ai_tool_executions row. A gate
+  // that already wrote this call's row (an approval or audit record) owns it;
+  // otherwise the refusal is recorded here, and an approval HANDOFF is not a
+  // refusal at all (the release worker owns that row).
+  return async (toolName, input, mcpToolName, toolUseId) => {
+    const ledger: PreHookLedgerState = { rowWritten: false };
+    let result: Awaited<ReturnType<PreToolUseCallback>>;
+    try {
+      result = await decide(ledger, toolName, input, mcpToolName);
+    } catch (err) {
+      if (!ledger.rowWritten) {
+        await recordPreHookRefusal(session, toolName, input, { error: PRE_HOOK_THREW_REFUSAL }, toolUseId);
+      }
+      throw err;
+    }
+    if (!result.allowed && !result.handoff && !ledger.rowWritten) {
+      await recordPreHookRefusal(session, toolName, input, result, toolUseId);
+    }
+    return result;
+  };
+}
+
+/** Per call: set once a gate below has inserted this call's ai_tool_executions row (#10411). */
+interface PreHookLedgerState {
+  rowWritten: boolean;
 }
 
 function createGatedSessionPreToolUse(session: ActiveSession) {
   return async (
     wispCall: { current: WispCallState | null },
+    ledger: PreHookLedgerState,
     toolName: string,
     input: Record<string, unknown>,
     mcpToolName?: string,
@@ -1345,6 +1377,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 .returning()
           );
           helperExec = row;
+          if (row) ledger.rowWritten = true;
         } catch (err) {
           console.error('[AI-SDK] Failed to create helper approval record:', toolName, err);
           return { allowed: false, error: 'Failed to create approval record' };
@@ -1487,6 +1520,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 status: 'executing',
               })
           );
+          ledger.rowWritten = true;
         } catch (err) {
           console.error('[AI-SDK] Failed to create auto-approve audit record:', toolName, err);
           return { allowed: false, error: 'Failed to create audit record. Please try again.' };
@@ -1685,6 +1719,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   status: 'executing',
                 })
             );
+            ledger.rowWritten = true;
           } catch (err) {
             console.error('[AI-SDK] Failed to create plan-step audit record:', toolName, err);
             return { allowed: false, error: 'Failed to create audit record. Please try again.' };
@@ -1752,6 +1787,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               .returning()
         );
         approvalExec = row;
+        if (row) ledger.rowWritten = true;
       } catch (err) {
         console.error('[AI-SDK] Failed to create approval record:', toolName, err);
         return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
@@ -2970,7 +3006,7 @@ function approvedTopologyRun(toolName: string, output: string, isError: boolean)
   return { runId, state };
 }
 
-async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined): Promise<void> {
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined, refusalLedgered: boolean): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
   // No tool row is written here, but the call must stop being pending or the
   // dropped-call fallback would misreport it (#7931).
@@ -2978,6 +3014,8 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
   session.eventBus.publish({ type: 'topology_progress', phase: 'analyzing' });
   const run = approvedTopologyRun(toolName, output, isError);
   if (run) session.eventBus.publish({ type: 'topology_diagnostic_run', ...run });
+  // #10411: the pre hook already wrote this refused call's row.
+  if (refusalLedgered) return;
   try {
     await withDbAccessContext(
       { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
@@ -2998,6 +3036,9 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
   return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
+    // #10411: the echo of a refusal whose ledger row the pre hook already
+    // wrote — no second row, and no UPDATE of a same-name sibling's row.
+    const refusalLedgered = takeLedgeredRefusal(session, toolName, output, isError, sdkToolUseId);
     // A timed-out topology turn (C1): its gate is gone, so a tool that was
     // still in flight must not fall through to the generic path and persist
     // its raw output. It did run, though, so it must stop being pending —
@@ -3008,7 +3049,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       return;
     }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId);
+      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId, refusalLedgered);
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -3139,7 +3180,9 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
         : (typeof sealed?.sealedResult.delegantToolCallId === 'string'
           ? sealed.sealedResult.delegantToolCallId
           : undefined);
-    if (guardrailCheck.tier < 2) {
+    if (refusalLedgered) {
+      // #10411: the pre hook wrote this refused call's one row.
+    } else if (guardrailCheck.tier < 2) {
       try {
         await withDbAccessContext(
           { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
