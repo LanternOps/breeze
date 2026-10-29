@@ -13,6 +13,17 @@ const SITE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 vi.mock('../services', () => ({}));
 
+// These org-only route regressions do not enter the separate OD5 read view.
+// Preserve ownership/locking helpers used by the real membership code, while
+// keeping the new cross-owner lookups out of their queued Drizzle responses.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  resolveOrgSessionPartnerId: vi.fn().mockResolvedValue(null),
+  readPartnerGroupsForOrgSession: vi.fn().mockResolvedValue([]),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -334,6 +345,12 @@ describe('groups routes', () => {
     });
 
     it('should validate required deviceIds', async () => {
+      // Readability is established before body validation.
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([makeGroup()])
+        }) })
+      } as never);
       const res = await app.request(`/groups/${GROUP_ID}/devices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },

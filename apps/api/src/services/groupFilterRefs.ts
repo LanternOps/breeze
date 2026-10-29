@@ -1,3 +1,5 @@
+import { ERROR_CODES } from '@breeze/shared';
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroups } from '../db/schema';
@@ -67,4 +69,28 @@ export async function findCycleForSave(
   const graph = new Map<string, Set<string>>();
   for (const r of rows) graph.set(r.id, collectGroupRefs(r.filterConditions));
   return findGroupFilterCycle(groupId, refs, graph);
+}
+
+
+/** Partner filters cannot carry cross-group dependencies or hard-coded org ids. */
+export function partnerGroupFilterRefusal(filter: unknown): {
+  error: string; code: 'PARTNER_GROUP_FILTER_UNSUPPORTED'; fields: string[];
+} | null {
+  const fields = new Set<string>();
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if ('field' in node && (node.field === 'groupId' || node.field === 'orgId')) fields.add(node.field);
+    if ('conditions' in node && Array.isArray(node.conditions)) node.conditions.forEach(visit);
+  };
+  visit(filter);
+  return fields.size === 0 ? null : {
+    error: 'Partner-wide device group filters cannot reference groups or organizations',
+    code: ERROR_CODES.PARTNER_GROUP_FILTER_UNSUPPORTED,
+    fields: [...fields],
+  };
+}
+
+/** The owner helper pins this lookup to the caller's own partner(s), avoiding an existence oracle. */
+export async function findPartnerGroupRefs(filter: unknown): Promise<string[]> {
+  return findPartnerOwnedGroupIds([...collectGroupRefs(filter)]);
 }

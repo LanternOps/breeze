@@ -13,6 +13,17 @@ const SITE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 vi.mock('../services', () => ({}));
 
+// These org-only route regressions do not enter the separate OD5 read view.
+// Preserve ownership/locking helpers used by the real membership code, while
+// keeping the new cross-owner lookups out of their queued Drizzle responses.
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  resolveOrgSessionPartnerId: vi.fn().mockResolvedValue(null),
+  readPartnerGroupsForOrgSession: vi.fn().mockResolvedValue([]),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
@@ -554,7 +565,7 @@ describe('groups routes', () => {
       const body = await res.json();
       expect(body.data.id).toBe(GROUP_ID);
 
-      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_ID);
+      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, { orgId: ORG_ID });
       expect(schedulePeripheralPolicyDevice.mock.calls).toEqual([
         [DEVICE_ID, 'group_deleted'],
         [DEVICE_ID_2, 'group_deleted'],
@@ -598,7 +609,7 @@ describe('groups routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('child groups');
-      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_ID);
+      expect(deleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, { orgId: ORG_ID });
     });
 
     it('returns 409 with contractCount only when the caller lacks contracts:read', async () => {

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
-import { isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY } from '../services/deviceGroupOwnership';
-import { zValidator } from '../lib/validation';
+import { createMiddleware } from 'hono/factory';
+import { isPartnerOwnedGroup, PARTNER_GROUP_READ_ONLY_BODY, resolveOrgSessionPartnerId, readPartnerGroupsForOrgSession, type OrgSessionPartnerGroupRow } from '../services/deviceGroupOwnership';
+import { zValidator, formatZodError } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { configPolicyAssignments, configurationPolicies, deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, sites } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
@@ -18,12 +19,18 @@ import {
 import { writeRouteAudit } from '../services/auditEvents';
 import type { FilterConditionGroup } from '../services/filterEngine';
 import { PERMISSIONS, canAccessSite, hasPermission, type UserPermissions } from '../services/permissions';
-import { findCycleForSave } from '../services/groupFilterRefs';
+import { findCycleForSave, findPartnerGroupRefs, partnerGroupFilterRefusal } from '../services/groupFilterRefs';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from '../services/deviceGroupDelete';
 
-export const groupRoutes = new Hono();
+import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { requestPartnerGroupEvaluationAfterCommit } from '../jobs/partnerGroupEvaluationJobs';
+import { previewPartnerGroup } from '../services/partnerGroupPreview';
+import { ERROR_CODES } from '@breeze/shared';
+
+type GroupRouteEnv = { Variables: { resolvedGroup: typeof deviceGroups.$inferSelect } };
+export const groupRoutes = new Hono<GroupRouteEnv>();
 const requireGroupRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireGroupWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 
@@ -62,6 +69,8 @@ type DeviceGroup = {
   filterConditions: FilterConditionGroup | null;
   filterFieldsUsed: string[];
   parentId: string | null;
+  ownerScope: 'organization' | 'partner';
+  evaluation: { state: 'pending' | 'current' | 'partial'; evaluatedAt: string | null; failedOrgs: number } | null;
   deviceCount: number;
   createdAt: string;
   updatedAt: string;
@@ -93,6 +102,7 @@ const filterConditionGroupSchema: z.ZodType<FilterConditionGroup> = z.lazy(() =>
 ) as z.ZodType<FilterConditionGroup>;
 
 const listGroupsQuerySchema = z.object({
+  ownerScope: z.enum(['organization', 'partner', 'all']).default('organization'),
   /**
    * Narrows the result to one org, for callers (e.g. the configuration-policy
    * assignments target picker) that need only the groups belonging to one
@@ -127,6 +137,7 @@ const listGroupsQuerySchema = z.object({
 const groupFilterConditionsField = filterConditionGroupSchema.nullable().optional();
 
 const createGroupSchema = z.object({
+  ownerScope: z.enum(['organization', 'partner']).default('organization'),
   orgId: z.string().guid().optional(),
   siteId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
@@ -200,10 +211,10 @@ async function getOrgIdsForAuth(
 
 async function canReadGroup(
   group: typeof deviceGroups.$inferSelect,
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>,
 ): Promise<boolean> {
   if (group.orgId !== null) return ensureOrgAccess(group.orgId, auth);
-  return auth.scope === 'system' || (group.partnerId !== null && group.partnerId === auth.partnerId);
+  return auth.scope === 'system' || (auth.scope === 'partner' && auth.partnerOrgAccess !== 'none' && group.partnerId !== null && group.partnerId === auth.partnerId);
 }
 
 function redactPartnerGroup(group: typeof deviceGroups.$inferSelect, auth: Pick<AuthContext, 'scope'>): boolean {
@@ -212,12 +223,12 @@ function redactPartnerGroup(group: typeof deviceGroups.$inferSelect, auth: Pick<
 
 async function getGroupWithAccess(
   groupId: string,
-  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
+  auth: Pick<AuthContext, 'scope' | 'partnerId' | 'partnerOrgAccess' | 'orgId' | 'accessibleOrgIds' | 'canAccessOrg'>
 ) {
   const [group] = await db
     .select()
     .from(deviceGroups)
-    .where(eq(deviceGroups.id, groupId))
+    .where(and(eq(deviceGroups.id, groupId), auth.scope === 'organization' ? isNotNull(deviceGroups.orgId) : undefined))
     .limit(1);
 
   if (!group) {
@@ -230,6 +241,43 @@ async function getGroupWithAccess(
   }
 
   return group;
+}
+
+/** Unknown and unreadable ids have the same response, even for read-only users.
+ * Permission and MFA gates still run before any mutation of a readable group. */
+const requireReadableGroup = createMiddleware<GroupRouteEnv>(async (c, next) => {
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'Group not found' }, 404);
+  const group = await getGroupWithAccess(id, c.get('auth'));
+  if (!group) return c.json({ error: 'Group not found' }, 404);
+  c.set('resolvedGroup', group);
+  await next();
+});
+
+/** A safe projection is expanded only with fixed redacted values. */
+function orgReadRow(row: OrgSessionPartnerGroupRow): typeof deviceGroups.$inferSelect {
+  return { ...row, orgId: null, siteId: null, parentId: null, rules: null,
+    filterConditions: null, filterFieldsUsed: [], filterRevision: 1,
+    evaluatedRevision: 0, evaluatedAt: null, evaluationFailedOrgs: 0 };
+}
+
+async function getGroupForReadView(groupId: string, auth: AuthContext) {
+  const group = await getGroupWithAccess(groupId, auth);
+  if (group || auth.scope !== 'organization' || !auth.orgId) return group;
+  const partnerId = await resolveOrgSessionPartnerId(auth.orgId);
+  if (!partnerId) return null;
+  const [row] = await readPartnerGroupsForOrgSession(partnerId, { groupId });
+  return row ? orgReadRow(row) : null;
+}
+
+function memberOrgCondition(auth: AuthContext, requestedOrgId?: string): SQL | undefined {
+  if (requestedOrgId && auth.scope !== 'system' && !(auth.accessibleOrgIds ?? []).includes(requestedOrgId)) return sql`false`;
+  if (auth.scope === 'organization') return auth.orgId ? eq(deviceGroupMemberships.orgId, auth.orgId) : sql`false`;
+  if (auth.scope === 'partner') return and(
+    inArray(deviceGroupMemberships.orgId, auth.accessibleOrgIds ?? []),
+    requestedOrgId ? eq(deviceGroupMemberships.orgId, requestedOrgId) : undefined,
+  );
+  return requestedOrgId ? eq(deviceGroupMemberships.orgId, requestedOrgId) : undefined;
 }
 
 /**
@@ -247,11 +295,11 @@ export function groupSiteAllowed(
   return typeof group.siteId === 'string' && canAccessSite(perms, group.siteId);
 }
 
-async function getDeviceCountForGroup(groupId: string): Promise<number> {
+async function getDeviceCountForGroup(groupId: string, auth?: AuthContext): Promise<number> {
   const [result] = await db
     .select({ count: sql<number>`count(*)` })
     .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.groupId, groupId));
+    .where(and(eq(deviceGroupMemberships.groupId, groupId), auth ? memberOrgCondition(auth) : undefined));
 
   return Number(result?.count ?? 0);
 }
@@ -284,10 +332,15 @@ function mapGroupRow(
     filterConditions: redact ? null : group.filterConditions as FilterConditionGroup | null,
     filterFieldsUsed: redact ? [] : group.filterFieldsUsed ?? [],
     parentId: group.parentId,
+    ownerScope: group.orgId === null ? 'partner' : 'organization',
+    evaluation: group.orgId !== null || redact ? null : {
+      state: group.evaluatedRevision < group.filterRevision ? 'pending' : group.evaluationFailedOrgs > 0 ? 'partial' : 'current',
+      evaluatedAt: group.evaluatedAt?.toISOString() ?? null, failedOrgs: group.evaluationFailedOrgs,
+    },
     deviceCount,
     createdAt: group.createdAt.toISOString(),
     updatedAt: group.updatedAt.toISOString(),
-    policy: policy ?? undefined,
+    policy: redact ? undefined : policy ?? undefined,
   };
   if (deviceIds) {
     result.deviceIds = deviceIds;
@@ -307,7 +360,7 @@ groupRoutes.get(
     const query = c.req.valid('query');
 
     const orgIds = await getOrgIdsForAuth(auth);
-    if (auth.scope !== 'system' && (!orgIds || orgIds.length === 0)) {
+    if (auth.scope !== 'system' && (!orgIds || orgIds.length === 0) && !(auth.scope === 'partner' && auth.partnerOrgAccess !== 'none' && query.ownerScope !== 'organization')) {
       return c.json({ data: [], total: 0 });
     }
 
@@ -319,10 +372,10 @@ groupRoutes.get(
     let effectiveOrgIds = orgIds;
     if (query.orgId) {
       if (orgIds) {
-        if (!orgIds.includes(query.orgId)) {
+        if (!orgIds.includes(query.orgId) && query.ownerScope === 'organization') {
           return c.json({ data: [], total: 0 });
         }
-        effectiveOrgIds = [query.orgId];
+        effectiveOrgIds = orgIds.includes(query.orgId) ? [query.orgId] : [];
       } else {
         effectiveOrgIds = [query.orgId];
       }
@@ -333,9 +386,12 @@ groupRoutes.get(
     }
 
     const conditions: SQL[] = [];
-    if (effectiveOrgIds) {
-      conditions.push(inArray(deviceGroups.orgId, effectiveOrgIds));
-    }
+    const includePartner = query.ownerScope !== 'organization' && !query.siteId && !query.parentId && !perms?.allowedSiteIds;
+    const orgCondition = effectiveOrgIds ? inArray(deviceGroups.orgId, effectiveOrgIds) : isNotNull(deviceGroups.orgId);
+    const partnerCondition = includePartner && auth.scope === 'system' ? isNull(deviceGroups.orgId)
+      : includePartner && auth.scope === 'partner' && auth.partnerId && auth.partnerOrgAccess !== 'none'
+        ? and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, auth.partnerId)) : undefined;
+    conditions.push(or(query.ownerScope !== 'partner' ? orgCondition : undefined, partnerCondition) ?? sql`false`);
     if (perms?.allowedSiteIds) {
       if (perms.allowedSiteIds.length === 0) return c.json({ data: [], total: 0 });
       conditions.push(inArray(deviceGroups.siteId, perms.allowedSiteIds));
@@ -359,6 +415,12 @@ groupRoutes.get(
       .orderBy(desc(deviceGroups.createdAt));
 
     let results = groups;
+    if (includePartner && auth.scope === 'organization' && auth.orgId) {
+      const partnerId = await resolveOrgSessionPartnerId(auth.orgId);
+      if (partnerId) results = [...results, ...(await readPartnerGroupsForOrgSession(partnerId, {}))
+        .filter(row => !query.type || row.type === query.type).map(orgReadRow)]
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    }
     if (perms?.allowedSiteIds) {
       results = results.filter((group) => groupSiteAllowed(group, perms));
     }
@@ -382,6 +444,7 @@ groupRoutes.get(
               .where(
                 and(
                   inArray(deviceGroupMemberships.groupId, groupIds),
+                  memberOrgCondition(auth, query.orgId),
                   inArray(devices.siteId, perms.allowedSiteIds)
                 )
               )
@@ -393,7 +456,7 @@ groupRoutes.get(
               count: sql<number>`count(*)`
             })
             .from(deviceGroupMemberships)
-            .where(inArray(deviceGroupMemberships.groupId, groupIds))
+            .where(and(inArray(deviceGroupMemberships.groupId, groupIds), memberOrgCondition(auth, query.orgId)))
             .groupBy(deviceGroupMemberships.groupId)
       : [];
 
@@ -419,6 +482,7 @@ groupRoutes.get(
               .where(
                 and(
                   inArray(deviceGroupMemberships.groupId, groupIds),
+                  memberOrgCondition(auth, query.orgId),
                   inArray(devices.siteId, perms.allowedSiteIds)
                 )
               )
@@ -429,7 +493,7 @@ groupRoutes.get(
               deviceId: deviceGroupMemberships.deviceId
             })
             .from(deviceGroupMemberships)
-            .where(inArray(deviceGroupMemberships.groupId, groupIds));
+            .where(and(inArray(deviceGroupMemberships.groupId, groupIds), memberOrgCondition(auth, query.orgId)));
 
       membershipMap = new Map<string, string[]>();
       for (const row of membershipRows) {
@@ -444,7 +508,8 @@ groupRoutes.get(
 
     // Query policy assignments for these groups
     const groupPolicyMap = new Map<string, { id: string; name: string }>();
-    if (groupIds.length > 0) {
+    const policyGroupIds = results.filter(group => !redactPartnerGroup(group, auth)).map(group => group.id);
+    if (policyGroupIds.length > 0) {
       const policyRows = await db
         .select({
           groupId: configPolicyAssignments.targetId,
@@ -456,7 +521,7 @@ groupRoutes.get(
         .where(
           and(
             eq(configPolicyAssignments.level, 'device_group'),
-            inArray(configPolicyAssignments.targetId, groupIds),
+            inArray(configPolicyAssignments.targetId, policyGroupIds),
             eq(configurationPolicies.status, 'active')
           )
         )
@@ -494,7 +559,7 @@ groupRoutes.get(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
+    const group = await getGroupForReadView(id, auth);
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
@@ -503,9 +568,9 @@ groupRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
-    const deviceCount = await getDeviceCountForGroup(id);
+    const deviceCount = await getDeviceCountForGroup(id, auth);
 
-    const [assignedPolicy] = await db
+    const [assignedPolicy] = redactPartnerGroup(group, auth) ? [] : await db
       .select({
         policyId: configPolicyAssignments.configPolicyId,
         policyName: configurationPolicies.name,
@@ -540,10 +605,36 @@ groupRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requireGroupWrite,
   requireMfa(),
-  zValidator('json', createGroupSchema),
   async (c) => {
     const auth = c.get('auth');
-    const payload = c.req.valid('json');
+    const raw = await c.req.json().catch(() => null);
+    if (raw?.ownerScope === 'partner') {
+      if (auth.scope === 'system') return c.json({ error: 'Partner-wide device groups must be created by a partner user' }, 400);
+      if (auth.scope !== 'partner' || !canManagePartnerWidePolicies(auth) || !auth.partnerId)
+        return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      if ((c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds)
+        return c.json({ error: 'Access to this site denied' }, 403);
+    }
+    const parsed = createGroupSchema.safeParse(raw);
+    if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
+    const payload = parsed.data;
+    if (payload.ownerScope === 'partner') {
+      if (!auth.partnerId) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      if (payload.orgId !== undefined || payload.siteId !== undefined || payload.parentId !== undefined || payload.deviceIds !== undefined || payload.rules !== undefined || payload.type !== 'dynamic' || !payload.filterConditions)
+        return c.json({ error: 'Partner-wide groups require a dynamic filter and cannot have an organization, site, parent, rules or manual devices' }, 400);
+      const validation = validateFilter(payload.filterConditions);
+      if (!validation.valid) return c.json({ error: 'Invalid filter conditions', details: validation.errors }, 400);
+      const refusal = partnerGroupFilterRefusal(payload.filterConditions);
+      if (refusal) return c.json(refusal, 400);
+      const [group] = await db.insert(deviceGroups).values({ orgId: null, partnerId: auth.partnerId,
+        siteId: null, parentId: null, name: payload.name, type: 'dynamic', filterConditions: payload.filterConditions,
+        filterFieldsUsed: extractFieldsFromFilter(payload.filterConditions),
+      }).returning();
+      if (!group) return c.json({ error: 'Failed to create group' }, 500);
+      writeRouteAudit(c, { orgId: null, action: 'device_group.create', resourceType: 'device_group', resourceId: group.id, resourceName: group.name });
+      requestPartnerGroupEvaluationAfterCommit(group.id, 'created');
+      return c.json({ data: mapGroupRow(group, 0, false) }, 201);
+    }
     const perms = c.get('permissions') as UserPermissions | undefined;
 
     // The dashboard never puts orgId in this body — fetchWithAuth scopes every
@@ -575,12 +666,16 @@ groupRoutes.post(
       return c.json({ error: 'orgId is required' }, 400);
     }
 
+    if (!orgId) return c.json({ error: 'orgId is required' }, 400);
+    if (payload.filterConditions && (await findPartnerGroupRefs(payload.filterConditions)).length)
+      return c.json({ error: 'Organization group filters cannot reference partner-wide groups', code: ERROR_CODES.PARTNER_GROUP_FILTER_UNSUPPORTED }, 400);
+
     if (perms?.allowedSiteIds && (!payload.siteId || !canAccessSite(perms, payload.siteId))) {
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
     if (payload.siteId) {
-      const validSite = await siteBelongsToOrg(payload.siteId, orgId!);
+      const validSite = await siteBelongsToOrg(payload.siteId, orgId);
       if (!validSite) {
         return c.json({ error: 'Site not found or belongs to different organization' }, 400);
       }
@@ -631,7 +726,7 @@ groupRoutes.post(
 
       const deviceValidation = await validateManualMembershipDevices({
         deviceIds: requestedDeviceIds,
-        orgId: orgId!,
+        orgId: orgId,
         siteId: payload.siteId ?? null
       });
 
@@ -646,7 +741,7 @@ groupRoutes.post(
     const [group] = await db
       .insert(deviceGroups)
       .values({
-        orgId: orgId!,
+        orgId: orgId,
         siteId: payload.siteId,
         name: payload.name,
         type: payload.type,
@@ -738,20 +833,44 @@ groupRoutes.post(
 groupRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', groupIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', groupIdParamSchema),
-  zValidator('json', updateGroupSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const payload = c.req.valid('json');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
+    const group = c.get('resolvedGroup');
+    if (group.orgId === null && !canManagePartnerWidePolicies(auth))
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    if (group.orgId === null && !groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined))
+      return c.json({ error: 'Access to this site denied' }, 403);
+    const parsed = updateGroupSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
+    const payload = parsed.data;
+    if (group.orgId === null) {
+      if (payload.siteId != null || payload.parentId != null || payload.type === 'static' || payload.filterConditions === null || payload.rules !== undefined)
+        return c.json({ error: 'Partner-wide groups require a dynamic filter and cannot have a site, parent or rules' }, 400);
+      const updates: Omit<Partial<typeof deviceGroups.$inferInsert>, 'filterRevision'> & { filterRevision?: SQL } = { updatedAt: new Date() };
+      if (payload.name !== undefined) updates.name = payload.name;
+      if (payload.filterConditions !== undefined) {
+        const validation = validateFilter(payload.filterConditions);
+        if (!validation.valid) return c.json({ error: 'Invalid filter conditions', details: validation.errors }, 400);
+        const refusal = partnerGroupFilterRefusal(payload.filterConditions);
+        if (refusal) return c.json(refusal, 400);
+        updates.filterConditions = payload.filterConditions;
+        updates.filterFieldsUsed = extractFieldsFromFilter(payload.filterConditions);
+        updates.filterRevision = sql`${deviceGroups.filterRevision} + 1`;
+      }
+      const [updated] = await db.update(deviceGroups).set(updates).where(eq(deviceGroups.id, id)).returning();
+      if (!updated) return c.json({ error: 'Failed to update group' }, 500);
+      writeRouteAudit(c, { orgId: null, action: 'device_group.update', resourceType: 'device_group', resourceId: id, resourceName: updated.name, details: { changedFields: Object.keys(payload) } });
+      if (payload.filterConditions !== undefined) requestPartnerGroupEvaluationAfterCommit(id, 'filter_updated');
+      return c.json({ data: mapGroupRow(updated, await getDeviceCountForGroup(id, auth), false) });
     }
-    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
+    if (payload.filterConditions && (await findPartnerGroupRefs(payload.filterConditions)).length)
+      return c.json({ error: 'Organization group filters cannot reference partner-wide groups', code: ERROR_CODES.PARTNER_GROUP_FILTER_UNSUPPORTED }, 400);
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (!groupSiteAllowed(group, perms)) {
@@ -902,18 +1021,18 @@ groupRoutes.patch(
 groupRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', groupIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', groupIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
-    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
+    const group = c.get('resolvedGroup');
+    if (group.orgId === null && !canManagePartnerWidePolicies(auth))
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    if (group.orgId === null && !group.partnerId) return c.json({ error: 'Group not found' }, 404);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -921,7 +1040,9 @@ groupRoutes.delete(
 
     let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
     try {
-      result = await deleteDeviceGroup(id, group.orgId);
+      if (group.orgId !== null) result = await deleteDeviceGroup(id, { orgId: group.orgId });
+      else if (group.partnerId) result = await deleteDeviceGroup(id, { partnerId: group.partnerId });
+      else return c.json({ error: 'Group not found' }, 404);
     } catch (err) {
       if (err instanceof DeviceGroupDeleteError) {
         if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
@@ -943,11 +1064,13 @@ groupRoutes.delete(
       throw err;
     }
 
-    await Promise.all(result.affectedDeviceIds.map((deviceId) =>
+    for (let offset = 0; offset < result.affectedDeviceIds.length; offset += 100) {
+    await Promise.all(result.affectedDeviceIds.slice(offset, offset + 100).map((deviceId) =>
       schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
         console.error(`[groups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
       })
     ));
+    }
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -972,7 +1095,7 @@ groupRoutes.get(
     const perms = c.get('permissions') as UserPermissions | undefined;
     const { id } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
+    const group = await getGroupForReadView(id, auth);
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
@@ -986,6 +1109,8 @@ groupRoutes.get(
     }
 
     const conditions: SQL[] = [eq(deviceGroupMemberships.groupId, id)];
+    const orgCondition = memberOrgCondition(auth);
+    if (orgCondition) conditions.push(orgCondition);
     if (perms?.allowedSiteIds) {
       conditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
@@ -1032,20 +1157,19 @@ groupRoutes.get(
 groupRoutes.post(
   '/:id/devices',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', groupIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', groupIdParamSchema),
-  zValidator('json', addDevicesSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
-    const payload = c.req.valid('json');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
+    const group = c.get('resolvedGroup');
     if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
+    const parsed = addDevicesSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json(formatZodError(parsed.error), 400);
+    const payload = parsed.data;
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1107,17 +1231,15 @@ groupRoutes.post(
 groupRoutes.delete(
   '/:id/devices/:deviceId',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', deviceIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id, deviceId } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
+    const group = c.get('resolvedGroup');
     if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -1196,7 +1318,6 @@ groupRoutes.post(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
-    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -1211,6 +1332,13 @@ groupRoutes.post(
     }
 
     const filter = group.filterConditions as FilterConditionGroup;
+    if (group.orgId === null) {
+      if (!group.partnerId) return c.json({ error: 'Group not found' }, 404);
+      const preview = await previewPartnerGroup({ id, partnerId: group.partnerId, filterConditions: filter }, auth, { limit });
+      return c.json({ data: { totalCount: preview.total, devices: preview.devices,
+        evaluatedAt: new Date().toISOString(), partial: preview.partial,
+        evaluatedOrgs: preview.evaluatedOrgs, totalOrgs: preview.totalOrgs } });
+    }
     let preview;
     try {
       preview = await evaluateFilterWithPreview(filter, {
@@ -1250,17 +1378,15 @@ groupRoutes.post(
 groupRoutes.post(
   '/:id/devices/:deviceId/pin',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', deviceIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id, deviceId } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
+    const group = c.get('resolvedGroup');
     if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
@@ -1319,17 +1445,15 @@ groupRoutes.post(
 groupRoutes.delete(
   '/:id/devices/:deviceId/pin',
   requireScope('organization', 'partner', 'system'),
+  zValidator('param', deviceIdParamSchema),
+  requireReadableGroup,
   requireGroupWrite,
   requireMfa(),
-  zValidator('param', deviceIdParamSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id, deviceId } = c.req.valid('param');
 
-    const group = await getGroupWithAccess(id, auth);
-    if (!group) {
-      return c.json({ error: 'Group not found' }, 404);
-    }
+    const group = c.get('resolvedGroup');
     if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
@@ -1432,6 +1556,8 @@ groupRoutes.get(
 
     // Build conditions
     const conditions: SQL[] = [eq(groupMembershipLog.groupId, id)];
+    if (group.orgId === null && auth.scope === 'partner')
+      conditions.push(inArray(groupMembershipLog.orgId, auth.accessibleOrgIds ?? []));
     if (query.deviceId) {
       conditions.push(eq(groupMembershipLog.deviceId, query.deviceId));
     }

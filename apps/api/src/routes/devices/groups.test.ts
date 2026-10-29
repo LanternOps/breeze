@@ -761,7 +761,7 @@ describe('Device Groups routes — multi-tenant isolation', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(writeRouteAudit).toHaveBeenCalled();
-      expect(mockDeleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_A);
+      expect(mockDeleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, { orgId: ORG_A });
       expect(mockSchedulePeripheralPolicyDevice.mock.calls).toEqual([
         [DEVICE_1, 'group_deleted'],
         [DEVICE_2, 'group_deleted'],
@@ -915,7 +915,7 @@ describe('Device Groups routes — multi-tenant isolation', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'Cannot delete group with child groups' });
-      expect(mockDeleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, ORG_A);
+      expect(mockDeleteDeviceGroup).toHaveBeenCalledWith(GROUP_ID, { orgId: ORG_A });
     });
   });
 

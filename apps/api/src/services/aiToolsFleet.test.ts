@@ -6,6 +6,7 @@ vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
 }));
 import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { inArray, sql } from 'drizzle-orm';
 
 const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
@@ -162,9 +163,9 @@ vi.mock('../db/schema/devices', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
-    deviceGroups: { orgId: 'orgId', id: 'id' },
-    deviceGroupMemberships: { groupId: 'groupId' },
-    groupMembershipLog: { groupId: 'groupId' },
+    deviceGroups: { orgId: 'orgId', partnerId: 'partnerId', id: 'id' },
+    deviceGroupMemberships: { groupId: 'groupId', orgId: 'orgId' },
+    groupMembershipLog: { groupId: 'groupId', orgId: 'orgId' },
   };
 });
 
@@ -369,7 +370,7 @@ describe('manage_groups peripheral reconciliation', () => {
     vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
       limit: vi.fn().mockResolvedValue([{ id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null }]),
     }) }) } as any);
-    const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, auth));
+    const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, { ...auth, scope: 'partner', partnerId: 'partner-1', partnerOrgAccess: 'all' }));
     expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY', error: 'Partner-wide device groups are read-only here' });
     expect(db.insert).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
@@ -1971,5 +1972,80 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
       expect(result.success).toBe(true);
       expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
     });
+  });
+});
+
+
+describe('manage_groups partner ownership W3', () => {
+  const tools = new Map<string, AiTool>();
+  registerFleetTools(tools);
+  const tool = tools.get('manage_groups');
+  if (!tool) throw new Error('manage_groups missing');
+  const dialect = new PgDialect();
+  const group = { id: 'group-partner', orgId: null, partnerId: 'partner-1', name: 'Fleet', siteId: null,
+    filterConditions: { operator: 'AND', conditions: [{ field: 'hostname', operator: 'equals', value: 'secret' }] } };
+  const partnerAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' }, orgId: null, partnerId: 'partner-1',
+    scope: 'partner', partnerOrgAccess: 'selected', accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => inArray(sql.raw('org_id'), ['org-1']),
+  } as any;
+  beforeEach(() => { vi.clearAllMocks(); vi.mocked(findPartnerOwnedGroupIds).mockResolvedValue([]); });
+
+  function selectRows(rows: unknown[]) {
+    const chain: any = { limit: vi.fn().mockResolvedValue(rows), orderBy: vi.fn(() => chain),
+      where: vi.fn(() => chain), leftJoin: vi.fn(() => chain), from: vi.fn(() => chain) };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+    return chain;
+  }
+
+  it.each(['list', 'get', 'membership_log'])('%s includes own partner groups in its query', async (action) => {
+    const lookup = selectRows([group]);
+    if (action !== 'list') selectRows([]);
+    const response = JSON.parse(await tool.handler({ action, groupId: group.id }, partnerAuth));
+    expect(response.error).toBeUndefined();
+    const query = dialect.sqlToQuery(lookup.where.mock.calls[0][0]);
+    expect(query.params).toContain('partner-1');
+    expect(query.sql).toContain('is null');
+  });
+
+  it.each(['get', 'membership_log'])('%s clamps partner members/log to accessible orgs', async (action) => {
+    selectRows([group]);
+    const members = selectRows([]);
+    await tool.handler({ action, groupId: group.id }, partnerAuth);
+    const query = dialect.sqlToQuery(members.where.mock.calls[0][0]);
+    expect(query.params).toContain('org-1');
+    expect(query.sql).toContain(' in ');
+  });
+
+  it.each(['organization', 'none'])('list has no partner branch for %s scope/access', async (kind) => {
+    const lookup = selectRows([]);
+    const auth = kind === 'organization'
+      ? { ...partnerAuth, scope: 'organization', orgId: 'org-1' }
+      : { ...partnerAuth, partnerOrgAccess: 'none', accessibleOrgIds: [] };
+    await tool.handler({ action: 'list' }, auth);
+    expect(dialect.sqlToQuery(lookup.where.mock.calls[0][0]).params).not.toContain('partner-1');
+  });
+
+  it.each(['organization', 'none', 'other'])('get denies partner rows to %s callers even if selected by RLS', async (kind) => {
+    selectRows([group]);
+    const auth = kind === 'organization' ? { ...partnerAuth, scope: 'organization', orgId: 'org-1' }
+      : kind === 'none' ? { ...partnerAuth, partnerOrgAccess: 'none' }
+      : { ...partnerAuth, partnerId: 'partner-2' };
+    expect(JSON.parse(await tool.handler({ action: 'get', groupId: group.id }, auth)))
+      .toEqual({ error: 'Group not found or access denied' });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['create', 'update'])('%s refuses org filters referencing a partner group', async (action) => {
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValue([group.id]);
+    if (action === 'create') vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-group' }]) }) } as never);
+    if (action === 'update') selectRows([{ ...group, orgId: 'org-1', partnerId: null }]);
+    const response = JSON.parse(await tool.handler({ action, orgId: 'org-1', groupId: 'org-group', name: 'Org',
+      filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: group.id }] },
+    }, partnerAuth));
+    expect(response.code).toBe('PARTNER_GROUP_FILTER_UNSUPPORTED');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });

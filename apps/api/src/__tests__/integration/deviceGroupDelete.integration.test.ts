@@ -59,7 +59,7 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
   runDb.each(['draft', 'active', 'paused'])('refuses while a %s contract bills the group', async (status) => {
     const f = await seed();
     const contractId = await contractWithGroupLine(f, status);
-    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId))).rejects.toMatchObject({
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }))).rejects.toMatchObject({
       name: 'DeviceGroupDeleteError', code: 'BILLED_BY_CONTRACTS', contractCount: 1,
       contracts: [{ id: contractId, name: `C-${status}`, status }],
     });
@@ -70,8 +70,8 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
   runDb.each(['cancelled', 'expired'])('deletes when only a %s contract references it; the line keeps its stamped name', async (status) => {
     const f = await seed();
     const contractId = await contractWithGroupLine(f, status);
-    const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
-    expect(res).toEqual({ group: { id: f.group.id, name: 'VIP', orgId: f.orgId }, affectedDeviceIds: [f.deviceId] });
+    const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }));
+    expect(res).toEqual({ group: { id: f.group.id, name: 'VIP', orgId: f.orgId, partnerId: null }, affectedDeviceIds: [f.deviceId] });
     const [line] = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.contractId, contractId)));
     expect(line).toMatchObject({ deviceGroupId: null, deviceGroupName: 'VIP' });
     const logs = await withSystemDbAccessContext(() => db.select().from(groupMembershipLog).where(eq(groupMembershipLog.groupId, f.group.id)));
@@ -96,8 +96,8 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
       ])
     );
 
-    const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
-    expect(res).toEqual({ group: { id: f.group.id, name: 'VIP', orgId: f.orgId }, affectedDeviceIds: [f.deviceId] });
+    const res = await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }));
+    expect(res).toEqual({ group: { id: f.group.id, name: 'VIP', orgId: f.orgId, partnerId: null }, affectedDeviceIds: [f.deviceId] });
     const still = await withSystemDbAccessContext(() => db.select().from(deviceGroups).where(eq(deviceGroups.id, f.group.id)));
     expect(still).toHaveLength(0);
     const assignments = await withSystemDbAccessContext(() =>
@@ -115,9 +115,9 @@ describe('deleteDeviceGroup (real DB) #3205 W02', () => {
   runDb('refuses a group with children, and NOT_FOUND for a group in another org', async () => {
     const f = await seed();
     await withSystemDbAccessContext(() => db.insert(deviceGroups).values({ orgId: f.orgId, name: 'child', type: 'static', parentId: f.group.id }));
-    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId))).rejects.toMatchObject({ code: 'HAS_CHILDREN' });
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }))).rejects.toMatchObject({ code: 'HAS_CHILDREN' });
     const other = await seed();
-    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, other.orgId))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: other.orgId }))).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(new DeviceGroupDeleteError('NOT_FOUND', 'x')).toBeInstanceOf(Error);
   });
 });
@@ -127,7 +127,7 @@ describe('deleteDeviceGroup — quoted groups (#3205 W05)', () => {
   runDb.each(['draft', 'sent', 'viewed'])('refuses while a %s quote prices the group', async (status) => {
     const f = await seed();
     const quoteId = await quoteWithGroupLine(f, status);
-    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId))).rejects.toMatchObject({
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }))).rejects.toMatchObject({
       name: 'DeviceGroupDeleteError', code: 'QUOTED_BY_QUOTES', quoteCount: 1,
       quotes: [expect.objectContaining({ id: quoteId, status })],
     });
@@ -139,7 +139,7 @@ describe('deleteDeviceGroup — quoted groups (#3205 W05)', () => {
     'deletes when only a %s quote references it, and the line keeps its stamp', async (status) => {
       const f = await seed();
       const quoteId = await quoteWithGroupLine(f, status);
-      await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId));
+      await withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId }));
       const [line] = await withSystemDbAccessContext(() =>
         db.select().from(quoteLines).where(eq(quoteLines.quoteId, quoteId)));
       expect(line).toMatchObject({ deviceGroupId: null, deviceGroupName: 'VIP' });
@@ -151,7 +151,7 @@ describe('deleteDeviceGroup — quoted groups (#3205 W05)', () => {
     const f = await seed();
     await contractWithGroupLine(f, 'active');
     await quoteWithGroupLine(f, 'sent');
-    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, f.orgId)))
+    await expect(withSystemDbAccessContext(() => deleteDeviceGroup(f.group.id, { orgId: f.orgId })))
       .rejects.toMatchObject({ code: 'BILLED_BY_CONTRACTS', contractCount: 1, quoteCount: 1 });
   });
 });
