@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
   wispEnabledOpts: [] as Array<{ enabled?: boolean } | undefined>,
   scope: 'partner' as string | null,
   entitlement: 'enabled' as 'loading' | 'enabled' | 'locked',
-  /** GET /wisp/thread[?orgId=] → payload (status 200); absent = 404 no_active_grant. */
+  /** GET /wisp/thread[?orgId=] → payload (status 200); absent = 200 { data: null } (no grant, #10200). */
   threads: {} as Record<string, unknown>,
   /** GET /wisp/thread[?orgId=] → this failure status instead (e.g. 500, or 404 without the code). */
   threadFailures: {} as Record<string, { status: number; body: unknown }>,
@@ -29,7 +29,7 @@ vi.mock('@/stores/auth', () => ({
       const failure = h.threadFailures[url];
       if (failure) return { ok: false, status: failure.status, json: async () => failure.body };
       const hit = h.threads[url];
-      if (hit === undefined) return { ok: false, status: 404, json: async () => ({ code: 'no_active_grant' }) };
+      if (hit === undefined) return { ok: true, status: 200, json: async () => ({ data: null }) };
       return { ok: true, status: 200, json: async () => hit };
     }
     return { ok: false, status: 404, json: async () => ({}) };

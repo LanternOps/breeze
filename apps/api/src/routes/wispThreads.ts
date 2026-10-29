@@ -3,7 +3,7 @@
  * Mounted by W02's hub as `wispRoutes.route('/thread', wispThreadRoutes)`,
  * i.e. /api/v1/wisp/thread.
  *
- *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | 404 no_active_grant
+ *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | { data: null } (no active grant for the scope)
  *                                    (grant carries the W05 spend meter: spentTodayCents, budgetResetsAt — w00 A32)
  *   GET   /:id                    → the same { data: { thread, focusOrgName, grant, wideningAvailable } } for the
  *                                    caller's own thread (W06 deep links; existence-neutral 404)
@@ -346,7 +346,9 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
   const partnerId = partnerIdOf(auth);
   const { orgId } = c.req.valid('query');
   const grant = await getActiveGrantForUser(auth.user.id, { partnerId, orgId: orgId ?? null });
-  if (!grant) return fail(c, 404, 'no_active_grant', 'No active Wisp delegation for this scope');
+  // No grant for this scope is an expected answer (the panel probes org then
+  // partner-wide), not an error status: 200 with null data (#10200).
+  if (!grant) return c.json({ data: null });
 
   const thread = await getOrCreateThread(grant.id);
   return c.json({ data: await threadPayload(partnerId, thread, grant) });

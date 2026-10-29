@@ -239,11 +239,11 @@ describe('GET /wisp/thread', () => {
     expect(h.getActiveGrantForUser).not.toHaveBeenCalled();
   });
 
-  it('is 404 no_active_grant when the user has no grant for the scope', async () => {
+  it('is 200 { data: null } when the user has no grant for the scope — an expected miss, not a 404 (#10200)', async () => {
     h.getActiveGrantForUser.mockResolvedValue(null);
     const res = await buildApp().request(`/wisp/thread?orgId=${ORG}`);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ code: 'no_active_grant' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: null });
     expect(h.getActiveGrantForUser).toHaveBeenCalledWith(USER, { partnerId: PARTNER, orgId: ORG });
     expect(h.getOrCreateThread).not.toHaveBeenCalled();
   });
