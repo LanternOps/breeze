@@ -483,6 +483,11 @@
     "rebootRequired": "Requerido",
     "rebootDone": "Completado",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Cancelado antes del envío: se eliminó el anillo de actualización.",
+      "ring_disabled": "Cancelado antes del envío: se deshabilitó el anillo de actualización.",
+      "ring_unavailable": "Omitido: el anillo de actualización se eliminó o deshabilitó antes de enviar a este dispositivo."
+    },
     "errors": {
       "load": "No se pudo cargar el trabajo de parche"
     }

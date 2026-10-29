@@ -403,6 +403,7 @@ const EXEMPT: Record<string, string> = {
   'services/partnerTrustPromotion.ts': 'reads one partner\'s device IP classes for a trust decision; no per-device action',
   'services/patchAlerts.ts': 'derived: emitters take deviceId/orgId chosen by upstream job-finalizer/reboot-worker callers',
   'services/patchEligibility.ts': 'derived: takes deviceId/orgId from job executor, AI patch plan, or release effect digest callers',
+  'services/updateRingQueuedWork.ts': 'derived: only CANCELS work already queued from a deleted ring; its device read is an existence check on the cancelled jobs\' own targets, and nothing is dispatched (#8909)',
   'services/peripheralEffectivePolicy.ts': 'derived: resolves policy for one caller-supplied deviceId; not an enumerator',
   'services/psa/ticketScope.ts': 'request path: SQL condition restricts ticket-mapping rows to the request\'s accessibleOrgIds',
   'services/quickSupportEnd.ts': 'lifecycle: Decommissions the one device tied to a caller-given session id; not fan-out',

@@ -15,6 +15,11 @@ import { getPagination, inferPatchOs } from './patches/helpers';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
+  cancelQueuedRingPatchWork,
+  type RingQueuedWorkCancellation,
+  type RingQueuedWorkCancelReason,
+} from '../services/updateRingQueuedWork';
+import {
   manualDecisionScope,
   resolveLatestManualDecisions,
   selectRingScopedApprovalRows,
@@ -61,6 +66,21 @@ updateRingRoutes.use('*', authMiddleware);
  * scope (epic #2135; security review 2026-08-16 §1.1 #3). Returns a 403 body
  * for the caller to return, or null when the write may proceed.
  */
+function cancelledWorkPayload(cancelled: RingQueuedWorkCancellation) {
+  return {
+    cancelledPatchJobCount: cancelled.cancelledJobIds.length,
+    cancelledDeviceInstallCount: cancelled.cancelledInstallCount,
+  };
+}
+
+function cancelledWorkAuditDetails(cancelled: RingQueuedWorkCancellation, reason: RingQueuedWorkCancelReason) {
+  return {
+    ...cancelledWorkPayload(cancelled),
+    cancelledPatchJobIds: cancelled.cancelledJobIds,
+    cancelReason: reason,
+  };
+}
+
 function partnerWideRingWriteDenial(
   c: any,
   auth: { scope: 'system' | 'partner' | 'organization'; partnerOrgAccess?: 'all' | 'selected' | 'none' | null },
@@ -429,6 +449,13 @@ updateRingRoutes.patch(
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')))
       .returning();
 
+    // Disabling also cancels the ring's not-yet-dispatched patch work (#8909).
+    // AFTER the write, in this same request transaction: the write's row lock
+    // is what waits out in-flight dispatches (see updateRingQueuedWork.ts).
+    const cancelled = data.enabled === false
+      ? await cancelQueuedRingPatchWork(id, 'ring_disabled')
+      : null;
+
     writeRouteAudit(c, {
       orgId: null,
       action: 'update_ring.update',
@@ -438,10 +465,15 @@ updateRingRoutes.patch(
         partnerId: existing.partnerId,
         changes: Object.keys(data),
         ...(linked ? { linkedPolicyCount: linked.length, linkedPolicyIds: linked.map((p) => p.id) } : {}),
+        ...(cancelled ? cancelledWorkAuditDetails(cancelled, 'ring_disabled') : {}),
       },
     });
 
-    return c.json(linked ? { ...updated, ...linkedPolicyPayload(linked) } : updated);
+    return c.json({
+      ...updated,
+      ...(linked ? linkedPolicyPayload(linked) : {}),
+      ...(cancelled ? cancelledWorkPayload(cancelled) : {}),
+    });
   }
 );
 
@@ -478,6 +510,10 @@ updateRingRoutes.delete(
       .set({ enabled: false, updatedAt: new Date() })
       .where(and(eq(patchPolicies.id, id), eq(patchPolicies.kind, 'ring')));
 
+    // Cancel the ring's not-yet-dispatched patch work (#8909) — after the
+    // write, in this same transaction (see updateRingQueuedWork.ts).
+    const cancelled = await cancelQueuedRingPatchWork(id, 'ring_deleted');
+
     writeRouteAudit(c, {
       orgId: null,
       action: 'update_ring.delete',
@@ -488,10 +524,11 @@ updateRingRoutes.delete(
         partnerId: existing.partnerId,
         linkedPolicyCount: linked.length,
         linkedPolicyIds: linked.map((p) => p.id),
+        ...cancelledWorkAuditDetails(cancelled, 'ring_deleted'),
       },
     });
 
-    return c.json({ success: true, ...linkedPolicyPayload(linked) });
+    return c.json({ success: true, ...linkedPolicyPayload(linked), ...cancelledWorkPayload(cancelled) });
   }
 );
 
