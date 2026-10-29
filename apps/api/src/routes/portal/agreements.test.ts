@@ -277,6 +277,16 @@ describe('GET /agreements/:id', () => {
     expect(m.markViewed).not.toHaveBeenCalled();
   });
 
+  it('#10294: a signed request names the template as it was at signing, not the renamed live template', async () => {
+    h.rows.set(agreementRequests, [request({ status: 'signed', signedAt: new Date('2026-10-21T09:00:00Z'), expiresAt: PAST })]);
+    h.rows.set(agreementRequestRecipients, [{ requestId: REQ }]);
+    h.rows.set(contractDocuments, [{ id: DOC, templateNameSnapshot: 'Business Associate Agreement' }]);
+    m.renderData.mockResolvedValue(authoredRender({ templateName: 'BAA (renamed)' }));
+    const { data } = await (await app().request(`/agreements/${REQ}`)).json();
+    expect(data.template.name).toBe('Business Associate Agreement');
+    expect(JSON.stringify(data)).not.toContain('renamed');
+  });
+
   it('a signed request with no signed-agreement row is captured as an integrity fault (page still renders)', async () => {
     h.rows.set(agreementRequests, [request({ status: 'signed', signedAt: new Date('2026-10-21T09:00:00Z') })]);
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);

@@ -17,11 +17,24 @@
 --
 -- contract_documents carries no breeze_partner_export_* triggers, so the
 -- backfill needs no partner-export pre-locks.
+--
+-- APPEND-ONLY GUARD: 2027-01-06-170000-contract-documents-append-only.sql
+-- freezes every column (new ones included) for every role, the owner too, so
+-- this one-off back-fill disables contract_documents_block_update around its
+-- UPDATE, as that file's header requires of an evidence back-fill. Why it is
+-- safe: the UPDATE writes only template_name_snapshot, only where it is still
+-- NULL (never overwriting a value), and the guard is re-enabled in the same
+-- transaction autoMigrate wraps this file in, so no other session ever sees it
+-- off (DISABLE TRIGGER holds a SHARE ROW EXCLUSIVE lock until commit). Once
+-- set, the guard freezes the snapshot like any other evidence column. The
+-- guard function itself is not changed.
 
 SELECT set_config('breeze.scope', 'system', true);
 
 ALTER TABLE contract_documents
   ADD COLUMN IF NOT EXISTS template_name_snapshot varchar(255);
+
+ALTER TABLE contract_documents DISABLE TRIGGER contract_documents_block_update;
 
 DO $$
 DECLARE n integer;
@@ -34,3 +47,5 @@ BEGIN
   GET DIAGNOSTICS n = ROW_COUNT;
   RAISE NOTICE 'contract_documents.template_name_snapshot backfilled on % row(s)', n;
 END $$;
+
+ALTER TABLE contract_documents ENABLE TRIGGER contract_documents_block_update;
