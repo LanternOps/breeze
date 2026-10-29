@@ -359,6 +359,49 @@ describe('ProfilePage passkey management', () => {
     ]);
   });
 
+  it('reuses the unspent deletion grant after a password typo', async () => {
+    const passkeyId = 'b0000000-0000-4000-8000-000000000009';
+    const stepUpGrantId = 'c0000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Lost passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId }))
+      .mockResolvedValueOnce(makeJsonResponse({ code: 'invalid_credentials', error: 'Invalid credentials' }, false, 400))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod: 'passkey',
+    }} />);
+
+    await screen.findByText('Lost passkey');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'wrong-password' },
+    });
+    fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Invalid credentials');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'correct-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => url === '/auth/mfa/step-up')).toHaveLength(1);
+    expect(fetchWithAuthMock.mock.calls[3]).toEqual([
+      `/auth/passkeys/${passkeyId}`,
+      expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({ currentPassword: 'correct-password', stepUpGrantId }),
+      }),
+    ]);
+  });
+
   it('uses an available passkey to delete one after TOTP has been disabled', async () => {
     const passkeyId = '50000000-0000-4000-8000-000000000009';
     const assertion = { id: 'browser-credential', response: { signature: 'sig' } };

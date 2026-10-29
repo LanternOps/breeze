@@ -213,6 +213,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   // #5314: deleting a passkey removes an MFA factor and bumps `mfa_epoch`,
   // signing the account's OTHER sessions out. Ask before doing that.
   const [passkeyPendingDelete, setPasskeyPendingDelete] = useState<PasskeySummary | null>(null);
+  const [passkeyDeleteRetryGrant, setPasskeyDeleteRetryGrant] = useState<{ passkeyId: string; grantId: string; sessionGeneration: number } | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
@@ -1367,41 +1368,55 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const generation = useAuthStore.getState().sessionGeneration;
     try {
       setMutatingPasskeyId(passkeyId);
-      let stepUpBody: Record<string, unknown>;
-      if (method === 'passkey') {
-        if (recoveryCode) {
-          stepUpBody = { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId };
-        } else {
-          // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
-          const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
-          const optionsData = await optionsResponse.json().catch(() => ({}));
-          if (!optionsResponse.ok) {
-            throw new Error(optionsData.error ?? optionsData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
-              defaultValue: 'Failed to verify current MFA factor',
-            }));
+      const retryGrant = passkeyDeleteRetryGrant?.passkeyId === passkeyId
+        && passkeyDeleteRetryGrant.sessionGeneration === generation
+        ? passkeyDeleteRetryGrant
+        : null;
+      let stepUpGrantId = retryGrant?.grantId;
+      if (!retryGrant) {
+        setPasskeyDeleteRetryGrant(null);
+        let stepUpBody: Record<string, unknown>;
+        if (method === 'passkey') {
+          if (recoveryCode) {
+            stepUpBody = { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId };
+          } else {
+            // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
+            const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
+            const optionsData = await optionsResponse.json().catch(() => ({}));
+            if (!optionsResponse.ok) {
+              throw new Error(optionsData.error ?? optionsData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+                defaultValue: 'Failed to verify current MFA factor',
+              }));
+            }
+            const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
+            const credential = await getPasskeyCredential(optionsJSON);
+            stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
           }
-          const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
-          const credential = await getPasskeyCredential(optionsJSON);
-          stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
+        } else if (method === 'totp' || method === 'sms') {
+          stepUpBody = recoveryCode
+            ? { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId }
+            : { method, code: factorCode, operation: 'delete_passkey', passkeyId };
+        } else {
+          throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
+            defaultValue: 'Failed to verify current MFA factor',
+          }));
         }
-      } else if (method === 'totp' || method === 'sms') {
-        stepUpBody = recoveryCode
-          ? { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId }
-          : { method, code: factorCode, operation: 'delete_passkey', passkeyId };
-      } else {
-        throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
-          defaultValue: 'Failed to verify current MFA factor',
-        }));
-      }
 
-      // runaction-exempt: inline-feedback handler, step 2 of 3 — see the options call above.
-      const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
-        method: 'POST',
-        body: JSON.stringify(stepUpBody),
-      });
-      const stepUpData = await stepUpResponse.json().catch(() => ({}));
-      if (!stepUpResponse.ok || typeof stepUpData.stepUpGrantId !== 'string' || !stepUpData.stepUpGrantId) {
-        throw new Error(stepUpData.error ?? stepUpData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+        // runaction-exempt: inline-feedback handler, step 2 of 3 — see the options call above.
+        const stepUpResponse = await fetchWithAuth('/auth/mfa/step-up', {
+          method: 'POST',
+          body: JSON.stringify(stepUpBody),
+        });
+        const stepUpData = await stepUpResponse.json().catch(() => ({}));
+        if (!stepUpResponse.ok || typeof stepUpData.stepUpGrantId !== 'string' || !stepUpData.stepUpGrantId) {
+          throw new Error(stepUpData.error ?? stepUpData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+            defaultValue: 'Failed to verify current MFA factor',
+          }));
+        }
+        stepUpGrantId = stepUpData.stepUpGrantId;
+      }
+      if (!stepUpGrantId) {
+        throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
           defaultValue: 'Failed to verify current MFA factor',
         }));
       }
@@ -1409,15 +1424,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above.
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'DELETE',
-        body: JSON.stringify({ ...manageProof(passkeyPassword), stepUpGrantId: stepUpData.stepUpGrantId })
+        body: JSON.stringify({ ...manageProof(passkeyPassword), stepUpGrantId })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        setPasskeyDeleteRetryGrant(data.code === 'invalid_credentials' && stepUpGrantId
+          ? { passkeyId, grantId: stepUpGrantId, sessionGeneration: generation }
+          : null);
         throw new Error(
           deadManageGrantMessage(data)
             ?? data.error ?? data.message ?? t('profilePage.failedToDeletePasskeyHttp', { status: response.status })
         );
       }
+      setPasskeyDeleteRetryGrant(null);
       forgetSpentManageGrant(passkeyPassword);
       // #5038: same contract as registration above — deleting a factor rotates
       // the caller's session rather than evicting it.
