@@ -14,8 +14,7 @@ import {
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import { parseTunnelOriginConfig } from './tunnelOrigin';
-import { isAllAddressesCidr, normalizeInternalApiHost } from '../services/requestTransport';
-import { isValidIpOrCidr } from '../services/ipMatch';
+import { isPrivateServiceRange, normalizeInternalApiHost } from '../services/requestTransport';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -376,14 +375,13 @@ function validateInternalServiceExemption(
 ): void {
   const cidrs = (cidrsRaw ?? '').split(',').map((entry) => entry.trim()).filter(Boolean);
   for (const entry of cidrs) {
-    const network = entry.split('/')[0] ?? '';
-    if (!isValidIpOrCidr(entry) || isAllAddressesCidr(entry) || !isPrivateOrLocalProxyNetwork(network)) {
+    if (!isPrivateServiceRange(entry)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['INTERNAL_SERVICE_CIDRS'],
         message:
-          `INTERNAL_SERVICE_CIDRS entry ${entry} must be a valid private-network IP or CIDR (e.g. the compose `
-          + 'bridge subnet, BREEZE_DOCKER_SUBNET). Public and all-address ranges are refused.',
+          `INTERNAL_SERVICE_CIDRS entry ${entry} must be a valid IP or CIDR lying wholly inside a private network `
+          + '(e.g. the compose bridge subnet, BREEZE_DOCKER_SUBNET). Public, over-wide and all-address ranges are refused.',
       });
     }
   }

@@ -4270,7 +4270,7 @@ describe('INTERNAL_SERVICE_CIDRS validation (#9700)', () => {
     });
   });
 
-  it.each(['0.0.0.0/0', '::/0', '203.0.113.0/24', 'not-a-cidr', '172.31.0.0/99'])(
+  it.each(['0.0.0.0/0', '::/0', '203.0.113.0/24', 'not-a-cidr', '172.31.0.0/99', '10.0.0.0/1', '172.16.0.0/8', 'fc00::/1'])(
     'refuses %j',
     (entry) => {
       withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: `172.31.0.0/24,${entry}` }, () => {

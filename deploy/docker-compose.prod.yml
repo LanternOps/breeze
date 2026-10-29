@@ -323,7 +323,8 @@ x-api-env: &api-env
   # TCP peer is inside this range, is NOT the trusted proxy above, and names an
   # INTERNAL_API_HOSTS host is exempt. Tracks BREEZE_DOCKER_SUBNET; the API
   # publishes no host port, so nothing outside the network can source it.
-  INTERNAL_SERVICE_CIDRS: ${INTERNAL_SERVICE_CIDRS:-${BREEZE_DOCKER_SUBNET:-172.30.0.0/24}}
+  # Set it to an empty value (not just unset) to turn the exemption off.
+  INTERNAL_SERVICE_CIDRS: ${INTERNAL_SERVICE_CIDRS-${BREEZE_DOCKER_SUBNET:-172.30.0.0/24}}
   INTERNAL_API_HOSTS: ${INTERNAL_API_HOSTS:-api:3001}
   # This reference stack is fronted by Cloudflare (cloudflared → Caddy), so
   # CF-Connecting-IP is authoritative. Self-hosters NOT behind Cloudflare

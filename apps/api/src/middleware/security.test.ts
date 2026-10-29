@@ -685,6 +685,54 @@ describe('FORCE_HTTPS internal service exemption (#9700)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('ignores a range that is wider than the private block its base address sits in', async () => {
+    // 10.0.0.0/1 starts in 10/8 but spans 0.0.0.0-127.255.255.255 (public space).
+    const res = await request(
+      createApp({ ...opts, internalServiceCidrs: '10.0.0.0/1' }),
+      'api:3001',
+      '93.184.216.34',
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['172.31.1.5', '10.0.0.5'])('rejects a private peer outside the configured range (%s)', async (peer) => {
+    const res = await request(createApp(opts), 'api:3001', peer);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a spoofed internal Host from the trusted proxy in IPv4-mapped form', async () => {
+    const res = await request(createApp(opts), 'api:3001', `::ffff:${CADDY_IP}`, { 'x-forwarded-proto': 'http' });
+    expect(res.status).toBe(400);
+  });
+
+  it.each(['api:3001@evil.example.net', 'api:3001/x', 'api:30011', 'api.:3001'])(
+    'rejects an internal peer whose Host only resembles the internal host (%s)',
+    async (host) => {
+      const app = createApp(opts);
+      const res = await app.request('http://api.example.com/test', { headers: { host } }, fromPeer(PORTAL_IP));
+      expect(res.status).toBe(400);
+    },
+  );
+
+  it('keeps the valid entries when INTERNAL_SERVICE_CIDRS also holds invalid or public ones', async () => {
+    process.env.INTERNAL_SERVICE_CIDRS = 'garbage, 0.0.0.0/0, 10.0.0.0/1, 172.31.0.0/24';
+    const app = createApp({ forceHttps: 'true', publicApiUrl: 'https://api.example.com' });
+    expect((await request(app, 'api:3001', PORTAL_IP)).status).toBe(200);
+    expect((await request(app, 'api:3001', '93.184.216.34')).status).toBe(400);
+  });
+
+  // Defence in depth for a STALE TRUSTED_PROXY_CIDRS: if the proxy's address
+  // drifts out of the trusted list but stays in the subnet, its relayed
+  // internet traffic must still never qualify. Proxies append a client-IP
+  // header; the SSR callers never send one.
+  it.each(['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'])(
+    'rejects an internal-range peer that relays a client IP via %s (proxy-shaped)',
+    async (header) => {
+      const res = await request(createApp(opts), 'api:3001', '172.31.0.20', { [header]: '203.0.113.9' });
+      expect(res.status).toBe(400);
+    },
+  );
+
   it('does not log a misconfiguration warning for an exempted internal call', async () => {
     await request(createApp(opts), 'api:3001', PORTAL_IP, { 'x-forwarded-proto': 'http' });
     expect(warnSpy).not.toHaveBeenCalled();

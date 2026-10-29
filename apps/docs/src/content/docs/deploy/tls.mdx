@@ -143,13 +143,14 @@ The API also logs a rate-limited `[force-https]` warning on this path with the v
 
 ### Customer portal pages fail with `FORCE_HTTPS_NON_CANONICAL_HOST`
 
-The portal (and the web app) render pages on the server by calling the API over the private Docker network at `INTERNAL_API_URL` (`http://api:3001` by default). That hop is plain HTTP by design. The API lets it through `FORCE_HTTPS` only when all three hold:
+The portal (and the web app) render pages on the server by calling the API over the private Docker network at `INTERNAL_API_URL` (`http://api:3001` by default). That hop is plain HTTP by design. The API lets it through `FORCE_HTTPS` only when all of these hold:
 
 - the connection's source address is inside `INTERNAL_SERVICE_CIDRS`. The bundled compose files set this to the Docker network (`BREEZE_DOCKER_SUBNET`). The API checks the socket address, not a header;
 - the source is not one of your `TRUSTED_PROXY_CIDRS`, so a request relayed through Caddy never qualifies;
+- the request carries no `X-Forwarded-For`, `X-Real-IP` or `CF-Connecting-IP` header. Proxies add these, so relayed traffic never qualifies even if `TRUSTED_PROXY_CIDRS` is stale;
 - the `Host` is listed in `INTERNAL_API_HOSTS` (default `api:3001`).
 
-If portal pages return this error, check that `INTERNAL_SERVICE_CIDRS` covers the network the portal runs on and that `INTERNAL_API_HOSTS` matches the host and port in `INTERNAL_API_URL`. Do not add the portal to `TRUSTED_PROXY_CIDRS` instead: a trusted proxy can set the client IP, scheme and host the API sees, and an application container must not have that power. `INTERNAL_SERVICE_CIDRS` takes private ranges only, and an empty value turns the exemption off.
+If portal pages return this error, check that `INTERNAL_SERVICE_CIDRS` covers the network the portal runs on and that `INTERNAL_API_HOSTS` matches the host and port in `INTERNAL_API_URL`. Do not add the portal to `TRUSTED_PROXY_CIDRS` instead: a trusted proxy can set the client IP, scheme and host the API sees, and an application container must not have that power. `INTERNAL_SERVICE_CIDRS` takes only ranges that sit entirely inside a private network. Setting it to an empty value turns the exemption off.
 
 ## Nginx (Alternative)
 
