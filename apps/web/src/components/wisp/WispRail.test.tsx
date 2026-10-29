@@ -109,7 +109,7 @@ describe('WispRail', () => {
       onWispChange: props.onWispChange, onRevoked: props.onRevoked,
     });
 
-    expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern] });
+    expect(h.needsYouProps).toMatchObject({ grantId: 'g1', threadId: 't1', initial: [concern], refreshKey: 3 });
     expect(h.workersProps).toMatchObject({ threadId: 't1', refreshKey: 3 });
     expect(h.linksProps).toMatchObject({ threadId: 't1', links: [link], onLinksChange: props.onLinksChange });
     expect(h.activityProps).toMatchObject({ threadId: 't1', refreshKey: 3, collapsible: true });

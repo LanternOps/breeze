@@ -87,7 +87,7 @@ export default function WispRail({
 
       {needsYou !== null && (
         <div className={NEEDS_YOU_BODY}>
-          <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={needsYou} />
+          <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={needsYou} refreshKey={activityKey} />
         </div>
       )}
 

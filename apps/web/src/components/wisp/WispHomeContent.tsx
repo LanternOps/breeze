@@ -121,7 +121,9 @@ export default function WispHomeContent() {
   }, [load]);
 
   // A check starting or finishing is when new activity appears: refresh the timeline then.
-  const liveKey = view.kind === 'ready' ? (view.current?.startedAt ?? 'idle') : null;
+  // So is a grant status change (#10104): Resume, or a poll that finds the
+  // grant paused / resumed, re-runs the rail's concerns and activity reads.
+  const liveKey = view.kind === 'ready' ? `${view.wisp.status}|${view.current?.startedAt ?? 'idle'}` : null;
   const lastLiveKey = useRef<string | null>(null);
   useEffect(() => {
     if (liveKey === null) return;
