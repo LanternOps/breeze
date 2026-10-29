@@ -1333,7 +1333,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
   }, { failClosed: true, failClosedMethods: true });
-  if (!policy.allowedMethods[body.method]) {
+  if (body.method !== 'recovery' && !policy.allowedMethods[body.method]) {
     writeAuthAudit(c, {
       orgId: auth.orgId ?? undefined,
       action: 'auth.mfa.stepup.failed',
@@ -1384,6 +1384,13 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     const r = await twilio.checkVerificationCode(u.phoneNumber, body.code);
     if (r.serviceError) return c.json({ error: 'SMS verification temporarily unavailable' }, 502);
     ok = r.valid;
+  } else if (body.method === 'recovery') {
+    try {
+      await consumeRecoveryCode(db, auth.user.id, body.code);
+      ok = true;
+    } catch (error) {
+      if (!(error instanceof RecoveryCodeInvalidError)) throw error;
+    }
   } else {
     // passkey — client must have already called POST /auth/mfa/step-up/options.
     ok = await verifyStepUpPasskeyAssertion(auth.user.id, body.credential);

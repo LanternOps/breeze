@@ -366,6 +366,12 @@ export const mfaStepUpSchema = z.discriminatedUnion('method', [
     resource: stepUpResource.optional(),
     passkeyId: z.string().uuid().optional(),
   }),
+  z.object({
+    method: z.literal('recovery'),
+    code: z.string().refine((v) => recoveryCode.test(v.trim()), { message: 'Invalid code' }),
+    operation: z.literal('delete_passkey'),
+    passkeyId: z.string().uuid(),
+  }),
 ]);
 
 export const acceptInviteSchema = z.object({

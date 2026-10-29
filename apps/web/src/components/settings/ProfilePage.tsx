@@ -1367,18 +1367,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMutatingPasskeyId(passkeyId);
       let stepUpBody: Record<string, unknown>;
       if (method === 'passkey') {
-        // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
-        // Same single-catch shape as the recovery-code rotation above.
-        const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
-        const optionsData = await optionsResponse.json().catch(() => ({}));
-        if (!optionsResponse.ok) {
-          throw new Error(optionsData.error ?? optionsData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
-            defaultValue: 'Failed to verify current MFA factor',
-          }));
+        if (passkeyFactorCode.trim()) {
+          stepUpBody = { method: 'recovery', code: passkeyFactorCode.trim(), operation: 'delete_passkey', passkeyId };
+        } else {
+          // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
+          const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
+          const optionsData = await optionsResponse.json().catch(() => ({}));
+          if (!optionsResponse.ok) {
+            throw new Error(optionsData.error ?? optionsData.message ?? t('profilePage.failedToVerifyCurrentFactor', {
+              defaultValue: 'Failed to verify current MFA factor',
+            }));
+          }
+          const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
+          const credential = await getPasskeyCredential(optionsJSON);
+          stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
         }
-        const optionsJSON = (optionsData.options ?? optionsData.optionsJSON ?? optionsData) as PasskeyAuthenticationOptions;
-        const credential = await getPasskeyCredential(optionsJSON);
-        stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
       } else if (method === 'totp' || method === 'sms') {
         stepUpBody = { method, code: passkeyFactorCode.trim(), operation: 'delete_passkey', passkeyId };
       } else {
@@ -1754,7 +1757,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         {/* #4045: a passwordless account deletes too — its "password" is a fresh
             IdP round-trip, offered here, and it still owes the same current MFA
             code (or passkey assertion) as everyone else. */}
-        {((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') || (isPasswordless && passkeys.length > 0)) && (
+        {((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') || (isPasswordless && passkeys.length > 0)) && (
           <div className="space-y-2 rounded-md border p-4">
             <div className="space-y-1">
               <h3 className="text-sm font-medium">{t('profilePage.deletePasskeyVerifyHeading')}</h3>
@@ -1778,17 +1781,19 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 </button>
               </div>
             )}
-            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && (
+            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') && (
             <>
             <label className="text-sm font-medium" htmlFor="passkey-factor-code">
-              {t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+              {deletePasskeyMethod === 'passkey'
+                ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code (optional)' })
+                : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
             </label>
             <div className="flex gap-2">
               <input
                 id="passkey-factor-code"
                 data-testid="passkey-factor-code"
                 ref={passkeyFactorCodeRef}
-                inputMode="numeric"
+                inputMode={deletePasskeyMethod === 'passkey' ? 'text' : 'numeric'}
                 autoComplete="one-time-code"
                 value={passkeyFactorCode}
                 onChange={event => setPasskeyFactorCode(event.target.value)}
