@@ -147,7 +147,7 @@ describe('SendAgreementDialog', () => {
       expect(screen.queryByTestId('agreements-send-expiry-blank')).not.toBeInTheDocument();
       await fillAndCreate();
       await waitFor(() => expect(api.createAgreementRequest).toHaveBeenCalled());
-      expect(api.createAgreementRequest.mock.calls[0]![0]).not.toHaveProperty('expiresAt', expect.anything());
+      expect(api.createAgreementRequest.mock.calls[0]![0].expiresAt).toBeUndefined();
       warn.mockRestore();
     });
   });
