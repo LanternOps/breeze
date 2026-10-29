@@ -420,6 +420,8 @@
     "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen.",
     "ringDelete": {
       "title": "{{name}} löschen?",
+      "messageNone": "Keine Richtlinie verwendet diesen Ring. Seine Genehmigungsregeln und Zeitplaneinstellungen werden gelöscht und können nicht wiederhergestellt werden.",
+      "title": "{{name}} löschen?",
       "messageOne": "1 Richtlinie führt keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
       "messageMany": "{{count}} Richtlinien führen keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
       "confirm": "Ring löschen"

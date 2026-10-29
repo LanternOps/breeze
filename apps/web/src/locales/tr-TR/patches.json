@@ -420,6 +420,8 @@
     "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin.",
     "ringDelete": {
       "title": "{{name}} silinsin mi?",
+      "messageNone": "Bu halkayı kullanan ilke yok. Onay kuralları ve zamanlama ayarları silinecek ve geri yüklenemeyecek.",
+      "title": "{{name}} silinsin mi?",
       "messageOne": "1 ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
       "messageMany": "{{count}} ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
       "confirm": "Halkayı sil"
