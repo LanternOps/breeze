@@ -208,8 +208,10 @@ export default function AiChatSidebar() {
   // store — revoked on /wisp (the home's exitWispMode), a create the server
   // refused as unusable, a plain chat picked from History — the answer from
   // before is stale: forget it and ask again, so Meet Wisp (or another live
-  // grant) is what the panel shows. That grant itself is never re-entered on
-  // the strength of that read: whatever dropped it knew better.
+  // grant) is what the panel shows. That grant itself is not re-entered on
+  // the strength of that one read (whatever dropped it knew better); the guard
+  // is spent by it, so a later open, org change or New conversation decides
+  // afresh.
   // (A grant created on /wisp reaches the panel through the home binding the
   // shared store to its thread, WispHomeThread.)
   const wispGrantId = wisp?.grantId ?? null;
@@ -218,7 +220,12 @@ export default function AiChatSidebar() {
   useEffect(() => {
     const previous = shownGrantIdRef.current;
     shownGrantIdRef.current = wispGrantId;
-    if (previous === null || previous === wispGrantId) return;
+    if (previous === wispGrantId) return;
+    // Entering a grant (fresh, or switching to another thread) is not an end.
+    if (wispGrantId !== null) {
+      endedGrantIdRef.current = null;
+      return;
+    }
     endedGrantIdRef.current = previous;
     grantLookupKeyRef.current = null;
     setGrantLookup({ kind: "idle" });
@@ -236,13 +243,15 @@ export default function AiChatSidebar() {
     if (grantLookupKeyRef.current === key) return;
     grantLookupKeyRef.current = key;
     if (useAiStore.getState().wisp) return;
+    const justEnded = endedGrantIdRef.current;
+    endedGrantIdRef.current = null;
     void lookUpActiveGrant(selectedOrgId).then((result) => {
       // The org changed while this was in flight: the newer lookup owns the answer.
       if (grantLookupKeyRef.current !== key) return;
       if (result.kind === "failed") grantLookupKeyRef.current = null;
       setGrantLookup(result);
       if (result.kind !== "active") return;
-      if (result.grant.grantId === endedGrantIdRef.current) return;
+      if (result.grant.grantId === justEnded) return;
       const now = useAiStore.getState();
       if (now.wisp || now.sessionId || now.isLoading) return;
       void now.enterWispMode(result.grant);

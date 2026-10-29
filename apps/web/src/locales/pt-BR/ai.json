@@ -618,6 +618,7 @@
     },
     "header": {
       "scopeAll": "Todas as organizações",
+      "scopeFallback": "esta organização",
       "status": {
         "active": "Ativo",
         "paused": "Pausado",

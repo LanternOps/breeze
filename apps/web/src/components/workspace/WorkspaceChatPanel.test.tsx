@@ -40,6 +40,7 @@ const store = {
 vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
 
 import WorkspaceChatPanel from './WorkspaceChatPanel';
+import { useOrgStore } from '@/stores/orgStore';
 
 const baseTab = (over = {}) => ({
   id: 't',
@@ -253,7 +254,18 @@ describe('WorkspaceChatPanel - one voice under a Wisp grant (#10195)', () => {
     render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
     render(<>{messagesHarness.props?.emptyState}</>);
     fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0]);
-    expect(store.sendMessage).toHaveBeenCalledWith('t', expect.any(String));
+    expect(store.sendMessage).toHaveBeenCalledWith('t', 'What needs my attention today? Keep it short.');
+  });
+
+  it('an org-scoped Wisp tab greets with the organization name, or "this organization" before the list loads', () => {
+    useOrgStore.setState({ organizations: [{ id: 'org-a', name: 'Acme' }] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-a' } }) as any} />);
+    const named = render(<>{messagesHarness.props?.emptyState}</>);
+    expect(named.container.querySelector('[data-testid="wisp-welcome"]')).toHaveTextContent("I'm looking around Acme.");
+    useOrgStore.setState({ organizations: [] } as never);
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: 'org-x' } }) as any} />);
+    const unknown = render(<>{messagesHarness.props?.emptyState}</>);
+    expect(unknown.container.querySelector('[data-testid="wisp-welcome"]')).toHaveTextContent("I'm looking around this organization.");
   });
 
   it.each([

@@ -352,7 +352,15 @@ describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', (
     expect(screen.getByTestId('wisp-welcome')).toHaveTextContent("I'm looking around All organizations.");
     expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('first brief');
     fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0]);
-    expect(sendMessage).toHaveBeenCalledWith(expect.any(String));
+    expect(sendMessage).toHaveBeenCalledWith('What needs my attention today? Keep it short.');
+  });
+
+  it('an org-scoped Wisp session greets with the organization name', () => {
+    useOrgStore.setState({ organizations: [{ id: 'org-a', name: 'Acme' }] } as never);
+    useAiStore.setState({ wisp: { ...wisp(), scopeOrgId: 'org-a' }, sessionId: 'sess-w', hydratedSessionId: 'sess-w' });
+    render(<AiChatSidebar />);
+    render(<>{kitProps.messages?.emptyState as React.ReactNode}</>);
+    expect(screen.getByTestId('wisp-welcome')).toHaveTextContent("I'm looking around Acme.");
   });
 
   it('a plain chat keeps the Breeze AI empty state and placeholder', () => {
@@ -380,10 +388,28 @@ describe('AiChatSidebar speaks one voice and follows the grant live (#10195)', (
     render(<AiChatSidebar />);
     await settle();
     // e.g. the session create was refused grant_inactive and dropped Wisp, but the thread read still says active.
+    expect(wisp().grantId).toBe('grant-1');
     h.threads['/wisp/thread'] = threadBody('grant-1', 'active');
     act(() => useAiStore.setState({ wisp: null }));
     await waitFor(() => expect(wispThreadCalls()).toEqual(['/wisp/thread']));
     await settle();
+    expect(enterWispMode).not.toHaveBeenCalled();
+
+    // The guard is spent by that one read: the next lookup (here an org change) decides afresh.
+    act(() => useOrgStore.setState({ currentOrgId: 'org-b' }));
+    await waitFor(() => expect(enterWispMode).toHaveBeenCalledTimes(1));
+    expect(enterWispMode.mock.calls[0][0]).toMatchObject({ grantId: 'grant-1' });
+  });
+
+  it('entering or switching grants is not an end: no extra lookup', async () => {
+    render(<AiChatSidebar />);
+    await waitFor(() => expect(wispThreadCalls()).toEqual(['/wisp/thread']));
+    await settle();
+    act(() => useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w', hydratedSessionId: 'sess-w' }));
+    await settle();
+    act(() => useAiStore.setState({ wisp: { ...wisp(), grantId: 'grant-2', threadId: 'thread-2' } }));
+    await settle();
+    expect(wispThreadCalls()).toEqual(['/wisp/thread']);
     expect(enterWispMode).not.toHaveBeenCalled();
   });
 
