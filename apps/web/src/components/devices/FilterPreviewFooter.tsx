@@ -7,30 +7,50 @@
 // preview endpoint is live everywhere.
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { FilterCondition, FilterConditionGroup, FilterOperator } from '@breeze/shared';
+import type { FilterCondition, FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
-
-// Operators that take no value (mirrors FilterValueEditor's NO_VALUE_OPERATORS).
-const NO_VALUE_OPERATORS: ReadonlySet<FilterOperator> = new Set(['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty']);
+import { NO_VALUE_OPERATORS } from './filterMigration';
 
 function isGroup(c: FilterCondition | FilterConditionGroup): c is FilterConditionGroup {
-  return 'conditions' in c;
+  return Array.isArray((c as FilterConditionGroup).conditions);
 }
 
-function conditionAwaitingValue(c: FilterCondition): boolean {
-  if (NO_VALUE_OPERATORS.has(c.operator)) return false;
-  const v = c.value as unknown;
+function isBlank(v: unknown): boolean {
   if (v === null || v === undefined) return true;
-  if (Array.isArray(v)) return v.length === 0;
   if (typeof v === 'string') return v.trim() === '';
+  if (typeof v === 'number') return Number.isNaN(v);
+  if (Array.isArray(v)) return v.length === 0;
   return false;
 }
 
-// True when any leaf condition still needs a value (e.g. a Site / Device Group
-// chip opened with nothing ticked yet). Previewing such a group returns a
-// meaningless "~0 devices match" (#9857), so the footer shows a hint instead.
+function conditionAwaitingValue(c: FilterCondition): boolean {
+  if (NO_VALUE_OPERATORS.includes(c.operator)) return false;
+  const v = c.value as unknown;
+  if (isBlank(v)) return true;
+  // Range / relative-date shapes ({from,to}, {amount,unit}): incomplete while
+  // any part is still blank. Date instances are complete values.
+  if (typeof v === 'object' && !(v instanceof Date)) {
+    return Object.values(v as Record<string, unknown>).some(isBlank);
+  }
+  return false;
+}
+
+function collectLeaves(group: FilterConditionGroup, out: FilterCondition[] = []): FilterCondition[] {
+  for (const c of group.conditions) {
+    if (isGroup(c)) collectLeaves(c, out);
+    else out.push(c);
+  }
+  return out;
+}
+
+// True when the group has conditions but none of them has a value yet (e.g. a
+// Site / Device Group chip opened with nothing ticked). Previewing such a group
+// returns a meaningless "~0 devices match" (#9857), so the footer shows a hint
+// instead. A partly filled group (sentence builder with one blank row) still
+// previews, as it did before.
 export function isAwaitingValue(group: FilterConditionGroup): boolean {
-  return group.conditions.some(c => (isGroup(c) ? isAwaitingValue(c) : conditionAwaitingValue(c)));
+  const leaves = collectLeaves(group);
+  return leaves.length > 0 && leaves.every(conditionAwaitingValue);
 }
 
 export interface FilterPreviewFooterProps {
