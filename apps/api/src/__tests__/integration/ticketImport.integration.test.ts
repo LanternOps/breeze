@@ -800,7 +800,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       ticketId: rc.ticketId,
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: live.id },
-      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED,
+      commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NO_FILES, ...NOTHING_CHANGED,
     });
     // A moved ref with no origin resolves to a ticket this principal did not
     // import: refused, never resumed onto it (on every pass).
