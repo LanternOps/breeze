@@ -59,7 +59,7 @@ export const BUILTIN_PACKAGE_IMMUTABLE = 'Built-in packages are managed by Breez
  *   custom packages stay out of org-scope lists. Their versions are
  *   partner-axis only, so the card would be a dead end.
  */
-export function nullOrgCatalogBranches(auth: { scope: string; partnerId: string | null }): SQL[] {
+export function nullOrgCatalogBranches(auth: Pick<AuthContext, 'scope' | 'partnerId'>): SQL[] {
   const branches: SQL[] = [isNotNull(softwareCatalog.integrationProvider)];
   if (auth.scope === 'partner' && auth.partnerId) {
     branches.push(and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!);

@@ -546,3 +546,93 @@ describe('software_catalog.builtin_package_key (#6958)', () => {
     expect((await get(`/software/catalog/${keyed!.id}/versions`)).status).toBe(404);
   });
 });
+
+// #10036: the three catalog list paths (GET /catalog, /catalog/search and the
+// AI manage_software_catalog list) share nullOrgCatalogBranches. Pin which
+// NULL-org rows each scope lists: org scope gets integration + keyed
+// built-ins only, partner scope additionally its un-keyed partner-wide rows.
+describe('catalog list scope branches (#10036)', () => {
+  async function seedNullOrgRows(partnerId: string) {
+    const { catalog: integration } = await seedBuiltin(partnerId);
+    const [keyed] = await getTestDb().insert(softwareCatalog)
+      .values({ orgId: null, partnerId, builtinPackageKey: 'controld_windows', name: 'Zz10036 keyed', isManaged: true })
+      .returning();
+    const [partnerWide] = await getTestDb().insert(softwareCatalog)
+      .values({ orgId: null, partnerId, name: 'Zz10036 partner-wide custom' })
+      .returning();
+    return { integrationId: integration.id, keyedId: keyed!.id, partnerWideId: partnerWide!.id };
+  }
+
+  it('GET /catalog and /catalog/search: org scope lists integration + keyed rows but not un-keyed partner-wide; partner scope lists all three', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { integrationId, keyedId, partnerWideId } = await seedNullOrgRows(partner.id);
+    const otherPartner = await createPartner();
+    const { keyedId: foreignKeyedId } = await seedNullOrgRows(otherPartner.id);
+    const app = await buildApp();
+    const ids = async (path: string) => {
+      const res = await app.request(path, { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return ((await res.json()).data as Array<{ id: string }>).map((r) => r.id);
+    };
+
+    activeAuth = { scope: 'organization', orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    for (const path of ['/software/catalog?limit=100', '/software/catalog/search?q=e']) {
+      const asOrg = await ids(path);
+      expect(asOrg).toEqual(expect.arrayContaining([integrationId, keyedId]));
+      expect(asOrg).not.toContain(partnerWideId);
+      expect(asOrg).not.toContain(foreignKeyedId);
+    }
+
+    activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    for (const path of [`/software/catalog?orgId=${org.id}&limit=100`, `/software/catalog/search?q=e&orgId=${org.id}`]) {
+      const asPartner = await ids(path);
+      expect(asPartner).toEqual(expect.arrayContaining([integrationId, keyedId, partnerWideId]));
+      expect(asPartner).not.toContain(foreignKeyedId);
+    }
+  });
+
+  it('AI manage_software_catalog list: org scope gets its partner\'s keyed row, not another partner\'s, nor un-keyed partner-wide rows', async () => {
+    const { withDbAccessContext } = await import('../../db');
+    const { eq } = await import('drizzle-orm');
+    const { registerSoftwareCatalogTools } = await import('../../services/aiToolsSoftwareCatalog');
+    const tools = new Map<string, any>();
+    registerSoftwareCatalogTools(tools);
+    const tool = tools.get('manage_software_catalog')!;
+
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { keyedId, partnerWideId } = await seedNullOrgRows(partner.id);
+    const otherPartner = await createPartner();
+    const { keyedId: foreignKeyedId } = await seedNullOrgRows(otherPartner.id);
+
+    const orgAuth = {
+      principal: { kind: 'user_session' },
+      user: { id: null, email: 'integration@test' },
+      scope: 'organization',
+      orgId: org.id,
+      partnerId: partner.id,
+      accessibleOrgIds: [org.id],
+      canAccessOrg: (id: string) => id === org.id,
+      orgCondition: (col: any) => eq(col, org.id),
+      token: { mfa: true, amr: ['pwd', 'mfa'] },
+      aiOrigin: { kind: 'chat', sessionId: 'session-1' },
+    };
+    const list = (input: Record<string, unknown>) =>
+      withDbAccessContext(
+        { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id], accessiblePartnerIds: null, currentPartnerId: partner.id, userId: null },
+        async () => {
+          const out = JSON.parse(await tool.handler({ action: 'list', limit: 200, ...input }, orgAuth as never));
+          return (out.packages as Array<{ id: string }>).map((p) => p.id);
+        },
+      );
+
+    // Both list branches: no orgId (auth.orgCondition) and an explicit orgId.
+    for (const input of [{}, { orgId: org.id }]) {
+      const listed = await list(input);
+      expect(listed).toContain(keyedId);
+      expect(listed).not.toContain(partnerWideId);
+      expect(listed).not.toContain(foreignKeyedId);
+    }
+  });
+});

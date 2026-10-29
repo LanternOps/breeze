@@ -16,9 +16,11 @@
 -- read the children of a keyed built-in owned by the caller's OWN partner,
 -- keyed on the same GUC as the parent row's read branch.
 --
---   * SELECT only. Postgres never consults a FOR SELECT policy for
---     UPDATE/DELETE row targeting or INSERT WITH CHECK, so the existing write
---     policies stay the only way to write these rows. Built-in versions stay
+--   * SELECT only. A FOR SELECT policy never grants INSERT, UPDATE or DELETE.
+--     When an UPDATE/DELETE reads rows (WHERE, RETURNING), Postgres ANDs the
+--     SELECT policies with that command's own policies, so this branch can
+--     only narrow a write, never widen it. The existing write policies stay
+--     the only way to write these rows. Built-in versions stay
 --     immutable outside system scope (route guard isImmutableBuiltin, #9983).
 --   * Keyed rows only. An un-keyed partner-wide custom package's versions stay
 --     partner-axis only. This file does not widen them.
