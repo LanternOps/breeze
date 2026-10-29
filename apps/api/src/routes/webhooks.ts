@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { db, runAfterDbContextCommit } from '../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { webhookDeliveries, webhooks as webhooksTable } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -658,6 +658,7 @@ webhookRoutes.post(
 
     writeRouteAudit(c, {
       orgId: created.orgId,
+      partnerId: created.partnerId ?? undefined,
       action: 'webhook.create',
       resourceType: 'webhook',
       resourceId: created.id,
@@ -814,6 +815,7 @@ webhookRoutes.patch(
 
     writeRouteAudit(c, {
       orgId: updated.orgId,
+      partnerId: updated.partnerId ?? undefined,
       action: 'webhook.update',
       resourceType: 'webhook',
       resourceId: updated.id,
@@ -857,6 +859,7 @@ webhookRoutes.delete(
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.delete',
       resourceType: 'webhook',
       resourceId: webhook.id,
@@ -996,6 +999,7 @@ webhookRoutes.post(
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.test',
       resourceType: 'webhook',
       resourceId: webhook.id,
@@ -1060,14 +1064,18 @@ webhookRoutes.post(
     }
 
     if (webhook.partnerId && delivery.orgId !== null) {
-      const [liveOrg] = await db.select({ id: organizations.id }).from(organizations)
-        .where(and(
-          eq(organizations.id, delivery.orgId),
-          eq(organizations.partnerId, webhook.partnerId),
-          partnerFanoutOrgCondition(),
-        )).limit(1);
-      if (!liveOrg) {
-        return c.json({ error: "Cannot retry: organization is no longer live under this webhook's partner" }, 409);
+      // The parent webhook owner is authorized above. Inactive organizations
+      // are absent from request org access, so read only the delivery org's
+      // lifecycle in system scope to distinguish inactivity from departure.
+      const [org] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({
+        partnerId: organizations.partnerId,
+        live: sql<boolean>`${partnerFanoutOrgCondition()}`,
+      }).from(organizations).where(eq(organizations.id, delivery.orgId!)).limit(1)));
+      if (!org || org.partnerId !== webhook.partnerId) {
+        return c.json({ error: 'Cannot retry: organization moved to another partner' }, 409);
+      }
+      if (!org.live) {
+        return c.json({ error: 'Cannot retry: organization is not currently active; retry after it is reactivated' }, 409);
       }
     }
 
@@ -1114,6 +1122,7 @@ webhookRoutes.post(
 
     writeRouteAudit(c, {
       orgId: webhook.orgId,
+      partnerId: webhook.partnerId ?? undefined,
       action: 'webhook.retry',
       resourceType: 'webhook',
       resourceId: webhook.id,

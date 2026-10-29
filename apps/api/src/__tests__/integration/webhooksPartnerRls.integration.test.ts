@@ -3,8 +3,9 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createUser } from './db-utils';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { executeOrgMerge } from '../../services/orgMerge';
 
 const SYSTEM: DbAccessContext = {
   scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null, userId: null,
@@ -38,6 +39,49 @@ describe('webhooks partner ownership RLS', () => {
     const a = await createPartner();
     const b = await createPartner();
     await expect(withDbAccessContext(partnerContext(a.id), () => insertWebhook(b.id, null)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  it('rejects an org session forging a partner owner even when currentPartnerId matches', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    await expect(withDbAccessContext(orgContext(org.id, partner.id), () => insertWebhook(partner.id, null)))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  it.each(['UPDATE', 'DELETE'] as const)('another partner cannot %s a partner webhook', async (command) => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const webhookId = await withDbAccessContext(SYSTEM, () => insertWebhook(owner.id, null));
+    const affected = await withDbAccessContext(partnerContext(other.id), () => db.execute(command === 'UPDATE'
+      ? sql`UPDATE webhooks SET name = 'Forged edit' WHERE id = ${webhookId} RETURNING id`
+      : sql`DELETE FROM webhooks WHERE id = ${webhookId} RETURNING id`));
+    expect(affected).toHaveLength(0);
+    const unchanged = await withDbAccessContext(SYSTEM, () => db.execute(sql`
+      SELECT partner_id, org_id, name FROM webhooks WHERE id = ${webhookId}
+    `));
+    expect(unchanged).toEqual([{ partner_id: owner.id, org_id: null, name: 'RLS webhook' }]);
+  });
+
+  it('rejects re-owning an accessible webhook to another partner via WITH CHECK', async () => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const webhookId = await withDbAccessContext(SYSTEM, () => insertWebhook(owner.id, null));
+    await expect(withDbAccessContext(partnerContext(owner.id), () => db.execute(sql`
+      UPDATE webhooks SET partner_id = ${other.id} WHERE id = ${webhookId}
+    `))).rejects.toMatchObject({ cause: { code: '42501' } });
+    const unchanged = await withDbAccessContext(SYSTEM, () => db.execute(sql`
+      SELECT partner_id FROM webhooks WHERE id = ${webhookId}
+    `));
+    expect(unchanged[0]!.partner_id).toBe(owner.id);
+  });
+
+  it('rejects a delivery inserted by another partner under a partner webhook', async () => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const org = await createOrganization({ partnerId: owner.id });
+    const webhookId = await withDbAccessContext(SYSTEM, () => insertWebhook(owner.id, null));
+    await expect(withDbAccessContext(partnerContext(other.id), () => insertDelivery(webhookId, org.id)))
       .rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
@@ -122,6 +166,39 @@ describe('webhooks partner ownership RLS', () => {
       expect(await db.execute(sql`SELECT id FROM webhooks WHERE id = ${webhookId}`)).toHaveLength(1);
       const deliveries = await db.execute(sql`SELECT org_id FROM webhook_deliveries WHERE webhook_id = ${webhookId}`);
       expect(deliveries.map(row => row.org_id)).toEqual([survivor.id]);
+    });
+  });
+
+  it('the merge engine repoints a partner-webhook delivery from loser to survivor and retains the partner webhook', async () => {
+    const partner = await createPartner();
+    const loser = await createOrganization({ partnerId: partner.id });
+    const survivor = await createOrganization({ partnerId: partner.id });
+    const actor = await createUser({ partnerId: partner.id });
+    const webhookId = await withDbAccessContext(SYSTEM, () => insertWebhook(partner.id, null));
+    const [delivery] = await withDbAccessContext(SYSTEM, () => insertDelivery(webhookId, loser.id));
+
+    const priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      await executeOrgMerge({
+        loserOrgId: loser.id,
+        survivorOrgId: survivor.id,
+        partnerId: partner.id,
+        performedBy: actor.id,
+        performedByEmail: actor.email,
+      });
+    } finally {
+      if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+    }
+
+    await withDbAccessContext(SYSTEM, async () => {
+      const deliveries = await db.execute(sql`
+        SELECT org_id, webhook_id, payload FROM webhook_deliveries WHERE id = ${delivery!.id}
+      `);
+      expect(deliveries).toEqual([{ org_id: survivor.id, webhook_id: webhookId, payload: {} }]);
+      const parents = await db.execute(sql`SELECT partner_id, org_id FROM webhooks WHERE id = ${webhookId}`);
+      expect(parents).toEqual([{ partner_id: partner.id, org_id: null }]);
     });
   });
 });

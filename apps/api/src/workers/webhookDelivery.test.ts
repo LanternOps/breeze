@@ -229,6 +229,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     expect(result.success).toBe(false);
     expect(result.superseded).toBe(true);
     expect(result.errorMessage).toContain('not found');
+    expect(result).toHaveProperty('supersededReason', 'not_found');
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
 
@@ -243,6 +244,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     expect(result.success).toBe(false);
     expect(result.superseded).toBe(true);
     expect(result.errorMessage).toMatch(/could not be decrypted/);
+    expect(result).toHaveProperty('supersededReason', 'decrypt_failed');
     expect(safeFetchMock).not.toHaveBeenCalled();
   });
 

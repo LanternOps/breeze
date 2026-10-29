@@ -1,6 +1,6 @@
 import { createHmac } from 'crypto';
 import { DelayedError, type Job, Worker } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { parseQueueJobData } from '../services/bullmqValidation';
 import { webhookAttemptJobDataSchema, type WebhookAttemptJobData } from '../jobs/queueSchemas';
@@ -100,6 +100,8 @@ export type DeliveryClaimOutcome =
   | { claimed: true; delivery: ClaimedWebhookDelivery }
   | { claimed: false; observedStatus: typeof webhookDeliveryStatusEnum.enumValues[number] | null; observedAttempts: number | null; dueInMs: number | null };
 
+export type WebhookDeliverySupersededReason = 'not_found' | 'superseded' | 'decrypt_failed' | 'org_departed' | 'org_inactive';
+
 export interface WebhookDeliveryResult {
   deliveryId: string;
   webhookId: string;
@@ -114,6 +116,7 @@ export interface WebhookDeliveryResult {
   deliveredAt?: string;
   /** Lifecycle changes invalidate the queued premise, so they never schedule a retry. */
   superseded?: boolean;
+  supersededReason?: WebhookDeliverySupersededReason;
   nextAttemptAt?: Date | null;
 }
 
@@ -130,10 +133,15 @@ function generateSignature(payload: string, secret: string, timestamp: number): 
 
 export type ResolveDeliveryWebhookConfigOutcome =
   | { status: 'ok'; webhook: WebhookConfig }
-  | { status: 'not_found' }
-  | { status: 'superseded' }
-  | { status: 'decrypt_failed' }
-  | { status: 'org_departed' };
+  | { status: WebhookDeliverySupersededReason };
+
+const SUPERSEDED_MESSAGES: Record<WebhookDeliverySupersededReason, string> = {
+  not_found: 'Webhook not found (deleted after this delivery was queued)',
+  superseded: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued',
+  decrypt_failed: 'superseded_by_edit: webhook credentials could not be decrypted',
+  org_departed: "superseded_by_edit: organization no longer belongs to this webhook's partner",
+  org_inactive: 'superseded_by_edit: organization is not active for partner-wide delivery',
+};
 
 /** Reload and decrypt at send time so queued jobs never store credentials. */
 async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<ResolveDeliveryWebhookConfigOutcome> {
@@ -154,11 +162,15 @@ async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<Re
   // A queued event remains tied to its original org, even after that org moves
   // or stops being eligible for partner-wide fan-out. Tests have no event org.
   if (row.partnerId && job.orgId != null) {
-    const [org] = await runWithSystemDbAccess(() => db.select({ id: organizations.id })
+    const [org] = await runWithSystemDbAccess(() => db.select({
+      partnerId: organizations.partnerId,
+      live: sql<boolean>`${partnerFanoutOrgCondition()}`,
+    })
       .from(organizations)
-      .where(and(eq(organizations.id, job.orgId!), eq(organizations.partnerId, row.partnerId!), partnerFanoutOrgCondition()))
+      .where(eq(organizations.id, job.orgId!))
       .limit(1));
-    if (!org) return { status: 'org_departed' };
+    if (!org || org.partnerId !== row.partnerId) return { status: 'org_departed' };
+    if (org.live !== true) return { status: 'org_inactive' };
   }
 
   try {
@@ -185,13 +197,6 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   const resolved = await resolveDeliveryWebhookConfig(job);
   if (resolved.status !== 'ok') {
-    const errorMessage = resolved.status === 'not_found'
-      ? 'Webhook not found (deleted after this delivery was queued)'
-      : resolved.status === 'org_departed'
-        ? "superseded_by_edit: organization no longer belongs to this webhook's partner"
-        : resolved.status === 'decrypt_failed'
-          ? 'superseded_by_edit: webhook credentials could not be decrypted'
-          : 'superseded_by_edit: webhook was edited or disabled after this delivery was queued';
     return {
       deliveryId,
       webhookId: job.webhookId,
@@ -199,8 +204,9 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       eventType: event.type,
       success: false,
       superseded: true,
+      supersededReason: resolved.status,
       attempts: job.attempts + 1,
-      errorMessage
+      errorMessage: SUPERSEDED_MESSAGES[resolved.status],
     };
   }
   const { webhook } = resolved;
@@ -452,7 +458,8 @@ export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, 
   }
   if (result.superseded) {
     console.warn(`[WebhookWorker] delivery-superseded ${JSON.stringify({
-      errorId: 'WEBHOOK_DELIVERY_SUPERSEDED', deliveryId, webhookId, eventId: row.eventId
+      errorId: 'WEBHOOK_DELIVERY_SUPERSEDED', deliveryId, webhookId, eventId: row.eventId,
+      cause: result.supersededReason, orgId: row.orgId,
     })}`);
   } else if (!nextAttemptAt && !result.success) {
     console.warn(`[WebhookWorker] retries-exhausted ${JSON.stringify({

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext as system } from '../../db';
-import { organizations, partners, webhooks, webhookDeliveries } from '../../db/schema';
+import { organizations, organizationExternalLinks, partners, webhooks, webhookDeliveries } from '../../db/schema';
 import { buildWebhookFanoutDeps } from '../../services/webhookFanoutDeps';
 import { configureWebhookDeliveryExecution, configureWebhookFanout, handleWebhookFanoutEvent, processWebhookAttemptJob } from '../../workers/webhookDelivery';
 import { claimDeliveryForExecution, recordDeliveryOutcome, releaseDeliveryClaim } from '../../services/webhookDeliveryRecord';
@@ -58,7 +58,11 @@ describe('partner webhook fan-out against real Postgres', () => {
   });
 
   it('routes two live orgs to their partner, isolates other partners, and stores each event org', async () => {
-    const { orgs, partnerHook, orgHook } = await seed();
+    const { p, orgs, partnerHook, orgHook } = await seed();
+    const externalId = `company-${randomUUID()}`;
+    await system(() => db.insert(organizationExternalLinks).values({
+      orgId: orgs[0]!.id, partnerId: p, system: 'connectwise', externalId,
+    }));
     const first = await fanout(event(orgs[0]!.id));
     expect(first.map(d => d.webhookId).sort()).toEqual([partnerHook.id, orgHook.id].sort());
     expect(first.every(d => d.orgId === orgs[0]!.id)).toBe(true);
@@ -66,8 +70,15 @@ describe('partner webhook fan-out against real Postgres', () => {
     expect(second.map(d => d.webhookId)).toEqual([partnerHook.id]);
     expect(second[0]!.orgId).toBe(orgs[1]!.id);
     expect(await fanout(event(orgs[2]!.id))).toEqual([]);
-    expect(first.find(d => d.webhookId === partnerHook.id)!.payload).toHaveProperty('orgExternalIds', []);
+    expect(first.find(d => d.webhookId === partnerHook.id)!.payload).toHaveProperty('orgExternalIds', [{ system: 'connectwise', externalId }]);
     expect(first.find(d => d.webhookId === orgHook.id)!.payload).not.toHaveProperty('orgExternalIds');
+  });
+
+  it('includes trial org events in partner-wide fan-out', async () => {
+    const { orgs, partnerHook } = await seed();
+    await system(() => db.update(organizations).set({ status: 'trial' }).where(eq(organizations.id, orgs[1]!.id)));
+    const deliveries = await fanout(event(orgs[1]!.id));
+    expect(deliveries).toMatchObject([{ webhookId: partnerHook.id, orgId: orgs[1]!.id }]);
   });
 
   it('excludes holding, quick-support, deleted and suspended orgs', async () => {
@@ -101,7 +112,11 @@ describe('partner webhook fan-out against real Postgres', () => {
       await processWebhookAttemptJob({ data: { deliveryId: delivery!.id, webhookId: partnerHook.id, generation: partnerHook.approvalGeneration, attemptsMade: 0 } } as never);
       expect(post).not.toHaveBeenCalled();
       const [row] = await system(() => db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery!.id)));
-      expect(row).toMatchObject({ status: 'failed', nextRetryAt: null, errorMessage: "superseded_by_edit: organization no longer belongs to this webhook's partner" });
+      // "deleted" above is a soft delete: the org still has its partner but
+      // is inactive. A physically missing org is covered by the worker unit test.
+      expect(row).toMatchObject({ status: 'failed', nextRetryAt: null, errorMessage: change === 'moved'
+        ? "superseded_by_edit: organization no longer belongs to this webhook's partner"
+        : 'superseded_by_edit: organization is not active for partner-wide delivery' });
     } finally { post.mockRestore(); }
   });
 });

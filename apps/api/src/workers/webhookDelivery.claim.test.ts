@@ -155,7 +155,7 @@ it.each([null, 'event-org'])('uses the claimed delivery org %s in the partner en
   const webhook = { id: webhookId, orgId: null, partnerId: 'partner-1', status: 'active', approvalGeneration: 3, url: 'https://hooks.example.com', events: [] };
   claim.mockResolvedValue({ claimed: true, delivery: { ...row, orgId } });
   m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [webhook] }) }) });
-  if (orgId) m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ id: orgId }] }) }) });
+  if (orgId) m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1', live: true }] }) }) });
   await processWebhookAttemptJob(job(), 'token');
   expect(JSON.parse(m.fetch.mock.calls[0]![1].body).orgId).toBe(orgId);
   expect(m.select).toHaveBeenCalledTimes(orgId ? 2 : 1);

@@ -6,9 +6,9 @@ vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(
 vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: vi.fn(async () => undefined) }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../services/notificationSenders/webhookSender', () => ({ validateWebhookUrlSafetyWithDns: vi.fn(async () => []), redactUrlForLogs: (value: string) => value }));
-vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()), db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
+vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()), runOutsideDbContext: vi.fn((work) => work()), withSystemDbAccessContext: vi.fn((work) => work()), db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() } }));
 vi.mock('../middleware/auth', () => ({ authMiddleware: vi.fn(), requireScope: vi.fn(() => async (_c: unknown, next: () => unknown) => next()), requirePermission: vi.fn(() => async (_c: unknown, next: () => unknown) => next()), requireMfa: vi.fn(() => async (_c: unknown, next: () => unknown) => next()) }));
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { webhooks } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -89,6 +89,7 @@ describe('partner webhook ownership', () => {
       auth.canAccessOrg = () => true; // Ownership must not depend on an org accessor accepting null.
       selectOne([row()]); const response = await request(method!, `/${HOOK}${suffix}`, method === 'PATCH' ? { name: 'Renamed' } : method === 'POST' ? {} : undefined);
       expect(response.status).toBe(404); expect(db.insert).not.toHaveBeenCalled(); expect(db.update).not.toHaveBeenCalled(); expect(db.delete).not.toHaveBeenCalled();
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
     });
   }
   it.each(['organization', 'restricted-partner'])('omits partner rows from the %s list predicate', async (scope) => {
@@ -154,6 +155,32 @@ describe('partner webhook ownership', () => {
       }));
     }
   });
+  it.each(['create', 'update', 'delete', 'test', 'retry'] as const)('attributes system-scope %s audit events to the webhook owner partner', async (action) => {
+    auth.scope = 'system';
+    auth.partnerId = null;
+    let response: Response;
+    if (action === 'create') {
+      insertEcho();
+      response = await request('POST', '', { ...body, partnerId: PARTNER });
+    } else {
+      selectOne([row()]);
+      if (action === 'update') {
+        vi.mocked(db.update).mockReturnValueOnce({ set: () => ({ where: () => ({ returning: async () => [row({ name: 'Updated' })] }) }) } as any);
+        response = await request('PATCH', `/${HOOK}`, { name: 'Updated' });
+      } else if (action === 'delete') {
+        vi.mocked(db.delete).mockReturnValueOnce({ where: async () => undefined } as any);
+        response = await request('DELETE', `/${HOOK}`);
+      } else {
+        if (action === 'retry') selectOne([{ id: DELIVERY, orgId: null, eventId: 'test-original', eventType: 'test', status: 'failed', payload: {}, payloadVersion: 2 }]);
+        insertEcho(true);
+        response = await request('POST', `/${HOOK}/${action === 'retry' ? `retry/${DELIVERY}` : 'test'}`, {});
+      }
+    }
+    expect(response.status).toBe(action === 'create' ? 201 : action === 'test' || action === 'retry' ? 202 : 200);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: `webhook.${action}`, orgId: null, partnerId: PARTNER,
+    }));
+  });
   it('records a partner test with null event org and a test UUID marker for any event type', async () => {
     selectOne([row()]); const values = insertEcho(true); const response = await request('POST', `/${HOOK}/test`, { event: 'alert.triggered' });
     expect(response.status).toBe(202); expect(values.mock.calls[0]![0]).toMatchObject({ orgId: null, eventType: 'alert.triggered', eventId: expect.stringMatching(/^test-[0-9a-f-]{36}$/) }); expect((await response.json()).delivery.orgId).toBeNull();
@@ -164,12 +191,24 @@ describe('partner webhook ownership', () => {
     expect(values.mock.calls[0]![0]).toMatchObject({ orgId: ORG, eventId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
   });
   it.each([ORG, null])('copies the source delivery org (%s) when replaying', async (orgId) => {
-    selectOne([row()]); selectOne([{ id: DELIVERY, orgId, eventId: orgId ? 'event-original' : 'test-original', eventType: 'alert.triggered', status: 'failed', payload: {}, payloadVersion: 2 }]); if (orgId) selectOne([{ id: ORG }]);
+    selectOne([row()]); selectOne([{ id: DELIVERY, orgId, eventId: orgId ? 'event-original' : 'test-original', eventType: 'alert.triggered', status: 'failed', payload: {}, payloadVersion: 2 }]); if (orgId) selectOne([{ partnerId: PARTNER, live: true }]);
     const values = insertEcho(true); const response = await request('POST', `/${HOOK}/retry/${DELIVERY}`); expect(response.status).toBe(202); expect(values.mock.calls[0]![0]).toMatchObject({ orgId }); expect((await response.json()).delivery.orgId).toBe(orgId); if (orgId === null) expect(values.mock.calls[0]![0].eventId).toMatch(/^test-[0-9a-f-]{36}$/);
+    if (orgId !== null) {
+      expect(runOutsideDbContext).toHaveBeenCalledOnce();
+      expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
+    }
   });
-  it('refuses a replay whose org is no longer live under the webhook partner', async () => {
-    selectOne([row()]); selectOne([{ id: DELIVERY, orgId: ORG, eventId: 'original', eventType: 'alert.triggered', status: 'failed' }]); selectOne([]);
-    const response = await request('POST', `/${HOOK}/retry/${DELIVERY}`); expect(response.status).toBe(409); expect((await response.json()).error).toMatch(/organization.*partner/i); expect(db.insert).not.toHaveBeenCalled();
+  it.each([
+    { label: 'missing', orgs: [], error: 'Cannot retry: organization moved to another partner' },
+    { label: 'moved', orgs: [{ partnerId: OTHER, live: true }], error: 'Cannot retry: organization moved to another partner' },
+    { label: 'inactive', orgs: [{ partnerId: PARTNER, live: false }], error: 'Cannot retry: organization is not currently active; retry after it is reactivated' },
+  ])('refuses a replay whose org is $label with the matching reason', async ({ orgs, error }) => {
+    selectOne([row()]); selectOne([{ id: DELIVERY, orgId: ORG, eventId: 'original', eventType: 'alert.triggered', status: 'failed' }]); selectOne(orgs);
+    insertEcho(true);
+    const response = await request('POST', `/${HOOK}/retry/${DELIVERY}`);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error });
+    expect(db.insert).not.toHaveBeenCalled();
   });
   it('delivery summaries expose the event org, not the partner webhook null owner', async () => {
     selectOne([row()]); vi.mocked(db.select).mockReturnValueOnce({ from: () => ({ where: async () => [{ count: 1 }] }) } as any);
