@@ -47,6 +47,12 @@ vi.mock('./notificationDispatcher', () => ({
   cancelAlertEscalations: (...args: unknown[]) => cancelAlertEscalationsMock(...args),
 }));
 
+const isRedisAvailableMock = vi.fn(() => true);
+vi.mock('./redis', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isRedisAvailable: () => isRedisAvailableMock(),
+}));
+
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 
 const DEVICE_ID = '44444444-4444-4444-4444-444444444444';
@@ -440,6 +446,7 @@ describe('evaluateWarrantyAlerts gating', () => {
     queueRegradeRun(-5, {
       id: 'alert-legacy-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical',
       title: 'Warranty expired: Test Mac', context: { source: 'warranty_evaluator' },
+      triggeredAt: new Date(Date.now() - 3_600_000), // inside the escalation window
     });
 
     const result = await evaluateWarrantyAlerts(DEVICE_ID);
@@ -449,8 +456,10 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       severity: 'medium',
       title: 'Warranty expired: Test Mac',
-      context: expect.objectContaining({ previousSeverity: 'critical', source: 'warranty_evaluator' }),
     }));
+    // The context patch is merged in SQL (jsonb ||), so a concurrent context
+    // write is not clobbered from a stale read; its content is asserted by the
+    // integration test against real Postgres.
     expect(publishEventMock).not.toHaveBeenCalled();
     expect(cancelAlertEscalationsMock).toHaveBeenCalledWith('alert-legacy-1');
     expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -496,6 +505,58 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(set).toHaveBeenCalled();
     expect(writeAuditEventMock).not.toHaveBeenCalled();
     expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  // Review round: the escalation cancel scans every delayed notification job,
+  // and on the agent request path a reconnecting BullMQ connection waits
+  // rather than throwing. So it is skipped when Redis is down, skipped for an
+  // alert older than the longest escalation delay (nothing can still be
+  // pending), and never awaited by the evaluator.
+  it('does not cancel escalations for a downgraded alert older than the longest escalation delay (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-old-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-old-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 30 * 86_400_000),
+    });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ severity: 'medium' }));
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not cancel escalations when Redis is unavailable (#10371)', async () => {
+    isRedisAvailableMock.mockReturnValueOnce(false);
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-recent-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-recent-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 3_600_000),
+    });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+  });
+
+  it('does not block the evaluation on a hanging escalation cancel (#10371)', async () => {
+    cancelAlertEscalationsMock.mockReturnValueOnce(new Promise(() => {})); // never settles
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-hang-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-hang-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null,
+      triggeredAt: new Date(Date.now() - 3_600_000),
+    });
+
+    const outcome = await Promise.race([
+      evaluateWarrantyAlerts(DEVICE_ID).then(() => 'done'),
+      new Promise((resolve) => setTimeout(() => resolve('blocked'), 500)),
+    ]);
+
+    expect(outcome).toBe('done');
+    expect(cancelAlertEscalationsMock).toHaveBeenCalledWith('alert-hang-1');
   });
 
   it('auto-resolves a stale TIMED-SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {

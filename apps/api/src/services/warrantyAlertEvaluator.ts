@@ -16,6 +16,7 @@ import { buildResolveAlertCas, createSourcedAlert } from './alertService';
 import { publishEvent } from './eventBus';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { cancelAlertEscalations } from './notificationDispatcher';
+import { isRedisAvailable } from './redis';
 import { resolveEffectiveWarrantyInlineSettings } from './warrantyPolicyResolution';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
@@ -29,6 +30,23 @@ const OPEN_WARRANTY_ALERT_STATUSES: AlertRow['status'][] = ['active', 'acknowled
 
 // Higher = more severe. Used only to tell a downgrade from an upgrade.
 const SEVERITY_RANK: Record<AlertSeverity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
+// An escalation step's delay is capped at 10080 minutes (7 days,
+// delivery/escalationSteps.ts), with re-notify of up to 10 × 1440 minutes on
+// top. Past this age no step scheduled when the alert triggered can still be
+// pending, so a downgrade skips the delayed-queue scan entirely.
+const ESCALATION_CANCEL_WINDOW_MS = 18 * 24 * 60 * 60 * 1000;
+
+function shouldCancelEscalationsOnDowngrade(
+  alert: AlertRow,
+  previousSeverity: AlertSeverity,
+  severity: AlertSeverity,
+): boolean {
+  if (SEVERITY_RANK[severity] >= SEVERITY_RANK[previousSeverity]) return false;
+  const triggeredAt = alert.triggeredAt instanceof Date ? alert.triggeredAt.getTime() : NaN;
+  if (!Number.isFinite(triggeredAt) || Date.now() - triggeredAt > ESCALATION_CANCEL_WINDOW_MS) return false;
+  return isRedisAvailable();
+}
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -274,8 +292,11 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
  *     "silent state change" stance as the suppression-expiry reaper.
  *   - A DOWNGRADE cancels any escalation step still delayed from the old,
  *     higher grade, so correcting a legacy critical alert cannot page anyone
- *     on the old critical-keyed escalation policy. Best-effort: a Redis
- *     failure is logged and never blocks the re-grade.
+ *     on the old critical-keyed escalation policy. Best-effort and never
+ *     awaited; skipped when Redis is down or when the alert is older than
+ *     any escalation step could be (ESCALATION_CANCEL_WINDOW_MS), which is
+ *     most legacy alerts. Steps that do fire still pass the dispatcher's
+ *     send-time status guard.
  *   - The change is recorded as an `alert.severity_regraded` audit row
  *     (system actor) and as `previousSeverity`/`regradedAt` on the alert's
  *     context, so it is visible on the alert itself.
@@ -297,27 +318,24 @@ async function regradeOpenWarrantyAlerts(
     if (alert.severity === target.severity) continue;
 
     const previousSeverity = alert.severity;
-    const regradedAt = new Date().toISOString();
-    const priorContext = (alert.context && typeof alert.context === 'object' && !Array.isArray(alert.context))
-      ? alert.context as Record<string, unknown>
-      : {};
+    const contextPatch = {
+      ...target.context,
+      previousSeverity,
+      regradedAt: new Date().toISOString(),
+    };
 
     // Compare-and-swap on (status still open, severity unchanged since the
     // read): a technician resolving/dismissing the alert, or a concurrent
-    // evaluator run, wins and this write matches nothing.
+    // evaluator run, wins and this write matches nothing. The context patch
+    // is merged in SQL so keys written since the read are kept; `source` is
+    // filled only when the row never had one.
     const written = await db
       .update(alerts)
       .set({
         severity: target.severity,
         title: target.title,
         message: target.message,
-        context: {
-          ...priorContext,
-          ...target.context,
-          source: priorContext.source ?? 'warranty_evaluator',
-          previousSeverity,
-          regradedAt,
-        },
+        context: sql`jsonb_build_object('source', 'warranty_evaluator') || coalesce(${alerts.context}, '{}'::jsonb) || ${JSON.stringify(contextPatch)}::jsonb`,
       })
       .where(
         and(
@@ -351,12 +369,14 @@ async function regradeOpenWarrantyAlerts(
       console.error(`[WarrantyAlertEvaluator] Failed to write re-grade audit event for alert ${alert.id}:`, err);
     }
 
-    if (SEVERITY_RANK[target.severity] < SEVERITY_RANK[previousSeverity]) {
-      try {
-        await cancelAlertEscalations(alert.id);
-      } catch (err) {
+    if (shouldCancelEscalationsOnDowngrade(alert, previousSeverity, target.severity)) {
+      // Fire-and-forget: cancelAlertEscalations scans the whole delayed set on
+      // the BullMQ connection, which waits rather than throws while Redis
+      // reconnects. The agent inventory request and the batch sync loop must
+      // never stall on it.
+      void cancelAlertEscalations(alert.id).catch((err) => {
         console.error(`[WarrantyAlertEvaluator] Failed to cancel escalations for re-graded alert ${alert.id}:`, err);
-      }
+      });
     }
 
     console.log(
