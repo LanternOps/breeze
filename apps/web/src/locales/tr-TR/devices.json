@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",

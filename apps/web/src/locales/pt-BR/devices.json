@@ -354,7 +354,7 @@
     "currentSite": "Site atual",
     "newSite": "Novo site",
     "loadingSites": "Carregando sites...",
-    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites em Configurações → Organizações para permitir movimentações.",
+    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites na aba Sites da organização (Organizações → abra a organização → Sites) para permitir movimentações.",
     "current": "(atual)",
     "cancel": "Cancelar",
     "moving": "Movendo...",

@@ -354,7 +354,7 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
