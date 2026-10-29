@@ -1889,7 +1889,8 @@
     "inheritance": {
       "inherited": "Geerbter Standardwert",
       "overridden": "Für diese Organisation festgelegt",
-      "reset": "Auf Standard zurücksetzen"
+      "reset": "Auf Standard zurücksetzen",
+      "resetLabel": "{{setting}} auf Standard zurücksetzen"
     },
     "policies": {
       "title": "Standardrichtlinien",

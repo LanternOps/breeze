@@ -1889,7 +1889,8 @@
     "inheritance": {
       "inherited": "Devralınan varsayılan",
       "overridden": "Bu kuruluş için ayarlandı",
-      "reset": "Varsayılana sıfırla"
+      "reset": "Varsayılana sıfırla",
+      "resetLabel": "{{setting}} ayarını varsayılana sıfırla"
     },
     "policies": {
       "title": "Varsayılan politikalar",

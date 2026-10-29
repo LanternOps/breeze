@@ -1889,7 +1889,8 @@
     "inheritance": {
       "inherited": "Padrão herdado",
       "overridden": "Definido para esta organização",
-      "reset": "Redefinir para o padrão"
+      "reset": "Redefinir para o padrão",
+      "resetLabel": "Redefinir {{setting}} para o padrão"
     },
     "policies": {
       "title": "Políticas padrão",

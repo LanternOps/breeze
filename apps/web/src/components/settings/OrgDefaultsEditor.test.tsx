@@ -618,12 +618,103 @@ describe('OrgDefaultsEditor — only changed fields become overrides (#9945)', (
     const onSave = vi.fn();
     render(<OrgDefaultsEditor organizationName={ORG} defaults={{ agentUpdatePolicy: 'manual' }} onSave={onSave} />);
 
-    await user.click(screen.getByTestId('defaults-reset-agentUpdatePolicy'));
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent update policy' }), 'manual');
+    await user.click(screen.getByRole('button', { name: 'Reset Agent update policy to default' }));
+    const select = screen.getByRole('combobox', { name: 'Agent update policy' });
+    expect(select).toHaveValue('auto');
+    expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Inherited default');
+    await user.selectOptions(select, 'manual');
     expect(screen.getByTestId('defaults-source-agentUpdatePolicy')).toHaveTextContent('Set for this organization');
     await user.click(screen.getByTestId('save-defaults'));
 
     expect(onSave.mock.calls[0][0]).toEqual({ agentUpdatePolicy: 'manual' });
+  });
+
+  it('drops a field that was edited and then reset on an org that never set it', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{}} onSave={onSave} />);
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent update policy' }), 'manual');
+    await user.click(screen.getByTestId('defaults-reset-agentUpdatePolicy'));
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({});
+  });
+
+  it('removes the enrollment overrides when they are set back to inherit', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{ defaultEnrollmentTtlMinutes: 1440, defaultEnrollmentDeviceCount: 5 }}
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByTestId('org-default-enrollment-ttl'), '');
+    await user.clear(screen.getByTestId('org-default-enrollment-device-count'));
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({});
+  });
+
+  it('keeps stored pins and keys this form does not edit, and still strips a stale cap', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        defaults={{
+          agentVersionPins: { agent: '0.88.0' },
+          maxEnrollmentLinkTtlMinutes: 60,
+          // A key from a newer build this form does not know about.
+          ...({ futureKey: { a: 1 } } as Record<string, unknown>),
+        }}
+        onSave={onSave}
+      />,
+    );
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Agent update policy' }), 'manual');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({
+      agentVersionPins: { agent: '0.88.0' },
+      futureKey: { a: 1 },
+      agentUpdatePolicy: 'manual',
+    });
+  });
+
+  it('saves a valid window picked over an invalid stored one', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<OrgDefaultsEditor organizationName={ORG} defaults={{ maintenanceWindow: '0000-2359' }} onSave={onSave} />);
+
+    await user.click(screen.getByTestId('maintenance-mode-window'));
+    await user.selectOptions(screen.getByTestId('maintenance-day'), 'Wed');
+    await user.click(screen.getByTestId('save-defaults'));
+
+    expect(onSave.mock.calls[0][0]).toEqual({ maintenanceWindow: 'Wed 02:00-04:00' });
+  });
+
+  it.each([
+    ['policyDefaults', { deviceCompliance: 'lenient' }, { deviceCompliance: 'strict', dataProtection: 'strict', accessControl: 'strict' }],
+    ['agentUpdatePolicy', 'manual', 'auto'],
+  ] as const)('replaces an inert stored %s with the partner value when the partner locks it', async (field, orgValue, partnerValue) => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <OrgDefaultsEditor
+        organizationName={ORG}
+        onSave={onSave}
+        defaults={{ [field]: orgValue }}
+        locked={[`defaults.${field}`]}
+        effectiveDefaults={{ [field]: partnerValue }}
+      />,
+    );
+
+    await user.click(screen.getByTestId('save-defaults'));
+    expect(onSave.mock.calls[0][0]).toEqual({ [field]: partnerValue });
   });
 
   it('shows no inheritance control on a partner-locked field', () => {

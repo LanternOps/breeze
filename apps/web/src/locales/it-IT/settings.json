@@ -1889,7 +1889,8 @@
     "inheritance": {
       "inherited": "Valore predefinito ereditato",
       "overridden": "Impostato per questa organizzazione",
-      "reset": "Ripristina il valore predefinito"
+      "reset": "Ripristina il valore predefinito",
+      "resetLabel": "Ripristina il valore predefinito: {{setting}}"
     },
     "policies": {
       "title": "Criteri predefiniti",

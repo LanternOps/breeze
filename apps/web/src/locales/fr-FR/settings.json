@@ -1889,7 +1889,8 @@
     "inheritance": {
       "inherited": "Valeur par défaut héritée",
       "overridden": "Défini pour cette organisation",
-      "reset": "Rétablir la valeur par défaut"
+      "reset": "Rétablir la valeur par défaut",
+      "resetLabel": "Rétablir la valeur par défaut : {{setting}}"
     },
     "policies": {
       "title": "Politiques par défaut",

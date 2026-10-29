@@ -111,6 +111,14 @@ const LOCKABLE_FIELDS = [
 // seedable editor fields.
 type LockableField = (typeof LOCKABLE_FIELDS)[number] | 'maxEnrollmentLinkTtlMinutes';
 
+// Section titles that name each field in its "Reset to default" button label.
+const INHERITANCE_TITLE_KEYS: Record<(typeof LOCKABLE_FIELDS)[number], string> = {
+  policyDefaults: 'orgDefaultsEditor.policies.title',
+  autoEnrollment: 'orgDefaultsEditor.autoEnrollment.title',
+  agentUpdatePolicy: 'orgDefaultsEditor.agentUpdates.title',
+  maintenanceWindow: 'orgDefaultsEditor.maintenance.title',
+};
+
 const defaultValues: DefaultsData = {
   policyDefaults: {
     deviceCompliance: 'balanced',
@@ -313,18 +321,25 @@ export default function OrgDefaultsEditor({
     markDirty();
   };
 
+  // Granularity is the whole field, not each sub-control: editing one policy
+  // select or one auto-enrollment checkbox writes that field's full object,
+  // because the partner lock and the resolvers treat each field as one unit.
   const renderInheritance = (field: Extract<EditableField, LockableField>) => {
     if (isLocked(field)) return null; // "Managed by partner" already says where it comes from
     const own = hasOwnValue(field);
     return (
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span data-testid={`defaults-source-${field}`}>
+        {/* Live region: Reset unmounts its own button, so announce the new state. */}
+        <span role="status" data-testid={`defaults-source-${field}`}>
           {own ? t('orgDefaultsEditor.inheritance.overridden') : t('orgDefaultsEditor.inheritance.inherited')}
         </span>
         {own && (
           <button
             type="button"
             onClick={() => resetField(field)}
+            aria-label={t('orgDefaultsEditor.inheritance.resetLabel', {
+              setting: t(/* i18n-dynamic */ INHERITANCE_TITLE_KEYS[field]),
+            })}
             data-testid={`defaults-reset-${field}`}
             className="font-medium text-primary underline-offset-2 hover:underline"
           >
