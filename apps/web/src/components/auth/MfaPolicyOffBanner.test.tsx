@@ -150,6 +150,23 @@ describe('MfaPolicyOffBanner', () => {
     expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument();
   });
 
+  it('appears once permissions land, and hides again when organizations:write is revoked', async () => {
+    state.user = { id: 'user-1', canManagePartnerWide: true };
+    fetchWithAuthMock.mockResolvedValue(partnerResponse(undefined));
+    const { rerender } = render(<MfaPolicyOffBanner />);
+    await act(async () => {});
+    expect(fetchWithAuthMock).not.toHaveBeenCalled();
+
+    state.user = { id: 'user-1', canManagePartnerWide: true, permissions: ORGS_WRITE };
+    rerender(<MfaPolicyOffBanner />);
+    expect(await screen.findByTestId(TEST_ID)).toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+
+    state.user = { id: 'user-1', canManagePartnerWide: true, permissions: [{ resource: 'organizations', action: 'read' }] };
+    rerender(<MfaPolicyOffBanner />);
+    await waitFor(() => expect(screen.queryByTestId(TEST_ID)).not.toBeInTheDocument());
+  });
+
   it('renders for a wildcard (*:*) admin grant', async () => {
     state.user = { id: 'user-1', canManagePartnerWide: true, permissions: [{ resource: '*', action: '*' }] };
     fetchWithAuthMock.mockResolvedValueOnce(partnerResponse(undefined));

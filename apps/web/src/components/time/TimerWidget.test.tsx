@@ -51,6 +51,25 @@ describe('TimerWidget', () => {
     expect(container.querySelector('[data-testid="timer-widget"]')).toBeNull();
   });
 
+  it('starts polling when time_entries:read arrives and stops when it is revoked (#10295)', async () => {
+    canReadTime = false;
+    fetchWithAuth.mockResolvedValue(jsonRes(null));
+    const { rerender } = render(<TimerWidget />);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+
+    canReadTime = true;
+    rerender(<TimerWidget />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith('/time-entries/running'));
+    const calls = fetchWithAuth.mock.calls.length;
+
+    canReadTime = false;
+    rerender(<TimerWidget />);
+    // A timer-changed broadcast would refresh if the subscription were still live.
+    await act(async () => { window.dispatchEvent(new CustomEvent(TIMER_CHANGED_EVENT)); await Promise.resolve(); });
+    expect(fetchWithAuth.mock.calls.length).toBe(calls);
+  });
+
   it('waits for the token (unresolved scope) before fetching the running timer (#7498)', async () => {
     jwtScope = null;
     render(<TimerWidget />);

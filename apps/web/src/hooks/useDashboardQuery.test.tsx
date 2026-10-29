@@ -235,7 +235,16 @@ describe('useDashboardQuery enabled: false', () => {
     expect(lastState?.unavailable).toBe(false);
   });
 
-  it('drops loaded data and ignores an in-flight response when the permission is revoked', async () => {
+  it('drops loaded data when the permission is revoked', async () => {
+    const { rerender } = render(<GatedProbe token={0} enabled />);
+    await waitFor(() => expect(lastState?.data).toBe(7));
+
+    rerender(<GatedProbe token={0} enabled={false} />);
+    await waitFor(() => expect(lastState?.unavailable).toBe(true));
+    expect(lastState?.data).toBeNull();
+  });
+
+  it('ignores an in-flight response when the permission is revoked', async () => {
     let resolvePending!: (r: Response) => void;
     fetchWithAuthMock.mockReturnValueOnce(
       new Promise<Response>((r) => (resolvePending = r)) as any
