@@ -285,8 +285,8 @@ export default function SsoProviderForm({
     const id = event.target.value;
     const preset = id ? presets.find(p => p.id === id) : undefined;
     if (!preset) {
-      // Custom configuration (or a preset the list hasn't loaded): keep the
-      // current values for the admin to edit.
+      // Custom configuration: keep the current values for the admin to edit.
+      // (Preset options not in the loaded list are disabled, see the select.)
       appliedPresetRef.current = id;
       void presetField.onChange(event);
       return;
@@ -390,7 +390,13 @@ export default function SsoProviderForm({
               onChange={handlePresetChange}
             >
               {presetOptions.map(option => (
-                <option key={option.value} value={option.value}>
+                <option
+                  key={option.value}
+                  value={option.value}
+                  // A preset applies only from the loaded list; until it loads
+                  // (or if /sso/presets failed) picking one could fill nothing.
+                  disabled={option.value !== '' && !presets.some(p => p.id === option.value)}
+                >
                   {t(/* i18n-dynamic */ option.labelKey)}
                 </option>
               ))}
