@@ -28,7 +28,10 @@ function humanize(type: string): string {
   const words = type
     .split(/[\s._-]+/)
     .filter(Boolean)
-    .map((word) => ACRONYMS[word.toLowerCase()] ?? word.toLowerCase());
+    .map((word) => {
+      const lower = word.toLowerCase();
+      return Object.hasOwn(ACRONYMS, lower) ? ACRONYMS[lower]! : lower;
+    });
   if (words.length === 0) return '';
   const first = words[0]!;
   words[0] = first.charAt(0).toUpperCase() + first.slice(1);
@@ -46,7 +49,8 @@ export function formatAuditResourceType(
 ): string {
   const trimmed = type?.trim();
   if (!trimmed) return '-';
-  return labels?.[trimmed] ?? (humanize(trimmed) || '-');
+  const label = labels && Object.hasOwn(labels, trimmed) ? labels[trimmed] : undefined;
+  return label ?? (humanize(trimmed) || '-');
 }
 
 /** Locale-aware `formatAuditResourceType`. */
