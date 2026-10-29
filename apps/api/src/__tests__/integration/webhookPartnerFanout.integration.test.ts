@@ -103,15 +103,17 @@ describe('partner webhook fan-out against real Postgres', () => {
     } finally { post.mockRestore(); }
   });
 
-  it.each(['moved', 'suspended', 'deleted'] as const)('resolves a queued delivery without POST or retry after its org is %s', async change => {
+  it.each(['moved', 'suspended', 'merging', 'deleted'] as const)('resolves a queued delivery without POST or retry after its org is %s', async change => {
     const { orgs, partnerHook, other } = await seed();
     const [delivery] = await fanout(event(orgs[1]!.id));
-    await system(() => db.update(organizations).set(change === 'moved' ? { partnerId: other } : change === 'suspended' ? { status: 'suspended' } : { deletedAt: new Date() }).where(eq(organizations.id, orgs[1]!.id)));
+    await system(() => db.update(organizations).set(change === 'moved' ? { partnerId: other } : change === 'suspended' ? { status: 'suspended' } : change === 'merging' ? { status: 'merging' } : { deletedAt: new Date() }).where(eq(organizations.id, orgs[1]!.id)));
     const post = vi.spyOn(urlSafety, 'safeFetch').mockResolvedValue(new Response('ok'));
     try {
       await processWebhookAttemptJob({ data: { deliveryId: delivery!.id, webhookId: partnerHook.id, generation: partnerHook.approvalGeneration, attemptsMade: 0 } } as never);
       expect(post).not.toHaveBeenCalled();
       const [row] = await system(() => db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery!.id)));
+      // "merging" pins current behaviour: a delivery claimed while its org is
+      // mid-merge is superseded (spec liveness rule), not carried to the survivor.
       // "deleted" above is a soft delete: the org still has its partner but
       // is inactive. A physically missing org is covered by the worker unit test.
       expect(row).toMatchObject({ status: 'failed', nextRetryAt: null, errorMessage: change === 'moved'
