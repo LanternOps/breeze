@@ -52,7 +52,7 @@ import { validateFlowDocument } from '../../services/flowValidator';
 import { legacyPrefers, loadSwitchedConvertedAutomations } from '../../services/flows/conversion/claims';
 import { automationSourceDigest, generatedScriptPlaceholderId } from '../../services/flows/conversion/convertAutomation';
 import { createConversion } from '../../services/flows/conversion/service';
-import { saveDraftFlow } from '../../services/flows/service';
+import { getFlow, saveDraftFlow } from '../../services/flows/service';
 import { flowDocumentDigest, resetShadowIfChanged } from '../../services/flows/conversion/ledger';
 import { switchConversion } from '../../services/flows/conversion/switch';
 import { revertConversion } from '../../services/flows/conversion/revert';
@@ -146,6 +146,7 @@ async function tenant() {
     siteId: site!.id,
     otherSiteId: otherSite!.id,
     orgRoleId: orgRole.id,
+    partnerRoleId: partnerRole.id,
     deviceId: device.id,
     siblingScriptId: siblingScript!.id,
     switcher,
@@ -254,6 +255,12 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(loaded[0]!.conversion).toEqual({ id: s.conversionId, state: 'switched', switchAt: ledger.switchAt });
     expect(legacyPrefers(loaded[0]!.conversion, new Date(ledger.switchAt!.getTime() - 1), false)).toBe(true);
     expect(legacyPrefers(loaded[0]!.conversion, ledger.switchAt, false)).toBe(false);
+
+    // C3: the flow detail names the Job it moved from, read in the caller's context.
+    const detail = await t.asOrg(() => getFlow(t.orgAuth(), s.flowId));
+    expect(detail?.flow.convertedFrom).toEqual({
+      automationId: row.id, name: automation.name, conversionId: s.conversionId, state: 'switched',
+    });
   });
 
   runDb('enable refusal rolls back scripts, secret and ledger', async () => {
@@ -640,6 +647,68 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(sw.ok, JSON.stringify(sw)).toBe(true);
     const rv = await underKeyShare(() => t.asOrg(() => revertConversion(t.orgAuth(), s.conversionId)));
     expect(rv.ok, JSON.stringify(rv)).toBe(true);
+  }, 30_000);
+
+  runDb('GET /automations lists a switched Job (read-only, with its flow) but never a monitor-retired one (#5221 C2)', async () => {
+    const t = await tenant();
+    const switched = await job(t, {});
+    const s = await converted(t, switched, {});
+    const sw = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()));
+    expect(sw.ok, JSON.stringify(sw)).toBe(true);
+    // A row retired for any other reason (the W05c1 monitor conversion) stays out of the list.
+    const monitorRetired = await job(t, {});
+    await system(() => db.update(automations)
+      .set({ enabled: false, retiredAt: new Date(), retiredReason: 'monitor_deleted' })
+      .where(eq(automations.id, monitorRetired.id)));
+
+    const token = await createAccessToken({
+      sub: t.switcher.id, email: t.switcher.email, roleId: t.orgRoleId, orgId: t.orgId, partnerId: t.partnerId,
+      scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const app = new Hono();
+    app.route('/automations', automationRoutes);
+    const list = async () => {
+      const res = await app.request('/automations?limit=100', { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status, await res.clone().text()).toBe(200);
+      const body = await res.json() as { data: Array<{ id: string; conversion: unknown }>; pagination?: { total: number } };
+      return body;
+    };
+    const before = await list();
+    const ids = before.data.map((r) => r.id);
+    expect(ids).toContain(switched.id);
+    expect(ids).not.toContain(monitorRetired.id);
+    expect(before.data.find((r) => r.id === switched.id)?.conversion).toEqual({ id: s.conversionId, state: 'switched', flowId: s.flowId });
+    expect(before.pagination?.total ?? before.data.length).toBe(before.data.length);
+
+    // A partner-scope caller sees a switched partner-wide Job too (the partner branch ANDs on the same predicate).
+    const pwJob = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: t.partnerCreator.id });
+    const sp = await converted(t, pwJob, {});
+    const pr = await t.asPartner(() => switchConversion(t.partnerAuth(), sp.conversionId, req()));
+    expect(pr.ok, JSON.stringify(pr)).toBe(true);
+    const pwRetired = await job(t, { orgId: null, partnerId: t.partnerId, conditions: [], createdBy: t.partnerCreator.id });
+    await system(() => db.update(automations)
+      .set({ enabled: false, retiredAt: new Date(), retiredReason: 'monitor_deleted' })
+      .where(eq(automations.id, pwRetired.id)));
+    const partnerToken = await createAccessToken({
+      sub: t.partnerSwitcher.id, email: t.partnerSwitcher.email, roleId: t.partnerRoleId, orgId: null, partnerId: t.partnerId,
+      scope: 'partner', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const pres = await app.request('/automations?limit=100', { headers: { Authorization: `Bearer ${partnerToken}` } });
+    expect(pres.status, await pres.clone().text()).toBe(200);
+    const pbody = await pres.json() as { data: Array<{ id: string; conversion: unknown }>; pagination?: { total: number } };
+    const pids = pbody.data.map((r) => r.id);
+    expect(pids).toContain(pwJob.id);
+    expect(pids).toContain(switched.id);
+    expect(pids).not.toContain(pwRetired.id);
+    expect(pids).not.toContain(monitorRetired.id);
+    expect(pbody.data.find((r) => r.id === pwJob.id)?.conversion).toEqual({ id: sp.conversionId, state: 'switched', flowId: sp.flowId });
+    expect(pbody.pagination?.total ?? pbody.data.length).toBe(pbody.data.length);
+
+    // After a revert the Job is an ordinary row again.
+    const rv = await t.asOrg(() => revertConversion(t.orgAuth(), s.conversionId));
+    expect(rv.ok, JSON.stringify(rv)).toBe(true);
+    const after = await list();
+    expect(after.data.find((r) => r.id === switched.id)?.conversion).toEqual({ id: s.conversionId, state: 'reverted', flowId: s.flowId });
   }, 30_000);
 
   for (const method of ['PATCH', 'DELETE'] as const) {
