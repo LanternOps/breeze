@@ -160,6 +160,7 @@ describe('validateFlowDocument', () => {
     // M365 tools are not in the core execution registry at all (session-aware).
     expect(codes(r.issues)).toEqual(['tool_not_found']);
     expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
   });
 
   it('a flow-eligible core tool without a Zod schema fails closed (tool_not_allowed)', async () => {
@@ -366,11 +367,19 @@ describe('validateFlowDocument', () => {
   });
 
   it('structure errors skip the catalog checks', async () => {
-    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } }, { id: 'b', tool: 'wait', input: { minutes: 1 } }]), ORG_OWNER);
+    const r = await validateFlowDocument(doc([
+      { id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } },
+      { id: 'b', tool: 'wait', input: { minutes: 1 } },
+      { id: 'c', tool: 'halo__create_ticket', input: {} },
+      { id: 'd', tool: 'get_device_details', input: {} },
+    ]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['forward_reference']);
     expect(resolveTenantToolsForOwner).not.toHaveBeenCalled();
-    // Without the catalog, an unregistered name is unknown rather than "core" (#9937).
-    expect(r.steps.map((s) => [s.id, s.source])).toEqual([['a', 'unknown'], ['b', 'builtin']]);
+    // Without the catalog, an unregistered name is unknown rather than "core" (#9937);
+    // a slug__name keeps its tenant shape and a registered core name stays core.
+    expect(r.steps.map((s) => [s.id, s.source])).toEqual([
+      ['a', 'unknown'], ['b', 'builtin'], ['c', 'tenant'], ['d', 'core'],
+    ]);
   });
 
   it('a structurally broken document returns schema issues, never throws', async () => {
