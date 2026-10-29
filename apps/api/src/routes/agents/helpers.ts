@@ -87,6 +87,7 @@ import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibilit
 import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
 import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
+import { isUpgradeTargetServable } from '../../services/localBinaryBuild';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
 import { recordIssuedCertificateForDevice, revokeInlineAfterContextExit } from '../../services/deviceMtlsCertificateIssuance';
@@ -3376,7 +3377,7 @@ export async function resolvePinnedUpgradeTarget(args: {
       )
       .orderBy(desc(agentVersions.createdAt)) // newest first if multiple isLatest rows exist
       .limit(1);
-    return latest?.version ?? null;
+    return servableTargetOrNull(component, platform, architecture, latest?.version ?? null);
   }
 
   const [pinned] = await db
@@ -3404,7 +3405,25 @@ export async function resolvePinnedUpgradeTarget(args: {
     warnMissingPinnedBuild(component, platform, architecture, pin, agentId);
     return null;
   }
-  return pinned.version;
+  return servableTargetOrNull(component, platform, architecture, pinned.version);
+}
+
+/**
+ * #7516 — the last step of every offer resolution: a target whose bytes this
+ * server cannot serve (BINARY_SOURCE=local holding a different build) becomes
+ * null, i.e. no offer. Withholding at offer time, not refusing at download
+ * time: a 409 from the download would still have every device re-try it each
+ * heartbeat, while no offer costs nothing and self-heals the moment the
+ * promoted target and the local build agree.
+ */
+async function servableTargetOrNull(
+  component: string,
+  platform: string,
+  architecture: string,
+  version: string | null,
+): Promise<string | null> {
+  if (version === null) return null;
+  return (await isUpgradeTargetServable({ component, platform, architecture, version })) ? version : null;
 }
 
 export interface PinnedUpgradeRequest {
@@ -3455,12 +3474,13 @@ export async function resolvePinnedUpgradeTargets(args: {
 
   for (const request of requests) {
     if (request.pin === null) {
-      result.set(request.component, rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null);
+      const latest = rows.find((r) => r.component === request.component && r.isLatest)?.version ?? null;
+      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, latest));
       continue;
     }
     const hit = rows.find((r) => r.component === request.component && r.version === request.pin);
     if (hit) {
-      result.set(request.component, hit.version);
+      result.set(request.component, await servableTargetOrNull(request.component, platform, architecture, hit.version));
       continue;
     }
     warnMissingPinnedBuild(request.component, platform, architecture, request.pin, agentId);

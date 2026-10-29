@@ -1860,6 +1860,10 @@ By default (`AGENT_AUTO_PROMOTE=true`), syncing a new agent release immediately 
   Leave `AGENT_AUTO_PROMOTE` unset (or `true`) to keep the default behavior where the release matching your server version rolls out as soon as the API syncs it. The promote action is audit-logged either way.
 </Aside>
 
+<Aside type="note">
+  With `BINARY_SOURCE=local`, the server holds only one build per platform: the one in its binaries volume. Until the promoted version (or a version pin) matches that build, the API offers the affected devices no upgrade at all. They stay on their current version instead of downloading bytes that can never pass checksum verification. The API logs `withholding … upgrade offer` once per component and platform while this lasts. Promote the build your server holds, or deploy the binaries for the version you promoted, and devices upgrade on their next heartbeat.
+</Aside>
+
 ### Pinning Agent and Watchdog Versions
 
 Instead of always tracking the latest promoted release, you can pin the fleet — or a single customer — to a specific version. **Settings → Partner Defaults** and **Settings → Org Defaults** each expose an **Update version targets** card with independent **Agent target** and **Watchdog target** selectors. Each selector offers every registered version plus **Latest promoted** (track the globally promoted release, the default behavior).
