@@ -125,7 +125,7 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 		log.Info("pam: approved launch failed; leaving the user's UAC prompt open",
 			"elevationRequestId", payload.RequestID, "failureCode", result.FailureCode)
 	}
-	h.notifyPamApplyOutcome(payload.RequestID, result)
+	h.notifyPamApplyOutcome(payload.RequestID, result, payload.DecidedBy.Technician())
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult

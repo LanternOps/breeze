@@ -35,6 +35,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/etwlua"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
@@ -672,6 +673,17 @@ type Heartbeat struct {
 	// the session broker (test seam); a non-nil error means "not shown". nil
 	// means sendSessionNotifyTitled.
 	pamNotifySink func(title, body, winSession string) error
+	// Elevation prompts (#10190 W07, pam_prompt.go): the open flows by
+	// request id; test seams for the PromptOnSecureDesktop read, the
+	// requester's prompt owner and the consent.exe exit probe (nil = the
+	// real ones); the consent watch interval; and the renderer that
+	// carried each decline, for the withdraw body (memory only).
+	pamElevations           elevationFlows
+	pamSecureDesktop        func() (bool, error)
+	pamElevationOwner       func(winSession string) (prompthost.Owner, bool)
+	pamConsentExited        func(etwlua.ConsentInstance) (bool, error)
+	elevationConsentPoll    time.Duration
+	pamWithdrawRenderersMap sync.Map
 	// pamSupportNameCached is the MSP support name last returned by a
 	// successful elevation submit (pam_support_name.go), loaded from its
 	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
@@ -8855,12 +8867,20 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 	}
 }
 
-// pamUserNotifyProtocolVersion is 1 on Windows builds, the only platform with
+// pamUserNotifyProtocolVersion is 2 on Windows builds, the only platform with
 // UAC interception and so the only one that can have a tracked hand-off to
 // notify about (#8928). Elsewhere it is 0 and omitted from the beat.
+//
+//   - 1 (#8928): claims pam_request_notify and shows the outcome notices.
+//   - 2 (#10190 W07): also accepts `decidedBy` on pam_apply_v2, whose
+//     payload is decoded strictly (an API sends it only to 2 or above) and
+//     shows outcomes on the elevation prompt.
 func pamUserNotifyProtocolVersion() int {
 	if runtime.GOOS == "windows" {
-		return 1
+		return pamUserNotifyProtocolCurrent
 	}
 	return 0
 }
+
+// pamUserNotifyProtocolCurrent is the Windows value (see above).
+const pamUserNotifyProtocolCurrent = 2
