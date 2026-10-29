@@ -988,7 +988,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
     excludedSensitive: [],
     excludedOpen: [],
   }),
-  "ticket_external_refs": tablePolicy("org_id", {"included":["external_number","id","ticket_id","org_id","partner_id","partner_service_principal_id","external_id","external_url","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_external_refs": tablePolicy("org_id", {"included":["external_number","id","ticket_id","org_id","partner_id","partner_service_principal_id","external_id","external_url","created_at","updated_at","origin_ticket_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_form_org_links": tablePolicy("org_id", {"included":["id","form_id","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "ticket_forms": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","description","category_id","title_template","description_intro","default_priority","default_tags","show_in_portal","is_active","sort_order","version","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["fields"]}),
   "ticket_links": tablePolicy("org_id", {"included":["id","org_id","source_ticket_id","target_ticket_id","link_type","created_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
