@@ -32,7 +32,7 @@ vi.mock('../../stores/featuresStore', () => ({
   useFeaturesStore: Object.assign(
     (sel: (s: { loaded: boolean }) => unknown) => sel({ loaded: flag.loaded }),
     // The partners/me unit reads the sending-domains flag imperatively (#9949).
-    { getState: () => ({ load: async () => {}, features: { sendingDomains: false } }) },
+    { getState: () => ({ load: async () => {}, configOk: true, features: { sendingDomains: false } }) },
   ),
 }));
 

@@ -44,6 +44,10 @@ interface FeaturesState {
   registration: RegistrationConfig;
   softwarePackages: SoftwarePackagesConfig;
   loaded: boolean;
+  /** True only once /config answered and parsed. `loaded` is also true after a
+   *  failed read (the defaults stand); a gate that can recover on its own,
+   *  such as the sending-domains probe, reads this to tell the two apart. */
+  configOk: boolean;
   load: () => Promise<void>;
 }
 
@@ -74,7 +78,7 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => {
       const res = await fetchWithAuth('/config', { method: 'GET' });
       if (!res.ok) {
         console.error('[features] /config fetch failed:', { status: res.status });
-        set({ loaded: true });
+        set({ loaded: true, configOk: false });
         return;
       }
       const data = (await res.json()) as {
@@ -114,10 +118,11 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => {
           uploadsEnabled: data.softwarePackages?.uploadsEnabled !== false,
         },
         loaded: true,
+        configOk: true,
       });
     } catch (err) {
       console.error('[features] /config fetch failed:', err instanceof Error ? err.message : err);
-      set({ loaded: true });
+      set({ loaded: true, configOk: false });
     }
   };
 
@@ -127,6 +132,7 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => {
     registration: DEFAULT_REGISTRATION,
     softwarePackages: DEFAULT_SOFTWARE_PACKAGES,
     loaded: false,
+    configOk: false,
     load: () => {
       if (get().loaded) return Promise.resolve();
       inflight ??= readConfig().finally(() => { inflight = null; });

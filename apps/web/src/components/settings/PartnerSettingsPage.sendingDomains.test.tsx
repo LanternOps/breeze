@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import PartnerSettingsPage from './PartnerSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -65,7 +65,8 @@ beforeEach(() => {
   fetchWithAuthMock.mockReset();
   window.location.hash = '';
   // The store is a module singleton; every test starts from "not yet read".
-  useFeaturesStore.setState({ loaded: false });
+  // A failed /config leaves `features` untouched, so reset the flag too.
+  useFeaturesStore.setState({ loaded: false, features: { ...useFeaturesStore.getState().features, sendingDomains: false } });
   useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false, adoptPartnerId: vi.fn() } as never);
 });
 
@@ -105,6 +106,67 @@ describe('PartnerSettingsPage — sending domains tab', () => {
 
     expect(calls('/orgs/partners/me')).toBe(1);
     expect(calls('/partner/sending-domains')).toBe(1);
+  });
+
+  it('falls back to the direct list read when /config itself could not be read', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    route({ capability: { supported: true, provider: 'fake', verifiesByDns: true, eligible: true, maxDomains: 3 }, domains: [], identities: [] });
+    const base = fetchWithAuthMock.getMockImplementation()!;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) =>
+      url === '/config' ? Promise.resolve(json({ error: 'bad gateway' }, 502)) : base(url, init));
+    render(<PartnerSettingsPage />);
+
+    // A transient /config failure must not hide a configured feature for the session.
+    expect(await screen.findByTestId('partner-settings-tab-sendingDomains')).not.toBeNull();
+    expect(calls('/partner/sending-domains')).toBe(1);
+    errSpy.mockRestore();
+  });
+
+  it('keeps an unsaved edit while the org store refetches (#9949)', async () => {
+    route({ error: 'sending_domains_unsupported' }, 404);
+    const view = render(<PartnerSettingsPage />);
+    const name = await screen.findByLabelText(/company name/i) as HTMLInputElement;
+    fireEvent.change(name, { target: { value: 'Acme MSP Renamed' } });
+
+    for (const isLoading of [true, false]) {
+      useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading, adoptPartnerId: vi.fn() } as never);
+      view.rerender(<PartnerSettingsPage />);
+    }
+    await act(async () => { await new Promise(r => setTimeout(r, 20)); });
+
+    expect((screen.getByLabelText(/company name/i) as HTMLInputElement).value).toBe('Acme MSP Renamed');
+    expect((screen.getByTestId('partner-settings-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Retry reloads after a failed partners/me read', async () => {
+    route({ error: 'sending_domains_unsupported' }, 404);
+    const base = fetchWithAuthMock.getMockImplementation()!;
+    let failFirst = true;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/orgs/partners/me' && failFirst) {
+        failFirst = false;
+        return Promise.resolve(json({ error: 'boom' }, 500));
+      }
+      return base(url, init);
+    });
+    render(<PartnerSettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /retry/i }));
+    expect(await screen.findByLabelText(/company name/i)).not.toBeNull();
+    expect(calls('/orgs/partners/me')).toBe(2);
+  });
+
+  it('reloads when the partner id clears and comes back', async () => {
+    route({ error: 'sending_domains_unsupported' }, 404);
+    const view = render(<PartnerSettingsPage />);
+    await screen.findByLabelText(/company name/i);
+
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: null, isLoading: true, adoptPartnerId: vi.fn() } as never);
+    view.rerender(<PartnerSettingsPage />);
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false, adoptPartnerId: vi.fn() } as never);
+    view.rerender(<PartnerSettingsPage />);
+
+    await waitFor(() => expect(calls('/orgs/partners/me')).toBe(2));
   });
 
   it('reloads when the partner actually changes', async () => {

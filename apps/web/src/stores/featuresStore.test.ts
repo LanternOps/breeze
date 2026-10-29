@@ -151,6 +151,28 @@ describe('sendingDomains (#9949)', () => {
   });
 });
 
+describe('configOk (#9949)', () => {
+  it('is true only after /config answered', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    useFeaturesStore.setState({ loaded: false, configOk: false });
+    fetchMock.mockResolvedValueOnce(res({}, false, 502));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: false });
+
+    // A failed re-read after a good one must not keep the old configOk.
+    useFeaturesStore.setState({ loaded: false, configOk: true });
+    fetchMock.mockRejectedValueOnce(new Error('network'));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: false });
+
+    useFeaturesStore.setState({ loaded: false, configOk: false });
+    fetchMock.mockResolvedValueOnce(res({}));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: true });
+    errSpy.mockRestore();
+  });
+});
+
 describe('load() de-duplication (#9949)', () => {
   it('concurrent callers share one /config request', async () => {
     vi.clearAllMocks();

@@ -258,12 +258,15 @@ const toLogin = () => { void navigateTo('/login', { replace: true }); };
  * The Sender Addresses capability, or null when the tab should stay hidden.
  * /config reports whether this instance has an EMAIL_DOMAINS_PROVIDER (off by
  * default everywhere); the list is read only when it does, because without one
- * every sending-domains route answers 404 (#9949). A 404 from the list itself
- * still reads as "hidden" rather than an error.
+ * every sending-domains route answers 404 (#9949). When /config itself could
+ * not be read, the list read decides instead, so a transient failure does not
+ * hide a configured feature for the session. A 404 from the list still reads
+ * as "hidden" rather than an error.
  */
 async function probeSendingDomains(): Promise<SendingDomainsCapabilityDto | null> {
   await useFeaturesStore.getState().load();
-  if (!useFeaturesStore.getState().features.sendingDomains) return null;
+  const { configOk, features } = useFeaturesStore.getState();
+  if (configOk && !features.sendingDomains) return null;
   const result = await fetchSendingDomains();
   return result.supported ? (result.data.capability ?? null) : null;
 }
@@ -342,7 +345,12 @@ export function usePartnersMeUnit() {
       // Best-effort: decides whether the Sender Addresses tab appears at all.
       probeSendingDomains()
         .then(capability => { if (isCurrent()) setSendingDomainsCapability(capability); })
-        .catch(() => { if (isCurrent()) setSendingDomainsCapability(null); })
+        .catch(err => {
+          // A 404 already resolved as "hidden"; anything here is a real failure
+          // of a configured feature, so leave a trace before hiding the tab.
+          console.error('[partner-settings] sending-domains probe failed:', err instanceof Error ? err.message : err);
+          if (isCurrent()) setSendingDomainsCapability(null);
+        })
         .finally(() => { if (isCurrent()) setSendingDomainsChecked(true); });
     } catch (err) {
       if (!isCurrent()) return;
