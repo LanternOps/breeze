@@ -694,6 +694,8 @@ export default function MFASettings({
             {t('mFASettings.addAnExtraLayerOfSecurityToYourAccount')}</p>
         </div>
 
+        {children}
+
         {/* Authenticator app row */}
         <div data-testid="mfa-authenticator-row" className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
           <div className="space-y-1">
@@ -802,8 +804,6 @@ export default function MFASettings({
             ) : null}
           </div>
         )}
-
-        {children}
 
         {enabled && (
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
