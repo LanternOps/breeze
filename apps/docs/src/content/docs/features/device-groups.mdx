@@ -5,7 +5,7 @@ description: Organize devices into static and dynamic groups for targeted policy
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Device Groups let you organize managed devices into logical collections for targeted policy assignment, bulk operations, and fleet segmentation. Groups are scoped to an organization and optionally to a site, and they support a parent-child hierarchy for nested grouping.
+Device Groups let you organize managed devices into logical collections for targeted policy assignment, bulk operations, and fleet segmentation. Most groups belong to one organization and optionally to a site, and they support a parent-child hierarchy for nested grouping. A partner can also create [partner-wide groups](#partner-wide-groups) that span every organization it manages.
 
 Breeze supports two group types:
 
@@ -28,7 +28,7 @@ Static groups have a fixed membership list. You add or remove devices explicitly
 
 Each organization can name one static group that newly enrolled devices join automatically. Set it under the organization's settings, **Defaults** tab, **Default device group**; the picker lists the organization's static groups, and **None** turns it off. A device is added once, when it enrolls; devices already enrolled are not moved. If the group has been deleted or turned dynamic, enrollment still succeeds and the device is simply not added.
 
-There is no partner-wide default group, because a group belongs to one organization.
+The default group must be one of the organization's own static groups. A partner-wide group cannot be the default, because partner-wide groups are always dynamic.
 
 ### Dynamic groups
 
@@ -44,13 +44,64 @@ Dynamic group membership is also re-evaluated when individual device attributes 
 From v0.123.0 this includes changes to a device's **tags** and **custom field values**, whether they are edited on the device, imported from CSV, written back by a script or changed by the AI assistant. A custom-field write re-evaluates only when the value actually changed. Before v0.123.0 a group that filtered on tags or custom fields stayed stale until someone re-saved it.
 </Aside>
 
+## Partner-wide groups
+
+A partner-wide group belongs to the partner (MSP), not to one organization. One group definition covers every organization the partner manages, so you write a rule once and use it for all of your customers. Quick Support organizations and the holding organization for unassigned devices are not included.
+
+### What partner-wide groups can do
+
+- **Dynamic only.** A partner-wide group is always a dynamic group built from a filter. It cannot be static, and devices cannot be added, removed or pinned by hand.
+- **No site, parent or organization filter.** The group has no site or parent group. Its filter can use any field except **Organization** (`orgId`) and **Device Group** (`groupId`). The **Site** field is allowed.
+- **Policy targets.** A partner-wide group can be targeted by **partner-owned** configuration policies (the policies you create for **All organizations**) and by the **Deploy monitor** dialog of a partner-wide monitor. An organization's own policies cannot target it, and other targets (scripts, automations, maintenance windows, software deployments, alert rules and similar) refuse it with an error instead of silently matching no devices.
+- **Precedence.** An assignment to a partner-wide group is a device-group-level assignment. It takes precedence over organization- and site-level assignments of other policies, and a device-level assignment still overrides it.
+
+### Who can create and change them
+
+Only a partner user with access to **all** organizations can create, edit or delete a partner-wide group. On the **Device Groups** page, select **Create Group** and choose **All organizations** under the owner selector. The selector is offered only when you create a group; an existing group cannot change owner. You can rename a partner-wide group and change its filter later.
+
+Partner users with access to selected organizations can see the group and its filter, but its member counts and member lists include only the organizations they can access, and they cannot change it.
+
+### What organization users see
+
+Users who sign in to one organization see a partner-wide group's name with an **All orgs** badge, and only the devices from their own organization. The filter rules are hidden from them; the card says the group is managed by their service provider. They cannot edit, delete or preview the group.
+
+### Finding and checking partner-wide groups
+
+On the **Device Groups** page, use the **All orgs** filter to show only partner-wide groups. Each partner-wide group shows:
+
+- when its membership was last evaluated;
+- how many organizations failed to evaluate, if any. Breeze retries those organizations automatically, and saving the group's filter starts a new evaluation;
+- a **Show members** list with an **Organization** column.
+
+Membership is updated when devices change and by a periodic background check. Breeze does not promise a fixed update time.
+
+### Example: monitor every device that runs a given application
+
+Say you want a monitor on every customer device that has PowerChute Business Edition installed.
+
+<Steps>
+
+1. On the **Device Groups** page, select **Create Group**, choose **All organizations**, and name the group, for example "PowerChute agents".
+
+2. Add the filter condition **Has Software Installed** `contains` `PowerChute Business Edition`, check the preview, and create the group.
+
+3. Open your partner-wide monitor (one created for **All organizations**) and select **Deploy monitor**.
+
+4. Choose **Create a policy for** → **a device group**, pick "PowerChute agents" under **All orgs (partner-wide)**, and attach.
+
+</Steps>
+
+Breeze creates a partner-owned configuration policy assigned to the group. When a device in any customer organization installs the application, it joins the group and gets the monitor; when the application is removed, the device leaves the group.
+
+To reuse the group for another partner-owned configuration policy, open the policy's **Assignments** tab and pick the group under **Device groups (all orgs)**.
+
 ## Creating a group
 
 <Steps>
 
 1. Choose a **name** (1--255 characters) and a **type** (`static` or `dynamic`).
 
-2. Specify the **organization** the group belongs to. Optionally scope it to a **site**.
+2. Specify the **organization** the group belongs to. Optionally scope it to a **site**. Partner administrators can instead choose **All organizations** to create a [partner-wide group](#partner-wide-groups).
 
 3. For dynamic groups, define **filter conditions** (see [Dynamic group rules](#dynamic-group-rules) below).
 

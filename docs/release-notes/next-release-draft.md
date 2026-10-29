@@ -162,3 +162,13 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 
 - Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
 - Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.
+
+
+### Device groups (partner-owned) — UI
+
+- Partner administrators with access to all organizations can create **All organizations** device groups from the Device Groups page and from the device list's "save as group" dialog. Partner-wide groups are dynamic only; the form hides static membership and the Organization and Device Group filter fields.
+- The Device Groups page lists organization and partner-wide groups together, with an **All orgs** badge, an owner filter, the last evaluation time, a count of organizations that failed to evaluate, and a member list with an Organization column.
+- Organization users see a partner-wide group's name, the **All orgs** badge and their own organization's devices; filter rules stay hidden and the group is read-only for them.
+- Partner-owned configuration policies can assign partner-wide groups from the Assignments tab. A partner-wide monitor's **Deploy monitor** dialog lists partner-wide groups next to organization groups.
+- The AI assistant's refusal to change a partner-wide group now says where a partner administrator can change it.
+- No migration, setting, or environment variable.
