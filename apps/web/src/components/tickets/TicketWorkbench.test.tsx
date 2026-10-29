@@ -3501,7 +3501,7 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
       loaded: false,
     });
   }
@@ -3586,7 +3586,7 @@ describe('TicketWorkbench — Onboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
       loaded: false,
     });
   }

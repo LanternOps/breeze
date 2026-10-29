@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
+import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled, cfAccessTrustEnabled, policyDecideEnabled, sweepActEnabled, toolSourcesEnabled, flowsEnabled, preAssignmentEnrollmentEnabled } from '../config/env';
 import { envFlag } from '../utils/envFlag';
 import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
@@ -33,6 +33,12 @@ configRoutes.get('/', (c) => {
       // Tool Catalog W3 (#5218) — platform kill switch for Flows.
       flows: flowsEnabled(),
       aiAgentsSweepAct: sweepActEnabled(),
+      // #9939 — BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED (default off). The
+      // approvals inbox reads this before prefetching `GET
+      // /ai/agents/graduation` for "Approve and always allow": while it is
+      // dark that affordance can never render, so the per-(org, kind) reads
+      // are pure waste (and mostly 404s for kinds an org does not run).
+      aiAgentsPolicyDecide: policyDecideEnabled(),
       // Caller verification (#6354): W04's UI reads this before showing any
       // verification surface. Exact-'true' contract via the real getter.
       callerVerification: isCallerVerificationEnabled(),
