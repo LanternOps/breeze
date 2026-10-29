@@ -3,7 +3,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { scriptParametersSchema } from '@breeze/shared';
-import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import {
   automations,
@@ -837,7 +837,11 @@ automationRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const conditions: SQL<unknown>[] = [isNull(automations.retiredAt)];
+    // Retired rows stay out of the list (W05c1), except a Job switched to a
+    // flow (#5221): it is listed read-only with its conversion so the Jobs page
+    // can link to the flow and offer Revert. `converted_to_flow_id` is set only
+    // by a switch and cleared by a revert (its CHECK pins the retired reason).
+    const conditions: SQL<unknown>[] = [or(isNull(automations.retiredAt), isNotNull(automations.convertedToFlowId))!];
 
     if (auth.scope === 'organization') {
       if (!auth.orgId) {

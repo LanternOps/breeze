@@ -648,6 +648,44 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(rv.ok, JSON.stringify(rv)).toBe(true);
   }, 30_000);
 
+  runDb('GET /automations lists a switched Job (read-only, with its flow) but never a monitor-retired one (#5221 C2)', async () => {
+    const t = await tenant();
+    const switched = await job(t, {});
+    const s = await converted(t, switched, {});
+    const sw = await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req()));
+    expect(sw.ok, JSON.stringify(sw)).toBe(true);
+    // A row retired for any other reason (the W05c1 monitor conversion) stays out of the list.
+    const monitorRetired = await job(t, {});
+    await system(() => db.update(automations)
+      .set({ enabled: false, retiredAt: new Date(), retiredReason: 'monitor_deleted' })
+      .where(eq(automations.id, monitorRetired.id)));
+
+    const token = await createAccessToken({
+      sub: t.switcher.id, email: t.switcher.email, roleId: t.orgRoleId, orgId: t.orgId, partnerId: t.partnerId,
+      scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const app = new Hono();
+    app.route('/automations', automationRoutes);
+    const list = async () => {
+      const res = await app.request('/automations?limit=100', { headers: { Authorization: `Bearer ${token}` } });
+      expect(res.status, await res.clone().text()).toBe(200);
+      const body = await res.json() as { data: Array<{ id: string; conversion: unknown }>; pagination?: { total: number } };
+      return body;
+    };
+    const before = await list();
+    const ids = before.data.map((r) => r.id);
+    expect(ids).toContain(switched.id);
+    expect(ids).not.toContain(monitorRetired.id);
+    expect(before.data.find((r) => r.id === switched.id)?.conversion).toEqual({ id: s.conversionId, state: 'switched', flowId: s.flowId });
+    expect(before.pagination?.total ?? before.data.length).toBe(before.data.length);
+
+    // After a revert the Job is an ordinary row again.
+    const rv = await t.asOrg(() => revertConversion(t.orgAuth(), s.conversionId));
+    expect(rv.ok, JSON.stringify(rv)).toBe(true);
+    const after = await list();
+    expect(after.data.find((r) => r.id === switched.id)?.conversion).toEqual({ id: s.conversionId, state: 'reverted', flowId: s.flowId });
+  }, 30_000);
+
   for (const method of ['PATCH', 'DELETE'] as const) {
     runDb(`a ${method} that read the Job before a switch committed does not land on the switched row`, async () => {
       const t = await tenant();
