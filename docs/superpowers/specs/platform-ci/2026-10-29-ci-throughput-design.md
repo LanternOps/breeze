@@ -81,29 +81,38 @@ area; agent jobs run on every app PR, including web-only ones.
 
 ### 0. Trusted policy boundary (prerequisite)
 
-Today CI checks out the PR's own `classify-pr-paths.sh` and runs it (`ci.yml:116, 177`). A
-PR can edit the classifier to emit `code=false` and skip the tests that would police that
-edit. Before selection gets thinner this closes:
+Test selection and the required gate are defined by files in the change being tested
+(workflow, classifier, `CI Success` aggregation). Before selection gets thinner, the
+authority that decides "this merge is verified enough" must not be editable by the change
+it judges:
 
-- The `changes` job runs the classifier and every policy file (floor list, suite map,
-  flaky ledger) **from the base revision**, never from the head.
-- A diff touching those files, `ci.yml` or `.github/scripts/**` forces the full suite, as
-  computed by the base-revision policy.
+- **The required gate runs from a workflow pinned outside the candidate change** — a
+  ruleset-required workflow sourced from a protected ref (or a dedicated GitHub App check),
+  validating the exact queue SHA. W1 confirms the mechanism is available on the org's plan
+  before anything else depends on it.
+- That gate computes selection with the classifier and every policy file (floor list,
+  reader map, flaky ledger) **from the base revision**, never from the head.
+- A diff touching any policy file, any workflow, or `.github/scripts/**` forces today's
+  full queue run.
 - The existing contract tests (`ci-area-gating.test.mjs`, `classify-pr-paths.test.mjs`) keep
   guarding the rules and run under that full suite.
 
-*(Found by the independent Codex review.)*
+*(Found by the independent Codex reviews.)*
 
 ### 1. Flake defense — nothing but a real failure ejects a PR
 
-1. **Retry failed test files once, inside the shard.** Run the shard; if files fail, re-run
-   only those files. Green on retry → job passes, the file is appended to the flaky ledger
-   (job summary + an artifact the shepherd collects). Red twice → job fails. Applies to API,
-   web and integration vitest shards and `go test` (re-run failed packages with `-run` on
-   the failed tests).
+1. **Retry the whole shard once.** Never re-run only the failed files: integration files
+   share sequential database state (`apps/api/src/__tests__/integration/setup.ts:197`
+   documents earlier tests' background queries) and web tests document order-dependent mock
+   leakage (`apps/web/vitest.config.ts:59`), so a file passing alone proves nothing. Green
+   on the full-shard retry → job passes and the failing tests go to the flaky ledger (job
+   summary + an artifact the shepherd collects). Red twice → job fails. A shard retry
+   (~10–17 min) is still far cheaper than an ejection plus up to 7 rebuilds. Same for
+   `go test` packages.
 2. **Flaky ledger + quarantine.** A committed list of known-flaky tests. Quarantined tests
-   still run and report, but don't fail the job. Entries carry an issue number and expire
-   (builder: e.g. 14 days) so quarantine can't become a graveyard.
+   still run and report, but don't fail the job — **unless the change touches the test file
+   or the source it covers**, in which case the test blocks as normal. Entries carry an
+   issue number and expire (builder: e.g. 14 days).
 3. **Known offenders fixed, not just retried:** Tauri apt fallback (#9847, 19 ejections),
    Go agent timing tests (17), the UTC-midnight brief test, PaymentMethodsPage timeout.
 4. **Advisories don't block the queue.** `security-audit` blocks on PRs that change the
@@ -138,26 +147,48 @@ Stays the main gate. Changes to the path rules:
 
 The queue answers one question: *did anything that merged after my PR run break me?*
 
-**Inputs** (computed in `changes` from the base-revision policy):
+**Provenance record (written by every PR run).** A PR run's green checks on the head SHA
+don't prove what was tested: `pull_request` runs test a synthetic merge commit, re-runs keep
+the original SHA, and a synchronize/force-push race can pair an old checkout with a newer
+PR-files response (`ci.yml:157`). So each PR run records, as an artifact/check output from
+the trusted gate:
 
-- `R` = the latest green `pull_request` CI run on the exact PR head SHA being merged. Its
-  test base (`B`) = the main commit that run merged onto.
-- `Δ` = files changed between `B` and the queue entry's parent (main tip + entries ahead),
-  excluding the PR's own files.
-- `P` = the PR's own changed files.
+- head SHA `H`, the merge commit actually checked out `M`, and its verified main parent `B`;
+- run id + attempt, the policy digest (hash of every base-revision policy file used);
+- the selection it computed and which suites completed green.
+
+A record counts only if every selected suite passed in that attempt and its file list was
+computed from `M` itself (not the live PR API). A re-run never refreshes `B` or the age:
+staleness is measured from the original attempt's `B`.
+
+**Inputs** (computed by the trusted gate from the base-revision policy):
+
+- `R` = the newest valid provenance record for the exact `H` being merged; `B` from it.
+- `Δ` = files changed between `B` and the queue entry's parent (main tip + entries ahead).
+  The tree diff already includes entries ahead, so queue groups and re-ordering need no
+  per-entry reconstruction; an ejection produces a new queue run that recomputes.
+- `P` = the PR's own changed files (`B`…`H` merge diff).
+- `O` = files in both `P` and `Δ` (same file edited on both sides).
 
 **Selection:**
 
-- Always: `changes`, typecheck, lint of `P`, the builds of areas in `P`.
-- The PR's own changed test files (`P` ∩ tests), across unit and integration.
-- For every area in `areas(Δ) ∩ areas(P)` (using the same reader map): that area's full
-  unit suite, plus the full integration suite if the overlap includes the API/DB side.
-- Protected floor: if `P` touches it, integration runs in full.
+- Always: typecheck, lint of `P`, the builds of areas in `P ∪ Δ`.
+- The PR's own changed test files (`P` ∩ tests), each routed to the vitest config/runner
+  that owns it (several contract suites live outside the main integration config,
+  `apps/api/vitest.integration.config.ts:366`).
+- For every area in `areas(Δ) ∩ areas(P)` — and every area of every file in `O` — that
+  area's full unit suite, plus the full integration suite if the overlap includes the
+  API/DB side.
+- **Path-read edges count as areas.** Tests that read docs, configs or other files by path
+  (e.g. `apps/web/src/components/devices/time/timeSyncDocs.test.ts:8` reads docs that the
+  classifier otherwise drops as docs-only, `classify-pr-paths.sh:166`) are declared in the
+  reader map, so a docs change in `Δ` selects them.
+- Protected floor: if `P ∪ Δ` touches it, integration runs in full.
 
-**Falls back to the PR's full selection** (today's PR-mode classification, applied to the
-queue ref) when: no green `R` on that exact SHA; `R` older than 12 h *or* more than ~40
-merges in `Δ` (builder may tune; the worst real case above was 9 h / 38 merges); `Δ` can't be
-computed; any policy file is in `P` or `Δ`. Any error → today's full queue behaviour.
+**Falls back to today's full queue run** (not the lighter PR-mode selection) when: no valid
+`R`; `R`'s `B` older than 12 h *or* more than ~40 merges in `Δ` (builder may tune; the worst
+real case above was 9 h / 38 merges); `Δ` can't be computed; the policy digest differs from
+the current base's; any policy file or workflow is in `P` or `Δ`. Any error → full.
 
 **Why this is safe by the evidence:** all five interactions from the week sit inside
 `areas(Δ) ∩ areas(P)`, and in all five the failing test is in `P`. They become selection
@@ -214,13 +245,16 @@ Targets are proposals, not claims.
 
 ## Waves (order matters: the safety pieces land before anything gets thinner)
 
-1. **W1 Trust boundary + flake defense:** base-revision policy; retry-once in shards;
-   flaky ledger/quarantine; advisories non-blocking in the queue + daily audit; Tauri apt
-   and Go timing fixes. *Cuts ejections immediately; no change to what's verified.*
-2. **W2 PR selection fixes:** install inputs as readers; protected floor file; `agent/**`
-   area both directions (full rigor).
-3. **W3 Thin queue run, shadow:** `R`/`B`/`Δ` computation, selection, the five fixtures,
-   shadow logging.
+1. **W1 Trust boundary + flake defense:** required gate pinned outside the candidate
+   change (confirm mechanism first); base-revision policy; whole-shard retry-once; flaky
+   ledger/quarantine with touch-exemption; advisories non-blocking in the queue + daily
+   audit; Tauri apt and Go timing fixes. *Cuts ejections immediately; no change to what's
+   verified.*
+2. **W2 PR selection fixes:** install inputs as readers; path-read edges in the reader map;
+   protected floor file; `agent/**` area both directions (full rigor).
+3. **W3 Thin queue run, shadow:** provenance records on PR runs; `R`/`B`/`Δ`/`O`
+   computation, selection, the five fixtures plus same-file-overlap and docs-path-read
+   fixtures, shadow logging.
 4. **W4 Thin queue run, enforced** after the shadow week.
 5. **W5 Shepherd v1:** auto re-enqueue, ledger upkeep, weekly metrics.
 6. **W6+ Refinements:** shard rebalancing, named integration suites, import-graph
@@ -228,7 +262,8 @@ Targets are proposals, not claims.
 
 ## Left to the builder
 
-- How `R` and `B` are found (checks API on the head SHA; the PR run's merge-commit parent).
+- Where provenance records live (artifact vs check-run output) and how the gate fetches them.
+- Ruleset-required workflow vs GitHub App for the pinned gate, once W1 confirms availability.
 - Staleness and merge-count thresholds, within the bounds above.
 - Ledger format, expiry length, retry mechanics per test runner.
 - How the shadow comparison is recorded.
@@ -237,5 +272,6 @@ Targets are proposals, not claims.
 
 None blocking. Calls made without him, for review:
 - Advisories stop blocking the queue (still block lockfile-changing PRs + daily issue).
-- Quarantined tests still run but don't block, with expiry.
+- Quarantined tests still run but don't block (unless the change touches them), with expiry.
+- Shard-level (not file-level) retry, accepting the extra minutes on a flaky shard.
 - 12 h / ~40 merges as the staleness fallback.
