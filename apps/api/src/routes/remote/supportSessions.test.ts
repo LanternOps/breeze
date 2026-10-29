@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 /**
@@ -145,6 +145,66 @@ beforeEach(() => {
   getOrCreateQuickSupportOrg.mockResolvedValue({ orgId: 'qs-org', siteId: 'qs-site' });
   getTrustedClientIp.mockReturnValue('203.0.113.7');
   process.env.PUBLIC_WEB_URL = 'https://us.2breeze.app';
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+// #10508: the landing URL is pasted into email/chat, so it must be absolute.
+// Stock compose sets only PUBLIC_APP_URL; PUBLIC_WEB_URL is an optional override.
+describe('POST /support-sessions landingUrl base', () => {
+  async function createLandingUrl(): Promise<{ landingUrl: string; raw: string }> {
+    insertReturns.push([SESSION_ROW]);
+    const res = await buildApp().request('/support-sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    return { landingUrl: body.landingUrl, raw: body.code.replace(/-/g, '') };
+  }
+
+  function stubBases(env: { PUBLIC_WEB_URL?: string; DASHBOARD_URL?: string; PUBLIC_APP_URL?: string }) {
+    vi.stubEnv('PUBLIC_WEB_URL', env.PUBLIC_WEB_URL ?? '');
+    vi.stubEnv('DASHBOARD_URL', env.DASHBOARD_URL ?? '');
+    vi.stubEnv('PUBLIC_APP_URL', env.PUBLIC_APP_URL ?? '');
+  }
+
+  it('builds an absolute link from PUBLIC_APP_URL when that is the only base set (stock compose)', async () => {
+    stubBases({ PUBLIC_APP_URL: 'https://rmm.example.com' });
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`https://rmm.example.com/quick?code=${raw}`);
+  });
+
+  it('prefers DASHBOARD_URL over PUBLIC_APP_URL, like the other dashboard links', async () => {
+    stubBases({ DASHBOARD_URL: 'https://dash.example.com', PUBLIC_APP_URL: 'https://rmm.example.com' });
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`https://dash.example.com/quick?code=${raw}`);
+  });
+
+  it('honours an explicit PUBLIC_WEB_URL override first', async () => {
+    stubBases({
+      PUBLIC_WEB_URL: 'https://support.example.com',
+      DASHBOARD_URL: 'https://dash.example.com',
+      PUBLIC_APP_URL: 'https://rmm.example.com',
+    });
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`https://support.example.com/quick?code=${raw}`);
+  });
+
+  it('strips trailing slashes from the base so the path has no double slash', async () => {
+    stubBases({ PUBLIC_APP_URL: 'https://rmm.example.com//' });
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`https://rmm.example.com/quick?code=${raw}`);
+  });
+
+  it('falls back to the relative path when no base is configured (the web client resolves it)', async () => {
+    stubBases({});
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`/quick?code=${raw}`);
+  });
 });
 
 describe('POST /support-sessions', () => {

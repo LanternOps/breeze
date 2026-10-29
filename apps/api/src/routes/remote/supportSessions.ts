@@ -128,7 +128,16 @@ supportSessionRoutes.post(
       getTrustedClientIp(c, 'unknown'),
     );
 
-    const webBase = process.env.PUBLIC_WEB_URL ?? '';
+    // The link is pasted into email/chat, so it must be absolute (#10508).
+    // Stock compose sets only PUBLIC_APP_URL; PUBLIC_WEB_URL stays an explicit
+    // override. No localhost default: with nothing configured the relative path
+    // is returned and the web client resolves it against its own origin.
+    const webBase = (
+      process.env.PUBLIC_WEB_URL
+      || process.env.DASHBOARD_URL
+      || process.env.PUBLIC_APP_URL
+      || ''
+    ).trim().replace(/\/+$/, '');
 
     return c.json({
       id: session.id,
