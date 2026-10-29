@@ -5047,6 +5047,18 @@ describe('auth routes', () => {
 				operation: 'delete_passkey',
 				resourceDigest: 'sha256:passkey-credential-row',
 			}));
+			expect(mintStepUpGrant.mock.invocationCallOrder[0]).toBeLessThan(consumeRecoveryCode.mock.invocationCallOrder[0]);
+		});
+
+		it('does not consume a recovery code when the deletion grant cannot be stored', async () => {
+			const passkeyId = '10000000-0000-4000-8000-000000000009';
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+			});
+			expect(res.status).toBe(503);
+			expect(consumeRecoveryCode).not.toHaveBeenCalled();
 		});
 
 		it('rejects recovery-code step-up for operations other than passkey deletion', async () => {
@@ -5060,8 +5072,10 @@ describe('auth routes', () => {
 			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
-		it('does not mint a passkey deletion grant for a spent or invalid recovery code', async () => {
+		it('cleans up the grant when a recovery code is spent or invalid', async () => {
+			vi.mocked(mintStepUpGrant).mockResolvedValueOnce('grant-passkey-delete');
 			vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
+			vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 			const res = await app.request('/auth/mfa/step-up', {
 				method: 'POST',
 				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
@@ -5074,7 +5088,11 @@ describe('auth routes', () => {
 			});
 			expect(res.status).toBe(400);
 			expect(await res.json()).toMatchObject({ code: 'mfa_proof_invalid' });
-			expect(mintStepUpGrant).not.toHaveBeenCalled();
+			expect(mintStepUpGrant).toHaveBeenCalledTimes(1);
+			expect(consumeStepUpGrant).toHaveBeenCalledWith('grant-passkey-delete', expect.objectContaining({
+				operation: 'delete_passkey',
+				resourceDigest: 'sha256:passkey-credential-row',
+			}));
 		});
 
 		it('rejects delete_passkey before factor verification when passkeyId is absent', async () => {
