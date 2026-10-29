@@ -115,7 +115,7 @@ The `backup_provider_devices` model is device-shaped. Cove fits it naturally bec
 |---|---|
 | `vendorDeviceId` | `${vendorCustomerId}:${workload}`, for example `26561-14:m365_mail` |
 | `name` | for example "Microsoft 365 mail (412 mailboxes)" |
-| `accountType` | `m365` or `gws` (**new value `gws`**; the column is varchar, so this is a TS union widening plus the shared type, with no migration) |
+| `accountType` | `m365` or `gws` (**new value `gws`**: the column is varchar, but a CHECK constraint from #6008 limits its values, so W01 ships a one-line migration that widens the CHECK) |
 | `dataSources` | `[workload]`: one of `m365_mail`, `m365_onedrive`, `m365_sharepoint`, `m365_teams`, `gws_mail`, `gws_drive`, `gws_shared_drive` |
 | `status` | the worst item status under `EXTERNAL_BACKUP_STATUS_SEVERITY` |
 | `lastSuccessAt` | the **oldest** `last_backup` among active, non-deactivated items. The workload is only as fresh as its stalest mailbox. |
@@ -174,7 +174,7 @@ All of these already exist for Cove. The work is to make sure SaaS rows render c
 
 ### Tenancy
 
-No new tables. `backup_provider_*` already has RLS, cascade and export registration from #6008. `accountType` gains a value and `dataSources` gains strings, so there is **no migration** unless review moves item detail out of `vendor_raw` (see Open decisions).
+No new tables. `backup_provider_*` already has RLS, cascade and export registration from #6008. `accountType` gains a value and `dataSources` gains strings, so the only migration is the widened `account_type` CHECK constraint.
 
 ## Testing
 
