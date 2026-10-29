@@ -1333,6 +1333,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     orgId: auth.orgId ?? null,
     partnerId: auth.partnerId ?? null,
   }, { failClosed: true, failClosedMethods: true });
+  // Recovery is exempt from the allowed-methods policy on purpose: the schema
+  // restricts it to `delete_passkey`, and a user whose passkey is gone needs it
+  // even when policy no longer allows their other methods.
   if (body.method !== 'recovery' && !policy.allowedMethods[body.method]) {
     writeAuthAudit(c, {
       orgId: auth.orgId ?? undefined,

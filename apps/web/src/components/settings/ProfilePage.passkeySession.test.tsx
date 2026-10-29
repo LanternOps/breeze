@@ -324,4 +324,66 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       undefined,
     );
   });
+
+  describe('against an API response without mfaState (newer web, older API)', () => {
+    it('still adopts the replacement session and shows the first-passkey recovery codes after register/verify', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+        .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+        .mockResolvedValueOnce(makeJsonResponse({
+          success: true,
+          passkey: { id: 'credential-2', name: 'iPhone' },
+          recoveryCodes: ['ABCD-1234', 'EFGH-5678'],
+          tokens: REPLACEMENT,
+        }))
+        .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'iPhone', lastUsedAt: null }] }));
+      createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+
+      render(<ProfilePage initialUser={USER} />);
+      await addPasskey();
+
+      expect(await screen.findByText('ABCD-1234')).toBeTruthy();
+      expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration.current, REPLACEMENT);
+      expect(commitMfaStateIfCurrentMock).not.toHaveBeenCalled();
+      expect(screen.queryByText(/invalid_union|discriminator/i)).toBeNull();
+    });
+
+    it('still adopts the replacement session and reports the deletion', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({
+          passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
+        }))
+        .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
+        .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: REPLACEMENT }));
+
+      render(<ProfilePage initialUser={USER} />);
+      await screen.findByText('MacBook Touch ID');
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+        target: { value: 'current-password' },
+      });
+      fireEvent.change(screen.getByLabelText(/Current MFA code/i), { target: { value: '123456' } });
+      fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+      expect(await screen.findByText('Passkey deleted')).toBeTruthy();
+      expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration.current, REPLACEMENT);
+      expect(commitMfaStateIfCurrentMock).not.toHaveBeenCalled();
+    });
+
+    it('asks the user to sign in again when neither mfaState nor tokens came back', async () => {
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+        .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+        .mockResolvedValueOnce(makeJsonResponse({ success: true, passkey: { id: 'credential-2', name: 'iPhone' } }))
+        .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'iPhone', lastUsedAt: null }] }));
+      createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+
+      render(<ProfilePage initialUser={USER} />);
+      await addPasskey();
+
+      expect(await screen.findByText('Passkey added. Sign in again to continue.')).toBeTruthy();
+      expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
+      expect(commitMfaStateIfCurrentMock).not.toHaveBeenCalled();
+    });
+  });
 });

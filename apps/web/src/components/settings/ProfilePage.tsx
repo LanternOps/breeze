@@ -4,6 +4,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
+import { isMfaRecoveryCode } from '@breeze/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
@@ -17,7 +18,7 @@ import CharacterKeyShortcutsSettings from './CharacterKeyShortcutsSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
 import { mintStepUpGrant, StepUpMintError } from '../../lib/mfaStepUp';
 import { createPasskeyCredential, fetchWithAuth, getPasskeyCredential, useAuthStore } from '../../stores/auth';
-import type { MfaMethod, PasskeyAuthenticationOptions, PasskeyRegistrationOptions, UserPreferences } from '../../stores/auth';
+import type { MfaMethod, PasskeyAuthenticationOptions, PasskeyRegistrationOptions, Tokens, UserPreferences } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
@@ -50,6 +51,24 @@ const passkeyMfaStateSchema = z.discriminatedUnion('mfaEnabled', [
   z.object({ mfaEnabled: z.literal(true), mfaMethod: z.enum(['totp', 'sms', 'passkey']) }),
   z.object({ mfaEnabled: z.literal(false), mfaMethod: z.null() }),
 ]);
+
+// The passkey change is already committed server-side when this runs, so a
+// response without `mfaState` (an older API during a deploy) must not throw.
+// The replacement session is still adopted. Only the badge update is skipped.
+function adoptPasskeyMutationSession(generation: number, body: { tokens?: Tokens }) {
+  const parsed = passkeyMfaStateSchema.safeParse(body);
+  const mfaState = parsed.success ? parsed.data : null;
+  const store = useAuthStore.getState();
+  let adopted: boolean;
+  if (mfaState) {
+    adopted = store.commitMfaStateIfCurrent(generation, mfaState, body.tokens);
+  } else if (body.tokens) {
+    adopted = store.commitReissuedSessionIfCurrent(generation, body.tokens);
+  } else {
+    adopted = store.sessionGeneration === generation;
+  }
+  return { adopted, mfaState };
+}
 
 type ProfileFormValues = z.infer<ReturnType<typeof createProfileSchema>>;
 
@@ -1287,16 +1306,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // bounced to /login?reason=session-expired by the very action they just
       // took. A refused commit (a logout raced the request) is not an error —
       // the passkey is already registered, so success still has to be shown.
-      const mfaState = passkeyMfaStateSchema.parse(verifyData);
-      const mfaStateCommitted = useAuthStore.getState().commitMfaStateIfCurrent(
-        generation,
-        mfaState,
-        verifyData.tokens,
-      );
+      const { adopted: mfaStateCommitted, mfaState } = adoptPasskeyMutationSession(generation, verifyData);
       const sessionStillCurrent = useAuthStore.getState().sessionGeneration === generation;
       const registerRequiresReauth = sessionStillCurrent
         && !(verifyData.tokens?.accessToken && mfaStateCommitted);
-      if (mfaStateCommitted) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
+      if (mfaStateCommitted && mfaState) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
       setPasskeyDialog(mfaStateCommitted && Array.isArray(verifyData.recoveryCodes) && verifyData.recoveryCodes.length ? { kind: 'recovery', codes: verifyData.recoveryCodes } : null);
       setPasskeyName('');
       setPasskeyPassword('');
@@ -1370,7 +1384,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
     const method = deletePasskeyMethod;
     const factorCode = passkeyFactorCode.trim();
-    const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(factorCode);
+    const recoveryCode = isMfaRecoveryCode(factorCode);
     // Captured before the request so a logout that races it is detectable.
     const generation = useAuthStore.getState().sessionGeneration;
     const retryGrant = passkeyDeleteRetryGrant?.passkeyId === passkeyId
@@ -1461,12 +1475,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       forgetSpentManageGrant(passkeyPassword);
       // #5038: same contract as registration above — deleting a factor rotates
       // the caller's session rather than evicting it.
-      const mfaState = passkeyMfaStateSchema.parse(data);
-      const mfaStateCommitted = useAuthStore.getState().commitMfaStateIfCurrent(
-        generation,
-        mfaState,
-        data.tokens,
-      );
+      const { adopted: mfaStateCommitted, mfaState } = adoptPasskeyMutationSession(generation, data);
       const sessionStillCurrent = useAuthStore.getState().sessionGeneration === generation;
       const deleteRequiresReauth = sessionStillCurrent
         && !(data.tokens?.accessToken && mfaStateCommitted);
@@ -1474,7 +1483,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       if (mfaStateCommitted) setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
       setPasskeyFactorCode('');
-      if (mfaStateCommitted) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
+      if (mfaStateCommitted && mfaState) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
       setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteRequiresReauth));
     } catch (error) {
       if (deleteRequestPending && stepUpGrantId) {
@@ -2009,7 +2018,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           confirmLabel={t('profilePage.delete')}
           confirmTestId="passkey-delete-confirm"
           isLoading={mutatingPasskeyId === passkeyDialog.passkey.id}
-          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant) || ((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && !passkeyFactorCode.trim()) || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery && !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(passkeyFactorCode.trim()))}
+          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant) || ((deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms') && !passkeyFactorCode.trim()) || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery && !isMfaRecoveryCode(passkeyFactorCode))}
         >
           <div className="space-y-4">
             {!isPasswordless && (

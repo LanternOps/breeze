@@ -1,6 +1,6 @@
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
+import { isMfaRecoveryCode, orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -51,10 +51,9 @@ export const registerPartnerSchema = z.object({
 // TOTP/SMS codes are 6 digits; recovery codes are `XXXX-XXXX` (8 [A-Z0-9]
 // with a hyphen). Accept either shape here; the handler routes on `method`.
 const totpOrSmsCode = /^\d{6}$/;
-const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i;
 export const mfaVerifySchema = z.object({
   code: z.string().refine(
-    (v) => totpOrSmsCode.test(v.trim()) || recoveryCode.test(v.trim()),
+    (v) => totpOrSmsCode.test(v.trim()) || isMfaRecoveryCode(v),
     { message: 'Invalid code format' },
   ),
   tempToken: z.string().optional(),
@@ -368,7 +367,7 @@ export const mfaStepUpSchema = z.discriminatedUnion('method', [
   }),
   z.object({
     method: z.literal('recovery'),
-    code: z.string().refine((v) => recoveryCode.test(v.trim()), { message: 'Invalid code' }),
+    code: z.string().refine(isMfaRecoveryCode, { message: 'Invalid code' }),
     operation: z.literal('delete_passkey'),
     passkeyId: z.string().uuid(),
     resource: z.never().optional(),

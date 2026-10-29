@@ -5064,7 +5064,11 @@ describe('auth routes', () => {
 				operation: 'delete_passkey',
 				resourceDigest: 'sha256:passkey-credential-row',
 			}));
-			expect(mintStepUpGrant.mock.invocationCallOrder[0]).toBeLessThan(consumeRecoveryCode.mock.invocationCallOrder[0]);
+			const [mintOrder] = vi.mocked(mintStepUpGrant).mock.invocationCallOrder;
+			const [consumeOrder] = vi.mocked(consumeRecoveryCode).mock.invocationCallOrder;
+			expect(mintOrder).toBeDefined();
+			expect(consumeOrder).toBeDefined();
+			expect(mintOrder!).toBeLessThan(consumeOrder!);
 		});
 
 		it('does not consume a recovery code when the deletion grant cannot be stored', async () => {
