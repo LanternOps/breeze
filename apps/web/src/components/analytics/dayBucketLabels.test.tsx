@@ -17,7 +17,9 @@ const shortDate = (y: number, m: number, d: number) =>
 
 const originalTz = process.env.TZ;
 afterEach(() => {
-  process.env.TZ = originalTz;
+  // Assigning `undefined` would set the literal string "undefined" (an invalid zone → UTC).
+  if (originalTz === undefined) delete process.env.TZ;
+  else process.env.TZ = originalTz;
 });
 
 const dayBucketResponse = (timestamps: string[]): Response =>
@@ -35,7 +37,7 @@ const dayBucketResponse = (timestamps: string[]): Response =>
     })
   }) as unknown as Response;
 
-async function runQuery(timeRange: '24h' | '7d'): Promise<QueryResult> {
+async function runQuery(timeRange: '1h' | '24h' | '7d' | '30d'): Promise<QueryResult> {
   const onQueryResult = vi.fn<(result: QueryResult) => void>();
   render(
     <QueryBuilder
@@ -55,6 +57,11 @@ describe.each(ZONES)('Query Builder day buckets keep their calendar date (TZ=%s,
     fetchMock.mockReset();
   });
 
+  it('the zone switch took effect (guards against a vacuous pass under UTC)', () => {
+    const offset = new Date(2026, 9, 22).getTimezoneOffset();
+    expect(offset).toBe(zone === 'America/Los_Angeles' ? 420 : -120);
+  });
+
   it('formatAxisLabel renders a bare YYYY-MM-DD as that calendar day', () => {
     expect(formatAxisLabel('2026-10-22')).toBe(shortDate(2026, 9, 22));
     expect(formatAxisLabel('2026-01-01')).toBe(shortDate(2026, 0, 1));
@@ -67,11 +74,11 @@ describe.each(ZONES)('Query Builder day buckets keep their calendar date (TZ=%s,
     );
   });
 
-  it('a day-interval query hands the chart date-only buckets that label as the bucket date', async () => {
+  it.each(['7d', '30d'] as const)('a %s query hands the chart date-only day buckets that label as the bucket date', async range => {
     fetchMock.mockResolvedValueOnce(
       dayBucketResponse(['2026-10-22T00:00:00.000Z', '2026-10-23T00:00:00.000Z', '2026-10-25T00:00:00Z'])
     );
-    const result = await runQuery('7d');
+    const result = await runQuery(range);
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.interval).toBe('day');
@@ -86,10 +93,13 @@ describe.each(ZONES)('Query Builder day buckets keep their calendar date (TZ=%s,
     ]);
   });
 
-  it('an hour-interval query keeps instant timestamps', async () => {
+  it.each([
+    ['24h', 'hour'],
+    ['1h', 'minute']
+  ] as const)('a %s query (%s interval) keeps instant timestamps', async (range, interval) => {
     fetchMock.mockResolvedValueOnce(dayBucketResponse(['2026-10-22T07:00:00.000Z']));
-    const result = await runQuery('24h');
-    expect(result.interval).toBe('hour');
+    const result = await runQuery(range);
+    expect(result.interval).toBe(interval);
     const data = (result.series[0] as { data: Array<{ timestamp: string }> }).data;
     expect(data[0].timestamp).toBe('2026-10-22T07:00:00.000Z');
   });

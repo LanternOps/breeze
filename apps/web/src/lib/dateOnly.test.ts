@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { formatDateOnly, parseDateOnly, utcDateOnly } from './dateOnly';
 
 describe('dateOnly (TZ=America/Denver)', () => {
@@ -15,6 +15,16 @@ describe('dateOnly (TZ=America/Denver)', () => {
 });
 
 describe('utcDateOnly (#10077)', () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  it('takes the UTC date of an offset instant', () => {
+    expect(utcDateOnly('2026-10-22T23:30:00-05:00')).toBe('2026-10-23');
+  });
+
   it('maps a UTC-midnight bucket instant to its UTC calendar date in any zone', () => {
     for (const zone of ['America/Los_Angeles', 'Europe/Berlin']) {
       process.env.TZ = zone;
