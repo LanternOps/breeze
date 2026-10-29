@@ -367,12 +367,12 @@ function mockInsertReturning(row: Record<string, unknown>) {
   return { values, returning };
 }
 
-/** #10411: the one `rejected` ledger row a refused call leaves, and no other insert. */
+/** #10411: the one `refused` ledger row a refused call leaves, and no other insert. */
 function expectOnlyTheRefusalRow(errorMessage: string) {
   expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
   const values = (vi.mocked(db.insert).mock.results[0]?.value as { values: ReturnType<typeof vi.fn> }).values;
   expect(values).toHaveBeenCalledTimes(1);
-  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage }));
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage }));
 }
 
 function makeActiveSession(overrides: Record<string, unknown> = {}) {

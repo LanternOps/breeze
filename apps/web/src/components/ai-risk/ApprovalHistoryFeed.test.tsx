@@ -100,3 +100,23 @@ describe('ApprovalHistoryFeed temp-password reveal', () => {
     expect(screen.queryByRole('button', { name: /reveal/i })).toBeNull();
   });
 });
+
+describe('ApprovalHistoryFeed platform refusals (#10411)', () => {
+  it('never badges a refused call as pending, and keeps it out of the Rejected filter', () => {
+    render(
+      <ApprovalHistoryFeed
+        executions={[
+          resetExecution({ id: 'exec-refused', toolName: 'run_script', status: 'refused', approvedBy: null, approvedAt: null, tempPasswordState: null, intentId: null }),
+          resetExecution({ id: 'exec-rejected', toolName: 'execute_command', status: 'rejected', approvedBy: null, approvedAt: null, tempPasswordState: null, intentId: null }),
+        ]}
+        loading={false}
+      />,
+    );
+    const refusedBadge = screen.getByText('refused');
+    expect(refusedBadge.className).not.toContain('amber');
+
+    fireEvent.click(screen.getByRole('button', { name: /^rejected$/i }));
+    expect(screen.queryByText(/run script/i)).toBeNull();
+    expect(screen.getByText(/execute command/i)).toBeTruthy();
+  });
+});

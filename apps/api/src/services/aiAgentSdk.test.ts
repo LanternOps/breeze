@@ -344,7 +344,7 @@ function mockInsertReturning(row: Record<string, unknown>) {
 
 /**
  * #10411: a call refused before any approval/audit record exists still leaves
- * exactly ONE ledger row — the pre hook's `rejected` row — and nothing else.
+ * exactly ONE ledger row — the pre hook's `refused` row — and nothing else.
  */
 function expectOnlyTheRefusalRow() {
   expect(vi.mocked(db.insert)).toHaveBeenCalledTimes(1);
@@ -352,7 +352,7 @@ function expectOnlyTheRefusalRow() {
   const values = (vi.mocked(db.insert).mock.results[0]?.value as { values?: ReturnType<typeof vi.fn> } | undefined)?.values;
   expect(values?.mock, 'db.insert must be mocked with a values() spy for this assertion').toBeDefined();
   expect(values).toHaveBeenCalledTimes(1);
-  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: expect.any(String) }));
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: expect.any(String) }));
 }
 
 function makeActiveSession(overrides: Record<string, unknown> = {}) {
@@ -5424,7 +5424,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     return updatedRows.filter((r) => r.table === schema.aiToolExecutions).map((r) => r.values);
   }
 
-  it('a guardrail-blocked Tier 3 call writes one rejected row with the reason, and its result echo writes nothing more', async () => {
+  it('a guardrail-blocked Tier 3 call writes one refused row with the reason, and its result echo writes nothing more', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: false, tier: 3, requiresApproval: false, reason: 'Blocked: destructive command',
     } as any);
@@ -5439,7 +5439,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(rows[0]).toMatchObject({
       sessionId: 'session-1',
       toolName: 'execute_command',
-      status: 'rejected',
+      status: 'refused',
       errorMessage: 'Blocked: destructive command',
       durationMs: 0,
     });
@@ -5456,7 +5456,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(await ledgerUpdates()).toHaveLength(0);
   });
 
-  it('a Tier 1 call refused by the rate limit gets ONE rejected row, not a second failed row from postToolUse', async () => {
+  it('a Tier 1 call refused by the rate limit gets ONE refused row, not a second failed row from postToolUse', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 1, requiresApproval: false } as any);
     vi.mocked(checkToolRateLimit).mockResolvedValue('Rate limit exceeded for query_devices');
     const session = makeActiveSession();
@@ -5469,7 +5469,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
 
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 'rejected', errorMessage: 'Rate limit exceeded for query_devices' });
+    expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Rate limit exceeded for query_devices' });
   });
 
   it('pairs a refusal with its echo by tool name and reason when the SDK sent no tool_use id', async () => {
@@ -5482,7 +5482,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
 
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 'rejected' });
+    expect(rows[0]).toMatchObject({ status: 'refused' });
   });
 
   it('a refusal echo never swallows a same-name ALLOWED call\'s own row', async () => {
@@ -5500,7 +5500,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
 
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.status).sort()).toEqual(['failed', 'rejected']);
+    expect(rows.map((r) => r.status).sort()).toEqual(['failed', 'refused']);
   });
 
   it('a failed refusal-row write is logged and never changes the verdict', async () => {
@@ -5518,7 +5518,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     errorSpy.mockRestore();
   });
 
-  it('a Tier 3 call whose intent cannot be created closes its own pending row as rejected — no second row', async () => {
+  it('a Tier 3 call whose intent cannot be created closes its own pending row as refused — no second row', async () => {
     const schema = await import('../db/schema');
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true, tier: 3, requiresApproval: true, description: 'Execute command',
@@ -5540,7 +5540,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: 'pending' });
     expect(await ledgerUpdates()).toContainEqual(expect.objectContaining({
-      status: 'rejected', errorMessage: 'Failed to create approval record',
+      status: 'refused', errorMessage: 'Failed to create approval record',
     }));
     expect(updatedRows.every((r) => r.table === schema.aiToolExecutions)).toBe(true);
   });
@@ -5557,7 +5557,7 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
     expect(rows[0]!.errorMessage).not.toContain('hunter2');
   });
 
-  it('a pre-hook that throws still leaves a rejected row, and the throw propagates', async () => {
+  it('a pre-hook that throws still leaves a refused row, and the throw propagates', async () => {
     vi.mocked(checkGuardrails).mockImplementation(() => { throw new Error('classifier exploded'); });
     const session = makeActiveSession();
 
@@ -5566,6 +5566,6 @@ describe('#10411: a pre-hook refusal leaves exactly one ledger row', () => {
 
     const rows = await ledgerInserts();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 'rejected', errorMessage: 'Guardrails check failed' });
+    expect(rows[0]).toMatchObject({ status: 'refused', errorMessage: 'Guardrails check failed' });
   });
 });

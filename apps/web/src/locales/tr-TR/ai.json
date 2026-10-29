@@ -346,6 +346,7 @@
       "pending": "beklemede",
       "approved": "onaylandı",
       "rejected": "reddedildi",
+      "refused": "engellendi",
       "completed": "tamamlandı",
       "failed": "başarısız oldu"
     },
@@ -388,6 +389,7 @@
     "requestedAt": "talep edildi {{time}}",
     "approvedAt": "onaylandı {{time}}",
     "rejectedAt": "reddedildi {{time}}",
+    "refusedAt": "engellendi {{time}}",
     "appliedAt": "uygulandı {{time}}",
     "flagDialog": {
       "title": "Oturumu işaretle",

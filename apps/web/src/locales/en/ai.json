@@ -346,6 +346,7 @@
       "pending": "pending",
       "approved": "approved",
       "rejected": "rejected",
+      "refused": "refused",
       "completed": "completed",
       "failed": "failed"
     },
@@ -388,6 +389,7 @@
     "requestedAt": "requested {{time}}",
     "approvedAt": "approved {{time}}",
     "rejectedAt": "rejected {{time}}",
+    "refusedAt": "refused {{time}}",
     "appliedAt": "applied {{time}}",
     "flagDialog": {
       "title": "Flag session",

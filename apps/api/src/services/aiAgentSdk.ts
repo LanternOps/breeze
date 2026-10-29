@@ -1077,7 +1077,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
 /**
  * #10411: a `pending` approval row whose call was refused before any intent
- * or approval could decide it is closed `rejected` with the refusal text, so
+ * or approval could decide it is closed `refused` with the refusal text, so
  * it does not sit in `pending` with no reason. Guarded on `pending` (a racing
  * writer that already terminal-marked it wins). Best-effort.
  */
@@ -1088,7 +1088,7 @@ async function closePendingLedgerRowAsRefused(session: ActiveSession, executionI
       () =>
         db
           .update(aiToolExecutions)
-          .set({ status: 'rejected', errorMessage: refusalLedgerText({ error: reason }), completedAt: new Date() })
+          .set({ status: 'refused', errorMessage: refusalLedgerText({ error: reason }), completedAt: new Date() })
           .where(and(eq(aiToolExecutions.id, executionId), eq(aiToolExecutions.status, 'pending'))),
     );
   } catch (err) {

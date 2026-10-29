@@ -69,7 +69,8 @@
           "executing": "Yürütülüyor",
           "completed": "Tamamlandı",
           "failed": "Başarısız",
-          "rejected": "Reddedildi"
+          "rejected": "Reddedildi",
+          "refused": "Engellendi"
         }
       },
       "intents": {

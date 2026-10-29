@@ -94,6 +94,7 @@
     "failed": "Fallido",
     "noRejectionsOrDenialsFound": "No se encontraron rechazos ni negaciones.",
     "rejected": "Rechazado",
+    "refused": "Bloqueado",
     "rejectionsAndDenials": "Rechazos y negaciones",
     "search": "Buscar...",
     "session": "Sesión",

@@ -124,6 +124,8 @@ function ToolStatusBadge({ status }: { status: string }) {
       "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
     failed:
       "border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400",
+    refused:
+      "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-400",
   };
   return (
     <span
@@ -676,7 +678,7 @@ export default function SessionsTab() {
                             {execution.approvedAt &&
                               ` · ${t("sessionsTab.approvedAt", { time: formatTime(execution.approvedAt) })}`}
                             {execution.completedAt &&
-                              ` · ${execution.status === "rejected" ? t("sessionsTab.rejectedAt", { time: formatTime(execution.completedAt) }) : t("sessionsTab.appliedAt", { time: formatTime(execution.completedAt) })}`}
+                              ` · ${execution.status === "rejected" ? t("sessionsTab.rejectedAt", { time: formatTime(execution.completedAt) }) : execution.status === "refused" ? t("sessionsTab.refusedAt", { time: formatTime(execution.completedAt) }) : t("sessionsTab.appliedAt", { time: formatTime(execution.completedAt) })}`}
                             {execution.durationMs != null && ` · ${execution.durationMs}ms`}
                           </p>
                           {execution.errorMessage && (

@@ -418,9 +418,9 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
     const session = makeActiveSession({ topologyInvestigation: undefined, topologyTurnSealed: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
     expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' })).toEqual({ allowed: false, error: 'This topology investigation has ended.' });
     expect(checkGuardrails).not.toHaveBeenCalled();
-    // #10411: the refusal leaves its one `rejected` ledger row (no output).
+    // #10411: the refusal leaves its one `refused` ledger row (no output).
     expect(values).toHaveBeenCalledTimes(1);
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected', errorMessage: 'This topology investigation has ended.' }));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'refused', errorMessage: 'This topology investigation has ended.' }));
     expect(values.mock.calls[0]![0]).not.toHaveProperty('toolOutput');
     await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'tool-use-1');
     expect(values).toHaveBeenCalledTimes(1);

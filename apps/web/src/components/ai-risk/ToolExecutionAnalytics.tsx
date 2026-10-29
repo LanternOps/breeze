@@ -117,6 +117,12 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                     fill="#f59e0b"
                     name="Rejected"
                   />
+                  <Bar
+                    dataKey="refused"
+                    stackId="a"
+                    fill="#94a3b8"
+                    name="Refused"
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>

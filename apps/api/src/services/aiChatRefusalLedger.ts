@@ -10,7 +10,7 @@
  * NO row, and a reviewer counting calls against rows came up short with the
  * reason surviving only in the model's prose.
  *
- * The pre hook now writes the row itself: status `rejected`, the refusal text
+ * The pre hook now writes the row itself: status `refused`, the refusal text
  * in `error_message`, `tool_input` redacted exactly like every other row,
  * `tool_output` never written. It then leaves a marker here so the echo's
  * postToolUse writes nothing more (and never UPDATEs a concurrently
@@ -20,6 +20,10 @@
  * Only a call the SDK sent without one falls back to tool name + refusal
  * text, which can only mis-pair two same-name refusals with the same text —
  * both are refusals with identical rows, so the ledger stays exact.
+ *
+ * `refused`, not `rejected`: `rejected` is the approval lifecycle's own
+ * outcome (a human denied it, it expired, the wait ended), and the analytics
+ * that count it must not start counting platform refusals.
  */
 import { db, withDbAccessContext } from '../db';
 import { aiToolExecutions } from '../db/schema';
@@ -81,7 +85,7 @@ export async function recordPreHookRefusal(
           sessionId: session.breezeSessionId,
           toolName,
           toolInput: redactSensitiveToolInput(input),
-          status: 'rejected',
+          status: 'refused',
           errorMessage,
           durationMs: 0,
           completedAt: new Date(),
