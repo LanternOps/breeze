@@ -93,6 +93,12 @@ export default function AuditFilters({ initialFilters, onApply, onClear }: Audit
   }, [userSearch, users]);
 
   const selectedUser = users.find(user => user.id === selectedUserId);
+  // The applied user's email, while the reopened panel's user is still the one
+  // that was applied. Covers the users list not having loaded (or failing), so
+  // an applied user filter is neither hidden nor dropped on re-apply (#9941).
+  const appliedUserEmail =
+    selectedUserId && selectedUserId === initialFilters?.userId ? initialFilters.userEmail : undefined;
+  const selectedUserLabel = selectedUser?.name || selectedUser?.email || appliedUserEmail;
 
   const toggleSelection = (value: string, list: string[], setter: (next: string[]) => void) => {
     if (list.includes(value)) {
@@ -108,11 +114,7 @@ export default function AuditFilters({ initialFilters, onApply, onClear }: Audit
       startDate: datePreset === 'custom' ? customStart : undefined,
       endDate: datePreset === 'custom' ? customEnd : undefined,
       userId: selectedUserId,
-      // Keep the applied user's email if the user list has not loaded (or failed)
-      // since the panel reopened, rather than silently dropping it.
-      userEmail:
-        selectedUser?.email ??
-        (selectedUserId && selectedUserId === initialFilters?.userId ? initialFilters.userEmail : undefined),
+      userEmail: selectedUser?.email ?? appliedUserEmail,
       actions: selectedActions,
       resources: selectedResources,
       search: detailsSearch
@@ -242,10 +244,13 @@ export default function AuditFilters({ initialFilters, onApply, onClear }: Audit
               </div>
             )}
           </div>
-          {selectedUser && (
-            <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+          {selectedUserLabel && (
+            <div
+              data-testid="audit-user-filter-chip"
+              className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm"
+            >
               <span className="text-muted-foreground">
-                {t('audit.auditFilters.filteringBy')} <span className="font-medium text-foreground">{selectedUser.name}</span>
+                {t('audit.auditFilters.filteringBy')} <span className="font-medium text-foreground">{selectedUserLabel}</span>
               </span>
               <button
                 type="button"

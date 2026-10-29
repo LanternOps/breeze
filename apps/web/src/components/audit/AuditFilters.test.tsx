@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import AuditFilters from './AuditFilters';
+import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) }),
@@ -73,6 +74,20 @@ describe('AuditFilters (#9672)', () => {
     render(<AuditFilters initialFilters={applied} onApply={onApply} />);
     fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
     expect(onApply).toHaveBeenCalledWith(applied);
+  });
+
+  it('keeps and shows the applied user while the users list has not loaded', () => {
+    vi.mocked(fetchWithAuth).mockReturnValueOnce(new Promise(() => {}));
+    const onApply = vi.fn();
+    render(
+      <AuditFilters
+        initialFilters={{ datePreset: '7d', userId: 'u1', userEmail: 'dana@example.com', actions: [], resources: [], search: '' }}
+        onApply={onApply}
+      />
+    );
+    expect(screen.getByTestId('audit-user-filter-chip').textContent).toContain('dana@example.com');
+    fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
+    expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', userEmail: 'dana@example.com' }));
   });
 
   it('opens with the defaults when no filters are applied', () => {
