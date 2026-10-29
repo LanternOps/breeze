@@ -47,6 +47,21 @@ export function parsePatchesHash(hash: string): PatchesHashState {
   return { tab: tab as PatchesTab | null, selection, status: pickStatus(params.status) };
 }
 
+/**
+ * The part of a Patches hash that survives a header org switch (#10083), with
+ * no leading `#`, or null when there is nothing to keep. Rebuilt from an
+ * allow-list rather than trimmed: the tab and the compliance status filter (a
+ * fixed vocabulary) mean the same thing in every org; the `/<selection>` slot
+ * (a patch id from the details drawer) and any key this page does not own are
+ * dropped, because they name things in the org being left.
+ */
+export function orgAgnosticPatchesHash(hash: string): string | null {
+  const { tab, status } = parsePatchesHash(hash);
+  const keptTab = tab ?? (status ? 'compliance' : null);
+  if (!keptTab) return null;
+  return status ? `${keptTab}&status=${status}` : keptTab;
+}
+
 /** A standalone compliance-tab hash for a link: `#compliance[&status=…]`. */
 export function encodePatchesHash(state: { status?: ComplianceStatusFilter }): string {
   return writeHashKeys('#compliance', { status: state.status ? [state.status] : null }, PATCHES_TABS);

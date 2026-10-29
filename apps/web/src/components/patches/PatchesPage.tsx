@@ -34,7 +34,8 @@ import { useHashState } from '@/lib/useHashState';
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { replaceUrl } from '../../lib/replaceUrl';
-import { parsePatchesHash, type PatchesTab } from './patchesHash';
+import { keepHashAcrossOrgSwitch } from '../../lib/orgSwitch';
+import { orgAgnosticPatchesHash, parsePatchesHash, type PatchesTab } from './patchesHash';
 
 type TabKey = PatchesTab;
 
@@ -221,6 +222,11 @@ export default function PatchesPage() {
     setDetailsPatchId(null);
     window.location.hash = 'patches';
   }, [setDetailsPatchId]);
+  // #10083: a header org switch re-renders this page in place. Keep the tab and
+  // the compliance status filter (same meaning in every org); never the patch id
+  // the drawer selected, which belongs to the org being left. Read at switch
+  // time, so it follows tab changes that replaceUrl made without a hashchange.
+  useEffect(() => keepHashAcrossOrgSwitch(() => orgAgnosticPatchesHash(window.location.hash)), []);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   // Which tab the approval modal opens on: 'approve' from Review (the default,
