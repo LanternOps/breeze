@@ -537,6 +537,9 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity, provenan
 // On the classic store a repo digest is a manifest digest and can never equal
 // the image id (the config digest), so "== image id" is the containerd store's
 // synthetic "name@<target>" entry, which says nothing about any registry.
+// The containerd store lists exactly one such entry per repository, so a real
+// registry digest for the same repository cannot be shadowed by it; if that
+// ever changed, the result errs towards local/unknown (no lookup), never a leak.
 func imageProvenance(digest, imageID string, identity, dropped bool, img apiImage, repository string) string {
 	switch {
 	case dropped || digest == "":

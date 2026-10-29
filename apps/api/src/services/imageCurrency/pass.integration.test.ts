@@ -207,6 +207,25 @@ describe('runImageCurrencyPass', () => {
     expect(rows.legacy).toMatchObject({ upstreamStatus: 'current' });
   });
 
+  it('a row whose provenance changed between scan and write is not overwritten', async () => {
+    const a = await orgWithDevice('provenance-race');
+    const run = randomUUID().slice(0, 8);
+    const repo = `docker.io/library/race-${run}`;
+    await addWorkload(a.org.id, a.device.id, 'flip', {
+      imageRef: `${repo}:1`, imageRepository: repo, imageTag: '1', imageDigest: D('7'), imageProvenance: 'confirmed',
+    });
+    const client: RegistryClient = {
+      lookup: async () => {
+        // The agent's next report lands mid-pass: same image, provenance now unknown.
+        await getTestDb().execute(sql`UPDATE device_workloads SET image_provenance = 'unknown' WHERE device_id = ${a.device.id}`);
+        return { kind: 'ok', digest: D('7'), mediaType: MEDIA_TYPE_DOCKER_MANIFEST, platformDigests: null };
+      },
+      requestCount: () => 1,
+    };
+    await runImageCurrencyPass({ client, onlyOrgIds: [a.org.id] });
+    expect((await rowsOf(a.device.id)).flip).toMatchObject({ imageProvenance: 'unknown', upstreamStatus: 'pending' });
+  });
+
   it('a row whose image changed between scan and write is not overwritten', async () => {
     const a = await orgWithDevice('currency-race');
     const run = randomUUID().slice(0, 8);

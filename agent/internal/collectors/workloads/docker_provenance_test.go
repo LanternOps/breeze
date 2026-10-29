@@ -104,7 +104,7 @@ func TestProvenanceAbsentWhenImageListFailed(t *testing.T) {
 	_, dial := newFakeEngine(t, routes)
 	d := newEngineDriver(RuntimeDocker, dial)
 	res := d.Collect(context.Background(), d.Detect(context.Background()))
-	if res.Complete {
+	if res.Complete || len(res.Workloads) == 0 {
 		t.Fatalf("result = %+v", res)
 	}
 	for _, w := range res.Workloads {
@@ -179,5 +179,37 @@ func TestBoundDropsUnknownProvenanceValues(t *testing.T) {
 		if val(w.ImageProvenance) != p {
 			t.Fatalf("provenance %q not kept", p)
 		}
+	}
+}
+
+// The mapping table, including shapes the fixtures do not carry.
+func TestImageProvenanceTable(t *testing.T) {
+	id := containerdDigest("66666666")
+	other := containerdDigest("77777777")
+	pulled := apiImage{Manifests: []apiManifest{{Kind: "image", ImageData: &apiImageData{Identity: &apiIdentity{
+		Pull: []apiPullIdentity{{Repository: "docker.io/library/alpine"}},
+	}}}}}
+	cases := []struct {
+		name           string
+		digest         string
+		identity, drop bool
+		img            apiImage
+		want           string
+	}{
+		{"no digest", "", false, false, apiImage{}, ProvenanceLocal},
+		{"digest withheld", "", true, true, apiImage{}, ProvenanceLocal},
+		{"withheld, then refilled from a pinned ref", id, true, true, apiImage{}, ProvenanceLocal},
+		{"classic manifest digest", other, false, false, apiImage{}, ProvenanceConfirmed},
+		{"pinned ref digest on an old engine, not the image id", other, false, false, apiImage{}, ProvenanceConfirmed},
+		{"containerd synthetic, old engine", id, false, false, apiImage{}, ProvenanceUnknown},
+		{"containerd synthetic, identity engine, no Manifests at all", id, true, false, apiImage{}, ProvenanceLocal},
+		{"containerd synthetic, identity says pulled here", id, true, false, pulled, ProvenanceConfirmed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := imageProvenance(tc.digest, id, tc.identity, tc.drop, tc.img, "docker.io/library/alpine"); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

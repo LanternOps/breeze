@@ -460,3 +460,16 @@ it('the database refuses a provenance outside the vocabulary', async () => {
     getTestDb().execute(sql`UPDATE device_workloads SET image_provenance = 'pulled' WHERE device_id = ${f.device.id}`),
   ).rejects.toThrow();
 });
+
+it('an incomplete snapshot keeps the stored digest but takes a fresh provenance the agent did report', async () => {
+  const f = await fixture();
+  await f.send(reportFixture({ collectedAt: at(0), runtimes: [runtimeFixture({ workloads: [wl('a')] })] }));
+  await f.send(
+    reportFixture({
+      collectedAt: at(1),
+      runtimes: [runtimeFixture({ complete: false, error: 'truncated', workloads: [wl('a', { imageDigest: null, imageProvenance: 'local' })] })],
+    }),
+  );
+  const [row] = await f.workloads();
+  expect(row).toMatchObject({ imageDigest: DIGEST('a'), imageProvenance: 'local', upstreamStatus: 'pending' });
+});

@@ -149,6 +149,28 @@ func TestParseWorkloadSettingsAcceptsImageProvenance(t *testing.T) {
 	}
 }
 
+// Flipping only accepts_image_provenance is a settings change: the in-flight
+// collection is discarded and the worker wakes, so the next report carries
+// (or stops carrying) the key without waiting a whole interval.
+func TestApplyWorkloadInventoryConfigProvenanceFlagIsAChange(t *testing.T) {
+	h, r, _ := newWorkloadsHeartbeat(t, fixedCollector())
+	base := map[string]any{"enabled": true, "interval_minutes": 15.0}
+	h.applyWorkloadInventoryConfig(base)
+	gen := r.generation
+	select {
+	case <-r.wake:
+	default:
+	}
+	h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 15.0, "accepts_image_provenance": true})
+	if r.generation != gen+1 || !r.settings.AcceptsImageProvenance || len(r.wake) != 1 {
+		t.Fatalf("generation %d -> %d, accepts=%v, wake=%d", gen, r.generation, r.settings.AcceptsImageProvenance, len(r.wake))
+	}
+	h.applyWorkloadInventoryConfig(map[string]any{"enabled": true, "interval_minutes": 15.0, "accepts_image_provenance": true})
+	if r.generation != gen+1 {
+		t.Fatalf("an identical payload bumped the generation to %d", r.generation)
+	}
+}
+
 func TestApplyWorkloadInventoryConfig(t *testing.T) {
 	h, r, _ := newWorkloadsHeartbeat(t, fixedCollector())
 	if r.settings.Enabled {
