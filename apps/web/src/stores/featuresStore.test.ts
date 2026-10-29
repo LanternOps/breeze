@@ -5,7 +5,8 @@ vi.mock('./auth', () => ({
 }));
 
 import { fetchWithAuth } from './auth';
-import { useFeaturesStore } from './featuresStore';
+import { renderHook, waitFor } from '@testing-library/react';
+import { useAiAgentsPolicyDecideGate, useFeaturesStore } from './featuresStore';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -140,6 +141,16 @@ describe('featuresStore', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(useFeaturesStore.getState().features.aiAgentsPolicyDecide).toBe(true);
     expect(useFeaturesStore.getState().loaded).toBe(true);
+  });
+
+  it('useAiAgentsPolicyDecideGate loads /config once and reports the policy-decide flag (#9939)', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { aiAgentsPolicyDecide: true, aiAgentsSweepAct: false } }));
+    const { result } = renderHook(() => useAiAgentsPolicyDecideGate());
+    expect(result.current).toEqual({ enabled: false, loaded: false });
+
+    await waitFor(() => expect(result.current).toEqual({ enabled: true, loaded: true }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/config', { method: 'GET' });
   });
 
   it('coerces missing fields to false', async () => {
