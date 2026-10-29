@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",
+        "quantityInvalid": "Enter a quantity (up to 2 decimals).",
+        "quantityTooLarge": "Quantity is too large (at most 10 digits before the decimal point).",
         "siteOptional": "Site (optional — scopes the device count)",
         "allSites": "All sites",
         "linkCatalogItemOptional": "Link catalog item (optional)",

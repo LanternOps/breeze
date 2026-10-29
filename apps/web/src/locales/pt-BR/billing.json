@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
+        "quantityInvalid": "Informe uma quantidade (até 2 casas decimais).",
+        "quantityTooLarge": "A quantidade é grande demais (no máximo 10 dígitos antes da vírgula decimal).",
         "siteOptional": "Site (opcional — limita a contagem de dispositivos)",
         "allSites": "Todos os sites",
         "linkCatalogItemOptional": "Vincular item do catálogo (opcional)",

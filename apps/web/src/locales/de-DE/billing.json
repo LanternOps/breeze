@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
+        "quantityInvalid": "Geben Sie eine Menge ein (bis zu 2 Dezimalstellen).",
+        "quantityTooLarge": "Die Menge ist zu groß (höchstens 10 Stellen vor dem Dezimalkomma).",
         "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
         "allSites": "Alle Seiten",
         "linkCatalogItemOptional": "Katalogelement verlinken (optional)",

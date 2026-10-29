@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
+        "quantityInvalid": "Inserisci una quantità (fino a 2 decimali).",
+        "quantityTooLarge": "La quantità è troppo grande (al massimo 10 cifre prima del separatore decimale).",
         "siteOptional": "Sito (facoltativo: limita il conteggio dei dispositivi)",
         "allSites": "Tutti i siti",
         "linkCatalogItemOptional": "Collega elemento di catalogo (facoltativo)",

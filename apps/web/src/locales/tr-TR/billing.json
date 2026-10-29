@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
+        "quantityInvalid": "Bir miktar girin (en fazla 2 ondalık basamak).",
+        "quantityTooLarge": "Miktar çok büyük (ondalık ayırıcıdan önce en fazla 10 basamak).",
         "siteOptional": "Site (isteğe bağlı — cihaz sayısını kapsar)",
         "allSites": "Tüm siteler",
         "linkCatalogItemOptional": "Katalog öğesine bağlantı (isteğe bağlı)",

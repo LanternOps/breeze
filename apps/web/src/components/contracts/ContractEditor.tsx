@@ -5,7 +5,7 @@ import { fetchAllSites, ListFetchError } from '../../lib/fetchAllSites';
 import { fetchAllOrganizationsFrom } from '../../lib/fetchAllOrganizations';
 import { navigateTo } from '@/lib/navigation';
 import '@/lib/i18n';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 // The billing save-grammar, shared rather than re-copied. The local copy this
@@ -31,6 +31,8 @@ import {
   type RolloverPolicy,
   type UpdateContractLinePatch,
 } from '../../lib/api/contracts';
+import { CONTRACT_DECIMAL_RE } from '@breeze/shared';
+import { contractQuantityIssue, type ContractQuantityIssue, isOnlyManualQuantityError, validationFieldErrors } from './manualQuantity';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import CatalogDistributorDrawer from '../settings/CatalogDistributorDrawer';
 import Pax8CatalogDrawer from '../settings/Pax8CatalogDrawer';
@@ -106,7 +108,8 @@ const sameRoleSet = (a: readonly string[], b: readonly string[] | null): boolean
   return a.length === other.length && [...a].sort().join(',') === [...other].sort().join(',');
 };
 
-const MONEY_RE = /^\d+(\.\d{1,2})?$/;
+// The server's numeric(12,2) grammar, shared rather than re-copied (#10293).
+const MONEY_RE = CONTRACT_DECIMAL_RE;
 const POSITIVE_INTEGER_RE = /^[1-9]\d*$/;
 
 function allowanceFieldsValid(includedQuantity: string, overageMode: OverageMode, overageUnitPrice: string): boolean {
@@ -184,7 +187,7 @@ function editDraftIncomplete(l: ContractLine, d: EditLineDraft): boolean {
   }
   if (l.lineType === 'per_device_role' && d.deviceRoles.length === 0) return true;
   if (l.lineType === 'per_device_group' && !d.deviceGroupId) return true;
-  if (l.lineType === 'manual' && !MONEY_RE.test(d.manualQuantity)) return true;
+  if (l.lineType === 'manual' && contractQuantityIssue(d.manualQuantity) !== null) return true;
   if (d.catalogItemId === null && !MONEY_RE.test(d.unitPrice)) return true;
   if (d.allowanceOn && !allowanceFieldsValid(d.includedQuantity, d.overageMode, d.overageUnitPrice)) return true;
   return false;
@@ -299,6 +302,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   const [lineDesc, setLineDesc] = useState('');
   const [linePrice, setLinePrice] = useState('0.00');
   const [lineQty, setLineQty] = useState('1');
+  // #10293: the API rejected the quantity this form sent; cleared on the next edit.
+  const [lineQtyServerError, setLineQtyServerError] = useState(false);
   const [lineTaxable, setLineTaxable] = useState(false);
   const [lineSiteId, setLineSiteId] = useState('');
   const [lineRoles, setLineRoles] = useState<Exclude<DeviceRole, 'unknown'>[]>([]);
@@ -617,6 +622,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
   // #3205: per_device_role requires at least one role picked before Add is allowed.
   const roleLineMissingRoles = lineType === 'per_device_role' && lineRoles.length === 0;
+  // #10293: a manual line needs a quantity the server's grammar accepts (shared
+  // contractQuantityIssue); a server-reported quantity error shows on the field too.
+  const manualQtyIssue = lineType === 'manual' ? contractQuantityIssue(lineQty) : null;
+  const manualQtyError: ContractQuantityIssue | null = manualQtyIssue
+    ?? (lineType === 'manual' && lineQtyServerError ? 'format' : null);
+  const quantityErrorText = (issue: ContractQuantityIssue): string => (issue === 'tooLarge'
+    ? t('contracts.contractEditor.addLine.quantityTooLarge')
+    : t('contracts.contractEditor.addLine.quantityInvalid'));
   // #3205 W04: an allowance needs a quantity, and a price when extras are billed.
   const allowanceOn = lineAllowanceOn && ALLOWANCE_TYPES.has(lineType);
   const allowanceIncomplete = allowanceOn
@@ -807,7 +820,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked) return;
+    if (busy || !contract || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked || manualQtyError) return;
     setBusy(true);
     try {
       await runAction({
@@ -839,10 +852,13 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           NO_PRICE_FOR_CURRENCY: t('contracts.contractEditor.errors.noPriceForCurrency', { currency: contract.currencyCode }),
           HOUR_BLOCK_EXISTS: t('contracts.hourBlock.errors.exists'),
         } as Record<string, string>)[code],
+        // #10293: a 400 that rejects only the quantity is shown on the field
+        // (below), not as a toast of the raw Zod text.
+        suppressErrorToast: (status, _code, body) => status === 400 && isOnlyManualQuantityError(body),
         successMessage: t('contracts.contractEditor.toast.lineAdded'),
         onUnauthorized: UNAUTHORIZED,
       });
-      setLineDesc(''); setLinePrice('0.00'); setLineQty('1');
+      setLineDesc(''); setLinePrice('0.00'); setLineQty('1'); setLineQtyServerError(false);
       setLineRoles([]);
       setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
       setLineBlockHours(''); setLineBlockRollover('none'); setLineBlockCap(''); setLineBlockAlert('');
@@ -850,11 +866,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
       setLineTaxable(false); setLineSiteId(''); setLineCatalogItem(null);
       refresh();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 400 && validationFieldErrors(err.body)?.manualQuantity) {
+        setLineQtyServerError(true);
+      }
       handleActionError(err, t('contracts.contractEditor.errors.addLine'));
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, lineAllowanceOn, lineIncludedQty, lineOverageMode, lineOveragePrice, lineBlockHours, lineBlockRollover, lineBlockCap, lineBlockAlert, blockSelected, blockBlocked, allowanceOn, allowanceIncomplete, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, refresh, t]);
+  }, [busy, contract, linesEditable, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineGroupId, lineCatalogItem, lineTaxable, lineAllowanceOn, lineIncludedQty, lineOverageMode, lineOveragePrice, lineBlockHours, lineBlockRollover, lineBlockCap, lineBlockAlert, blockSelected, blockBlocked, allowanceOn, allowanceIncomplete, catalogPriceUnresolved, roleLineMissingRoles, groupLineMissingGroup, manualQtyError, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -1213,6 +1232,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                         const patch = editing && d && base ? buildLinePatch(base, d) : null;
                         const saveDisabled = !d || !patch || Object.keys(patch).length === 0
                           || !base || editDraftIncomplete(base, d) || isPending(`edit-${l.id}`);
+                        const editQtyIssue = d && l.lineType === 'manual' ? contractQuantityIssue(d.manualQuantity) : null;
                         return (
                           <tr key={l.id} className="border-t" data-testid={`line-row-${idx}`}>
                             {editing && d ? (
@@ -1253,9 +1273,16 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                                         <input
                                           value={d.manualQuantity}
                                           onChange={(e) => setEditDraft({ ...d, manualQuantity: e.target.value })}
+                                          aria-invalid={editQtyIssue ? true : undefined}
+                                          aria-describedby={editQtyIssue ? `line-edit-qty-error-${idx}` : undefined}
                                           data-testid={`line-edit-qty-${idx}`}
                                           className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                                         />
+                                        {editQtyIssue && (
+                                          <span id={`line-edit-qty-error-${idx}`} className="text-xs text-destructive" data-testid={`line-edit-qty-error-${idx}`}>
+                                            {quantityErrorText(editQtyIssue)}
+                                          </span>
+                                        )}
                                       </label>
                                     )}
                                     {SITE_SCOPED_TYPES.has(l.lineType) && (
@@ -1713,10 +1740,17 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                       {t('contracts.contractEditor.addLine.quantity')}
                       <input
                         type="number" min="0" step="0.01" value={lineQty}
-                        onChange={(e) => setLineQty(e.target.value)}
+                        onChange={(e) => { setLineQty(e.target.value); setLineQtyServerError(false); }}
+                        aria-invalid={manualQtyError ? true : undefined}
+                        aria-describedby={manualQtyError ? 'contract-line-qty-error' : undefined}
                         data-testid="contract-line-qty"
                         className="h-9 rounded-md border bg-background px-3 text-sm text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
                       />
+                      {manualQtyError && (
+                        <span id="contract-line-qty-error" className="text-xs text-destructive" data-testid="contract-line-qty-error">
+                          {quantityErrorText(manualQtyError)}
+                        </span>
+                      )}
                     </label>
                   )}
                   {lineType === 'per_device_role' && (
@@ -1950,7 +1984,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked}
+                      type="button" onClick={() => void addLine()} disabled={busy || !linesEditable || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles || groupLineMissingGroup || allowanceIncomplete || blockBlocked || manualQtyError !== null}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >
