@@ -137,6 +137,7 @@ import {
   managedAutomationOwnerIsLive,
 } from './aiAgents/managedAutomation';
 import { MANAGED_BY_MONITOR_ERROR } from './monitors/managedRowGuard';
+import { conversionSummariesFor } from './flows/conversion/ledger';
 import type {
   FleetFindingKind,
   FleetFindingSeverity,
@@ -2402,6 +2403,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             .limit(limit);
         }
 
+        // W06 (#5221, Decision 9): each row carries its conversion ({ id, state, flowId } | null).
+        const conversions = await conversionSummariesFor(visible.map((a: { id: string }) => a.id));
+        visible = visible.map((a: { id: string }) => ({ ...a, conversion: conversions.get(a.id) ?? null }));
         return JSON.stringify({ automations: visible, showing: visible.length });
       }
 
@@ -2417,11 +2421,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
         if (isScopeNarrowedCaller(auth)) {
           const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
-          return JSON.stringify({ automation: restricted });
+          return JSON.stringify({ automation: { ...restricted, conversion } });
         }
-        return JSON.stringify({ automation: auto });
+        return JSON.stringify({ automation: { ...auto, conversion } });
       }
 
       if (action === 'history') {
@@ -2449,7 +2454,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             limit,
           })).rows;
 
-        return JSON.stringify({ automationId: auto.id, runs: page, showing: page.length });
+        const conversion = (await conversionSummariesFor([auto.id])).get(auto.id) ?? null;
+        return JSON.stringify({ automationId: auto.id, conversion, runs: page, showing: page.length });
       }
 
       if (action === 'create') {
@@ -2545,6 +2551,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!existing) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): a switched Job is frozen; its flow runs it now.
+        if (existing.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: existing.convertedToFlowId });
+        }
         if (isManagedAutomation(existing)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
         }
@@ -2565,9 +2575,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (toggleDenied) return JSON.stringify({ error: toggleDenied });
 
         const enabled = action === 'enable';
-        await db.update(automations)
+        // Re-checked after any lock wait: a switch that committed since the read above wins (#10685).
+        const toggled = await db.update(automations)
           .set({ enabled, updatedAt: new Date() })
-          .where(eq(automations.id, existing.id));
+          .where(and(eq(automations.id, existing.id), isNull(automations.convertedToFlowId)))
+          .returning({ id: automations.id });
+        if (toggled.length === 0) {
+          const [now] = await db.select({ flowId: automations.convertedToFlowId }).from(automations).where(eq(automations.id, existing.id)).limit(1);
+          return JSON.stringify(now?.flowId ? { error: 'automation_converted', flowId: now.flowId } : { error: 'Automation not found or access denied' });
+        }
 
         return JSON.stringify({ success: true, message: `Automation "${existing.name}" ${enabled ? 'enabled' : 'disabled'}` });
       }
@@ -2580,6 +2596,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [auto] = await db.select().from(automations).where(and(...conditions)).limit(1);
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
+        // W06 (#5221, Decision 9): see the enable/disable branch above.
+        if (auto.convertedToFlowId) {
+          return JSON.stringify({ error: 'automation_converted', flowId: auto.convertedToFlowId });
+        }
         if (isManagedAutomation(auto)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: auto.managedByAgentId });
         }
