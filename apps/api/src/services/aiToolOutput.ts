@@ -1094,6 +1094,8 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_contract_templates: new Set(['name', 'description', 'bodyHtml', 'warnings']),
   manage_contract_documents: new Set(['templateName', 'signerName', 'acceptanceMethod', 'quoteNumber']),
   get_device_billing: new Set(['description', 'contractName', 'name']),
+  // W14 PR B (#6784): names that came from the accounting provider or from staff, and provider error text.
+  manage_accounting_sync: new Set(['displayName', 'breezeDisplayName', 'proposedRemoteName', 'proposedRemoteEmail', 'sku', 'lastError', 'error', 'docNumber', 'invoiceNumber', 'email']),
   // W14 (#6784): get_invoice lineId returns the billed devices' hostnames, which the devices reported.
   get_invoice: new Set(['hostname']),
   // Alert title/message originate from a rule match against endpoint-

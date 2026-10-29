@@ -222,7 +222,10 @@ export type McpExemptReason =
 export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accessReviews.ts': { tools: ['manage_access_reviews'] }, // W11 (#6781): list/get/create/decide items; completing a review (revokes members) stays human-only
   'accounting/connectionSetupRoutes.ts': { exempt: 'vendor_console_admin', note: 'Xero organisation picker, cancel, and settings-option pickers -- post-consent steps of the interactive OAuth connect flow for the partner\'s accounting connection (Xero W02); no agent-driven equivalent.' },
-  'accounting/index.ts': { gap: '#6784' },
+  // W14 PR B (#6784): status, owed operations, customers, mappings, income accounts, remote candidates, link / unlink /
+  // sync a linked mapping, push / push-bulk. Connect, callback, disconnect, settings (+ refresh), customer import,
+  // reconcile and create_new mappings stay in the web app (W14 plan + PR B quorum).
+  'accounting/index.ts': { tools: ['manage_accounting_sync'] },
   'actionIntents.ts': { exempt: 'identity' }, // reveal-secret + GET /:id/status are human-session-only UI; the MCP surface is get_action_status/cancel_action
   'admin/abuse.ts': { exempt: 'platform_admin' },
   'admin/aiBilling.ts': { exempt: 'platform_admin' },
@@ -430,7 +433,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
   'contracts/documents.ts': { tools: ['manage_contract_documents'] }, // W14 (#6784): list + link; PDF download not built
-  'contracts/generate.ts': { gap: '#6784' },
+  'contracts/generate.ts': { tools: ['manage_contracts'] }, // W14 PR B (#6784): preview_invoice + four-eyes generate_invoice
   'contracts/hourPeriods.ts': { tools: ['get_contract'] },
   'contracts/lifecycle.ts': { tools: ['manage_contracts'] },
   'contracts/lines.ts': { tools: ['manage_contracts'] },
