@@ -283,14 +283,14 @@ describe('agent elevation-requests ingestion route', () => {
       brandingMocks.resolveMessageBranding.mockResolvedValueOnce(partnerBranding);
       const res = await submit();
       expect(res.status).toBe(201);
-      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', supportName: 'Contoso IT' });
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String), supportName: 'Contoso IT' });
       expect(brandingMocks.resolveMessageBranding).toHaveBeenCalledWith('org-1');
     });
 
     it('omits supportName when branding is null', async () => {
       happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
       const res = await submit();
-      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
     });
 
     it('omits supportName for the generic sender identity (the agent says "IT")', async () => {
@@ -299,7 +299,7 @@ describe('agent elevation-requests ingestion route', () => {
         ...partnerBranding, senderIdentity: 'generic',
         branding: { companyName: 'Your IT support team', displayName: 'Your IT support team', accent: null },
       });
-      expect(await (await submit()).json()).toEqual({ id: 'req-uuid', status: 'pending' });
+      expect(await (await submit()).json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
     });
 
     it('caps supportName at 120 code points', async () => {
@@ -318,7 +318,7 @@ describe('agent elevation-requests ingestion route', () => {
       brandingMocks.resolveMessageBranding.mockRejectedValueOnce(new Error('partner lookup failed'));
       const res = await submit();
       expect(res.status).toBe(201);
-      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+      expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
       // A lookup broken fleet-wide would make every toast say "IT": it must be
       // visible at warn, not hidden at debug.
       expect(warn).toHaveBeenCalledWith(
@@ -357,6 +357,49 @@ describe('agent elevation-requests ingestion route', () => {
     });
   });
 
+  describe('#10190 W07: pendingExpiresAt and first_question_renderer', () => {
+    const submit = (extra: Record<string, unknown> = {}) => buildApp().request('/agents/agent-123/elevation-requests', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...goodPayload, ...extra }),
+    });
+
+    it('a pending 201 carries pendingExpiresAt = requested_at + the stale-pending TTL (15 min default)', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const observedAt = '2027-01-15T10:00:00.000Z';
+      const res = await submit({ observed_at: observedAt });
+      expect(res.status).toBe(201);
+      const body = await res.json() as { pendingExpiresAt?: string };
+      expect(body.pendingExpiresAt).toBe('2027-01-15T10:15:00.000Z');
+    });
+
+    it('a non-pending 201 carries no pendingExpiresAt', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'auto_approved' }]);
+      pamMocks.evaluatePamBridge.mockResolvedValue({ match: 'allowlist', policyId: 'pol-2', auditMatches: [] });
+      const res = await submit();
+      expect(res.status).toBe(201);
+      expect(await res.json()).not.toHaveProperty('pendingExpiresAt');
+    });
+
+    it.each(['assist', 'native', 'headless'] as const)('first_question_renderer %s is recorded in the audit details', async (renderer) => {
+      const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const res = await submit({ first_question_renderer: renderer });
+      expect(res.status).toBe(201);
+      expect(vi.mocked(writeAuditEvent)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ first_question_renderer: renderer }),
+      }));
+      // ... and on the 'requested' elevation_audit row.
+      const auditInsert = values.mock.calls.map((c) => c[0]).find((v) => Array.isArray(v)) as Array<{ eventType: string; details: Record<string, unknown> }>;
+      expect(auditInsert.find((r) => r.eventType === 'requested')?.details.first_question_renderer).toBe(renderer);
+    });
+
+    it('an unknown first_question_renderer is dropped, never a 400', async () => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const res = await submit({ first_question_renderer: 'hologram' });
+      expect(res.status).toBe(201);
+      const details = vi.mocked(writeAuditEvent).mock.calls[0]![1].details as Record<string, unknown>;
+      expect(details).not.toHaveProperty('first_question_renderer');
+    });
+  });
+
   it('inserts an elevation request and returns id + status', async () => {
     const { values } = happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
 
@@ -369,7 +412,7 @@ describe('agent elevation-requests ingestion route', () => {
 
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body).toEqual({ id: 'req-uuid', status: 'pending' });
+    expect(body).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1070,7 +1113,7 @@ describe('#1254 mobile approval bridge (fan-out)', () => {
 
     const res = await post(buildApp());
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending' });
+    expect(await res.json()).toEqual({ id: 'req-uuid', status: 'pending', pendingExpiresAt: expect.any(String) });
   });
 
   it('a failing push does not abort the remaining approvers', async () => {

@@ -412,8 +412,10 @@ export async function claimPendingCommandsForDevice(
       unsupportedProtocolTypes.push('pam_reconcile_v2');
     }
     // #8928: outcome notices need an agent that tracks the request and can
-    // render them. Unsupported rows stay pending and expire at their deliverBy.
-    if (targetRole === 'agent' && capabilities?.pamUserNotifyProtocolVersion !== 1) {
+    // render them (protocol 1, or 2 since #10190 W07). Unsupported rows stay
+    // pending and expire at their deliverBy.
+    const notifyVersion = capabilities?.pamUserNotifyProtocolVersion;
+    if (targetRole === 'agent' && notifyVersion !== 1 && notifyVersion !== 2) {
       unsupportedProtocolTypes.push('pam_request_notify');
     }
 

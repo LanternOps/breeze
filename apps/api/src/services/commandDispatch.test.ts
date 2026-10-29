@@ -382,9 +382,9 @@ describe('command dispatch helpers', () => {
   });
 
   // #8928 — the user-outcome notice is claimable only by agents that report
-  // pamUserNotifyProtocolVersion 1 on THIS heartbeat. Unsupported rows stay
-  // pending and expire at deliverBy.
-  it.each([undefined, 0, 2, 1])('gates pam_request_notify on pamUserNotifyProtocolVersion %s', async (notifyVersion) => {
+  // pamUserNotifyProtocolVersion 1 or 2 (#10190 W07) on THIS heartbeat.
+  // Unsupported rows stay pending and expire at deliverBy.
+  it.each([undefined, 0, 3, 1, 2])('gates pam_request_notify on pamUserNotifyProtocolVersion %s', async (notifyVersion) => {
     const tx = { select: selectChain([]), update: vi.fn() };
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
     await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
@@ -392,7 +392,7 @@ describe('command dispatch helpers', () => {
       pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1,
       pamUserNotifyProtocolVersion: notifyVersion,
     });
-    if (notifyVersion === 1) {
+    if (notifyVersion === 1 || notifyVersion === 2) {
       expect(vi.mocked(notInArray)).not.toHaveBeenCalledWith('deviceCommands.type', expect.arrayContaining(['pam_request_notify']));
     } else {
       expect(vi.mocked(notInArray)).toHaveBeenCalledWith('deviceCommands.type', ['pam_request_notify']);

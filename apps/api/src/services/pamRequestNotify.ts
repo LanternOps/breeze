@@ -74,6 +74,16 @@ export async function enqueuePamRequestNotify(
   req: { id: string; deviceId: string },
   outcome: PamRequestNotifyOutcome,
   reason?: string | null,
+  /**
+   * #10190 W07: resolves `decidedBy.technicianName` for a technician's deny
+   * (normally `() => resolvePamTechnicianName(deviceId, decider)`; shown per
+   * the device's technician_identity_level, never the email). Injected, not
+   * imported: the resolver reaches the remote-access policy graph, which this
+   * worker-reachable module must not (workerEntrypointClosure contract). Run
+   * only for a device that takes the notice; it must not throw (a throw is
+   * caught like any enqueue failure). An expiry has no decider: null.
+   */
+  resolveTechnicianName?: () => Promise<string | null>,
 ): Promise<'queued' | 'unsupported' | 'skipped'> {
   try {
     return await tx.transaction(async (sp) => {
@@ -94,9 +104,17 @@ export async function enqueuePamRequestNotify(
         );
         return 'unsupported' as const;
       }
-      if (device.pamUserNotifyProtocolVersion !== 1) return 'unsupported' as const;
+      // 1 (#8928) or 2 (#10190 W07: also decodes decidedBy on pam_apply_v2).
+      const notifyVersion = device.pamUserNotifyProtocolVersion;
+      if (notifyVersion !== 1 && notifyVersion !== 2) return 'unsupported' as const;
 
       const userReason = outcome === 'denied' ? sanitizePamUserReason(reason) : undefined;
+      // Forward compatible: every pam_request_notify agent ignores unknown
+      // payload fields (handlers_pam_notify.go), so decidedBy is always sent.
+      // Resolved only for a device that takes the notice, and never throws.
+      const technicianName = outcome === 'denied' && resolveTechnicianName
+        ? await resolveTechnicianName()
+        : null;
       await insertQueuedCommandInTransaction(sp, {
         id: randomUUID(),
         deviceId: req.deviceId,
@@ -105,6 +123,7 @@ export async function enqueuePamRequestNotify(
           requestId: req.id,
           outcome,
           ...(userReason !== undefined ? { reason: userReason } : {}),
+          decidedBy: { technicianName },
         },
         createdBy: null,
         deliverBy: new Date(Date.now() + PAM_REQUEST_NOTIFY_DELIVER_MS),

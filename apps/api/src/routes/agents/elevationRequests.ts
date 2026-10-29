@@ -15,6 +15,8 @@ import {
   pamSignerGroups,
   type SignerGroupEntry,
 } from '../../db/schema';
+import { PAM_PROMPT_RENDERERS } from '../../db/schema/elevations';
+import { pamPendingExpiresAt } from '../../jobs/pamPendingTtl';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
@@ -118,6 +120,10 @@ export const elevationRequestSchema = z.object({
   parent_image: z.string().max(4096).optional(),
   command_line: z.string().max(8192).optional(),
   observed_at: z.string().datetime({ offset: true }).optional(),
+  // #10190 W07: the renderer the agent intends to ask the end user's first
+  // question with (assist | native | headless). Audit only. An unknown value
+  // is dropped rather than failing the submit.
+  first_question_renderer: z.enum(PAM_PROMPT_RENDERERS).optional().catch(undefined),
 });
 
 export type ElevationRequestPayload = z.infer<typeof elevationRequestSchema>;
@@ -637,6 +643,7 @@ elevationRequestsRoutes.post(
               details: {
                 subject_username: payload.subject_username,
                 target_executable_path: payload.target_executable_path,
+                ...(payload.first_question_renderer ? { first_question_renderer: payload.first_question_renderer } : {}),
               },
               occurredAt: observedAt,
             },
@@ -717,6 +724,7 @@ elevationRequestsRoutes.post(
             subject_username: payload.subject_username,
             target_executable_path: payload.target_executable_path,
             ingest_status: row.status,
+            ...(payload.first_question_renderer ? { first_question_renderer: payload.first_question_renderer } : {}),
           },
         });
 
@@ -776,6 +784,9 @@ elevationRequestsRoutes.post(
             id: row.id,
             status: row.status,
             ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
+            // #10190 W07: when the stale-pending expirer may expire it (same
+            // basis: requested_at + TTL), for the device's waiting card.
+            ...(row.status === 'pending' ? { pendingExpiresAt: pamPendingExpiresAt(observedAt).toISOString() } : {}),
           },
         };
       } catch (err) {
