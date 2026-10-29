@@ -17,18 +17,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   fetchWithAuthMock,
   createPasskeyCredentialMock,
+  getPasskeyCredentialMock,
   commitReissuedSessionIfCurrentMock,
+  commitMfaStateIfCurrentMock,
+  sharedAuthUser,
   sessionGeneration,
 } = vi.hoisted(() => ({
   fetchWithAuthMock: vi.fn(),
   createPasskeyCredentialMock: vi.fn(),
+  getPasskeyCredentialMock: vi.fn(),
   commitReissuedSessionIfCurrentMock: vi.fn(() => true),
+  commitMfaStateIfCurrentMock: vi.fn((generation: number, state: { mfaEnabled: boolean; mfaMethod: string | null }) => {
+    if (generation !== 11) return false;
+    Object.assign(sharedAuthUser, state);
+    return true;
+  }),
+  sharedAuthUser: { mfaEnabled: true, mfaMethod: 'totp' as string | null },
   sessionGeneration: 11,
 }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: fetchWithAuthMock,
   createPasskeyCredential: createPasskeyCredentialMock,
+  getPasskeyCredential: getPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: (state: Record<string, unknown>) => unknown) => selector({ updateUser: vi.fn() }),
     {
@@ -36,6 +47,7 @@ vi.mock('../../stores/auth', () => ({
         updateUser: vi.fn(),
         sessionGeneration,
         commitReissuedSessionIfCurrent: commitReissuedSessionIfCurrentMock,
+        commitMfaStateIfCurrent: commitMfaStateIfCurrentMock,
       }),
     },
   ),
@@ -91,6 +103,8 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
   beforeEach(() => {
     vi.clearAllMocks();
     commitReissuedSessionIfCurrentMock.mockReturnValue(true);
+    Object.assign(sharedAuthUser, { mfaEnabled: true, mfaMethod: 'totp' });
+    getPasskeyCredentialMock.mockResolvedValue(credential);
     sessionStorage.clear();
     globalThis.URL.createObjectURL = vi.fn(() => 'blob:fake');
     globalThis.URL.revokeObjectURL = vi.fn();
@@ -115,6 +129,55 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration, REPLACEMENT);
     });
     expect(await screen.findByText('Passkey added')).toBeTruthy();
+  });
+
+  it('synchronizes the shared 2FA badge after adding the first passkey', async () => {
+    Object.assign(sharedAuthUser, { mfaEnabled: false, mfaMethod: null });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-2', name: 'iPhone' },
+        mfaEnabled: true,
+        mfaMethod: 'passkey',
+        tokens: REPLACEMENT,
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'iPhone', lastUsedAt: null }] }));
+    createPasskeyCredentialMock.mockResolvedValueOnce(credential);
+
+    render(<ProfilePage initialUser={{ ...USER, mfaEnabled: false, mfaMethod: null }} />);
+    await addPasskey();
+
+    await screen.findByText('Passkey added');
+    expect(sharedAuthUser).toMatchObject({ mfaEnabled: true, mfaMethod: 'passkey' });
+  });
+
+  it('clears the shared 2FA badge after deleting the last passkey factor', async () => {
+    Object.assign(sharedAuthUser, { mfaEnabled: true, mfaMethod: 'passkey' });
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({
+        passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
+      }))
+      .mockResolvedValueOnce(makeJsonResponse({ options: { challenge: 'step-up' } }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: 'step-up-grant' }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        mfaEnabled: false,
+        mfaMethod: null,
+        tokens: REPLACEMENT,
+      }));
+
+    render(<ProfilePage initialUser={{ ...USER, mfaEnabled: true, mfaMethod: 'passkey' }} />);
+    await screen.findByText('MacBook Touch ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(sharedAuthUser).toMatchObject({ mfaEnabled: false, mfaMethod: null });
   });
 
   // Covers both ways the API can omit `tokens`: an older build that never
