@@ -5060,6 +5060,23 @@ describe('auth routes', () => {
 			expect(mintStepUpGrant).not.toHaveBeenCalled();
 		});
 
+		it('does not mint a passkey deletion grant for a spent or invalid recovery code', async () => {
+			vi.mocked(consumeRecoveryCode).mockRejectedValueOnce(new RecoveryCodeInvalidError());
+			const res = await app.request('/auth/mfa/step-up', {
+				method: 'POST',
+				headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					method: 'recovery',
+					code: 'ABCD-1234',
+					operation: 'delete_passkey',
+					passkeyId: '10000000-0000-4000-8000-000000000009',
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(await res.json()).toMatchObject({ code: 'mfa_proof_invalid' });
+			expect(mintStepUpGrant).not.toHaveBeenCalled();
+		});
+
 		it('rejects delete_passkey before factor verification when passkeyId is absent', async () => {
 			const res = await app.request('/auth/mfa/step-up', {
 				method: 'POST',
