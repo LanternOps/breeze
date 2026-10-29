@@ -1,6 +1,7 @@
 package winupdate
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,18 @@ func TestPlanTargetReleaseReasonWording(t *testing.T) {
 		}
 	})
 
+	t.Run("same target with the DWORD off says restored, not moved", func(t *testing.T) {
+		st := owned("25H2")
+		st.targetEnabled = false
+		p := planTargetRelease(&TargetRelease{ProductVersion: "Windows 11", TargetVersion: "25H2"}, st)
+		if !p.write {
+			t.Fatalf("plan = %+v, want write", p)
+		}
+		if strings.Contains(p.result.Reason, "moved") || !strings.Contains(p.result.Reason, "restored") {
+			t.Errorf("reason = %q, want 'restored'", p.result.Reason)
+		}
+	})
+
 	t.Run("changed pin says moved, from and to", func(t *testing.T) {
 		p := planTargetRelease(&TargetRelease{ProductVersion: "Windows 11", TargetVersion: "24H2"}, owned("25H2"))
 		if strings.Contains(p.result.Reason, "already pinned") {
@@ -86,6 +99,56 @@ func TestPlanTargetReleaseReasonWording(t *testing.T) {
 		}
 		if !strings.Contains(p.result.Reason, "moved") || !strings.Contains(p.result.Reason, "25H2") || !strings.Contains(p.result.Reason, "24H2") {
 			t.Errorf("reason = %q, want 'moved' with old and new targets", p.result.Reason)
+		}
+	})
+}
+
+var errFakeWrongType = errors.New("unexpected value type")
+
+// Observe → plan, end to end: an unreadable admin value must never be written
+// over, and the Reason must say why instead of inventing a value.
+func TestTargetReleaseObserveThenPlan(t *testing.T) {
+	pin := &TargetRelease{ProductVersion: "Windows 11", TargetVersion: "25H2"}
+
+	t.Run("unreadable Info without sentinel is left as-found and reported unreadable", func(t *testing.T) {
+		st := observeTargetRelease(&fakeValueReader{readErr: map[string]error{targetReleaseVersionInfoValue: errFakeAccessDenied}}, fakeIsNotExist)
+		p := planTargetRelease(pin, st)
+		if p.write || p.revert || p.result.Managed {
+			t.Fatalf("plan = %+v, want no mutation", p)
+		}
+		if !strings.Contains(p.result.Reason, "TargetReleaseVersionInfo unreadable") {
+			t.Errorf("reason = %q, want it to say the Info value is unreadable", p.result.Reason)
+		}
+	})
+
+	t.Run("unreadable DWORD does not claim the policy is off", func(t *testing.T) {
+		st := observeTargetRelease(&fakeValueReader{readErr: map[string]error{targetReleaseVersionValue: errFakeWrongType}}, fakeIsNotExist)
+		p := planTargetRelease(pin, st)
+		if p.write {
+			t.Fatalf("plan = %+v, want no mutation", p)
+		}
+		if strings.Contains(p.result.Reason, "policy off") || !strings.Contains(p.result.Reason, "unreadable") {
+			t.Errorf("reason = %q, want unreadable, not 'policy off'", p.result.Reason)
+		}
+	})
+
+	t.Run("unreadable sentinel is named in the reason, not 'set outside Breeze'", func(t *testing.T) {
+		st := observeTargetRelease(&fakeValueReader{
+			ints:    map[string]uint64{targetReleaseVersionValue: 1},
+			strs:    map[string]string{targetReleaseVersionInfoValue: "24H2", productVersionValue: "Windows 11"},
+			readErr: map[string]error{breezeManagedTargetReleaseValue: errFakeWrongType},
+		}, fakeIsNotExist)
+		for _, desired := range []*TargetRelease{pin, nil} {
+			p := planTargetRelease(desired, st)
+			if p.write || p.revert {
+				t.Fatalf("plan(%v) = %+v, want no mutation", desired, p)
+			}
+			if !strings.Contains(p.result.Reason, breezeManagedTargetReleaseValue+" unreadable") {
+				t.Errorf("reason = %q, want it to name the unreadable sentinel", p.result.Reason)
+			}
+			if strings.Contains(p.result.Reason, "set outside Breeze") {
+				t.Errorf("reason = %q must not assert the values were set outside Breeze", p.result.Reason)
+			}
 		}
 	})
 }
@@ -132,24 +195,36 @@ func TestObserveTargetRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("a value of the wrong type or unreadable counts as present", func(t *testing.T) {
-		st := observeTargetRelease(&fakeValueReader{readErr: map[string]error{
-			targetReleaseVersionValue:     errFakeAccessDenied,
-			targetReleaseVersionInfoValue: errFakeAccessDenied,
-			productVersionValue:           errFakeAccessDenied,
-		}}, fakeIsNotExist)
-		if !st.targetPresent || !st.infoPresent || !st.productPresent || st.targetEnabled {
-			t.Fatalf("state = %+v, want all present, not enabled", st)
-		}
-	})
+	for _, readErr := range []error{errFakeAccessDenied, errFakeWrongType} {
+		t.Run("an unreadable value counts as present and unreadable: "+readErr.Error(), func(t *testing.T) {
+			st := observeTargetRelease(&fakeValueReader{readErr: map[string]error{
+				targetReleaseVersionValue:     readErr,
+				targetReleaseVersionInfoValue: readErr,
+				productVersionValue:           readErr,
+			}}, fakeIsNotExist)
+			if !st.targetPresent || !st.infoPresent || !st.productPresent || st.targetEnabled {
+				t.Fatalf("state = %+v, want all present, not enabled", st)
+			}
+			if !st.targetUnreadable || !st.infoUnreadable || !st.productUnreadable {
+				t.Fatalf("state = %+v, want all flagged unreadable", st)
+			}
+		})
 
-	t.Run("an unreadable sentinel is not Breeze ownership", func(t *testing.T) {
-		st := observeTargetRelease(&fakeValueReader{
-			strs:    map[string]string{targetReleaseVersionInfoValue: "23H2"},
-			readErr: map[string]error{breezeManagedTargetReleaseValue: errFakeAccessDenied},
-		}, fakeIsNotExist)
-		if st.breezeManaged {
-			t.Fatal("unreadable sentinel must not grant ownership")
+		t.Run("an unreadable sentinel is not Breeze ownership: "+readErr.Error(), func(t *testing.T) {
+			st := observeTargetRelease(&fakeValueReader{
+				strs:    map[string]string{targetReleaseVersionInfoValue: "23H2"},
+				readErr: map[string]error{breezeManagedTargetReleaseValue: readErr},
+			}, fakeIsNotExist)
+			if st.breezeManaged || !st.sentinelUnreadable {
+				t.Fatalf("state = %+v, want not owned and sentinelUnreadable", st)
+			}
+		})
+	}
+
+	t.Run("a sentinel of 0 is not Breeze ownership", func(t *testing.T) {
+		st := observeTargetRelease(&fakeValueReader{ints: map[string]uint64{breezeManagedTargetReleaseValue: 0}}, fakeIsNotExist)
+		if st.breezeManaged || st.sentinelUnreadable {
+			t.Fatalf("state = %+v", st)
 		}
 	})
 
