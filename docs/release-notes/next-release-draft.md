@@ -115,3 +115,10 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Still dark: no partner-owned group can be created yet. No migration, environment variable or setting.
 - Config-policy and automation-schedule expansion of a `device_group` assignment now resolves a partner-owned group to its members in every org of the partner.
 - Every other target surface (maintenance windows, backup SLAs, script runs, software deployments, automations, endpoint messages, AI agent triggers, peripheral policies, the enrollment default group, user device-group scope) answers a partner-owned group id with `400 PARTNER_GROUP_TARGET_UNSUPPORTED`. The groups API and the AI `manage_groups` tool treat partner-owned groups as read-only (`400 PARTNER_GROUP_READ_ONLY`).
+
+
+### Device groups (partner-owned, dark) — W2b
+
+- Partner-owned dynamic groups now have per-device and revisioned per-org evaluation, excluding Quick Support and holding organizations.
+- Still dark: nothing user-visible until W3 adds the create route. No migration, setting or environment variable.
+- A six-hour retry sweep repairs missed evaluations; it is a retry cadence, with no freshness SLA.
