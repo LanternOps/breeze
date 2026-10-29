@@ -6232,6 +6232,11 @@
       "fleetAddDescription": "Yeni bir site ekleyin ve ait olduğu kuruluşu seçin.",
       "empty": "Henüz site yok. Başlamak için bir kuruluşa site ekleyin.",
       "viewDevicesAt": "{{name}} konumundaki cihazları görüntüle"
+    },
+    "toasts": {
+      "created": "{{name}} sitesi oluşturuldu",
+      "saved": "{{name}} sitesi kaydedildi",
+      "deleted": "{{name}} sitesi silindi"
     }
   },
   "siteList": {

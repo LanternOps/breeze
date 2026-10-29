@@ -6227,6 +6227,11 @@
       "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
       "empty": "No sites yet. Add a site to an organization to get started.",
       "viewDevicesAt": "view devices at {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} created",
+      "saved": "Site {{name}} saved",
+      "deleted": "Site {{name}} deleted"
     }
   },
   "siteList": {
