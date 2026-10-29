@@ -189,6 +189,7 @@
         "selectOrganization": "Organisation auswählen",
         "submit": "Erstellen",
         "uptimeTarget": "Verfügbarkeitsziel (%)",
+        "uptimeTargetInvalid": "Geben Sie einen Wert von 0 bis 100 ein.",
         "windows": {
           "daily": "Täglich",
           "monthly": "Monatlich",

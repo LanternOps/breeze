@@ -189,6 +189,7 @@
         "selectOrganization": "Select an organization",
         "submit": "Create",
         "uptimeTarget": "Uptime target (%)",
+        "uptimeTargetInvalid": "Enter a value from 0 to 100.",
         "windows": {
           "daily": "Daily",
           "monthly": "Monthly",

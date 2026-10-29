@@ -189,6 +189,7 @@
         "selectOrganization": "Bir kuruluş seçin",
         "submit": "Oluştur",
         "uptimeTarget": "Çalışma süresi hedefi (%)",
+        "uptimeTargetInvalid": "0 ile 100 arasında bir değer girin.",
         "windows": {
           "daily": "Günlük",
           "monthly": "Aylık",

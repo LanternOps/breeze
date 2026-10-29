@@ -168,6 +168,7 @@ export default function SLAEmptyState({ onCreated }: SLAEmptyStateProps) {
               onChange={event => setName(event.target.value)}
               maxLength={255}
               required
+              autoFocus
               data-testid="analytics-sla-name"
               className={inputClass}
             />
@@ -182,9 +183,19 @@ export default function SLAEmptyState({ onCreated }: SLAEmptyStateProps) {
               value={uptimeTarget}
               onChange={event => setUptimeTarget(event.target.value)}
               aria-invalid={!targetValid}
+              aria-describedby={targetValid ? undefined : 'analytics-sla-uptime-target-error'}
               data-testid="analytics-sla-uptime-target"
               className={inputClass}
             />
+            {!targetValid && (
+              <span
+                id="analytics-sla-uptime-target-error"
+                className="block text-xs text-destructive"
+                data-testid="analytics-sla-uptime-target-error"
+              >
+                {t('analytics.slaEmptyState.form.uptimeTargetInvalid')}
+              </span>
+            )}
           </label>
           <label className="space-y-1 text-sm">
             <span className="font-medium">{t('analytics.slaEmptyState.form.measurementWindow')}</span>

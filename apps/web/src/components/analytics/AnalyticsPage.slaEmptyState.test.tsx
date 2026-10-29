@@ -155,6 +155,66 @@ describe('SLA tab without a definition (#9940)', () => {
     expect(posts[0]!.body.orgId).toBe('org-b');
   });
 
+  it('keeps the form open with what was typed when the create call fails', async () => {
+    routes['/analytics/sla'] = { data: [] };
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === 'POST') {
+        posts.push({ url: String(input), body: JSON.parse(String(init.body)) as Record<string, unknown> });
+        return respond({ error: 'MFA required' }, 403);
+      }
+      return base(input, init);
+    });
+    render(<AnalyticsPage />);
+    await settle();
+    const listingCalls = () =>
+      fetchMock.mock.calls.filter(([u, i]) => String(u).split('?')[0] === '/analytics/sla' && !i?.method).length;
+    const before = listingCalls();
+
+    fireEvent.click(screen.getByTestId('analytics-sla-create-open'));
+    fireEvent.change(screen.getByTestId('analytics-sla-name'), { target: { value: 'Gold' } });
+    fireEvent.click(screen.getByTestId('analytics-sla-create-submit'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Submitting resets, so a retry is possible; nothing was reloaded.
+    await waitFor(() => expect(screen.getByTestId('analytics-sla-create-submit')).not.toBeDisabled());
+    expect(screen.getByTestId('analytics-sla-create-form')).toBeInTheDocument();
+    expect(screen.getByTestId('analytics-sla-name')).toHaveValue('Gold');
+    expect(listingCalls()).toBe(before);
+  });
+
+  it('blocks an out-of-range uptime target and omits a blank one', async () => {
+    routes['/analytics/sla'] = { data: [] };
+    render(<AnalyticsPage />);
+    await settle();
+
+    fireEvent.click(screen.getByTestId('analytics-sla-create-open'));
+    fireEvent.change(screen.getByTestId('analytics-sla-name'), { target: { value: 'Gold' } });
+    const target = screen.getByTestId('analytics-sla-uptime-target');
+    const submit = screen.getByTestId('analytics-sla-create-submit');
+
+    fireEvent.change(target, { target: { value: '101' } });
+    expect(submit).toBeDisabled();
+    expect(screen.getByTestId('analytics-sla-uptime-target-error')).toBeInTheDocument();
+    expect(target).toHaveAttribute('aria-describedby', 'analytics-sla-uptime-target-error');
+
+    fireEvent.change(target, { target: { value: '' } });
+    expect(submit).not.toBeDisabled();
+    fireEvent.click(submit);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.body).not.toHaveProperty('uptimeTarget');
+  });
+
+  it('does not submit a whitespace-only name', async () => {
+    routes['/analytics/sla'] = { data: [] };
+    render(<AnalyticsPage />);
+    await settle();
+
+    fireEvent.click(screen.getByTestId('analytics-sla-create-open'));
+    fireEvent.change(screen.getByTestId('analytics-sla-name'), { target: { value: '   ' } });
+    expect(screen.getByTestId('analytics-sla-create-submit')).toBeDisabled();
+  });
+
   it('keeps the create action out of reach without organization write access', async () => {
     routes['/analytics/sla'] = { data: [] };
     grants = [{ resource: 'devices', action: 'read' }];
@@ -203,6 +263,33 @@ describe('SLA card details (#9940)', () => {
     render(<AnalyticsPage />);
     const list = await screen.findByTestId('analytics-sla-exclusions');
     expect(within(list).getByText(/too many devices/i)).toBeInTheDocument();
+  });
+
+  it('does not claim exclusions the compliance route did not report', async () => {
+    // The listing carries a figure; the live compliance call fails.
+    routes['/analytics/sla'] = {
+      data: [{ id: 'sla-1', name: 'Gold support', compliancePercentage: 99.9, uptimeTarget: 99.5, excludeMaintenanceWindows: true }]
+    };
+    fetchMock.mockImplementation(async (input) => {
+      const path = String(input).split('?')[0]!;
+      if (path === '/analytics/sla/sla-1/compliance') return respond({ error: 'boom' }, 500);
+      return respond(path in routes ? routes[path] : {});
+    });
+    render(<AnalyticsPage />);
+    expect(await screen.findByText('SLA Compliance', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.queryByTestId('analytics-sla-exclusions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Maintenance windows excluded')).not.toBeInTheDocument();
+  });
+
+  it('reports a load failure, not nothing, when a definition yields no figure', async () => {
+    routes['/analytics/sla'] = { data: [{ id: 'sla-1', name: 'Gold support', uptimeTarget: 99.5 }] };
+    // 200 without a liveUptime field at all.
+    routes['/analytics/sla/sla-1/compliance'] = { uptimeTarget: 99.5 };
+    render(<AnalyticsPage />);
+    await settle();
+    expect(screen.getByText('Unable to load: sla')).toBeInTheDocument();
+    expect(screen.queryByTestId('analytics-sla-empty')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('analytics-sla-card')).not.toBeInTheDocument();
   });
 
   it('shows the definition card when it has no devices to measure yet', async () => {

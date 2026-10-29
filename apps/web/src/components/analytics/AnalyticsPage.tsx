@@ -344,29 +344,22 @@ const normalizeSla = (raw: unknown): SlaSummary | null => {
 };
 
 /**
- * Exclusions as the compliance route reports them (`exclusions`), falling back
- * to the definition's own flags when that call is unavailable.
+ * Exclusions as the compliance route applied them (`exclusions`). Undefined
+ * when the route did not report them: the definition's own flags say what was
+ * requested, not what was applied, so they are not shown as fact.
  */
-const normalizeSlaExclusions = (
-  complianceExclusions: unknown,
-  definition: Record<string, unknown>
-): SlaExclusions => {
-  if (isRecord(complianceExclusions)) {
-    const maintenance = complianceExclusions.maintenanceWindows;
-    return {
-      weekends: complianceExclusions.weekends === true,
-      maintenance: maintenance === 'applied'
-        ? 'applied'
-        : maintenance === 'skipped_too_many_devices'
-          ? 'skipped'
-          : maintenance === 'unavailable'
-            ? 'unavailable'
-            : 'off'
-    };
-  }
+const normalizeSlaExclusions = (complianceExclusions: unknown): SlaExclusions | undefined => {
+  if (!isRecord(complianceExclusions)) return undefined;
+  const maintenance = complianceExclusions.maintenanceWindows;
   return {
-    weekends: definition.excludeWeekends === true,
-    maintenance: definition.excludeMaintenanceWindows === true ? 'applied' : 'off'
+    weekends: complianceExclusions.weekends === true,
+    maintenance: maintenance === 'applied'
+      ? 'applied'
+      : maintenance === 'skipped_too_many_devices'
+        ? 'skipped'
+        : maintenance === 'unavailable'
+          ? 'unavailable'
+          : 'off'
   };
 };
 
@@ -717,8 +710,8 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             // live one call deeper. Prefer live compliance for the first
             // definition, falling back to whatever the listing carried.
             const definitions = getRecord(slaData).data;
-            const definitionList = Array.isArray(definitions) ? definitions : [];
-            const firstDefinition = getRecord(definitionList[0]);
+            const definitionList = Array.isArray(definitions) ? definitions : null;
+            const firstDefinition = getRecord(definitionList?.[0]);
             if (typeof firstDefinition.id === 'string') {
               try {
                 const compliance = getRecord(await fetchJson(`/analytics/sla/${firstDefinition.id}/compliance`));
@@ -730,23 +723,23 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                     uptime: uptime ?? null,
                     target: pickOptionalNumber(compliance.uptimeTarget, firstDefinition.uptimeTarget) ?? summary?.target,
                     name: typeof firstDefinition.name === 'string' ? firstDefinition.name : undefined,
-                    exclusions: normalizeSlaExclusions(compliance.exclusions, firstDefinition)
+                    exclusions: normalizeSlaExclusions(compliance.exclusions)
                   };
                 }
               } catch {
                 // A definition exists but its numbers couldn't be fetched.
-                // When the listing itself carried a figure we keep showing it;
-                // otherwise this is a load failure, not the "no SLA configured"
-                // empty state.
-                if (summary === null) errors.push('sla');
+                // When the listing itself carried a figure we keep showing it
+                // (the failure is reported just below otherwise).
               }
             }
-            if (summary && !summary.exclusions && definitionList.length > 0) {
-              summary = { ...summary, exclusions: normalizeSlaExclusions(undefined, firstDefinition) };
-            }
+
+            const empty = definitionList !== null && definitionList.length === 0 && summary === null;
+            // A definition with no figure to show is a load failure, not the
+            // "no SLA configured" empty state — never render nothing silently.
+            if (summary === null && definitionList !== null && definitionList.length > 0) errors.push('sla');
 
             setSlaSummary(summary);
-            setSlaEmpty(definitionList.length === 0 && summary === null);
+            setSlaEmpty(empty);
           } catch (err) {
             errors.push('sla');
             setSlaSummary(null);
