@@ -279,6 +279,37 @@ describe('backup provider sync (real Postgres + Redis)', () => {
     expect(capturedEvents.filter((e) => e.type === 'backup.provider_device_recovered')).toHaveLength(1);
   });
 
+  runDb('persists Google Workspace (gws) SaaS rows', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fixture = await seed(unique);
+    listCustomers.mockResolvedValue([customer(fixture.orgId)]);
+    listDevices.mockResolvedValue({
+      devices: [vendorDevice({
+        vendorDeviceId: 'vc-1:gws_drive', name: 'Google Drive (3 drives)', osType: 'unknown',
+        osVersion: null, clientVersion: null, accountType: 'gws', dataSources: ['gws_drive'],
+        status: 'completed', vendorStatusCode: null, lastSuccessAt: new Date(), errorsCount: 0,
+      })],
+      failedCustomerIds: [],
+    });
+    await syncConnectionById(fixture.connectionId);
+
+    const result = await withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select()
+        .from(backupProviderDevices)
+        .where(eq(backupProviderDevices.connectionId, fixture.connectionId));
+      const [connection] = await db
+        .select()
+        .from(backupProviderConnections)
+        .where(eq(backupProviderConnections.id, fixture.connectionId));
+      return { rows, connection };
+    });
+    expect(result.connection!.lastSyncStatus).toBe('success');
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.accountType).toBe('gws');
+    expect(result.rows[0]!.breezeDeviceId).toBeNull();
+  });
+
   runDb('a failed vendor enumeration deletes nothing and records the error', async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const fixture = await seed(unique);
