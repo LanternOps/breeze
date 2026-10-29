@@ -52,7 +52,7 @@ import { validateFlowDocument } from '../../services/flowValidator';
 import { legacyPrefers, loadSwitchedConvertedAutomations } from '../../services/flows/conversion/claims';
 import { automationSourceDigest, generatedScriptPlaceholderId } from '../../services/flows/conversion/convertAutomation';
 import { createConversion } from '../../services/flows/conversion/service';
-import { saveDraftFlow } from '../../services/flows/service';
+import { getFlow, saveDraftFlow } from '../../services/flows/service';
 import { flowDocumentDigest, resetShadowIfChanged } from '../../services/flows/conversion/ledger';
 import { switchConversion } from '../../services/flows/conversion/switch';
 import { revertConversion } from '../../services/flows/conversion/revert';
@@ -254,6 +254,12 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(loaded[0]!.conversion).toEqual({ id: s.conversionId, state: 'switched', switchAt: ledger.switchAt });
     expect(legacyPrefers(loaded[0]!.conversion, new Date(ledger.switchAt!.getTime() - 1), false)).toBe(true);
     expect(legacyPrefers(loaded[0]!.conversion, ledger.switchAt, false)).toBe(false);
+
+    // C3: the flow detail names the Job it moved from, read in the caller's context.
+    const detail = await t.asOrg(() => getFlow(t.orgAuth(), s.flowId));
+    expect(detail?.flow.convertedFrom).toEqual({
+      automationId: row.id, name: automation.name, conversionId: s.conversionId, state: 'switched',
+    });
   });
 
   runDb('enable refusal rolls back scripts, secret and ledger', async () => {
