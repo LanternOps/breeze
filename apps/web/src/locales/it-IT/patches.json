@@ -419,7 +419,6 @@
     "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
     "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto.",
     "ringDelete": {
-      "title": "Eliminare {{name}}?",
       "messageNone": "Nessun criterio usa questo anello. Le sue regole di approvazione e le impostazioni di pianificazione verranno eliminate e non potranno essere ripristinate.",
       "title": "Eliminare {{name}}?",
       "messageOne": "1 criterio smetterà di applicare le patch pianificate finché non sceglierai un altro anello.",

@@ -419,7 +419,6 @@
     "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
     "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
     "ringDelete": {
-      "title": "Delete {{name}}?",
       "messageNone": "No policies use this ring. Its approval rules and schedule settings will be deleted and cannot be restored.",
       "title": "Delete {{name}}?",
       "messageOne": "1 policy will stop scheduled patching until you pick another ring.",

@@ -419,7 +419,6 @@
     "truncatedNotice": "Exibindo {{shown}} de {{total}} patches. Os filtros aqui apenas restringem o que já foi carregado, então o restante não pode ser alcançado nesta visualização — use a API de patches para percorrer o catálogo completo.",
     "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
     "ringDelete": {
-      "title": "Excluir {{name}}?",
       "messageNone": "Nenhuma política usa este anel. Suas regras de aprovação e configurações de agendamento serão excluídas e não poderão ser restauradas.",
       "title": "Excluir {{name}}?",
       "messageOne": "1 política deixará de aplicar patches agendados até que você escolha outro anel.",

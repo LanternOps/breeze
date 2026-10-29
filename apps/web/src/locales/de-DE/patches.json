@@ -419,7 +419,6 @@
     "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
     "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen.",
     "ringDelete": {
-      "title": "{{name}} löschen?",
       "messageNone": "Keine Richtlinie verwendet diesen Ring. Seine Genehmigungsregeln und Zeitplaneinstellungen werden gelöscht und können nicht wiederhergestellt werden.",
       "title": "{{name}} löschen?",
       "messageOne": "1 Richtlinie führt keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
