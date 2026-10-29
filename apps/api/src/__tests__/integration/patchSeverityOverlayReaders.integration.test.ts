@@ -310,4 +310,54 @@ describe('GET /update-rings/:id/patches — severity filter/display', () => {
     expect(row).toBeDefined();
     expect(row.severity).toBe('critical');
   });
+
+  // #9930: a ring with no assigned devices used to scope the fallback to
+  // `IN (NULL)`, so every unclassified row read 'unknown' (Unrated), and the
+  // projection dropped externalId/version. It now falls back to the ring
+  // partner's own devices — never another partner's.
+  runDb('empty ring resolves severity from its partner\'s devices and returns externalId/version', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const site = await createSite({ orgId: env.organization.id });
+    const deviceId = await seedDevice(env.organization.id, site.id, 'empty-ring-partner-device');
+    const patchId = await seedUnclassifiedMicrosoftPatch();
+    await seedDevicePatch({ deviceId, orgId: env.organization.id, patchId, reportedSeverity: 'critical' });
+    await withSystemDbAccessContext(() =>
+      db.update(patches).set({ version: '10.0.26100.2314' }).where(eq(patches.id, patchId)),
+    );
+
+    // Another partner's device reports a severity for a different patch; the
+    // empty ring must not pick it up.
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    const otherDeviceId = await seedDevice(otherOrg.id, otherSite.id, 'empty-ring-foreign-device');
+    const foreignPatchId = await seedUnclassifiedMicrosoftPatch('Foreign Cumulative Update');
+    await seedDevicePatch({ deviceId: otherDeviceId, orgId: otherOrg.id, patchId: foreignPatchId, reportedSeverity: 'critical' });
+
+    // No linkPolicyToRing: the ring resolves zero devices.
+    const [ring] = await withSystemDbAccessContext(() =>
+      db.insert(patchPolicies).values({
+        partnerId: env.partner.id,
+        kind: 'ring',
+        name: `ring-${randomUUID().slice(0, 8)}`,
+      }).returning({ id: patchPolicies.id }),
+    );
+    if (!ring) throw new Error('failed to seed ring');
+
+    const app = new Hono();
+    app.route('/update-rings', updateRingRoutes);
+
+    const res = await app.request(`/update-rings/${ring.id}/patches?limit=100&severity=critical`, {
+      headers: { Authorization: `Bearer ${env.token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const ids = body.data.map((p: { id: string }) => p.id);
+    expect(ids).toContain(patchId);
+    expect(ids).not.toContain(foreignPatchId);
+    const row = body.data.find((p: { id: string }) => p.id === patchId);
+    expect(row.severity).toBe('critical');
+    expect(row.externalId).toMatch(/^msrc:/);
+    expect(row.version).toBe('10.0.26100.2314');
+  });
 });

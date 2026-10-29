@@ -80,6 +80,8 @@ vi.mock('../db/schema', () => ({
     severity: 'severity',
     category: 'category',
     osTypes: 'osTypes',
+    externalId: 'externalId',
+    version: 'version',
     releaseDate: 'releaseDate',
     requiresReboot: 'requiresReboot',
     downloadSizeMb: 'downloadSizeMb',
@@ -652,6 +654,123 @@ describe('updateRings routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+    // #9930: the shared PatchList renders `version` / `externalId` as the
+    // disambiguator for colliding titles (#9533); the ring list must project
+    // them from the catalog row exactly as GET /patches does.
+    describe('catalog identity and empty-ring severity (#9930)', () => {
+      // Flattens a Drizzle SQL tree to text; interpolated values appear inline, so a
+      // partner-id predicate is visible.
+      const flattenWithParams = (node: unknown): string => {
+        if (node === null || node === undefined) return '';
+        if (typeof node === 'string') return node;
+        if (Array.isArray(node)) return node.map(flattenWithParams).join('');
+        const n = node as { queryChunks?: unknown[]; value?: unknown };
+        if (Array.isArray(n.queryChunks)) return n.queryChunks.map(flattenWithParams).join('');
+        if (Array.isArray(n.value)) return (n.value as unknown[]).map(flattenWithParams).join('');
+        if (typeof n.value === 'string') return `<${n.value}>`;
+        return '';
+      };
+
+      function mockRingPatchesQueries(rows: Record<string, unknown>[]) {
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ id: RING_ID, partnerId: PARTNER_ID }])
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue(rows) })
+                })
+              })
+            })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: rows.length }]) })
+          } as any)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ groupBy: vi.fn().mockResolvedValue([]) })
+            })
+          } as any);
+        // The approvals read only runs when the page has rows; an unconsumed
+        // once-mock would leak into the next test.
+        if (rows.length > 0) {
+          vi.mocked(db.select).mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+          } as any);
+        }
+      }
+
+      it('projects externalId and version from the patch catalog and returns them', async () => {
+        mockRingPatchesQueries([
+          {
+            id: PATCH_ID,
+            title: 'Google Chrome',
+            source: 'third_party',
+            severity: 'moderate',
+            osTypes: ['windows'],
+            externalId: 'Google.Chrome',
+            version: '130.0.6723.70',
+            createdAt: new Date('2026-01-01')
+          }
+        ]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        expect(projection.externalId).toBe('externalId');
+        expect(projection.version).toBe('version');
+        const body = await res.json();
+        expect(body.data[0].externalId).toBe('Google.Chrome');
+        expect(body.data[0].version).toBe('130.0.6723.70');
+      });
+
+      it("falls back to the ring partner's devices for severity/category when the ring has no devices", async () => {
+        // Default mock: the ring resolves zero devices.
+        mockRingPatchesQueries([]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        for (const key of ['severity', 'severitySource', 'category']) {
+          const text = flattenWithParams(projection[key]);
+          // Never `IN (NULL)` (which made every non-trusted row 'unknown' /
+          // Unrated), and never unscoped: pinned to the ring's own partner.
+          expect(text, key).not.toContain('IN (NULL)');
+          expect(text, key).toContain('"organizations"."partner_id" = ');
+          expect(text, key).toContain(PARTNER_ID);
+        }
+      });
+
+      it('keeps the ring-device scope (no partner fallback) when the ring has devices', async () => {
+        vi.mocked(resolveRingDeviceIdsWithWarnings).mockResolvedValueOnce({ deviceIds: ['d1', 'd2'], warnings: [] } as any);
+        mockRingPatchesQueries([]);
+
+        const res = await app.request(`/update-rings/${RING_ID}/patches`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+        expect(res.status).toBe(200);
+
+        const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
+        const text = flattenWithParams(projection.severity);
+        expect(text).toContain('"device_patches"."device_id" IN (d1, d2)');
+        expect(text).not.toContain('"organizations"."partner_id"');
+      });
     });
   });
 

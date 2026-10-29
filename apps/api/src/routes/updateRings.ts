@@ -565,10 +565,23 @@ updateRingRoutes.get(
     // already used below for approval-status scoping — rather than the flat
     // per-row overlay fragment used where a query already joins one device's
     // `device_patches` row directly.
+    //
+    // A ring with no devices yet (#9930) falls back to the devices of the
+    // ring's own partner — the fleet the ring would govern, and the same
+    // population GET /patches resolves severity from for that partner. The
+    // old `IN (NULL)` matched nothing, so every non-trusted row read
+    // 'unknown' (Unrated). Pinned to `ring.partnerId`, never unscoped:
+    // `patches` is global and system-scope callers bypass RLS. Display only:
+    // approval status below is read from patch_approvals, not severity.
     const { deviceIds: ringDeviceIds } = await resolveRingDeviceIdsWithWarnings(id);
     const ringDeviceIdListSql = ringDeviceIds.length > 0
       ? sql`(${sql.join(ringDeviceIds.map((deviceId) => sql`${deviceId}`), sql`, `)})`
-      : sql`(NULL)`;
+      : sql`(
+        SELECT "devices"."id"
+        FROM "devices"
+        INNER JOIN "organizations" ON "organizations"."id" = "devices"."org_id"
+        WHERE "organizations"."partner_id" = ${ring.partnerId}
+      )`;
     const effectiveSeveritySql = sql<string>`COALESCE(NULLIF(${patches.severity}::text, 'unknown'), (
       SELECT "device_patches"."reported_severity"::text
       FROM "device_patches"
@@ -625,6 +638,10 @@ updateRingRoutes.get(
         title: patches.title,
         description: patches.description,
         source: patches.source,
+        // Catalog identity — the web's PatchList shows version/externalId as
+        // the disambiguator when titles collide (#9533, #9930), same as GET /patches.
+        externalId: patches.externalId,
+        version: patches.version,
         severity: effectiveSeveritySql,
         severitySource: effectiveSeveritySourceSql,
         category: effectiveCategorySql,
