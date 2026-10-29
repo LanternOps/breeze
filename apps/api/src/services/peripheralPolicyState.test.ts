@@ -264,24 +264,27 @@ describe('planPeripheralPolicyResult', () => {
   });
 });
 
+// The locked device read joins its org and partner (lifecycle gate, #10362).
+function deviceSelect(row: Record<string, unknown>) {
+  const join = { innerJoin: () => join, where: () => ({ limit: () => ({ for: () => Promise.resolve([{
+    id: identity.deviceId,
+    orgId: identity.orgId,
+    peripheralPolicyProtocolVersion: 2,
+    status: 'online',
+    orgStatus: 'active',
+    orgDeletedAt: null,
+    partnerStatus: 'active',
+    partnerDeletedAt: null,
+    ...row,
+  }]) }) }) };
+  return { from: () => join };
+}
+
 describe('reconcilePeripheralPolicyDevice trust gate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     txMock.select
-      .mockReturnValueOnce({
-        from: () => ({
-          where: () => ({
-            limit: () => ({
-              for: () => Promise.resolve([{
-                id: identity.deviceId,
-                orgId: identity.orgId,
-                peripheralPolicyProtocolVersion: 2,
-                status: 'active',
-              }]),
-            }),
-          }),
-        }),
-      })
+      .mockReturnValueOnce(deviceSelect({ status: 'active' }))
       .mockReturnValueOnce({
         from: () => ({
           where: () => ({ limit: () => ({ for: () => Promise.resolve([]) }) }),
@@ -292,20 +295,7 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
 
   it('treats a decommissioned device as incompatible without consulting partner trust', async () => {
     txMock.select.mockReset();
-    txMock.select.mockReturnValueOnce({
-      from: () => ({
-        where: () => ({
-          limit: () => ({
-            for: () => Promise.resolve([{
-              id: identity.deviceId,
-              orgId: identity.orgId,
-              peripheralPolicyProtocolVersion: 2,
-              status: 'decommissioned',
-            }]),
-          }),
-        }),
-      }),
-    });
+    txMock.select.mockReturnValueOnce(deviceSelect({ status: 'decommissioned' }));
 
     await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'periodic_drift'))
       .resolves.toBe('incompatible');
@@ -315,22 +305,51 @@ describe('reconcilePeripheralPolicyDevice trust gate', () => {
     expect(txMock.update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['suspended partner', { partnerStatus: 'suspended' }],
+    ['churned partner', { partnerStatus: 'churned' }],
+    ['pending partner', { partnerStatus: 'pending' }],
+    ['soft-deleted partner', { partnerDeletedAt: new Date('2026-10-01T00:00:00Z') }],
+    ['suspended org', { orgStatus: 'suspended' }],
+    ['offboarding org', { orgStatus: 'offboarding' }],
+    ['soft-deleted org', { orgDeletedAt: new Date('2026-10-01T00:00:00Z') }],
+  ])('treats a device of a %s as incompatible without consulting partner trust (#10362)', async (_label, row) => {
+    txMock.select.mockReset();
+    txMock.select.mockReturnValueOnce(deviceSelect(row));
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'periodic_drift'))
+      .resolves.toBe('incompatible');
+
+    expect(loadEffectivePolicyMock).not.toHaveBeenCalled();
+    expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+    expect(txMock.insert).not.toHaveBeenCalled();
+    expect(txMock.update).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a device of a trial org of an active partner', async () => {
+    txMock.select.mockReset();
+    txMock.select
+      .mockReturnValueOnce(deviceSelect({ orgStatus: 'trial' }))
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => ({ for: () => Promise.resolve([]) }) }),
+        }),
+      });
+    txMock.insert
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) })
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'command-1' }]) }),
+      })
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) });
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'policy_changed'))
+      .resolves.toBe('queued');
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledTimes(1);
+  });
+
   it('treats a device parked in a holding org as incompatible without any write', async () => {
     txMock.select.mockReset();
-    txMock.select.mockReturnValueOnce({
-      from: () => ({
-        where: () => ({
-          limit: () => ({
-            for: () => Promise.resolve([{
-              id: identity.deviceId,
-              orgId: identity.orgId,
-              peripheralPolicyProtocolVersion: 2,
-              status: 'online',
-            }]),
-          }),
-        }),
-      }),
-    });
+    txMock.select.mockReturnValueOnce(deviceSelect({ status: 'online' }));
     parkedDeviceIds.add(identity.deviceId);
     try {
       await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'policy_changed'))

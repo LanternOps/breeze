@@ -35,7 +35,19 @@ vi.mock('../db/schema', () => ({
     peripheralPolicyProtocolVersion: 'device.peripheralPolicyProtocolVersion',
     status: 'device.status',
   },
-  organizations: { id: 'organization.id', partnerId: 'organization.partnerId', type: 'organization.type' },
+  organizations: {
+    id: 'organization.id',
+    partnerId: 'organization.partnerId',
+    type: 'organization.type',
+    status: 'organization.status',
+    deletedAt: 'organization.deletedAt',
+  },
+  partners: {
+    id: 'partner.id',
+    status: 'partner.status',
+    trustState: 'partner.trustState',
+    deletedAt: 'partner.deletedAt',
+  },
   peripheralEvents: {},
   peripheralPolicies: {},
 }));
@@ -48,10 +60,12 @@ vi.mock('../services/commandQueue', () => ({
 vi.mock('../services/peripheralPolicyState', () => ({
   reconcilePeripheralPolicyDevice: vi.fn(),
 }));
+const { trustModeMock } = vi.hoisted(() => ({ trustModeMock: vi.fn(() => 'off') }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: trustModeMock }));
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
-import { and, eq, ne } from 'drizzle-orm';
-import { devices } from '../db/schema';
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { devices, organizations, partners } from '../db/schema';
 import {
   processPeripheralPolicyReconciliationSweep,
   resolvePeripheralPolicyDeviceIds,
@@ -65,6 +79,7 @@ describe('schedulePeripheralPolicyDevice', () => {
     queueMock.add.mockResolvedValue({ id: 'new-job' });
     queueMock.getRepeatableJobs.mockResolvedValue([]);
     selectMock.mockReset();
+    trustModeMock.mockReturnValue('off');
   });
 
   it('uses one stable device-keyed job and coalesces a newer reason', async () => {
@@ -130,9 +145,10 @@ describe('schedulePeripheralPolicyDevice', () => {
   });
 
   it('keyset-pages the fleet and lets reconciliation coalesce non-drifted devices', async () => {
+    const trusted = { partnerId: 'partner-1', trustState: 'trusted' as const };
     const loadPage = vi.fn()
-      .mockResolvedValueOnce([{ id: 'device-1' }, { id: 'device-2' }])
-      .mockResolvedValueOnce([{ id: 'device-3' }]);
+      .mockResolvedValueOnce([{ id: 'device-1', ...trusted }, { id: 'device-2', ...trusted }])
+      .mockResolvedValueOnce([{ id: 'device-3', ...trusted }]);
     const reconcile = vi.fn()
       .mockResolvedValueOnce('coalesced')
       .mockResolvedValueOnce('queued')
@@ -142,7 +158,7 @@ describe('schedulePeripheralPolicyDevice', () => {
       pageSize: 2,
       loadPage,
       reconcile,
-    })).resolves.toEqual({ scanned: 3, queued: 1, coalesced: 1, incompatible: 1 });
+    })).resolves.toEqual({ scanned: 3, queued: 1, coalesced: 1, incompatible: 1, trustDenied: 0 });
     expect(loadPage.mock.calls).toEqual([[null, 2], ['device-2', 2]]);
     expect(reconcile.mock.calls).toEqual([
       ['device-1', 'periodic_drift'],
@@ -151,17 +167,26 @@ describe('schedulePeripheralPolicyDevice', () => {
     ]);
   });
 
-  it('never sweeps decommissioned devices in the default fleet page query', async () => {
+  it('never sweeps decommissioned devices or inactive tenants in the default fleet page query', async () => {
     const where = vi.fn().mockReturnValue({
       orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
     });
-    selectMock.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+    const secondJoin = vi.fn().mockReturnValue({ where });
+    const firstJoin = vi.fn().mockReturnValue({ innerJoin: secondJoin });
+    selectMock.mockReturnValue({ from: vi.fn().mockReturnValue({ innerJoin: firstJoin }) });
 
     await expect(processPeripheralPolicyReconciliationSweep({
       pageSize: 50,
       reconcile: vi.fn(),
-    })).resolves.toEqual({ scanned: 0, queued: 0, coalesced: 0, incompatible: 0 });
+    })).resolves.toEqual({ scanned: 0, queued: 0, coalesced: 0, incompatible: 0, trustDenied: 0 });
 
+    expect(selectMock).toHaveBeenCalledWith({
+      id: devices.id,
+      partnerId: organizations.partnerId,
+      trustState: partners.trustState,
+    });
+    expect(firstJoin).toHaveBeenCalledWith(organizations, eq(organizations.id, devices.orgId));
+    expect(secondJoin).toHaveBeenCalledWith(partners, eq(partners.id, organizations.partnerId));
     expect(where).toHaveBeenCalledTimes(1);
     expect(where.mock.calls[0]?.[0]).toEqual(and(
       eq(devices.isEphemeral, false),
@@ -169,7 +194,40 @@ describe('schedulePeripheralPolicyDevice', () => {
       notParkedDeviceCondition(),
       eq(devices.peripheralPolicyProtocolVersion, 2),
       ne(devices.status, 'decommissioned'),
+      // #10362: never a device of a suspended/churned/offboarding/deleted org or partner.
+      inArray(organizations.status, ['active', 'trial']),
+      isNull(organizations.deletedAt),
+      eq(partners.status, 'active'),
+      isNull(partners.deletedAt),
     ));
+  });
+
+  it('skips (never reconciles) devices whose partner trust would deny the push in enforce mode (#10362)', async () => {
+    trustModeMock.mockReturnValue('enforce');
+    const loadPage = vi.fn().mockResolvedValueOnce([
+      { id: 'device-1', partnerId: 'partner-trusted', trustState: 'trusted' },
+      { id: 'device-2', partnerId: 'partner-probation', trustState: 'probation' },
+      { id: 'device-3', partnerId: 'partner-restricted', trustState: 'restricted' },
+    ]);
+    const reconcile = vi.fn().mockResolvedValue('coalesced');
+
+    await expect(processPeripheralPolicyReconciliationSweep({ pageSize: 10, loadPage, reconcile }))
+      .resolves.toEqual({ scanned: 3, queued: 0, coalesced: 1, incompatible: 0, trustDenied: 2 });
+    // Only the trusted device reaches reconcile, so the denied ones never hit
+    // the trust gate and never write a capability_denied audit row per sweep.
+    expect(reconcile.mock.calls).toEqual([['device-1', 'periodic_drift']]);
+  });
+
+  it('still reconciles non-trusted partners in shadow mode (gate allows, audits once, then coalesces)', async () => {
+    trustModeMock.mockReturnValue('shadow');
+    const loadPage = vi.fn().mockResolvedValueOnce([
+      { id: 'device-1', partnerId: 'partner-probation', trustState: 'probation' },
+    ]);
+    const reconcile = vi.fn().mockResolvedValue('queued');
+
+    await expect(processPeripheralPolicyReconciliationSweep({ pageSize: 10, loadPage, reconcile }))
+      .resolves.toEqual({ scanned: 1, queued: 1, coalesced: 0, incompatible: 0, trustDenied: 0 });
+    expect(reconcile).toHaveBeenCalledWith('device-1', 'periodic_drift');
   });
 
   it('installs one jittered recurring sweep instead of synchronized fleet work', async () => {
