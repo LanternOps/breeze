@@ -17,13 +17,13 @@ type winEventStream struct {
 }
 
 // Keys are persisted: keep their spelling and the round-robin order stable.
-func windowsEventStreams(categories []string) []winEventStream {
+func windowsEventStreams(categories, appProviders []string) []winEventStream {
 	return []winEventStream{
 		{"security", "Security", securityEventSelection(), categoryEnabled(categories, "security")},
 		{"system-errors", "System", "(Level=1 or Level=2)", systemLogQueryEnabled(categories)},
 		{"system-power", "System", powerEventSelection(), categoryEnabled(categories, "system")},
 		{"application-errors", "Application", "(Level=1 or Level=2)", categoryEnabled(categories, "application")},
-		{"application-providers", "Application", applicationProviderSelection(applicationInfoProviderAllowlist), categoryEnabled(categories, "application")},
+		{"application-providers", "Application", applicationProviderSelection(appProviders), categoryEnabled(categories, "application")},
 	}
 }
 
@@ -148,12 +148,13 @@ func caughtUpWinEventAdvances(streams []winEventStreamResult, consumed []int, pr
 }
 
 type windowsEventPassSnapshot struct {
-	categories []string
-	minLevel   string
-	maxEvents  int
-	streams    []winEventStream
-	xpaths     []string
-	previous   map[string]eventLogBookmark
+	categories           []string
+	minLevel             string
+	maxEvents            int
+	streams              []winEventStream
+	xpaths               []string
+	previous             map[string]eventLogBookmark
+	applicationProviders []string
 }
 
 // snapshotWindowsStreams releases the mutex even if query construction or
@@ -168,7 +169,8 @@ func (c *EventLogCollector) snapshotWindowsStreams(now time.Time) windowsEventPa
 		maxEvents:  c.maxEvents,
 		previous:   make(map[string]eventLogBookmark),
 	}
-	snapshot.streams = windowsEventStreams(snapshot.categories)
+	snapshot.applicationProviders = effectiveApplicationProviders(c.policyApplicationProviders)
+	snapshot.streams = windowsEventStreams(snapshot.categories, snapshot.applicationProviders)
 	snapshot.xpaths = make([]string, len(snapshot.streams))
 	for i, stream := range snapshot.streams {
 		if !stream.enabled {
@@ -176,6 +178,28 @@ func (c *EventLogCollector) snapshotWindowsStreams(now time.Time) windowsEventPa
 		}
 		var bookmark *eventLogBookmark
 		if b, ok := c.bookmarks[stream.key]; ok {
+			if stream.key == "application-providers" {
+				stored := b.Providers
+				// Version-1 bookmarks from before policy providers covered the built-ins.
+				if stored == nil {
+					stored = applicationInfoProviderAllowlist
+				}
+				added := addedApplicationProviders(snapshot.applicationProviders, stored)
+				if len(added) > 0 {
+					anchor := b.Time
+					if anchor.IsZero() {
+						anchor = c.lastCollectTime
+					}
+					b = eventLogBookmark{Time: anchor}
+					// A failed/unacknowledged pass retries the same reset without log spam.
+					if !slicesEqual(c.applicationProviderReanchorLogged, snapshot.applicationProviders) {
+						slog.Info("event log application providers changed; re-anchoring stream", "collector", c.name, "added", added)
+						c.applicationProviderReanchorLogged = append([]string(nil), snapshot.applicationProviders...)
+					}
+				} else {
+					c.applicationProviderReanchorLogged = nil
+				}
+			}
 			bookmark = &b
 			snapshot.previous[stream.key] = b
 		}
@@ -233,6 +257,12 @@ func (c *EventLogCollector) collectWindowsStreams(run winEventQueryRunner, now t
 	events, advances, consumed := cutWinEventStreams(results, snapshot.minLevel, snapshot.maxEvents)
 	for key, bookmark := range caughtUpWinEventAdvances(results, consumed, snapshot.previous, now) {
 		advances[key] = bookmark
+	}
+	// Stamp only advances, using the providers queried by this pass. A config
+	// update during the query must not label old results with a newer list.
+	if bookmark, ok := advances["application-providers"]; ok {
+		bookmark.Providers = append([]string(nil), snapshot.applicationProviders...)
+		advances["application-providers"] = bookmark
 	}
 	for i, result := range results {
 		if len(result.records) == perQueryCap || consumed[i] < len(result.records) {

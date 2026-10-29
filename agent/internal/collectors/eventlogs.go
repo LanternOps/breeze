@@ -46,19 +46,21 @@ type EventLogCollector struct {
 	sourceWatermarks map[string]time.Time
 	// Windows bookmarks advance only through consumed records. Persistent
 	// collectors stage each pass until the heartbeat acknowledges its upload.
-	bookmarks       map[string]eventLogBookmark
-	pending         map[string]eventLogBookmark
-	bookmarkPath    string
-	bookmarksLoaded bool
-	ackRequired     bool
-	failedSends     int
-	floored         map[string]bool
-	failing         map[string]bool
-	saveFailing     bool
-	maxEvents       int
-	categories      []string
-	minimumLevel    string
-	intervalMinutes int
+	bookmarks                         map[string]eventLogBookmark
+	pending                           map[string]eventLogBookmark
+	bookmarkPath                      string
+	bookmarksLoaded                   bool
+	ackRequired                       bool
+	failedSends                       int
+	floored                           map[string]bool
+	failing                           map[string]bool
+	saveFailing                       bool
+	maxEvents                         int
+	categories                        []string
+	minimumLevel                      string
+	intervalMinutes                   int
+	policyApplicationProviders        []string
+	applicationProviderReanchorLogged []string
 }
 
 // NewEventLogCollector creates a new EventLogCollector

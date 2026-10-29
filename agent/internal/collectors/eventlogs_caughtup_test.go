@@ -3,6 +3,7 @@ package collectors
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func TestCaughtUpWinEventAdvances(t *testing.T) {
 				}
 				return
 			}
-			if len(got) != 1 || got["security"] != *tc.want {
+			if len(got) != 1 || !reflect.DeepEqual(got["security"], *tc.want) {
 				t.Fatalf("advances = %v, want security=%+v", got, *tc.want)
 			}
 		})
@@ -67,12 +68,12 @@ func TestWindowsQuietStreamRefreshesAnchor(t *testing.T) {
 			c.lastCollectTime = first.Add(-25 * time.Hour)
 			c.collectWindowsStreams(func(_, _ string) ([]winEvent, error) { return nil, nil }, first)
 			want := eventLogBookmark{Time: first}
-			if c.pending["security"] != want || len(c.bookmarks) != 0 {
+			if !reflect.DeepEqual(c.pending["security"], want) || len(c.bookmarks) != 0 {
 				t.Fatalf("quiet advance must wait for ack: pending=%v committed=%v", c.pending, c.bookmarks)
 			}
 			c.CompletePass(EventLogPassSent)
 			bookmark := streamTestBookmark(t, c, "security")
-			if bookmark != want {
+			if !reflect.DeepEqual(bookmark, want) {
 				t.Fatalf("quiet bookmark = %+v, want %+v", bookmark, want)
 			}
 			second := first.Add(tc.gap)
@@ -86,7 +87,7 @@ func TestWindowsQuietStreamRefreshesAnchor(t *testing.T) {
 				t.Fatalf("second quiet pass did not use first pass anchor: %s", query)
 			}
 			c.CompletePass(EventLogPassSent)
-			if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{Time: second}) {
+			if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, eventLogBookmark{Time: second}) {
 				t.Fatalf("second quiet bookmark = %+v", got)
 			}
 		})
@@ -99,7 +100,7 @@ func TestWindowsQuietStreamRetainsRecordID(t *testing.T) {
 	c.categories = []string{"security"}
 	c.bookmarks = map[string]eventLogBookmark{"security": {RecordID: 10, Time: now.Add(-72 * time.Hour)}}
 	c.collectWindowsStreams(func(_, _ string) ([]winEvent, error) { return nil, nil }, now)
-	if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{RecordID: 10, Time: now}) {
+	if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, eventLogBookmark{RecordID: 10, Time: now}) {
 		t.Fatalf("quiet stream lost ID or retained stale time: %+v", got)
 	}
 }

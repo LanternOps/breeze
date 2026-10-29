@@ -156,7 +156,7 @@ func TestCompleteEventLogPass(t *testing.T) {
 					t.Fatal("pending not cleared")
 				}
 			}
-			if c.bookmarks["security"] != tc.want || c.bookmarks["system-power"] != old || c.failedSends != tc.failures {
+			if !reflect.DeepEqual(c.bookmarks["security"], tc.want) || !reflect.DeepEqual(c.bookmarks["system-power"], old) || c.failedSends != tc.failures {
 				t.Fatalf("bookmarks=%v failures=%d; want security=%v failures=%d", c.bookmarks, c.failedSends, tc.want, tc.failures)
 			}
 			if !tc.saved {
@@ -217,7 +217,7 @@ func TestEventLogBookmarkSaveFailureKeepsMemory(t *testing.T) {
 	next := eventLogBookmark{RecordID: 42, Time: time.Now().UTC()}
 	c.pending = map[string]eventLogBookmark{"security": next}
 	c.CompletePass(EventLogPassSent)
-	if c.bookmarks["security"] != next || c.pending != nil || c.failedSends != 0 {
+	if !reflect.DeepEqual(c.bookmarks["security"], next) || c.pending != nil || c.failedSends != 0 {
 		t.Fatalf("save failure lost committed state: bookmarks=%v pending=%v failures=%d", c.bookmarks, c.pending, c.failedSends)
 	}
 }

@@ -501,25 +501,26 @@ type Heartbeat struct {
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
 	// overlap; without this they would diff the same baseline, upload the same
 	// records twice, and race to commit (#3529).
-	changeTrackerMu    sync.Mutex
-	sessionCol         *collectors.SessionCollector
-	policyStateCol     *collectors.PolicyStateCollector
-	patchCol           *collectors.PatchCollector
-	patchMgr           *patching.PatchManager
-	connectionsCol     *collectors.ConnectionsCollector
-	eventLogCol        *collectors.EventLogCollector
-	bootCol            *collectors.BootPerformanceCollector
-	reliabilityCol     *collectors.ReliabilityCollector
-	loopDefer          loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
-	agentVersion       string
-	desktopMgr         *desktop.SessionManager
-	wsDesktopMgr       *desktop.WsSessionManager
-	terminalMgr        *terminal.Manager
-	tunnelMgr          *tunnel.Manager
-	executor           *executor.Executor
-	backupBinaryPath   string
-	rollbackController rollbackController
-	rebootMgr          *patching.RebootManager
+	changeTrackerMu           sync.Mutex
+	sessionCol                *collectors.SessionCollector
+	policyStateCol            *collectors.PolicyStateCollector
+	patchCol                  *collectors.PatchCollector
+	patchMgr                  *patching.PatchManager
+	connectionsCol            *collectors.ConnectionsCollector
+	eventLogCol               *collectors.EventLogCollector
+	eventLogRejectedProviders []string // protected by mu; suppress repeated invalid-config warnings
+	bootCol                   *collectors.BootPerformanceCollector
+	reliabilityCol            *collectors.ReliabilityCollector
+	loopDefer                 loopDeferral // per-route Retry-After deferral (W09, loop_deferral.go)
+	agentVersion              string
+	desktopMgr                *desktop.SessionManager
+	wsDesktopMgr              *desktop.WsSessionManager
+	terminalMgr               *terminal.Manager
+	tunnelMgr                 *tunnel.Manager
+	executor                  *executor.Executor
+	backupBinaryPath          string
+	rollbackController        rollbackController
+	rebootMgr                 *patching.RebootManager
 	// recoveryMarkerVal (W04a) is guarded by mu like the other single-value
 	// fields above (see lifecycleMode()); read every beat by
 	// recoveryMarker() and cleared once the server acks it.
@@ -3899,6 +3900,40 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 		interval = asInt("collectionIntervalMinutes")
 	}
 
+	// Presence is distinct from an empty list: old servers omit this key, while
+	// an empty array deliberately removes all policy additions.
+	providersRaw, providersPresent := m["application_providers"]
+	if !providersPresent {
+		providersRaw, providersPresent = m["applicationProviders"]
+	}
+	var providers []string
+	providersArray := false
+	switch values := providersRaw.(type) {
+	case []any:
+		providersArray = true
+		for _, value := range values {
+			if name, ok := value.(string); ok {
+				providers = append(providers, name)
+			}
+		}
+	case []string:
+		providersArray = true
+		providers = values
+	}
+	if providersPresent && providersArray {
+		changed, rejected := h.eventLogCol.UpdateApplicationProviders(providers)
+		h.mu.Lock()
+		warnRejected := len(rejected) > 0 && (changed || !slices.Equal(h.eventLogRejectedProviders, rejected))
+		h.eventLogRejectedProviders = append([]string(nil), rejected...)
+		h.mu.Unlock()
+		if warnRejected {
+			log.Warn("rejected invalid event log application providers", "providers", rejected)
+		}
+		if changed {
+			log.Info("applied event log application providers", "applicationProviders", h.eventLogCol.ApplicationProviders())
+		}
+	}
+
 	if maxEvents > 0 || len(categories) > 0 || minLevel != "" || interval > 0 {
 		changed := h.eventLogCol.UpdateConfig(maxEvents, categories, minLevel, interval)
 		if changed {
@@ -3917,7 +3952,7 @@ func (h *Heartbeat) applyEventLogConfig(raw any) {
 			}
 			log.Info("applied event log config update", logFields...)
 		}
-	} else if len(m) > 0 {
+	} else if len(m) > 0 && !providersPresent {
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)

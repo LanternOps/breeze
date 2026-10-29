@@ -130,7 +130,7 @@ func TestWindowsStreamsFailureIsolation(t *testing.T) {
 	if len(got) != 2 || got[0].EventID != "1104:21" || got[1].EventID != "1104:22" {
 		t.Fatalf("healthy streams did not retain deterministic output: %+v", got)
 	}
-	if got := streamTestBookmark(t, c, "security"); got != old {
+	if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, old) {
 		t.Fatalf("failed stream advanced: %+v", got)
 	}
 	for key, want := range map[string]int64{"application-errors": 21, "application-providers": 22} {
@@ -152,7 +152,7 @@ func TestWindowsStreamsCapDrainsFromLastRecord(t *testing.T) {
 	if got := c.collectWindowsStreams(func(_, _ string) ([]winEvent, error) { return batch, nil }, now); len(got) != 50 {
 		t.Fatalf("collected %d events, want 50", len(got))
 	}
-	if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{RecordID: 50, Time: now.Add(-time.Second)}) {
+	if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, eventLogBookmark{RecordID: 50, Time: now.Add(-time.Second)}) {
 		t.Fatalf("capped query was incorrectly treated as caught up: %+v", got)
 	}
 	var nextXPath string
@@ -180,7 +180,7 @@ func TestWindowsStreamsAckRetryAndRestart(t *testing.T) {
 		return []winEvent{streamTestEvent(20, now)}, nil
 	}
 	c.collectWindowsStreams(run, now)
-	if got := streamTestBookmark(t, c, "security"); got != old {
+	if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, old) {
 		t.Fatalf("unacknowledged pass advanced bookmark: %+v", got)
 	}
 	c.CompletePass(EventLogPassFailed)
@@ -291,7 +291,7 @@ func TestWindowsStreamsCategoryEnablement(t *testing.T) {
 				t.Fatalf("queried %v, want %v", queried, want)
 			}
 			for key, bookmark := range c.bookmarks {
-				if !want[key] && bookmark != old {
+				if !want[key] && !reflect.DeepEqual(bookmark, old) {
 					t.Errorf("disabled stream %s advanced to %+v", key, bookmark)
 				}
 			}
@@ -325,7 +325,7 @@ func TestWindowsStreamsCutStagesOnlyConsumedRecords(t *testing.T) {
 		t.Fatalf("unexpected cut: %+v", got)
 	}
 	c.CompletePass(EventLogPassSent)
-	if got := streamTestBookmark(t, c, "security"); got != (eventLogBookmark{RecordID: 2, Time: recordTime}) {
+	if got := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(got, eventLogBookmark{RecordID: 2, Time: recordTime}) {
 		t.Fatalf("cut stream was incorrectly treated as caught up: %+v", got)
 	}
 	var query string

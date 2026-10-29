@@ -28,8 +28,9 @@ const (
 )
 
 type eventLogBookmark struct {
-	RecordID int64     `json:"recordId"`
-	Time     time.Time `json:"time"`
+	RecordID  int64     `json:"recordId"`
+	Time      time.Time `json:"time"`
+	Providers []string  `json:"providers,omitempty"`
 }
 
 type eventLogBookmarkState struct {
