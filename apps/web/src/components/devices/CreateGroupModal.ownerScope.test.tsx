@@ -7,7 +7,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { showToast } from '../shared/Toast';
 import { i18n } from '@/lib/i18n';
 
-const state = vi.hoisted(() => ({ partner: true, wide: true, defaultScope: 'organization' as 'organization' | 'partner' }));
+const state = vi.hoisted(() => ({ partner: true, wide: true as boolean | undefined, defaultScope: 'organization' as 'organization' | 'partner' }));
 vi.mock('@/hooks/useDefaultOwnerScope', () => ({ useDefaultOwnerScope: () => ({ isPartnerScope: state.partner, defaultOwnerScope: state.defaultScope }) }));
 vi.mock('@/lib/authScope', () => ({ getJwtClaims: () => ({ scope: state.partner ? 'partner' : 'organization' }) }));
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), useAuthStore: (selector: (s: unknown) => unknown) => selector({ user: { canManagePartnerWide: state.wide } }) }));
@@ -30,15 +30,30 @@ describe('CreateGroupModal owner scope', () => {
     expect(screen.queryByRole('button', { name: 'Dynamic' })).not.toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Name' }), 'All servers');
     await user.click(screen.getByRole('button', { name: 'Create Group' }));
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('group-1'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('group-1', 'partner'));
     const body = JSON.parse(String(mockFetch.mock.calls[0][1]?.body));
     expect(body).toEqual({ ownerScope: 'partner', name: 'All servers', type: 'dynamic', filterConditions: { operator: 'AND', conditions: [{ field: 'hostname', operator: 'contains', value: '' }] } });
     expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Device group created' });
   });
   it.each(['restricted partner', 'organization'])('hides owner selector for %s', (kind) => {
-    state.partner = kind !== 'organization'; state.wide = false;
+    state.partner = kind !== 'organization'; state.wide = kind === 'organization';
     render(<CreateGroupModal isOpen onClose={vi.fn()} onCreated={vi.fn()} />);
     expect(screen.queryByTestId('group-owner-scope')).not.toBeInTheDocument();
+  });
+  it('shows the owner selector when partner-wide capability is absent', () => {
+    state.wide = undefined;
+    render(<CreateGroupModal isOpen onClose={vi.fn()} onCreated={vi.fn()} />);
+    expect(screen.getByTestId('group-owner-scope')).toBeInTheDocument();
+  });
+  it('shows one error toast and an inline error without success when the response has no id', async () => {
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status: 201 }));
+    const user = userEvent.setup(); const onCreated = vi.fn();
+    render(<CreateGroupModal isOpen onClose={vi.fn()} onCreated={onCreated} />);
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Servers');
+    await user.click(screen.getByRole('button', { name: 'Create Group' }));
+    expect(await screen.findByText(i18n.t('devices:createGroupModal.failedToCreateGroup'))).toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledExactlyOnceWith({ type: 'error', message: i18n.t('devices:createGroupModal.failedToCreateGroup') });
+    expect(onCreated).not.toHaveBeenCalled();
   });
   it('uses the latest ambient default when a mounted closed modal opens', () => {
     const props = { onClose: vi.fn(), onCreated: vi.fn() };

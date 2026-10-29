@@ -333,6 +333,7 @@
     "cancel": "Annuler",
     "detachConfirm": "Détacher de {{policy}}?",
     "errors": {
+      "loadGroups": "Impossible de charger les groupes d’appareils.",
       "attach": "Impossible de joindre le moniteur",
       "detach": "Impossible de détacher le moniteur",
       "linkedFeature": "Les moniteurs de cette politique proviennent d'une politique de fonctionnalité partagée. Modifiez cette politique ou choisissez-en une autre."

@@ -46,9 +46,9 @@ export function PartnerGroupMembers({ groupId }: { groupId: string }) {
     void (async () => {
       try {
         const response = await fetchWithAuth(`/device-groups/${groupId}/devices`);
-        const body = await response.json();
+        const body = await response.json().catch(() => null);
         if (!response.ok) throw new Error(groupApiErrorMessage(body, t('partnerGroups.membersError')));
-        if (active) setMembers(body.data ?? []);
+        if (active) setMembers(body?.data ?? []);
       } catch (err) {
         if (active) setError(err instanceof Error ? err.message : t('partnerGroups.membersError'));
       } finally {

@@ -40,6 +40,7 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
   const [policies, setPolicies] = useState<ConfigPolicy[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsError, setGroupsError] = useState<string>();
   const [selectedPolicyId, setSelectedPolicyId] = useState('');
   const [level, setLevel] = useState<TargetLevel>('organization');
   const [targetId, setTargetId] = useState('');
@@ -56,11 +57,15 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
     void fetchAllSites<Site>('/orgs/sites')
       .then((list) => setSites(list))
       .catch(() => setSites([]));
+    setGroupsError(undefined);
     void fetchWithAuth(orgId ? '/groups' : '/groups?ownerScope=all')
-      .then((res) => (res.ok ? res.json() : { data: [] }))
+      .then((res) => {
+        if (!res.ok) throw new Error(t('deploy.errors.loadGroups'));
+        return res.json();
+      })
       .then((data) => setGroups(data.data ?? data.groups ?? []))
-      .catch(() => setGroups([]));
-  }, [open, orgId]);
+      .catch(() => setGroupsError(t('deploy.errors.loadGroups')));
+  }, [open, orgId, t]);
 
   useEffect(() => {
     if (mode !== 'new') return;
@@ -219,6 +224,11 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
                     )}
                   </>}
                 </select>
+              )}
+              {level === 'device_group' && groupsError && (
+                <p className="text-sm text-destructive" data-testid="deploy-monitor-groups-error">
+                  {groupsError}
+                </p>
               )}
               <input
                 data-testid="deploy-monitor-policy-name"

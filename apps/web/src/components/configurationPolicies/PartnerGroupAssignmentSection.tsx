@@ -38,9 +38,9 @@ export default function PartnerGroupAssignmentSection({ policyId, assignments, r
     void (async () => {
       try {
         const response = await fetchWithAuth('/device-groups?ownerScope=partner', { skipOrgIdInjection: true });
-        const body = await response.json();
+        const body = await response.json().catch(() => null);
         if (!response.ok) throw new Error(extractApiError(body, t('configurationPolicies.partnerGroupAssignment.failedToLoad')));
-        if (!cancelled) setGroups(Array.isArray(body.data) ? body.data : []);
+        if (!cancelled) setGroups(Array.isArray(body?.data) ? body.data : []);
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : t('configurationPolicies.partnerGroupAssignment.failedToLoad'));
       } finally {

@@ -82,6 +82,26 @@ describe('OrganizationScopePanel', () => {
     expect(screen.getByRole('checkbox', { name: /Contoso Ltd/i })).not.toBeChecked();
   });
 
+  it('renders partner groups and refreshes assignments after assigning one', async () => {
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/device-groups?ownerScope=partner', 'GET', () => jsonRes({ data: [{ id: 'g1', name: 'All servers' }] }))
+      .once('/configuration-policies/p1/assignments', 'POST', () => jsonRes({}))
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'a1', level: 'device_group', targetId: 'g1', priority: 0 }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    expect(await screen.findByTestId('policy-partner-groups')).toBeInTheDocument();
+    await screen.findByRole('option', { name: 'All servers' });
+    fireEvent.change(screen.getByTestId('policy-partner-group-select'), { target: { value: 'g1' } });
+    fireEvent.click(screen.getByTestId('policy-partner-group-assign'));
+
+    expect(await screen.findByTestId('policy-partner-group-remove-g1')).toBeInTheDocument();
+    const getCalls = fetchWithAuthMock.mock.calls.filter(
+      (c) => c[0] === '/configuration-policies/p1/assignments' && !(c[1] as RequestInit | undefined)?.method,
+    );
+    expect(getCalls).toHaveLength(2);
+  });
+
   it('POSTs an organization assignment when an org is checked', async () => {
     routes
       .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))

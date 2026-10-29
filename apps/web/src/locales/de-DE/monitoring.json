@@ -333,6 +333,7 @@
     "cancel": "Abbrechen",
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {
+      "loadGroups": "Gerätegruppen konnten nicht geladen werden.",
       "attach": "Monitor konnte nicht angehängt werden",
       "detach": "Monitor konnte nicht gelöst werden",
       "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."

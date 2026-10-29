@@ -72,6 +72,27 @@ describe('partner device groups', () => {
     serve([partner]); render(<DeviceGroupsPage />); await screen.findByText('Partner servers');
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
+  it('lets an organization viewer clear a hash owner filter with no partner groups', async () => {
+    auth('organization'); window.history.replaceState(null, '', '#owner=partner');
+    serve([organization]); render(<DeviceGroupsPage />);
+    expect(await screen.findByTestId('group-owner-filter-partner')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('Organization servers')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('group-owner-filter-all'));
+    expect(await screen.findByText('Organization servers')).toBeInTheDocument();
+    expect(window.location.hash).not.toContain('owner=partner');
+  });
+  it('edits a partner group with only its name, dynamic type, and filter', async () => {
+    serve([partner]); render(<DeviceGroupsPage />); await screen.findByText('Partner servers');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const name = screen.getByPlaceholderText('e.g. Production Linux');
+    await userEvent.clear(name); await userEvent.type(name, 'Renamed partner servers');
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(mockFetch.mock.calls.some(([, opts]) => opts?.method === 'PATCH')).toBe(true));
+    const call = mockFetch.mock.calls.find(([, opts]) => opts?.method === 'PATCH')!;
+    expect(call[0]).toBe('/device-groups/partner-group');
+    expect(JSON.parse(String(call[1]?.body))).toEqual({ name: 'Renamed partner servers', type: 'dynamic', filterConditions: filter });
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument());
+  });
   it('hides partner writes for restricted partners', async () => {
     auth('partner', false); serve([partner]); render(<DeviceGroupsPage />); await screen.findByText('Partner servers');
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();

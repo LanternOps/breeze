@@ -51,6 +51,12 @@ describe('PartnerGroupAssignmentSection', () => {
     expect(await screen.findByText('Unavailable')).toBeInTheDocument();
     expect(screen.getByTestId('policy-partner-group-assign')).toBeDisabled();
   });
+  it('shows the translated fallback for a non-JSON gateway error', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }));
+    render(<PartnerGroupAssignmentSection {...props} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load device groups');
+    expect(screen.getByTestId('policy-partner-group-assign')).toBeDisabled();
+  });
   it('toasts a failed assignment without refreshing saved assignments', async () => {
     fetchMock.mockImplementation(async (url, init) => {
       if (url === '/device-groups?ownerScope=partner') return json({ data: [{ id: 'g1', name: 'All servers' }] });

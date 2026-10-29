@@ -116,6 +116,33 @@ describe('DeployMonitorDialog (#5289)', () => {
     expect(screen.getByRole('group', { name: 'Organization groups' })).toHaveTextContent('Office servers');
   });
 
+  it.each(['response', 'network'] as const)('shows an inline groups error for a %s failure', async (failure) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url.startsWith('/groups')) {
+        if (failure === 'network') throw new Error('Network unavailable');
+        return json({}, false, 502);
+      }
+      return json({ data: [] });
+    });
+    render(<DeployMonitorDialog monitorId="m1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    expect(await screen.findByTestId('deploy-monitor-groups-error')).toHaveTextContent("Couldn't load device groups.");
+    expect(screen.getByTestId('deploy-monitor-groups-error')).toHaveClass('text-destructive');
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'site' } });
+    expect(screen.queryByTestId('deploy-monitor-groups-error')).not.toBeInTheDocument();
+  });
+
+  it('keeps an empty successful groups response free of errors', async () => {
+    fetchMock.mockResolvedValue(json({ data: [] }));
+    render(<DeployMonitorDialog monitorId="m1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups?ownerScope=all'));
+    expect(screen.queryByTestId('deploy-monitor-groups-error')).not.toBeInTheDocument();
+    expect(screen.getByTestId('deploy-monitor-target-select').children).toHaveLength(1);
+  });
+
   it('keeps the plain groups endpoint for an org-owned monitor', async () => {
     render(<DeployMonitorDialog monitorId="m1" orgId="org1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups'));

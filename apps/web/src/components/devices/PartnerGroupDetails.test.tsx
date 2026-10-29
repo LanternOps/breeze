@@ -24,6 +24,13 @@ describe('partner group details', () => {
     await user.click(screen.getByTestId('partner-group-members-toggle-group-1'));
     await waitFor(() => expect(screen.queryByText('No devices in this group.')).not.toBeInTheDocument());
   });
+  it('shows the translated fallback for a non-JSON gateway error', async () => {
+    mockFetch.mockResolvedValueOnce(new Response('Bad Gateway', { status: 502 }));
+    const user = userEvent.setup();
+    render(<PartnerGroupMembers groupId="group-1" />);
+    await user.click(screen.getByTestId('partner-group-members-toggle-group-1'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load group members.');
+  });
   it('pluralizes one unevaluated organization and handles missing evaluation time', () => {
     const { rerender } = render(<PartnerGroupEvaluationStatus groupId="g" evaluation={{ state: 'partial', failedOrgs: 1, evaluatedAt: '2026-10-29T12:00:00Z' }} />);
     expect(screen.getByTestId('group-evaluation-g')).toHaveTextContent('1 org not evaluated');

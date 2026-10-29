@@ -333,6 +333,7 @@
     "cancel": "Cancelar",
     "detachConfirm": "Desanexar de {{policy}}?",
     "errors": {
+      "loadGroups": "Não foi possível carregar os grupos de dispositivos.",
       "attach": "Falha ao anexar o monitor",
       "detach": "Falha ao desanexar o monitor",
       "linkedFeature": "Os monitores desta política vêm de uma política de recurso compartilhada. Edite essa política ou escolha outra."

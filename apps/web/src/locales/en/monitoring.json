@@ -333,6 +333,7 @@
     "cancel": "Cancel",
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
+      "loadGroups": "Couldn't load device groups.",
       "attach": "Failed to attach monitor",
       "detach": "Failed to detach monitor",
       "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."

@@ -1138,7 +1138,7 @@ export default function DeviceGroupsPage() {
         </div>
       )}
 
-      {(canCreatePartnerGroup || groups.some((group) => group.ownerScope === "partner")) && (
+      {(canCreatePartnerGroup || ownerFilter !== "all" || groups.some((group) => group.ownerScope === "partner")) && (
         <div data-testid="group-owner-filter" className="flex flex-wrap gap-1" role="group" aria-label={t("partnerGroups.ownerScope")}>
           {(["all", "organization", "partner"] as const).map((owner) => (
             <button key={owner} type="button" data-testid={`group-owner-filter-${owner}`} aria-pressed={ownerFilter === owner}

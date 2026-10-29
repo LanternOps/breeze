@@ -17,7 +17,7 @@ type GroupType = "static" | "dynamic";
 interface CreateGroupModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated: (groupId: string) => void;
+  onCreated: (groupId: string, ownerScope: GroupOwnerScope) => void;
 }
 
 const makeEmptyFilter = (): FilterConditionGroup => ({
@@ -68,34 +68,34 @@ export default function CreateGroupModal({
       const body: Record<string, unknown> = isPartner
         ? { ownerScope: 'partner', name: name.trim(), type: 'dynamic', filterConditions }
         : { name: name.trim(), type, ...(type === 'dynamic' ? { filterConditions } : {}) };
-      const data = await runAction<{ data?: { id?: string }; id?: string }>({
+      const newGroupId = await runAction<string>({
         request: () => fetchWithAuth("/device-groups", {
           method: "POST",
           body: JSON.stringify(body),
         }),
+        parseSuccess: (data) => {
+          const group = data as { data?: { id?: unknown }; id?: unknown } | null;
+          const id = group?.data?.id ?? group?.id;
+          if (!id || typeof id !== 'string') {
+            throw new Error(t('createGroupModal.missingGroupId'));
+          }
+          return id;
+        },
         successMessage: t('createGroupModal.created'),
         errorFallback: t('createGroupModal.failedToCreateGroup'),
       });
-
-      const newGroupId = data?.data?.id ?? data?.id;
-
-      if (!newGroupId || typeof newGroupId !== "string") {
-        throw new Error(
-          t('createGroupModal.missingGroupId'),
-        );
-      }
 
       // Reset form
       setName("");
       setType("static");
       setOwnerScope(canCreatePartnerGroup ? defaultOwnerScope : 'organization');
       setFilterConditions(makeEmptyFilter());
-      onCreated(newGroupId);
+      onCreated(newGroupId, isPartner ? 'partner' : 'organization');
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
+      const message = err instanceof Error ? err.message : t("createGroupModal.failedToCreateGroup");
+      setError(message);
       if (!(err instanceof ActionError)) {
-        const message = err instanceof Error ? err.message : t("createGroupModal.failedToCreateGroup");
-        setError(message);
         showToast({ type: 'error', message });
       }
     } finally {
