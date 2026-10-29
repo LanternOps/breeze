@@ -77,3 +77,6 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 ### Device groups
 
 - **Dynamic groups keyed on installed software now follow inventory changes (#10497).** When an accepted software inventory report adds or removes a name, the device is re-evaluated against its organization's software-keyed dynamic groups; before, a software change alone never updated membership. A device moved to another organization, by the move action or by assigning a parked device, is now evaluated against the destination organization's dynamic groups. Membership that went stale before this release is not recomputed automatically: to refresh a group now, edit it and save its filter (software-keyed groups, and groups in organizations that received a moved device). No migration, no new environment variables.
+### Agent
+
+- **Windows agent now collects Warning and Information Application events from `APCPBEAgent` (APC PowerChute Business Edition, #10493).** `event_log` monitors on PowerChute UPS events (EventID 2000, Warning, e.g. "UPS On Battery") can now fire. The built-in Warning/Information provider list is now `MsiInstaller`, `APCPBEAgent`; every other provider is still collected at Error/Critical only. Needs this release's Windows agent. No migration, no new environment variables, no new setting.
