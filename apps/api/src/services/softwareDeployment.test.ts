@@ -2706,7 +2706,52 @@ describe('buildAndDispatchSoftwareInstalls — install scripts, zip and agent ga
     );
   });
 
-  it('(j3) the batch message stays generic when devices failed for different reasons (#10307)', async () => {
+  it('(j3) the batch message stays generic when devices failed variable resolution for different reasons (#10307)', async () => {
+    mockDeviceReads(
+      [
+        { ...winDevice('dev-a', NEW), customFields: { alpha: 'x' } },
+        { ...winDevice('dev-b', NEW), customFields: { beta: 'y' } },
+      ],
+      [],
+    );
+    const result = await run(
+      {
+        ...baseVersion,
+        installScriptsEnabled: true,
+        preInstallScript: 'echo {{device.customField.alpha}} {{device.customField.beta}}',
+      },
+      ['dev-a', 'dev-b'],
+    );
+    const reasons = updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage);
+    // Precondition: two devices, two DIFFERENT variable reasons.
+    expect(new Set(reasons).size).toBe(2);
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+  });
+
+  it('(j3b) a dispatch failure keeps the batch message from naming the variable reason (#10307)', async () => {
+    mockDeviceReads(
+      [
+        { ...winDevice('dev-a', NEW), customFields: {} },
+        { ...winDevice('dev-b', NEW), customFields: { alpha: 'x' } },
+      ],
+      [],
+    );
+    dispatchDeviceCommandMock.mockRejectedValueOnce(new Error('queue down'));
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{device.customField.alpha}}' },
+      ['dev-a', 'dev-b'],
+    );
+    const reasons = updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage);
+    // Precondition: one variable failure and one dispatch failure.
+    expect(reasons).toEqual(
+      expect.arrayContaining(['Could not resolve installer variable(s): {{device.customField.alpha}}', 'queue down']),
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+  });
+
+  it('(j4) the batch message stays generic when a variable failure is mixed with another gate (#10307)', async () => {
     mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)], []);
     const result = await run(
       { ...baseVersion, installScriptsEnabled: true, preInstallScript: 'echo {{var.missing}}' },

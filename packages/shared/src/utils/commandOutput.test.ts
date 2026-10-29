@@ -17,6 +17,12 @@ describe('stripAnsi', () => {
     expect(stripAnsi('x\u009b31my\u0000z\u0007\tq\r\nw')).toBe('xyz\tq\nw');
   });
 
+  it('resolves bare \\r overwrites (progress spinners) to the final frame of each line', () => {
+    expect(stripAnsi('Downloading 10%\rDownloading 50%\rDownloading 100%\r\nERR boom\r\n')).toBe(
+      'Downloading 100%\nERR boom\n',
+    );
+  });
+
   it('removes caret-notation SGR left behind by a terminal capture', () => {
     expect(stripAnsi('^[[90mtime^[[0m ^[[31mERR^[[0m boom')).toBe('time ERR boom');
   });
@@ -54,6 +60,17 @@ describe('commandOutputExcerpt', () => {
     expect(excerpt?.text.length).toBeLessThanOrEqual(20);
     expect(excerpt?.text.endsWith('b'.repeat(19))).toBe(true);
     expect(excerpt?.text.startsWith('…')).toBe(true);
+  });
+
+  it('never starts the char-bounded tail with half a surrogate pair', () => {
+    // 'a😀😀' is 5 UTF-16 units; keeping the last 2 units after '…' would
+    // cut the first emoji's pair at a low surrogate.
+    const excerpt = commandOutputExcerpt('a😀😀😀', { maxChars: 4 });
+    const text = excerpt!.text;
+    expect(text.startsWith('…')).toBe(true);
+    const first = text.charCodeAt(1);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+    expect(text.endsWith('😀')).toBe(true);
   });
 
   it('applies default bounds', () => {

@@ -24,7 +24,13 @@ export function stripAnsi(text: string): string {
     .replace(CSI_SEQUENCE, '')
     .replace(OTHER_ESCAPE, '')
     .replace(CARET_SGR, '')
-    .replace(/\r\n?/g, '\n')
+    .replace(/\r\n/g, '\n')
+    // A bare \r is a terminal overwrite (progress spinner): keep the frame
+    // that was left on screen, not every frame as its own line. A trailing
+    // \r overwrites nothing.
+    .split('\n')
+    .map((line) => line.replace(/\r+$/, '').split('\r').pop() ?? '')
+    .join('\n')
     .replace(STRAY_CONTROLS, '');
 }
 
@@ -60,7 +66,11 @@ export function commandOutputExcerpt(
   let text = lines.slice(-maxLines).join('\n');
   if (text.length > maxChars) {
     truncated = true;
-    text = `…${text.slice(text.length - (maxChars - 1))}`;
+    let tail = text.slice(text.length - (maxChars - 1));
+    // Do not start on the low half of a surrogate pair.
+    const first = tail.charCodeAt(0);
+    if (first >= 0xdc00 && first <= 0xdfff) tail = tail.slice(1);
+    text = `…${tail}`;
   }
   return { text, truncated };
 }

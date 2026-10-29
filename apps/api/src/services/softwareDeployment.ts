@@ -958,6 +958,9 @@ export async function buildAndDispatchSoftwareInstalls(
   // Distinct per-device variable-failure messages (token names only, never
   // values). When there is exactly one, the batch message repeats it (#10307).
   const variableFailureReasons = new Set<string>();
+  // Devices whose dispatch threw: they keep the batch message from naming a
+  // variable reason as if it were every device's (#10307).
+  let dispatchFailureCount = 0;
   const countVariableFailure = (reason: string) => {
     variableFailureCount++;
     variableFailureReasons.add(reason);
@@ -1241,6 +1244,7 @@ export async function buildAndDispatchSoftwareInstalls(
         );
       const failedResult = fanoutDeviceResult(input, device.id, 'failed', null, errorMessage);
       if (failedResult) deviceResults.push(failedResult);
+      dispatchFailureCount++;
       continue;
     }
     dispatchedDeviceIds.push(device.id);
@@ -1269,7 +1273,8 @@ export async function buildAndDispatchSoftwareInstalls(
         variableFailureCount > 0
           ? 'All target devices failed installer variable resolution' +
             (variableFailureReasons.size === 1 &&
-            agentVersionFailureCount + scriptOsFailureCount + policyDenialCount + missingDeviceCount === 0
+            agentVersionFailureCount + scriptOsFailureCount + policyDenialCount + missingDeviceCount +
+              dispatchFailureCount === 0
               ? `: ${[...variableFailureReasons][0]}`
               : '')
           : agentVersionFailureCount > 0 && scriptOsFailureCount === 0
