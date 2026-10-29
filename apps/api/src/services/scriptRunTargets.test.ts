@@ -71,6 +71,16 @@ beforeEach(() => {
 });
 
 describe('resolveScriptRunTargets', () => {
+  it('refuses partner groups with 400 PARTNER_GROUP_TARGET_UNSUPPORTED before access checks or dispatch', async () => {
+    queueSelects([{ id: G1, orgId: null, siteId: null }]);
+    const canAccessOrg = vi.fn(() => false);
+    const result = await resolveScriptRunTargets({ auth: { canAccessOrg }, permissions: undefined, target: target(G1) });
+    expect(result).toMatchObject({ ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(canAccessOrg).not.toHaveBeenCalled();
+    expect(resolveDeploymentTargetsWithWarnings).not.toHaveBeenCalled();
+    expect(resolveExecutionSafeGroupIds).not.toHaveBeenCalled();
+  });
+
   it('resolves a group to its members and reports per-group counts', async () => {
     queueSelects([{ id: G1, orgId: O1, siteId: null }] satisfies GroupRow[], memberships(G1, [id(1), id(2)]));
     mockResolvePerOrg({ [O1]: { deviceIds: [id(1), id(2)] } });

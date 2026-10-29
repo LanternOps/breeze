@@ -25,6 +25,7 @@
 import { and, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceGroupMemberships, deviceGroups, devices } from '../db/schema';
+import { partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import { resolveDeploymentTargetsWithWarnings } from './deploymentTargetResolver';
 import { resolveExecutionSafeGroupIds } from './executionTargetGating';
 import { canAccessSite, type UserPermissions } from './permissions';
@@ -44,7 +45,7 @@ export type ResolvedScriptRunGroup = {
   refused: boolean;
 };
 
-export type ScriptRunTargetFailureCode = 'GROUP_NOT_FOUND' | 'NO_TARGETS' | 'TOO_MANY_TARGETS';
+export type ScriptRunTargetFailureCode = 'GROUP_NOT_FOUND' | 'NO_TARGETS' | 'TOO_MANY_TARGETS' | ReturnType<typeof partnerGroupTargetRefusal>['code'];
 
 export type ResolveScriptRunTargetsResult =
   | { ok: true; deviceIds: string[]; warnings: string[]; resolvedGroups: ResolvedScriptRunGroup[] }
@@ -79,7 +80,12 @@ export async function resolveScriptRunTargets(input: {
       .from(deviceGroups)
       .where(inArray(deviceGroups.id, requestedIds))
     : [];
-  const groupsById = new Map(groupRows.map((row) => [row.id, row]));
+  const partnerGroupIds = groupRows.filter((row) => row.orgId === null).map((row) => row.id);
+  if (partnerGroupIds.length > 0) {
+    return { ok: false, status: 400, ...partnerGroupTargetRefusal(partnerGroupIds) };
+  }
+  const orgGroups = groupRows.filter((row): row is typeof row & { orgId: string } => row.orgId !== null);
+  const groupsById = new Map(orgGroups.map((row) => [row.id, row]));
 
   const unusable = requestedIds.filter((groupId) => {
     const group = groupsById.get(groupId);

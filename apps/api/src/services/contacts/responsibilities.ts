@@ -19,6 +19,7 @@ export interface ContactResponsibilityInput {
 }
 
 export class ResponsibilityValidationError extends Error {
+  readonly status = 400;
   constructor(
     message: string,
     readonly code:

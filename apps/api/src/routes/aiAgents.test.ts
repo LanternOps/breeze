@@ -1,3 +1,8 @@
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../services/deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -565,6 +570,7 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 }
 
 beforeEach(() => {
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
   loadMeasuredImpactMock.mockResolvedValue({ schemaVersion: 1, window: 30 });
@@ -5430,5 +5436,21 @@ describe('GET /ai-agents/runs/:runId/artifacts (execution-plane W01, reconciliat
     expect(Array.isArray(detailBody.data)).toBe(false);
     expect(detailBody.data).not.toHaveProperty('downloadPath');
     expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);   // detail did not hit the list
+  });
+});
+
+describe('partner-owned AI agent run scope', () => {
+  it.each(['POST', 'PATCH'])('%s refuses partner group triggers with 400 before persisting', async (method) => {
+    const { createAgent, updateAgent } = await import('../services/aiAgents/agentService');
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([AGENT_ID]);
+    const res = await buildApp().request(method === 'POST' ? '/ai-agents' : `/ai-agents/${AGENT_ID}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...(method === 'POST' ? { kind: 'triage', name: 'Triage' } : {}), triggers: { deviceGroupIds: [AGENT_ID] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [AGENT_ID] });
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(updateAgent).not.toHaveBeenCalled();
   });
 });

@@ -359,6 +359,18 @@ describe('manage_groups peripheral reconciliation', () => {
     vi.clearAllMocks();
   });
 
+  it.each(['update', 'delete', 'add_devices', 'remove_devices'])('manage_groups %s refuses partner groups before persisting', async (action) => {
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue([{ id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null }]),
+    }) }) } as any);
+    const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, auth));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY', error: 'Partner-wide device groups are read-only here' });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(mockDeleteDeviceGroup).not.toHaveBeenCalled();
+  });
+
   it('schedules exactly the memberships inserted by the direct AI path', async () => {
     let selectCall = 0;
     vi.mocked(db.select).mockImplementation(() => {

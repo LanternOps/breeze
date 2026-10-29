@@ -47,6 +47,10 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 import {
+  resolveEffectiveGroupMembers,
+  groupIncludesDevice,
+  pinDeviceToGroup,
+  addManualGroupMemberships,
   evaluateDeviceMembershipForGroup,
   evaluateGroupMembership,
   pruneGroupMembershipsOutsideSite,
@@ -163,7 +167,8 @@ describe('evaluateGroupMembership persisted site scope', () => {
   });
 
   it('prunes pinned and dynamic memberships outside a reassigned group site', async () => {
-    mockSelect.mockReturnValueOnce(membershipJoinChain([
+    mockSelect.mockReturnValueOnce(selectChain([{ id: 'group-1', orgId: 'org-1' }], true))
+      .mockReturnValueOnce(membershipJoinChain([
       { deviceId: 'pinned-old-site', siteId: 'site-1', isPinned: true },
       { deviceId: 'dynamic-old-site', siteId: 'site-1', isPinned: false },
       { deviceId: 'new-site-member', siteId: 'site-2', isPinned: false },
@@ -174,5 +179,51 @@ describe('evaluateGroupMembership persisted site scope', () => {
     expect(result).toEqual({ removed: 2 });
     expect(mockDelete).toHaveBeenCalledTimes(1);
     expect(mockInsert).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('partner-owned groups remain dark until W2b', () => {
+  const group = { id: 'group-1', orgId: null, siteId: null, type: 'dynamic' as const, filterConditions: { operator: 'AND', conditions: [] } };
+  beforeEach(() => vi.resetAllMocks());
+
+  it('resolveEffectiveGroupMembers skips partner groups without reads or writes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await resolveEffectiveGroupMembers(group)).toEqual({ matched: new Set(), pinned: new Set() });
+    expect(mockSelect).not.toHaveBeenCalled();
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[groupMembership] partner group group-1 skipped until W2b evaluation');
+    warn.mockRestore();
+  });
+
+  it.each(['device', 'group'])('%s evaluator skips partner groups without membership writes', async (kind) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSelect.mockReturnValueOnce(selectChain([group], true));
+    const result = kind === 'device'
+      ? await evaluateDeviceMembershipForGroup(group.id, 'device-1')
+      : await evaluateGroupMembership(group.id);
+    expect(result).toEqual({ evaluatedGroups: 0, added: 0, removed: 0 });
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockEvaluateFilter).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[groupMembership] partner group group-1 skipped until W2b evaluation');
+    warn.mockRestore();
+  });
+
+  it('groupIncludesDevice returns false for partner groups without querying', async () => {
+    expect(await groupIncludesDevice(group, { id: 'device-1', orgId: 'org-1', siteId: null, isEphemeral: false })).toBe(false);
+    expect(mockSelect).not.toHaveBeenCalled();
+  });
+
+  it.each(['prune', 'pin', 'manual'])('%s refuses an internally requested partner-group membership write', async (kind) => {
+    mockSelect.mockReturnValueOnce(selectChain([group], true));
+    const pending = kind === 'prune' ? pruneGroupMembershipsOutsideSite(group.id, 'site-1', 'org-1')
+      : kind === 'pin' ? pinDeviceToGroup(group.id, 'device-1', true, 'org-1')
+      : addManualGroupMemberships({ groupId: group.id, orgId: 'org-1', deviceIds: ['device-1'] });
+    await expect(pending).rejects.toThrow('partner-owned device groups are read-only');
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 });

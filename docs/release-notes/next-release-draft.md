@@ -96,3 +96,9 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - `2027-01-12-200100-device-group-membership-owner-integrity.sql`: replaces the membership group FK with a deferred constraint trigger, adds owner revalidation and reparent detach, and replaces the device-move function. DDL and function replacements only; no backfill or rows written.
 - `2027-01-12-200200-config-assignment-partner-device-group-targets.sql`: replaces five assignment-integrity and export functions to support partner group targets. DDL and function replacements only; no backfill or rows written.
 - Execution targets now refuse a group id they cannot resolve. No new environment variable or setting.
+
+### Device groups (partner-owned, dark) — W2a
+
+- Still dark: no partner-owned group can be created yet. No migration, environment variable or setting.
+- Config-policy and automation-schedule expansion of a `device_group` assignment now resolves a partner-owned group to its members in every org of the partner.
+- Every other target surface (maintenance windows, backup SLAs, script runs, software deployments, automations, endpoint messages, AI agent triggers, peripheral policies, the enrollment default group, user device-group scope) answers a partner-owned group id with `400 PARTNER_GROUP_TARGET_UNSUPPORTED`. The groups API and the AI `manage_groups` tool treat partner-owned groups as read-only (`400 PARTNER_GROUP_READ_ONLY`).
