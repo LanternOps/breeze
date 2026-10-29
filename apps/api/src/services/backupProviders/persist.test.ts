@@ -204,6 +204,26 @@ describe('persistVendorSnapshot', () => {
     expect(calls.some((c) => c.kind === 'delete')).toBe(true);
   });
 
+  it('keeps a failed customer’s rows untouched while updating another customer', async () => {
+    const { tx, calls } = makeTx(
+      [
+        [{ id: 'c1', vendorCustomerId: 'vc1' }, { id: 'c2', vendorCustomerId: 'vc2' }],
+        [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }, { id: 'c2', vendorCustomerId: 'vc2', orgId: ORG }],
+        [{ id: 'p-old', vendorDeviceId: 'v-old', customerId: 'c1' }, { id: 'p2', vendorDeviceId: 'v2', customerId: 'c2' }],
+      ],
+      [[{ id: 'c2', vendorCustomerId: 'vc2' }], [{ id: 'p2', orgId: ORG }]],
+    );
+    await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer(), vendorCustomer({ vendorCustomerId: 'vc2' })],
+      devices: [vendorDevice({ vendorCustomerId: 'vc2', vendorDeviceId: 'v2' })],
+      failedCustomerIds: ['vc1'],
+    });
+    expect(calls.filter((c) => c.kind === 'delete')).toEqual([]);
+    const inserted = calls.filter((c) => c.kind === 'insert').flatMap((c) => c.payload as Array<Record<string, unknown>>);
+    expect(inserted.filter((row) => 'vendorCustomerId' in row)).toHaveLength(1);
+    expect(inserted.filter((row) => 'vendorDeviceId' in row)).toMatchObject([{ vendorDeviceId: 'v2', customerId: 'c2' }]);
+  });
+
   it('deletes a device row whose vendor device vanished from a complete snapshot', async () => {
     const { tx, calls } = makeTx(
       [
