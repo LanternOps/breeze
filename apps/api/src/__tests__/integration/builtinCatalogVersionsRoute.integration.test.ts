@@ -486,27 +486,63 @@ describe('software_catalog.builtin_package_key (#6958)', () => {
     expect(versions).toEqual([]);
   });
 
-  // #6958 PR D decision: org scope does NOT list keyed built-ins (their
-  // versions are RLS-invisible to org scope, so the card would be a dead end).
-  // Flip deliberately with the follow-up that adds a software_versions SELECT
-  // branch on builtin_package_key plus the org branch in GET /catalog.
-  it('PINNED: GET /catalog lists a keyed row for partner scope but not for org scope under the same partner', async () => {
+  // #10036: an org-scope caller reads its partner's keyed built-in end to end
+  // (list, search, by id, versions), the same as partner scope. Before #10036
+  // the row was readable by id but its versions were RLS-invisible, so list
+  // and search hid it to avoid a dead-end card.
+  it('#10036: org scope lists, searches and reads the versions of its partner\'s keyed row', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const [keyed] = await seedKeyed(partner.id, 'controld_windows');
-    await getTestDb().insert(softwareVersions).values({
+    const [version] = await getTestDb().insert(softwareVersions).values({
       catalogId: keyed!.id, version: '1.5.8', fileType: 'zip', isLatest: true, installScriptsEnabled: true, postInstallScript: 'x',
-    });
+    }).returning();
     const app = await buildApp();
+    const get = (path: string) => app.request(path, { headers: { Authorization: 'Bearer token' } });
+    const ids = async (res: Response) => ((await res.json()).data as Array<{ id: string }>).map((r) => r.id);
 
     activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
-    const asPartner = await app.request(`/software/catalog?orgId=${org.id}&limit=100`, { headers: { Authorization: 'Bearer token' } });
+    const asPartner = await get(`/software/catalog?orgId=${org.id}&limit=100`);
     expect(asPartner.status).toBe(200);
-    expect(((await asPartner.json()).data as Array<{ id: string }>).map((r) => r.id)).toContain(keyed!.id);
+    expect(await ids(asPartner)).toContain(keyed!.id);
 
     activeAuth = { scope: 'organization', orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id] };
-    const asOrg = await app.request('/software/catalog?limit=100', { headers: { Authorization: 'Bearer token' } });
-    expect(asOrg.status).toBe(200);
-    expect(((await asOrg.json()).data as Array<{ id: string }>).map((r) => r.id)).not.toContain(keyed!.id);
+    const list = await get('/software/catalog?limit=100');
+    expect(list.status).toBe(200);
+    const listed = ((await list.json()).data as Array<Record<string, unknown>>).find((r) => r.id === keyed!.id);
+    expect(listed).toMatchObject({ builtinPackageKey: 'controld_windows', installScriptsEnabled: true });
+    // count(*) is a bigint, which the list feed passes through as a string.
+    expect(Number(listed!.versionCount)).toBe(1);
+
+    const search = await get('/software/catalog/search?q=controld');
+    expect(search.status).toBe(200);
+    expect(await ids(search)).toContain(keyed!.id);
+
+    const item = await get(`/software/catalog/${keyed!.id}`);
+    expect(item.status).toBe(200);
+    expect((await item.json()).data.versionCount).toBe(1);
+
+    const versions = await get(`/software/catalog/${keyed!.id}/versions`);
+    expect(versions.status).toBe(200);
+    expect(await ids(versions)).toEqual([version!.id]);
+  });
+
+  it('#10036: an org under a different partner sees none of another partner\'s keyed row', async () => {
+    const partnerA = await createPartner();
+    const [keyed] = await seedKeyed(partnerA.id, 'nextdns_windows');
+    await getTestDb().insert(softwareVersions).values({ catalogId: keyed!.id, version: '1.0.0', fileType: 'zip', isLatest: true });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const app = await buildApp();
+    const get = (path: string) => app.request(path, { headers: { Authorization: 'Bearer token' } });
+
+    activeAuth = { scope: 'organization', orgId: orgB.id, partnerId: partnerB.id, accessibleOrgIds: [orgB.id] };
+    const list = await get('/software/catalog?limit=100');
+    expect(list.status).toBe(200);
+    expect(((await list.json()).data as Array<{ id: string }>).map((r) => r.id)).not.toContain(keyed!.id);
+    const search = await get('/software/catalog/search?q=nextdns');
+    expect(((await search.json()).data as Array<{ id: string }>).map((r) => r.id)).not.toContain(keyed!.id);
+    expect((await get(`/software/catalog/${keyed!.id}`)).status).toBe(404);
+    expect((await get(`/software/catalog/${keyed!.id}/versions`)).status).toBe(404);
   });
 });
