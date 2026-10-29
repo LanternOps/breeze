@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Publish this rule set before sweeping with it.",
     "sweepNowDisabled": "Enable this rule set before sweeping with it.",
     "progress": {
-      "label": "{{done}} of {{total}} devices done"
+      "finished_one": "{{finished}} of {{count}} device finished",
+      "finished_other": "{{finished}} of {{count}} devices finished",
+      "completed_one": "{{count}} completed",
+      "completed_other": "{{count}} completed",
+      "timedOut_one": "{{count}} timed out",
+      "timedOut_other": "{{count}} timed out",
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "cancelled_one": "{{count}} cancelled",
+      "cancelled_other": "{{count}} cancelled",
+      "expired_one": "{{count}} expired",
+      "expired_other": "{{count}} expired"
     },
     "errors": {
       "orgOutOfScope": "One or more organizations are outside your access.",
@@ -2487,6 +2498,7 @@
       "resweep": "Sweep again with the current rules",
       "rulesChanged": "Rules changed since this sweep started",
       "queued": "Queued: {{queued}}",
+      "running": "Running: {{running}}",
       "columns": {
         "ruleSets": "Rule sets",
         "origin": "Started from",

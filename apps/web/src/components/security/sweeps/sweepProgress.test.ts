@@ -61,4 +61,36 @@ describe('describeSweepProgress', () => {
     expect(r.percent).toBe(0);
     expect(Number.isNaN(r.percent)).toBe(false);
   });
+
+  // #10078: cancelled / failed / expired children are finished, not "done".
+  it('a cancelled sweep names its cancelled devices instead of "devices done"', () => {
+    const r = describeSweepProgress(sweep({ state: 'cancelled', targeted: 2, progress: { completed: 1, cancelled: 1 } }));
+    expect(r.percent).toBe(100);
+    expect(r.tone).toBe('warning');
+    expect(r.label).toBe('2 of 2 devices finished · 1 completed · 1 cancelled');
+    expect(r.label).not.toMatch(/done/);
+  });
+
+  it('a cancelled-only sweep reports no completed devices', () => {
+    const r = describeSweepProgress(sweep({ state: 'cancelled', targeted: 2, progress: { cancelled: 2 } }));
+    expect(r.label).toBe('2 of 2 devices finished · 2 cancelled');
+  });
+
+  it('lists every non-zero terminal state separately', () => {
+    const r = describeSweepProgress(
+      sweep({ state: 'expired', targeted: 10, progress: { completed: 4, timedOut: 1, failed: 2, cancelled: 1, expired: 2 } }),
+    );
+    expect(r.label).toBe('10 of 10 devices finished · 4 completed · 1 timed out · 2 failed · 1 cancelled · 2 expired');
+  });
+
+  it('an active sweep with nothing finished shows only the finished count', () => {
+    const r = describeSweepProgress(sweep({ targeted: 2, progress: { queued: 1, running: 1 } }));
+    expect(r.percent).toBe(0);
+    expect(r.label).toBe('0 of 2 devices finished');
+  });
+
+  it('a single-device sweep uses the singular', () => {
+    const r = describeSweepProgress(sweep({ state: 'completed', targeted: 1, progress: { completed: 1 } }));
+    expect(r.label).toBe('1 of 1 device finished · 1 completed');
+  });
 });

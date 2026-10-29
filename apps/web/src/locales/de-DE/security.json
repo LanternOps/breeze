@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Veröffentlichen Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "sweepNowDisabled": "Aktivieren Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "progress": {
-      "label": "{{done}} von {{total}} Geräten abgeschlossen"
+      "finished_one": "{{finished}} von {{count}} Gerät beendet",
+      "finished_other": "{{finished}} von {{count}} Geräten beendet",
+      "completed_one": "{{count}} abgeschlossen",
+      "completed_other": "{{count}} abgeschlossen",
+      "timedOut_one": "{{count}} mit Zeitüberschreitung",
+      "timedOut_other": "{{count}} mit Zeitüberschreitung",
+      "failed_one": "{{count}} fehlgeschlagen",
+      "failed_other": "{{count}} fehlgeschlagen",
+      "cancelled_one": "{{count}} abgebrochen",
+      "cancelled_other": "{{count}} abgebrochen",
+      "expired_one": "{{count}} abgelaufen",
+      "expired_other": "{{count}} abgelaufen"
     },
     "errors": {
       "orgOutOfScope": "Mindestens eine Organisation liegt außerhalb Ihres Zugriffs.",
@@ -2487,6 +2498,7 @@
       "resweep": "Erneut mit den aktuellen Regeln prüfen",
       "rulesChanged": "Regeln seit dem Start dieses Sweeps geändert",
       "queued": "In der Warteschlange: {{queued}}",
+      "running": "Wird ausgeführt: {{running}}",
       "columns": {
         "ruleSets": "Regelsätze",
         "origin": "Gestartet über",

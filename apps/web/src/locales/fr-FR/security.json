@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Publiez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "sweepNowDisabled": "Activez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "progress": {
-      "label": "{{done}} appareils sur {{total}} terminés"
+      "finished_one": "{{finished}} sur {{count}} appareil terminé",
+      "finished_other": "{{finished}} sur {{count}} appareils terminés",
+      "completed_one": "{{count}} analysé",
+      "completed_other": "{{count}} analysés",
+      "timedOut_one": "{{count}} hors délai",
+      "timedOut_other": "{{count}} hors délai",
+      "failed_one": "{{count}} en échec",
+      "failed_other": "{{count}} en échec",
+      "cancelled_one": "{{count}} annulé",
+      "cancelled_other": "{{count}} annulés",
+      "expired_one": "{{count}} expiré",
+      "expired_other": "{{count}} expirés"
     },
     "errors": {
       "orgOutOfScope": "Une ou plusieurs organisations sont en dehors de votre accès.",
@@ -2487,6 +2498,7 @@
       "resweep": "Balayer à nouveau avec les règles actuelles",
       "rulesChanged": "Règles modifiées depuis le début de ce balayage",
       "queued": "En file d'attente : {{queued}}",
+      "running": "En cours : {{running}}",
       "columns": {
         "ruleSets": "Ensembles de règles",
         "origin": "Lancé depuis",

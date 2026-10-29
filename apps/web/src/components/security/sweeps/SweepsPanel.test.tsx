@@ -114,6 +114,25 @@ describe('SweepsPanel', () => {
     expect(screen.queryByTestId('sweep-rules-changed-sw-1')).toBeNull();
   });
 
+  it('an active sweep shows running devices beside queued ones (#10078)', async () => {
+    listRows = [sweep({ targeted: 2, progress: progress({ queued: 1, running: 1 }) })];
+    await renderPanel();
+    const cell = screen.getByTestId('sweep-progress-sw-1');
+    expect(cell.textContent).toContain('0 of 2 devices finished');
+    expect(cell.textContent).toContain('Queued: 1');
+    expect(cell.textContent).toContain('Running: 1');
+  });
+
+  it('a cancelled sweep reads as cancelled, not "100% … devices done" (#10078)', async () => {
+    listRows = [sweep({ state: 'cancelled', targeted: 2, progress: progress({ completed: 1, cancelled: 1 }) })];
+    await renderPanel();
+    const cell = screen.getByTestId('sweep-progress-sw-1');
+    expect(cell.getAttribute('aria-valuenow')).toBe('100');
+    expect(cell.textContent).toContain('2 of 2 devices finished · 1 completed · 1 cancelled');
+    expect(cell.textContent).not.toMatch(/100%|done/);
+    expect(cell.textContent).not.toContain('Running');
+  });
+
   it('shows an empty state', async () => {
     listRows = [];
     await renderPanel();

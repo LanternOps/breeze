@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Publique este conjunto de reglas antes de usarlo en un barrido.",
     "sweepNowDisabled": "Habilite este conjunto de reglas antes de usarlo en un barrido.",
     "progress": {
-      "label": "{{done}} de {{total}} dispositivos terminados"
+      "finished_one": "{{finished}} de {{count}} dispositivo finalizado",
+      "finished_other": "{{finished}} de {{count}} dispositivos finalizados",
+      "completed_one": "{{count}} completado",
+      "completed_other": "{{count}} completados",
+      "timedOut_one": "{{count}} con tiempo agotado",
+      "timedOut_other": "{{count}} con tiempo agotado",
+      "failed_one": "{{count}} fallido",
+      "failed_other": "{{count}} fallidos",
+      "cancelled_one": "{{count}} cancelado",
+      "cancelled_other": "{{count}} cancelados",
+      "expired_one": "{{count}} vencido",
+      "expired_other": "{{count}} vencidos"
     },
     "errors": {
       "orgOutOfScope": "Una o más organizaciones están fuera de su acceso.",
@@ -2487,6 +2498,7 @@
       "resweep": "Barrer de nuevo con las reglas actuales",
       "rulesChanged": "Las reglas cambiaron desde que empezó este barrido",
       "queued": "En cola: {{queued}}",
+      "running": "En ejecución: {{running}}",
       "columns": {
         "ruleSets": "Conjuntos de reglas",
         "origin": "Iniciado desde",

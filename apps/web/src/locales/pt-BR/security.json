@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Publique este conjunto de regras antes de usá-lo em uma varredura.",
     "sweepNowDisabled": "Ative este conjunto de regras antes de usá-lo em uma varredura.",
     "progress": {
-      "label": "{{done}} de {{total}} dispositivos concluídos"
+      "finished_one": "{{finished}} de {{count}} dispositivo finalizado",
+      "finished_other": "{{finished}} de {{count}} dispositivos finalizados",
+      "completed_one": "{{count}} concluído",
+      "completed_other": "{{count}} concluídos",
+      "timedOut_one": "{{count}} com tempo esgotado",
+      "timedOut_other": "{{count}} com tempo esgotado",
+      "failed_one": "{{count}} com falha",
+      "failed_other": "{{count}} com falha",
+      "cancelled_one": "{{count}} cancelado",
+      "cancelled_other": "{{count}} cancelados",
+      "expired_one": "{{count}} expirado",
+      "expired_other": "{{count}} expirados"
     },
     "errors": {
       "orgOutOfScope": "Uma ou mais organizações estão fora do seu acesso.",
@@ -2487,6 +2498,7 @@
       "resweep": "Varrer novamente com as regras atuais",
       "rulesChanged": "Regras alteradas desde o início desta varredura",
       "queued": "Na fila: {{queued}}",
+      "running": "Em execução: {{running}}",
       "columns": {
         "ruleSets": "Conjuntos de regras",
         "origin": "Iniciada por",

@@ -2399,7 +2399,18 @@
     "sweepNowUnpublished": "Bu kural kümesini toplu taramada kullanmadan önce yayımlayın.",
     "sweepNowDisabled": "Bu kural kümesini toplu taramada kullanmadan önce etkinleştirin.",
     "progress": {
-      "label": "{{total}} cihazdan {{done}} tanesi tamamlandı"
+      "finished_one": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "finished_other": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "completed_one": "{{count}} tamamlandı",
+      "completed_other": "{{count}} tamamlandı",
+      "timedOut_one": "{{count}} zaman aşımına uğradı",
+      "timedOut_other": "{{count}} zaman aşımına uğradı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "cancelled_one": "{{count}} iptal edildi",
+      "cancelled_other": "{{count}} iptal edildi",
+      "expired_one": "{{count}} süresi doldu",
+      "expired_other": "{{count}} süresi doldu"
     },
     "errors": {
       "orgOutOfScope": "Bir veya daha fazla kuruluş erişiminizin dışında.",
@@ -2487,6 +2498,7 @@
       "resweep": "Güncel kurallarla yeniden tara",
       "rulesChanged": "Bu toplu tarama başladığından beri kurallar değişti",
       "queued": "Sırada: {{queued}}",
+      "running": "Çalışıyor: {{running}}",
       "columns": {
         "ruleSets": "Kural kümeleri",
         "origin": "Başlatıldığı yer",
