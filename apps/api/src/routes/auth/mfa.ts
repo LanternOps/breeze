@@ -1386,7 +1386,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
     ok = r.valid;
   } else if (body.method === 'recovery') {
     try {
-      await consumeRecoveryCode(db, auth.user.id, body.code);
+      await db.transaction((tx) => consumeRecoveryCode(tx, auth.user.id, body.code));
       ok = true;
     } catch (error) {
       if (!(error instanceof RecoveryCodeInvalidError)) throw error;

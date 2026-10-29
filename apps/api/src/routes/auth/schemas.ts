@@ -371,6 +371,7 @@ export const mfaStepUpSchema = z.discriminatedUnion('method', [
     code: z.string().refine((v) => recoveryCode.test(v.trim()), { message: 'Invalid code' }),
     operation: z.literal('delete_passkey'),
     passkeyId: z.string().uuid(),
+    resource: z.never().optional(),
   }),
 ]);
 

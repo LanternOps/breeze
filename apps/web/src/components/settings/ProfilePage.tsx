@@ -1355,7 +1355,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       return;
     }
     const method = deletePasskeyMethod;
-    if ((method === 'totp' || method === 'sms') && !passkeyFactorCode.trim()) {
+    const factorCode = passkeyFactorCode.trim();
+    const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(factorCode);
+    if ((method === 'totp' || method === 'sms') && !factorCode) {
       setPasskeyError(t('mFASettings.currentMfaCodeRequired', {
         defaultValue: 'Enter a current MFA code before deleting a passkey',
       }));
@@ -1367,8 +1369,8 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMutatingPasskeyId(passkeyId);
       let stepUpBody: Record<string, unknown>;
       if (method === 'passkey') {
-        if (passkeyFactorCode.trim()) {
-          stepUpBody = { method: 'recovery', code: passkeyFactorCode.trim(), operation: 'delete_passkey', passkeyId };
+        if (recoveryCode) {
+          stepUpBody = { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId };
         } else {
           // runaction-exempt: inline-feedback handler, step 1 of 3 (options -> step-up -> delete).
           const optionsResponse = await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' });
@@ -1383,7 +1385,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           stepUpBody = { method: 'passkey', credential, operation: 'delete_passkey', passkeyId };
         }
       } else if (method === 'totp' || method === 'sms') {
-        stepUpBody = { method, code: passkeyFactorCode.trim(), operation: 'delete_passkey', passkeyId };
+        stepUpBody = recoveryCode
+          ? { method: 'recovery', code: factorCode, operation: 'delete_passkey', passkeyId }
+          : { method, code: factorCode, operation: 'delete_passkey', passkeyId };
       } else {
         throw new Error(t('profilePage.failedToVerifyCurrentFactor', {
           defaultValue: 'Failed to verify current MFA factor',
@@ -1786,14 +1790,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
             <label className="text-sm font-medium" htmlFor="passkey-factor-code">
               {deletePasskeyMethod === 'passkey'
                 ? t('profilePage.recoveryCode', { defaultValue: 'Recovery code (optional)' })
-                : t('mFASettings.currentMfaCode', { defaultValue: 'Current MFA code' })}
+                : t('profilePage.currentMfaOrRecoveryCode', { defaultValue: 'Current MFA code or recovery code' })}
             </label>
             <div className="flex gap-2">
               <input
                 id="passkey-factor-code"
                 data-testid="passkey-factor-code"
                 ref={passkeyFactorCodeRef}
-                inputMode={deletePasskeyMethod === 'passkey' ? 'text' : 'numeric'}
+                inputMode="text"
                 autoComplete="one-time-code"
                 value={passkeyFactorCode}
                 onChange={event => setPasskeyFactorCode(event.target.value)}

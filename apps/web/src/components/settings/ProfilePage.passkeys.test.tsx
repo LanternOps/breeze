@@ -326,6 +326,39 @@ describe('ProfilePage passkey management', () => {
     expect(getPasskeyCredentialMock).not.toHaveBeenCalled();
   });
 
+  it.each(['totp', 'sms'] as const)('accepts a recovery code when %s is primary', async (mfaMethod) => {
+    const passkeyId = '90000000-0000-4000-8000-000000000009';
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: passkeyId, name: 'Unavailable passkey', lastUsedAt: null }] }))
+      .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: 'a0000000-0000-4000-8000-000000000009' }))
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: { accessToken: 'reissued-access-token', expiresInSeconds: 900 } }));
+
+    render(<ProfilePage initialUser={{
+      id: 'user-1',
+      name: 'Casey Admin',
+      email: 'casey@example.com',
+      mfaEnabled: true,
+      mfaMethod,
+    }} />);
+
+    await screen.findByText('Unavailable passkey');
+    fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.change(screen.getByLabelText(/Current MFA code or recovery code/i), { target: { value: 'ABCD-1234' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
+
+    await screen.findByText('Passkey deleted');
+    expect(fetchWithAuthMock.mock.calls[1]).toEqual([
+      '/auth/mfa/step-up',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ method: 'recovery', code: 'ABCD-1234', operation: 'delete_passkey', passkeyId }),
+      }),
+    ]);
+  });
+
   it('uses an available passkey to delete one after TOTP has been disabled', async () => {
     const passkeyId = '50000000-0000-4000-8000-000000000009';
     const assertion = { id: 'browser-credential', response: { signature: 'sig' } };
