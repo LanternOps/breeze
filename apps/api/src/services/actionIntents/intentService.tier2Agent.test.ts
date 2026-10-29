@@ -623,8 +623,10 @@ describe('#10027: MCP non-read action below Tier 3 on a registry-Tier-3 tool', (
     expect(inserted?.riskTier).toBe(3);
     expect(inserted?.approvalScope).toBe('supervised');
     expect(inserted?.policyDecisionState).toBe('human_required');
-    const approvals = dbState.insertedApprovalRequestsValues[0] as Array<{ riskTier: string }>;
+    const approvals = dbState.insertedApprovalRequestsValues[0] as Array<{ riskTier: string; userId: string }>;
     expect(approvals[0]?.riskTier).toBe('high');
+    // Supervised: the one approval row belongs to the requester (the key's owner).
+    expect(approvals.map((r) => r.userId)).toEqual([REQUESTER_ID]);
   });
 
   it('without the MCP marker, scan is still tool_not_tier3 (chat and other callers unchanged)', async () => {

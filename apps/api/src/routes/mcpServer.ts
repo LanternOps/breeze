@@ -1602,13 +1602,6 @@ function extractActionEnum(inputSchema: unknown): string[] | null {
 }
 
 /**
- * Which of a tool's declared actions are gated over MCP — used to append a
- * "these actions require the web app" note to a mixed multiplexer's
- * `tools/list` description. Empty for a wholly-gated tool (it's suppressed
- * entirely, see isToolWhollyGatedOverMcp) and for a tool with no gated
- * actions at all.
- */
-/**
  * #10027: the read-only actions of a registry-Tier-3 tool that `tools/call`
  * runs directly with MCP_TIER3_INTENTS_ENABLED on (see `readBelowIntentTier`).
  * Classified by the real checkGuardrails, so the description cannot claim a
@@ -1629,10 +1622,18 @@ function mcpIntentFlatSuffix(toolName: string): string {
   if (reads.length === 0) return MCP_INTENT_FLAT_SUFFIX;
   const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
   const noun = key === 'action' ? 'actions' : `${key} values`;
-  return ` (Requires approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status. `
+  // Built from the flat suffix so the two wordings cannot drift.
+  return `${MCP_INTENT_FLAT_SUFFIX.slice(0, -1)} `
     + `Read-only ${noun} ${reads.map((a) => `"${a}"`).join(', ')} run directly without approval.)`;
 }
 
+/**
+ * Which of a tool's declared actions are gated over MCP — used to append a
+ * "these actions require the web app" note to a mixed multiplexer's
+ * `tools/list` description. Empty for a wholly-gated tool (it's suppressed
+ * entirely, see isToolWhollyGatedOverMcp) and for a tool with no gated
+ * actions at all.
+ */
 function gatedActionsForTool(toolName: string, inputSchema: unknown, unattendedPrincipal = false): string[] {
   if (unattendedPrincipal) return [];
   const actionEnum = extractActionEnum(inputSchema);
