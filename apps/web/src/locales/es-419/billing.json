@@ -1292,6 +1292,7 @@
         "noPublishedVersion": "Esta plantilla aún no tiene una versión publicada. Publícala antes de agregarla a una cotización.",
         "pinnedVersion": "Fijado a v{{version}}",
         "autoVariablesTitle": "Se completa automáticamente desde la cotización",
+        "autoValueBlank": "En blanco",
         "autoHint": "Estos valores se resuelven desde la cotización al enviar la propuesta.",
         "manualVariablesTitle": "Completa para esta propuesta",
         "labelFieldLabel": "Etiqueta de la sección",

@@ -1292,6 +1292,7 @@
         "noPublishedVersion": "This template has no published version yet. Publish it before adding it to a quote.",
         "pinnedVersion": "Pinned to v{{version}}",
         "autoVariablesTitle": "Filled automatically from the quote",
+        "autoValueBlank": "Blank",
         "autoHint": "These values resolve from the quote when the proposal is sent.",
         "manualVariablesTitle": "Fill in for this proposal",
         "labelFieldLabel": "Section label",

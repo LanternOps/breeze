@@ -1255,6 +1255,7 @@
         "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",
+        "autoValueBlank": "Vide",
         "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
         "manualVariablesTitle": "À remplir pour cette proposition",
         "labelFieldLabel": "Libellé de la section",

@@ -1255,6 +1255,7 @@
         "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",
+        "autoValueBlank": "Vuoto",
         "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
         "manualVariablesTitle": "Compila per questa proposta",
         "labelFieldLabel": "Etichetta sezione",

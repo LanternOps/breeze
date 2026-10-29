@@ -1300,6 +1300,7 @@
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoValueBlank": "Boş",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
         "manualVariablesTitle": "Bu teklifi doldurun",
         "labelFieldLabel": "Bölüm etiketi",
