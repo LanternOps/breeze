@@ -73,19 +73,26 @@ describe('alert webhook enrichment', () => {
     expect((await buildAlertWebhookProjections(event(type))).org.status).toBe(status);
   });
 
-  it('fills the frozen v2 ticket shape from refs present at enrichment time', async () => {
-    mocks.listExternalTickets.mockResolvedValue([
-      { source: 'partner_api', partnerServicePrincipalId: SITE, externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42', state: null, createdAt: NOW, updatedAt: NOW },
-      { source: 'psa', partnerServicePrincipalId: null, externalId: '99', externalUrl: null, externalNumber: null, state: 'open', createdAt: NOW, updatedAt: NOW },
-    ]);
+  it('keeps partner integration data out of the org projection and freezes both four-key shapes', async () => {
+    const orgMapping = { source: 'psa', partnerServicePrincipalId: null, externalId: 'org-99', externalUrl: null, externalNumber: null, state: 'open', createdAt: NOW, updatedAt: NOW };
+    const partnerRef = { source: 'partner_api', partnerServicePrincipalId: SITE, externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42', state: null, createdAt: NOW, updatedAt: NOW };
+    const partnerMapping = { ...orgMapping, externalId: 'partner-99' };
+    mocks.listExternalTickets.mockImplementation(async (_alert, viewer) => viewer === null
+      ? [orgMapping] : [partnerRef, partnerMapping, orgMapping]);
     const { org, partner } = await buildAlertWebhookProjections(event());
+    expect(mocks.listExternalTickets).toHaveBeenCalledWith(ALERT, null, { orgId: ORG });
     expect(mocks.listExternalTickets).toHaveBeenCalledWith(ALERT, PARTNER, { orgId: ORG });
     expect(org.externalTickets).toEqual([
-      { source: 'partner_api', externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42' },
-      { source: 'psa', externalId: '99', externalUrl: null, externalNumber: null },
+      { source: 'psa', externalId: 'org-99', externalUrl: null, externalNumber: null },
     ]);
-    expect(partner.externalTickets).toEqual(org.externalTickets);
+    expect(partner.externalTickets).toEqual([
+      { source: 'partner_api', externalId: '42', externalUrl: 'https://psa.example/42', externalNumber: 'INC-42' },
+      { source: 'psa', externalId: 'partner-99', externalUrl: null, externalNumber: null },
+      { source: 'psa', externalId: 'org-99', externalUrl: null, externalNumber: null },
+    ]);
     expect(Object.isFrozen(org.externalTickets[0])).toBe(true);
+    expect(Object.isFrozen(partner.externalTickets[0])).toBe(true);
+    expect(partner.externalTickets).not.toBe(org.externalTickets);
   });
 
   it.each(['alert.acknowledged', 'alert.resolved'] as const)('uses non-blocking MVCC reads for %s enrichment', async (type) => {
@@ -254,6 +261,30 @@ describe('alert webhook enrichment', () => {
     });
     expect(mocks.captureException).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"reason":"alert_id_invalid"'));
+  });
+
+  it.each(['org', 'partner'] as const)('preserves main enrichment when the %s external-ticket read fails', async (viewer) => {
+    const error = new Error('external tickets unavailable');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    if (viewer === 'partner') {
+      mocks.listExternalTickets.mockResolvedValueOnce([
+        { source: 'psa', externalId: 'org-ticket', externalUrl: null, externalNumber: null },
+      ]);
+    }
+    mocks.listExternalTickets.mockRejectedValueOnce(error);
+    const { org, partner } = await buildAlertWebhookProjections(event());
+    for (const projection of [org, partner]) {
+      expect(projection).toMatchObject({
+        orgName: row.orgName, deviceHostname: row.deviceHostname,
+        siteName: row.siteName, title: row.title, enrichmentIncomplete: true,
+        externalTickets: [],
+      });
+    }
+    expect(partner.orgExternalIds).toEqual([{ system: 'connectwise', externalId: 'company-7' }]);
+    expect(mocks.captureException).toHaveBeenCalledExactlyOnceWith(error, undefined,
+      expect.objectContaining({ errorId: 'WEBHOOK_ALERT_EXTERNAL_TICKETS_FAILED', eventId: 'event-1', orgId: ORG, eventType: 'alert.triggered' }),
+      { fingerprint: ['webhook-alert-external-tickets-failed'] });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('WEBHOOK_ALERT_EXTERNAL_TICKETS_FAILED'));
   });
 
   it('discards all enrichment if the external-link read fails', async () => {

@@ -56,11 +56,22 @@ describe('listAlertExternalTickets', () => {
     expect(mappings.params).toEqual([ALERT, ORG, PARTNER]);
   });
 
-  it('does not expose partner-owned PSA connections without a viewer partner', async () => {
-    expect(await listAlertExternalTickets(ALERT, null)).toEqual([]);
-    const query = new PgDialect().sqlToQuery(mocks.predicates[1]!);
-    expect(query.params).toEqual([ALERT]);
+  it('org viewers read only org-owned PSA mappings, skipping partner-principal refs entirely', async () => {
+    // Only the PSA query should consume this result; a refs read would instead
+    // expose it as a partner_api record, and would issue a second query.
+    mocks.rows.push([{ id: 'org-mapping', externalId: 'ORG-1', externalUrl: null,
+      state: 'open', createdAt: CREATED, updatedAt: CREATED }]);
+    const records = await listAlertExternalTickets(ALERT, null, { orgId: ORG });
+    expect(records.map(record => [record.source, record.externalId])).toEqual([['psa', 'ORG-1']]);
+    expect(mocks.select).toHaveBeenCalledTimes(1);
+    const query = new PgDialect().sqlToQuery(mocks.predicates[0]!);
+    expect(query.params).toEqual([ALERT, ORG]);
+    expect(query.sql).toContain('"psa_ticket_mappings"."external_ticket_id" is not null');
+    expect(query.sql).toContain('"alerts"."org_id" = $2');
+    expect(query.sql).toContain('"psa_connections"."org_id" = "alerts"."org_id"');
+    expect(query.sql).toContain('"psa_connections"."partner_id" is null');
     expect(query.sql).not.toContain('"psa_connections"."partner_id" =');
+    expect(query.sql).not.toContain('"alert_external_refs"');
   });
   it('propagates read errors without changing database context', async () => {
     mocks.select.mockImplementationOnce(() => { throw new Error('read failed'); });

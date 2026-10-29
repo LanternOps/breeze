@@ -8,6 +8,7 @@ import {
   partnerApiIdempotencyKeys, partnerServicePrincipals, psaConnections, psaTicketMappings, ticketAlertLinks, ticketExternalRefs, tickets,
 } from '../../db/schema';
 import { partnerApiRoutes } from '../../routes/partnerApi';
+import { buildAlertWebhookProjections } from '../../services/webhookPayload/alertEnrichment';
 import { listAlertExternalTickets } from '../../services/alertExternalTickets';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
@@ -80,6 +81,9 @@ describe('partner API alert external refs', () => {
     expect(refs[0]).toMatchObject({ source: 'partner_api', externalId: 'PSA-42', state: null });
     const replacement = await jsonOk(await request(application, a.rawKey, path, 'PUT', { externalId: 'PSA-43' }));
     expect(replacement).toMatchObject({ changed: true, data: { externalUrl: null, externalNumber: null } });
+    const afterReplacement = (await jsonOk(await request(application, a.rawKey, `${path}s`))).data;
+    expect(afterReplacement.find((ref: any) => ref.partnerServicePrincipalId === b.principal.id))
+      .toMatchObject({ externalId: 'PSA-42' });
     expect(await jsonOk(await request(application, a.rawKey, path, 'DELETE'))).toEqual({ schemaVersion: '1', deleted: true });
     expect(await jsonOk(await request(application, a.rawKey, path, 'DELETE'))).toEqual({ schemaVersion: '1', deleted: false });
     const remaining = await admin.select().from(alertExternalRefs).where(eq(alertExternalRefs.alertId, f.alert.id));
@@ -171,6 +175,40 @@ describe('partner API alert external refs', () => {
     expect(systemRead.map((r) => r.externalId).sort()).toEqual(expected);
     const orgOnly = await withSystemDbAccessContext(() => listAlertExternalTickets(f.alert.id, null));
     expect(orgOnly.map((r) => r.externalId)).toEqual(['ORG-1']);
+  });
+
+  runDb('splits webhook external tickets between org and partner viewers against real Postgres', async () => {
+    const f = await seedAlertRefFixture();
+    const admin = getTestDb();
+    await admin.insert(alertExternalRefs).values({
+      alertId: f.alert.id, orgId: f.orgA.id, partnerId: f.partner.id,
+      partnerServicePrincipalId: f.principal.id, externalId: 'PRINCIPAL-SECRET',
+    });
+    const [partnerConnection] = await admin.insert(psaConnections).values({ partnerId: f.partner.id, name: 'Partner PSA', provider: 'jira', credentials: {} }).returning();
+    const [orgConnection] = await admin.insert(psaConnections).values({ orgId: f.orgA.id, name: 'Org PSA', provider: 'jira', credentials: {} }).returning();
+    const [foreignConnection] = await admin.insert(psaConnections).values({ partnerId: f.otherPartner.id, name: 'Foreign PSA', provider: 'jira', credentials: {} }).returning();
+    await admin.insert(psaTicketMappings).values([
+      { connectionId: partnerConnection!.id, alertId: f.alert.id, externalTicketId: 'PARTNER-SECRET' },
+      { connectionId: orgConnection!.id, alertId: f.alert.id, externalTicketId: 'ORG-LOCAL' },
+      { connectionId: foreignConnection!.id, alertId: f.alert.id, externalTicketId: 'FOREIGN-SECRET' },
+    ]);
+    const projections = await buildAlertWebhookProjections({
+      id: crypto.randomUUID(), type: 'alert.triggered', orgId: f.orgA.id,
+      source: 'test', priority: 'normal', metadata: { timestamp: new Date().toISOString() },
+      payload: { alertId: f.alert.id, deviceId: f.device.id },
+    });
+    expect(projections.org.enrichmentIncomplete).toBe(false);
+    expect(projections.org.externalTickets.map(row => row.externalId)).toEqual(['ORG-LOCAL']);
+    expect(projections.partner.externalTickets.map(row => row.externalId).sort()).toEqual(['ORG-LOCAL', 'PARTNER-SECRET', 'PRINCIPAL-SECRET']);
+    for (const projection of [projections.org, projections.partner]) {
+      for (const record of projection.externalTickets) {
+        expect(Object.keys(record).sort()).toEqual(['externalId', 'externalNumber', 'externalUrl', 'source']);
+        expect(Object.isFrozen(record)).toBe(true);
+      }
+    }
+    // The shared service enforces this even under the system context used by enrichment.
+    const orgOnly = await withSystemDbAccessContext(() => listAlertExternalTickets(f.alert.id, null, { orgId: f.orgA.id }));
+    expect(orgOnly.map(row => [row.source, row.externalId])).toEqual([['psa', 'ORG-LOCAL']]);
   });
 
   runDb('moving an external link re-emits both its former and new organizations', async () => {

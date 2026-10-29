@@ -328,6 +328,14 @@ not refresh it. For current state, call
 (or the staff `GET /api/v1/alerts/<alertId>/external-tickets` route). V1 payloads
 are unchanged.
 
+Visibility follows webhook ownership. Partner-owned webhooks receive every
+partner-principal reference on the alert plus mappings from PSA connections
+owned by that partner or by the alert's organization. Org-owned webhooks receive
+only mappings from PSA connections owned by the alert's organization with no
+partner owner. They never receive partner-principal references or partner-owned
+PSA connection mappings. Org-scoped users of the staff GET route receive the
+same restricted view as an org-owned webhook.
+
 Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means the alert row could not be read (it was not yet committed, the id was invalid, or the enrichment query failed), so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site leaves its fields `null` without setting the flag.
 
 | Field | Type | Meaning |
@@ -349,7 +357,7 @@ Hostname, site, and organization name are read when the delivery is first record
 | `siteName` | string or null | Site name |
 | `orgName` | string or null | Organization name |
 | `alertUrl` | string | Dashboard link to the alert, or `/alerts` when the alert id is unavailable; relative when no dashboard base URL is configured |
-| `externalTickets` | array of objects | References and eligible PSA mappings present at enrichment time. Each object has exactly `source` (`partner_api` or `psa`), `externalId`, nullable `externalUrl`, and nullable `externalNumber`; empty when none exist |
+| `externalTickets` | array of objects | References and PSA mappings permitted for the webhook owner at enrichment time (org-owned webhooks receive only org-owned PSA mappings). Each object has exactly `source` (`partner_api` or `psa`), `externalId`, nullable `externalUrl`, and nullable `externalNumber`; empty when none exist |
 | `acknowledgedByPrincipalId` | string or null | Partner API service principal that acknowledged the alert; null when absent |
 | `resolvedByPrincipalId` | string or null | Partner API service principal that resolved the alert; null when absent. A principal resolution counts as a person's resolve and starts no automatic AI verdict run |
 | `enrichmentIncomplete` | boolean | The alert row could not be read or the enrichment query failed; missing device or site alone does not set it |

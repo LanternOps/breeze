@@ -2,7 +2,7 @@ import './setup';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { organizationExternalLinks, organizations, partnerServicePrincipals } from '../../db/schema';
+import { alerts, devices, organizationExternalLinks, organizations, partnerServicePrincipals } from '../../db/schema';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
@@ -41,6 +41,31 @@ describe('alert external refs follow alert lifecycle', () => {
     await executeOrgMerge({ loserOrgId: f.orgA.id, survivorOrgId: f.orgB.id,
       partnerId: f.partner.id, performedBy: f.actor.id, performedByEmail: f.actor.email });
     expect(await refs(f.alert.id)).toEqual([{ org_id: f.orgB.id, partner_id: f.partner.id }]);
+  });
+
+  it('cross-partner device move preserves a site-owned topology alert ref unchanged', async () => {
+    const f = await seedAlertRefFixture();
+    const [topologyAlert] = await getTestDb().insert(alerts).values({
+      orgId: f.orgA.id, deviceId: f.device.id, severity: 'high', status: 'active',
+      title: 'gateway unreachable', topologySiteId: f.site.id,
+      topologySourceKey: `topology:${'a'.repeat(64)}`,
+    }).returning();
+    await getTestDb().execute(insertAlertRef({ ...f, alert: topologyAlert! }));
+    const before = await getTestDb().execute(sql`SELECT * FROM alert_external_refs WHERE alert_id = ${topologyAlert!.id}::uuid`);
+    const targetSite = await createSite({ orgId: f.foreignOrg.id });
+
+    await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: f.device.id, sourceOrgId: f.orgA.id, targetOrgId: f.foreignOrg.id, targetSiteId: targetSite.id,
+      targetOrgName: f.foreignOrg.name, deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+      actor: { userId: f.actor.id, allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
+    })));
+
+    expect(await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, f.device.id)))
+      .toEqual([{ orgId: f.foreignOrg.id }]);
+    expect(await getTestDb().select({ orgId: alerts.orgId, siteId: alerts.topologySiteId }).from(alerts).where(eq(alerts.id, topologyAlert!.id)))
+      .toEqual([{ orgId: f.orgA.id, siteId: f.site.id }]);
+    expect(await getTestDb().execute(sql`SELECT * FROM alert_external_refs WHERE alert_id = ${topologyAlert!.id}::uuid`))
+      .toEqual(before);
   });
 
   it('org erasure succeeds with an external link and removes its refs', async () => {

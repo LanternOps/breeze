@@ -3681,7 +3681,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'listAlertExternalTickets',
         tags: ['Alerts'],
         summary: 'List external ticket references and PSA mappings for an alert',
-        description: 'Requires alerts.read and access to the alert organization and site. Returns current references from every integration principal and visible PSA connections.',
+        description: 'Requires alerts.read and access to the alert organization and site. Partner-level viewers see every integration principal reference and PSA mappings from connections owned by their partner or the alert organization. Org-scoped users see only mappings from PSA connections owned by the alert organization with no partner owner; partner-principal references and partner-owned PSA mappings are excluded.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {

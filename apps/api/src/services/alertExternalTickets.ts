@@ -14,6 +14,9 @@ export type AlertExternalTicket = {
 };
 
 /** Callers authorize the alert first. Reads retain the caller's DB/RLS context.
+ * Partner viewers see principal refs plus their partner's or the alert org's
+ * PSA mappings. A null viewer sees only alert-org-owned PSA mappings, never
+ * partner-principal refs or partner-owned connections.
  * System-context enrichment supplies its event org to keep each MVCC read
  * tenant-scoped even if the alert moves between queries. */
 export async function listAlertExternalTickets(
@@ -21,7 +24,7 @@ export async function listAlertExternalTickets(
   viewerPartnerId: string | null,
   opts?: { orgId?: string },
 ): Promise<AlertExternalTicket[]> {
-  const refs = await db.select({
+  const refs = viewerPartnerId !== null ? await db.select({
     id: alertExternalRefs.id,
     partnerServicePrincipalId: alertExternalRefs.partnerServicePrincipalId,
     externalId: alertExternalRefs.externalId,
@@ -34,7 +37,7 @@ export async function listAlertExternalTickets(
       eq(alertExternalRefs.alertId, alertId),
       opts?.orgId !== undefined ? eq(alertExternalRefs.orgId, opts.orgId) : undefined,
     ))
-    .orderBy(asc(alertExternalRefs.createdAt), asc(alertExternalRefs.id));
+    .orderBy(asc(alertExternalRefs.createdAt), asc(alertExternalRefs.id)) : [];
 
   const mappings = await db.select({
     id: psaTicketMappings.id,
@@ -51,7 +54,7 @@ export async function listAlertExternalTickets(
       opts?.orgId !== undefined ? eq(alerts.orgId, opts.orgId) : undefined,
       isNotNull(psaTicketMappings.externalTicketId),
       or(
-        viewerPartnerId ? eq(psaConnections.partnerId, viewerPartnerId) : undefined,
+        viewerPartnerId !== null ? eq(psaConnections.partnerId, viewerPartnerId) : undefined,
         and(eq(psaConnections.orgId, alerts.orgId), isNull(psaConnections.partnerId)),
       ),
     ))

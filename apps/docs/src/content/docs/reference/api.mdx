@@ -270,8 +270,12 @@ Each route requires the listed scope on the principal.
 
 Alert external references are namespaced by principal: one reference per
 principal and alert, with the same external ticket allowed on several alerts.
-PUT/DELETE cannot change another principal's reference; anyone who can read the
-alert can read its references. An identical PUT performs no write or audit,
+PUT/DELETE cannot change another principal's reference. Partner-level viewers
+can read every principal's references plus mappings from their partner's or the
+alert organization's PSA connections. Org-scoped users and org-owned webhooks
+see only mappings from PSA connections owned by the alert's organization with
+no partner owner; they do not see partner-principal references or partner-owned
+PSA connection mappings. An identical PUT performs no write or audit,
 and repeated DELETE returns `deleted: false`. Neither requires an
 `X-Idempotency-Key`. PUT responds with `{ schemaVersion: "1", changed, data }`;
 `data` contains `alertId`, `orgId`, `partnerServicePrincipalId`, `externalId`,
@@ -350,7 +354,7 @@ schemas in
 | `GET` | `/alerts` | List alerts |
 | `GET` | `/alerts/summary` | Alert summary counts |
 | `GET` | `/alerts/:id` | Get alert details |
-| `GET` | `/alerts/:id/external-tickets` | Read external ticket references and eligible PSA mappings using the same alert read permission, organization and site scope. Returns `404` when the alert is not accessible. |
+| `GET` | `/alerts/:id/external-tickets` | Read external tickets using the usual alert read permission, organization and site scope. Org-scoped users see only org-owned PSA mappings, never partner-principal refs or partner-owned PSA mappings; partner-level viewers also see those refs and their partner’s PSA mappings. Returns `404` when the alert is not accessible. |
 | `POST` | `/alerts/:id/acknowledge` | Acknowledge alert. Valid only from `active`; returns `409` if the alert left that status first (another user, or the auto-resolve sweep, got there first) |
 | `POST` | `/alerts/:id/resolve` | Resolve alert. Returns `409` if the alert already reached a terminal status |
 | `POST` | `/alerts/:id/suppress` | Suppress alert. Returns `409` if the alert already reached a terminal status |

@@ -1702,6 +1702,7 @@ describe('POST /devices/:id/move-org', () => {
       // stays in the source org).
       expect(collapseStmt(statements[23]!)).toContain('UPDATE security_scans SET');
       expect(collapseStmt(statements[24]!)).toContain('DELETE FROM alert_external_refs');
+      expect(collapseStmt(statements[24]!)).toContain(`WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid AND topology_site_id IS NULL)`);
       expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
       expect(statements[25]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {

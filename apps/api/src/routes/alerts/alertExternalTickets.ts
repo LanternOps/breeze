@@ -19,6 +19,6 @@ alertExternalTicketRoutes.get('/:id/external-tickets',
       ...auth, allowedSiteIds: c.get('permissions').allowedSiteIds,
     });
     if (!alert) return c.json({ error: 'Alert not found' }, 404);
-    return c.json({ data: await listAlertExternalTickets(id, auth.partnerId) });
+    return c.json({ data: await listAlertExternalTickets(id, auth.scope === 'organization' ? null : auth.partnerId ?? null) });
   },
 );

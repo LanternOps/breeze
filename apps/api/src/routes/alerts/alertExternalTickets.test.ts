@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 const state = vi.hoisted(() => ({
+  scope: 'partner' as 'organization' | 'partner',
   authenticated: true, read: true, orgAccess: true, allowedSiteIds: undefined as string[] | undefined,
   getAlert: vi.fn(), list: vi.fn(),
 }));
 vi.mock('../../middleware/auth', () => ({
   requireScope: () => async (c: any, next: any) => {
     if (!state.authenticated) return c.json({ error: 'Unauthorized' }, 401);
-    c.set('auth', { scope: 'partner', partnerId: '22222222-2222-4222-8222-222222222222', canAccessOrg: () => state.orgAccess });
+    c.set('auth', { scope: state.scope, partnerId: '22222222-2222-4222-8222-222222222222', canAccessOrg: () => state.orgAccess });
     await next();
   },
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
@@ -23,7 +24,7 @@ import { alertExternalTicketRoutes } from './alertExternalTickets';
 const ALERT = '11111111-1111-4111-8111-111111111111';
 const app = new Hono().route('/alerts', alertExternalTicketRoutes);
 beforeEach(() => {
-  vi.clearAllMocks(); state.authenticated = true; state.read = true; state.orgAccess = true; state.allowedSiteIds = undefined;
+  vi.clearAllMocks(); state.scope = 'partner'; state.authenticated = true; state.read = true; state.orgAccess = true; state.allowedSiteIds = undefined;
   state.getAlert.mockImplementation(async (_id, auth) => auth.canAccessOrg('org') ? { id: ALERT, orgId: 'org' } : null);
   state.list.mockResolvedValue([]);
 });
@@ -34,6 +35,15 @@ describe('staff alert external tickets', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ data: [{ source: 'partner_api', externalId: 'PSA-42' }] });
     expect(state.list).toHaveBeenCalledWith(ALERT, '22222222-2222-4222-8222-222222222222');
+  });
+  it.each(['organization', 'partner'] as const)('applies %s viewer isolation even when auth has a partnerId', async (scope) => {
+    state.scope = scope;
+    const partnerRef = { source: 'partner_api', externalId: 'PARTNER-SECRET' };
+    state.list.mockImplementation(async (_id, viewer) => viewer === null ? [] : [partnerRef]);
+    const response = await app.request(`/alerts/${ALERT}/external-tickets`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: scope === 'organization' ? [] : [partnerRef] });
+    expect(state.list).toHaveBeenCalledWith(ALERT, scope === 'organization' ? null : '22222222-2222-4222-8222-222222222222');
   });
   it('returns 404 for an alert outside organization reach', async () => {
     state.orgAccess = false;

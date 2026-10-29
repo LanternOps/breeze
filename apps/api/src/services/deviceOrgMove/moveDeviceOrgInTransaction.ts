@@ -545,14 +545,15 @@ export async function moveDeviceOrgInTransaction(
         WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
   );
 
-  // alerts.org_id is restamped INSIDE the device UPDATE by the database;
-  // its composite FK then cascades alert_external_refs.org_id. Discard refs
-  // pinned to another partner BEFORE that flip or the immediate org/partner
-  // FK would abort it. Within one partner this deletes nothing; the FK alone
-  // restamps refs (no application-level rewrite).
+  // breeze_cascade_device_org_id() restamps alerts.org_id inside the devices
+  // UPDATE, except for site-owned topology alerts that stay with their site.
+  // The composite FK then cascades the moved alerts' refs to the new org.
+  // Discard their refs pinned to another partner BEFORE that flip or the
+  // immediate org/partner FK would abort it. Within one partner this deletes
+  // nothing; site-owned topology refs always stay unchanged with their alert.
   await tx.execute(
     sql`DELETE FROM alert_external_refs
-        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)
           AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
   );
 

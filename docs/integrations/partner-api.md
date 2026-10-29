@@ -662,10 +662,13 @@ to the caller's principal. URL query strings are not included in the audit.
 GET items contain `source` (`partner_api` or `psa`),
 `partnerServicePrincipalId` (null for PSA mappings), `externalId`,
 `externalUrl`, `externalNumber`, `state`, `createdAt`, and nullable `updatedAt`.
-`externalUrl`, `externalNumber`, and `state` are nullable. Readers can see other
-principals' references on an alert they can read. PSA mappings are limited to
-connections owned by the viewing partner or the alert's organization; another
-partner's connection is never included. Staff use
+`externalUrl`, `externalNumber`, and `state` are nullable. Partner-level readers
+can see every principal's references on an alert they can read, plus PSA
+mappings from connections owned by that partner or by the alert's organization;
+another partner's connection is never included. Org-scoped users and org-owned
+webhooks see only mappings from PSA connections owned by the alert's organization
+(with no partner owner). They do not receive partner-principal references or
+partner-owned PSA connection mappings. Staff use
 `GET /api/v1/alerts/<alertId>/external-tickets` under the alert's usual
 permission, organization, and site restrictions. The alert page displays these
 references as read-only chips, linking only HTTPS URLs.
@@ -674,8 +677,8 @@ All three Partner API routes return `404 partner_alert_not_found` for an
 unknown alert or one outside the principal's accessible organizations, and
 `403` without the route's required scope. PUT and DELETE use the default
 partner write budget (120 requests per hour per principal and key). V2
-webhooks include the references present at enrichment time; use GET for their
-current state.
+webhooks include the references permitted for their owner at enrichment time;
+use GET for current state, subject to the same viewer restrictions.
 
 ## Tickets feed (`tickets:read`)
 
