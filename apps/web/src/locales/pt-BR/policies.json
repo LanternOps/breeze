@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Provedores de aplicativos (Aviso e Informação)",
+        "applicationProvidersHelp": "Os eventos de aplicativo dos níveis Erro e Crítico são coletados de todos os provedores; os de Aviso e Informação, somente dos provedores integrados ({{providers}}) e dos listados aqui. Use o nome exato do provedor exibido na coluna “Origem” do Visualizador de Eventos ou em Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Somente a política de Logs de Eventos com precedência para o dispositivo se aplica. As listas de provedores não são combinadas entre políticas.",
+        "providerNameLabel": "Nome do provedor de eventos de aplicativo",
+        "addProvider": "Adicionar provedor",
+        "removeProvider": "Remover",
+        "removeProviderNamed": "Remover {{provider}}",
+        "providerNameInvalid": "Use de 1 a {{max}} caracteres, começando com uma letra ou um dígito. São permitidos letras, dígitos, espaços, pontos, sublinhados, cifrões, parênteses e hífens.",
+        "providerAlreadyListed": "Este provedor já está na lista.",
+        "providerLimit": "{{total}} de {{max}} provedores adicionais"
       },
       "featureTabShell": {
         "override": "Substituir",

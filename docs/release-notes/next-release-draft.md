@@ -193,3 +193,9 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - **The Security category now collects audit events.** It reads Audit Failure events (failed logons and others) plus account lockout, audit log cleared, audit policy changed, user created or deleted, and members added to security groups. These Level 0 audit events are reported as `warning`, so the `minimumLevel` setting and event-log monitors apply to them.
 - **Events without message text are no longer sent empty.** The agent uses the event's insertion strings, or a placeholder naming the provider and event ID.
 - No migration, environment variable or setting.
+
+### Event-log providers in policy
+
+Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
+Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
+Update agents to a release containing this change before relying on the provider list. Older agents ignore it.

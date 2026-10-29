@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Fournisseurs d’applications (Avertissement et Information)",
+        "applicationProvidersHelp": "Les événements d’application de niveau Erreur et Critique sont recueillis auprès de tous les fournisseurs; ceux de niveau Avertissement et Information, seulement auprès des fournisseurs intégrés ({{providers}}) et de ceux indiqués ici. Utilisez le nom exact du fournisseur affiché dans la colonne « Source » de l’Observateur d’événements ou dans Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Seule la stratégie de journaux d’événements prioritaire pour un appareil s’applique. Les listes de fournisseurs des différentes stratégies ne sont pas combinées.",
+        "providerNameLabel": "Nom du fournisseur d’événements d’application",
+        "addProvider": "Ajouter un fournisseur",
+        "removeProvider": "Retirer",
+        "removeProviderNamed": "Retirer {{provider}}",
+        "providerNameInvalid": "Utilisez de 1 à {{max}} caractères, en commençant par une lettre ou un chiffre. Caractères permis : lettres, chiffres, espaces, points, traits de soulignement, signes de dollar, parenthèses et traits d’union.",
+        "providerAlreadyListed": "Ce fournisseur figure déjà dans la liste.",
+        "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
         "override": "Outremise",

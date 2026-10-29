@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Application providers (Warning and Information)",
+        "applicationProvidersHelp": "Error and Critical Application events are collected from every provider; Warning and Information events only from the built-in providers ({{providers}}) and the providers listed here. Use the exact provider name shown in Event Viewer’s \"Source\" column or Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Only the single winning Event Logs policy for a device applies. Provider lists are not combined across policies.",
+        "providerNameLabel": "Application event provider name",
+        "addProvider": "Add provider",
+        "removeProvider": "Remove",
+        "removeProviderNamed": "Remove {{provider}}",
+        "providerNameInvalid": "Use 1–{{max}} characters, starting with a letter or digit. Allowed: letters, digits, spaces, periods, underscores, dollar signs, parentheses and hyphens.",
+        "providerAlreadyListed": "This provider is already listed.",
+        "providerLimit": "{{total}} of {{max}} additional providers"
       },
       "featureTabShell": {
         "override": "Override",

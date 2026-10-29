@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumSeviye",
         "collectionIntervalMinutes2": "koleksiyonAralığıDakika",
-        "rateLimitPerHour2": "RateLimitPerHour"
+        "rateLimitPerHour2": "RateLimitPerHour",
+        "applicationProvidersHeading": "Uygulama sağlayıcıları (Uyarı ve Bilgi)",
+        "applicationProvidersHelp": "Hata ve Kritik düzeyindeki Uygulama olayları tüm sağlayıcılardan toplanır; Uyarı ve Bilgi olayları yalnızca yerleşik sağlayıcılardan ({{providers}}) ve burada listelenen sağlayıcılardan toplanır. Olay Görüntüleyicisi’nin \"Kaynak\" sütununda veya Get-WinEvent -ListProvider çıktısında gösterilen tam sağlayıcı adını kullanın.",
+        "applicationProvidersScope": "Bir cihaz için yalnızca öncelikli Olay Günlükleri ilkesi uygulanır. Farklı ilkelerin sağlayıcı listeleri birleştirilmez.",
+        "providerNameLabel": "Uygulama olayı sağlayıcısının adı",
+        "addProvider": "Sağlayıcı ekle",
+        "removeProvider": "Kaldır",
+        "removeProviderNamed": "{{provider}} sağlayıcısını kaldır",
+        "providerNameInvalid": "Bir harf veya rakamla başlayan 1–{{max}} karakter kullanın. İzin verilenler: harfler, rakamlar, boşluklar, noktalar, alt çizgiler, dolar işaretleri, parantezler ve kısa çizgiler.",
+        "providerAlreadyListed": "Bu sağlayıcı zaten listede.",
+        "providerLimit": "{{max}} ek sağlayıcıdan {{total}} tanesi"
       },
       "featureTabShell": {
         "override": "Geçersiz kıl",

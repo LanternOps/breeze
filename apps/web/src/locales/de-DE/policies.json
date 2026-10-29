@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "MinimumLevel",
         "collectionIntervalMinutes2": "CollectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Anwendungsanbieter (Warnung und Information)",
+        "applicationProvidersHelp": "Anwendungsereignisse der Stufen Fehler und Kritisch werden von allen Anbietern erfasst; Warnungen und Informationen nur von den integrierten Anbietern ({{providers}}) und den hier aufgeführten Anbietern. Verwenden Sie den exakten Anbieternamen aus der Spalte „Quelle“ der Ereignisanzeige oder aus Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Für ein Gerät gilt nur die maßgebliche Ereignisprotokollrichtlinie. Anbieterlisten verschiedener Richtlinien werden nicht zusammengeführt.",
+        "providerNameLabel": "Name des Anwendungsereignisanbieters",
+        "addProvider": "Anbieter hinzufügen",
+        "removeProvider": "Entfernen",
+        "removeProviderNamed": "{{provider}} entfernen",
+        "providerNameInvalid": "Verwenden Sie 1–{{max}} Zeichen, beginnend mit einem Buchstaben oder einer Ziffer. Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkte, Unterstriche, Dollarzeichen, runde Klammern und Bindestriche.",
+        "providerAlreadyListed": "Dieser Anbieter ist bereits aufgeführt.",
+        "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },
       "featureTabShell": {
         "override": "Überschreiben",

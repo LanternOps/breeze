@@ -674,7 +674,17 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Proveedores de aplicaciones (Advertencia e Información)",
+        "applicationProvidersHelp": "Los eventos de aplicación de nivel Error y Crítico se recopilan de todos los proveedores; los de Advertencia e Información, solo de los proveedores integrados ({{providers}}) y los indicados aquí. Use el nombre exacto del proveedor que aparece en la columna «Origen» del Visor de eventos o en Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Solo se aplica la directiva de registros de eventos que prevalece para cada dispositivo. Las listas de proveedores no se combinan entre directivas.",
+        "providerNameLabel": "Nombre del proveedor de eventos de aplicación",
+        "addProvider": "Agregar proveedor",
+        "removeProvider": "Quitar",
+        "removeProviderNamed": "Quitar {{provider}}",
+        "providerNameInvalid": "Use entre 1 y {{max}} caracteres, comenzando con una letra o un dígito. Se permiten letras, dígitos, espacios, puntos, guiones bajos, signos de dólar, paréntesis y guiones.",
+        "providerAlreadyListed": "Este proveedor ya está en la lista.",
+        "providerLimit": "{{total}} de {{max}} proveedores adicionales"
       },
       "featureTabShell": {
         "override": "Anular",

@@ -138,3 +138,58 @@ describe('EventLogTab', () => {
     expect(payload.featurePolicyId).toBeNull();
   });
 });
+
+
+describe('EventLogTab application providers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({ id: 'link-1', featureType: 'event_log', inlineSettings: {} });
+  });
+
+  function mount(applicationProviders?: unknown) {
+    return render(<EventLogTab policyId="policy-1" linkedPolicyId={null} onLinkChanged={vi.fn()}
+      existingLink={applicationProviders === undefined ? undefined : {
+        id: 'link-1', featureType: 'event_log', featurePolicyId: null,
+        inlineSettings: { applicationProviders },
+      }} />);
+  }
+
+  it('adds trimmed providers by button and Enter, deduplicates ignoring case, and saves them', async () => {
+    mount();
+    const input = screen.getByTestId('event-log-app-providers-input');
+    fireEvent.change(input, { target: { value: ' Dell UPS Local Node Manager ' } });
+    fireEvent.click(screen.getByTestId('event-log-app-providers-add'));
+    fireEvent.change(input, { target: { value: 'dell ups local node manager' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getAllByTestId('event-log-app-providers-item')).toHaveLength(1);
+    fireEvent.change(input, { target: { value: 'MSSQL$SQLEXPRESS' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock.mock.calls[0][1].inlineSettings.applicationProviders)
+      .toEqual(['Dell UPS Local Node Manager', 'MSSQL$SQLEXPRESS']);
+  });
+
+  it.each(["Foo' or '1'='1", 'A[B]', 'a;b', '.NET Runtime', 'A'.repeat(257), '   '])('rejects invalid provider %s inline', (provider) => {
+    mount();
+    fireEvent.change(screen.getByTestId('event-log-app-providers-input'), { target: { value: provider } });
+    fireEvent.click(screen.getByTestId('event-log-app-providers-add'));
+    expect(screen.queryAllByTestId('event-log-app-providers-item')).toHaveLength(0);
+    expect(screen.getByTestId('event-log-app-providers-error').textContent).toBeTruthy();
+  });
+
+  it('disables Add at 20 and allows removing a provider', () => {
+    mount(Array.from({ length: 20 }, (_, i) => `Provider${i}`));
+    expect((screen.getByTestId('event-log-app-providers-add') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getAllByTestId('event-log-app-providers-remove')[0]);
+    expect(screen.getAllByTestId('event-log-app-providers-item')).toHaveLength(19);
+    expect((screen.getByTestId('event-log-app-providers-add') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('normalizes legacy non-array data to an empty list in the save payload', async () => {
+    mount('legacy');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(saveMock.mock.calls[0][1].inlineSettings.applicationProviders).toEqual([]);
+  });
+});

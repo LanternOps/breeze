@@ -247,8 +247,8 @@
     "nameserver": "Ad sunucusu",
     "degradedIsFailure": "Bozulmuşu hata say",
     "maxResponseMs": "Şundan yavaşsa başarısız (ms)",
-    "eventLogCollectionNoSource": "Bilgi ve Uyarı düzeyindeki Uygulama olayları yalnızca {{providers}} kaynağından toplanır. Diğer kaynakların olayları bu kuralı yalnızca Hata veya Kritik düzeyinde tetikler.",
-    "eventLogCollectionSourceNotCollected": "Aracı, \"{{source}}\" kaynağından Bilgi veya Uyarı düzeyindeki Uygulama olaylarını toplamaz; bu nedenle bu kural yalnızca Hata veya Kritik olaylarıyla eşleşir. Toplanan sağlayıcılar: {{providers}}."
+    "eventLogCollectionNoSource": "Bilgi ve Uyarı düzeyindeki Uygulama olayları yalnızca {{providers}} sağlayıcılarından toplanır. Diğer kaynakların olayları, kaynak bir Olay Günlükleri yapılandırma ilkesinde listelenmedikçe yalnızca Hata veya Kritik düzeyinde bu kuralla eşleşir (Yapılandırma ilkesi → Olay Günlükleri → Uygulama sağlayıcıları).",
+    "eventLogCollectionSourceNotCollected": "Aracı, \"{{source}}\" kaynağından Bilgi veya Uyarı düzeyindeki Uygulama olaylarını, kaynak bir Olay Günlükleri yapılandırma ilkesinde listelenmedikçe toplamaz (Yapılandırma ilkesi → Olay Günlükleri → Uygulama sağlayıcıları). Aksi takdirde bu kural yalnızca kaynağın Hata veya Kritik olaylarıyla eşleşir. Yerleşik sağlayıcılar: {{providers}}."
   },
   "operators": {
     "gt": "büyüktür",

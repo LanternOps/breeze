@@ -247,8 +247,8 @@
     "nameserver": "Serveur de noms",
     "degradedIsFailure": "Considérer « dégradé » comme un échec",
     "maxResponseMs": "Échec au-delà de (ms)",
-    "eventLogCollectionNoSource": "Les événements Application de niveau Information et Avertissement ne sont collectés que depuis {{providers}}. Les événements d'autres sources ne déclenchent cette règle qu'aux niveaux Erreur ou Critique.",
-    "eventLogCollectionSourceNotCollected": "L'agent ne collecte pas les événements Application de niveau Information ou Avertissement de « {{source}} »; cette règle ne correspondra donc qu'à ses événements Erreur ou Critique. Fournisseurs collectés : {{providers}}."
+    "eventLogCollectionNoSource": "Les événements d’application de niveau Information et Avertissement sont recueillis uniquement auprès de {{providers}}. Les événements d’autres sources correspondent à cette règle seulement au niveau Erreur ou Critique, sauf si une stratégie de configuration des journaux d’événements inclut la source (Stratégie de configuration → Journaux d’événements → Fournisseurs d’applications).",
+    "eventLogCollectionSourceNotCollected": "L’agent ne recueille pas les événements d’application de niveau Information ou Avertissement de « {{source}} », sauf si une stratégie de configuration des journaux d’événements l’inclut (Stratégie de configuration → Journaux d’événements → Fournisseurs d’applications). Sinon, cette règle correspond uniquement à ses événements Erreur ou Critique. Fournisseurs intégrés : {{providers}}."
   },
   "operators": {
     "gt": "supérieur à",

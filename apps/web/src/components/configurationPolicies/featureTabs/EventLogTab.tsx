@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
 import { ScrollText } from "lucide-react";
+import {
+  APPLICATION_INFO_EVENT_PROVIDERS,
+  APPLICATION_EVENT_PROVIDER_NAME_PATTERN,
+  MAX_APPLICATION_PROVIDER_NAME_LENGTH,
+  MAX_POLICY_APPLICATION_PROVIDERS,
+} from "@breeze/shared";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
@@ -13,6 +19,7 @@ type EventLogSettings = {
   minimumLevel: "info" | "warning" | "error" | "critical";
   collectionIntervalMinutes: number;
   rateLimitPerHour: number;
+  applicationProviders: string[];
 };
 const defaults: EventLogSettings = {
   retentionDays: 30,
@@ -24,6 +31,7 @@ const defaults: EventLogSettings = {
   // (apps/api routes/agents/helpers.ts).
   collectionIntervalMinutes: 15,
   rateLimitPerHour: 12000,
+  applicationProviders: [],
 };
 const createAllCategories = () => [
   {
@@ -85,6 +93,8 @@ export default function EventLogTab({
   parentLink,
 }: FeatureTabProps) {
   useTranslation("policies");
+  const [providerInput, setProviderInput] = useState("");
+  const [providerError, setProviderError] = useState("");
   const allCategories = createAllCategories();
   const levelOptions = createLevelOptions();
   const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
@@ -97,18 +107,23 @@ export default function EventLogTab({
     const merged = { ...defaults, ...stored };
     if (!Array.isArray(merged.collectCategories))
       merged.collectCategories = [...defaults.collectCategories];
+    if (!Array.isArray(merged.applicationProviders)) merged.applicationProviders = [];
     return merged;
   });
   useEffect(() => {
     const link = existingLink ?? parentLink;
     if (link?.inlineSettings) {
+      const stored = link.inlineSettings as Partial<EventLogSettings>;
       setSettings((prev) => {
         const merged = {
           ...prev,
-          ...(link.inlineSettings as Partial<EventLogSettings>),
+          ...stored,
         };
         if (!Array.isArray(merged.collectCategories))
           merged.collectCategories = [...defaults.collectCategories];
+        merged.applicationProviders = Array.isArray(stored.applicationProviders)
+          ? stored.applicationProviders
+          : [];
         return merged;
       });
     }
@@ -138,7 +153,23 @@ export default function EventLogTab({
     minimumLevel: s.minimumLevel,
     collectionIntervalMinutes: s.collectionIntervalMinutes,
     rateLimitPerHour: s.rateLimitPerHour,
+    applicationProviders: s.applicationProviders,
   });
+  const addProvider = () => {
+    const name = providerInput.trim();
+    if (!name || name.length > MAX_APPLICATION_PROVIDER_NAME_LENGTH || !APPLICATION_EVENT_PROVIDER_NAME_PATTERN.test(name)) {
+      setProviderError(i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerNameInvalid", { max: MAX_APPLICATION_PROVIDER_NAME_LENGTH }));
+      return;
+    }
+    if (settings.applicationProviders.some((provider) => provider.toLowerCase() === name.toLowerCase())) {
+      setProviderError(i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerAlreadyListed"));
+      return;
+    }
+    if (settings.applicationProviders.length >= MAX_POLICY_APPLICATION_PROVIDERS) return;
+    update("applicationProviders", [...settings.applicationProviders, name]);
+    setProviderInput("");
+    setProviderError("");
+  };
   const handleSave = async () => {
     clearError();
     const result = await save(existingLink?.id ?? null, {
@@ -334,6 +365,65 @@ export default function EventLogTab({
           </p>
         </div>
       </div>
+
+      <section className="mt-6 space-y-3" aria-labelledby="event-log-app-providers-heading">
+        <h3 id="event-log-app-providers-heading" className="text-sm font-semibold">
+          {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.applicationProvidersHeading")}
+        </h3>
+        <p id="event-log-app-providers-help" className="text-sm text-muted-foreground">
+          {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.applicationProvidersHelp", { providers: APPLICATION_INFO_EVENT_PROVIDERS.join(", ") })}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.applicationProvidersScope")}
+        </p>
+        <label htmlFor="event-log-app-providers-input" className="block text-sm font-medium">
+          {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerNameLabel")}
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            id="event-log-app-providers-input"
+            data-testid="event-log-app-providers-input"
+            type="text"
+            value={providerInput}
+            aria-describedby={`event-log-app-providers-help${providerError ? " event-log-app-providers-error" : ""}`}
+            aria-invalid={!!providerError}
+            onChange={(event) => { setProviderInput(event.target.value); setProviderError(""); }}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addProvider(); } }}
+            className="h-10 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+          />
+          <button
+            type="button"
+            data-testid="event-log-app-providers-add"
+            disabled={settings.applicationProviders.length >= MAX_POLICY_APPLICATION_PROVIDERS}
+            onClick={addProvider}
+            className="h-10 rounded-md border px-4 text-sm font-medium hover:bg-muted focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.addProvider")}
+          </button>
+        </div>
+        {providerError && <p id="event-log-app-providers-error" data-testid="event-log-app-providers-error" role="alert" className="text-sm text-destructive">{providerError}</p>}
+        <p className="text-xs text-muted-foreground">
+          {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.providerLimit", { total: settings.applicationProviders.length, max: MAX_POLICY_APPLICATION_PROVIDERS })}
+        </p>
+        {settings.applicationProviders.length > 0 && (
+          <ul className="divide-y rounded-md border">
+            {settings.applicationProviders.map((provider) => (
+              <li key={provider.toLowerCase()} data-testid="event-log-app-providers-item" className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0 break-all">{provider}</span>
+                <button
+                  type="button"
+                  data-testid="event-log-app-providers-remove"
+                  aria-label={i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.removeProviderNamed", { provider })}
+                  onClick={() => { update("applicationProviders", settings.applicationProviders.filter((item) => item !== provider)); setProviderError(""); }}
+                  className="shrink-0 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  {i18n.t("policies:configurationPolicies.featureTabs.eventLogTab.removeProvider")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* Categories */}
       <div className="mt-6 space-y-3">
