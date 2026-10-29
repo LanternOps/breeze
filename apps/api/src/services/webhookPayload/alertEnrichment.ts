@@ -63,8 +63,10 @@ async function readEnrichment(event: BreezeEvent) {
     subjectKey: alerts.subjectKey,
     resolutionNote: alerts.resolutionNote,
     resolvedBy: alerts.resolvedBy,
+    resolvedByPrincipalId: alerts.resolvedByPrincipalId,
     resolutionReason: alerts.resolutionReason,
     acknowledgedBy: alerts.acknowledgedBy,
+    acknowledgedByPrincipalId: alerts.acknowledgedByPrincipalId,
     suppressedUntil: alerts.suppressedUntil,
   }).from(organizations)
     // Publishers may still be in a transaction. The org anchors the read so a
@@ -112,7 +114,7 @@ function project(event: BreezeEvent, row: EnrichmentRow, incomplete: boolean): A
     title: text('title'), message: text('message'), triggeredAt: time('triggeredAt'), acknowledgedAt: time('acknowledgedAt'), resolvedAt: time('resolvedAt'),
     deviceHostname: stringOrNull(row?.deviceHostname), siteId: stringOrNull(row?.siteId), siteName: stringOrNull(row?.siteName), orgName: stringOrNull(row?.orgName),
     alertUrl: alertWebhookUrl(alertId ?? ''),
-    externalTickets: [], acknowledgedByPrincipalId: null, resolvedByPrincipalId: null,
+    externalTickets: [], acknowledgedByPrincipalId: text('acknowledgedByPrincipalId'), resolvedByPrincipalId: text('resolvedByPrincipalId'),
     enrichmentIncomplete: incomplete,
     subjectKey: text('subjectKey'), resolutionNote: text('resolutionNote'), resolvedBy: text('resolvedBy'), resolutionReason: text('resolutionReason'),
     acknowledgedBy: text('acknowledgedBy'), suppressedBy: stringOrNull(payload.suppressedBy), suppressedUntil: time('suppressedUntil'),

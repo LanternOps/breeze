@@ -101,7 +101,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | Event | Description |
 |-------|-------------|
 | `alert.triggered` | A monitoring rule has fired a new alert |
-| `alert.acknowledged` | An alert has been acknowledged by a user |
+| `alert.acknowledged` | An alert has been acknowledged by a user or service principal |
 | `alert.resolved` | An alert condition has cleared |
 | `alert.suppressed` | Breeze AI has suppressed an alert. Suppressing an alert from the dashboard or `POST /alerts/:id/suppress` does not publish this event yet |
 
@@ -284,7 +284,8 @@ Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, and `alert.suppr
 | `alertId` | string | Alert id |
 | `ruleId` | string or null | Rule id |
 | `deviceId` | string | Device id |
-| `acknowledgedBy` | string | Id of the user who acknowledged the alert |
+| `acknowledgedBy` | string or null | Id of the acknowledging user; null for a service principal |
+| `acknowledgedByPrincipalId` | string (optional) | Partner API service principal id; present only for a principal acknowledgment |
 
 #### v1: alert.resolved
 
@@ -297,7 +298,8 @@ Several paths publish this event: the alert service, REST resolve, bulk actions,
 | `deviceId` | string | Device id; always present |
 | `resolutionNote` | string or null, when present | Resolution note; omitted by some producers |
 | `resolvedAt` | ISO 8601 string | Resolution time; always present |
-| `resolvedBy` | string or null | Resolving user id; always present, null for system resolutions |
+| `resolvedBy` | string or null | Resolving user id; always present, null for system or service principal resolutions |
+| `resolvedByPrincipalId` | string (optional) | Partner API service principal id; present only for a principal resolution, which counts as a person's resolve and starts no automatic AI verdict run |
 | `triggeredAt` | ISO 8601 string | Trigger time; always present |
 | `resolutionReason` | string or null, when present | Resolution reason; alert-service paths only |
 | `subjectKey` | string, when present | Subject identity; subject recoveries only |
@@ -341,8 +343,8 @@ Hostname, site, and organization name are read when the delivery is first record
 | `orgName` | string or null | Organization name |
 | `alertUrl` | string | Dashboard link to the alert, or `/alerts` when the alert id is unavailable; relative when no dashboard base URL is configured |
 | `externalTickets` | array of objects | Each object has string `source` and `externalId`, plus nullable string `externalUrl` and `externalNumber`. Always `[]` until a later release fills it |
-| `acknowledgedByPrincipalId` | string or null | Always `null` until a later release fills it |
-| `resolvedByPrincipalId` | string or null | Always `null` until a later release fills it |
+| `acknowledgedByPrincipalId` | string or null | Partner API service principal that acknowledged the alert; null when absent |
+| `resolvedByPrincipalId` | string or null | Partner API service principal that resolved the alert; null when absent. A principal resolution counts as a person's resolve and starts no automatic AI verdict run |
 | `enrichmentIncomplete` | boolean | The alert row could not be read or the enrichment query failed; missing device or site alone does not set it |
 | `subjectKey` | string or null | Alert subject identity |
 | `resolutionNote` | string or null | Resolution note |
@@ -576,6 +578,7 @@ This outline uses a low-code automation platform such as Rewst between Breeze an
 4. On `alert.triggered`, map `data.severity` to your Manage priority ids. For example, map `critical` and `high` to your urgent queue, and send null severity for review. Use `data.orgName` to look up the company, `data.deviceHostname` and `data.title` in the ticket summary, and `data.alertUrl` in the description. Keep the lookup explicit when organization names are ambiguous or enrichment is incomplete.
 5. Store an `alertId` → ticket id mapping. On `alert.acknowledged`, update the mapped ticket according to your workflow. Use the alert id and current ticket state to decide whether to create or update; repeated alert states must not create duplicate tickets.
 6. On `alert.resolved`, close the mapped ticket with your configured Manage closed status. If no mapping exists, send the event for review rather than creating a new closed ticket.
+7. Grant a dedicated principal `alerts:write`. When the Manage ticket closes, call `POST /api/v1/partner-api/alerts/<alertId>/resolve` with an optional `note`. Ignore webhook events whose `acknowledgedByPrincipalId` or `resolvedByPrincipalId` is your own principal id so the write-back does not loop.
 
 <Aside type="note">
   The exact Rewst trigger setup is not yet confirmed, including whether its webhook trigger verifies an HMAC signature or only a static header. This section will be updated when that setup is confirmed.

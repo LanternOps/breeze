@@ -651,6 +651,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           triggeredAt: { type: 'string', format: 'date-time' },
           acknowledgedAt: { type: 'string', format: 'date-time', nullable: true },
           acknowledgedBy: { type: 'string', format: 'uuid', nullable: true },
+          acknowledgedByPrincipalId: { type: 'string', format: 'uuid', nullable: true, description: 'Partner API service principal that acknowledged the alert, or null.' },
           acknowledgedByName: {
             type: 'string',
             nullable: true,
@@ -658,6 +659,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           },
           resolvedAt: { type: 'string', format: 'date-time', nullable: true },
           resolvedBy: { type: 'string', format: 'uuid', nullable: true },
+          resolvedByPrincipalId: { type: 'string', format: 'uuid', nullable: true, description: 'Partner API service principal that resolved the alert, or null.' },
           resolvedByName: {
             type: 'string',
             nullable: true,

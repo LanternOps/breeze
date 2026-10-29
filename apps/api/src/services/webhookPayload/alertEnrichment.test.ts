@@ -76,6 +76,35 @@ describe('alert webhook enrichment', () => {
     expect(org).toMatchObject({ title: 'Payload title', severity: 'critical', triggeredAt: NOW, resolvedAt: NOW, status: 'resolved', enrichmentIncomplete: false });
   });
 
+  it('prefers principal ids from the payload and keeps them out of details', async () => {
+    rows([{ ...row, acknowledgedByPrincipalId: PARTNER, resolvedByPrincipalId: PARTNER }]);
+    const { org, partner } = await buildAlertWebhookProjections(event('alert.resolved', {
+      acknowledgedByPrincipalId: SITE, resolvedByPrincipalId: DEVICE,
+    }));
+    for (const projection of [org, partner]) {
+      expect(projection).toMatchObject({ acknowledgedByPrincipalId: SITE, resolvedByPrincipalId: DEVICE });
+      expect(projection.details).not.toHaveProperty('acknowledgedByPrincipalId');
+      expect(projection.details).not.toHaveProperty('resolvedByPrincipalId');
+    }
+  });
+
+  it('falls back to principal ids on the row', async () => {
+    rows([{ ...row, acknowledgedByPrincipalId: PARTNER, resolvedByPrincipalId: SITE }]);
+    const { org } = await buildAlertWebhookProjections(event('alert.resolved', {
+      acknowledgedByPrincipalId: 42, resolvedByPrincipalId: null,
+    }));
+    expect(org).toMatchObject({ acknowledgedByPrincipalId: PARTNER, resolvedByPrincipalId: SITE });
+    const selection = queries[0]!.selection as Record<string, unknown>;
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(sql`${selection.acknowledgedByPrincipalId}`).sql).toBe('"alerts"."acknowledged_by_principal_id"');
+    expect(dialect.sqlToQuery(sql`${selection.resolvedByPrincipalId}`).sql).toBe('"alerts"."resolved_by_principal_id"');
+  });
+
+  it('leaves principal ids null when neither payload nor row supplies them', async () => {
+    const { org } = await buildAlertWebhookProjections(event());
+    expect(org).toMatchObject({ acknowledgedByPrincipalId: null, resolvedByPrincipalId: null });
+  });
+
   it('falls back on wrong payload types and invalid timestamps', async () => {
     const { org } = await buildAlertWebhookProjections(event('alert.triggered', {
       title: 13, severity: 'urgent', triggeredAt: 'yesterday', resolvedAt: true, responsesOwner: 'yes',
