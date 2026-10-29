@@ -130,3 +130,9 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - **Alert pages show read-only External tickets chips,** using the ticket number when available and linking only HTTPS URLs. Org-scoped users see only org-owned PSA mappings; partner-principal refs and partner-owned PSA mappings are hidden.
 - **V2 alert webhook `externalTickets` now includes references permitted for its owner at enrichment time.** Partner-owned webhooks receive principal refs and their partner’s or the alert org’s PSA mappings. Org-owned webhooks receive only org-owned PSA mappings, never partner-principal refs or partner-owned PSA mappings. Use the GET route for current state under the same viewer restrictions. V1 payloads are unchanged.
 - **Migrations:** `2027-01-14-110000-alerts-id-org-unique.sql` builds `alerts_id_org_uq` concurrently on the hot alerts table; `2027-01-14-110100-alert-external-refs.sql` creates the tenant-isolated reference table, constraints, indexes and RLS policies; `2027-01-14-110200-org-external-links-export-watermark.sql` adds the link-change watermark triggers. DDL/trigger definitions only: the migrations write no rows. No new environment variables.
+
+### Device groups (partner-owned, dark) — W2b
+
+- Partner-owned dynamic groups now have per-device and revisioned per-org evaluation, excluding Quick Support and holding organizations.
+- Still dark: nothing user-visible until W3 adds the create route. No migration, setting or environment variable.
+- A six-hour retry sweep repairs missed evaluations; it is a retry cadence, with no freshness SLA.

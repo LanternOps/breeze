@@ -3,7 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
 vi.mock('../db', () => ({
-  db: { select: vi.fn() },
+  db: { select: vi.fn(), execute: vi.fn() },
   getCurrentDbAccessContext: vi.fn(() => ({
     scope: 'organization', orgId: 'org-a', accessibleOrgIds: ['org-a'], accessiblePartnerIds: [], currentPartnerId: null,
   })),
@@ -12,6 +12,7 @@ vi.mock('../db', () => ({
 }));
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
+  acquireGroupOrgMembershipLocks, acquirePartnerGroupRowLocks, acquireMembershipExportOrgLock, membershipLockKeysQuery,
   findPartnerOwnedGroupIds, groupOwnerMatchesMembershipOrg, isPartnerOwnedGroup,
   partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY,
 } from './deviceGroupOwnership';
@@ -86,4 +87,58 @@ describe('deviceGroupOwnership', () => {
       error: 'Partner-wide device groups are read-only here', code: 'PARTNER_GROUP_READ_ONLY',
     });
   });
+});
+
+
+describe('partner membership lock ordering', () => {
+  it('builds namespaced PostgreSQL bigint keys with deduplicated input pairs', () => {
+    const query = dialect.sqlToQuery(membershipLockKeysQuery([
+      { groupId: 'g2', orgId: 'o' }, { groupId: 'g1', orgId: 'o' }, { groupId: 'g2', orgId: 'o' },
+    ]));
+    expect(query.sql).toContain('hashtextextended');
+    expect(query.sql).toContain('device_group_membership:');
+    expect(query.params).toEqual(['g2', 'o', 'g1', 'o']);
+  });
+
+  it.each(['shared', 'exclusive'] as const)('acquires every %s lock once in numeric bigint order', async (mode) => {
+    vi.mocked(db.execute).mockResolvedValueOnce([
+      { key: '9223372036854775806' }, { key: '-2' }, { key: '11' }, { key: '3' }, { key: '-2' },
+    ] as never).mockResolvedValue([] as never);
+    await acquireGroupOrgMembershipLocks([{ groupId: 'g', orgId: 'o' }], mode);
+    const queries = vi.mocked(db.execute).mock.calls.slice(1).map(([query]) => {
+      if (typeof query === 'string') throw new Error('expected structured SQL');
+      return dialect.sqlToQuery(query.getSQL());
+    });
+    expect(queries.map((query) => query.params)).toEqual([['-2'], ['3'], ['11'], ['9223372036854775806']]);
+    expect(queries.every((query) => query.sql.includes(mode === 'shared' ? 'pg_advisory_xact_lock_shared' : 'pg_advisory_xact_lock('))).toBe(true);
+  });
+
+  it('locks group rows in ascending id order and only for partner owners', async () => {
+    vi.mocked(db.execute).mockResolvedValue([] as never);
+    await acquirePartnerGroupRowLocks(['g2', 'g1', 'g2']);
+    const call = vi.mocked(db.execute).mock.calls[0];
+    if (!call || typeof call[0] === 'string') throw new Error('expected structured SQL');
+    const query = dialect.sqlToQuery(call[0].getSQL());
+    expect(query.sql).toContain('ORDER BY id FOR KEY SHARE');
+    expect(query.sql).toContain('org_id IS NULL AND partner_id IS NOT NULL');
+    expect(query.params).toEqual(['g2', 'g1']);
+  });
+
+  it('takes no locks for empty group/pair input', async () => {
+    await acquirePartnerGroupRowLocks([]);
+    await acquireGroupOrgMembershipLocks([], 'shared');
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+});
+
+
+it('takes the existing export org lock before membership mutations', async () => {
+  vi.mocked(db.execute).mockResolvedValue([] as never);
+  await acquireMembershipExportOrgLock('org-id');
+  const call = vi.mocked(db.execute).mock.calls[0];
+  if (!call || typeof call[0] === 'string') throw new Error('expected structured SQL');
+  const query = dialect.sqlToQuery(call[0].getSQL());
+  expect(query.sql).toContain('public.breeze_partner_export_lock_orgs_exclusive(ARRAY[');
+  expect(query.sql).toContain('::uuid[]');
+  expect(query.params).toEqual(['org-id']);
 });
