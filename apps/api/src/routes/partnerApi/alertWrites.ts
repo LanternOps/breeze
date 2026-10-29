@@ -61,18 +61,9 @@ function respond(c: Context, principal: PartnerApiPrincipalContext, action: 'ack
     }, 409);
   }
   const { alert, changed, previousStatus } = outcome;
-  const response = partnerAlertWriteResponseSchema.parse({
-    schemaVersion: '1', changed,
-    data: {
-      id: alert.id, orgId: alert.orgId, status: alert.status,
-      acknowledgedAt: alert.acknowledgedAt?.toISOString() ?? null,
-      resolvedAt: alert.resolvedAt?.toISOString() ?? null,
-      resolutionReason: alert.resolutionReason,
-      acknowledgedByPrincipalId: alert.acknowledgedByPrincipalId,
-      resolvedByPrincipalId: alert.resolvedByPrincipalId,
-    },
-  });
   // Outside the partner transaction, matching the other Partner API writes.
+  // Written before the response is shaped so a committed change is audited
+  // even if response validation throws.
   if (changed) void writeAuditEventAsync(c, {
     orgId: alert.orgId, actorType: 'api_key', actorId: principal.partnerServicePrincipalId,
     initiatedBy: 'integration', action: `alert.${action}`, resourceType: 'alert',
@@ -83,6 +74,17 @@ function respond(c: Context, principal: PartnerApiPrincipalContext, action: 'ack
       partnerServicePrincipalName: principal.name, keyId: principal.keyId, partnerId: principal.partnerId,
       previousStatus, nextStatus: alert.status,
       ...(action === 'resolve' ? { hasResolutionNote } : {}),
+    },
+  });
+  const response = partnerAlertWriteResponseSchema.parse({
+    schemaVersion: '1', changed,
+    data: {
+      id: alert.id, orgId: alert.orgId, status: alert.status,
+      acknowledgedAt: alert.acknowledgedAt?.toISOString() ?? null,
+      resolvedAt: alert.resolvedAt?.toISOString() ?? null,
+      resolutionReason: alert.resolutionReason,
+      acknowledgedByPrincipalId: alert.acknowledgedByPrincipalId,
+      resolvedByPrincipalId: alert.resolvedByPrincipalId,
     },
   });
   return c.json(response, 200);
@@ -123,6 +125,7 @@ partnerAlertWriteRoutes.post('/alerts/:id/resolve', writeScope,
       const changed = await resolveAlert(id, note, undefined, false, 'manual', principal.partnerServicePrincipalId);
       const current = await getPartnerAlertOr404(principal, id);
       if (changed) {
+        // Unreachable in practice: same transaction and RLS context as the write.
         if (!current) throw new Error('Resolved alert returned no row');
         return { kind: 'success', changed: true, alert: current, previousStatus: found.status };
       }
