@@ -786,7 +786,9 @@ elevationRequestsRoutes.post(
             ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
             // #10190 W07: when the stale-pending expirer may expire it (same
             // basis: requested_at + TTL), for the device's waiting card.
-            ...(row.status === 'pending' ? { pendingExpiresAt: pamPendingExpiresAt(observedAt).toISOString() } : {}),
+            // requested_at is the agent's observed_at, so a skewed agent
+            // clock is clamped to [now, now + TTL] on the server clock.
+            ...(row.status === 'pending' ? { pendingExpiresAt: pamPendingExpiresAt(observedAt, now).toISOString() } : {}),
           },
         };
       } catch (err) {

@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   resolveConfig: vi.fn(),
-  userRows: [] as Array<{ name: string | null }>,
+  userRows: [] as Array<{ name: string | null }> | Error,
   select: vi.fn(),
+  inContext: true,
+  savepoints: [] as Array<'open' | 'committed' | 'rolled_back'>,
 }));
 
 vi.mock('../routes/remote/helpers', async () => {
@@ -17,9 +19,31 @@ vi.mock('../routes/remote/helpers', async () => {
 vi.mock('../db', () => ({
   db: {
     select: (...args: unknown[]) => {
-      mocks.select(...args);
-      return { from: () => ({ where: () => ({ limit: async () => mocks.userRows }) }) };
+      // Records whether the read ran inside the resolver's savepoint.
+      mocks.select(mocks.savepoints.at(-1));
+      return {
+        from: () => ({
+          where: () => ({
+            limit: async () => {
+              if (mocks.userRows instanceof Error) throw mocks.userRows;
+              return mocks.userRows;
+            },
+          }),
+        }),
+      };
     },
+  },
+  hasDbAccessContext: () => mocks.inContext,
+  withDbTransaction: async <T>(fn: () => Promise<T>): Promise<T> => {
+    mocks.savepoints.push('open');
+    try {
+      const out = await fn();
+      mocks.savepoints[mocks.savepoints.length - 1] = 'committed';
+      return out;
+    } catch (err) {
+      mocks.savepoints[mocks.savepoints.length - 1] = 'rolled_back';
+      throw err;
+    }
   },
 }));
 
@@ -36,6 +60,31 @@ describe('resolvePamTechnicianName (#10190 W07, OD-7 (b))', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.userRows = [{ name: 'Dana Tech' }];
+    mocks.inContext = true;
+    mocks.savepoints = [];
+  });
+
+  it('inside a DB context the user read runs in its own savepoint (a failed statement must not abort the caller\'s transaction)', async () => {
+    level('name');
+    await expect(resolvePamTechnicianName(DEVICE, { userId: USER })).resolves.toBe('Dana Tech');
+    expect(mocks.select).toHaveBeenCalledWith('open');
+    expect(mocks.savepoints).toEqual(['committed']);
+  });
+
+  it('a failed user read rolls back only the savepoint and yields null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    level('name');
+    mocks.userRows = new Error('invalid input syntax for type uuid');
+    await expect(resolvePamTechnicianName(DEVICE, { userId: 'not-a-uuid' })).resolves.toBeNull();
+    expect(mocks.savepoints).toEqual(['rolled_back']);
+    warn.mockRestore();
+  });
+
+  it('with no DB context it reads without a savepoint (none to protect)', async () => {
+    level('name');
+    mocks.inContext = false;
+    await expect(resolvePamTechnicianName(DEVICE, { userId: USER })).resolves.toBe('Dana Tech');
+    expect(mocks.savepoints).toEqual([]);
   });
 
   it('technicianName null at generic level, and the user is never read', async () => {

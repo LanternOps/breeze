@@ -12,13 +12,16 @@
  * Best effort by design. It feeds `decidedBy.technicianName` on the
  * `pam_apply_v2` and `pam_request_notify` payloads, and nothing about it may
  * block or roll back the apply, the deny or the expiry: every failure is
- * `null`. Reads run in the caller's DB context (the policy lookup in its own
- * savepoint — see `resolveRemoteSessionPromptConfig`); a decider row the
- * context cannot see is `null`, never an error.
+ * `null`. Reads run in the caller's DB context, and inside a DB context the
+ * whole lookup runs in its own savepoint: callers invoke it inside their
+ * transaction (the apply worker under its actuation row lock, a deny inside
+ * the decision), and a failed statement outside a savepoint would abort that
+ * transaction, so the apply or deny it only decorates would fail too. A
+ * decider row the context cannot see is `null`, never an error.
  */
 import { eq } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
 import { users } from '../db/schema';
 import { buildTechnicianDisplay, resolveRemoteSessionPromptConfig } from '../routes/remote/helpers';
 
@@ -35,22 +38,10 @@ export type PamDecider = {
 export async function resolvePamTechnicianName(deviceId: string, decider: PamDecider): Promise<string | null> {
   if (!decider.name?.trim() && !decider.userId) return null; // nobody decided (expiry, auto approval)
   try {
-    const { identityLevel } = await resolveRemoteSessionPromptConfig(deviceId);
-    if (identityLevel === 'generic') return null;
-
-    let name = decider.name ?? null;
-    if (!name?.trim() && decider.userId) {
-      const [row] = await db
-        .select({ name: users.name })
-        .from(users)
-        .where(eq(users.id, decider.userId))
-        .limit(1);
-      name = row?.name ?? null;
-    }
-    const shown = buildTechnicianDisplay(identityLevel, name, null, null).name?.trim();
-    if (!shown) return null;
-    const points = Array.from(shown);
-    return points.length <= PAM_TECHNICIAN_NAME_MAX ? shown : points.slice(0, PAM_TECHNICIAN_NAME_MAX).join('');
+    // A failure rolls back to this savepoint only, never the caller's work.
+    return hasDbAccessContext()
+      ? await withDbTransaction(() => lookupTechnicianName(deviceId, decider))
+      : await lookupTechnicianName(deviceId, decider);
   } catch (err) {
     // resolveRemoteSessionPromptConfig already reports its own failures to
     // Sentry; this only records that the outcome went out without a name.
@@ -60,4 +51,23 @@ export async function resolvePamTechnicianName(deviceId: string, decider: PamDec
     );
     return null;
   }
+}
+
+async function lookupTechnicianName(deviceId: string, decider: PamDecider): Promise<string | null> {
+  const { identityLevel } = await resolveRemoteSessionPromptConfig(deviceId);
+  if (identityLevel === 'generic') return null;
+
+  let name = decider.name ?? null;
+  if (!name?.trim() && decider.userId) {
+    const [row] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, decider.userId))
+      .limit(1);
+    name = row?.name ?? null;
+  }
+  const shown = buildTechnicianDisplay(identityLevel, name, null, null).name?.trim();
+  if (!shown) return null;
+  const points = Array.from(shown);
+  return points.length <= PAM_TECHNICIAN_NAME_MAX ? shown : points.slice(0, PAM_TECHNICIAN_NAME_MAX).join('');
 }

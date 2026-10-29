@@ -340,6 +340,34 @@ export interface CommandClaimCaller extends CommandCallerIncarnation {
   agentId: string;
 }
 
+/**
+ * #10190 W07: the PAM apply worker adds `decidedBy` to a pam_apply_v2 only
+ * for a device reporting pamUserNotifyProtocolVersion >= 2, because older
+ * agents decode the payload with DisallowUnknownFields and refuse the whole
+ * apply. A row built for a v2 agent can still be claimed after the device
+ * rolled back to an older one, so a heartbeat claim hands a caller below 2
+ * the payload without the key. Only the delivered copy changes; the stored
+ * row keeps what was built. Every other command passes through untouched.
+ *
+ * The WebSocket push (pamActuationWorker -> claimPendingCommandForDelivery)
+ * sends the payload the worker built moments earlier from the capability it
+ * read in the same transaction; a downgrade inside that window is accepted:
+ * the older agent refuses the apply, which fails closed.
+ */
+export function stripPamApplyDecidedByForClaim<T extends { type: string; payload: unknown }>(
+  commands: T[],
+  capabilities: { pamUserNotifyProtocolVersion?: number } | undefined,
+): T[] {
+  if ((capabilities?.pamUserNotifyProtocolVersion ?? 0) >= 2) return commands;
+  return commands.map((command) => {
+    if (command.type !== 'pam_apply_v2') return command;
+    const payload = command.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !('decidedBy' in payload)) return command;
+    const { decidedBy: _omitted, ...rest } = payload as Record<string, unknown>;
+    return { ...command, payload: rest };
+  });
+}
+
 export async function claimPendingCommandsForDevice(
   caller: CommandClaimCaller,
   limit: number = 10,
@@ -569,6 +597,6 @@ export async function claimPendingCommandsForDevice(
       }
     }
 
-    return claimed;
+    return stripPamApplyDecidedByForClaim(claimed, capabilities);
   });
 }

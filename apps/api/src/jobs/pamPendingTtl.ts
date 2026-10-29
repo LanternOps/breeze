@@ -20,7 +20,14 @@ export function pamPendingTtlMinutes(): number {
  * `requested_at` (the same basis its WHERE clause uses). It runs every five
  * minutes, so the row can stay pending up to one interval longer: a device
  * that shows this time states the earliest expiry, never a later one.
+ *
+ * `requested_at` comes from the agent's clock, so the result is clamped to
+ * [now, now + TTL] on the server clock: a skewed agent never gets a deadline
+ * in the past or one beyond a full TTL from now.
  */
-export function pamPendingExpiresAt(requestedAt: Date): Date {
-  return new Date(requestedAt.getTime() + pamPendingTtlMinutes() * 60_000);
+export function pamPendingExpiresAt(requestedAt: Date, now: Date = new Date()): Date {
+  const ttlMs = pamPendingTtlMinutes() * 60_000;
+  const raw = requestedAt.getTime() + ttlMs;
+  const nowMs = now.getTime();
+  return new Date(Math.min(Math.max(raw, nowMs), nowMs + ttlMs));
 }

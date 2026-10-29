@@ -364,11 +364,25 @@ describe('agent elevation-requests ingestion route', () => {
 
     it('a pending 201 carries pendingExpiresAt = requested_at + the stale-pending TTL (15 min default)', async () => {
       happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
-      const observedAt = '2027-01-15T10:00:00.000Z';
-      const res = await submit({ observed_at: observedAt });
+      // A plausible agent clock (5 min ago): inside the clamp, so exact.
+      const observedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 5 * 60_000);
+      const res = await submit({ observed_at: observedAt.toISOString() });
       expect(res.status).toBe(201);
       const body = await res.json() as { pendingExpiresAt?: string };
-      expect(body.pendingExpiresAt).toBe('2027-01-15T10:15:00.000Z');
+      expect(body.pendingExpiresAt).toBe(new Date(observedAt.getTime() + 15 * 60_000).toISOString());
+    });
+
+    it.each([
+      ['an agent clock far in the past', '2020-01-01T00:00:00.000Z', 0],
+      ['an agent clock far in the future', '2099-01-01T00:00:00.000Z', 15],
+    ])('pendingExpiresAt is clamped to [now, now + TTL] for %s', async (_label, observedAt, minutesFromNow) => {
+      happyPathInsert([{ id: 'req-uuid', status: 'pending' }]);
+      const before = Date.now();
+      const res = await submit({ observed_at: observedAt });
+      const after = Date.now();
+      const at = Date.parse((await res.json() as { pendingExpiresAt: string }).pendingExpiresAt);
+      expect(at).toBeGreaterThanOrEqual(before + minutesFromNow * 60_000);
+      expect(at).toBeLessThanOrEqual(after + minutesFromNow * 60_000);
     });
 
     it('a non-pending 201 carries no pendingExpiresAt', async () => {
