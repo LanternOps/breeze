@@ -106,6 +106,10 @@ export interface Tokens {
   expiresInSeconds: number;
 }
 
+export type MfaAccountState =
+  | { mfaEnabled: true; mfaMethod: MfaPrimaryMethod }
+  | { mfaEnabled: false; mfaMethod: null };
+
 /**
  * Why the app bounced the user to /login. Rendered as `?reason=<code>` by
  * handleSessionExpired() and turned into copy by LoginPage.
@@ -148,6 +152,7 @@ interface AuthState {
   updateUser: (user: Partial<User>) => void;
   commitMfaEnrollmentIfCurrent: (generation: number, method: MfaPrimaryMethod, tokens?: Tokens) => boolean;
   commitMfaDisableIfCurrent: (generation: number, tokens?: Tokens) => boolean;
+  commitMfaStateIfCurrent: (generation: number, mfa: MfaAccountState, tokens?: Tokens) => boolean;
   commitReissuedSessionIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
@@ -305,6 +310,23 @@ export const useAuthStore = create<AuthState>()(
           return {
             ...(tokens ? { tokens } : {}),
             user: { ...state.user, mfaEnabled: false, mfaMethod: null },
+          };
+        });
+        return committed;
+      },
+
+      commitMfaStateIfCurrent: (generation, mfa, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            ...(tokens ? { tokens } : {}),
+            user: { ...state.user, ...mfa },
           };
         });
         return committed;

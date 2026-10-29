@@ -388,6 +388,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   let teardownFailed: boolean;
   let sessionInstalled = true;
   let replacement: { recoveryCodes: string[] | null; issued: AuthorizedUserSession | null } | null = null;
+  let mfaState: Pick<typeof users.$inferSelect, 'mfaEnabled' | 'mfaMethod'>;
   if (!enrollmentState.mfaEnabled) {
     const recoveryCodes = generateRecoveryCodes();
     const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
@@ -421,7 +422,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
         recoveryCodes,
         recoveryCodeHashes,
         persistFactor: async (tx, hashes) => {
-          const enabled = await tx
+          const [enabled] = await tx
             .update(users)
             .set({
               mfaEnabled: true,
@@ -430,9 +431,10 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
               updatedAt: new Date(),
             })
             .where(and(eq(users.id, auth.user.id), eq(users.mfaEnabled, false)))
-            .returning({ id: users.id });
-          if (enabled.length !== 1) throw new Error('MFA enrollment state changed');
-          return persistPasskey(tx);
+            .returning({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod });
+          if (!enabled) throw new Error('MFA enrollment state changed');
+          await persistPasskey(tx);
+          return enabled;
         },
       });
     } catch (error) {
@@ -442,6 +444,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       return response;
     }
     sessionInstalled = await installReplacementSession(c, result.issued, auth.user.id, 'passkey_register');
+    mfaState = result.value;
     mfaEpoch = result.mfaEpoch;
     teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
     // The one-time recovery codes are reported even when the session install
@@ -495,7 +498,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
           await persistPasskey(tx);
           const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
 
-          const rows = await tx
+          const [state] = await tx
             .update(users)
             .set({
               mfaEnabled: true,
@@ -503,9 +506,9 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
               updatedAt: new Date()
             })
             .where(eq(users.id, auth.user.id))
-            .returning({ id: users.id });
-          if (rows.length !== 1) throw new Error('Passkey registration user disappeared');
-          return undefined;
+            .returning({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod });
+          if (!state) throw new Error('Passkey registration user disappeared');
+          return state;
         },
       });
     } catch (error) {
@@ -516,6 +519,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     }
 
     sessionInstalled = await installReplacementSession(c, result.issued, auth.user.id, 'passkey_register');
+    mfaState = result.value;
     mfaEpoch = result.mfaEpoch;
     teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
     // No recovery codes: the account already holds its own set.
@@ -545,6 +549,7 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   return c.json({
     success: true,
     passkey: toPublicPasskey(inserted),
+    ...mfaState,
     // Recovery codes appear only on the INITIAL enrollment that minted them.
     ...(replacement?.recoveryCodes ? { recoveryCodes: replacement.recoveryCodes } : {}),
     // Withheld when the post-commit install failed: the refresh JTI was never
@@ -1161,7 +1166,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
               : allowedSms > 0
                 ? 'sms'
                 : null;
-        const updated = await tx
+        const [updated] = await tx
           .update(users)
           .set({
             mfaEnabled: remainingAllowedFactorCount > 0,
@@ -1173,9 +1178,9 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
             updatedAt: new Date(),
           })
           .where(eq(users.id, auth.user.id))
-          .returning({ id: users.id });
-        if (updated.length !== 1) throw new Error('Passkey owner disappeared');
-        return undefined;
+          .returning({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod });
+        if (!updated) throw new Error('Passkey owner disappeared');
+        return updated;
       },
     });
   } catch (error) {
@@ -1212,6 +1217,7 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   c.header('Cache-Control', 'no-store');
   return c.json({
     success: true,
+    ...result.value,
     ...(sessionInstalled ? { tokens: toPublicTokens(result.issued) } : {}),
   });
 });

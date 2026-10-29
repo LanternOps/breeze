@@ -28,12 +28,12 @@ const {
   getPasskeyCredentialMock: vi.fn(),
   commitReissuedSessionIfCurrentMock: vi.fn(() => true),
   commitMfaStateIfCurrentMock: vi.fn((generation: number, state: { mfaEnabled: boolean; mfaMethod: string | null }) => {
-    if (generation !== 11) return false;
+    if (generation !== sessionGeneration.current) return false;
     Object.assign(sharedAuthUser, state);
     return true;
   }),
   sharedAuthUser: { mfaEnabled: true, mfaMethod: 'totp' as string | null },
-  sessionGeneration: 11,
+  sessionGeneration: { current: 11 },
 }));
 
 vi.mock('../../stores/auth', () => ({
@@ -45,7 +45,7 @@ vi.mock('../../stores/auth', () => ({
     {
       getState: () => ({
         updateUser: vi.fn(),
-        sessionGeneration,
+        sessionGeneration: sessionGeneration.current,
         commitReissuedSessionIfCurrent: commitReissuedSessionIfCurrentMock,
         commitMfaStateIfCurrent: commitMfaStateIfCurrentMock,
       }),
@@ -103,6 +103,12 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
   beforeEach(() => {
     vi.clearAllMocks();
     commitReissuedSessionIfCurrentMock.mockReturnValue(true);
+    sessionGeneration.current = 11;
+    commitMfaStateIfCurrentMock.mockImplementation((generation, state) => {
+      if (generation !== sessionGeneration.current) return false;
+      Object.assign(sharedAuthUser, state);
+      return true;
+    });
     Object.assign(sharedAuthUser, { mfaEnabled: true, mfaMethod: 'totp' });
     getPasskeyCredentialMock.mockResolvedValue(credential);
     sessionStorage.clear();
@@ -117,6 +123,8 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
       .mockResolvedValueOnce(makeJsonResponse({
         success: true,
         passkey: { id: 'credential-2', name: 'iPhone' },
+        mfaEnabled: true,
+        mfaMethod: 'passkey',
         tokens: REPLACEMENT,
       }))
       .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'iPhone', lastUsedAt: null }] }));
@@ -126,7 +134,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     await addPasskey();
 
     await waitFor(() => {
-      expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration, REPLACEMENT);
+      expect(commitMfaStateIfCurrentMock).toHaveBeenCalledWith(
+        sessionGeneration.current,
+        { mfaEnabled: true, mfaMethod: 'passkey' },
+        REPLACEMENT,
+      );
     });
     expect(await screen.findByText('Passkey added')).toBeTruthy();
   });
@@ -188,7 +200,12 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({ passkeys: [] }))
       .mockResolvedValueOnce(makeJsonResponse({ options: registrationOptions }))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true, passkey: { id: 'credential-2', name: 'iPhone' } }))
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        passkey: { id: 'credential-2', name: 'iPhone' },
+        mfaEnabled: true,
+        mfaMethod: 'passkey',
+      }))
       .mockResolvedValueOnce(makeJsonResponse({ passkeys: [{ id: 'credential-2', name: 'iPhone', lastUsedAt: null }] }));
     createPasskeyCredentialMock.mockResolvedValueOnce(credential);
 
@@ -201,6 +218,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     // a disconnected /login?reason=session-expired on some later screen.
     expect(await screen.findByText('Passkey added. Sign in again to continue.')).toBeTruthy();
     expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
+    expect(commitMfaStateIfCurrentMock).toHaveBeenCalledWith(
+      sessionGeneration.current,
+      { mfaEnabled: true, mfaMethod: 'passkey' },
+      undefined,
+    );
   });
 
   it('installs the replacement session returned by the passkey delete', async () => {
@@ -209,7 +231,12 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
       .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: REPLACEMENT }));
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        tokens: REPLACEMENT,
+      }));
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
@@ -222,7 +249,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     await waitFor(() => {
-      expect(commitReissuedSessionIfCurrentMock).toHaveBeenCalledWith(sessionGeneration, REPLACEMENT);
+      expect(commitMfaStateIfCurrentMock).toHaveBeenCalledWith(
+        sessionGeneration.current,
+        { mfaEnabled: true, mfaMethod: 'totp' },
+        REPLACEMENT,
+      );
     });
     expect(await screen.findByText('Passkey deleted')).toBeTruthy();
   });
@@ -231,13 +262,21 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     // A logout/re-login raced the request: the store refuses the stale-generation
     // commit. The passkey is already gone server-side, so the outcome still has
     // to be shown rather than surfaced as a failure the user would retry.
-    commitReissuedSessionIfCurrentMock.mockReturnValue(false);
+    commitMfaStateIfCurrentMock.mockImplementationOnce(() => {
+      sessionGeneration.current += 1;
+      return false;
+    });
     fetchWithAuthMock
       .mockResolvedValueOnce(makeJsonResponse({
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
       .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true, tokens: REPLACEMENT }));
+      .mockResolvedValueOnce(makeJsonResponse({
+        success: true,
+        mfaEnabled: true,
+        mfaMethod: 'totp',
+        tokens: REPLACEMENT,
+      }));
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
@@ -253,6 +292,11 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     // a stale generation, which means a logout already moved the session on. No
     // re-auth notice — the plain success message stands.
     expect(await screen.findByText('Passkey deleted')).toBeTruthy();
+    expect(commitMfaStateIfCurrentMock).toHaveBeenCalledWith(
+      sessionGeneration.current - 1,
+      { mfaEnabled: true, mfaMethod: 'totp' },
+      REPLACEMENT,
+    );
   });
 
   it('does not try to adopt a delete session the API did not return', async () => {
@@ -261,7 +305,7 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
         passkeys: [{ id: 'credential-1', name: 'MacBook Touch ID', lastUsedAt: null }],
       }))
       .mockResolvedValueOnce(makeJsonResponse({ stepUpGrantId: '20000000-0000-4000-8000-000000000009' }))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true }));
+      .mockResolvedValueOnce(makeJsonResponse({ success: true, mfaEnabled: true, mfaMethod: 'totp' }));
 
     render(<ProfilePage initialUser={USER} />);
     await screen.findByText('MacBook Touch ID');
@@ -274,6 +318,10 @@ describe('ProfilePage — passkey writes adopt the replacement session (#5038)',
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
     expect(await screen.findByText('Passkey deleted. Sign in again to continue.')).toBeTruthy();
-    expect(commitReissuedSessionIfCurrentMock).not.toHaveBeenCalled();
+    expect(commitMfaStateIfCurrentMock).toHaveBeenCalledWith(
+      sessionGeneration.current,
+      { mfaEnabled: true, mfaMethod: 'totp' },
+      undefined,
+    );
   });
 });

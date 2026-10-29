@@ -46,6 +46,11 @@ const createProfileSchema = (t: TFunction) => z.object({
   name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
 });
 
+const passkeyMfaStateSchema = z.discriminatedUnion('mfaEnabled', [
+  z.object({ mfaEnabled: z.literal(true), mfaMethod: z.enum(['totp', 'sms', 'passkey']) }),
+  z.object({ mfaEnabled: z.literal(false), mfaMethod: z.null() }),
+]);
+
 type ProfileFormValues = z.infer<ReturnType<typeof createProfileSchema>>;
 
 type User = {
@@ -870,11 +875,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
    * success message rather than letting the user discover it as a disconnected
    * /login?reason=session-expired on some later screen.
    *
-   * A REFUSED commit is different and needs no notice: the store refuses only on
-   * a stale generation, which means a logout already moved the session on.
+   * A response from an older generation needs no notice because the newer
+   * session owns its own authentication state.
    */
-  const withReauthNotice = (message: string, replacementAdopted: boolean) =>
-    (replacementAdopted ? message : `${message}. ${t('profilePage.signInAgainToContinue')}`);
+  const withReauthNotice = (message: string, requiresReauth: boolean) =>
+    (requiresReauth ? `${message}. ${t('profilePage.signInAgainToContinue')}` : message);
 
   /**
    * #4045: the "user at the keyboard" proof a factor-MANAGEMENT request sends —
@@ -1273,15 +1278,16 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       // bounced to /login?reason=session-expired by the very action they just
       // took. A refused commit (a logout raced the request) is not an error —
       // the passkey is already registered, so success still has to be shown.
-      const registerReplacementAdopted = Boolean(verifyData.tokens?.accessToken);
-      if (registerReplacementAdopted) {
-        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, verifyData.tokens);
-      }
-      // G4-14: a first-factor enrollment (`prev.mfaMethod` unset) makes this the
-      // account's MFA method. Leave an existing method alone for a second
-      // passkey added to an already-enrolled account. MFASettings reads this to
-      // decide whether the recovery-codes panel below just became relevant.
-      setUser(prev => (prev ? { ...prev, mfaEnabled: true, mfaMethod: prev.mfaMethod ?? 'passkey' } : null));
+      const mfaState = passkeyMfaStateSchema.parse(verifyData);
+      const mfaStateCommitted = useAuthStore.getState().commitMfaStateIfCurrent(
+        generation,
+        mfaState,
+        verifyData.tokens,
+      );
+      const sessionStillCurrent = useAuthStore.getState().sessionGeneration === generation;
+      const registerRequiresReauth = sessionStillCurrent
+        && !(verifyData.tokens?.accessToken && mfaStateCommitted);
+      if (mfaStateCommitted) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
       setPasskeyDialog(null);
       setPasskeyName('');
       setPasskeyPassword('');
@@ -1292,11 +1298,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setSsoSetupReady(false);
       setPasskeyStepUpNeeded(false);
       setPasskeyStepUpCode('');
-      if (Array.isArray(verifyData.recoveryCodes)) {
+      if (mfaStateCommitted && Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
-      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyAdded'), registerReplacementAdopted));
-      await loadPasskeys();
+      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyAdded'), registerRequiresReauth));
+      if (mfaStateCommitted) await loadPasskeys();
     } catch (error) {
       if (error instanceof Error && error.name === 'NotAllowedError') {
         setPasskeyError(t('profilePage.passkeySetupWasCanceledOrTimedOut'));
@@ -1449,15 +1455,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       forgetSpentManageGrant(passkeyPassword);
       // #5038: same contract as registration above — deleting a factor rotates
       // the caller's session rather than evicting it.
-      const deleteReplacementAdopted = Boolean(data.tokens?.accessToken);
-      if (deleteReplacementAdopted) {
-        useAuthStore.getState().commitReissuedSessionIfCurrent(generation, data.tokens);
-      }
+      const mfaState = passkeyMfaStateSchema.parse(data);
+      const mfaStateCommitted = useAuthStore.getState().commitMfaStateIfCurrent(
+        generation,
+        mfaState,
+        data.tokens,
+      );
+      const sessionStillCurrent = useAuthStore.getState().sessionGeneration === generation;
+      const deleteRequiresReauth = sessionStillCurrent
+        && !(data.tokens?.accessToken && mfaStateCommitted);
       setPasskeyDialog(null);
-      setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
+      if (mfaStateCommitted) setPasskeys(prev => prev.filter(passkey => passkey.id !== passkeyId));
       setPasskeyPassword('');
       setPasskeyFactorCode('');
-      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteReplacementAdopted));
+      if (mfaStateCommitted) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
+      setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteRequiresReauth));
     } catch (error) {
       if (deleteRequestPending && stepUpGrantId) {
         setPasskeyDeleteRetryGrant({ passkeyId, grantId: stepUpGrantId, sessionGeneration: generation });

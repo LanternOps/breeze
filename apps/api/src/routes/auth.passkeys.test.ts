@@ -89,7 +89,11 @@ vi.mock('../services', () => {
         set: vi.fn((values: Record<string, unknown>) => {
           dbState.updateSets.push(values);
           const whereResult: any = Promise.resolve(undefined);
-          whereResult.returning = vi.fn(() => Promise.resolve([{ id: 'user-123' }]));
+          whereResult.returning = vi.fn(() => Promise.resolve([{
+            id: 'user-123',
+            mfaEnabled: values.mfaEnabled ?? true,
+            mfaMethod: 'mfaMethod' in values ? values.mfaMethod : 'totp',
+          }]));
           return { where: vi.fn(() => whereResult) };
         }),
       })),
@@ -831,6 +835,11 @@ describe('passkey MFA auth routes', () => {
       });
 
       expect(res.status).toBe(200);
+      expect(await res.clone().json()).toMatchObject({
+        success: true,
+        mfaEnabled: true,
+        mfaMethod: 'passkey',
+      });
       expect(consumeStepUpGrant).toHaveBeenCalledWith(
         '11111111-1111-4111-8111-111111111111',
         expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
@@ -2347,6 +2356,8 @@ describe('passkey MFA auth routes', () => {
       expect(body).toMatchObject({
         success: true,
         passkey: { id: 'passkey-credential-1' },
+        mfaEnabled: true,
+        mfaMethod: 'totp',
         // The replacement access token is what keeps the caller authenticated
         // past its own epoch bump.
         tokens: { accessToken: 'replacement-access-token', expiresInSeconds: 900 },
@@ -2439,6 +2450,7 @@ describe('passkey MFA auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(body).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
       // Discriminating even though a pre-fix route also answers 200 with no
       // tokens: the install has to have been ATTEMPTED for its failure to be
       // the reason they are missing.
@@ -2465,6 +2477,8 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({
+        mfaEnabled: true,
+        mfaMethod: 'totp',
         success: true,
         tokens: { accessToken: 'replacement-access-token', expiresInSeconds: 900 },
       });
@@ -2507,6 +2521,8 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({
+        mfaEnabled: false,
+        mfaMethod: null,
         success: true,
         tokens: { accessToken: 'replacement-access-token' },
       });
@@ -2525,6 +2541,7 @@ describe('passkey MFA auth routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+      expect(body).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
       expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
       expect(body.tokens).toBeUndefined();
     });
