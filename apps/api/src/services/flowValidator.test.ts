@@ -141,11 +141,17 @@ describe('validateFlowDocument', () => {
     expect(codes(b.issues)).toEqual(['tool_not_found']);
     expect(a.issues[0]!.message.replace('no_such_tool', 'X')).toBe(b.issues[0]!.message.replace('hudu__get_asset', 'X'));
     expect(a.effectiveTier).toBeNull();
+    // #9937: a tool the catalog cannot resolve is reported as unknown, never
+    // guessed into "core" or "tenant" from the shape of its name.
+    expect(a.steps[0]!.source).toBe('unknown');
+    expect(b.steps[0]!.source).toBe('unknown');
   });
 
   it('manage_ai_agents is tool_not_allowed', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_ai_agents', input: { action: 'list' } }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['tool_not_allowed']);
+    // A registered core tool that flows refuse is still a core tool (#9937).
+    expect(r.steps[0]!.source).toBe('core');
   });
 
   it('a session-only (M365) tool is tool_not_allowed — flows run without a chat session', async () => {
@@ -179,6 +185,7 @@ describe('validateFlowDocument', () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'flow__nightly_cleanup', input: {} }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['flow_step_not_supported']);
     expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
   });
 
   it('http_request POST pins tier 3 and GET tier 2', async () => {
@@ -362,6 +369,8 @@ describe('validateFlowDocument', () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } }, { id: 'b', tool: 'wait', input: { minutes: 1 } }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['forward_reference']);
     expect(resolveTenantToolsForOwner).not.toHaveBeenCalled();
+    // Without the catalog, an unregistered name is unknown rather than "core" (#9937).
+    expect(r.steps.map((s) => [s.id, s.source])).toEqual([['a', 'unknown'], ['b', 'builtin']]);
   });
 
   it('a structurally broken document returns schema issues, never throws', async () => {

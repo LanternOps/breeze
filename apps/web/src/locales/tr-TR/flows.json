@@ -55,7 +55,8 @@
     "source": {
       "core": "Çekirdek araç",
       "tenant": "Araç kaynağı",
-      "builtin": "Yerleşik"
+      "builtin": "Yerleşik",
+      "unknown": "Bilinmeyen araç"
     },
     "preApprovedBadge": "Önceden onaylı",
     "builtin": {

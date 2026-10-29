@@ -70,3 +70,40 @@ describe('FlowStepList built-in steps', () => {
     expect(screen.getByTestId('flow-step-builtin-ask').textContent).toContain('No tools');
   });
 });
+
+describe('FlowStepList step badges and defaults (#9937)', () => {
+  it('labels a step whose tool did not resolve as an unknown tool, not a core tool', () => {
+    render(
+      <FlowStepList
+        steps={[step('bogus', 'not_a_real_tool', {})]}
+        summaries={[{ id: 'bogus', tool: 'not_a_real_tool', source: 'unknown', tier: null, approval: 'default' }]}
+      />,
+    );
+    expect(screen.getByTestId('flow-step-bogus-source').textContent).toBe('Unknown tool');
+    expect(screen.queryByText('Core tool')).toBeNull();
+  });
+
+  it('still labels a resolved core tool as a core tool', () => {
+    render(
+      <FlowStepList
+        steps={[step('read', 'get_device_details', {})]}
+        summaries={[{ id: 'read', tool: 'get_device_details', source: 'core', tier: 1, approval: 'default' }]}
+      />,
+    );
+    expect(screen.getByTestId('flow-step-read-source').textContent).toBe('Core tool');
+  });
+
+  it('shows the schema defaults when a stored step omits onFailure and timeoutSec', () => {
+    const bare = { id: 'clean', tool: 'run_script', input: {}, approval: 'default' } as never;
+    render(<FlowStepList steps={[bare]} summaries={[summary('clean', 'run_script', 3)]} />);
+    expect(screen.getByTestId('flow-step-clean-on-failure').textContent).toBe('stop');
+    expect(screen.getByTestId('flow-step-clean-timeout').textContent).toBe('300s');
+  });
+
+  it('shows the stored onFailure and timeoutSec when present', () => {
+    const custom = { id: 'go', tool: 'run_script', input: {}, approval: 'default', onFailure: 'continue', timeoutSec: 900 } as never;
+    render(<FlowStepList steps={[custom]} summaries={[summary('go', 'run_script', 3)]} />);
+    expect(screen.getByTestId('flow-step-go-on-failure').textContent).toBe('continue');
+    expect(screen.getByTestId('flow-step-go-timeout').textContent).toBe('900s');
+  });
+});

@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { FlowDocumentV1, FlowStepSummary } from '@breeze/shared';
+import { FLOW_STEP_DEFAULTS, type FlowDocumentV1, type FlowStepSummary } from '@breeze/shared';
 import { useHashState } from '@/lib/useHashState';
 import { cn } from '@/lib/utils';
 
@@ -122,7 +122,10 @@ export function FlowStepList({
               )}
               <span className="font-medium" data-testid={`flow-step-${step.id}-tool`}>{step.tool}</span>
               {summary && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                <span
+                  data-testid={`flow-step-${step.id}-source`}
+                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+                >
                   {t(/* i18n-dynamic */ `step.source.${summary.source}`)}
                 </span>
               )}
@@ -165,11 +168,15 @@ export function FlowStepList({
                 )}
                 <div>
                   <dt className="text-muted-foreground">{t('step.onFailure')}</dt>
-                  <dd className="font-mono">{step.onFailure}</dd>
+                  <dd className="font-mono" data-testid={`flow-step-${step.id}-on-failure`}>
+                    {step.onFailure ?? FLOW_STEP_DEFAULTS.onFailure}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">{t('step.timeout')}</dt>
-                  <dd className="font-mono">{step.timeoutSec}s</dd>
+                  <dd className="font-mono" data-testid={`flow-step-${step.id}-timeout`}>
+                    {step.timeoutSec ?? FLOW_STEP_DEFAULTS.timeoutSec}s
+                  </dd>
                 </div>
               </dl>
             )}

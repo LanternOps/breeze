@@ -55,7 +55,8 @@
     "source": {
       "core": "Ferramenta nativa",
       "tenant": "Fonte de ferramentas",
-      "builtin": "Integrada"
+      "builtin": "Integrada",
+      "unknown": "Ferramenta desconhecida"
     },
     "preApprovedBadge": "Pré-aprovado",
     "builtin": {
