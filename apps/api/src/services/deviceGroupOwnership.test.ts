@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-vi.mock('../db', () => ({ db: { select: vi.fn() } }));
-import { db } from '../db';
+vi.mock('../db', () => ({
+  db: { select: vi.fn() },
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization' })),
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+}));
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   findPartnerOwnedGroupIds, groupOwnerMatchesMembershipOrg, isPartnerOwnedGroup,
   partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY,
@@ -25,17 +30,18 @@ describe('deviceGroupOwnership', () => {
     expect(sql).toContain('"organizations"."id" = "device_group_memberships"."org_id"');
   });
 
-  it('returns only visible partner ids, ignores unknown ids, and deduplicates', async () => {
-    const where = vi.fn().mockResolvedValue([
-      { id: 'partner-group', orgId: null },
-      { id: 'org-group', orgId: 'org-a' },
-      { id: 'partner-group', orgId: null },
-    ]);
+  it('reads in system scope, filters to org_id IS NULL, and deduplicates', async () => {
+    // Org-session JWTs carry no partner id, so a request-scoped read would not
+    // see a partner group at all; the lookup must leave the caller's context.
+    const where = vi.fn().mockResolvedValue([{ id: 'partner-group' }, { id: 'partner-group' }]);
     vi.mocked(db.select).mockReturnValue({ from: vi.fn().mockReturnValue({ where }) } as never);
     expect(await findPartnerOwnedGroupIds(['partner-group', 'org-group', 'unknown', 'partner-group']))
       .toEqual(['partner-group']);
-    expect(dialect.sqlToQuery(where.mock.calls[0]![0] as SQL).params)
-      .toEqual(['partner-group', 'org-group', 'unknown']);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    const query = dialect.sqlToQuery(where.mock.calls[0]![0] as SQL);
+    expect(query.params).toEqual(['partner-group', 'org-group', 'unknown']);
+    expect(query.sql).toContain('"device_groups"."org_id" is null');
   });
 
   it('does not query for empty input', async () => {

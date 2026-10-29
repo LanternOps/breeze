@@ -282,7 +282,7 @@ function mapGroupRow(
     type: group.type,
     rules: redact ? null : group.rules,
     filterConditions: redact ? null : group.filterConditions as FilterConditionGroup | null,
-    filterFieldsUsed: group.filterFieldsUsed ?? [],
+    filterFieldsUsed: redact ? [] : group.filterFieldsUsed ?? [],
     parentId: group.parentId,
     deviceCount,
     createdAt: group.createdAt.toISOString(),

@@ -6,7 +6,7 @@
  * Each tool wraps existing DB schema and service logic with org-scoped isolation.
  */
 
-import { PARTNER_GROUP_READ_ONLY_BODY } from './deviceGroupOwnership';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -2036,6 +2036,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_maintenance_windows', async (input, auth) => {
       const action = input.action as string;
       const orgId = getOrgId(auth);
+
+      if (action === 'create' || action === 'update') {
+        const partnerGroupIds = await findPartnerOwnedGroupIds((input.groupIds as string[] | undefined) ?? []);
+        if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
+      }
 
       // NOTE (#3654): the create/update/delete blocks further down are dead —
       // this guard and the `action` enum both exclude them. If they are ever

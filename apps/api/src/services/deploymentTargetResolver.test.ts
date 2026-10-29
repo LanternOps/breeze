@@ -108,6 +108,7 @@ describe('resolveDeploymentTargets', () => {
     expect(result.deviceIds).toEqual([]);
     expect(result.warnings).toEqual([expect.stringContaining('Partner-wide device groups can only be targeted by partner configuration policies')]);
     expect(db.select).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([GROUP_ID_1]);
   });
 
   beforeEach(() => {

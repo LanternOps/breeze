@@ -187,14 +187,14 @@ describe('partner-owned groups remain dark until W2b', () => {
   const group = { id: 'group-1', orgId: null, siteId: null, type: 'dynamic' as const, filterConditions: { operator: 'AND', conditions: [] } };
   beforeEach(() => vi.resetAllMocks());
 
-  it('resolveEffectiveGroupMembers skips partner groups without reads or writes', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(await resolveEffectiveGroupMembers(group)).toEqual({ matched: new Set(), pinned: new Set() });
+  it('resolveEffectiveGroupMembers throws GroupEvaluationError(unsupported_owner) for partner groups, never an empty list', async () => {
+    // #3205: an unevaluable group is an ERROR for billing callers, not zero members.
+    await expect(resolveEffectiveGroupMembers(group)).rejects.toMatchObject({
+      name: 'GroupEvaluationError', groupId: 'group-1', reason: 'unsupported_owner',
+    });
     expect(mockSelect).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDelete).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith('[groupMembership] partner group group-1 skipped until W2b evaluation');
-    warn.mockRestore();
   });
 
   it.each(['device', 'group'])('%s evaluator skips partner groups without membership writes', async (kind) => {

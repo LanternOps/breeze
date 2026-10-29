@@ -5452,5 +5452,6 @@ describe('partner-owned AI agent run scope', () => {
     expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [AGENT_ID] });
     expect(createAgent).not.toHaveBeenCalled();
     expect(updateAgent).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([AGENT_ID]);
   });
 });

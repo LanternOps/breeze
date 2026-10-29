@@ -7,6 +7,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { resolveAssignmentDevices } from '../../services/configPolicyAssignmentDevices';
 import { resolvePatchConfigPolicyForDevice } from '../../services/featureConfigResolver';
 import { resolveDeviceIdsForAssignment } from '../../jobs/automationWorker';
+import { findPartnerOwnedGroupIds } from '../../services/deviceGroupOwnership';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -134,5 +135,16 @@ describe('partner device group fanout (#10521 W2a)', () => {
       { level: 'device_group', targetId: f.groupId, roleFilter: null, osFilter: null },
       { policyOrgId: null, policyPartnerId: f.otherPartnerId }, options,
     ))).deviceIds).toEqual([]);
+  });
+
+  runDb('write refusals detect a partner group for an org-session caller (no partner id in the DB context)', async () => {
+    const f = await fixture();
+    // The real org-JWT request context: middleware/auth.ts keeps partnerId null,
+    // so RLS hides the partner group from this caller. The refusal must still fire.
+    const found = await withDbAccessContext({
+      scope: 'organization', orgId: f.a.orgId, accessibleOrgIds: [f.a.orgId],
+      accessiblePartnerIds: [], currentPartnerId: null, userId: null,
+    }, () => findPartnerOwnedGroupIds([f.groupId, f.a.deviceId]));
+    expect(found).toEqual([f.groupId]);
   });
 });

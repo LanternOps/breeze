@@ -129,6 +129,7 @@ describe('sla routes', () => {
     expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
     expect(insertMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
   });
 
   let app: Hono;

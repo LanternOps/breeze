@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@breeze/shared';
-import { inArray, sql, type SQL } from 'drizzle-orm';
-import { db } from '../db';
+import { and, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, organizations } from '../db/schema';
 
 /** Partner-owned definitions have no owning organization. */
@@ -19,13 +19,27 @@ export function groupOwnerMatchesMembershipOrg(): SQL {
        WHERE ${organizations.id} = ${deviceGroupMemberships.orgId})))`;
 }
 
-/** Find visible partner-owned ids, ignoring unknown ids and repeated inputs. */
+/**
+ * Which of `ids` name a partner-owned group, ignoring unknown ids and repeats.
+ *
+ * Reads in SYSTEM scope on purpose. Organization-session JWTs carry no
+ * partner id (`middleware/auth.ts`), so under the caller's RLS a partner group
+ * is invisible to an org user and a request-scoped read would return [] — the
+ * write would then store the id silently. The query returns only the ids the
+ * caller already sent, filtered to `org_id IS NULL`; no row data leaves it.
+ */
 export async function findPartnerOwnedGroupIds(ids: readonly string[]): Promise<string[]> {
   const uniqueIds = [...new Set(ids)];
   if (uniqueIds.length === 0) return [];
-  const rows = await db.select({ id: deviceGroups.id, orgId: deviceGroups.orgId })
-    .from(deviceGroups).where(inArray(deviceGroups.id, uniqueIds));
-  return [...new Set(rows.filter(isPartnerOwnedGroup).map((row) => row.id))];
+  const read = async () => db.select({ id: deviceGroups.id })
+    .from(deviceGroups)
+    .where(and(inArray(deviceGroups.id, uniqueIds), isNull(deviceGroups.orgId)));
+  // Already system-scoped (worker): read straight through rather than open a
+  // second pooled connection. Otherwise leave the request context first.
+  const rows = getCurrentDbAccessContext()?.scope === 'system'
+    ? await read()
+    : await runOutsideDbContext(() => withSystemDbAccessContext(read));
+  return [...new Set(rows.map((row) => row.id))];
 }
 
 export function partnerGroupTargetRefusal(ids: string[]): {

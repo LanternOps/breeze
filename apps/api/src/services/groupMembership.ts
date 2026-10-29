@@ -67,7 +67,7 @@ export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | '
 export class GroupEvaluationError extends Error {
   constructor(
     public readonly groupId: string,
-    public readonly reason: 'invalid_filter' | 'engine_error',
+    public readonly reason: 'invalid_filter' | 'engine_error' | 'unsupported_owner',
     cause?: unknown,
   ) {
     super(`device group ${groupId}: ${reason}`, cause === undefined ? undefined : { cause });
@@ -98,10 +98,10 @@ const SLOW_GROUP_EVALUATION_MS = 250;
  *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
  */
 export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
-  if (group.orgId === null) {
-    console.warn(`[groupMembership] partner group ${group.id} skipped until W2b evaluation`);
-    return { matched: new Set(), pinned: new Set() };
-  }
+  // Partner-owned groups have no single org to evaluate in (per-org evaluation
+  // lands in W2b of #10521). Callers are org-scoped (contract billing), so an
+  // empty set would silently under-bill: fail loudly instead (#3205 rule).
+  if (group.orgId === null) throw new GroupEvaluationError(group.id, 'unsupported_owner');
   const filterConditions = group.filterConditions;
   let dynamicFilter: FilterConditionGroup | null = null;
   if (group.type === 'dynamic' && filterConditions !== null && filterConditions !== undefined) {

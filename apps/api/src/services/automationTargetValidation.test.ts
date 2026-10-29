@@ -40,6 +40,7 @@ describe('validateAutomationTargetConditions', () => {
     await expect(validateAutomationTargetConditions({ owner, conditions: { type: 'groups', groupIds: [G1] } }))
       .resolves.toMatchObject({ ok: false, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
     expect(db.select).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([G1]);
   });
 
   it.each([

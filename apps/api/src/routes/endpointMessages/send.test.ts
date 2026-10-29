@@ -152,6 +152,7 @@ describe('POST /endpoint-messages (#8741)', () => {
     expect(h.persist).not.toHaveBeenCalled();
     expect(h.claimIdem).not.toHaveBeenCalled();
     expect(h.resolveTargetsDetailed).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
   });
 
   beforeEach(() => {

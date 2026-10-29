@@ -157,7 +157,7 @@ function makeGroup(overrides: Record<string, unknown> = {}) {
     type: 'dynamic',
     rules: { legacy: true },
     filterConditions: { operator: 'AND', conditions: [{ field: 'osType', operator: 'equals', value: 'windows' }] },
-    filterFieldsUsed: [],
+    filterFieldsUsed: ['osType'],
     parentId: null,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -178,9 +178,9 @@ function query(rows: unknown[]) {
 
 describe('partner-owned group reads and write refusals', () => {
   let app: Hono;
-  const setScope = (scope: 'organization' | 'partner' | 'system') => {
+  const setScope = (scope: 'organization' | 'partner' | 'system', partnerId: string | null = PARTNER_ID) => {
     vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
-      c.set('auth', { scope, orgId: ORG_ID, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID], canAccessOrg: () => true });
+      c.set('auth', { scope, orgId: ORG_ID, partnerId, accessibleOrgIds: [ORG_ID], canAccessOrg: () => true });
       return next();
     });
   };
@@ -191,13 +191,41 @@ describe('partner-owned group reads and write refusals', () => {
     app.route('/groups', groupRoutes);
   });
 
-  it('org scope GET /:id of a partner group of its own partner returns name, partnerId, orgId null; filterConditions and rules are null', async () => {
+  it("org scope with a partner id (API-key shape) GET /:id of its partner's group returns name, partnerId, orgId null; filterConditions, rules and filterFieldsUsed are redacted", async () => {
     vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never)
       .mockReturnValueOnce(query([{ count: 2 }]) as never)
       .mockReturnValueOnce(query([]) as never);
     const res = await app.request(`/groups/${GROUP_ID}`);
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toMatchObject({ name: 'Test Group', partnerId: PARTNER_ID, orgId: null, filterConditions: null, rules: null });
+    expect((await res.json()).data).toMatchObject({ name: 'Test Group', partnerId: PARTNER_ID, orgId: null, filterConditions: null, rules: null, filterFieldsUsed: [] });
+  });
+
+  it('org-session scope (partnerId null) GET /:id of a partner group returns 404', async () => {
+    setScope('organization', null);
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never);
+    const res = await app.request(`/groups/${GROUP_ID}`);
+    expect(res.status).toBe(404);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("partner scope GET /:id of another partner's group returns 404", async () => {
+    setScope('partner');
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup({ partnerId: ORG_ID_2 })]) as never);
+    const res = await app.request(`/groups/${GROUP_ID}`);
+    expect(res.status).toBe(404);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('system scope GET /:id of a partner group returns the filter', async () => {
+    setScope('system', null);
+    vi.mocked(db.select).mockReturnValueOnce(query([makeGroup()]) as never)
+      .mockReturnValueOnce(query([{ count: 2 }]) as never)
+      .mockReturnValueOnce(query([]) as never);
+    const res = await app.request(`/groups/${GROUP_ID}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({
+      filterConditions: makeGroup().filterConditions, rules: makeGroup().rules, filterFieldsUsed: ['osType'],
+    });
   });
 
   it("org scope GET /:id of another partner's group returns 404", async () => {
@@ -214,7 +242,7 @@ describe('partner-owned group reads and write refusals', () => {
       .mockReturnValueOnce(query([]) as never);
     const res = await app.request(`/groups/${GROUP_ID}`);
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toMatchObject({ filterConditions: makeGroup().filterConditions, rules: makeGroup().rules });
+    expect((await res.json()).data).toMatchObject({ filterConditions: makeGroup().filterConditions, rules: makeGroup().rules, filterFieldsUsed: ['osType'] });
   });
 
   it.each([
