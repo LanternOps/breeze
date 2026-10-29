@@ -39,6 +39,7 @@ import { sendInvoiceEmail } from './invoicePdf';
 import { toCents } from './invoiceMath';
 import { captureException } from './sentry';
 import { auditToolWrite } from './aiToolsSoftwareShared';
+import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const AMOUNT_RE = /^\d{1,12}(\.\d{1,2})?$/;
@@ -119,6 +120,11 @@ export async function generateInvoiceAction(
 ): Promise<string> {
   const expected = parseExpectations(input);
   if (typeof expected === 'string') return expected;
+  // An invoice bills the whole contract and the org's billing contact: a site- or device-restricted session never
+  // generates one (stricter than the route's whole-contract site check, which the gate below still makes).
+  if (!canMutateOrgWideGovernance(auth)) {
+    return jsonError('Generating an invoice bills the whole organization; a site- or device-restricted session cannot', 'ACCESS_DENIED');
+  }
 
   // 1. The caller's own context (self-managed: no per-call transaction is held).
   await withAuthDbAccessContext(auth, () => gate(contractId, actor));

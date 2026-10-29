@@ -45,6 +45,7 @@ import { withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { canMutateOrgWideGovernance } from './siteCeilingAccess';
 import {
   AccountingMappingError, listMappingProposals, listRemoteIncomeAccountsForPartner, resolveConnectionAndToken,
   saveMappingDecision, syncMappedEntity, type MappingDecision, type MappingEntityType,
@@ -286,6 +287,8 @@ async function syncOne(partnerId: string, provider: AccountingProviderId, input:
 
 /** The invoices that are this partner's (REST: partner_id = the partner, under full-partner authority). */
 async function ownedInvoiceIds(ids: readonly string[], partnerId: string, auth: AuthContext): Promise<Set<string>> {
+  // Belt to the handler's top-level refusal: a restricted session owns no invoice here.
+  if (!canMutateOrgWideGovernance(auth)) return new Set();
   const rows = await withAuthDbAccessContext(auth, () => db.select({ id: invoices.id })
     .from(invoices).where(and(inArray(invoices.id, [...ids]), eq(invoices.partnerId, partnerId))));
   return new Set(rows.map((r) => r.id));
@@ -382,6 +385,11 @@ export function registerAccountingSyncTools(aiTools: Map<string, AiTool>): void 
       if (!ACCOUNTING_PROVIDERS.includes(provider)) return jsonError('provider must be quickbooks or xero', 'VALIDATION_ERROR');
       const partner = partnerOrRefusal(auth);
       if ('refusal' in partner) return partner.refusal;
+      // The realm is partner-wide (every org's customers and invoices): a site- or device-restricted session never
+      // reaches it (REST's full-partner authority implies the same for a partner member).
+      if (!canMutateOrgWideGovernance(auth)) {
+        return jsonError('Accounting sync covers every organization; a site- or device-restricted session cannot use it', 'ACCESS_DENIED');
+      }
       const gate = providerRefusal(provider, action);
       if (gate) return gate;
       const mfa = mfaGatedToolError(TOOL, action, auth);

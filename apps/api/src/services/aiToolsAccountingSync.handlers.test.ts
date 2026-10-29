@@ -132,6 +132,14 @@ describe('manage_accounting_sync gates', () => {
     noServiceCalls();
   });
 
+  it('refuses a device-bound session (the realm is partner-wide; canMutateOrgWideGovernance), calling nothing', async () => {
+    const status = await run({ action: 'status', ...base }, makeAuth({ allowedDeviceIds: ['d-1'] }));
+    expect(status.code).toBe('ACCESS_DENIED');
+    const device = await run({ action: 'push', ...base, invoiceId: INV_A }, makeAuth({ allowedDeviceIds: ['d-1'] }));
+    expect(device.code).toBe('ACCESS_DENIED');
+    noServiceCalls();
+  });
+
   it('provider gate: unregistered, unsupported capability, and unconfigured provider', async () => {
     h.findProvider.mockReturnValue(undefined);
     expect((await run({ action: 'status', ...base })).code).toBe('capability_unavailable');

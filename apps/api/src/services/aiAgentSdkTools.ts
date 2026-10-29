@@ -5139,8 +5139,33 @@ export function buildBreezeSdkTools(
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
-      // W14 PR B (#6784): preview_invoice / generate_invoice and its assertions — the toolInputSchemas shape.
-      inputShape('manage_contracts'),
+      // Inline (aiToolsContracts.registryParity reads this enum from source); W14 PR B (#6784) adds
+      // preview_invoice / generate_invoice and generate_invoice's assertions, as toolInputSchemas.
+      {
+        action: z.enum([
+          'create_draft',
+          'update',
+          'delete_draft',
+          'add_line',
+          'remove_line',
+          'update_line',
+          'activate',
+          'pause',
+          'resume',
+          'cancel',
+          'preview_invoice',
+          'generate_invoice',
+        ]),
+        contractId: uuid.optional(),
+        lineId: uuid.optional(),
+        input: z.record(z.string(), z.unknown()).optional(),
+        line: z.record(z.string(), z.unknown()).optional(),
+        patch: z.record(z.string(), z.unknown()).optional(),
+        periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+        autoIssue: z.boolean().optional(),
+        expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
+      },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),
 
