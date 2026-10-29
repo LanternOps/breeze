@@ -202,6 +202,21 @@ describe('buildAuditCsv', () => {
     }
   });
 
+  // #8971: a withdrawn row carries its cause into the export, and every
+  // other row exports empty cells for the two new trailing columns.
+  it('exports withdrawnAt and withdrawnReason as trailing columns', () => {
+    const at = '2026-06-10T12:00:05.000Z';
+    const csv = buildAuditCsv([
+      { ...decided, reason: 'Restart spooler', status: 'withdrawn', withdrawnAt: at, withdrawnReason: 'user_denied' },
+      { ...decided, reason: 'Restart spooler' },
+    ]);
+    const [headerLine, withdrawnLine, otherLine] = csv.split('\n');
+    const header = headerLine.split(',');
+    expect(header.slice(-2)).toEqual(['"withdrawnAt"', '"withdrawnReason"']);
+    expect(withdrawnLine.split(',').slice(-2)).toEqual([`"${at}"`, '"user_denied"']);
+    expect(otherLine.split(',').slice(-2)).toEqual(['""', '""']);
+  });
+
   it('neutralizes spreadsheet-formula injection in agent-supplied fields', () => {
     const malicious: ElevationRequest = {
       ...decided,
