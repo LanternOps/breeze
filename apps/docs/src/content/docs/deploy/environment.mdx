@@ -1208,10 +1208,10 @@ The warranty worker looks each physical device's serial number up against its ma
 | `DELL_CLIENT_SECRET` | — | Matching Dell OAuth client secret. Both are required for Dell lookups. |
 | `LENOVO_API_KEY` | — | ClientID for Lenovo's official [Warranty API](https://supportapi.lenovo.com/Documentation/Warranty.html) (`supportapi.lenovo.com`), issued through a Lenovo partner manager |
 | `LENOVO_WARRANTY_ENABLED` | — | `true` enables credential-free Lenovo lookups through the JSON endpoint behind Lenovo's public warranty-lookup page. It is not documented by Lenovo and may stop working without notice, so it is opt-in. |
-| `HP_WARRANTY_ENABLED` | — | `true` or `1` enables HP lookups through HP's public support warranty endpoint, one serial at a time and rate limited. It is not an official API and may stop working without notice. |
+| `HP_WARRANTY_ENABLED` | — | **Currently has no effect.** HP's public support warranty endpoint no longer returns usable data, so the HP lookup is turned off in the API whatever this is set to. The variable is planned for removal. |
 
 <Aside>
-  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP's official Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown` unless you turn on `HP_WARRANTY_ENABLED`, which uses HP's public support endpoint instead.
+  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP's official Warranty API is not available to MSP or RMM vendors, and HP's public support endpoint no longer works for automated lookups, so HP devices stay `unknown`; `HP_WARRANTY_ENABLED` does not change that.
 </Aside>
 
 ## Breeze AI for Office (add-ins, optional)
