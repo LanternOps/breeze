@@ -17,6 +17,10 @@
  * scheme (with `x-huntress-timestamp`, or `x-signature` / `x-timestamp`) is
  * kept unchanged for any sender already configured that way.
  *
+ * A verified Standard Webhooks delivery reports its `webhook-id` as
+ * `messageId`; the route reserves it against replay
+ * (services/huntressWebhookReplay.ts).
+ *
  * Scheme selection: if ANY Standard Webhooks header is present, that scheme
  * is authoritative and the legacy headers are not consulted, so a partly
  * stripped delivery reports the header that is actually missing. Otherwise
@@ -31,7 +35,9 @@ export const HUNTRESS_WEBHOOK_REPLAY_WINDOW_SECONDS = 10 * 60;
 export type HuntressWebhookScheme = 'standard-webhooks' | 'legacy';
 
 export type HuntressWebhookVerifyResult =
-  | { ok: true; scheme: HuntressWebhookScheme }
+  /** `messageId` is the verified `webhook-id`, for replay reservation. */
+  | { ok: true; scheme: 'standard-webhooks'; messageId: string }
+  | { ok: true; scheme: 'legacy' }
   | { ok: false; scheme: HuntressWebhookScheme; error: string };
 
 type HeaderReader = (name: string) => string | undefined;
@@ -71,12 +77,12 @@ export function verifyHuntressWebhookRequest(input: {
   const signature = firstHeader(header, STANDARD_WEBHOOK_HEADERS.signature);
 
   if (id !== null || timestamp !== null || signature !== null) {
-    const missing = [
-      id === null ? 'webhook-id' : null,
-      timestamp === null ? 'webhook-timestamp' : null,
-      signature === null ? 'webhook-signature' : null,
-    ].filter((name): name is string => name !== null);
-    if (missing.length > 0) {
+    if (id === null || timestamp === null || signature === null) {
+      const missing = [
+        id === null ? 'webhook-id' : null,
+        timestamp === null ? 'webhook-timestamp' : null,
+        signature === null ? 'webhook-signature' : null,
+      ].filter((name): name is string => name !== null);
       return {
         ok: false,
         scheme: 'standard-webhooks',
@@ -91,7 +97,7 @@ export function verifyHuntressWebhookRequest(input: {
       input.now ?? new Date(),
       { toleranceSeconds: HUNTRESS_WEBHOOK_REPLAY_WINDOW_SECONDS, unprefixedSecret: 'raw' },
     );
-    if (result.ok) return { ok: true, scheme: 'standard-webhooks' };
+    if (result.ok) return { ok: true, scheme: 'standard-webhooks', messageId: id };
     // All three headers were non-empty, so the shared verifier cannot report
     // missing_headers here; map it defensively rather than assert.
     const error = result.reason === 'missing_headers'

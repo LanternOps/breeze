@@ -472,7 +472,7 @@
     "webhookSecret": "Segreto webhook",
     "generate": "Genera ",
     "copyThisWebhookSecretNowThenClickUpdate": "Copia ora questo webhook secret, quindi fai clic su Aggiorna per salvarlo.",
-    "pasteTheSameValueIntoHuntresssWebhookConfiguration": "Incolla lo stesso valore nella configurazione webhook di Huntress. Dopo il salvataggio, Breeze lo conserva cifrato e non lo mostra più. ",
+    "pasteTheSameValueIntoHuntresssWebhookConfiguration": "Usa un segreto generato solo con un mittente che ti permette di impostarne uno tuo. Huntress emette il proprio segreto di firma: incolla invece quello mostrato in View Signing Secret. Dopo il salvataggio, Breeze lo conserva cifrato e non lo mostra più. ",
     "copySecret": "Copia secret",
     "syncNow": "Sincronizza ora ",
     "inboundWebhookPushFromHuntress": "Webhook in ingresso (push da Huntress)",

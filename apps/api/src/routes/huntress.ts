@@ -20,6 +20,11 @@ import {
 } from '../jobs/huntressSync';
 import { extractHuntressWebhookAccountId } from '../services/huntressClient';
 import { verifyHuntressWebhookRequest } from '../services/huntressWebhookSignature';
+import {
+  releaseHuntressWebhookMessage,
+  reserveHuntressWebhookMessage,
+} from '../services/huntressWebhookReplay';
+import { getRedis } from '../services/redis';
 import { ensureBuiltinPackage } from '../services/builtinDeploymentPackages';
 import { decryptForColumn, encryptSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -215,8 +220,13 @@ async function resolveWebhookIntegration(params: {
   return { ...lookup.integration, isActive: true };
 }
 
-function isHuntressTestDelivery(payload: unknown, webhookTestHeader: string | undefined): boolean {
-  if (webhookTestHeader?.trim().toLowerCase() === 'true') return true;
+/**
+ * A Huntress "Send Test" delivery, recognised from the SIGNED body only.
+ * The `webhook-test` header Svix adds is outside the signature, so it is
+ * never consulted: honouring it would let anyone who can add a header turn a
+ * genuine signed event into a silently dropped "test".
+ */
+function isHuntressTestDelivery(payload: unknown): boolean {
   return Boolean(
     payload
     && typeof payload === 'object'
@@ -270,15 +280,42 @@ huntressRoutes.post('/webhook', async (c) => {
     header: (name) => c.req.header(name),
   });
   if (!signatureCheck.ok) {
+    // The 401 body is all Huntress's delivery log shows; this line is the
+    // self-hoster's side. Never log the secret or the signature itself.
+    const secretFormat = webhookSecret.trim().startsWith('whsec_')
+      ? 'whsec_-prefixed'
+      : 'no whsec_ prefix (used as raw bytes)';
+    console.warn(
+      `[huntress] Webhook signature rejected integration=${integration.id} scheme=${signatureCheck.scheme} secret=${secretFormat}: ${signatureCheck.error}`
+    );
     return c.json({ error: signatureCheck.error }, 401);
   }
 
-  // Huntress's "Send Test" (`webhook-test: true`, body
-  // `{"event_type":"test.event",...}`) proves the URL and secret work. It
-  // carries no agents or incidents, so acknowledge it without ingesting.
-  // Only reached once the signature has verified.
-  if (isHuntressTestDelivery(payload, c.req.header('webhook-test'))) {
+  // Huntress's "Send Test" (body `{"event_type":"test.event",...}`) proves
+  // the URL and secret work. It carries no agents or incidents, so
+  // acknowledge it without ingesting. Only reached once the signature has
+  // verified, and before the replay reservation so a test never needs Redis.
+  if (isHuntressTestDelivery(payload)) {
+    console.info(`[huntress] Webhook test delivery acknowledged integration=${integration.id} scheme=${signatureCheck.scheme}`);
     return c.json({ accepted: true, test: true, integrationId: integration.id });
+  }
+
+  // Replay guard (Standard Webhooks only; the legacy scheme has no message
+  // id). Svix is at-least-once and re-signs each retry, so reserve the
+  // verified webhook-id before ingesting. Redis unavailable -> 503 so Svix
+  // retries, the same fail-closed choice as the Resend receiver.
+  const redis = getRedis();
+  let reservationKey: string | null = null;
+  if (signatureCheck.scheme === 'standard-webhooks') {
+    const reservation = await reserveHuntressWebhookMessage(redis, integration.id, signatureCheck.messageId);
+    if (reservation.status === 'unavailable') {
+      console.error(`[huntress] Webhook replay guard unavailable; asking Huntress to retry integration=${integration.id}`);
+      return c.json({ error: 'Service Unavailable' }, 503);
+    }
+    if (reservation.status === 'duplicate') {
+      return c.json({ accepted: true, duplicate: true, integrationId: integration.id });
+    }
+    reservationKey = reservation.key;
   }
 
   try {
@@ -299,6 +336,11 @@ huntressRoutes.post('/webhook', async (c) => {
   } catch (error) {
     console.error('[huntress] Webhook ingestion failed:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
+    // Ingest is upsert-based, so a retry is safe: release the reservation so
+    // Huntress's retry is processed rather than answered as a duplicate.
+    if (redis && reservationKey) {
+      await releaseHuntressWebhookMessage(redis, reservationKey);
+    }
     return c.json({ error: 'Webhook ingestion failed' }, 500);
   }
 });

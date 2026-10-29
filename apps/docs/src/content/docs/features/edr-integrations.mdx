@@ -88,7 +88,9 @@ Huntress delivers webhooks through Svix, using the [Standard Webhooks](https://w
 3. Breeze computes `base64(HMAC-SHA256(key, "{webhook-id}.{webhook-timestamp}.{body}"))` over the raw request body and compares it, using a timing-safe comparison, to each `v1,<signature>` value in `webhook-signature`. The header can carry several space-separated values while a secret is being rotated; a match on any one is accepted.
 4. The timestamp must be within **10 minutes** of the current server time, or the webhook is rejected as a potential replay.
 
-A delivery with `webhook-test: true` or an `event_type` of `test.event` (what Huntress's **Send Test** sends) is answered with `200` after its signature verifies, and is not imported.
+Each verified delivery's `webhook-id` is recorded for 24 hours. Huntress delivers at least once, so a redelivery of an id Breeze already processed is answered `200` and not imported again. If processing fails, the id is released so Huntress's retry goes through. Breeze needs Redis for this check: when Redis is unavailable, Breeze answers `503` and Huntress retries later, rather than risking double processing.
+
+A delivery whose signed body has an `event_type` of `test.event` (what Huntress's **Send Test** sends) is answered with `200` after its signature verifies, and is not imported. The `webhook-test` header is not covered by the signature, so Breeze ignores it.
 
 <Aside>
   For senders already set up with Breeze's older scheme, Breeze still accepts `x-huntress-signature: sha256=<hex>` (fallback `x-signature`), where the value is `HMAC-SHA256(secret, "{timestamp}.{body}")` and the timestamp comes from `x-huntress-timestamp` (fallback `x-timestamp`), with the same 10-minute window. Breeze uses this scheme only when no Standard Webhooks headers are present.
@@ -554,6 +556,12 @@ The delivery reached Breeze but its signature did not verify. The response body 
 - **"Invalid Huntress webhook signature"**: the secret in Breeze does not match Huntress's. Copy the value from Huntress's **View Signing Secret** again, including the `whsec_` prefix, paste it into **Webhook Secret**, and save.
 - **"Webhook signature timestamp is outside the replay window"**: the delivery's timestamp is more than 10 minutes from the Breeze server's clock. Check the server's time sync, or redeliver a fresh event rather than replaying an old one.
 - **"Missing Standard Webhooks header(s): ..."** or **"Missing webhook signature header ..."**: the signature headers did not reach Breeze. Check that no proxy in front of Breeze strips `webhook-*` headers.
+
+The API log has a matching `[huntress] Webhook signature rejected` line with the integration ID, the scheme, and whether the stored secret has the `whsec_` prefix. The line never includes the secret.
+
+### Huntress webhook returns 503
+
+Breeze could not reach Redis to record the delivery's `webhook-id`, so it asked Huntress to retry instead of risking double processing. Huntress retries automatically. Check the API's Redis connection if this persists.
 
 ### Huntress webhook returns 409 "Multiple active integrations match"
 

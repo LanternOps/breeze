@@ -472,7 +472,7 @@
     "webhookSecret": "Web Kancası Sırrı",
     "generate": "Oluştur ",
     "copyThisWebhookSecretNowThenClickUpdate": "Bu webhook sırrını şimdi kopyalayın ve ardından kaydetmek için Güncelle'ye tıklayın.",
-    "pasteTheSameValueIntoHuntresssWebhookConfiguration": "Aynı değeri Huntress'nin web kancası yapılandırmasına yapıştırın. Kaydettikten sonra Breeze şifrelenmiş olarak saklar ve bir daha asla görüntülemez. ",
+    "pasteTheSameValueIntoHuntresssWebhookConfiguration": "Oluşturulan bir sırrı yalnızca kendi sırrınızı belirlemenize izin veren bir gönderenle kullanın. Huntress kendi imzalama sırrını verir: bunun yerine View Signing Secret altında gösterileni yapıştırın. Kaydettikten sonra Breeze şifrelenmiş olarak saklar ve bir daha asla görüntülemez. ",
     "copySecret": "Sırrı kopyala",
     "syncNow": "Şimdi Eşitle ",
     "inboundWebhookPushFromHuntress": "Gelen web kancası (Huntress'den aktarın)",

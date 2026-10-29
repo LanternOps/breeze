@@ -593,6 +593,13 @@ describe("HuntressIntegration", () => {
     expect(
       screen.getByText(/Copy this webhook secret now/i),
     ).toBeInTheDocument();
+    // Huntress issues its own whsec_ secret (#10335): the notice must not send
+    // the user to paste a Breeze-generated value into Huntress.
+    const notice = screen
+      .getByText(/Copy this webhook secret now/i)
+      .closest("div") as HTMLElement;
+    expect(notice.textContent).not.toMatch(/Paste the same value into Huntress/i);
+    expect(notice.textContent).toContain("View Signing Secret");
     const secretInput = screen.getByPlaceholderText(
       "Paste the signing secret from Huntress (whsec_…)",
     ) as HTMLInputElement;

@@ -14,6 +14,8 @@ const WHSEC_SECRET = `whsec_${KEY_BYTES.toString('base64')}`;
 const MSG_ID = 'msg_2pHuntressTestDelivery';
 const BODY = '{"event_type":"test.event","message":"Hello World"}';
 const NOW = new Date('2026-10-28T18:35:42.000Z');
+// A verified Standard Webhooks delivery reports its webhook-id for replay reservation.
+const OK_STANDARD = { ok: true, scheme: 'standard-webhooks', messageId: MSG_ID } as const;
 
 function seconds(offset = 0): string {
   return String(Math.floor(NOW.getTime() / 1000) + offset);
@@ -53,7 +55,7 @@ function verify(map: Record<string, string | undefined>, opts: { secret?: string
 
 describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
   it('accepts a delivery signed the way Huntress signs it (webhook-* headers, whsec_ secret)', () => {
-    expect(verify(standardHeaders())).toEqual({ ok: true, scheme: 'standard-webhooks' });
+    expect(verify(standardHeaders())).toEqual(OK_STANDARD);
   });
 
   it('accepts the svix-* header aliases', () => {
@@ -62,7 +64,7 @@ describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
       'svix-id': std['webhook-id'],
       'svix-timestamp': std['webhook-timestamp'],
       'svix-signature': std['webhook-signature'],
-    })).toEqual({ ok: true, scheme: 'standard-webhooks' });
+    })).toEqual(OK_STANDARD);
   });
 
   // Svix sends one v1 entry per currently-valid secret during a rotation.
@@ -73,7 +75,24 @@ describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
       `v1,${svixSign(KEY_BYTES, MSG_ID, timestamp, BODY)}`,
     ].join(' ');
     expect(verify(standardHeaders({ timestamp, signature })))
-      .toEqual({ ok: true, scheme: 'standard-webhooks' });
+      .toEqual(OK_STANDARD);
+  });
+
+  it('accepts when the matching v1 value comes first and a stale one follows', () => {
+    const timestamp = seconds();
+    const signature = [
+      `v1,${svixSign(KEY_BYTES, MSG_ID, timestamp, BODY)}`,
+      'v1,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    ].join(' ');
+    expect(verify(standardHeaders({ timestamp, signature })))
+      .toEqual(OK_STANDARD);
+  });
+
+  it('reports the trimmed webhook-id of a verified delivery', () => {
+    const timestamp = seconds();
+    const signature = `v1,${svixSign(KEY_BYTES, MSG_ID, timestamp, BODY)}`;
+    expect(verify({ 'webhook-id': `  ${MSG_ID} `, 'webhook-timestamp': timestamp, 'webhook-signature': signature }))
+      .toEqual(OK_STANDARD);
   });
 
   it('rejects a signature made with a different secret', () => {
@@ -96,7 +115,14 @@ describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
     expect(HUNTRESS_WEBHOOK_REPLAY_WINDOW_SECONDS).toBe(600);
     // 9 minutes old: outside a 5-minute window, inside ours.
     expect(verify(standardHeaders({ timestamp: seconds(-9 * 60) })))
-      .toEqual({ ok: true, scheme: 'standard-webhooks' });
+      .toEqual(OK_STANDARD);
+  });
+
+  it('accepts exactly at the 10-minute boundary, past and future', () => {
+    expect(verify(standardHeaders({ timestamp: seconds(-600) })))
+      .toEqual(OK_STANDARD);
+    expect(verify(standardHeaders({ timestamp: seconds(600) })))
+      .toEqual(OK_STANDARD);
   });
 
   it('rejects a timestamp older than the replay window', () => {
@@ -126,7 +152,7 @@ describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
   it('uses the raw secret bytes as the HMAC key when the secret has no whsec_ prefix', () => {
     const rawSecret = 'a-plain-shared-secret-without-prefix';
     const signedWithRaw = standardHeaders({ key: Buffer.from(rawSecret, 'utf8') });
-    expect(verify(signedWithRaw, { secret: rawSecret })).toEqual({ ok: true, scheme: 'standard-webhooks' });
+    expect(verify(signedWithRaw, { secret: rawSecret })).toEqual(OK_STANDARD);
 
     // ...and NOT the base64 decoding of it (that is only for whsec_ secrets).
     const signedWithDecoded = standardHeaders({ key: Buffer.from(rawSecret, 'base64') });
@@ -154,6 +180,42 @@ describe('verifyHuntressWebhookRequest — Standard Webhooks (Svix)', () => {
       scheme: 'standard-webhooks',
       error: 'Missing Standard Webhooks header(s): webhook-signature',
     });
+  });
+
+  it('treats a lone svix-* header as a Standard Webhooks delivery and names what is missing', () => {
+    expect(verify({ 'svix-id': MSG_ID })).toEqual({
+      ok: false,
+      scheme: 'standard-webhooks',
+      error: 'Missing Standard Webhooks header(s): webhook-timestamp, webhook-signature',
+    });
+  });
+
+  // Each field resolves on its own (webhook-* first, then svix-*); all three
+  // values are inside the HMAC, so mixing families grants nothing.
+  it('accepts a mix of webhook-* and svix-* spellings across fields', () => {
+    const std = standardHeaders();
+    expect(verify({
+      'webhook-id': std['webhook-id'],
+      'svix-timestamp': std['webhook-timestamp'],
+      'svix-signature': std['webhook-signature'],
+    })).toEqual(OK_STANDARD);
+  });
+
+  it('prefers the webhook-* spelling when both families are present', () => {
+    const good = standardHeaders();
+    const bad = standardHeaders({ key: Buffer.from('some-other-thirty-two-byte-key!!') });
+    expect(verify({
+      ...good,
+      'svix-id': 'msg_other',
+      'svix-timestamp': seconds(-3600),
+      'svix-signature': bad['webhook-signature'],
+    })).toEqual(OK_STANDARD);
+    expect(verify({
+      ...bad,
+      'svix-id': good['webhook-id'],
+      'svix-timestamp': good['webhook-timestamp'],
+      'svix-signature': good['webhook-signature'],
+    })).toEqual({ ok: false, scheme: 'standard-webhooks', error: 'Invalid Huntress webhook signature' });
   });
 
   // Standard Webhooks headers make that scheme authoritative: a delivery that
@@ -187,7 +249,7 @@ describe('verifyHuntressWebhookRequest — legacy x-huntress-signature', () => {
   }
 
   function nowSeconds(): string {
-    // The legacy verifier reads the real clock.
+    // The legacy verifier reads the real clock and ignores the injected `now`.
     return String(Math.floor(Date.now() / 1000));
   }
 
