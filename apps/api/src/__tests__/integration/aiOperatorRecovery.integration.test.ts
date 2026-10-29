@@ -19,7 +19,7 @@ import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   actionIntents,
@@ -439,6 +439,59 @@ describe('AI Operator reconciler — stopping tasks settle and never advance', (
     });
     expect((await runReconcilerPass()).runningPastLease).toBe(0);
     expect(await readTask(task.id)).toMatchObject({ state: 'stopping', leaseEpoch: 2 });
+  });
+
+  runDb('a stopping task with an unparseable checkpoint still hands off (fail is not a stopping arm)', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping' });
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE ai_operator_tasks SET checkpoint = '{}'::jsonb WHERE id = ${task.id}`));
+    await expect(handleTaskWake({ orgId: t.orgId, taskId: task.id, sourceKind: 'test', sourceId: task.id }))
+      .resolves.toMatch(/^handed off: stopped/);
+    expect(await readTask(task.id)).toMatchObject({ state: 'handed_off', outcome: 'unresolved' });
+  });
+
+  runDb('a stale live snapshot cannot terminalize a stopped task either (settle loses its CAS)', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'queued' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'stopping' }).where(eq(aiOperatorTasks.id, task.id)));
+    await expect(__testOnly.settle({
+      task: claim.task, leaseEpoch: claim.leaseEpoch, event: 'complete', outcome: 'verified_resolved', detail: 'stale',
+    })).resolves.toBe(false);
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping', outcome: null });
+  });
+
+  runDb('a stopping settle loses its CAS once the row is already terminal, and says so', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'stopping' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    // Something else terminalized it under the same epoch.
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'failed', outcome: 'unresolved', outcomeDetail: 'other writer' }).where(eq(aiOperatorTasks.id, task.id)));
+    const { advanceTask } = await import('../../services/aiOperator/taskCoordinator');
+    await expect(advanceTask(claim.task, claim.leaseEpoch)).resolves.toBe('skipped (stopping settle lost its lease CAS)');
+    expect(await readTask(task.id)).toMatchObject({ state: 'failed', outcomeDetail: 'other writer' });
+  });
+
+  runDb('the recipe advancers\' own lease CAS (leasedWrite) also refuses to write over a stop', async () => {
+    const t = await seedTenant();
+    const task = await createTask(t, { state: 'queued' });
+    const claim = await claimTaskLease({ orgId: t.orgId, taskId: task.id, requireWakeDue: false });
+    if (!claim.won) throw new Error(`claim lost: ${claim.reason}`);
+    await withSystemDbAccessContext(() => db.update(aiOperatorTasks)
+      .set({ state: 'stopping' }).where(eq(aiOperatorTasks.id, task.id)));
+    const { leasedWrite } = await import('../../services/aiOperator/identityAdvancers');
+    const also = vi.fn();
+    await expect(leasedWrite({
+      orgId: t.orgId, taskId: task.id, revision: claim.task.revision, leaseEpoch: claim.leaseEpoch,
+      observedState: claim.task.state, patch: { state: 'waiting' }, alsoInTransaction: also,
+    })).resolves.toBe(false);
+    expect(also).not.toHaveBeenCalled();
+    expect(await readTask(task.id)).toMatchObject({ state: 'stopping' });
   });
 
   runDb('a coordinator that leased the task BEFORE a stop cannot write it back to a live state', async () => {

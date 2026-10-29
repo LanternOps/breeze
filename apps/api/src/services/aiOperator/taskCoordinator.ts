@@ -85,7 +85,7 @@ import {
   classifyDeviceCommandEvidence,
   readDeviceCommandEvidence,
 } from './deviceCommandEvidence';
-import { admissionFenced, nextTaskState, type TaskTransitionEvent } from './taskTransitions';
+import { admissionFenced, leasedWriteTargetStates, nextTaskState, type TaskTransitionEvent } from './taskTransitions';
 import {
   recordAiOperatorLeaseReclaim,
   recordAiOperatorUnknownEffectHandoff,
@@ -104,14 +104,6 @@ import {
   openHumanWorkStep,
   readHumanWorkStep,
 } from './humanWorkService';
-
-/**
- * The states a coordinator holding a lease on a LIVE task may write over.
- * `paused`, `stopping` and every terminal state are fenced (spec §7.3): a
- * writer whose snapshot predates the fence must lose its CAS. See
- * `writeLeased`'s `observedState`.
- */
-const LIVE_LEASED_WRITE_STATES = ['queued', 'running', 'waiting'] as const;
 
 /** How long a lease is good for. Spec §11.2's short lease. */
 export const TASK_LEASE_MS = 60_000;
@@ -302,12 +294,8 @@ async function writeLeased(args: {
   revision: number;
   leaseEpoch: number;
   /**
-   * The task state the writer's snapshot holds (#9979). Part of the CAS: the
-   * `stopping` writers (org-merge fence, device delete / move / reinstall) do
-   * NOT bump `lease_epoch`, so without this a coordinator that leased the task
-   * before a stop landed could write it straight back to `waiting` and undo
-   * the fence. A writer that saw a live state may only write over a live
-   * state; a writer settling a `stopping` task only over `stopping`.
+   * The task state the writer's snapshot holds (#9979). Part of the CAS; see
+   * `leasedWriteTargetStates` for why and for which states it admits.
    */
   observedState: string;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
@@ -338,9 +326,7 @@ async function writeLeased(args: {
           eq(aiOperatorTasks.orgId, args.orgId),
           eq(aiOperatorTasks.revision, args.revision),
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
-          args.observedState === 'stopping'
-            ? eq(aiOperatorTasks.state, 'stopping')
-            : inArray(aiOperatorTasks.state, [...LIVE_LEASED_WRITE_STATES]),
+          inArray(aiOperatorTasks.state, [...leasedWriteTargetStates(args.observedState)]),
         ))
         .returning({ id: aiOperatorTasks.id });
       if (rows.length !== 1) return false;
@@ -1013,35 +999,39 @@ async function settleStoppingTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   const priorNote = task.outcomeDetail?.trim();
   const detail = `stopped: ${reason}${priorNote ? `\n${priorNote}` : ''}`;
 
+  // A lost CAS (another holder, or the row left `stopping`) wrote nothing;
+  // say so rather than reporting a settle that did not happen.
+  const lost = 'skipped (stopping settle lost its lease CAS)';
+
   if (await hasInFlightEffect(task.orgId, task.id)) {
-    await settle({
+    const ok = await settle({
       task, leaseEpoch, event: 'settle_handed_off', outcome: 'unknown_effect', detail,
       handoffSummary:
         `Operator stopped this task before it finished (${reason}) while an action it had already sent `
         + 'had not reported a result. That action may still complete. Confirm its result before redoing '
         + 'or undoing anything, then finish the remaining work by hand or start a new task.',
     });
-    return `handed off: stopped with an effect in flight (${reason})`;
+    return ok ? `handed off: stopped with an effect in flight (${reason})` : lost;
   }
 
   if (task.deadlineAt && task.deadlineAt.getTime() <= Date.now()) {
-    await settle({
+    const ok = await settle({
       task, leaseEpoch, event: 'settle_expired', outcome: 'unresolved', detail,
       handoffSummary:
         `Operator stopped this task before it finished (${reason}) and its deadline has passed. `
         + 'Nothing further was started after the stop.',
     });
-    return `expired: stopped past the deadline (${reason})`;
+    return ok ? `expired: stopped past the deadline (${reason})` : lost;
   }
 
-  await settle({
+  const ok = await settle({
     task, leaseEpoch, event: 'settle_handed_off', outcome: 'unresolved', detail,
     handoffSummary:
       `Operator stopped this task before it finished (${reason}). Nothing further was started after `
       + 'the stop. Review the task timeline for what was done, then finish the remaining work by hand '
       + 'or start a new task.',
   });
-  return `handed off: stopped (${reason})`;
+  return ok ? `handed off: stopped (${reason})` : lost;
 }
 
 /** Why a `stopping` task stopped, from the rows the stop writers stamp. */
