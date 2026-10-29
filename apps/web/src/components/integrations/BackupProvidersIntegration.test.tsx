@@ -114,6 +114,20 @@ describe("BackupProvidersIntegration", () => {
     expect(screen.getByTestId("backup-add-password")).toHaveAttribute("autoComplete", "new-password");
   });
 
+  it("#9932: credential labels use the same terms as the help text (API user login name / token)", async () => {
+    render(<BackupProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("backup-providers-add"));
+    expect(screen.getByText("API user login name")).toBeInTheDocument();
+    expect(screen.getByText("API user token")).toBeInTheDocument();
+    expect(screen.queryByText("Username")).toBeNull();
+    expect(screen.queryByText("Password")).toBeNull();
+    expect(screen.getByTestId("backup-add-password-toggle")).toHaveAttribute("aria-label", "Show token");
+    const help = screen.getByTestId("backup-add-help").textContent ?? "";
+    expect(help).toContain("login name");
+    expect(help).toContain("token");
+    expect(help).not.toMatch(/as the (username|password)/);
+  });
+
   it("shows the dedicated-user help text on the add form", async () => {
     render(<BackupProvidersIntegration />);
     fireEvent.click(await screen.findByTestId("backup-providers-add"));
