@@ -114,19 +114,21 @@ describe('partner device group evaluation', () => {
       return original(filter, opts);
     });
     const whole = evaluatePartnerGroupForOrg(f.group.id, f.a.orgId);
-    await waitForStart(filterEntered.promise, whole);
-    const perDevice = withSystemDbAccessContext(async () => {
-      devicePid = await backendPid();
-      deviceEntered.release();
-      return updateDeviceMembership(f.a.deviceId, ['hostname'], f.a.orgId);
-    });
-    void perDevice.catch(() => undefined);
+    let perDevice: ReturnType<typeof updateDeviceMembership> | undefined;
     try {
-      await deviceEntered.promise;
+      await waitForStart(filterEntered.promise, whole);
+      perDevice = withSystemDbAccessContext(async () => {
+        devicePid = await backendPid();
+        deviceEntered.release();
+        return updateDeviceMembership(f.a.deviceId, ['hostname'], f.a.orgId);
+      });
+      await waitForStart(deviceEntered.promise, perDevice);
       await waitForBlock(devicePid, wholePid);
     } finally {
       releaseFilter.release();
+      await Promise.allSettled([whole, ...(perDevice ? [perDevice] : [])]);
     }
+    if (!perDevice) throw new Error('per-device evaluation did not start');
     const [wholeResult] = await Promise.all([whole, perDevice]);
     expect(wholeResult).toMatchObject({ ok: true, removed: 1 });
     expect(await members(f.group.id)).toEqual([]);
@@ -220,16 +222,19 @@ describe('partner device group evaluation', () => {
         stepUp: null, via: 'generic_move',
       });
     }));
-    await waitForStart(moveEntered.promise, move);
-    const evaluation = evaluatePartnerGroupForOrg(group.id, source.orgId);
+    let evaluation: ReturnType<typeof evaluatePartnerGroupForOrg> | undefined;
     try {
+      await waitForStart(moveEntered.promise, move);
+      evaluation = evaluatePartnerGroupForOrg(group.id, source.orgId);
       await waitForStart(filterEntered.promise, evaluation);
       // A SQL-observed wait, not a timer-based assumption: the evaluator's diff
       // exists but it has not taken a membership tuple lock ahead of the mover.
       await waitForBlock(evaluatorPid, movePid);
     } finally {
       finishMove.release();
+      await Promise.allSettled([move, ...(evaluation ? [evaluation] : [])]);
     }
+    if (!evaluation) throw new Error('per-org evaluation did not start');
     const [, result] = await Promise.all([move, evaluation]);
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, status: 'evaluated' });
     expect(await members(group.id)).toEqual([]);

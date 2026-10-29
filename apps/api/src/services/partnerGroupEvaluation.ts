@@ -24,7 +24,7 @@ import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, devices, groupMembershipLog, organizations } from '../db/schema';
 import { acquireGroupOrgMembershipLocks, acquireMembershipExportOrgLock, acquirePartnerGroupRowLocks } from './deviceGroupOwnership';
-import { resolveEffectiveGroupMembers, schedulePeripheralMembershipChanges } from './groupMembership';
+import { GroupEvaluationError, resolveEffectiveGroupMembers, schedulePeripheralMembershipChanges } from './groupMembership';
 import { excludeQuickSupportOrgs } from './quickSupportOrg';
 import { notHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
@@ -70,7 +70,11 @@ export async function evaluatePartnerGroupForOrg(
     return await runOutsideDbContext(() => withSystemDbAccessContext(async (): Promise<PartnerGroupOrgResult> => {
       await acquirePartnerGroupRowLocks([groupId]);
       const [group] = await db.select().from(deviceGroups).where(eq(deviceGroups.id, groupId)).limit(1);
-      if (!group || group.orgId !== null || group.partnerId === null || group.type !== 'dynamic') {
+      // A NULL filter resolves to "matches nothing"; diffing that would delete
+      // every unpinned member in every org. Write nothing, exactly as the
+      // org-group evaluator (evaluateGroupMembership) returns early.
+      if (!group || group.orgId !== null || group.partnerId === null || group.type !== 'dynamic'
+        || group.filterConditions === null) {
         return { ...empty, ok: true, status: 'gone' };
       }
       if (opts.expectedRevision !== undefined && group.filterRevision !== opts.expectedRevision) {
@@ -83,10 +87,21 @@ export async function evaluatePartnerGroupForOrg(
       if (!org) return { ...empty, ok: true, status: 'skipped' };
 
       await acquireGroupOrgMembershipLocks([{ groupId, orgId }], 'exclusive');
+      // KEY SHARE admits filter edits. A writer that waited for membership
+      // admission must observe the definition committed by the preceding
+      // writer, rather than undoing its result with the pre-wait snapshot.
+      const [freshGroup] = await db.select().from(deviceGroups).where(eq(deviceGroups.id, groupId)).limit(1);
+      if (!freshGroup || freshGroup.orgId !== null || freshGroup.partnerId === null
+        || freshGroup.type !== 'dynamic' || freshGroup.filterConditions === null) {
+        return { ...empty, ok: true, status: 'gone' };
+      }
+      if (opts.expectedRevision !== undefined && freshGroup.filterRevision !== opts.expectedRevision) {
+        return { ...empty, ok: true, status: 'superseded' };
+      }
       const started = performance.now();
       let effective;
       try {
-        effective = await resolveEffectiveGroupMembers(group, orgId);
+        effective = await resolveEffectiveGroupMembers(freshGroup, orgId);
       } finally {
         filterMs = performance.now() - started;
       }
@@ -140,8 +155,13 @@ export async function evaluatePartnerGroupForOrg(
         matched: effective.matched.size, filterMs };
     }, 'partnerGroupEvaluation.org'));
   } catch (error) {
-    // Catch OUTSIDE the context so any partial write rolls back before reporting.
-    return { ...empty, filterMs, ok: false, status: 'failed',
-      error: error instanceof Error ? error.message : String(error) };
+    // Caught OUTSIDE the context, so any partial write has rolled back. Only an
+    // org-local, deterministic evaluation failure (invalid filter, filter
+    // engine error/timeout) becomes a per-org `failed` that keeps the previous
+    // members. Anything else (40P01, connection loss, RLS, a bug) is rethrown
+    // so BullMQ retries the page; per-org work is idempotent.
+    if (!(error instanceof GroupEvaluationError)) throw error;
+    console.error(`[partnerGroupEvaluation] group ${groupId} org ${orgId} not evaluated (${error.reason}):`, error.cause ?? error);
+    return { ...empty, filterMs, ok: false, status: 'failed', error: error.message };
   }
 }

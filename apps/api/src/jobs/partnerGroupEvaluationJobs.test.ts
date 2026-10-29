@@ -4,7 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const mocks = vi.hoisted(() => ({
   select: vi.fn(), update: vi.fn(), page: vi.fn(), evaluate: vi.fn(), orgEvaluate: vi.fn(),
   add: vi.fn(), getJob: vi.fn(), close: vi.fn(), afterCommit: vi.fn(),
-  repeatables: vi.fn(), removeRepeatable: vi.fn(), worker: vi.fn(),
+  repeatables: vi.fn(), removeRepeatable: vi.fn(), worker: vi.fn(), delayedScore: vi.fn(),
   context: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   outside: vi.fn((fn: () => unknown) => fn()), ambient: vi.fn(() => false),
 }));
@@ -22,7 +22,7 @@ vi.mock('../services/groupMembership', () => ({ evaluateGroupMembership: mocks.o
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('bullmq', () => ({
-  Queue: class { add = mocks.add; getJob = mocks.getJob; close = mocks.close; getRepeatableJobs = mocks.repeatables; removeRepeatableByKey = mocks.removeRepeatable; },
+  Queue: class { client = Promise.resolve({ zscore: mocks.delayedScore }); toKey = (name: string) => `bull:partner-group-evaluation:${name}`; add = mocks.add; getJob = mocks.getJob; close = mocks.close; getRepeatableJobs = mocks.repeatables; removeRepeatableByKey = mocks.removeRepeatable; },
   Worker: class { constructor(...args: unknown[]) { mocks.worker(...args); } on = vi.fn(); close = mocks.close; },
 }));
 
@@ -45,7 +45,8 @@ function selectRows(rows: unknown[]) {
   return where;
 }
 function finalizeRows(rows: unknown[]) {
-  const set = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) });
+  const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) });
+  const set = vi.fn().mockReturnValue({ where });
   mocks.update.mockReturnValueOnce({ set });
   return set;
 }
@@ -55,6 +56,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.ambient.mockReturnValue(false);
   mocks.getJob.mockResolvedValue(undefined);
+  mocks.delayedScore.mockResolvedValue(null);
   mocks.add.mockResolvedValue({ id: 'queued' });
   mocks.repeatables.mockResolvedValue([]);
   mocks.evaluate.mockImplementation(async (_groupId: string, orgId: string) => ({ orgId, ok: true, status: 'evaluated', added: 1, removed: 0, matched: 1, filterMs: 1 }));
@@ -94,6 +96,17 @@ describe('partner group evaluation jobs', () => {
     expect(new PgDialect().sqlToQuery(set.mock.calls[0]?.[0].evaluatedRevision).sql).toMatch(/greatest/i);
   });
 
+  it('finalize UPDATE guards filter_revision with the evaluated revision parameter', async () => {
+    selectRows([group]);
+    mocks.page.mockResolvedValueOnce([]);
+    const set = finalizeRows([{ id: group.id }]);
+    await processPartnerGroupEvaluation(data({ revision: 3 }), { enqueue: vi.fn(), now: clock });
+    const where = set.mock.results[0]?.value.where;
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]?.[0]);
+    expect(query.sql).toMatch(/"filter_revision" = \$2/);
+    expect(query.params).toEqual(['group', 3]);
+  });
+
   it('stops before page discovery when the revision is already superseded', async () => {
     selectRows([group]);
     const enqueue = vi.fn();
@@ -127,6 +140,43 @@ describe('partner group evaluation jobs', () => {
     expect(mocks.add).toHaveBeenCalledTimes(1);
   });
 
+  it.each([0, 5000])('shortens a delayed head to a requested delay of %i ms', async (delayMs) => {
+    vi.spyOn(Date, 'now').mockReturnValue(clock().getTime());
+    const changeDelay = vi.fn().mockResolvedValue(undefined);
+    mocks.getJob.mockResolvedValue({ id: 'existing', getState: async () => 'delayed', changeDelay });
+    mocks.delayedScore.mockResolvedValue(String((clock().getTime() + 900000) * 4096));
+    try {
+      expect(await schedulePartnerGroupEvaluation('group', 'filter_edit', { delayMs })).toBe('existing');
+      expect(mocks.delayedScore).toHaveBeenCalledWith('bull:partner-group-evaluation:delayed', 'existing');
+      expect(changeDelay).toHaveBeenCalledWith(delayMs);
+      expect(mocks.add).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each([1000, 5000])('keeps a delayed head due in %i ms when the requested delay is no shorter', async (remainingMs) => {
+    vi.spyOn(Date, 'now').mockReturnValue(clock().getTime());
+    const changeDelay = vi.fn();
+    mocks.getJob.mockResolvedValue({ id: 'existing', getState: async () => 'delayed', changeDelay });
+    mocks.delayedScore.mockResolvedValue(String((clock().getTime() + remainingMs) * 4096));
+    try {
+      await schedulePartnerGroupEvaluation('group', 'sweep', { delayMs: 5000 });
+      expect(changeDelay).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps a head whose delayed-set score disappeared while checking its state', async () => {
+    const changeDelay = vi.fn();
+    mocks.getJob.mockResolvedValue({ id: 'existing', getState: async () => 'delayed', changeDelay });
+    mocks.delayedScore.mockResolvedValue(null);
+    expect(await schedulePartnerGroupEvaluation('group', 'edit', { delayMs: 0 })).toBe('existing');
+    expect(changeDelay).not.toHaveBeenCalled();
+    expect(mocks.add).not.toHaveBeenCalled();
+  });
+
   it('adds an active-job follow-up and replaces failed records', async () => {
     const remove = vi.fn();
     mocks.getJob.mockResolvedValueOnce({ id: 'existing', getState: async () => 'active' });
@@ -151,7 +201,7 @@ describe('partner group evaluation jobs', () => {
     await schedulePartnerGroupEvaluationSweep(() => 0.5);
     expect(mocks.removeRepeatable.mock.calls).toEqual([['old']]);
     expect(mocks.add).toHaveBeenCalledWith('partner-group-sweep', expect.any(Object), expect.objectContaining({
-      repeat: { every: 21600000 }, delay: 10800000,
+      repeat: { every: 21600000 }, delay: 10800000, attempts: 3, backoff: { type: 'exponential', delay: 60000 },
     }));
   });
 
@@ -165,13 +215,13 @@ describe('partner group evaluation jobs', () => {
   it('sweep enqueues every dynamic partner group with jitter ≤ 15 min and re-evaluates org groups whose filter_fields_used overlap software.*', async () => {
     const partnerWhere = selectRows([{ id: 'g1' }, { id: 'g2' }]);
     const orgWhere = selectRows([{ id: 'o1' }, { id: 'o2' }]);
-    mocks.orgEvaluate.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce({});
+    mocks.orgEvaluate.mockResolvedValue({});
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const enqueue = vi.fn();
     expect(await runPartnerGroupSweep({ enqueue, random: () => 0.5, now: clock })).toEqual({ partnerGroups: 2, orgGroups: 2 });
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue).toHaveBeenNthCalledWith(1, expect.objectContaining({ groupId: 'g1', revision: null }), expect.objectContaining({ delayMs: 450000 }));
-    expect(mocks.orgEvaluate.mock.calls).toEqual([['o1'], ['o2']]);
+    expect(mocks.orgEvaluate.mock.calls).toEqual([['o1', { exportLockBeforeWrites: true }], ['o2', { exportLockBeforeWrites: true }]]);
     const dialect = new PgDialect();
     expect(dialect.sqlToQuery(partnerWhere.mock.calls[0]?.[0]).sql).toMatch(/partner_id.*is not null/i);
     const orgSQL = dialect.sqlToQuery(orgWhere.mock.calls[0]?.[0]);
@@ -180,4 +230,23 @@ describe('partner group evaluation jobs', () => {
     expect(mocks.outside).toHaveBeenCalled();
     error.mockRestore();
   });
+  it('collects enqueue and org-group failures, finishes the sweep, and rejects for retry', async () => {
+    selectRows([{ id: 'g1' }, { id: 'g2' }]);
+    selectRows([{ id: 'o1' }, { id: 'o2' }]);
+    const enqueueError = new Error('redis unavailable');
+    const orgError = new Error('org evaluation unavailable');
+    const enqueue = vi.fn().mockRejectedValueOnce(enqueueError).mockResolvedValueOnce(undefined);
+    mocks.orgEvaluate.mockRejectedValueOnce(orgError).mockResolvedValueOnce({});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(runPartnerGroupSweep({ enqueue, random: () => 0 })).rejects.toMatchObject({
+        name: 'AggregateError', errors: [enqueueError, orgError],
+      });
+      expect(enqueue).toHaveBeenCalledTimes(2);
+      expect(mocks.orgEvaluate).toHaveBeenCalledTimes(2);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
 });

@@ -16,21 +16,23 @@ vi.mock('./deviceGroupOwnership', () => ({
   acquirePartnerGroupRowLocks: mocks.rows, acquireGroupOrgMembershipLocks: mocks.locks,
   acquireMembershipExportOrgLock: mocks.exportLock,
 }));
-vi.mock('./groupMembership', () => ({
-  resolveEffectiveGroupMembers: mocks.resolve, schedulePeripheralMembershipChanges: mocks.schedule,
-}));
+vi.mock('./groupMembership', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./groupMembership')>();
+  return { ...actual, resolveEffectiveGroupMembers: mocks.resolve, schedulePeripheralMembershipChanges: mocks.schedule };
+});
 vi.mock('./quickSupportOrg', async () => {
   const { ne } = await import('drizzle-orm');
   const { organizations } = await import('../db/schema');
   return { excludeQuickSupportOrgs: () => ne(organizations.type, 'quick_support') };
 });
+import { GroupEvaluationError } from './groupMembership';
 import { evaluatePartnerGroupForOrg, listPartnerGroupEvaluationOrgIds } from './partnerGroupEvaluation';
 
 const dialect = new PgDialect();
 const partnerId = '11111111-1111-4111-8111-111111111111';
 const groupId = '22222222-2222-4222-8222-222222222222';
 const orgId = '33333333-3333-4333-8333-333333333333';
-const group = { id: groupId, orgId: null, partnerId, type: 'dynamic', filterRevision: 4 };
+const group = { id: groupId, orgId: null, partnerId, type: 'dynamic', filterRevision: 4, filterConditions: { operator: 'AND', conditions: [] } };
 function selectRows(rows: unknown[]) {
   const limit = vi.fn().mockResolvedValue(rows);
   const orderBy = vi.fn().mockReturnValue({ limit });
@@ -64,7 +66,7 @@ describe('partner group evaluation', () => {
 
   it('locks before resolving and writes only the evaluation org, scheduling after successful writes', async () => {
     selectRows([group]);
-    selectRows([{ id: orgId }]);
+    selectRows([{ id: orgId }]); selectRows([group]);
     selectRows([{ deviceId: 'old-device', isPinned: false }]);
     selectRows([{ id: 'new-device' }]);
     const values = vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ deviceId: 'new-device' }]) }) });
@@ -89,14 +91,60 @@ describe('partner group evaluation', () => {
   });
 
   it('reports a filter failure without deleting previous members or adding audit rows', async () => {
-    selectRows([group]); selectRows([{ id: orgId }]);
-    mocks.resolve.mockRejectedValueOnce(new Error('statement timeout'));
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([group]);
+    mocks.resolve.mockRejectedValueOnce(new GroupEvaluationError(groupId, 'engine_error', new Error('statement timeout')));
     expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({
-      orgId, ok: false, status: 'failed', error: 'statement timeout', added: 0, removed: 0,
+      orgId, ok: false, status: 'failed', error: `device group ${groupId}: engine_error`, added: 0, removed: 0,
     });
     expect(mocks.insert).not.toHaveBeenCalled();
     expect(mocks.delete).not.toHaveBeenCalled();
     expect(mocks.schedule).not.toHaveBeenCalled();
+  });
+
+  it('returns gone for a NULL filter without deleting existing members', async () => {
+    selectRows([{ ...group, filterConditions: null }]);
+    selectRows([{ deviceId: 'previous-member', isPinned: false }]);
+    expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({ status: 'gone', added: 0, removed: 0 });
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-GroupEvaluationError from the transaction so the queue retries', async () => {
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([group]);
+    const failure = new Error('connection lost');
+    mocks.resolve.mockRejectedValueOnce(failure);
+    await expect(evaluatePartnerGroupForOrg(groupId, orgId)).rejects.toBe(failure);
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns superseded when the revision changed during the exclusive lock wait', async () => {
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([{ ...group, filterRevision: 5 }]);
+    expect(await evaluatePartnerGroupForOrg(groupId, orgId, { expectedRevision: 4 }))
+      .toMatchObject({ status: 'superseded', added: 0, removed: 0 });
+    expect(mocks.locks).toHaveBeenCalledOnce();
+    expect(mocks.resolve).not.toHaveBeenCalled();
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.delete).not.toHaveBeenCalled();
+  });
+
+  it.each([{ rows: [] }, { rows: [{ ...group, filterConditions: null }] }, { rows: [{ ...group, type: 'static' }] }, { rows: [{ ...group, orgId }] }])(
+    'returns gone for an ineligible definition after the exclusive lock wait %#', async ({ rows }) => {
+      selectRows([group]); selectRows([{ id: orgId }]); selectRows(rows);
+      expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({ status: 'gone' });
+      expect(mocks.resolve).not.toHaveBeenCalled();
+      expect(mocks.insert).not.toHaveBeenCalled();
+      expect(mocks.delete).not.toHaveBeenCalled();
+    },
+  );
+
+  it('resolves the fresh filter after the exclusive lock wait without an expected revision', async () => {
+    const fresh = { ...group, filterRevision: 5, filterConditions: { operator: 'OR', conditions: [] } };
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([fresh]);
+    selectRows([{ deviceId: 'new-device', isPinned: false }]);
+    expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({ status: 'evaluated' });
+    expect(mocks.resolve).toHaveBeenCalledWith(fresh, orgId);
   });
 
   it('returns superseded before acquiring membership locks or writing', async () => {
@@ -126,7 +174,7 @@ describe('partner group evaluation', () => {
 
 describe('partner export lock protocol', () => {
   it('does not take an export lock or write when the diff is empty', async () => {
-    selectRows([group]); selectRows([{ id: orgId }]);
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([group]);
     selectRows([{ deviceId: 'new-device', isPinned: false }]);
     expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({ ok: true, added: 0, removed: 0 });
     expect(mocks.exportLock).not.toHaveBeenCalled();
@@ -135,7 +183,7 @@ describe('partner export lock protocol', () => {
   });
 
   it('rechecks additions after the export lock and excludes devices moved out meanwhile', async () => {
-    selectRows([group]); selectRows([{ id: orgId }]); selectRows([]);
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([group]); selectRows([]);
     const recheck = selectRows([]);
     expect(await evaluatePartnerGroupForOrg(groupId, orgId)).toMatchObject({ ok: true, added: 0, removed: 0 });
     expect(mocks.exportLock).toHaveBeenCalledWith(orgId);
@@ -151,7 +199,7 @@ describe('partner export lock protocol', () => {
 
   it('logs and counts only returned deletions with group, org and device predicates', async () => {
     mocks.resolve.mockResolvedValueOnce({ matched: new Set(), pinned: new Set(), filterMs: 9 });
-    selectRows([group]); selectRows([{ id: orgId }]);
+    selectRows([group]); selectRows([{ id: orgId }]); selectRows([group]);
     selectRows([{ deviceId: 'moved-device', isPinned: false }]);
     const where = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) });
     mocks.delete.mockReturnValue({ where });

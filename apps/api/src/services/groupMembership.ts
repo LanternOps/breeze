@@ -382,7 +382,10 @@ async function writeDeviceMembership(
   return { evaluatedGroups: 1, added: add ? 1 : 0, removed: add ? 0 : 1 };
 }
 
-export async function evaluateGroupMembership(groupId: string): Promise<MembershipUpdateSummary> {
+export async function evaluateGroupMembership(
+  groupId: string,
+  options: { exportLockBeforeWrites?: boolean } = {},
+): Promise<MembershipUpdateSummary> {
   const [group] = await db
     .select()
     .from(deviceGroups)
@@ -422,7 +425,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, group.orgId)));
 
   const currentIds = new Set(currentMemberships.map(row => row.deviceId));
-  const toAdd: string[] = [];
+  let toAdd: string[] = [];
   const toRemove: string[] = [];
 
   for (const deviceId of matchingIds) {
@@ -434,6 +437,19 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   for (const membership of currentMemberships) {
     if (!matchingIds.has(membership.deviceId) && !membership.isPinned) {
       toRemove.push(membership.deviceId);
+    }
+  }
+
+  if (options.exportLockBeforeWrites && (toAdd.length > 0 || toRemove.length > 0)) {
+    // The sweep shares export admission with per-device writers. Finish the
+    // filter-fields backfill (group row lock) FIRST: route PATCH holds that row
+    // before writing memberships, so export -> group row would form a cycle.
+    // As in orgMerge/moveDeviceOrgInTransaction, export precedes membership rows.
+    await acquireMembershipExportOrgLock(orgId);
+    if (toAdd.length > 0) {
+      const stillInOrg = await db.select({ id: devices.id }).from(devices)
+        .where(and(inArray(devices.id, toAdd), eq(devices.orgId, orgId)));
+      toAdd = stillInOrg.map(device => device.id);
     }
   }
 
@@ -458,6 +474,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
       .where(
         and(
           eq(deviceGroupMemberships.groupId, groupId),
+          eq(deviceGroupMemberships.orgId, orgId),
           inArray(deviceGroupMemberships.deviceId, toRemove)
         )
       );
@@ -749,7 +766,7 @@ export async function removeDeviceFromAllGroups(deviceId: string): Promise<void>
   const orgId = memberships[0]?.orgId;
   if (!orgId) return;
   if (memberships.some(row => row.orgId !== orgId)) {
-    throw new Error('device membership cleanup requires exactly one organization');
+    throw new Error(`device ${deviceId} memberships span orgs ${[...new Set(memberships.map(row => row.orgId))].join(', ')}; refusing cleanup (tenancy integrity)`);
   }
   const partnerGroups = memberships.filter(row => row.groupOrgId === null);
   await acquirePartnerGroupRowLocks(partnerGroups.map(row => row.groupId));

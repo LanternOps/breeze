@@ -69,10 +69,19 @@ function jobOptions(delay = HEAD_DELAY_MS) {
 async function enqueueEvaluation(data: PartnerGroupEvaluationJobData, opts: PartnerGroupEnqueueOptions): Promise<string> {
   const target = getPartnerGroupEvaluationQueue();
   let jobId = opts.jobId ?? `partner-group-eval-${data.groupId}`;
+  const delayMs = opts.delayMs ?? (data.revision === null ? HEAD_DELAY_MS : 0);
   const existing = await target.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
     if (isReusableState(state)) {
+      if (state === 'delayed' && data.revision === null) {
+        // changeDelay is relative to now and does not update Job.timestamp.
+        // Read the delayed-set due time so repeated requests never postpone a head.
+        const score = await (await target.client).zscore(target.toKey('delayed'), String(existing.id));
+        if (score !== null && delayMs < Math.floor(Number(score) / 4096) - Date.now()) {
+          await existing.changeDelay(delayMs);
+        }
+      }
       if (state !== 'active') return String(existing.id);
       // Active heads have already read their revision. A distinct head is
       // required or a filter edit during evaluation would be silently lost.
@@ -82,7 +91,7 @@ async function enqueueEvaluation(data: PartnerGroupEvaluationJobData, opts: Part
     }
   }
   const added = await target.add('partner-group-evaluation', data, {
-    ...jobOptions(opts.delayMs ?? (data.revision === null ? HEAD_DELAY_MS : 0)), jobId,
+    ...jobOptions(delayMs), jobId,
   });
   return String(added.id);
 }
@@ -166,23 +175,34 @@ export async function runPartnerGroupSweep(deps: PartnerGroupSweepDeps = {}): Pr
   const partnerGroups = await withSystemDbAccessContext(() => db.select({ id: deviceGroups.id }).from(deviceGroups)
     .where(and(isNull(deviceGroups.orgId), isNotNull(deviceGroups.partnerId), eq(deviceGroups.type, 'dynamic'), isNotNull(deviceGroups.filterConditions))),
   'partnerGroupEvaluation.sweep.discovery');
+  const enqueueFailures: unknown[] = [];
   for (const group of partnerGroups) {
     try {
       await enqueue(headData(group.id, 'periodic_sweep', now), { delayMs: Math.floor(random() * PARTNER_GROUP_SWEEP_JITTER_MS) });
     } catch (error) {
       console.error(`[PartnerGroupEvaluation] Sweep enqueue failed for ${group.id}:`, error);
+      enqueueFailures.push(error);
     }
   }
   const orgGroups = await withSystemDbAccessContext(() => db.select({ id: deviceGroups.id }).from(deviceGroups)
     .where(and(isNotNull(deviceGroups.orgId), eq(deviceGroups.type, 'dynamic'), isNotNull(deviceGroups.filterConditions),
       sql`exists (select 1 from unnest(${deviceGroups.filterFieldsUsed}) f where f like 'software.%')`)),
   'partnerGroupEvaluation.sweep.orgDiscovery');
+  // One failure must not strand the rest, but the sweep is the only retry for
+  // these groups: collect and throw so BullMQ retries and the failure is visible.
+  const failures: unknown[] = [];
   for (const group of orgGroups) {
     try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(() => evaluateGroupMembership(group.id), 'partnerGroupEvaluation.sweep.org'));
+      await runOutsideDbContext(() => withSystemDbAccessContext(() => evaluateGroupMembership(group.id, { exportLockBeforeWrites: true }), 'partnerGroupEvaluation.sweep.org'));
     } catch (error) {
       console.error(`[PartnerGroupEvaluation] Sweep evaluation failed for org group ${group.id}:`, error);
+      failures.push(error);
     }
+  }
+  if (failures.length > 0 || enqueueFailures.length > 0) {
+    throw new AggregateError([...enqueueFailures, ...failures],
+      `partner-group sweep: ${enqueueFailures.length} of ${partnerGroups.length} partner-group enqueues and `
+      + `${failures.length} of ${orgGroups.length} org-group evaluations failed`);
   }
   return { partnerGroups: partnerGroups.length, orgGroups: orgGroups.length };
 }
@@ -195,6 +215,7 @@ export async function schedulePartnerGroupEvaluationSweep(random: () => number =
   await target.add('partner-group-sweep', { queuedAt: new Date().toISOString() }, {
     jobId: 'partner-group-sweep', repeat: { every: PARTNER_GROUP_SWEEP_INTERVAL_MS },
     delay: Math.floor(random() * PARTNER_GROUP_SWEEP_INTERVAL_MS),
+    attempts: 3, backoff: { type: 'exponential', delay: 60_000 },
     removeOnComplete: { count: 20 }, removeOnFail: { count: 50 },
   });
 }
