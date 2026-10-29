@@ -735,8 +735,11 @@ describe('updateRings routes', () => {
         expect(body.data[0].version).toBe('130.0.6723.70');
       });
 
-      it("falls back to the ring partner's devices for severity/category when the ring has no devices", async () => {
-        // Default mock: the ring resolves zero devices.
+      it('reads no device-reported severity/category when the ring has no devices', async () => {
+        // Default mock: the ring resolves zero devices. An empty ring has no
+        // evidence of its own, so device-derived severity stays Unrated; it
+        // must neither borrow the partner fleet's reports nor emit the
+        // broken `IN (NULL)` predicate.
         mockRingPatchesQueries([]);
 
         const res = await app.request(`/update-rings/${RING_ID}/patches`, {
@@ -748,18 +751,14 @@ describe('updateRings routes', () => {
         const projection = vi.mocked(db.select).mock.calls[1]?.[0] as Record<string, unknown>;
         for (const key of ['severity', 'severitySource', 'category']) {
           const text = flattenWithParams(projection[key]);
-          // Never `IN (NULL)` (which made every non-trusted row 'unknown' /
-          // Unrated), and never unscoped: pinned to the ring's own partner.
           expect(text, key).not.toContain('IN (NULL)');
-          expect(text, key).toContain('"organizations"."partner_id" = ');
-          expect(text, key).toContain(PARTNER_ID);
-          // Same patching population as GET /patches
-          // (resolveOutstandingDeviceScope): no ephemeral Quick Support
-          // devices, no holding-org (unassigned pool) devices, no deleted orgs.
-          expect(text, key).toContain('"devices"."is_ephemeral" = false');
-          expect(text, key).toContain(`"organizations"."type" <> 'unassigned_pool'`);
-          expect(text, key).toContain('"organizations"."deleted_at" IS NULL');
+          expect(text, key).not.toContain('device_patches');
+          expect(text, key).not.toContain('"organizations"');
         }
+        // The trusted shared classification still drives the value.
+        const severityText = flattenWithParams(projection.severity);
+        expect(severityText).toBe(`COALESCE(NULLIF(severity::text, 'unknown'), NULL::text, 'unknown')::patch_severity`);
+        expect(flattenWithParams(projection.category)).toBe('COALESCE(category, NULL::text)');
       });
 
       it('keeps the ring-device scope (no partner fallback) when the ring has devices', async () => {
