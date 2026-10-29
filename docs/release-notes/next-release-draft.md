@@ -154,3 +154,10 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 
 - Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
 - Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.
+
+### AI full control (#6754) — W14 billing tools, PR B
+
+- **Generate a contract invoice from chat (four-eyes).** `manage_contracts` gains `preview_invoice` (what the next billing run would invoice) and `generate_invoice`, which needs a second approver and refuses to release if the invoice changed after approval. An auto-issued invoice is emailed only if its total is the approved one, and only to the approved recipients.
+- **QuickBooks / Xero sync tool.** `manage_accounting_sync` reads connection status, mappings and customers; links, unlinks or re-syncs a mapping (one approver); pushes invoices into the books (four-eyes, up to 10 per call, pushed at release rather than queued).
+- **Durable approvals of partner-wide actions now release.** A released action reconstructed for a partner user now carries that user's current "all organizations" access, so partner-wide gates (rate cards, partner billing settings, accounting) no longer refuse a full-partner administrator's approved action.
+- AI agents are never offered these writes. No migration, setting or environment variable.
