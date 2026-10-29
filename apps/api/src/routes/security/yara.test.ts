@@ -195,11 +195,25 @@ describe('GET rule sets: why a stale set is unpublished (#10306)', () => {
 
   it('list: a stale set reads checker_unavailable when the compiler cannot run', async () => {
     yaracAvailableMock.mockResolvedValueOnce(false);
-    mockList([row({ stale: true }), row({ id: 'other', stale: false })]);
+    mockList([row({ stale: true }), row({ id: 'other', stale: false }), row({ id: 'third', stale: true })]);
     const res = await get('/yara/rule-sets');
     expect(res.status).toBe(200);
     const { data } = await res.json();
-    expect(data.map((s: { staleReason: unknown }) => s.staleReason)).toEqual(['checker_unavailable', null]);
+    expect(data.map((s: { staleReason: unknown }) => s.staleReason)).toEqual([
+      'checker_unavailable',
+      null,
+      'checker_unavailable',
+    ]);
+    // One probe per request, however many sets are stale.
+    expect(yaracAvailableMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('PATCH with no changes returns the set with its staleReason', async () => {
+    yaracAvailableMock.mockResolvedValueOnce(false);
+    mockVisibleSet(row({ stale: true }));
+    const res = await patch(app({}), `/yara/rule-sets/${SET}`, {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.staleReason).toBe('checker_unavailable');
   });
 
   it('list: a stale set reads errors when the compiler runs', async () => {
