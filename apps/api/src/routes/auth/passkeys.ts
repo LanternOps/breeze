@@ -71,17 +71,22 @@ import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
 
-function authIssuanceAdmissionError(c: Context, error: unknown): Response | null {
+function authIssuanceAdmissionError(
+  c: Context,
+  error: unknown,
+  { stepUpGrantConsumed = false }: { stepUpGrantConsumed?: boolean } = {},
+): Response | null {
+  const consumedGrant = stepUpGrantConsumed ? { stepUpGrantConsumed: true } : {};
   if (error instanceof AuthBindingRotationRequiredError) {
     installAuthBindingReplacement(c, error.replacement);
-    return c.json({ error: error.message, reason: 'auth_binding_rotation_required' }, 428);
+    return c.json({ error: error.message, reason: 'auth_binding_rotation_required', ...consumedGrant }, 428);
   }
   if (
     error instanceof AuthBindingUnavailableError
     || error instanceof AuthIssuanceConflictError
     || error instanceof AuthIssuanceCapabilityError
   ) {
-    return c.json({ error: 'Authentication issuance unavailable' }, 409);
+    return c.json({ error: 'Authentication issuance unavailable', ...consumedGrant }, 409);
   }
   return null;
 }
@@ -1042,7 +1047,10 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
     + (factorState.allowedMethods.sms && factorState.hasSms ? 1 : 0);
 
   if (factorState.mfaRequired && remainingFactorCount === 0) {
-    return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
+    return c.json({
+      error: 'Cannot remove the last MFA factor while your role or organization requires MFA',
+      code: 'last_mfa_factor_required',
+    }, 403);
   }
 
   // #5038: removing a factor advances mfa_epoch and revokes every refresh
@@ -1075,7 +1083,16 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   });
   if (reauthConsumeError) {
     await cancelAuthIssuance(capability).catch(() => undefined);
-    return reauthConsumeError;
+    const errorData = await reauthConsumeError.clone().json().catch(() => ({}));
+    const headers = new Headers(reauthConsumeError.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    headers.set('content-type', 'application/json');
+    return new Response(JSON.stringify({ ...errorData, stepUpGrantConsumed: true }), {
+      status: reauthConsumeError.status,
+      statusText: reauthConsumeError.statusText,
+      headers,
+    });
   }
 
   let result;
@@ -1164,9 +1181,13 @@ passkeyRoutes.delete('/passkeys/:id', authMiddleware, zValidator('json', deleteP
   } catch (error) {
     await cancelAuthIssuance(capability).catch(() => undefined);
     if (error instanceof LastRequiredMfaFactorError) {
-      return c.json({ error: 'Cannot remove the last MFA factor while your role or organization requires MFA' }, 403);
+      return c.json({
+        error: 'Cannot remove the last MFA factor while your role or organization requires MFA',
+        code: 'last_mfa_factor_required',
+        stepUpGrantConsumed: true,
+      }, 403);
     }
-    const response = authIssuanceAdmissionError(c, error);
+    const response = authIssuanceAdmissionError(c, error, { stepUpGrantConsumed: true });
     if (!response) throw error;
     return response;
   }

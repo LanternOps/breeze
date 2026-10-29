@@ -1358,22 +1358,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     const method = deletePasskeyMethod;
     const factorCode = passkeyFactorCode.trim();
     const recoveryCode = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(factorCode);
-    if ((method === 'totp' || method === 'sms') && !factorCode) {
+    // Captured before the request so a logout that races it is detectable.
+    const generation = useAuthStore.getState().sessionGeneration;
+    const retryGrant = passkeyDeleteRetryGrant?.passkeyId === passkeyId
+      && passkeyDeleteRetryGrant.sessionGeneration === generation
+      ? passkeyDeleteRetryGrant
+      : null;
+    if ((method === 'totp' || method === 'sms') && !factorCode && !retryGrant) {
       setPasskeyError(t('mFASettings.currentMfaCodeRequired', {
         defaultValue: 'Enter a current MFA code before deleting a passkey',
       }));
       return;
     }
-    // Captured before the request so a logout that races it is detectable.
-    const generation = useAuthStore.getState().sessionGeneration;
     let stepUpGrantId: string | undefined;
     let deleteRequestPending = false;
     try {
       setMutatingPasskeyId(passkeyId);
-      const retryGrant = passkeyDeleteRetryGrant?.passkeyId === passkeyId
-        && passkeyDeleteRetryGrant.sessionGeneration === generation
-        ? passkeyDeleteRetryGrant
-        : null;
       stepUpGrantId = retryGrant?.grantId;
       if (!retryGrant) {
         setPasskeyDeleteRetryGrant(null);
@@ -1432,7 +1432,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       deleteRequestPending = false;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setPasskeyDeleteRetryGrant((data.code === 'invalid_credentials' || response.status === 409) && stepUpGrantId
+        const grantWasNotConsumed = data.stepUpGrantConsumed !== true;
+        const retryableFailure = (data.code === 'invalid_credentials' && grantWasNotConsumed)
+          || (data.code === 'last_mfa_factor_required' && grantWasNotConsumed)
+          || (response.status === 409 && grantWasNotConsumed);
+        setPasskeyDeleteRetryGrant(retryableFailure && stepUpGrantId
           ? { passkeyId, grantId: stepUpGrantId, sessionGeneration: generation }
           : null);
         throw new Error(
