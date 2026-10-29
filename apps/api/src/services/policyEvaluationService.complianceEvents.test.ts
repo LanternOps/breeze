@@ -214,12 +214,34 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
 
       expect(withDbTransactionMock).toHaveBeenCalledTimes(2);
       expect(result.devicesEvaluated).toBe(2);
+      expect(result.devicesFailed).toBe(1);
       expect(result.results.map((r) => r.deviceId)).toEqual([OTHER.id]);
-      expect(captureExceptionMock).toHaveBeenCalledWith(sqlError);
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        sqlError,
+        undefined,
+        { job: 'config-policy-compliance-scan' },
+        { fingerprint: ['config-policy-compliance-device', 'unknown'] },
+      );
 
       await result.afterCommit!();
       const publishedFor = publishEventMock.mock.calls.map((c) => (c[2] as { deviceId: string }).deviceId);
       expect(publishedFor).toEqual([OTHER.id, OTHER.id]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // Every device failing is a fault the whole scan shares, not one bad device:
+  // the job must fail rather than commit an empty scan that looks healthy.
+  it('fails the scan when every device evaluation fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    insertMock.mockImplementation(() => ({
+      values: () => ({ onConflictDoUpdate: () => Promise.reject(new Error('column does not exist')) }),
+    }));
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true }))
+        .rejects.toThrow('every device evaluation failed (1)');
+      expect(publishEventMock).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
     }

@@ -26,6 +26,7 @@ import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideA
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { sqlTextArray } from '../db/sqlValues';
+import { pgErrorCode } from '../utils/pgErrors';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
@@ -2367,14 +2368,17 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   options: { deferEnqueue?: boolean } = {}
 ): Promise<{
   rulesScanned: number;
+  /** Devices the scan attempted, including any in `devicesFailed`. */
   devicesEvaluated: number;
+  /** Devices whose evaluation failed and rolled back (#10401). */
+  devicesFailed: number;
   results: ConfigPolicyEvaluationResult[];
 } & RemediationAfterCommit> {
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
   const deferredEvents: DeferredPolicyEvent[] | undefined = options.deferEnqueue ? [] : undefined;
   const dueChecks = await scanDueComplianceChecks();
   if (dueChecks.length === 0) {
-    return { rulesScanned: 0, devicesEvaluated: 0, results: [] };
+    return { rulesScanned: 0, devicesEvaluated: 0, devicesFailed: 0, results: [] };
   }
 
   const nowMs = Date.now();
@@ -2427,6 +2431,7 @@ export async function scanAndEvaluateConfigPolicyCompliance(
 
   const allDeviceIds = Array.from(dueRuleIdsByDeviceId.keys());
   const allResults: ConfigPolicyEvaluationResult[] = [];
+  const failures: unknown[] = [];
 
   for (const deviceId of allDeviceIds) {
     // #10401 — the worker runs this whole scan in ONE system transaction. A
@@ -2450,14 +2455,36 @@ export async function scanAndEvaluateConfigPolicyCompliance(
       if (deferred && deviceDeferred) deferred.push(...deviceDeferred);
       if (deferredEvents && deviceEvents) deferredEvents.push(...deviceEvents);
     } catch (error) {
+      failures.push(error);
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
-      captureException(error);
+      // A failed device is retried on every scan, so group its events under a
+      // bounded fingerprint (SQLSTATE, never an id) rather than one per device.
+      captureException(error, undefined, { job: 'config-policy-compliance-scan' }, {
+        fingerprint: ['config-policy-compliance-device', pgErrorCode(error) ?? 'unknown'],
+      });
+    }
+  }
+
+  if (failures.length > 0) {
+    console.error(
+      `[ConfigPolicyCompliance] ${failures.length} of ${allDeviceIds.length} device evaluation(s) failed this scan`,
+    );
+    // Every device failing is not one bad device: it is a fault the whole scan
+    // shares (schema drift, a broken query). Fail the job, as it did before the
+    // per-device savepoints, instead of committing an empty scan that looks
+    // healthy.
+    if (failures.length === allDeviceIds.length) {
+      throw new AggregateError(
+        failures,
+        `[ConfigPolicyCompliance] every device evaluation failed (${failures.length})`,
+      );
     }
   }
 
   return {
     rulesScanned: dueChecks.length,
     devicesEvaluated: allDeviceIds.length,
+    devicesFailed: failures.length,
     results: allResults,
     ...afterCommitOf(deferred, deferredEvents),
   };
