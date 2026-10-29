@@ -1,13 +1,13 @@
 import { i18n } from '@/lib/i18n';
 import type { TFunction } from 'i18next';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import ChangePasswordForm from './ChangePasswordForm';
 import ConnectSsoCard from './ConnectSsoCard';
-import MFASettings from './MFASettings';
+import MFASettings, { IssuedRecoveryCodes } from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
 import TicketPushoverSettings from './TicketPushoverSettings';
 import EmailNotificationSettings from './EmailNotificationSettings';
@@ -202,6 +202,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [passkeyName, setPasskeyName] = useState('');
   const [passkeyPassword, setPasskeyPassword] = useState('');
   const [passkeyFactorCode, setPasskeyFactorCode] = useState('');
+  const [usePasskeyRecovery, setUsePasskeyRecovery] = useState(false);
   const [passkeyError, setPasskeyError] = useState<string | undefined>();
   const [passkeySuccess, setPasskeySuccess] = useState<string | undefined>();
   const [isLoadingPasskeys, setIsLoadingPasskeys] = useState(false);
@@ -216,7 +217,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [editingPasskeyId, setEditingPasskeyId] = useState<string | null>(null);
   const [editingPasskeyName, setEditingPasskeyName] = useState('');
   const [mutatingPasskeyId, setMutatingPasskeyId] = useState<string | null>(null);
-  const [passkeyDialog, setPasskeyDialog] = useState<{ kind: 'add' } | { kind: 'delete'; passkey: PasskeySummary } | null>(null);
+  const [passkeyDialog, setPasskeyDialog] = useState<{ kind: 'add' } | { kind: 'recovery'; codes: string[] } | { kind: 'delete'; passkey: PasskeySummary } | null>(null);
   const [passkeyDeleteRetryGrant, setPasskeyDeleteRetryGrant] = useState<{ passkeyId: string; grantId: string; sessionGeneration: number } | null>(null);
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
@@ -1288,7 +1289,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const registerRequiresReauth = sessionStillCurrent
         && !(verifyData.tokens?.accessToken && mfaStateCommitted);
       if (mfaStateCommitted) setUser(prev => (prev ? { ...prev, ...mfaState } : null));
-      setPasskeyDialog(null);
+      setPasskeyDialog(mfaStateCommitted && Array.isArray(verifyData.recoveryCodes) && verifyData.recoveryCodes.length ? { kind: 'recovery', codes: verifyData.recoveryCodes } : null);
       setPasskeyName('');
       setPasskeyPassword('');
       // register/verify is the terminal write that BURNS the grant. Drop it so
@@ -1298,9 +1299,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setSsoSetupReady(false);
       setPasskeyStepUpNeeded(false);
       setPasskeyStepUpCode('');
-      if (mfaStateCommitted && Array.isArray(verifyData.recoveryCodes)) {
-        setRecoveryCodes(verifyData.recoveryCodes);
-      }
       setPasskeySuccess(withReauthNotice(t('profilePage.passkeyAdded'), registerRequiresReauth));
       if (mfaStateCommitted) await loadPasskeys();
     } catch (error) {
@@ -1731,22 +1729,14 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         errorMessage={mfaError}
         successMessage={mfaSuccess}
         loading={mfaLoading || isStartingSsoReauth}
-      />
-
-      {/* Connect SSO (self-service identity linking, #2183) */}
-      <ConnectSsoCard />
-
+      >
       {/* Passkeys */}
       <div
         ref={passkeyCardRef}
         data-testid="passkey-card"
-        className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+        className="space-y-4 rounded-md border bg-muted/30 p-4"
       >
-        <div className="space-y-1">
-          <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('profilePage.managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo')}</p>
-        </div>
+        <h3 className="text-sm font-medium">{t('profilePage.passkeys')}</h3>
 
         <div className="space-y-3">
           {isLoadingPasskeys ? (
@@ -1817,6 +1807,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                             setPasskeySuccess(undefined);
                             setPasskeyPassword('');
                             setPasskeyFactorCode('');
+                            setUsePasskeyRecovery(false);
                             setPasskeyDialog({ kind: 'delete', passkey });
                           }}
                           disabled={!!mutatingPasskeyId}
@@ -1836,10 +1827,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
-        <div className="space-y-4 rounded-md border p-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
-          </div>
+        <div>
           {isPasswordless && !hasSsoReauthGrant ? (
             <button
               type="button"
@@ -1882,6 +1870,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           </div>
         )}
       </div>
+
+      </MFASettings>
+
+      {/* Connect SSO (self-service identity linking, #2183) */}
+      <ConnectSsoCard />
 
       {/* Approval security (Breeze Authenticator) */}
       <ApproverDevicesSection passkeyCount={passkeys.length} mfaMethod={user?.mfaMethod ?? null} />
@@ -1989,19 +1982,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           </div>
         </form>
       </Dialog>
+      {passkeyDialog?.kind === 'recovery' && (
+        <Dialog open onClose={() => setPasskeyDialog(null)} title={t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' })} labelledBy="passkey-recovery-title" className="p-6">
+          <IssuedRecoveryCodes passkey codes={passkeyDialog.codes} onDone={() => setPasskeyDialog(null)} />
+        </Dialog>
+      )}
       {passkeyDialog?.kind === 'delete' && (
         <ConfirmDialog
           open
           onClose={closePasskeyDialog}
           onConfirm={() => { void handleDeletePasskey(passkeyDialog.passkey.id); }}
           title={t('profilePage.deletePasskeyConfirmTitle')}
-          message={t('profilePage.deletePasskeyConfirmMessage', {
-            name: passkeyDialog.passkey.name || 'Passkey',
-          })}
+          message={<Trans i18nKey="profilePage.deletePasskeyConfirmMessage" ns="settings" values={{ name: passkeyDialog.passkey.name || 'Passkey' }} components={{ strong: <strong className="font-semibold text-foreground" /> }} />}
           confirmLabel={t('profilePage.delete')}
           confirmTestId="passkey-delete-confirm"
           isLoading={mutatingPasskeyId === passkeyDialog.passkey.id}
-          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant)}
+          confirmDisabled={(!isPasswordless && !passkeyPassword) || (isPasswordless && !hasSsoReauthGrant) || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery && !/^[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(passkeyFactorCode.trim()))}
         >
           <div className="space-y-4">
             {!isPasswordless && (
@@ -2034,7 +2030,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 </button>
               </div>
             )}
-            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || deletePasskeyMethod === 'passkey') && (
+            {(deletePasskeyMethod === 'totp' || deletePasskeyMethod === 'sms' || (deletePasskeyMethod === 'passkey' && usePasskeyRecovery)) && (
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="passkey-factor-code">
                   {deletePasskeyMethod === 'passkey'
@@ -2044,7 +2040,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                 {deletePasskeyMethod === 'passkey' && (
                   <p className="text-xs text-muted-foreground">
                     {t('profilePage.passkeyRecoveryCodeHint', {
-                      defaultValue: 'Use an unused recovery code if you can’t access this passkey. Otherwise, leave blank.',
+                      defaultValue: 'Enter an unused recovery code.',
                     })}
                   </p>
                 )}
@@ -2071,6 +2067,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
                   )}
                 </div>
               </div>
+            )}
+            {deletePasskeyMethod === 'passkey' && (
+              <button type="button" className="text-sm text-primary underline underline-offset-4" disabled={!!mutatingPasskeyId} onClick={() => { setUsePasskeyRecovery(!usePasskeyRecovery); setPasskeyFactorCode(''); setPasskeyError(undefined); }}>
+                {usePasskeyRecovery ? t('profilePage.usePasskeyVerification', { defaultValue: 'Use passkey verification instead' }) : t('profilePage.useRecoveryCode', { defaultValue: 'Can’t access your passkey? Use a recovery code' })}
+              </button>
             )}
             {passkeyError && <p role="alert" className="text-sm text-destructive">{passkeyError}</p>}
           </div>

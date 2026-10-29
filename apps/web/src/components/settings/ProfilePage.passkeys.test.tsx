@@ -13,7 +13,7 @@ vi.mock('../../stores/auth', () => ({
   getPasskeyCredential: getPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 
@@ -57,7 +57,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     ok,
     status,
     statusText: ok ? 'OK' : 'ERROR',
-    json: vi.fn().mockResolvedValue(payload),
+    json: vi.fn().mockResolvedValue(payload && typeof payload === 'object' && ('passkey' in payload || 'success' in payload) ? { mfaEnabled: true, mfaMethod: 'passkey', ...payload } : payload),
   }) as unknown as Response;
 
 // Captured before any test can stub it. Several tests here replace
@@ -70,6 +70,8 @@ const REAL_LOCATION = window.location;
 describe('ProfilePage passkey management', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset();
+    createPasskeyCredentialMock.mockReset();
     Object.defineProperty(window, 'location', { configurable: true, value: REAL_LOCATION });
     // #4055 records the originating card here; a value bleeding between tests
     // would silently reroute the one after it.
@@ -312,6 +314,7 @@ describe('ProfilePage passkey management', () => {
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'current-password' },
     });
+    fireEvent.click(screen.getByRole('button', { name: /Can’t access your passkey/ }));
     fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 
@@ -385,6 +388,7 @@ describe('ProfilePage passkey management', () => {
     fireEvent.change(screen.getByLabelText(/Current password/i, { selector: '#passkey-password' }), {
       target: { value: 'wrong-password' },
     });
+    fireEvent.click(screen.getByRole('button', { name: /Can’t access your passkey/ }));
     fireEvent.change(screen.getByLabelText(/Recovery code/i), { target: { value: 'ABCD-1234' } });
     fireEvent.click(screen.getByTestId('passkey-delete-confirm'));
 

@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import type { ClipboardEvent, KeyboardEvent } from 'react';
+import type { ClipboardEvent, KeyboardEvent, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MfaMethod } from '../../stores/auth';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -8,6 +8,7 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 const DIGIT_COUNT = 6;
 
 type MFASettingsProps = {
+  children?: ReactNode;
   enabled?: boolean;
   mfaMethod?: MfaMethod | null;
   /**
@@ -101,6 +102,7 @@ type MFAView =
 
 export default function MFASettings({
   enabled = false,
+  children,
   mfaMethod,
   hasPassword,
   onSsoReauth,
@@ -801,6 +803,8 @@ export default function MFASettings({
           </div>
         )}
 
+        {children}
+
         {enabled && (
           <div className="flex items-center justify-between rounded-md border bg-muted/30 p-4">
             <div className="space-y-1">
@@ -1282,10 +1286,11 @@ export default function MFASettings({
   return null;
 }
 
-function IssuedRecoveryCodes({ codes, success, onDone }: {
+export function IssuedRecoveryCodes({ codes, success, onDone, passkey = false }: {
   codes?: readonly string[];
   success?: string;
   onDone: () => void;
+  passkey?: boolean;
 }) {
   const { t } = useTranslation('settings');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
@@ -1306,11 +1311,12 @@ function IssuedRecoveryCodes({ codes, success, onDone }: {
   };
 
   return (
-    <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+    <div className={passkey ? 'space-y-6' : 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'}>
       <div className="space-y-1">
-        <h2 className="text-lg font-semibold">{t('mFASettings.recoveryCodes')}</h2>
+        {passkey && <p className="text-sm text-emerald-600">{t('profilePage.passkeyAdded')}</p>}
+        <h2 id={passkey ? 'passkey-recovery-title' : undefined} className="text-lg font-semibold">{passkey ? t('mFASettings.saveRecoveryCodes', { defaultValue: 'Save your recovery codes' }) : t('mFASettings.recoveryCodes')}</h2>
         <p className="text-sm text-muted-foreground">
-          {t('mFASettings.recoveryCodesAreShownOnceAndCannotBeDisplayedAgain')}
+          {passkey ? t('mFASettings.saveRecoveryCodesDescription', { defaultValue: 'Store these somewhere safe. Each code can be used once if you lose access to your sign-in factor. These codes cannot be shown again.' }) : t('mFASettings.recoveryCodesAreShownOnceAndCannotBeDisplayedAgain')}
         </p>
       </div>
       {codes?.length ? (
