@@ -129,6 +129,25 @@ describe('contract_documents.certificate_version (#10513)', () => {
     expect(await howText(id)).toContain('via signing link');
   });
 
+  runDb('the migration added the column WITHOUT a fast default, so rows existing at migration time stayed NULL = v1', async () => {
+    // `ADD COLUMN … DEFAULT 2` would stamp every pre-existing row v2 through
+    // the attribute's "missing value" (atthasmissing) without touching them;
+    // ADD COLUMN then a separate SET DEFAULT leaves them NULL. Positive
+    // control first: prove this probe sees a fast default when there is one.
+    const missing = async (table: string) => rows(await admin().execute(sql`
+      SELECT a.atthasmissing FROM pg_attribute a
+       WHERE a.attrelid = ${table}::regclass AND a.attname = 'certificate_version'`))[0]!.atthasmissing;
+    await admin().execute(sql`DROP TABLE IF EXISTS public.cert_version_probe`);
+    await admin().execute(sql`CREATE TABLE public.cert_version_probe (id int)`);
+    try {
+      await admin().execute(sql`ALTER TABLE public.cert_version_probe ADD COLUMN certificate_version smallint DEFAULT 2`);
+      expect(await missing('public.cert_version_probe')).toBe(true);
+    } finally {
+      await admin().execute(sql`DROP TABLE IF EXISTS public.cert_version_probe`);
+    }
+    expect(await missing('public.contract_documents')).toBe(false);
+  });
+
   runDb('CHECK: NULL is the only spelling of v1 — a stored 1 or 0 is 23514; 2 is accepted', async () => {
     const s = await seed();
     const requestId = await linkAnsweredRequest(s);

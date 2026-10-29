@@ -25,6 +25,10 @@
 -- The CHECK keeps NULL the only encoding of v1 (a stored 1 would be a second
 -- spelling of the same thing) and rejects nonsense values.
 --
+-- ROLLBACK: code older than #10513 ignores this column, so a code rollback
+-- re-labels v2 documents "via emailed link" until #10513 is redeployed; v1
+-- rows are unaffected either way. The column itself is additive and nullable.
+--
 -- Idempotent: ADD COLUMN IF NOT EXISTS, SET DEFAULT is re-runnable, the CHECK
 -- is added only when absent. Writes no rows.
 

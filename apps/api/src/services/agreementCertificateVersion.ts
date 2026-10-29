@@ -18,6 +18,10 @@
 // CURRENT_CERTIFICATE_VERSION, keep every older branch rendering byte-for-byte
 // what it rendered before. NULL is the only encoding of v1
 // (contract_documents_certificate_version_chk rejects a stored 1).
+//
+// Every insert path MUST write CURRENT_CERTIFICATE_VERSION explicitly. The DB
+// default (2) only covers pre-#10513 code inserting mid-rollout; after a bump
+// to v3 it would silently stamp v2 on an insert that forgot the column.
 
 export type CertificateVersion = 1 | 2;
 
