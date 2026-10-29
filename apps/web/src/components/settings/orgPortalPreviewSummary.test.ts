@@ -75,7 +75,7 @@ describe('orgPortalPreviewSummary (#9952)', () => {
     }
     const byLabel = Object.fromEntries(rows.map((r) => [r.label, r.value]));
     expect(byLabel['Security score']).toBe('69 (Good)');
-    expect(byLabel['Endpoint protection']).toBe('8 of 10 protected');
+    expect(byLabel['Endpoint protection']).toBe('8 of 10 protected · 1 not yet known');
     expect(byLabel['Patches applied this month']).toBe('42');
     expect(byLabel['Action items']).toBe('5');
     expect(byLabel['Support']).toBe('3 open requests');
@@ -96,6 +96,36 @@ describe('orgPortalPreviewSummary (#9952)', () => {
     expect(byLabel['Endpoint protection']).toBe('Not set up');
     expect(byLabel['Action items']).toBe('4 · May be out of date');
     expect(byLabel['Support']).toBe('1 open request');
+  });
+
+  it('mirrors the portal for partial tiles: no invented zeros, unknown fleets, unknown statuses', () => {
+    const rows = summarizeSection('dashboard', {
+      devicesProtected: { status: 'ok', protected: 0, unprotected: 0, unknown: 10, total: 10, asOf: null },
+      actionItems: { status: 'stale', count: null, topIssues: [], asOf: 'x' },
+      patchesApplied: { status: 'mystery', applied: null },
+      awaitingYou: { status: 'ok', proposals: null, invoices: 2, asOf: 'x' },
+      service: { status: 'ok', windowDays: 90, deliveredOnTime: null, deliveredLate: null, missed: null,
+        nextDue: { name: 'Quarterly review', dueAt: '2026-11-03T12:00:00.000Z' }, asOf: 'x' },
+    }, t);
+    const byLabel = Object.fromEntries(rows.map((r) => [r.label, r.value]));
+    expect(byLabel['Endpoint protection']).toBe('Not yet known for all 10 devices');
+    expect(byLabel['Action items']).toBe('May be out of date');
+    expect(byLabel['Patches applied this month']).toBe('Not yet available');
+    expect(byLabel['Awaiting your customer']).toBe('Not yet available');
+    expect(byLabel['Service delivered (90 days)']).toMatch(/^Next due: Quarterly review, .*2026/);
+
+    const partialService = summarizeSection('dashboard', {
+      service: { status: 'ok', windowDays: 90, deliveredOnTime: 3, deliveredLate: null, missed: 1, nextDue: null, asOf: 'x' },
+    }, t);
+    expect(partialService[0].value).toBe('Not yet available');
+  });
+
+  it('formats tile dates in the org timezone the dashboard names, as the portal does', () => {
+    const tile = { status: 'ok', completedAt: '2026-10-22T03:00:00.000Z', verificationType: null, configured: 1, total: 1, asOf: 'x' };
+    const la = summarizeSection('dashboard', { timezone: 'America/Los_Angeles', backup: tile }, t)[0].value;
+    const akl = summarizeSection('dashboard', { timezone: 'Pacific/Auckland', backup: tile }, t)[0].value;
+    expect(la).toMatch(/21/);
+    expect(akl).toMatch(/22/);
   });
 
   it('summarizes the Security section with labels, not DTO field names', () => {
@@ -148,6 +178,28 @@ describe('orgPortalPreviewSummary (#9952)', () => {
     expect(byLabel['Open RPO / RTO breaches']).toBe('RPO 1 · RTO 0');
     expect(byLabel['Third-party backup']).toBe('Cove, Datto');
     for (const row of rows) expect(row.label).not.toMatch(RAW_KEY);
+  });
+
+  it('does not invent zero counts for a Security section with no data, and shows a bare score for an unknown band', () => {
+    const empty = summarizeSection('security', {
+      dataStatus: 'no_data', asOf: 'x', score: null, band: null, scoreHistory: [],
+      threatEvents: { label: 'Endpoint threat events', weeks: [] },
+      vulnerabilities: { openBySeverity: {}, kevCount: 0, lastDetectedAt: null },
+    }, t);
+    expect(empty).toEqual([{ label: 'Security score', value: 'Not yet available' }]);
+    const bare = summarizeSection('security', { dataStatus: 'ok', score: 55, band: 'weird' }, t);
+    expect(bare).toEqual([{ label: 'Security score', value: '55' }]);
+  });
+
+  it('labels a Backups section that is not configured instead of printing nulls', () => {
+    const rows = summarizeSection('backups', {
+      dataStatus: 'not_configured', asOf: 'x', protected: null, unprotected: null, total: null,
+      lastPassedVerification: null, openRpoBreaches: null, openRtoBreaches: null, externalProviders: [],
+    }, t);
+    expect(rows).toEqual([
+      { label: 'Devices backed up', value: 'Not set up' },
+      { label: 'Last backup verified', value: 'Not yet available' },
+    ]);
   });
 
   it('renders nothing (rather than raw keys) for a section it has no summary for', () => {

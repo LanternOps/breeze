@@ -61,14 +61,14 @@ function statusLabel(t: Translate, status: unknown): string {
 }
 
 /**
- * The portal's rule: an `ok` tile without a figure reads "Not yet available";
- * a stale figure is still shown, marked as possibly out of date; any other
- * non-ok status replaces the figure with its plain-language label.
+ * The portal's LedgerRow rule: a figure is always shown when there is one, and
+ * any non-ok status adds its plain-language mark; with no figure, the row reads
+ * the status mark alone (an `ok` tile without a figure is "Not yet available").
+ * An unrecognised status reads as "Not yet available" rather than a raw value.
  */
 function withStatus(t: Translate, status: unknown, value: string | null): string {
-  if (value !== null && status === 'ok') return value;
-  if (value !== null && status === 'stale') return `${value} · ${statusLabel(t, 'stale')}`;
-  return statusLabel(t, status === 'ok' ? 'no_data' : status);
+  if (value === null) return statusLabel(t, status === 'ok' ? 'no_data' : status);
+  return status === 'ok' ? value : `${value} · ${statusLabel(t, status)}`;
 }
 
 function scoreValue(t: Translate, score: unknown, band: unknown): string | null {
@@ -86,12 +86,15 @@ function protectedOfTotal(t: Translate, prot: unknown, total: unknown): string |
     : t('settings:orgPortalSettingsEditor.preview.values.protectedOfTotal', { protected: p, total: n });
 }
 
-const dateValue = (v: unknown): string | null => {
+/** A date as the customer reads it: in the org's timezone when the payload names one. */
+const dateValue = (v: unknown, timeZone?: string | null): string | null => {
   const s = str(v);
-  return s ? formatDate(s, { dateStyle: 'medium' }) : null;
+  return s ? formatDate(s, { dateStyle: 'medium', ...(timeZone ? { timeZone } : {}) }) : null;
 };
 
-const TILE_VALUE: Record<DashboardTileKey, (tile: Obj, t: Translate) => string | null> = {
+type TileFormatter = (tile: Obj, t: Translate, timeZone: string | null) => string | null;
+
+const TILE_VALUE: Record<DashboardTileKey, TileFormatter> = {
   awaitingYou: (tile, t) => {
     const proposals = num(tile.proposals);
     const invoices = num(tile.invoices);
@@ -99,23 +102,32 @@ const TILE_VALUE: Record<DashboardTileKey, (tile: Obj, t: Translate) => string |
       ? null
       : t('settings:orgPortalSettingsEditor.preview.values.awaitingCounts', { proposals, invoices });
   },
-  devicesProtected: (tile, t) => protectedOfTotal(t, tile.protected, tile.total),
+  devicesProtected: (tile, t) => {
+    const unknown = num(tile.unknown);
+    const total = num(tile.total);
+    const figure = protectedOfTotal(t, tile.protected, tile.total);
+    if (figure === null || unknown === null || total === null) return null;
+    // Portal rule: a fleet nobody has heard from is not "0 of N protected".
+    if (unknown === total) return t('settings:orgPortalSettingsEditor.preview.values.unknownAll', { total });
+    return unknown > 0
+      ? `${figure} · ${t('settings:orgPortalSettingsEditor.preview.values.unknownSome', { count: unknown })}`
+      : figure;
+  },
   securityScore: (tile, t) => scoreValue(t, tile.score, tile.band),
   actionItems: (tile) => (num(tile.count) === null ? null : String(tile.count)),
   patchesApplied: (tile) => (num(tile.applied) === null ? null : String(tile.applied)),
-  backup: (tile) => dateValue(tile.completedAt),
-  service: (tile, t) => {
+  backup: (tile, _t, timeZone) => dateValue(tile.completedAt, timeZone),
+  service: (tile, t, timeZone) => {
     const onTime = num(tile.deliveredOnTime);
-    if (onTime !== null) {
-      return t('settings:orgPortalSettingsEditor.preview.values.serviceCounts', {
-        onTime,
-        late: num(tile.deliveredLate) ?? 0,
-        missed: num(tile.missed) ?? 0,
-      });
+    const late = num(tile.deliveredLate);
+    const missed = num(tile.missed);
+    // Portal rule: counts only when all three are known; never an invented zero.
+    if (onTime !== null && late !== null && missed !== null) {
+      return t('settings:orgPortalSettingsEditor.preview.values.serviceCounts', { onTime, late, missed });
     }
     const next = isRecord(tile.nextDue) ? tile.nextDue : null;
     const name = next ? str(next.name) : null;
-    const due = next ? dateValue(next.dueAt) : null;
+    const due = next ? dateValue(next.dueAt, timeZone) : null;
     return name && due ? t('settings:orgPortalSettingsEditor.preview.values.nextDue', { name, date: due }) : null;
   },
   support: (tile, t) => {
@@ -126,13 +138,14 @@ const TILE_VALUE: Record<DashboardTileKey, (tile: Obj, t: Translate) => string |
 
 function summarizeDashboard(data: Obj, t: Translate): PreviewRow[] {
   const rows: PreviewRow[] = [];
+  const timeZone = str(data.timezone);
   // Portal ledger order; keys the API did not send (withheld tiles) are skipped.
   for (const key of Object.keys(DASHBOARD_TILE_LABEL_KEYS) as DashboardTileKey[]) {
     const tile = data[key];
     if (!isRecord(tile)) continue;
     rows.push({
       label: t(/* i18n-dynamic */ DASHBOARD_TILE_LABEL_KEYS[key]),
-      value: withStatus(t, tile.status, TILE_VALUE[key](tile, t)),
+      value: withStatus(t, tile.status, TILE_VALUE[key](tile, t, timeZone)),
     });
   }
   return rows;
@@ -143,6 +156,9 @@ function summarizeSecurity(data: Obj, t: Translate): PreviewRow[] {
     label: t(/* i18n-dynamic */ DASHBOARD_TILE_LABEL_KEYS.securityScore),
     value: withStatus(t, data.dataStatus, scoreValue(t, data.score, data.band)),
   }];
+  // dataStatus is no_data only when every security source is empty: the counts
+  // below would be invented zeros, so the score row's status mark stands alone.
+  if (data.dataStatus !== 'ok' && data.dataStatus !== 'stale') return rows;
   const vulns = isRecord(data.vulnerabilities) ? data.vulnerabilities : null;
   if (vulns) {
     const bySeverity = isRecord(vulns.openBySeverity) ? Object.values(vulns.openBySeverity) : [];
@@ -171,7 +187,10 @@ function summarizeSecurity(data: Obj, t: Translate): PreviewRow[] {
 function summarizeBackups(data: Obj, t: Translate): PreviewRow[] {
   const rows: PreviewRow[] = [{
     label: t('settings:orgPortalSettingsEditor.preview.backupRows.devices'),
-    value: withStatus(t, data.dataStatus, protectedOfTotal(t, data.protected, data.total)),
+    // Backups dataStatus keys on a passed verification, not on coverage, so a
+    // known device count is shown as-is (portal BackupOverview does the same).
+    value: protectedOfTotal(t, data.protected, data.total)
+      ?? statusLabel(t, data.dataStatus === 'ok' ? 'no_data' : data.dataStatus),
   }];
   const verified = isRecord(data.lastPassedVerification) ? dateValue(data.lastPassedVerification.completedAt) : null;
   rows.push({

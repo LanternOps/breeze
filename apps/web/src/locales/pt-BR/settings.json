@@ -2102,7 +2102,10 @@
         "nextDue": "Próximo vencimento: {{name}}, {{date}}",
         "openRequests_one": "{{count}} solicitação aberta",
         "openRequests_other": "{{count}} solicitações abertas",
-        "threatCounts": "Detectados: {{detected}} · Resolvidos: {{resolved}}"
+        "threatCounts": "Detectados: {{detected}} · Resolvidos: {{resolved}}",
+        "unknownAll": "Ainda desconhecido para todos os {{total}} dispositivos",
+        "unknownSome_one": "{{count}} ainda desconhecido",
+        "unknownSome_other": "{{count}} ainda desconhecidos"
       },
       "securityRows": {
         "openVulnerabilities": "Vulnerabilidades abertas",

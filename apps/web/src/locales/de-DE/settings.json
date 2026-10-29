@@ -2102,7 +2102,10 @@
         "nextDue": "Nächste Fälligkeit: {{name}}, {{date}}",
         "openRequests_one": "{{count}} offene Anfrage",
         "openRequests_other": "{{count}} offene Anfragen",
-        "threatCounts": "Erkannt: {{detected}} · Behoben: {{resolved}}"
+        "threatCounts": "Erkannt: {{detected}} · Behoben: {{resolved}}",
+        "unknownAll": "Für alle {{total}} Geräte noch unbekannt",
+        "unknownSome_one": "{{count}} noch unbekannt",
+        "unknownSome_other": "{{count}} noch unbekannt"
       },
       "securityRows": {
         "openVulnerabilities": "Offene Schwachstellen",

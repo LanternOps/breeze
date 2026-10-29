@@ -2102,7 +2102,10 @@
         "nextDue": "Sonraki son tarih: {{name}}, {{date}}",
         "openRequests_one": "{{count}} açık talep",
         "openRequests_other": "{{count}} açık talep",
-        "threatCounts": "Algılanan: {{detected}} · Çözülen: {{resolved}}"
+        "threatCounts": "Algılanan: {{detected}} · Çözülen: {{resolved}}",
+        "unknownAll": "{{total}} cihazın tümü için henüz bilinmiyor",
+        "unknownSome_one": "{{count}} cihaz henüz bilinmiyor",
+        "unknownSome_other": "{{count}} cihaz henüz bilinmiyor"
       },
       "securityRows": {
         "openVulnerabilities": "Açık güvenlik açıkları",
