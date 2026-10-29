@@ -49,7 +49,7 @@
  * retrying against a row that can never advance.
  */
 
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -85,7 +85,7 @@ import {
   classifyDeviceCommandEvidence,
   readDeviceCommandEvidence,
 } from './deviceCommandEvidence';
-import { nextTaskState, type TaskTransitionEvent } from './taskTransitions';
+import { admissionFenced, nextTaskState, type TaskTransitionEvent } from './taskTransitions';
 import {
   recordAiOperatorLeaseReclaim,
   recordAiOperatorUnknownEffectHandoff,
@@ -104,6 +104,14 @@ import {
   openHumanWorkStep,
   readHumanWorkStep,
 } from './humanWorkService';
+
+/**
+ * The states a coordinator holding a lease on a LIVE task may write over.
+ * `paused`, `stopping` and every terminal state are fenced (spec §7.3): a
+ * writer whose snapshot predates the fence must lose its CAS. See
+ * `writeLeased`'s `observedState`.
+ */
+const LIVE_LEASED_WRITE_STATES = ['queued', 'running', 'waiting'] as const;
 
 /** How long a lease is good for. Spec §11.2's short lease. */
 export const TASK_LEASE_MS = 60_000;
@@ -293,6 +301,15 @@ async function writeLeased(args: {
   taskId: string;
   revision: number;
   leaseEpoch: number;
+  /**
+   * The task state the writer's snapshot holds (#9979). Part of the CAS: the
+   * `stopping` writers (org-merge fence, device delete / move / reinstall) do
+   * NOT bump `lease_epoch`, so without this a coordinator that leased the task
+   * before a stop landed could write it straight back to `waiting` and undo
+   * the fence. A writer that saw a live state may only write over a live
+   * state; a writer settling a `stopping` task only over `stopping`.
+   */
+  observedState: string;
   patch: Partial<typeof aiOperatorTasks.$inferInsert>;
   /**
    * Task-graph writes (step rows, events — Recipe Library wave E2) to run in
@@ -321,6 +338,9 @@ async function writeLeased(args: {
           eq(aiOperatorTasks.orgId, args.orgId),
           eq(aiOperatorTasks.revision, args.revision),
           eq(aiOperatorTasks.leaseEpoch, args.leaseEpoch),
+          args.observedState === 'stopping'
+            ? eq(aiOperatorTasks.state, 'stopping')
+            : inArray(aiOperatorTasks.state, [...LIVE_LEASED_WRITE_STATES]),
         ))
         .returning({ id: aiOperatorTasks.id });
       if (rows.length !== 1) return false;
@@ -340,8 +360,9 @@ async function writeLeased(args: {
   // healthy race, and the only symptom would be the waiting-age gauge drifting
   // up with no explanation anywhere.
   if (!committed) {
-    console.warn('[aiOperator] stale coordinator lost its lease CAS; another holder owns this task', {
+    console.warn('[aiOperator] stale coordinator lost its lease CAS; another holder owns this task, or it was stopped', {
       taskId: args.taskId, orgId: args.orgId, revision: args.revision, leaseEpoch: args.leaseEpoch,
+      observedState: args.observedState,
     });
   }
   return committed;
@@ -364,6 +385,7 @@ async function yieldToWait(args: {
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: args.task.state as string,
     patch: {
       state: nextTaskState(args.task.state as string, 'wait'),
       waitReason: args.reason,
@@ -401,7 +423,16 @@ async function yieldToWait(args: {
 async function settle(args: {
   task: AiOperatorTaskRow;
   leaseEpoch: number;
-  event: Extract<TaskTransitionEvent, 'complete' | 'partial' | 'hand_off' | 'fail'>;
+  /**
+   * A live-state terminal (`complete` | `partial` | `hand_off` | `fail`) or,
+   * for a `stopping` task only, a stopping-path settle (#9980). The table
+   * decides which is legal from the task's state; `settleStoppingTask` is the
+   * one caller of the `settle_*` events.
+   */
+  event: Extract<
+    TaskTransitionEvent,
+    'complete' | 'partial' | 'hand_off' | 'fail' | 'settle_handed_off' | 'settle_expired' | 'settle_cancelled'
+  >;
   outcome: AiOperatorTaskOutcome;
   detail: string;
   handoffSummary?: string;
@@ -413,6 +444,7 @@ async function settle(args: {
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: args.task.state as string,
     patch: {
       state: terminalState,
       outcome: args.outcome,
@@ -464,15 +496,14 @@ async function settle(args: {
   // over-reports is worse than none: it trains the reader to ignore it.
   if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
   // Wisp W05: tell the triage engine the task reached a terminal state.
-  // `settle`'s `event` is narrowed to complete | partial | hand_off | fail,
-  // whose destinations (completed | partial | handed_off | failed) are all
-  // terminal and are exactly the states the payload type allows; the
-  // stopping-path terminals (cancelled / expired) settle elsewhere and are not
-  // a "finished" signal. Fire-and-forget, after the commit, outside any DB
+  // The payload's states are completed | partial | handed_off | failed; a
+  // stopping-path `settle_handed_off` lands in `handed_off` and IS announced
+  // (a human now owns the remainder), while `cancelled` / `expired` are not a
+  // "finished" signal and are not published. Fire-and-forget, after the commit, outside any DB
   // context (#1105): a bus outage must not fail a settled task.
   // publishEvent is `async`, so in production it only ever rejects; the outer
   // catch covers a non-async stand-in (test doubles) that throws.
-  if (committed) {
+  if (committed && isFinishedEventState(terminalState)) {
     try {
       void publishEvent('ai.operator.task.finished', args.task.orgId, {
         taskId: args.task.id,
@@ -486,6 +517,11 @@ async function settle(args: {
     }
   }
   return committed;
+}
+
+const FINISHED_EVENT_STATES = ['completed', 'partial', 'handed_off', 'failed'] as const;
+function isFinishedEventState(state: string): state is (typeof FINISHED_EVENT_STATES)[number] {
+  return (FINISHED_EVENT_STATES as readonly string[]).includes(state);
 }
 
 /** A lost `ai.operator.task.finished` is a lost Wisp wake: report it, never fail the settle. */
@@ -546,6 +582,7 @@ async function admitReasoningRun(args: {
     taskId: task.id,
     revision: task.revision,
     leaseEpoch: args.leaseEpoch,
+    observedState: task.state as string,
     patch: {
       revision: nextRevision,
       attemptOrdinal,
@@ -801,6 +838,16 @@ export function stepNeedsRequesterAccessRecheck(step: StepDefinition | undefined
 }
 
 export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
+  // The task's OWN fence, before anything else (#9979). A `stopping` task is
+  // never advanced: no gate, no advancer, no reasoning run, no child intent.
+  // It only settles, and it settles even when its checkpoint no longer parses
+  // (the `fail` below is not a legal arm from `stopping`, #9980).
+  if (task.state === 'stopping') return settleStoppingTask(task, leaseEpoch);
+  // Unreachable through `claimTaskLease`, whose door admits only queued /
+  // running / waiting / stopping. Kept so a future caller that hands this a
+  // paused or terminal row gets a no-op, never an advance.
+  if (admissionFenced(task.state)) return `skipped (task is ${task.state})`;
+
   const parsedCheckpoint = parseTaskCheckpointResult(task.checkpoint);
   if (!parsedCheckpoint.ok) {
     await settle({
@@ -935,6 +982,122 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   }
 
   return advance({ task, leaseEpoch, checkpoint, recipe, now });
+}
+
+/**
+ * Settle a `stopping` task (#9979, #9980). The only thing the coordinator ever
+ * does with one.
+ *
+ * Every writer of `stopping` today is an authority loss — the org-merge fence
+ * and the device delete / move / reinstall detach hooks — so the honest
+ * terminal is `handed_off`: a person now owns whatever remains. In order:
+ *
+ *  1. An effect that was DISPATCHED and has not reported (`unknown_effect`).
+ *     Spec §7.3: a stop "preserves observation of in-flight work"; the task
+ *     cannot wait from `stopping`, so it hands off saying the effect may still
+ *     land, and the reconciler's set 4 keeps chasing a device command's result
+ *     onto the operation row after the task is terminal.
+ *  2. Past the deadline with nothing in flight: `expired`.
+ *  3. Otherwise: `handed_off`, `unresolved`, naming why it stopped.
+ *
+ * `settle_cancelled` is deliberately not reached: no cancel route exists yet
+ * (P3-5). When one does, it must record that the stop was a cancel so this
+ * function can tell a human's cancel from an authority loss.
+ *
+ * A minted-but-undispatched child intent needs nothing here: the dispatch
+ * claim (`dispatchClaim.ts`) refuses any task not in a live state, so it can
+ * never execute once this settle commits.
+ */
+async function settleStoppingTask(task: AiOperatorTaskRow, leaseEpoch: number): Promise<string> {
+  const reason = await describeStopReason(task);
+  const priorNote = task.outcomeDetail?.trim();
+  const detail = `stopped: ${reason}${priorNote ? `\n${priorNote}` : ''}`;
+
+  if (await hasInFlightEffect(task.orgId, task.id)) {
+    await settle({
+      task, leaseEpoch, event: 'settle_handed_off', outcome: 'unknown_effect', detail,
+      handoffSummary:
+        `Operator stopped this task before it finished (${reason}) while an action it had already sent `
+        + 'had not reported a result. That action may still complete. Confirm its result before redoing '
+        + 'or undoing anything, then finish the remaining work by hand or start a new task.',
+    });
+    return `handed off: stopped with an effect in flight (${reason})`;
+  }
+
+  if (task.deadlineAt && task.deadlineAt.getTime() <= Date.now()) {
+    await settle({
+      task, leaseEpoch, event: 'settle_expired', outcome: 'unresolved', detail,
+      handoffSummary:
+        `Operator stopped this task before it finished (${reason}) and its deadline has passed. `
+        + 'Nothing further was started after the stop.',
+    });
+    return `expired: stopped past the deadline (${reason})`;
+  }
+
+  await settle({
+    task, leaseEpoch, event: 'settle_handed_off', outcome: 'unresolved', detail,
+    handoffSummary:
+      `Operator stopped this task before it finished (${reason}). Nothing further was started after `
+      + 'the stop. Review the task timeline for what was done, then finish the remaining work by hand '
+      + 'or start a new task.',
+  });
+  return `handed off: stopped (${reason})`;
+}
+
+/** Why a `stopping` task stopped, from the rows the stop writers stamp. */
+async function describeStopReason(task: AiOperatorTaskRow): Promise<string> {
+  if (task.targetDetachedReason) {
+    return `the task's device target was detached (${task.targetDetachedReason})`;
+  }
+  const detached = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => db
+      .select({
+        kind: aiOperatorTaskTargets.targetKind,
+        label: aiOperatorTaskTargets.targetLabel,
+        reason: aiOperatorTaskTargets.detachedReason,
+      })
+      .from(aiOperatorTaskTargets)
+      .where(and(
+        eq(aiOperatorTaskTargets.orgId, task.orgId),
+        eq(aiOperatorTaskTargets.taskId, task.id),
+        eq(aiOperatorTaskTargets.state, 'detached'),
+      ))
+      .orderBy(aiOperatorTaskTargets.targetOrdinal)
+      .limit(5)));
+  if (detached.length > 0) {
+    return detached
+      .map((d) => `task target ${d.label} (${d.kind}) was detached (${d.reason ?? 'unknown reason'})`)
+      .join('; ');
+  }
+  return 'the task was stopped';
+}
+
+/**
+ * An effect that LEFT Breeze and has not reported: dispatched (or carrying an
+ * execution reference) with a `pending` / `unknown` result. Wider than
+ * `hasUnsettledOperation`, which only counts rows with an execution reference
+ * — identity effects are dispatched through the release worker and carry
+ * none, but a dispatched provider write is just as able to land after a stop.
+ * A `reserved` row that was never claimed sent nothing and is not counted.
+ */
+async function hasInFlightEffect(orgId: string, taskId: string): Promise<boolean> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select({ id: aiOperatorOperations.id })
+        .from(aiOperatorOperations)
+        .where(and(
+          eq(aiOperatorOperations.orgId, orgId),
+          eq(aiOperatorOperations.taskId, taskId),
+          inArray(aiOperatorOperations.resultState, ['pending', 'unknown']),
+          or(
+            eq(aiOperatorOperations.dispatchState, 'dispatched'),
+            sql`${aiOperatorOperations.executionRefId} IS NOT NULL`,
+          ),
+        ))
+        .limit(1);
+      return rows.length > 0;
+    }));
 }
 
 /**
@@ -1374,6 +1537,7 @@ async function writeLeasedStep(
     taskId: task.id,
     revision: task.revision,
     leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: stepKey,
       phase,
@@ -1439,6 +1603,7 @@ async function settleStepAndMove(args: {
     taskId: task.id,
     revision: task.revision,
     leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: toStepKey,
       phase,
@@ -1529,6 +1694,7 @@ export async function advanceHumanWork(args: {
       taskId: task.id,
       revision: task.revision,
       leaseEpoch,
+      observedState: task.state as string,
       patch: {
         state: nextTaskState(task.state as string, 'wait'),
         waitReason: 'information',
