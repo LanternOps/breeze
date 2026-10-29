@@ -255,10 +255,10 @@ export const SECURITY_SCAN_COMMAND_GRACE_MS = 10 * 60 * 1000;
  * command carries. It used to be a flat 30 minutes, while a policy can give
  * the agent up to 720 (`scanTimeoutMinutes`), so the reaper failed long scans
  * the agent was still running. The payload's `timeoutMinutes` is the agent's
- * deadline (services/securityScanPayload.ts writes the policy value). With no
- * budget on the wire — no policy governs the device — the agent scans with no
- * deadline at all, so the server falls back to the 720-minute policy ceiling,
- * the same bound the sweep pump finalizes on.
+ * deadline (services/securityScanPayload.ts writes the policy value, or the
+ * 720-minute ceiling when no policy governs the device). A payload with no
+ * budget — a command queued before that change — falls back to the same
+ * ceiling, the bound the sweep pump finalizes on.
  */
 function securityScanTimeoutMs(payload?: Record<string, unknown> | null): number {
   const [min, max] = SECURITY_SCAN_TIMEOUT_MINUTES_RANGE;

@@ -132,11 +132,7 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	// quarantine stay excluded whatever the policy says.
 	options.ExcludePaths = append(options.ExcludePaths, s.Exclusions...)
 
-	scanCtx := ctx
-	cancel := func() {}
-	if s.Timeout > 0 {
-		scanCtx, cancel = context.WithTimeout(ctx, s.Timeout)
-	}
+	scanCtx, cancel := context.WithTimeout(ctx, s.effectiveTimeout())
 	defer cancel()
 
 	started := time.Now()
@@ -379,4 +375,20 @@ func filterExistingPaths(paths []string) []string {
 		}
 	}
 	return filtered
+}
+
+// MaxScanTimeout is the longest a scan may run: the policy ceiling
+// (SECURITY_SCAN_TIMEOUT_MINUTES_RANGE in packages/shared). #10057 — the server
+// releases a device's scan slot once a delivered scan has been silent past this
+// ceiling, so a scan with no deadline could overlap the next one.
+const MaxScanTimeout = 720 * time.Minute
+
+// effectiveTimeout is the scan's deadline: the delivered budget, or
+// MaxScanTimeout when there is none (zero or negative) or it exceeds the
+// ceiling. A scan is never unbounded.
+func (s *SecurityScanner) effectiveTimeout() time.Duration {
+	if s.Timeout <= 0 || s.Timeout > MaxScanTimeout {
+		return MaxScanTimeout
+	}
+	return s.Timeout
 }

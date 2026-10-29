@@ -17,8 +17,15 @@
  *      offline device can wait for its `deliver_by` (the standard 7-day queue),
  *      and the reaper expiring it hands the row to rule 1. A row whose command
  *      row is gone falls back to `started_at`. 720 is the longest deadline a
- *      policy can give the agent, and a scan with no policy has none, so a
- *      shorter clock could fail a scan the agent is still running.
+ *      policy can give the agent, so a shorter clock could fail a scan the
+ *      agent is still running.
+ *
+ * Releasing the slot is safe only because the agent's scan is bounded by the
+ * same ceiling: the payload always carries `timeoutMinutes` (the policy budget,
+ * or 720 with no policy — services/securityScanPayload.ts), and agents from
+ * this build also default to 720 themselves (security.MaxScanTimeout). Without
+ * that a policy-less agent scanned with no deadline, and a scan dispatched into
+ * the freed slot could overlap one still running (#10057).
  *
  * Both are provisional in the same way as the sweep finalize: a late agent
  * result still lands, because the result handler (routes/agents/helpers.ts

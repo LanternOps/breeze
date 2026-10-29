@@ -72,6 +72,8 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	if timeoutMinutes > 0 {
 		scanner.Timeout = time.Duration(timeoutMinutes) * time.Minute
 	}
+	// No budget on the wire leaves Timeout at zero, which ScanWithContext
+	// treats as security.MaxScanTimeout, never as "no deadline" (#10057).
 
 	// #6263 W02 — optional YARA rule sets (contract C1). Absent ⇒ exactly the
 	// W01 legacy scan. Every rule-set problem is reported per set in
