@@ -26,7 +26,8 @@ const CUSTOM_DEFS = [
   },
 ];
 
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../stores/auth')>(),
   fetchWithAuth: vi.fn(),
 }));
 

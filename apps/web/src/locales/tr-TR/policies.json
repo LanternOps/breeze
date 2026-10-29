@@ -1219,6 +1219,20 @@
         "title": "Bu ilkedeki cihazlar iki kez uyarı verecek",
         "body": "Bu koşullar hem bağlı bir monitör hem de eski bir kural veya izleme olarak mevcut: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Cihaz grupları (tüm kuruluşlar)",
+      "description": "İş ortağı genelindeki bir cihaz grubunu hedefleyin. Grup ataması cihaz grubu düzeyinde uygulanır; bu nedenle diğer ilkelerin kuruluş ve site düzeyindeki atamalarından önceliklidir.",
+      "selectGroup": "Bir cihaz grubu seçin",
+      "assign": "Ata",
+      "remove": "Kaldır",
+      "assigned": "Cihaz grubu atandı",
+      "removed": "Cihaz grubu ataması kaldırıldı",
+      "failedToLoad": "Cihaz grupları yüklenemedi",
+      "failedToAssign": "Cihaz grubu atanamadı",
+      "failedToRemove": "Cihaz grubu ataması kaldırılamadı",
+      "empty": "Henüz iş ortağı genelinde cihaz grubu yok. Cihaz Grupları → Tüm kuruluşlar altında bir tane oluşturun.",
+      "loading": "Cihaz grupları yükleniyor…"
     }
   },
   "software": {

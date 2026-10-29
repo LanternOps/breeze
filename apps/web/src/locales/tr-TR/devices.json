@@ -390,7 +390,9 @@
     "filterRules": "Filtre Kuralları",
     "cancel": "İptal",
     "creating": "Oluşturuluyor...",
-    "createGroup": "Grup Oluştur"
+    "createGroup": "Grup Oluştur",
+    "created": "Cihaz grubu oluşturuldu",
+    "missingGroupId": "Grup oluşturuldu ancak sunucu yanıtında grup kimliği eksik. Lütfen sayfayı yenileyin."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Şuna bir politika atayın:",
     "policy2": "Politika",
     "selectAPolicy": "Bir politika seçin",
-    "applying": "Başvuruluyor..."
+    "applying": "Başvuruluyor...",
+    "ownerFilterAll": "Tüm gruplar",
+    "ownerFilterOrganization": "Kuruluş grupları",
+    "ownerFilterPartner": "Tüm kuruluşlar",
+    "noGroupsMatchFilter": "Bu filtreyle eşleşen grup yok.",
+    "managedByPartner": "Hizmet sağlayıcınız tarafından yönetilir. Üyelik kuralları gösterilmez; kuruluşunuzun cihazlarını görürsünüz.",
+    "partnerDynamicType": "Dinamik · Tüm kuruluşlar",
+    "partnerDeleteWarning": "Bu işlem grubu tüm kuruluşlardan kaldırır ve ilke atamalarını siler."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Donanım envanteri getirilemedi",
@@ -4666,5 +4675,28 @@
       "authorityDevice": "Bu varlık artık yönetilen bir cihaza bağlı. Konumu cihazda düzenleyin.",
       "mfaRequired": "Fiziksel konumu değiştirmek için çok faktörlü kimlik doğrulama gerekir."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Grup sahibi",
+    "organization": "Bu kuruluş",
+    "partner": "Tüm kuruluşlar",
+    "dynamicOnly": "iş ortağı genelinde, yalnızca dinamik",
+    "scopeHint": "Üyelik, yönettiğiniz her kuruluşta değerlendirilir; statik üyelik, siteler ve grup veya kuruluş filtre koşulları kullanılamaz.",
+    "allOrgs": "Tüm kuruluşlar",
+    "pending": "Üyelik güncelleniyor…",
+    "current": "Son değerlendirme: {{time}}",
+    "notEvaluated": "Henüz değerlendirilmedi",
+    "partial_one": "{{count}} kuruluş değerlendirilmedi · son başarılı değerlendirme {{time}}",
+    "partial_other": "{{count}} kuruluş değerlendirilmedi · son başarılı değerlendirme {{time}}",
+    "retryHint": "Breeze bu kuruluşları otomatik olarak yeniden dener. Grubun filtresini kaydetmek yeni bir değerlendirme başlatır.",
+    "showMembers": "Üyeleri göster",
+    "hideMembers": "Üyeleri gizle",
+    "device": "Cihaz",
+    "organizationColumn": "Kuruluş",
+    "status": "Durum",
+    "loading": "Üyeler yükleniyor…",
+    "membersError": "Grup üyeleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "emptyMembers": "Bu grupta cihaz yok."
   }
 }

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { Dialog } from "../shared/Dialog";
 import { FilterBuilder } from "../filters/FilterBuilder";
@@ -6,6 +6,11 @@ import { useDeviceFilterFields } from "../filters/useDeviceFilterFields";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
+import { GroupOwnerScopeField } from './GroupOwnerScopeField';
+import { partnerGroupFilterFields, partnerGroupFilterHasRefusedField, usePartnerGroupCapabilities, type GroupOwnerScope } from './partnerGroups';
 
 type GroupType = "static" | "dynamic";
 
@@ -26,6 +31,19 @@ export default function CreateGroupModal({
   onCreated,
 }: CreateGroupModalProps) {
   const { t } = useTranslation("devices");
+  const { defaultOwnerScope } = useDefaultOwnerScope();
+  const { canCreatePartnerGroup } = usePartnerGroupCapabilities();
+  const [ownerScope, setOwnerScope] = useState<GroupOwnerScope>(canCreatePartnerGroup ? defaultOwnerScope : 'organization');
+  const wasOpen = useRef(isOpen);
+  useEffect(() => {
+    // The modal stays mounted on DevicesPage. Follow the ambient default while
+    // closed and when opening, without replacing a choice made in the form.
+    if (!isOpen || !wasOpen.current) {
+      setOwnerScope(canCreatePartnerGroup ? defaultOwnerScope : 'organization');
+    }
+    wasOpen.current = isOpen;
+  }, [isOpen, canCreatePartnerGroup, defaultOwnerScope]);
+  const isPartner = canCreatePartnerGroup && ownerScope === 'partner';
   const [name, setName] = useState("");
   const [type, setType] = useState<GroupType>("static");
   const [filterConditions, setFilterConditions] =
@@ -38,48 +56,48 @@ export default function CreateGroupModal({
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
+    if (isPartner && partnerGroupFilterHasRefusedField(filterConditions)) {
+      setError(t('errors:PARTNER_GROUP_FILTER_UNSUPPORTED'));
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
 
     try {
-      const body: Record<string, unknown> = { name: name.trim(), type };
-      if (type === "dynamic") {
-        body.filterConditions = filterConditions;
-      }
-
-      const res = await fetchWithAuth("/device-groups", {
-        method: "POST",
-        body: JSON.stringify(body),
+      const body: Record<string, unknown> = isPartner
+        ? { ownerScope: 'partner', name: name.trim(), type: 'dynamic', filterConditions }
+        : { name: name.trim(), type, ...(type === 'dynamic' ? { filterConditions } : {}) };
+      const data = await runAction<{ data?: { id?: string }; id?: string }>({
+        request: () => fetchWithAuth("/device-groups", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+        successMessage: t('createGroupModal.created'),
+        errorFallback: t('createGroupModal.failedToCreateGroup'),
       });
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(
-          data?.error ?? `Failed to create group (${res.status})`,
-        );
-      }
-
-      const data = await res.json();
-      const newGroupId = data.data?.id ?? data.id;
+      const newGroupId = data?.data?.id ?? data?.id;
 
       if (!newGroupId || typeof newGroupId !== "string") {
         throw new Error(
-          "Group created but server response was missing the group ID. Please refresh the page.",
+          t('createGroupModal.missingGroupId'),
         );
       }
 
       // Reset form
       setName("");
       setType("static");
+      setOwnerScope(canCreatePartnerGroup ? defaultOwnerScope : 'organization');
       setFilterConditions(makeEmptyFilter());
       onCreated(newGroupId);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : t("createGroupModal.failedToCreateGroup"),
-      );
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        const message = err instanceof Error ? err.message : t("createGroupModal.failedToCreateGroup");
+        setError(message);
+        showToast({ type: 'error', message });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -88,6 +106,7 @@ export default function CreateGroupModal({
   const handleClose = () => {
     setName("");
     setType("static");
+    setOwnerScope(canCreatePartnerGroup ? defaultOwnerScope : 'organization');
     setFilterConditions(makeEmptyFilter());
     setError(null);
     onClose();
@@ -124,7 +143,9 @@ export default function CreateGroupModal({
             />
           </div>
 
-          <div>
+          {canCreatePartnerGroup && <GroupOwnerScopeField value={ownerScope} onChange={setOwnerScope} disabled={submitting} />}
+
+          {!isPartner && <div>
             <label className="block text-sm font-medium mb-1">
               {t("createGroupModal.type")}
             </label>
@@ -157,9 +178,9 @@ export default function CreateGroupModal({
                 ? t("createGroupModal.manuallyAddAndRemoveDevicesAfter")
                 : t("createGroupModal.devicesAreAutoAssignedBasedOn")}
             </p>
-          </div>
+          </div>}
 
-          {type === "dynamic" && (
+          {(isPartner || type === "dynamic") && (
             <div>
               <label className="block text-sm font-medium mb-1">
                 {t("createGroupModal.filterRules")}
@@ -167,7 +188,7 @@ export default function CreateGroupModal({
               <FilterBuilder
                 value={filterConditions}
                 onChange={setFilterConditions}
-                filterFields={filterFields}
+                filterFields={isPartner ? partnerGroupFilterFields(filterFields) : filterFields}
                 showPreview={false}
               />
             </div>

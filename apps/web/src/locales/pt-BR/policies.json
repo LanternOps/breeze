@@ -1219,6 +1219,20 @@
         "title": "Os dispositivos desta política alertarão duas vezes",
         "body": "Estas condições existem como monitor anexado e também como regra ou vigilância legada: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Grupos de dispositivos (todas as org.)",
+      "description": "Selecione como destino um grupo de dispositivos de todo o parceiro. Uma atribuição de grupo se aplica no nível do grupo de dispositivos e, portanto, tem precedência sobre atribuições de outras políticas nos níveis de organização e site.",
+      "selectGroup": "Selecione um grupo de dispositivos",
+      "assign": "Atribuir",
+      "remove": "Remover",
+      "assigned": "Grupo de dispositivos atribuído",
+      "removed": "Atribuição do grupo de dispositivos removida",
+      "failedToLoad": "Não foi possível carregar os grupos de dispositivos",
+      "failedToAssign": "Não foi possível atribuir o grupo de dispositivos",
+      "failedToRemove": "Não foi possível remover a atribuição do grupo de dispositivos",
+      "empty": "Ainda não há grupos de dispositivos de todo o parceiro. Crie um em Grupos de dispositivos → Todas as org.",
+      "loading": "Carregando grupos de dispositivos…"
     }
   },
   "software": {

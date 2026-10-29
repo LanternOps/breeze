@@ -9,7 +9,7 @@ import { navigateTo } from '@/lib/navigation';
 
 type ConfigPolicy = { id: string; name: string };
 type Site = { id: string; name: string };
-type Group = { id: string; name: string };
+type Group = { id: string; name: string; ownerScope?: 'organization' | 'partner' };
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -56,11 +56,11 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
     void fetchAllSites<Site>('/orgs/sites')
       .then((list) => setSites(list))
       .catch(() => setSites([]));
-    void fetchWithAuth('/groups')
+    void fetchWithAuth(orgId ? '/groups' : '/groups?ownerScope=all')
       .then((res) => (res.ok ? res.json() : { data: [] }))
       .then((data) => setGroups(data.data ?? data.groups ?? []))
       .catch(() => setGroups([]));
-  }, [open]);
+  }, [open, orgId]);
 
   useEffect(() => {
     if (mode !== 'new') return;
@@ -204,11 +204,20 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
                   onChange={(e) => setTargetId(e.target.value)}
                 >
                   <option value="">{t('deploy.selectTarget')}</option>
-                  {groups.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.name}
-                    </option>
-                  ))}
+                  {orgId ? groups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  )) : <>
+                    {groups.some((group) => group.ownerScope === 'partner') && (
+                      <optgroup label={t('deploy.partnerWideGroups')}>
+                        {groups.filter((group) => group.ownerScope === 'partner').map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </optgroup>
+                    )}
+                    {groups.some((group) => group.ownerScope !== 'partner') && (
+                      <optgroup label={t('deploy.organizationGroups')}>
+                        {groups.filter((group) => group.ownerScope !== 'partner').map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </optgroup>
+                    )}
+                  </>}
                 </select>
               )}
               <input

@@ -1219,6 +1219,20 @@
         "title": "Les appareils de cette politique alerteront deux fois",
         "body": "Ces conditions existent à la fois comme moniteur attaché et comme règle ou surveillance héritée : {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Groupes d’appareils (toutes les org.)",
+      "description": "Ciblez un groupe d’appareils à l’échelle du partenaire. Une affectation de groupe s’applique au niveau du groupe d’appareils et a donc priorité sur les affectations d’autres politiques au niveau de l’organisation et du site.",
+      "selectGroup": "Sélectionner un groupe d’appareils",
+      "assign": "Affecter",
+      "remove": "Retirer",
+      "assigned": "Groupe d’appareils affecté",
+      "removed": "Affectation du groupe d’appareils retirée",
+      "failedToLoad": "Impossible de charger les groupes d’appareils",
+      "failedToAssign": "Impossible d’affecter le groupe d’appareils",
+      "failedToRemove": "Impossible de retirer l’affectation du groupe d’appareils",
+      "empty": "Aucun groupe d’appareils à l’échelle du partenaire pour le moment. Créez-en un sous Groupes d’appareils → Toutes les org.",
+      "loading": "Chargement des groupes d’appareils…"
     }
   },
   "software": {

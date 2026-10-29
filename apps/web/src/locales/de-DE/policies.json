@@ -1219,6 +1219,20 @@
         "title": "Geräte in dieser Richtlinie melden doppelt",
         "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Gerätegruppen (alle Org.)",
+      "description": "Wählen Sie eine partnerweite Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
+      "selectGroup": "Gerätegruppe auswählen",
+      "assign": "Zuweisen",
+      "remove": "Entfernen",
+      "assigned": "Gerätegruppe zugewiesen",
+      "removed": "Gerätegruppenzuweisung entfernt",
+      "failedToLoad": "Gerätegruppen konnten nicht geladen werden",
+      "failedToAssign": "Gerätegruppe konnte nicht zugewiesen werden",
+      "failedToRemove": "Gerätegruppenzuweisung konnte nicht entfernt werden",
+      "empty": "Noch keine partnerweiten Gerätegruppen. Erstellen Sie eine unter Gerätegruppen → Alle Org.",
+      "loading": "Gerätegruppen werden geladen…"
     }
   },
   "software": {

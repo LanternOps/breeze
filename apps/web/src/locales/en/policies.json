@@ -1219,6 +1219,20 @@
         "title": "Devices in this policy will alert twice",
         "body": "These conditions exist both as an attached monitor and as a legacy rule or watch: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Device groups (all orgs)",
+      "description": "Target a partner-wide device group. A group assignment applies at device-group level, so it takes precedence over organization- and site-level assignments of other policies.",
+      "selectGroup": "Select a device group",
+      "assign": "Assign",
+      "remove": "Remove",
+      "assigned": "Device group assigned",
+      "removed": "Device group assignment removed",
+      "failedToLoad": "Failed to load device groups",
+      "failedToAssign": "Failed to assign device group",
+      "failedToRemove": "Failed to remove device group assignment",
+      "empty": "No partner-wide device groups yet. Create one under Device Groups → All orgs.",
+      "loading": "Loading device groups…"
     }
   },
   "software": {

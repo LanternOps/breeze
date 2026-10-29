@@ -390,7 +390,9 @@
     "filterRules": "Reglas de filtrado",
     "cancel": "Cancelar",
     "creating": "Creando...",
-    "createGroup": "Crear grupo"
+    "createGroup": "Crear grupo",
+    "created": "Grupo de dispositivos creado",
+    "missingGroupId": "El grupo se creó, pero la respuesta del servidor no incluyó su ID. Actualiza la página."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} quitados ocultos",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Asignar una política a",
     "policy2": "Política",
     "selectAPolicy": "Seleccione una política",
-    "applying": "Aplicando..."
+    "applying": "Aplicando...",
+    "ownerFilterAll": "Todos los grupos",
+    "ownerFilterOrganization": "Grupos de la organización",
+    "ownerFilterPartner": "Todas las org.",
+    "noGroupsMatchFilter": "Ningún grupo coincide con este filtro.",
+    "managedByPartner": "Administrado por tu proveedor de servicios. Las reglas de membresía no se muestran; ves los dispositivos de tu organización.",
+    "partnerDynamicType": "Dinámico · Todas las org.",
+    "partnerDeleteWarning": "Esto elimina el grupo de todas las organizaciones y borra sus asignaciones de políticas."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "No se pudo recuperar el inventario de hardware",
@@ -4666,5 +4675,28 @@
       "authorityDevice": "Este activo ahora está vinculado a un dispositivo administrado. Edita la ubicación en el dispositivo.",
       "mfaRequired": "Se requiere autenticación multifactor para cambiar la ubicación física."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Propietario del grupo",
+    "organization": "Esta organización",
+    "partner": "Todas las organizaciones",
+    "dynamicOnly": "de todo el socio, solo dinámicos",
+    "scopeHint": "La membresía se evalúa en cada organización que administras; no están disponibles la membresía estática, los sitios ni las condiciones de filtro por grupo u organización.",
+    "allOrgs": "Todas las org.",
+    "pending": "Actualizando membresía…",
+    "current": "Última evaluación: {{time}}",
+    "notEvaluated": "Aún no se ha evaluado",
+    "partial_one": "{{count}} organización sin evaluar · última evaluación correcta {{time}}",
+    "partial_other": "{{count}} organizaciones sin evaluar · última evaluación correcta {{time}}",
+    "retryHint": "Breeze reintenta estas organizaciones automáticamente. Guardar el filtro del grupo inicia una nueva evaluación.",
+    "showMembers": "Mostrar miembros",
+    "hideMembers": "Ocultar miembros",
+    "device": "Dispositivo",
+    "organizationColumn": "Organización",
+    "status": "Estado",
+    "loading": "Cargando miembros…",
+    "membersError": "No se pudieron cargar los miembros del grupo.",
+    "retry": "Reintentar",
+    "emptyMembers": "No hay dispositivos en este grupo."
   }
 }

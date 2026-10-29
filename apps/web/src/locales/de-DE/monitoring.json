@@ -336,7 +336,9 @@
       "attach": "Monitor konnte nicht angehängt werden",
       "detach": "Monitor konnte nicht gelöst werden",
       "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."
-    }
+    },
+    "partnerWideGroups": "Alle Org. (partnerweit)",
+    "organizationGroups": "Organisationsgruppen"
   },
   "policyTab": {
     "title": "Monitore",

@@ -336,7 +336,9 @@
       "attach": "Impossible de joindre le moniteur",
       "detach": "Impossible de détacher le moniteur",
       "linkedFeature": "Les moniteurs de cette politique proviennent d'une politique de fonctionnalité partagée. Modifiez cette politique ou choisissez-en une autre."
-    }
+    },
+    "partnerWideGroups": "Toutes les org. (à l’échelle du partenaire)",
+    "organizationGroups": "Groupes d’organisation"
   },
   "policyTab": {
     "title": "Moniteurs",

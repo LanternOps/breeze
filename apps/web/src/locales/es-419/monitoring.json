@@ -336,7 +336,9 @@
       "attach": "No se pudo adjuntar el monitor",
       "detach": "No se pudo separar el monitor",
       "linkedFeature": "Los monitores de esta política provienen de una política de función compartida. Edite esa política o elija otra."
-    }
+    },
+    "partnerWideGroups": "Todas las org. (de todo el socio)",
+    "organizationGroups": "Grupos de la organización"
   },
   "policyTab": {
     "title": "Monitores",

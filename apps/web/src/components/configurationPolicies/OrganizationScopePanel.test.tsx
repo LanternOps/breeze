@@ -46,21 +46,35 @@ function findCall(urlIncludes: string, method?: string) {
   });
 }
 
+// Responses are matched by endpoint and HTTP method, so adding independent
+// requests cannot consume another resource's fixture. Same-resource refetches
+// may have successive responses (e.g. an assignment removed by a mutation).
+const routeResponses: Array<{ prefix: string; method: string; respond: () => unknown }> = [];
+const routes = {
+  once(prefix: string, method: string, respond: () => unknown) {
+    routeResponses.push({ prefix, method, respond });
+    return routes;
+  },
+};
+
 beforeEach(() => {
+  routeResponses.length = 0;
   fetchWithAuthMock.mockReset();
   showToastMock.mockReset();
   // Safe default for any call not explicitly stubbed by a test (e.g. a
   // refetch-after-mutation) so the queue never underflows into `undefined`.
-  fetchWithAuthMock.mockImplementation(() =>
-    jsonRes({ data: [], pagination: { page: 1, limit: 100, total: 0 } })
-  );
+  fetchWithAuthMock.mockImplementation((url: string, options?: RequestInit) => {
+    const index = routeResponses.findIndex((route) => url.startsWith(route.prefix) && route.method === (options?.method ?? 'GET'));
+    if (index !== -1) return routeResponses.splice(index, 1)[0]!.respond();
+    return jsonRes({ data: [], pagination: { page: 1, limit: 100, total: 0 } });
+  });
 });
 
 describe('OrganizationScopePanel', () => {
   it('checks orgs that already have an organization-level assignment', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
@@ -69,9 +83,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('POSTs an organization assignment when an org is checked', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
@@ -84,9 +98,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('POSTs a partner assignment (no targetId) when All orgs is toggled on', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
@@ -102,12 +116,12 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('deletes every existing org assignment before POSTing the partner row when multiple orgs are assigned and All orgs is toggled on', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([
         { id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 },
         { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0 },
       ]))
-      .mockImplementationOnce(() => orgsPageRes([
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([
         { id: 'org-acme', name: 'Acme Corp' },
         { id: 'org-contoso', name: 'Contoso Ltd' },
       ]));
@@ -138,10 +152,10 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('reaches orgs beyond the first page via "Load more"', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-1', name: 'Org One' }], 2, 1))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-2', name: 'Org Two' }], 2, 2));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-1', name: 'Org One' }], 2, 1))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-2', name: 'Org Two' }], 2, 2));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     await screen.findByRole('checkbox', { name: 'Org One' });
@@ -163,9 +177,9 @@ describe('OrganizationScopePanel', () => {
   // when it's absent from the currently loaded/searched page — and unchecking
   // it must still fire the DELETE.
   it('DELETEs the org assignment when an assigned org (in the current page) is unchecked', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0 }]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const acme = await screen.findByRole('checkbox', { name: /Acme Corp/i });
@@ -177,9 +191,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('DELETEs the partner assignment when "All organizations" is turned off', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
@@ -191,14 +205,14 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('surfaces an error and still refetches assignments when a mutation fails mid-sequence', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-contoso', name: 'Contoso Ltd' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
 
-    fetchWithAuthMock.mockImplementationOnce(() => jsonRes({ error: 'Simulated failure' }, false, 500));
+    routes.once('/configuration-policies/p1/assignments', 'POST', () => jsonRes({ error: 'Simulated failure' }, false, 500));
 
     fireEvent.click(contoso);
 
@@ -219,10 +233,10 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('always renders an assigned org that is not in the current page, and can unassign it', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([{ id: 'a-51', level: 'organization', targetId: 'org-51', priority: 0 }]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-1', name: 'Org One' }], 51, 1))
-      .mockImplementationOnce(() => jsonRes({ id: 'org-51', name: 'Org 51' })); // individual lookup
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'a-51', level: 'organization', targetId: 'org-51', priority: 0 }]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-1', name: 'Org One' }], 51, 1))
+      .once('/orgs/organizations/org-51', 'GET', () => jsonRes({ id: 'org-51', name: 'Org 51' })); // individual lookup
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
 
@@ -235,14 +249,14 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('issues a server-side search request and resets to page 1', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-1', name: 'Org One' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-1', name: 'Org One' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     await screen.findByRole('checkbox', { name: 'Org One' });
 
-    fetchWithAuthMock.mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes.once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     const searchBox = screen.getByPlaceholderText('Search organizations...');
     fireEvent.change(searchBox, { target: { value: 'acme' } });
@@ -258,16 +272,16 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('shows a searching indicator while a search refetch is in flight and orgs are already loaded', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-1', name: 'Org One' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-1', name: 'Org One' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     await screen.findByRole('checkbox', { name: 'Org One' });
     expect(screen.queryByText(/Searching…/i)).not.toBeInTheDocument();
 
     let resolveSearch: (value: unknown) => void = () => {};
-    fetchWithAuthMock.mockImplementationOnce(
+    routes.once('/orgs/organizations?', 'GET',
       () => new Promise((resolve) => { resolveSearch = resolve; })
     );
 
@@ -287,9 +301,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('renders role and OS filter chips', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     expect(await screen.findByText('Role Filter')).toBeInTheDocument();
@@ -299,9 +313,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('POSTs a partner assignment with roleFilter when Server is selected and All orgs is toggled on', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const allOrgs = await screen.findByRole('checkbox', { name: /All organizations/i });
@@ -317,9 +331,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('POSTs an org assignment with osFilter when Windows is selected and an org is checked', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     const contoso = await screen.findByRole('checkbox', { name: /Contoso Ltd/i });
@@ -338,11 +352,11 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('shows a Server badge on All orgs when the partner assignment has a role filter', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() =>
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () =>
         assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0, roleFilter: ['server'] }]),
       )
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     expect(await screen.findByRole('checkbox', { name: /All organizations/i })).toBeChecked();
@@ -351,8 +365,8 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('shows a Linux badge on an assigned org row', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() =>
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () =>
         assignmentsRes([{
           id: 'a1',
           level: 'organization',
@@ -361,7 +375,7 @@ describe('OrganizationScopePanel', () => {
           osFilter: ['linux'],
         }]),
       )
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }, { id: 'org-contoso', name: 'Contoso Ltd' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     expect(await screen.findByRole('checkbox', { name: /Acme Corp/i })).toBeChecked();
@@ -369,17 +383,17 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('posts the edited filters when one of two shared-filter orgs is turned off and back on', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([
         { id: 'a1', level: 'organization', targetId: 'org-acme', priority: 0, roleFilter: ['server'] },
         { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0, roleFilter: ['server'] },
       ]))
-      .mockImplementationOnce(() => orgsPageRes([
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([
         { id: 'org-acme', name: 'Acme Corp' },
         { id: 'org-contoso', name: 'Contoso Ltd' },
       ]))
-      .mockImplementationOnce(() => jsonRes({}))
-      .mockImplementationOnce(() => assignmentsRes([
+      .once('/configuration-policies/p1/assignments/', 'DELETE', () => jsonRes({}))
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([
         { id: 'a2', level: 'organization', targetId: 'org-contoso', priority: 0, roleFilter: ['server'] },
       ]));
 
@@ -412,9 +426,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('toasts success when "All organizations" is turned on', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     fireEvent.click(await screen.findByRole('checkbox', { name: /All organizations/i }));
@@ -425,9 +439,9 @@ describe('OrganizationScopePanel', () => {
   });
 
   it('toasts success when "All organizations" is turned off', async () => {
-    fetchWithAuthMock
-      .mockImplementationOnce(() => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
-      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+    routes
+      .once('/configuration-policies/p1/assignments', 'GET', () => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
+      .once('/orgs/organizations?', 'GET', () => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
 
     render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
     fireEvent.click(await screen.findByRole('checkbox', { name: /All organizations/i }));

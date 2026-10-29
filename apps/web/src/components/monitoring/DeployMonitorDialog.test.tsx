@@ -103,4 +103,23 @@ describe('DeployMonitorDialog (#5289)', () => {
     const body = JSON.parse((call![1] as RequestInit).body as string);
     expect(body.createPolicyFor.targetId).toBe('org-store-1');
   });
+  it('loads both ownership scopes for a partner-wide monitor and preserves both optgroups', async () => {
+    fetchMock.mockImplementation(async (url) => json({ data: url.startsWith('/groups') ? [
+      { id: 'partner-g', name: 'All servers', ownerScope: 'partner' },
+      { id: 'org-g', name: 'Office servers', ownerScope: 'organization' },
+    ] : [] }));
+    render(<DeployMonitorDialog monitorId="m1" orgId={null} open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups?ownerScope=all'));
+    fireEvent.click(screen.getByTestId('deploy-monitor-mode-new'));
+    fireEvent.change(screen.getByTestId('deploy-monitor-level-select'), { target: { value: 'device_group' } });
+    expect(await screen.findByRole('group', { name: 'All orgs (partner-wide)' })).toHaveTextContent('All servers');
+    expect(screen.getByRole('group', { name: 'Organization groups' })).toHaveTextContent('Office servers');
+  });
+
+  it('keeps the plain groups endpoint for an org-owned monitor', async () => {
+    render(<DeployMonitorDialog monitorId="m1" orgId="org1" open onClose={vi.fn()} onDeployed={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/groups'));
+    expect(fetchMock).not.toHaveBeenCalledWith('/groups?ownerScope=all');
+  });
+
 });
