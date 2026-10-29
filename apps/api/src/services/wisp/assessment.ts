@@ -40,7 +40,7 @@ import { tickets } from '../../db/schema/portal';
 import { wispGrants } from '../../db/schema/wisp';
 import { wispEnabled } from '../../config/env';
 import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
-import { createAndEnqueueAgentRun } from '../aiAgents/runService';
+import { createAndEnqueueAgentRun, type AgentRunSkipReason } from '../aiAgents/runService';
 import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
 import { captureException } from '../sentry';
@@ -250,16 +250,25 @@ export async function enqueueAssessment(
     await clearNoAgentReadiness(ceiling.partnerId, orgId);
     return { runId: result.run.id };
   }
-  // An agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
-  if (result.skipped === 'no_effective_agent') await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
+  // An enabled Triage agent resolved (the skip is something else), so a stale "no agent" concern is false: close it.
+  if (NO_ENABLED_TRIAGE_AGENT_SKIPS.has(result.skipped)) await raiseNoAgentReadiness(grantId, ceiling.partnerId, orgId);
   else await clearNoAgentReadiness(ceiling.partnerId, orgId);
   return skipAssessment(result.skipped, 'skipped_admission');
 }
 
-/** #10143: Wisp looks idle, not blocked, when an org has no effective AI agent. */
+/**
+ * #10143: Wisp looks idle, not blocked, when an org has no effective AI agent.
+ * #10292: an assessment is a `triage` run, so readiness is "an ENABLED Triage
+ * agent resolves" by the same partner-baseline → org-override merge admission
+ * uses (resolveEffectiveAgentSystem, then `effective.enabled` / `mode`). An
+ * agent of another kind never satisfies it, and one that resolves but is
+ * turned off blocks Wisp just the same — the copy names the kind for both.
+ */
+const NO_ENABLED_TRIAGE_AGENT_SKIPS: ReadonlySet<string> = new Set<AgentRunSkipReason>(['no_effective_agent', 'agent_disabled', 'mode_off']);
 const noAgentSignature = (orgId: string): string => `wisp-readiness:no-effective-agent:${orgId}`;
 const NO_AGENT_SUMMARY =
-  "Wisp can't check this organization yet — no AI agent is configured. Create one under Settings → AI Agents.";
+  "Wisp can't check this organization yet — its checks run as your Triage agent, and no enabled Triage agent "
+  + 'applies here (other agent kinds don\'t count). Create or turn one on under Settings → AI Agents.';
 const NO_AGENT_HREF = '/settings/ai-agents';
 
 /** Upsert (keyed by signature, so once per org however many ticks skip). Best effort: never changes the skip. */
