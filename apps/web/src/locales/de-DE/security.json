@@ -2703,5 +2703,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Sie haben keinen Zugriff auf diese Organisation"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig"
+    },
+    "findingStatus": {
+      "open": "Offen",
+      "remediated": "Behoben",
+      "accepted": "Akzeptiert",
+      "falsePositive": "Falsch positiv"
+    },
+    "scanStatus": {
+      "queued": "In Warteschlange",
+      "running": "Läuft",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
+    },
+    "dataType": {
+      "credential": "Anmeldedaten",
+      "financial": "Finanzdaten"
+    },
+    "a11y": {
+      "editPolicy": "Richtlinie {{name}} bearbeiten",
+      "deletePolicy": "Richtlinie {{name}} löschen",
+      "togglePolicyActive": "Aktiv: {{name}}"
+    }
   }
 }

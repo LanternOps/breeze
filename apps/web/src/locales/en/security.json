@@ -2703,5 +2703,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "You don't have access to this organization"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "findingStatus": {
+      "open": "Open",
+      "remediated": "Remediated",
+      "accepted": "Accepted",
+      "falsePositive": "False Positive"
+    },
+    "scanStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "dataType": {
+      "credential": "Credentials",
+      "financial": "Financial"
+    },
+    "a11y": {
+      "editPolicy": "Edit policy {{name}}",
+      "deletePolicy": "Delete policy {{name}}",
+      "togglePolicyActive": "Active: {{name}}"
+    }
   }
 }
