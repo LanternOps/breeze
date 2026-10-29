@@ -69,6 +69,22 @@ Behind `FLOWS_ENABLED` (default off). No new environment variables.
 - **`resolve_targets` also takes `deviceIds`**, so an event Job whose first action is a notice or an alert converts (it bound the triggering device and was refused before).
 - **Known differences from the Job** (verified by the parity suite): a notice's severity `high` or `medium` becomes `warning` (`low` becomes `info`), and an on-failure notice says "Automation <name> action <n> failed on <host>" instead of the action's failure reason.
 
+**PR C — Jobs move to Flows (R1).** No migration.
+
+- **`FLOWS_ENABLED` now defaults to `true`.** Unset or empty turns Flows on; the compose files pass `${FLOWS_ENABLED:-true}` and both `.env.example` files ship `FLOWS_ENABLED=true`. **To keep Flows off, set `FLOWS_ENABLED=false`**: every flow route then answers 404, Jobs stay fully writable (including creating new ones), and "Move to Flows" does not appear.
+- **New Jobs are made in Flows.** With Flows on, `POST /api/v1/automations` answers `410 { "error": "automations_moved_to_flows", "flowsUrl": "/flows" }` and the Jobs page's "New job" opens Flows. Existing Jobs keep running and stay editable until they are switched. Managed rows (AI triage seeding, monitor compile, policy workflows) are unaffected.
+- **Jobs page.** A "Move to Flows" column with the fidelity of each Job in shadow (**Exact**, **Needs review**, or **Can't move yet** with the blocker in words), a per-Job panel at `#convert-<jobId>` with the findings, the flow's steps and the shadow counters, a banner with "Start shadow for all convertible" for the selected organization (shadow only — nothing is ever switched automatically), and Revert. A switched Job is read-only and links to its flow; the flow's page shows "Moved from Job <name>".
+- **The switch dialog asks for every authority the flow gains**: each script step's pre-approval is off by default and needs a device cap (1–500, per run and per organization — an all-orgs flow multiplies it by the organization count); a Job limited to its creator's sites needs an explicit "wider scope" acceptance; the user accepts that the flow runs as them and pauses if their account is turned off or narrowed (the Job did not); generated scripts are shown with their body. Switch is never offered before the shadow is 10 minutes old.
+- **Event-triggered Jobs convert only with durable event dispatch.** Set both lines, or event Jobs show "Can't move yet" (`event_dispatch_not_durable`):
+  ```
+  EVENT_DISPATCH_MODE=enforce
+  EVENT_DISPATCH_QUEUE_SUBSCRIBERS=webhook-delivery,notification-dispatcher,flow-event-trigger
+  ```
+  (keep any other subscribers you already list; `flow-event-trigger` must be among them).
+- **Webhook senders keep the Job's URL** (it forwards to the flow; see PR B). The flow accepts JSON-object bodies only, and senders that send the plain secret header must move to `X-Breeze-Webhook-Token` (they get `401` after the switch while `AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET` is on).
+- **What can't move yet** (the Job keeps running unchanged): managed or policy-workflow Jobs, Jobs used for compliance remediation, `deploy_software` actions, service restarts, elevated scripts, event filters on null, lists or objects, cron expressions the flow scheduler reads differently, unknown target conditions, more than 400 current targets, all-orgs Jobs that target groups or use a webhook, a command with no shell on a mixed-OS target set, more than 20 notices per run, unsupported notification channels, a monthly run estimate above the flow limit, references the owner does not own, and text containing `{{`.
+- Later releases (tracked in #10336, not this one) make Jobs read-only and then stop running unswitched Jobs per installation.
+
 ### PAM (#8971)
 
 A UAC elevation the end user declines on the device (Deny, the PAM dialog times out, or it fails) can no longer be approved and launched afterwards. Three PRs, merged A → B → C.
