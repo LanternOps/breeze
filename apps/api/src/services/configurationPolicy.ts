@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
@@ -184,8 +185,12 @@ export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'devic
 
 // Discriminated union so a valid result can't carry a stray error string and
 // an invalid result can't omit one — every `return` in validateAssignmentTarget
-// below conforms.
-export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
+// below conforms. The structured partner-group refusal carries its HTTP class;
+// routes must not infer that class from human-readable error text.
+export type AssignmentTargetValidation =
+  | { valid: true }
+  | { valid: false; error: string; code?: undefined }
+  | { valid: false; error: string; code: 'PARTNER_GROUP_TARGET_UNSUPPORTED'; status: 400 };
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -2461,8 +2466,11 @@ export async function validateAssignmentTarget(
         const [group] = await db
           .select({ id: deviceGroups.id })
           .from(deviceGroups)
-          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
-          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .leftJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), or(
+            eq(organizations.partnerId, partnerId),
+            and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId)),
+          )))
           .limit(1);
         return group
           ? { valid: true }
@@ -2524,9 +2532,16 @@ export async function validateAssignmentTarget(
         .from(deviceGroups)
         .where(and(eq(deviceGroups.id, targetId), eq(deviceGroups.orgId, policyOrgId)))
         .limit(1);
-      return group
-        ? { valid: true }
-        : { valid: false, error: 'Device group target not found in the policy organization' };
+      if (group) return { valid: true };
+      if ((await findPartnerOwnedGroupIds([targetId])).length > 0) {
+        return {
+          valid: false,
+          error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+          code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+          status: 400,
+        };
+      }
+      return { valid: false, error: 'Device group target not found in the policy organization' };
     }
 
     case 'device': {

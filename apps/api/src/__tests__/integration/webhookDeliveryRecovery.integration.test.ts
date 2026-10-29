@@ -216,11 +216,11 @@ describe('webhook delivery recovery against real Postgres', () => {
   });
 
   it('records a delivery, and on the second attempt reports the row that won', async () => {
-    const webhookConfig = { id: webhookId, orgId: 'unused', name: 'n', url: 'u', events: [] };
+    const [webhookConfig] = await withSystemDbAccessContext(() => db.select().from(webhooks).where(eq(webhooks.id, webhookId)));
     const event = {
       id: randomUUID(),
       type: 'alert.triggered',
-      orgId: 'unused',
+      orgId: webhookConfig!.orgId,
       source: 'test',
       priority: 'normal',
       payload: { a: 1 },
@@ -243,12 +243,16 @@ describe('webhook delivery recovery against real Postgres', () => {
     // One event fans out to every subscribed webhook, so `event_id` alone is
     // not unique. A read-back keyed only on event_id would report the sibling's
     // status as this webhook's.
-    const otherWebhookId = await seedWebhook();
+    const [webhookConfig] = await withSystemDbAccessContext(() => db.select().from(webhooks).where(eq(webhooks.id, webhookId)));
+    const [sibling] = await withSystemDbAccessContext(() => db.insert(webhooks).values({
+      orgId: webhookConfig!.orgId, name: 'Sibling', url: 'https://example.test/sibling', events: ['alert.triggered'],
+    }).returning());
+    const otherWebhookId = sibling!.id;
     const sharedEventId = randomUUID();
     const event = {
       id: sharedEventId,
       type: 'alert.triggered',
-      orgId: 'unused',
+      orgId: webhookConfig!.orgId,
       source: 'test',
       priority: 'normal',
       payload: {},

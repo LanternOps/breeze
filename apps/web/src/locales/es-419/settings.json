@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Generar claves de inscripción de dispositivos. Requiere una fecha de vencimiento y al menos una IP de origen o CIDR.",
       "contracts_write": "Leer, crear y editar contratos y líneas de contrato, y eliminar líneas. No puede activar, pausar ni cancelar.",
       "tickets_write": "Crear, actualizar, asignar, cambiar el estado y comentar tickets. No puede eliminar ni mover tickets.",
+      "alerts_write": "Reconocer y resolver alertas en todas las organizaciones a las que puede acceder la entidad de servicio. No permite leer los detalles de las alertas (alerts:read), suprimirlas, descartarlas ni eliminarlas.",
       "ai_read": "Conectarse al endpoint de MCP y usar herramientas de solo lectura. Lo requieren todos los demás permisos ai:*.",
       "ai_write": "Herramientas de MCP que modifican datos.",
       "ai_execute": "Herramientas de MCP que ejecutan acciones en los dispositivos.",

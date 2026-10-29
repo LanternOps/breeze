@@ -101,7 +101,7 @@ function orphan(overrides: Record<string, unknown> = {}) {
     payloadVersion: 1, eventTimestamp: null, replayRootEventId: null,
     recoveryAttempts: 0,
     createdAt: new Date(NOW.getTime() - STALE_PENDING_MS - 60_000),
-    webhookOrgId: 'org-1',
+    deliveryOrgId: 'org-1',
     webhookStatus: 'active',
     webhookApprovalGeneration: 1,
     ...overrides

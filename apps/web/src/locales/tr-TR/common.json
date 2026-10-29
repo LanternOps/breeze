@@ -1297,6 +1297,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Sahiplik",
+        "allOrganizations": "Tüm kuruluşlar",
+        "thisOrganizationOnly": "Yalnızca bu kuruluş",
+        "all": "Tümü",
+        "organization": "Kuruluş",
+        "test": "Test gönderimi"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} teslimat denemeleri",
         "empty": "Henüz teslimat girişimi yok.",

@@ -12,7 +12,7 @@ import { configureWebhookDeliveryExecution, processWebhookAttemptJob } from './w
 const deliveryId = '11111111-1111-4111-8111-111111111111';
 const webhookId = '22222222-2222-4222-8222-222222222222';
 const now = new Date('2026-10-28T12:00:00Z');
-const row = { id: deliveryId, webhookId, eventId: 'event-1', eventType: 'alert.triggered', payload: { hello: true }, payloadVersion: 1 as const, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: 'root-event', attempts: 0 };
+const row = { orgId: 'org-1', id: deliveryId, webhookId, eventId: 'event-1', eventType: 'alert.triggered', payload: { hello: true }, payloadVersion: 1 as const, webhookGeneration: 3, eventTimestamp: now, createdAt: now, replayRootEventId: 'root-event', attempts: 0 };
 const claim = vi.fn();
 const recordOutcome = vi.fn();
 const releaseClaim = vi.fn();
@@ -148,4 +148,15 @@ describe('durable webhook execution claims', () => {
     expect(m.capture).toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_UNRECORDED'));
   });
+});
+
+
+it.each([null, 'event-org'])('uses the claimed delivery org %s in the partner envelope', async orgId => {
+  const webhook = { id: webhookId, orgId: null, partnerId: 'partner-1', status: 'active', approvalGeneration: 3, url: 'https://hooks.example.com', events: [] };
+  claim.mockResolvedValue({ claimed: true, delivery: { ...row, orgId } });
+  m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [webhook] }) }) });
+  if (orgId) m.select.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1', live: true }] }) }) });
+  await processWebhookAttemptJob(job(), 'token');
+  expect(JSON.parse(m.fetch.mock.calls[0]![1].body).orgId).toBe(orgId);
+  expect(m.select).toHaveBeenCalledTimes(orgId ? 2 : 1);
 });

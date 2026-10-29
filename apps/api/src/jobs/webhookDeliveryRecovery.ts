@@ -303,7 +303,7 @@ export async function runWebhookDeliveryRecoverySweep(
         recoveryAttempts: webhookDeliveries.recoveryAttempts,
         attempts: webhookDeliveries.attempts,
         createdAt: webhookDeliveries.createdAt,
-        webhookOrgId: webhooks.orgId,
+        deliveryOrgId: webhookDeliveries.orgId,
         webhookStatus: webhooks.status,
         webhookGeneration: webhookDeliveries.webhookGeneration,
         webhookApprovalGeneration: webhooks.approvalGeneration
@@ -357,7 +357,7 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               eventType: candidate.eventType
             })}`);
@@ -379,7 +379,7 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               ageMs: now.getTime() - candidate.createdAt.getTime()
             })}`);
@@ -401,7 +401,7 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_EXHAUSTED',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               eventType: candidate.eventType,
               recoveryAttempts: claimed.recoveryAttempts
@@ -431,7 +431,7 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               webhookStatus: candidate.webhookStatus
             })}`);
           },
@@ -474,7 +474,7 @@ export async function runWebhookDeliveryRecoverySweep(
           errorId: 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED',
           deliveryId: candidate.id,
           webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
+          orgId: candidate.deliveryOrgId,
           error: enqueueError instanceof Error ? enqueueError.message : String(enqueueError)
         })}`);
         continue;
@@ -485,7 +485,7 @@ export async function runWebhookDeliveryRecoverySweep(
         errorId: 'WEBHOOK_DELIVERY_RECOVERED',
         deliveryId: candidate.id,
         webhookId: candidate.webhookId,
-        orgId: candidate.webhookOrgId,
+        orgId: candidate.deliveryOrgId,
         eventId: candidate.eventId,
         eventType: candidate.eventType,
         recoveryAttempt: claimed.recoveryAttempts,

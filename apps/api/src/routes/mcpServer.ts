@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePrincipalCredential';
+import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
@@ -3807,7 +3808,9 @@ async function handleResourcesRead(
         name: automations.name,
         description: automations.description,
         enabled: automations.enabled,
-        trigger: automations.trigger
+        trigger: automations.trigger,
+        // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+        conversion: conversionSummarySql(automations.id),
       }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations, {
         // automations have NO catalog read branch — org-scope callers do NOT
         // see partner-wide automations (aligns with routes/automations.ts).

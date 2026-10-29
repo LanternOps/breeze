@@ -1088,6 +1088,7 @@ export * from './scriptParameterDefinitions';
 // ============================================
 
 export * from './tickets';
+export * from './alertExternalRefs';
 export * from './ticketForms';
 export * from './queryParams';
 export * from './timeEntries';

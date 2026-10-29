@@ -137,6 +137,8 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
 // after app-layer authorization.
 const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  // Event org for erasure/merge/export; read authority is the parent webhook's owner.
+  'webhook_deliveries',
   // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
   // org_id names an org the window may import into, not the row's tenant.
   'migration_window_orgs',
@@ -563,6 +565,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // webhooks_one_owner_chk, 2027-01-13-100000-webhooks-partner-ownership.sql:
+  // no partner-wide SELECT branch per OD1. Functional proof: webhooksPartnerRls.
+  'webhooks',
   // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
   // device_groups_partner_wide_select branch ships in the same file and is
   // load-bearing on the agent-auth config path. Functional proof:
@@ -1040,6 +1045,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // read, so reports must never carry one. Its partner branch is proven
 // functionally by reportsPartnerRls.integration.test.ts instead. The same
 // holds for its runs, `report_runs` (#4247, reportRunsOwnerRls).
+//
+// `webhooks` (#10531) also has an XOR CHECK but carries partner-private
+// cross-org plumbing: URL, secret, headers and cross-org delivery history.
+// OD1 forbids org sessions reading partner webhooks; the SELECT branch would
+// violate that boundary. Functional proof: webhooksPartnerRls.integration.test.ts.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // #10521 W1: device_groups_one_owner_chk in 2027-01-12-200000; the
   // device_groups_partner_wide_select branch ships in the same file and is
