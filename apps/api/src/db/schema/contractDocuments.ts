@@ -180,7 +180,13 @@ export const contractDocuments = pgTable('contract_documents', {
   recordedByUserId: uuid('recorded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   contentSha256: char('content_sha256', { length: 64 }),
   contentHashVersion: smallint('content_hash_version'),
-  acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 })
+  acceptanceRenderLocale: varchar('acceptance_render_locale', { length: 16 }),
+  // The template name AS IT WAS AT SIGNING (#10294 follow-up): the certificate,
+  // the portal list and the signed-copy email name the agreement from this, so
+  // a later template rename never changes signed evidence. NULL only on a row
+  // written before 2027-01-13-110000-contract-documents-template-name-snapshot
+  // by an instance still on older code; readers fall back to the live name.
+  templateNameSnapshot: varchar('template_name_snapshot', { length: 255 })
 }, (t) => [
   index('contract_documents_org_idx').on(t.orgId),
   // #9312: FK target for service_deliverable_evidence (contract_document_id, org_id).

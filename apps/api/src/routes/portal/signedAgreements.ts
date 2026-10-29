@@ -61,6 +61,7 @@ portalSignedAgreementRoutes.get('/signed-agreements', async (c) => {
       signedAt: contractDocuments.signedAt,
       acceptanceOrigin: contractDocuments.acceptanceOrigin,
       createdAt: contractDocuments.createdAt,
+      templateNameSnapshot: contractDocuments.templateNameSnapshot,
     })
     .from(contractDocuments)
     .where(eq(contractDocuments.orgId, orgId))
@@ -78,11 +79,14 @@ portalSignedAgreementRoutes.get('/signed-agreements', async (c) => {
 
   const data = docs.map((d) => {
     const template = labels.get(d.templateVersionId);
+    // The template name as it was at signing, never the request label (the
+    // label is staff-internal) and never a later rename (#10294). The live name
+    // stands in only for a row written without the snapshot.
+    const templateName = d.templateNameSnapshot?.trim() || template?.templateName || null;
     return {
       id: d.id,
-      // The template name, never the request label: the label is staff-internal (#10294).
-      name: template?.templateName || 'Agreement',
-      templateName: template?.templateName ?? null,
+      name: templateName || 'Agreement',
+      templateName,
       versionNumber: template?.versionNumber ?? null,
       sourceKind: d.sourceKind,
       // The proposal number for a quote-sourced agreement (null once the quote is gone).

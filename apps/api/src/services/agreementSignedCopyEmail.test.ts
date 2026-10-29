@@ -83,10 +83,10 @@ function queueCertified(input = certInput(), pdf = CERTIFIED) {
   renderMock.mockResolvedValueOnce(pdf);
 }
 
-function queuePrepared(recipients: string[], over: Record<string, unknown> = {}) {
+function queuePrepared(recipients: string[], over: Record<string, unknown> = {}, docOver: Record<string, unknown> = {}) {
   dbResults.push([prepRow(over)]);
   dbResults.push(recipients.map((email) => ({ email })));
-  dbResults.push([docRow()]);
+  dbResults.push([docRow(docOver)]);
 }
 
 describe('sendSignedAgreementCopy', () => {
@@ -114,6 +114,20 @@ describe('sendSignedAgreementCopy', () => {
     const env = sendEmailMock.mock.calls[0]![0];
     expect(env.subject).toBe('Your signed copy: Business Associate Agreement');
     for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('Portal sign 10-26');
+  });
+
+  it('#10294: names the agreement by the template name frozen at signing; the live name only stands in when none was frozen', async () => {
+    queuePrepared(['dana@example.com'], { templateName: 'BAA (renamed)' }, { templateNameSnapshot: 'Business Associate Agreement' });
+    queueCertified();
+    await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: 'dana@example.com' });
+    const env = sendEmailMock.mock.calls[0]![0];
+    expect(env.subject).toBe('Your signed copy: Business Associate Agreement');
+    for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('renamed');
+
+    queuePrepared(['dana@example.com'], { templateName: 'Live BAA' }, { templateNameSnapshot: null });
+    queueCertified();
+    await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: 'dana@example.com' });
+    expect(sendEmailMock.mock.calls[1]![0].subject).toBe('Your signed copy: Live BAA');
   });
 
   it('an externally-signed PNG is attached as its certified copy — a PDF, sanitized name', async () => {

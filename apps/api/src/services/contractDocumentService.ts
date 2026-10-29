@@ -395,6 +395,10 @@ export async function freezeSignedAgreement(input: FreezeSignedAgreementInput): 
       contentSha256: evidence.contentSha256,
       contentHashVersion: evidence.contentHashVersion,
       acceptanceRenderLocale: evidence.acceptanceRenderLocale,
+      // The template name as it is NOW, at signing (#10294): every path
+      // (authored, uploaded template, external upload) and both sources. A
+      // later rename must never change the signed record's certificate.
+      templateNameSnapshot: render.templateName.trim() || null,
     })
     .returning({ id: contractDocuments.id });
   return { id: row!.id, sha256 };
