@@ -437,6 +437,17 @@ describe('TicketDetails — merged request (#8972)', () => {
     expect(screen.queryByTestId('ticket-reply-form')).toBeNull();
   });
 
+  it('never renders a staff internalNumber from an older API, and still links by id', () => {
+    const legacy = { id: 'surv-1', internalNumber: 'T-2026-0002' } as unknown as PortalMergedTicket['mergedInto'];
+    render(<TicketDetails ticket={merged({ mergedInto: legacy })} />);
+    const banner = screen.getByTestId('portal-ticket-merged-banner');
+    expect(banner.textContent).toContain('This request was merged into another request.');
+    expect(banner.textContent).not.toContain('T-2026-0002');
+    const link = screen.getByTestId('portal-ticket-merged-link');
+    expect(link.textContent).toBe('Open the request');
+    expect(link.getAttribute('href')).toMatch(/\/tickets\/surv-1$/);
+  });
+
   it('names no target and links nowhere when the survivor is not readable', () => {
     render(<TicketDetails ticket={merged({ mergedInto: null })} />);
     expect(screen.getByTestId('portal-ticket-merged-banner').textContent).toContain('This request was merged into another request.');

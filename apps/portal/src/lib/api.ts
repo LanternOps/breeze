@@ -429,7 +429,9 @@ export interface TicketDetails extends TicketSummary {
  */
 export interface PortalMergedTicket {
   merged: true;
-  mergedInto: { id: string; ticketNumber: string } | null;
+  // ticketNumber is always present from a current API; optional so a payload
+  // from an older API (which sent internalNumber instead) still type-checks.
+  mergedInto: { id: string; ticketNumber?: string } | null;
   mergedAt: string | null;
   survivorDeleted: boolean;
 }
