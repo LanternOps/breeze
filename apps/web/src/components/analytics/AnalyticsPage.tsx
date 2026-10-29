@@ -975,7 +975,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   );
 
   const trendCard = (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
+    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs" data-testid="analytics-trend-card">
       <div className="mb-4 flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold">{fleetSummary.trendLabel}</h3>
         <p className="text-xs text-muted-foreground">{t('analytics.executiveSummary.weeklyTrend')}</p>
