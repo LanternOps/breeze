@@ -156,7 +156,7 @@ describe('generateInvoiceAction post-commit', () => {
     const out = await gen({ ...good, expectedRecipients: ['b@example.test', ' A@Example.test', 'a@example.test'] });
     expect(h.issue).toHaveBeenCalledWith(INVOICE, genActor);
     expect(h.send).toHaveBeenCalledWith(INVOICE, genActor, { to: ['a@example.test', 'b@example.test'] });
-    expect(h.issue.mock.invocationCallOrder[0]).toBeLessThan(h.send.mock.invocationCallOrder[0]);
+    expect(h.issue.mock.invocationCallOrder[0]!).toBeLessThan(h.send.mock.invocationCallOrder[0]!);
     expect(out).toMatchObject({ status: 'issued', emailSent: true });
   });
 

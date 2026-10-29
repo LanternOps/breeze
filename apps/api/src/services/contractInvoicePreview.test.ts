@@ -158,9 +158,9 @@ describe('previewDigestMaterial', () => {
 
   it('changes when a line quantity, unit price or taxable flag, the total, autoIssue or recipients change', async () => {
     const p = await basePreview();
-    expect(changed(p, (c) => { c.lines[0].quantity = '2'; })).toBe(true);
-    expect(changed(p, (c) => { c.lines[0].unitPrice = '99.00'; })).toBe(true);
-    expect(changed(p, (c) => { c.lines[0].taxable = !c.lines[0].taxable; })).toBe(true);
+    expect(changed(p, (c) => { c.lines[0]!.quantity = '2'; })).toBe(true);
+    expect(changed(p, (c) => { c.lines[0]!.unitPrice = '99.00'; })).toBe(true);
+    expect(changed(p, (c) => { c.lines[0]!.taxable = !c.lines[0]!.taxable; })).toBe(true);
     expect(changed(p, (c) => { c.total = '999.00'; })).toBe(true);
     expect(changed(p, (c) => { c.autoIssue = !c.autoIssue; })).toBe(true);
     expect(changed(p, (c) => { c.recipients = ['other@example.test']; })).toBe(true);

@@ -224,7 +224,7 @@ describe('mapping writes', () => {
     expect(h.saveDecision).not.toHaveBeenCalled();
 
     const out = await run({ action: 'link_mapping', ...base, entityType: 'org', entityId: ORG, remoteEntityId: 'R9' });
-    expect(h.saveDecision.mock.calls[0][0]).toMatchObject({ decision: 'confirmed', remoteEntityId: 'R9', partnerId: PARTNER });
+    expect(h.saveDecision.mock.calls[0]![0]).toMatchObject({ decision: 'confirmed', remoteEntityId: 'R9', partnerId: PARTNER });
     expect(h.enqueueMapping).toHaveBeenCalledWith('org', ORG, PARTNER, 'conn-1');
     expect(out.syncEnqueued).toBe(true);
     for (const k of ['id', 'integrationId', 'remoteSyncToken']) expect(out.mapping).not.toHaveProperty(k);
@@ -234,7 +234,7 @@ describe('mapping writes', () => {
 
   it('unlink_mapping saves unlinked and never enqueues', async () => {
     const out = await run({ action: 'unlink_mapping', ...base, entityType: 'org', entityId: ORG });
-    expect(h.saveDecision.mock.calls[0][0]).toMatchObject({ decision: 'unlinked' });
+    expect(h.saveDecision.mock.calls[0]![0]).toMatchObject({ decision: 'unlinked' });
     expect(h.enqueueMapping).not.toHaveBeenCalled();
     expect(out).not.toHaveProperty('syncEnqueued');
   });
@@ -264,7 +264,7 @@ describe('push and push_bulk', () => {
   it('push: owned invoice is pushed with (id, partner, runner, {provider}) and a minimal output', async () => {
     h.rows.push([{ id: INV_A }]);
     const out = await run({ action: 'push', ...base, invoiceId: INV_A });
-    const call = h.push.mock.calls[0];
+    const call = h.push.mock.calls[0]!;
     expect(call[0]).toBe(INV_A);
     expect(call[1]).toBe(PARTNER);
     expect(typeof call[2]).toBe('function');
