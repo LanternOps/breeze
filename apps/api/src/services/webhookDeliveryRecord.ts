@@ -178,11 +178,16 @@ export async function claimDeliveryForExecution(
  * `ne(status, 'delivered')` conjunct passed everywhere.
  *
  * `webhooks.success_count` / `failure_count` count DELIVERIES, not attempts
- * (#9946). This runs once per attempt, so a failure is only counted on the
- * attempt that resolves the delivery (`finalAttempt`) and only when this write
- * actually landed — a late failure refused by the outcome CAS belongs to a
- * delivery whose final state is `delivered`. A success is always final.
+ * (#9946). This runs once per attempt, so a delivery is only counted on the
+ * attempt that resolves it (`finalAttempt`; a success is always final) and
+ * only when this write actually landed — an outcome refused by the CAS belongs
+ * to a delivery that was already `delivered`, and so already counted.
  * `last_delivery_at` ("Last Triggered") still moves on every attempt.
+ *
+ * Known gap: a delivery whose retry job is lost after a non-final failure (the
+ * worker logs WEBHOOK_DELIVERY_RETRY_ENQUEUE_FAILED when the enqueue throws),
+ * or that the recovery sweep resolves as abandoned, ends `failed` without
+ * moving `failure_count`.
  */
 export async function recordDeliveryOutcome(result: WebhookDeliveryOutcome): Promise<void> {
   await runWithSystemDbAccess(async () => {
@@ -246,19 +251,20 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryOutcome): Pro
       }
     }
 
-    const deliveryFailed = !result.success && result.finalAttempt && outcomeRecorded;
+    // Count the delivery once, on the attempt that resolves it, and only when
+    // that resolution is what the row now says (see the doc comment above).
+    const countsAsDelivery = result.finalAttempt && outcomeRecorded;
+    const now = new Date();
     const aggregateUpdate = result.success
       ? {
-        successCount: sql`${webhooksTable.successCount} + 1`,
-        lastSuccessAt: new Date(),
-        lastDeliveryAt: new Date()
+        ...(countsAsDelivery ? { successCount: sql`${webhooksTable.successCount} + 1` } : {}),
+        lastSuccessAt: now,
+        lastDeliveryAt: now
       }
-      : deliveryFailed
-        ? {
-          failureCount: sql`${webhooksTable.failureCount} + 1`,
-          lastDeliveryAt: new Date()
-        }
-        : { lastDeliveryAt: new Date() };
+      : {
+        ...(countsAsDelivery ? { failureCount: sql`${webhooksTable.failureCount} + 1` } : {}),
+        lastDeliveryAt: now
+      };
 
     await db
       .update(webhooksTable)

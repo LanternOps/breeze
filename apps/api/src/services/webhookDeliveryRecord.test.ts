@@ -51,6 +51,7 @@ const RESULT = {
   eventType: 'alert.triggered',
   success: true,
   attempts: 1,
+  finalAttempt: true,
   responseStatus: 200,
   responseTimeMs: 12,
   deliveredAt: '2026-09-11T12:00:00.000Z'
@@ -173,6 +174,17 @@ describe('recordDeliveryOutcome', () => {
       await recordDeliveryOutcome({ ...RESULT, success: false, finalAttempt: true } as never);
 
       expect(aggregateSet()).not.toHaveProperty('failureCount');
+      expect(aggregateSet()).toHaveProperty('lastDeliveryAt');
+    });
+
+    it('does not count a duplicate success on a row that already succeeded', async () => {
+      // Same rule as the late failure above: the CAS refused the write, so this
+      // delivery was already counted as a success.
+      state.updateResults = [[], []];
+
+      await recordDeliveryOutcome({ ...RESULT, finalAttempt: true } as never);
+
+      expect(aggregateSet()).not.toHaveProperty('successCount');
       expect(aggregateSet()).toHaveProperty('lastDeliveryAt');
     });
 

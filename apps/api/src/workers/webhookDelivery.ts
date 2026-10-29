@@ -708,7 +708,24 @@ class WebhookDeliveryWorker extends EventEmitter {
       };
 
       console.log(`[WebhookWorker] Scheduling retry for ${job.id} at ${nextRetryAt}`);
-      await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
+      try {
+        await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
+      } catch (enqueueError) {
+        // The row already says `failed`, so the recovery sweep (which only
+        // reclaims pending/retrying rows) will not revive it, and this
+        // non-final attempt was not counted as a failed delivery (#9946).
+        // Nothing else will ever report this delivery, so name it here.
+        console.error(`[WebhookWorker] retry-enqueue-failed ${JSON.stringify({
+          errorId: 'WEBHOOK_DELIVERY_RETRY_ENQUEUE_FAILED',
+          deliveryId: job.id,
+          webhookId: job.webhookId,
+          eventId: job.event.id,
+          attempts: result2.attempts,
+          error: enqueueError instanceof Error ? enqueueError.message : String(enqueueError)
+        })}`);
+        // The outer catch captures it to Sentry.
+        throw enqueueError;
+      }
 
     } catch (err) {
       if (this.blockingRedis?.status === 'ready') {

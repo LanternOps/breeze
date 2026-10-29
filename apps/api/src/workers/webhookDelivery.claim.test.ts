@@ -23,8 +23,16 @@ vi.mock('../services/eventBus', () => ({
   EVENT_TYPES: {}
 }));
 
+// Rows the config reload (`db.select().from().where().limit()`) returns for a
+// new-shape job. Legacy jobs (embedded `webhook`) never read it.
+const dbState = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[] }));
+
 vi.mock('../db', () => ({
-  db: {},
+  db: {
+    select: () => ({
+      from: () => ({ where: () => ({ limit: async () => dbState.rows }) })
+    })
+  },
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn()
 }));
@@ -78,6 +86,7 @@ describe('webhook delivery execution claim', () => {
 
   beforeEach(() => {
     brpopMock.mockReset();
+    dbState.rows = [];
     captureExceptionMock.mockReset();
     lpushMock.mockClear();
     lindexMock.mockReset();
@@ -259,6 +268,50 @@ describe('webhook delivery execution claim', () => {
       { success: false, attempts: 5, finalAttempt: true },
       { success: true, attempts: 3, finalAttempt: true }
     ]);
+  });
+
+  it('marks a superseded delivery final — it is never retried or DLQ\'d', async () => {
+    // A new-shape job (no embedded webhook) reloads its config; a disabled
+    // webhook makes the delivery superseded, which returns before the ladder.
+    // Without `superseded` in the final-attempt rule it would never be counted.
+    const seen: Array<{ superseded?: boolean; finalAttempt: boolean }> = [];
+    dbState.rows = [{ id: 'webhook-1', status: 'disabled', approvalGeneration: 1 }];
+    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
+    getWebhookWorker().setDeliveryCallback(async (r) => {
+      seen.push({ superseded: r.superseded, finalAttempt: r.finalAttempt });
+    });
+    const { webhook: _legacy, ...newShape } = JOB;
+
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify({ ...newShape, generation: 1 })]);
+    await processOnce();
+
+    expect(safeFetchMock).not.toHaveBeenCalled();
+    expect(seen).toEqual([{ superseded: true, finalAttempt: true }]);
+    expect(lpushMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed attempt whose retry could not be queued (#9946)', async () => {
+    // The attempt was not final, so it was not counted as a failed delivery;
+    // with the retry lost, nothing will ever count it. That must be loud.
+    safeFetchMock.mockResolvedValueOnce({ status: 500, ok: false, text: async () => 'boom' });
+    lpushMock.mockRejectedValueOnce(new Error('redis down'));
+    getWebhookWorker().setDeliveryClaimCallback(async () => ({ claimed: true as const }));
+    getWebhookWorker().setDeliveryCallback(async () => {});
+
+    brpopMock.mockResolvedValueOnce(['queue', JSON.stringify(JOB)]);
+    await processOnce();
+
+    const line = errorSpy.mock.calls
+      .map((c: unknown[]) => c.map(String).join(' '))
+      .find((l: string) => l.includes('WEBHOOK_DELIVERY_RETRY_ENQUEUE_FAILED'));
+    expect(line, 'a lost retry must be reported').toBeDefined();
+    expect(JSON.parse(line!.slice(line!.indexOf('{')))).toMatchObject({
+      deliveryId: 'delivery-1',
+      webhookId: 'webhook-1',
+      attempts: 1,
+      error: 'redis down'
+    });
+    expect(captureExceptionMock).toHaveBeenCalled();
   });
 
   it('honours the webhook\'s own maxRetries when deciding the final attempt', async () => {
