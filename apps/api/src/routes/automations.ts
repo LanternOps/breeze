@@ -68,6 +68,7 @@ import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 import { conversionSummariesFor, resetShadowIfChanged } from '../services/flows/conversion/ledger';
 import { OccurrenceClaimedError, claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
 import { legacyWebhookDeliveryIdHeader, webhookOccurrenceInstant, webhookOccurrenceKeys } from '../services/flows/conversion/webhookOccurrence';
+import { flowsEnabled } from '../config/env';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -1315,12 +1316,25 @@ automationRoutes.get(
 // These mutation routes remain for legacy compatibility.
 // ============================================
 
+/**
+ * W06 R1 (#5221, plan Decision 8): new standalone Jobs are not created once
+ * Flows are enabled on this installation — "New job" opens Flows instead. With
+ * FLOWS_ENABLED=false Jobs stay writable (Flows are unavailable there). Answers
+ * before body validation, so a client learns where to go whatever it sent.
+ * Managed rows (triage seeding, monitor compile) never come through this route.
+ */
+async function refuseCreateWhenFlowsEnabled(c: Context, next: Next) {
+  if (flowsEnabled()) return c.json({ error: 'automations_moved_to_flows', flowsUrl: '/flows' }, 410);
+  await next();
+}
+
 // DEPRECATED: Automations are now managed via Configuration Policies. These routes remain for legacy compatibility.
 automationRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requireAutomationWrite,
   requireMfa(),
+  refuseCreateWhenFlowsEnabled,
   zValidator('json', createAutomationSchema),
   async (c) => {
     const auth = c.get('auth');
