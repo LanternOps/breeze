@@ -798,6 +798,8 @@ describe('user routes', () => {
       expect(res.status).toBe(201);
       expect(insertedMemberships).toHaveLength(1);
       expect(insertedMemberships[0]).toMatchObject({ siteIds: [SITE_A] });
+      // #10315: device-group restriction is unenforced, so it is never stored.
+      expect(insertedMemberships[0]!.deviceGroupIds).toBeNull();
     });
 
     it('rejects an explicit site outside the live inviter scope before creating the invitee', async () => {
