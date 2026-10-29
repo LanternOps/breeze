@@ -435,6 +435,92 @@ describe('role routes', () => {
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
 
+    // #9600: inheritance now grants the parent's permissions at runtime, so the
+    // parent must be a global template or the caller's own tenant's role. An
+    // is_system row owned by ANOTHER partner used to pass on is_system alone.
+    it('refuses an is_system parent role that is owned by another partner', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '33333333-3333-4333-8333-333333333333',
+                scope: 'partner',
+                isSystem: true,
+                partnerId: 'partner-other',
+                orgId: null
+              }
+            ])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Borrowed',
+          parentRoleId: '33333333-3333-4333-8333-333333333333',
+          permissions: []
+        })
+      });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Parent role not accessible');
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('refuses a parent whose own inheritance chain is already at the depth limit', async () => {
+      const { MAX_ROLE_INHERITANCE_DEPTH } = await import('../services/roleInheritance');
+      const parentId = '44444444-4444-4444-8444-444444444444';
+      let validated = false;
+      let ancestor = 0;
+      const defaultSelect = vi.mocked(db.select).getMockImplementation()!;
+      // validateParentRole reads the parent first; every later role-row read
+      // is a hop of the lineage walk and always has a further (unique) parent,
+      // so the walk only stops at the depth bound. Grant reads return none.
+      vi.mocked(db.select).mockImplementation((() => ({
+        from: () => ({
+          where: () => ({
+            limit: () => {
+              if (!validated) {
+                validated = true;
+                return Promise.resolve([
+                  { id: parentId, scope: 'partner', isSystem: false, partnerId: 'partner-123', orgId: null }
+                ]);
+              }
+              ancestor += 1;
+              return Promise.resolve([{
+                name: `Level ${ancestor}`,
+                scope: 'partner',
+                partnerId: 'partner-123',
+                orgId: null,
+                isSystem: false,
+                parentRoleId: `ancestor-${ancestor}`
+              }]);
+            }
+          }),
+          innerJoin: () => ({ where: () => Promise.resolve([]) })
+        })
+      })) as any);
+
+      try {
+        const res = await app.request('/roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Too deep', parentRoleId: parentId, permissions: [] })
+        });
+
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe(
+          `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep`
+        );
+        expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(db.select).mockImplementation(defaultSelect);
+      }
+    });
+
     // #3524: a partner admin targets a specific org so the role is ORGANIZATION-
     // scoped (the SSO default-role picker only offers org-scoped, non-system
     // roles). The org must be inside the partner's own tree.

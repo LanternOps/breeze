@@ -548,7 +548,9 @@ The following named permission constants (`packages/shared/src/constants/permiss
 
 ### Role Inheritance
 
-Roles support single-parent inheritance via the `parentRoleId` field. A child role inherits all permissions from its parent chain and can add additional permissions of its own. Circular inheritance is detected and rejected.
+Roles support single-parent inheritance via the `parentRoleId` field. A child role inherits all permissions from its parent chain and can add additional permissions of its own. Members of the child role hold the inherited permissions at runtime, and a change to a parent's permissions reaches every role that inherits from it.
+
+The parent must be in the same scope as the child, and must be either a built-in role or a custom role of the same partner (partner roles) or the same organization (organization roles). A chain can be at most 8 parents deep. Circular inheritance, a parent from another tenant, and a chain deeper than 8 are rejected when the role is saved; if one of these exists anyway, permission checks stop following the chain at that point.
 
 Use `GET /roles/:id/effective-permissions` to view the full permission set including inherited permissions. The response distinguishes direct permissions from inherited ones and identifies the source role for each.
 

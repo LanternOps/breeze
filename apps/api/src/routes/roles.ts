@@ -20,6 +20,14 @@ import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { isPgForeignKeyViolation } from '../utils/pgErrors';
 
 import { isHiddenOrgType } from '../services/unassignedPool/visibility';
+import {
+  MAX_ROLE_INHERITANCE_DEPTH,
+  getEffectiveRolePermissionSources,
+  getRoleSubtreeHeight,
+  isPermittedParentRole,
+  resolveRoleLineage,
+  type EffectiveRolePermission,
+} from '../services/roleInheritance';
 export const roleRoutes = new Hono();
 
 roleRoutes.use('*', authMiddleware);
@@ -389,6 +397,16 @@ async function wouldCreateCircularInheritance(roleId: string, newParentId: strin
   return descendants.has(newParentId);
 }
 
+// Refuse a parent link that would put this role, or any role that inherits
+// from it, more than MAX_ROLE_INHERITANCE_DEPTH ancestors deep. The runtime walk
+// stops at that bound, so a deeper link would silently grant less than the
+// editor shows. `roleId` is null for a role being created (no descendants).
+async function exceedsInheritanceDepth(roleId: string | null, parentRoleId: string): Promise<boolean> {
+  const parentLineage = await resolveRoleLineage(parentRoleId);
+  const subtreeHeight = roleId ? await getRoleSubtreeHeight(roleId) : 0;
+  return parentLineage.length + subtreeHeight > MAX_ROLE_INHERITANCE_DEPTH;
+}
+
 // Helper to validate parent role is accessible in the same scope
 async function validateParentRole(
   parentRoleId: string,
@@ -415,81 +433,25 @@ async function validateParentRole(
     return { valid: false, error: 'Parent role must be in the same scope' };
   }
 
-  // If parent is not a system role, it must belong to the same partner/org
-  if (!parentRole.isSystem) {
-    if (scopeContext.scope === 'partner' && parentRole.partnerId !== scopeContext.partnerId) {
-      return { valid: false, error: 'Parent role not accessible' };
-    }
-    if (scopeContext.scope === 'organization' && parentRole.orgId !== scopeContext.orgId) {
-      return { valid: false, error: 'Parent role not accessible' };
-    }
+  // The parent must be a global built-in template or a role of the child's own
+  // partner/org. The same predicate confines the runtime walk
+  // (services/roleInheritance.ts), so a parent refused there is refused here.
+  // An is_system row owned by another tenant is NOT a global template and is
+  // refused (it used to pass on is_system alone).
+  const child = scopeContext.scope === 'partner'
+    ? { scope: 'partner', partnerId: scopeContext.partnerId, orgId: null, isSystem: false }
+    : { scope: 'organization', partnerId: null, orgId: scopeContext.orgId, isSystem: false };
+  if (!isPermittedParentRole(child, parentRole)) {
+    return { valid: false, error: 'Parent role not accessible' };
   }
 
   return { valid: true };
 }
 
-// Helper to get effective permissions (own + inherited from parent chain)
-async function getEffectivePermissions(
-  roleId: string,
-  visited: Set<string> = new Set()
-): Promise<{ resource: string; action: string; inherited: boolean; sourceRoleId: string; sourceRoleName: string }[]> {
-  if (visited.has(roleId)) {
-    return [];
-  }
-  visited.add(roleId);
-
-  // Get the role info
-  const [role] = await db
-    .select({
-      id: roles.id,
-      name: roles.name,
-      parentRoleId: roles.parentRoleId
-    })
-    .from(roles)
-    .where(eq(roles.id, roleId))
-    .limit(1);
-
-  if (!role) {
-    return [];
-  }
-
-  // Get direct permissions for this role
-  const directPerms = await db
-    .select({
-      resource: permissions.resource,
-      action: permissions.action
-    })
-    .from(rolePermissions)
-    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-    .where(eq(rolePermissions.roleId, roleId));
-
-  const result: { resource: string; action: string; inherited: boolean; sourceRoleId: string; sourceRoleName: string }[] = directPerms.map((p) => ({
-    resource: p.resource,
-    action: p.action,
-    inherited: false,
-    sourceRoleId: role.id,
-    sourceRoleName: role.name
-  }));
-
-  // Get inherited permissions from parent
-  if (role.parentRoleId) {
-    const inheritedPerms = await getEffectivePermissions(role.parentRoleId, visited);
-
-    // Add inherited permissions that aren't already directly assigned
-    const directPermSet = new Set(directPerms.map((p) => `${p.resource}:${p.action}`));
-
-    for (const inherited of inheritedPerms) {
-      const key = `${inherited.resource}:${inherited.action}`;
-      if (!directPermSet.has(key)) {
-        result.push({
-          ...inherited,
-          inherited: true
-        });
-      }
-    }
-  }
-
-  return result;
+// Effective permissions (own + inherited), from the same cycle-safe,
+// depth-bounded, tenant-confined walk the runtime resolver uses (#9600).
+async function getEffectivePermissions(roleId: string): Promise<EffectiveRolePermission[]> {
+  return getEffectiveRolePermissionSources(roleId);
 }
 
 // GET /roles - List all roles (system + custom for scope)
@@ -697,6 +659,9 @@ roleRoutes.post(
       );
       if (parentPermissionError) {
         return c.json({ error: parentPermissionError }, 403);
+      }
+      if (await exceedsInheritanceDepth(null, body.parentRoleId)) {
+        return c.json({ error: `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep` }, 400);
       }
     }
 
@@ -967,6 +932,9 @@ roleRoutes.patch(
       const wouldBeCircular = await wouldCreateCircularInheritance(roleId, body.parentRoleId);
       if (wouldBeCircular) {
         return c.json({ error: 'Cannot set parent role: would create circular inheritance' }, 400);
+      }
+      if (await exceedsInheritanceDepth(roleId, body.parentRoleId)) {
+        return c.json({ error: `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep` }, 400);
       }
     }
 
@@ -1469,28 +1437,9 @@ roleRoutes.get(
     // Get effective permissions including inherited ones
     const effectivePerms = await getEffectivePermissions(roleId);
 
-    // Build inheritance chain for display
-    const inheritanceChain: { id: string; name: string }[] = [];
-    let currentRoleId: string | null = role.parentRoleId;
-
-    while (currentRoleId) {
-      const [parentRole] = await db
-        .select({
-          id: roles.id,
-          name: roles.name,
-          parentRoleId: roles.parentRoleId
-        })
-        .from(roles)
-        .where(eq(roles.id, currentRoleId))
-        .limit(1);
-
-      if (parentRole) {
-        inheritanceChain.push({ id: parentRole.id, name: parentRole.name });
-        currentRoleId = parentRole.parentRoleId;
-      } else {
-        break;
-      }
-    }
+    // The inheritance chain for display: the validated ancestors the runtime
+    // resolver actually honours (cycle-safe, depth-bounded, same tenant).
+    const inheritanceChain: { id: string; name: string }[] = (await resolveRoleLineage(roleId)).slice(1);
 
     return c.json({
       roleId: role.id,
