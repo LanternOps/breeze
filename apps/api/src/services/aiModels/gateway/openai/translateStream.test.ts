@@ -236,4 +236,20 @@ describe('translateChatStream diagnostics', () => {
     expect(warns[0]).toContain('grant-77');
     expect(warns[0]).toContain('conn-42');
   });
+  describe('reasoning-only deltas keep the stream alive (#10591)', () => {
+    const reasoning = (t: string) => ({ choices: [{ index: 0, delta: { reasoning_content: t }, finish_reason: null }] });
+    const ctx = (keepaliveMs?: number) => ({ model: 'qwen', tools, messageId: 'msg_gw_1', estimatedInputTokens: 9, ...(keepaliveMs !== undefined ? { keepaliveMs } : {}) });
+    it('an event that produces no output yields a ping once the keepalive interval has passed', async () => {
+      const ev = await events(translateChatStream(sse(reasoning('think'), reasoning('more'), { choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] }, '[DONE]'), ctx(0)));
+      expect(ev.filter((e) => e.ev === 'ping')).toHaveLength(2);
+      expect(ev.find((e) => e.ev === 'ping')!.data).toEqual({ type: 'ping' });
+      // Reasoning text is never forwarded as answer text.
+      expect(ev.filter((e) => e.ev === 'content_block_delta').map((e) => e.data.delta.text)).toEqual(['ok']);
+      expect(ev.at(-1)!.ev).toBe('message_stop');
+    });
+    it('pings are throttled to the keepalive interval', async () => {
+      const ev = await events(translateChatStream(sse(...Array.from({ length: 50 }, () => reasoning('x')), { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }, '[DONE]'), ctx()));
+      expect(ev.filter((e) => e.ev === 'ping')).toHaveLength(0);
+    });
+  });
 });

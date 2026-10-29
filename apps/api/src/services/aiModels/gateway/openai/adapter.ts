@@ -1,5 +1,6 @@
 import { assertBoundModel, registerGatewayAdapter, type GatewayAdapter } from '../adapter';
 import { joinByoUrl } from '../byoEndpointPolicy';
+import { noteGatewayFailure } from '../failureNotes';
 import { forwardUpstream, readUpstreamErrorText } from '../forward';
 import { GatewayError, gatewayErrorBody, type AnthropicErrorType, type GatewayGrantRecord, type GatewayResponse } from '../types';
 import { genMessageId, translateChatResponse } from './translateResponse';
@@ -36,12 +37,45 @@ function upstreamErrorType(status: number): AnthropicErrorType {
   return 'api_error';
 }
 
-async function upstreamError(res: Response, grant: GatewayGrantRecord): Promise<GatewayResponse> {
+/** Diagnostics for one upstream call; never the prompt, the completion or a header value other than the request id. */
+interface UpstreamCallContext { model: string; stream: boolean; startedAt: number; promptTokensEstimate: number }
+
+/** Upstream request-id headers, in preference order. */
+const REQUEST_ID_HEADERS = ['x-request-id', 'request-id', 'openai-request-id', 'x-amzn-requestid', 'cf-ray'];
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** The upstream's request id, only when it is a plain bounded token (never logged otherwise). */
+function upstreamRequestId(res: Response): string | null {
+  for (const name of REQUEST_ID_HEADERS) {
+    const v = res.headers.get(name);
+    if (v !== null) return SAFE_REQUEST_ID.test(v) ? v : null;
+  }
+  return null;
+}
+
+/**
+ * One structured line per failed upstream call (#10591). Ids, model, status,
+ * latency and request id identify the call; `detail` is the scrubbed, bounded
+ * body from readUpstreamErrorText. Request headers and the prompt never appear.
+ */
+function logUpstreamFailure(grant: GatewayGrantRecord, call: UpstreamCallContext, what: string, res: Response, detail: string): void {
+  const requestId = upstreamRequestId(res);
+  console.warn(`[modelGateway] ${what} (grant ${grant.id}, connection ${grant.config.connectionId}, `
+    + `model ${JSON.stringify(call.model)}, stream ${call.stream}, latency_ms ${Date.now() - call.startedAt}, `
+    + `prompt_tokens_est ${call.promptTokensEstimate}, upstream_request_id ${requestId === null ? 'none' : JSON.stringify(requestId)})`
+    + `${detail ? `: ${detail}` : ''}`);
+}
+
+async function upstreamError(res: Response, grant: GatewayGrantRecord, call: UpstreamCallContext): Promise<GatewayResponse> {
   const type = upstreamErrorType(res.status);
   const detail = await readUpstreamErrorText(res, grant);
+  logUpstreamFailure(grant, call, `upstream returned HTTP ${res.status}`, res, detail);
   const message = type === 'authentication_error'
     ? 'The endpoint rejected the connection\'s key.'
     : `The endpoint returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`;
+  // The CLI retries on its own and then reports a generic error; this lets the
+  // chat turn name the endpoint's reason instead (scrubbed, no URL or key).
+  noteGatewayFailure(grant.aiSessionId, message);
   const status = res.status >= 400 && res.status < 600 ? res.status : 502;
   return { status, headers: { 'content-type': 'application/json' }, body: Buffer.from(gatewayErrorBody(type, message)) };
 }
@@ -51,6 +85,7 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
   const model = assertBoundModel(grant, parsed.model);
   if (grant.config.kind !== 'openai_compatible') throw new Error('openai adapter on a non-openai grant');
   const translated = translateMessagesRequest(parsed, model);
+  const call: UpstreamCallContext = { model, stream: translated.stream, startedAt: Date.now(), promptTokensEstimate: estimateInputTokens(parsed) };
   const res = await forwardUpstream(grant, {
     url: joinByoUrl(grant.config.baseUrl, 'chat/completions'),
     method: 'POST',
@@ -58,26 +93,28 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     body: JSON.stringify(translated.body),
     stream: translated.stream,
   }, signal);
-  if (!res.ok) return upstreamError(res, grant);
+  if (!res.ok) return upstreamError(res, grant, call);
   if (!translated.stream) {
     let payload: unknown;
     try { payload = await res.json(); } catch {
       throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned malformed JSON.');
     }
-    return json(200, translateChatResponse(payload, { model, tools: translated.tools, estimatedInputTokens: estimateInputTokens(parsed) }));
+    return json(200, translateChatResponse(payload, { model, tools: translated.tools, estimatedInputTokens: call.promptTokensEstimate }));
   }
   if (!res.body) throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned an empty stream.');
   if (!isEventStream(res.headers.get('content-type'))) {
     // A JSON answer or an HTML error page is not SSE; reading it as one would end
     // as an empty "complete" message. Drain a bounded prefix, drop the rest.
-    await readUpstreamErrorText(res, grant);
+    const contentType = (res.headers.get('content-type') ?? 'none').slice(0, 100);
+    const detail = await readUpstreamErrorText(res, grant);
+    logUpstreamFailure(grant, call, `upstream did not stream its answer (content_type ${JSON.stringify(contentType)})`, res, detail);
     throw new GatewayError(502, 'api_error', 'upstream_not_streamed', 'The endpoint did not stream its answer.');
   }
   return {
     status: 200,
     headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
     body: translateChatStream(res.body as unknown as AsyncIterable<Uint8Array>, {
-      model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: estimateInputTokens(parsed),
+      model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: call.promptTokensEstimate,
       grantId: grant.id, connectionId: grant.config.connectionId, secrets: [grant.credential.secret],
     }),
   };

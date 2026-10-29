@@ -1,4 +1,4 @@
-import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
+import { GATEWAY_IDLE_TIMEOUT_MS, GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
 import { scrubSecrets } from '../scrub';
 import { encodeSse, parseSse } from './sse';
 import { describeRefusedToolCalls, mapFinish, resolveUsage, UNSAFE_TOOL_CALL_NOTE, validateToolCalls } from './translateResponse';
@@ -17,7 +17,18 @@ export interface TranslateStreamContext {
   connectionId?: string;
   /** Secrets scrubbed from any logged text (the connection credential). */
   secrets?: ReadonlyArray<string | null>;
+  /**
+   * Least time between keepalive `ping` events sent while the upstream is
+   * active but produces nothing to forward (reasoning deltas, role-only
+   * chunks). Defaults to a quarter of the gateway idle timeout.
+   */
+  keepaliveMs?: number;
 }
+
+/** Default keepalive spacing: well inside the server's idle window. */
+export const STREAM_KEEPALIVE_MS = Math.floor(GATEWAY_IDLE_TIMEOUT_MS / 4);
+
+const PING = encodeSse('ping', { type: 'ping' });
 
 /**
  * Finish reasons that mark a complete answer. Anything else (an unknown value)
@@ -103,12 +114,18 @@ export async function* translateChatStream(
   let argChars = 0;
   let usage: OaiUsage | null = null;
   const assembler = new ToolCallAssembler();
+  const keepaliveMs = ctx.keepaliveMs ?? STREAM_KEEPALIVE_MS;
+  let lastYieldAt = Date.now();
 
   const warn = (what: string, detail?: string): void => {
     const ids = `grant ${ctx.grantId ?? 'unknown'}, connection ${ctx.connectionId ?? 'unknown'}`;
     const suffix = detail ? `: ${scrubSecrets(detail, ctx.secrets ?? [], LOG_TEXT_MAX)}` : '';
     console.warn(`[modelGateway] ${what} (${ids})${suffix}`);
   };
+
+  // Every event this function yields goes through here, so the keepalive clock
+  // always measures time since the caller last saw a byte.
+  const emit = (bytes: Uint8Array): Uint8Array => { lastYieldAt = Date.now(); return bytes; };
 
   yield encodeSse('message_start', {
     type: 'message_start',
@@ -127,15 +144,21 @@ export async function* translateChatStream(
       }
       if (chunk.usage) usage = chunk.usage;
       const choice = chunk.choices?.[0];
-      if (!choice) continue;
-      const delta = choice.delta ?? {};
+      const delta = choice?.delta ?? {};
+      if (!choice || !(typeof delta.content === 'string' && delta.content.length > 0)) {
+        // The upstream is alive but sent nothing to forward (a reasoning delta,
+        // a role-only or usage-only chunk). A ping keeps the gateway's idle
+        // timer, and the caller's, from cutting a long reasoning phase (#10591).
+        if (Date.now() - lastYieldAt >= keepaliveMs) yield emit(PING);
+        if (!choice) continue;
+      }
       if (typeof delta.content === 'string' && delta.content.length > 0) {
         if (!textOpen) {
-          yield encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
+          yield emit(encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } }));
           textOpen = true;
         }
         emittedChars += delta.content.length;
-        yield encodeSse('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: delta.content } });
+        yield emit(encodeSse('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: delta.content } }));
       }
       for (const tc of delta.tool_calls ?? []) {
         const cur = assembler.add(tc);

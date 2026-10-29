@@ -11,7 +11,9 @@
  * no oracle for whether a token ever existed — and no upstream call.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { captureException } from '../../sentry';
 import { scrubSecrets } from './scrub';
+import { noteGatewayFailure } from './failureNotes';
 import { assertBoundModel, getGatewayAdapter, type GatewayAdapter } from './adapter';
 import { auditGatewayEgress } from './forward';
 import { createGrantStore, type GrantStore } from './grants';
@@ -87,19 +89,35 @@ async function readBody(req: IncomingMessage, limit: number, signal: AbortSignal
   return Buffer.concat(parts);
 }
 
-async function writeResponse(res: ServerResponse, out: GatewayResponse, signal: AbortSignal, idleTimeoutMs: number): Promise<void> {
+/** What a stream had delivered when the idle timer cut it. */
+export interface IdleCutStats { elapsedMs: number; bytesStreamed: number }
+
+async function writeResponse(
+  res: ServerResponse,
+  out: GatewayResponse,
+  signal: AbortSignal,
+  idleTimeoutMs: number,
+  onIdleCut: (stats: IdleCutStats) => void,
+): Promise<void> {
   res.writeHead(out.status, { ...out.headers, 'cache-control': 'no-store' });
   if (Buffer.isBuffer(out.body)) { res.end(out.body); return; }
+  const startedAt = Date.now();
+  let bytesStreamed = 0;
   let idle: NodeJS.Timeout | null = null;
   let complete = false;
   const arm = (): void => {
     if (idle) clearTimeout(idle);
-    idle = setTimeout(() => res.destroy(new Error('gateway idle timeout')), idleTimeoutMs);
+    idle = setTimeout(() => {
+      // Never silent (#10591): a stream cut here was otherwise invisible server-side.
+      try { onIdleCut({ elapsedMs: Date.now() - startedAt, bytesStreamed }); } catch { /* logging must not keep the stream alive */ }
+      res.destroy(new Error('gateway idle timeout'));
+    }, idleTimeoutMs);
   };
   arm();
   try {
     for await (const chunk of out.body) {
       if (signal.aborted || res.destroyed) break;
+      bytesStreamed += chunk.length;
       if (!res.write(chunk)) {
         // Wait for drain, but also wake on abort / close / error.
         await new Promise<void>((resolve) => {
@@ -135,13 +153,19 @@ function headersOf(req: IncomingMessage): Record<string, string> {
  * body names a top-level `model` must name a bound one, whatever the adapter does.
  * Bodies that are not a JSON object are left to the adapter (which rejects them).
  */
-function assertAnthropicBodyModel(adapter: GatewayAdapter, body: Buffer, grant: GatewayGrantRecord): void {
-  if (adapter.dialect !== 'anthropic' || body.length === 0) return;
+function assertAnthropicBodyModel(adapter: GatewayAdapter, body: Buffer, grant: GatewayGrantRecord): string | null {
+  if (adapter.dialect !== 'anthropic' || body.length === 0) return null;
   let parsed: unknown;
-  try { parsed = JSON.parse(body.toString('utf8')); } catch { return; }
+  try { parsed = JSON.parse(body.toString('utf8')); } catch { return null; }
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'model' in parsed) {
-    assertBoundModel(grant, (parsed as { model?: unknown }).model);
+    return assertBoundModel(grant, (parsed as { model?: unknown }).model);
   }
+  return null;
+}
+
+/** Client-safe note for a stream the idle timer cut (no host, URL or credential). */
+export function idleCutMessage(idleTimeoutMs: number): string {
+  return `The model endpoint sent nothing for ${Math.round(idleTimeoutMs / 1000)} seconds, so the response was cut off.`;
 }
 
 const TIMED_OUT = gatewayErrorBody('api_error', 'The model endpoint did not answer in time.');
@@ -183,12 +207,17 @@ export async function startModelGateway(
       try {
         const body = await readBody(req, GATEWAY_MAX_REQUEST_BYTES, ac.signal);
         const adapter = getGatewayAdapter(grant.config.kind);
-        assertAnthropicBodyModel(adapter, body, grant);
+        const model = assertAnthropicBodyModel(adapter, body, grant);
         const out = await adapter.handle(
           { method: req.method ?? 'GET', path, headers: headersOf(req), body, signal: ac.signal },
           grant,
         );
-        await writeResponse(res, out, ac.signal, idleTimeoutMs);
+        await writeResponse(res, out, ac.signal, idleTimeoutMs, ({ elapsedMs, bytesStreamed }) => {
+          console.warn(`[modelGateway] stream idle timeout: no output for ${idleTimeoutMs} ms; response cut `
+            + `(grant ${grant.id}, connection ${grant.config.connectionId}, model ${model === null ? 'unknown' : JSON.stringify(model)}, `
+            + `path ${path}, idle_ms ${idleTimeoutMs}, elapsed_ms ${elapsedMs}, bytes_streamed ${bytesStreamed}).`);
+          noteGatewayFailure(grant.aiSessionId, idleCutMessage(idleTimeoutMs));
+        });
       } catch (error) {
         if (timedOut) {
           send(res, 504, TIMED_OUT);
@@ -202,8 +231,14 @@ export async function startModelGateway(
           send(res, error.status === 499 ? 400 : error.status, gatewayErrorBody(error.errorType,
             scrubSecrets(error.message, [grant.credential.secret])));
         } else {
-          console.error(`[modelGateway] unhandled adapter error (grant ${grant.id}, connection ${grant.config.connectionId}):`,
-            scrubSecrets(error instanceof Error ? error.message : String(error), [grant.credential.secret]));
+          const scrubbed = scrubSecrets(error instanceof Error ? error.message : String(error), [grant.credential.secret]);
+          console.error(`[modelGateway] unhandled adapter error (grant ${grant.id}, connection ${grant.config.connectionId}):`, scrubbed);
+          // A gateway bug, not an endpoint answer: report it. Only the scrubbed
+          // message travels (never the original error, whose cause chain or
+          // properties could carry the credential).
+          const reported = new Error(`model gateway adapter error: ${scrubbed}`);
+          reported.name = error instanceof Error ? error.name : 'Error';
+          captureException(reported, undefined, undefined, { fingerprint: ['ai_model_gateway', 'unhandled_adapter_error'] });
           send(res, 502, gatewayErrorBody('api_error', 'The model endpoint request failed.'));
         }
       } finally {
