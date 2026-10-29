@@ -586,6 +586,80 @@ describe('#7786: the CLI\'s background call never labels a failed turn', () => {
   });
 });
 
+describe('#10413: a query that started from zero bills every modelUsage key at its own rate', () => {
+  // An agent-run hop is ONE fresh query with persistSession:false: no resume,
+  // no transcript, so its modelUsage counts only this query. The first result
+  // is then an exact per-key delta from zero, not a ceiling.
+  const MAIN = tok(100, 80, 1500, 10);
+  const BG_USAGE = tok(900, 15);
+
+  it('main model + the CLI\'s background call: both keys billed, confirmed, served = bound', () => {
+    const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+      queryStartedAtZero: true,
+      result: success({ usage: ru(MAIN), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    expect(out.usage).toEqual([std(SONNET, MAIN), std(BG, BG_USAGE)]);
+    expect(out.usageConfirmed).toBe(true);
+    expect(out.usageNote).toBe('delta');
+    expect(out.outcome).toMatchObject({ servedModel: SONNET, fallbackUsed: false, stopReason: 'end_turn' });
+    expect(out.nextSnapshot).toEqual(snap({ [SONNET]: MAIN, [BG]: BG_USAGE }));
+  });
+
+  it('bills modelUsage, not result.usage: the per-key totals are the exact count, never added to result.usage', () => {
+    // result.usage is main-loop only and may undercount the main key; it is
+    // never summed on top of modelUsage (no double charge).
+    const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+      queryStartedAtZero: true,
+      result: success({ usage: ru(tok(90, 70, 1500, 10)), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    expect(out.usage).toEqual([std(SONNET, MAIN), std(BG, BG_USAGE)]);
+  });
+
+  it('a second result in the same query bills only the per-key growth since the first', () => {
+    const first = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+      queryStartedAtZero: true,
+      result: success({ usage: ru(MAIN), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    const second = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: first.nextSnapshot,
+      queryStartedAtZero: true,
+      result: success({ usage: ru(T), modelUsage: { [SONNET]: mu(add(MAIN, T)), [BG]: mu(BG_USAGE) } }) });
+    expect(second.usage).toEqual([std(SONNET, T)]);
+    expect(second.usageConfirmed).toBe(true);
+  });
+
+  it('a failed query whose only usage is the background call bills that call, unconfirmed, served = bound (#7786)', () => {
+    const frames = [...retries('overloaded', 529), syntheticError('server_error'), failedResult(529)];
+    const out = sdkTurnUsage({ binding: B, observation: observed(frames), previousSnapshot: null,
+      queryStartedAtZero: true, result: frames.at(-1) as SdkResultLike });
+    expect(out.usage).toEqual([std(BG, BG_USAGE)]);
+    expect(out.usageConfirmed).toBe(false);
+    expect(out.outcome).toMatchObject({ servedModel: SONNET, fallbackUsed: false, stopReason: 'error' });
+  });
+
+  it('fast served: only the bound model\'s row bills fast, the background row stays standard', () => {
+    const fastB: TurnBinding = { ...B, options: { speed: 'fast' } };
+    const out = sdkTurnUsage({ binding: fastB, observation: newSdkTurnObservation(), previousSnapshot: null,
+      queryStartedAtZero: true,
+      result: success({ fast_mode_state: 'on', usage: ru(MAIN), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    expect(out.usage).toEqual([{ ...std(SONNET, MAIN), speedServed: 'fast' }, std(BG, BG_USAGE)]);
+  });
+
+  it('a named refusal fallback: each model billed on its own row, served = the fallback', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', fallback_model: HAIKU, api_refusal_category: 'cyber' });
+    const out = sdkTurnUsage({ binding: B, observation: obs, previousSnapshot: null, queryStartedAtZero: true,
+      result: success({ usage: ru(tok(40, 30)), modelUsage: { [SONNET]: mu(tok(20, 1)), [HAIKU]: mu(tok(40, 30)) } }) });
+    expect(out.usage).toEqual([std(SONNET, tok(20, 1)), std(HAIKU, tok(40, 30))]);
+    expect(out.outcome).toMatchObject({ servedModel: HAIKU, fallbackUsed: true });
+    expect(out.usageConfirmed).toBe(true);
+  });
+
+  it('without the flag (a chat query that may have resumed a transcript) the first result keeps the capped rule', () => {
+    const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
+      result: success({ usage: ru(MAIN), modelUsage: { [SONNET]: mu(MAIN), [BG]: mu(BG_USAGE) } }) });
+    expect(out.usage).toEqual([std(SONNET, MAIN)]);
+    expect(out.usageConfirmed).toBe(false);
+    expect(out.usageNote).toBe('first_result');
+  });
+});
+
 describe('parseSdkUsageSnapshot', () => {
   it('round-trips a valid snapshot', () => {
     const s = snap({ [SONNET]: [T, 2], [OPUS]: tok(1, 2, 3, 4) });
