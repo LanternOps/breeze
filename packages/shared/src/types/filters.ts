@@ -211,7 +211,8 @@ export type CustomFieldValues = Record<string, unknown>;
  */
 export interface DeviceGroupWithFilter {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   siteId: string | null;
   name: string;
   type: 'static' | 'dynamic';

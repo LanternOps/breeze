@@ -1,7 +1,7 @@
 /**
- * Opt-in alerts:write: acknowledge and resolve only, with the principal acting
+ * Opt-in alerts:write: state actions and external ticket refs, with the principal acting
  * as itself. This grant does not imply alerts:read; responses contain state
- * and attribution, never alert content. No suppress/dismiss/delete/bulk.
+ * and attribution or refs, never alert content. No alert suppress/dismiss/delete/bulk.
  * Every database touch runs in one partner-scoped context with the principal's
  * accessible organization set and no user. CAS losers and repeats emit no
  * second event or domain audit. Out-of-reach path ids always return 404.
@@ -9,15 +9,17 @@
 import { Hono, type Context } from 'hono';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
+import { alertExternalTicketPutSchema } from '@breeze/shared';
 import { db } from '../../db';
-import { alerts } from '../../db/schema';
+import { alertExternalRefs, alerts } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../middleware/partnerApiAuth';
+import { listAlertExternalTickets } from '../../services/alertExternalTickets';
 import { acknowledgeAlert } from '../../services/alertActions';
 import { resolveAlert } from '../../services/alertService';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { inPartnerContext } from './dbContext';
-import { partnerAlertWriteResponseSchema } from './schemas';
+import { partnerAlertWriteResponseSchema, partnerAlertExternalTicketPutResponseSchema, partnerAlertExternalTicketDeleteResponseSchema, partnerAlertExternalTicketsResponseSchema } from './schemas';
 
 export const partnerAlertWriteRoutes = new Hono();
 const writeScope = requirePartnerApiScope('alerts:write');
@@ -38,11 +40,12 @@ const alertColumns = {
 type AlertRow = Pick<typeof alerts.$inferSelect, keyof typeof alertColumns>;
 
 /** The explicit organization predicate complements RLS; callers hold the partner context. */
-async function getPartnerAlertOr404(principal: PartnerApiPrincipalContext, id: string): Promise<AlertRow | null> {
+async function getPartnerAlertOr404(principal: PartnerApiPrincipalContext, id: string, lock = false): Promise<AlertRow | null> {
   if (principal.accessibleOrgIds.length === 0) return null;
-  const [row] = await db.select(alertColumns).from(alerts)
+  const query = db.select(alertColumns).from(alerts)
     .where(and(eq(alerts.id, id), inArray(alerts.orgId, principal.accessibleOrgIds)))
     .limit(1);
+  const [row] = await (lock ? query.for('no key update') : query);
   return row ?? null;
 }
 
@@ -135,4 +138,86 @@ partnerAlertWriteRoutes.post('/alerts/:id/resolve', writeScope,
         : { kind: 'conflict', status: current.status };
     });
     return respond(c, principal, 'resolve', outcome, !!note);
+  });
+
+function auditExternalTicket(c: Context, principal: PartnerApiPrincipalContext, alert: AlertRow, action: 'set' | 'delete', externalId: string): void {
+  void writeAuditEventAsync(c, {
+    orgId: alert.orgId, actorType: 'api_key', actorId: principal.partnerServicePrincipalId,
+    initiatedBy: 'integration', action: `alert.external_ticket.${action}`, resourceType: 'alert',
+    resourceId: alert.id, resourceName: alert.title, result: 'success',
+    details: {
+      principalType: 'partner_service_principal', partnerServicePrincipalId: principal.partnerServicePrincipalId,
+      partnerServicePrincipalName: principal.name, keyId: principal.keyId, partnerId: principal.partnerId,
+      externalId,
+    },
+  });
+}
+
+partnerAlertWriteRoutes.put('/alerts/:id/external-ticket', writeScope,
+  zValidator('param', idParam), zValidator('json', alertExternalTicketPutSchema), async (c) => {
+    const principal = c.get('partnerApiPrincipal');
+    const { id } = c.req.valid('param');
+    const body = c.req.valid('json');
+    // PUT is full replacement: omission clears the two nullable fields.
+    const fields = { externalId: body.externalId, externalUrl: body.externalUrl ?? null, externalNumber: body.externalNumber ?? null };
+    const outcome = await inPartnerContext(principal, async () => {
+      // Serialize the check/upsert, including the initially absent ref. This
+      // makes concurrent identical PUTs a real no-op with one audit, and pins
+      // the alert's org during moves without blocking FK key-share readers.
+      const alert = await getPartnerAlertOr404(principal, id, true);
+      if (!alert) return null;
+      const ownRef = and(eq(alertExternalRefs.alertId, id), eq(alertExternalRefs.partnerServicePrincipalId, principal.partnerServicePrincipalId));
+      const [existing] = await db.select().from(alertExternalRefs).where(ownRef).limit(1);
+      if (existing && existing.externalId === fields.externalId && existing.externalUrl === fields.externalUrl && existing.externalNumber === fields.externalNumber) {
+        return { alert, ref: existing, created: false, changed: false };
+      }
+      const [ref] = existing
+        ? await db.update(alertExternalRefs).set({ ...fields, updatedAt: new Date() }).where(ownRef).returning()
+        : await db.insert(alertExternalRefs).values({
+          alertId: id, orgId: alert.orgId, partnerId: principal.partnerId,
+          partnerServicePrincipalId: principal.partnerServicePrincipalId, ...fields,
+        }).returning();
+      if (!ref) throw new Error('External ticket write returned no row');
+      return { alert, ref, created: !existing, changed: true };
+    });
+    if (!outcome) return c.json({ error: 'Alert not found.', code: 'partner_alert_not_found' }, 404);
+    if (outcome.changed) auditExternalTicket(c, principal, outcome.alert, 'set', outcome.ref.externalId);
+    const { ref } = outcome;
+    return c.json(partnerAlertExternalTicketPutResponseSchema.parse({
+      schemaVersion: '1', changed: outcome.changed,
+      data: {
+        alertId: ref.alertId, orgId: ref.orgId, partnerServicePrincipalId: ref.partnerServicePrincipalId,
+        externalId: ref.externalId, externalUrl: ref.externalUrl, externalNumber: ref.externalNumber,
+        createdAt: ref.createdAt.toISOString(), updatedAt: ref.updatedAt.toISOString(),
+      },
+    }), outcome.created ? 201 : 200);
+  });
+
+partnerAlertWriteRoutes.delete('/alerts/:id/external-ticket', writeScope,
+  zValidator('param', idParam), async (c) => {
+    const principal = c.get('partnerApiPrincipal');
+    const { id } = c.req.valid('param');
+    const outcome = await inPartnerContext(principal, async () => {
+      const alert = await getPartnerAlertOr404(principal, id, true);
+      if (!alert) return null;
+      const [deleted] = await db.delete(alertExternalRefs).where(and(
+        eq(alertExternalRefs.alertId, id), eq(alertExternalRefs.partnerServicePrincipalId, principal.partnerServicePrincipalId),
+      )).returning();
+      return { alert, deleted };
+    });
+    if (!outcome) return c.json({ error: 'Alert not found.', code: 'partner_alert_not_found' }, 404);
+    if (outcome.deleted) auditExternalTicket(c, principal, outcome.alert, 'delete', outcome.deleted.externalId);
+    return c.json(partnerAlertExternalTicketDeleteResponseSchema.parse({ schemaVersion: '1', deleted: !!outcome.deleted }));
+  });
+
+partnerAlertWriteRoutes.get('/alerts/:id/external-tickets', requirePartnerApiScope('alerts:read'),
+  zValidator('param', idParam), async (c) => {
+    const principal = c.get('partnerApiPrincipal');
+    const { id } = c.req.valid('param');
+    const data = await inPartnerContext(principal, async () => {
+      if (!await getPartnerAlertOr404(principal, id)) return null;
+      return listAlertExternalTickets(id, principal.partnerId);
+    });
+    if (!data) return c.json({ error: 'Alert not found.', code: 'partner_alert_not_found' }, 404);
+    return c.json(partnerAlertExternalTicketsResponseSchema.parse({ schemaVersion: '1', data }));
   });
