@@ -133,11 +133,11 @@ supportSessionRoutes.post(
     // override. No localhost default: with nothing configured the relative path
     // is returned and the web client resolves it against its own origin.
     const webBase = (
-      process.env.PUBLIC_WEB_URL
-      || process.env.DASHBOARD_URL
-      || process.env.PUBLIC_APP_URL
+      process.env.PUBLIC_WEB_URL?.trim()
+      || process.env.DASHBOARD_URL?.trim()
+      || process.env.PUBLIC_APP_URL?.trim()
       || ''
-    ).trim().replace(/\/+$/, '');
+    ).replace(/\/+$/, '');
 
     return c.json({
       id: session.id,

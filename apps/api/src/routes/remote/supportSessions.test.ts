@@ -200,6 +200,12 @@ describe('POST /support-sessions landingUrl base', () => {
     expect(landingUrl).toBe(`https://rmm.example.com/quick?code=${raw}`);
   });
 
+  it('skips a whitespace-only base instead of letting it shadow the next one', async () => {
+    stubBases({ PUBLIC_WEB_URL: '   ', PUBLIC_APP_URL: 'https://rmm.example.com' });
+    const { landingUrl, raw } = await createLandingUrl();
+    expect(landingUrl).toBe(`https://rmm.example.com/quick?code=${raw}`);
+  });
+
   it('falls back to the relative path when no base is configured (the web client resolves it)', async () => {
     stubBases({});
     const { landingUrl, raw } = await createLandingUrl();
