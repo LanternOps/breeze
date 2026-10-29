@@ -158,7 +158,7 @@
         "maintenanceSkipped": "Fenêtres de maintenance non exclues : trop d'appareils à vérifier",
         "maintenanceUnavailable": "Fenêtres de maintenance non exclues : état indisponible",
         "none": "Aucune exclusion",
-        "title": "Exclusions",
+        "title": "Exclusions appliquées",
         "weekends": "Week-ends exclus"
       },
       "incidents": "{{count}} incidents",
