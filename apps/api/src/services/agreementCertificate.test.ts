@@ -494,9 +494,11 @@ describe('loadCertifiedAgreementInput', () => {
     });
   });
 
-  it('request label wins over the template name for the agreement name', async () => {
+  it('#10294: the agreement is named by its template, never the staff-internal request label', async () => {
     dbResults.push([loaderRow({ requestLabel: 'BAA — 2027 renewal' })]);
-    expect((await loadCertifiedAgreementInput(DOC_ID))!.agreement.name).toBe('BAA — 2027 renewal');
+    const input = (await loadCertifiedAgreementInput(DOC_ID))!;
+    expect(input.agreement.name).toBe(input.agreement.templateName);
+    expect(JSON.stringify(buildCertificateContent(input))).not.toContain('2027 renewal');
   });
 
   it('customer accept without a public-link response → portal', async () => {

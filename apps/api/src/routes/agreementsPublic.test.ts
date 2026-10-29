@@ -266,7 +266,8 @@ describe('GET /:token — view', () => {
     expect(res.status).toBe(200);
     expectPublicHeaders(res);
     const { data } = await res.json();
-    expect(data.request).toMatchObject({ id: REQUEST_ID, status: 'viewed', label: 'BAA', coverMessage: 'Please sign' });
+    expect(data.request).toMatchObject({ id: REQUEST_ID, status: 'viewed', coverMessage: 'Please sign' });
+    expect(data.request).not.toHaveProperty('label'); // staff-internal (#10294)
     expect(data.template).toEqual({ name: 'Business Associate Agreement', versionNumber: 3, sourceType: 'authored' });
     // Frozen client name + manual value substituted; the href value re-sanitized.
     expect(data.html).toContain('Example Clinic PO PO-9');

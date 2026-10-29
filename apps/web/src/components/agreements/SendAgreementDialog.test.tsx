@@ -119,15 +119,46 @@ describe('SendAgreementDialog', () => {
       expect(screen.getByTestId('agreements-send-expiry')).toHaveValue('2099-01-15');
     });
 
-    it('a failed defaults read keeps the built-in 30 days and SAYS so instead of naming a source', async () => {
+    it('#10294: the date stays blank until the partner default is known — never a built-in +30 that then jumps', async () => {
+      let release: (r: Response) => void = () => {};
+      api.getAgreementRequestDefaults.mockImplementation(() => new Promise<Response>((r) => { release = r; }));
+      renderDialog();
+      const expiry = await screen.findByTestId('agreements-send-expiry');
+      expect(expiry).toHaveValue('');
+      expect(screen.getByTestId('agreements-send-expiry-blank')).toHaveTextContent(/blank/i);
+      release(resp({ data: { defaultExpiryDays: 14, autoReminder: null } }));
+      await waitFor(() => expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(14)));
+      expect(screen.queryByTestId('agreements-send-expiry-blank')).not.toBeInTheDocument();
+    });
+
+    it('#10294: with no organization picked yet the date is blank (the default is resolved per org)', async () => {
+      render(<SendAgreementDialog open onClose={vi.fn()} onSent={vi.fn()} />);
+      expect(await screen.findByTestId('agreements-send-expiry')).toHaveValue('');
+      expect(api.getAgreementRequestDefaults).not.toHaveBeenCalled();
+    });
+
+    it('a failed defaults read leaves the date blank (the server applies the default) and SAYS so', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       api.getAgreementRequestDefaults.mockResolvedValue(resp({ error: 'nope' }, 500));
       renderDialog();
-      expect(await screen.findByTestId('agreements-send-expiry-default-unavailable')).toHaveTextContent(/built-in default/);
-      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue(inDays(30));
+      expect(await screen.findByTestId('agreements-send-expiry-default-unavailable')).toHaveTextContent(/blank/i);
+      expect(screen.getByTestId('agreements-send-expiry')).toHaveValue('');
       expect(screen.queryByTestId('agreements-send-expiry-default')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('agreements-send-expiry-blank')).not.toBeInTheDocument();
+      await fillAndCreate();
+      await waitFor(() => expect(api.createAgreementRequest).toHaveBeenCalled());
+      expect(api.createAgreementRequest.mock.calls[0]![0]).not.toHaveProperty('expiresAt', expect.anything());
       warn.mockRestore();
     });
+  });
+
+  it('#10294: the Label field says it is internal and customers see the template name', async () => {
+    renderDialog();
+    expect(await screen.findByTestId('agreements-send-label-hint')).toHaveTextContent(enBilling.agreements.send.labelHint);
+    expect(enBilling.agreements.send.labelHint).toMatch(/customers/i);
+  });
+
+  describe('#9075 W4a: switching org', () => {
 
     it("switching org drops the previous org's hint until the new defaults arrive", async () => {
       api.getAgreementRequestDefaults.mockImplementation(async (orgId: string) => (orgId === 'org-1'

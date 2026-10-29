@@ -107,6 +107,15 @@ describe('sendSignedAgreementCopy', () => {
     expect(loadInputMock).toHaveBeenCalledWith(DOC_ID);
   });
 
+  it('#10294: names the template in the subject and body, never the staff-internal request label', async () => {
+    queuePrepared(['dana@example.com'], { label: 'Portal sign 10-26' });
+    queueCertified();
+    await sendSignedAgreementCopy({ requestId: REQUEST_ID, signedAgreementId: DOC_ID, signerEmail: 'dana@example.com' });
+    const env = sendEmailMock.mock.calls[0]![0];
+    expect(env.subject).toBe('Your signed copy: Business Associate Agreement');
+    for (const part of [env.subject, env.html, env.text]) expect(part).not.toContain('Portal sign 10-26');
+  });
+
   it('an externally-signed PNG is attached as its certified copy — a PDF, sanitized name', async () => {
     queueCertified(certInput({ pdfData: Buffer.from('png'), mime: 'image/png', name: 'Scan "x"\r\n' }));
     const att = await loadSignedCopyAttachment(DOC_ID);

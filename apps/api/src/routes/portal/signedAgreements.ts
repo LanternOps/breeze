@@ -4,7 +4,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { db } from '../../db';
-import { agreementRequests, contractDocuments } from '../../db/schema/contractDocuments';
+import { contractDocuments } from '../../db/schema/contractDocuments';
 import { quotes } from '../../db/schema/quotes';
 import { auditPortalSensitiveRead } from '../../services/sensitiveReadAudit';
 import { buildSignedAgreementDownload, signedAgreementCopyQuery } from '../../services/signedAgreementDownload';
@@ -67,27 +67,21 @@ portalSignedAgreementRoutes.get('/signed-agreements', async (c) => {
     .orderBy(desc(contractDocuments.createdAt))
     .limit(200);
 
-  const requestIds = [...new Set(docs.map((d) => d.agreementRequestId).filter((v): v is string => v !== null))];
   const quoteIds = [...new Set(docs.map((d) => d.quoteId).filter((v): v is string => v !== null))];
   // Sequential: these share the request transaction's one connection.
-  const requestRows = requestIds.length
-    ? await db.select({ id: agreementRequests.id, label: agreementRequests.label }).from(agreementRequests)
-      .where(and(eq(agreementRequests.orgId, orgId), inArray(agreementRequests.id, requestIds)))
-    : [];
   const quoteRows = quoteIds.length
     ? await db.select({ id: quotes.id, quoteNumber: quotes.quoteNumber }).from(quotes)
       .where(and(eq(quotes.orgId, orgId), inArray(quotes.id, quoteIds)))
     : [];
   const labels = await loadTemplateLabels(docs.map((d) => d.templateVersionId));
-  const requestLabel = new Map(requestRows.map((r) => [r.id, r.label]));
   const quoteNumber = new Map(quoteRows.map((q) => [q.id, q.quoteNumber]));
 
   const data = docs.map((d) => {
     const template = labels.get(d.templateVersionId);
-    const label = d.agreementRequestId ? requestLabel.get(d.agreementRequestId)?.trim() : null;
     return {
       id: d.id,
-      name: label || template?.templateName || 'Agreement',
+      // The template name, never the request label: the label is staff-internal (#10294).
+      name: template?.templateName || 'Agreement',
       templateName: template?.templateName ?? null,
       versionNumber: template?.versionNumber ?? null,
       sourceKind: d.sourceKind,

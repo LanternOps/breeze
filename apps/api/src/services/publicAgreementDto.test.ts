@@ -80,13 +80,18 @@ function allKeys(value: unknown, acc: Set<string> = new Set()): Set<string> {
 }
 
 describe('toPublicAgreementPresentation (spec §5: request id is the only internal id)', () => {
+  it('#10294: never carries the staff-internal request label (the customer sees the template name)', () => {
+    const dto = toPublicAgreementPresentation({ ...base, request: row({ label: 'Portal sign 10-26' }), status: 'sent' });
+    expect(dto.request).not.toHaveProperty('label');
+    expect(JSON.stringify(dto)).not.toContain('Portal sign 10-26');
+  });
+
   it('builds the allow-listed view DTO', () => {
     const dto = toPublicAgreementPresentation({ ...base, request: row(), status: 'viewed' });
     expect(dto).toEqual({
       request: {
         id: REQUEST_ID,
         status: 'viewed',
-        label: 'BAA 2027',
         coverMessage: 'Please sign by Friday.',
         expiresAt: '2027-02-01T00:00:00.000Z',
         effectiveDate: '2027-01-10',

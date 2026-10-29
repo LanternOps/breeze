@@ -214,7 +214,6 @@ portalAgreementRoutes.get('/agreements', async (c) => {
     .select({
       id: agreementRequests.id,
       status: agreementRequests.status,
-      label: agreementRequests.label,
       templateVersionId: agreementRequests.templateVersionId,
       sentAt: agreementRequests.sentAt,
       expiresAt: agreementRequests.expiresAt,
@@ -234,7 +233,9 @@ portalAgreementRoutes.get('/agreements', async (c) => {
     const template = labels.get(r.templateVersionId);
     return {
       id: r.id,
-      name: r.label?.trim() || template?.templateName || 'Agreement',
+      // The template name, never the request label: the label is staff-internal
+      // (the Send dialog says so) and never reaches the customer (#10294).
+      name: template?.templateName || 'Agreement',
       templateName: template?.templateName ?? null,
       status: r.status as 'sent' | 'viewed',
       sentAt: r.sentAt ? r.sentAt.toISOString() : null,

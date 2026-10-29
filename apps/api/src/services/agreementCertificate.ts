@@ -75,7 +75,7 @@ export interface CertifiedAgreementDocument {
 
 export interface CertifiedAgreementInput {
   document: CertifiedAgreementDocument;
-  /** `name` = the request label, else the template name. */
+  /** `name` = the template name (never the staff-internal request label, #10294). */
   agreement: { name: string; templateName: string; versionNumber: number | null };
   parties: { seller: string | null; client: string | null };
   source: { kind: 'quote'; quoteNumber: string | null } | { kind: 'request'; requestId: string | null };
@@ -494,7 +494,6 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
         templateName: contractTemplates.name,
         versionNumber: contractTemplateVersions.versionNumber,
         versionSha256: contractTemplateVersions.sha256,
-        requestLabel: agreementRequests.label,
         requestSeller: agreementRequests.sellerSnapshot,
         requestClient: agreementRequests.clientNameSnapshot,
         requestPublicResponseJti: agreementRequests.publicResponseJti,
@@ -561,7 +560,9 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
       contentHashVersion: row.contentHashVersion,
       acceptanceRenderLocale: row.acceptanceRenderLocale,
     },
-    agreement: { name: nonBlank(row.requestLabel) ?? templateName, templateName, versionNumber: row.versionNumber ?? null },
+    // Named by the template, never the staff-internal request label: the
+    // certificate and its attachment filename reach the customer (#10294).
+    agreement: { name: templateName, templateName, versionNumber: row.versionNumber ?? null },
     parties: { seller: seller ?? nonBlank(row.partnerName), client: client ?? nonBlank(row.orgName) },
     source: isRequest ? { kind: 'request', requestId: row.agreementRequestId } : { kind: 'quote', quoteNumber: row.quoteNumber ?? null },
     how,

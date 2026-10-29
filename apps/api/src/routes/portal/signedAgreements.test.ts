@@ -79,7 +79,7 @@ beforeEach(() => {
 });
 
 describe('GET /signed-agreements', () => {
-  it('lists both source kinds as metadata, named by request label → template, with the proposal number', async () => {
+  it('lists both source kinds as metadata, named by the template (never the staff-internal request label, #10294), with the proposal number', async () => {
     h.rows.set(contractDocuments, [
       {
         id: DOC, sourceKind: 'request', templateVersionId: VERSION, agreementRequestId: REQ, quoteId: null,
@@ -99,7 +99,7 @@ describe('GET /signed-agreements', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual([
       {
-        id: DOC, name: 'HIPAA BAA 2026', templateName: 'BAA', versionNumber: 3, sourceKind: 'request', quoteNumber: null,
+        id: DOC, name: 'BAA', templateName: 'BAA', versionNumber: 3, sourceKind: 'request', quoteNumber: null,
         mime: 'application/pdf', byteSize: 1200, signerName: 'Dana Buyer', signedAt: '2026-10-21T09:00:00.000Z',
         acceptanceOrigin: 'customer', createdAt: '2026-10-21T09:00:01.000Z',
       },

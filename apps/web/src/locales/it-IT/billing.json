@@ -858,8 +858,10 @@
       "expiryDefaultHint_other": "Predefinito: {{count}} giorni, da Impostazioni di fatturazione → Accordi.",
       "autoReminderHint_one": "I promemoria automatici vengono inviati ogni giorno, fino a un massimo di {{max}}.",
       "autoReminderHint_other": "I promemoria automatici vengono inviati ogni {{count}} giorni, fino a un massimo di {{max}}.",
-      "expiryDefaultUnavailable": "Impossibile caricare la scadenza predefinita dalle Impostazioni di fatturazione; viene mostrato il valore predefinito integrato.",
+      "expiryDefaultUnavailable": "Impossibile caricare la scadenza predefinita dalle Impostazioni di fatturazione. Lascia la data vuota e il predefinito verrà applicato alla creazione dell’accordo.",
+      "expiryBlankHint": "Lascia vuoto per usare il predefinito da Impostazioni di fatturazione → Accordi.",
       "label": "Etichetta (facoltativo)",
+      "labelHint": "Solo interno. I clienti vedono il nome del modello.",
       "createDraft": "Crea bozza e anteprima",
       "creating": "Creazione…",
       "preview": {
