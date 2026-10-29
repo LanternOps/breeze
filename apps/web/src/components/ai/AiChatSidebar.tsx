@@ -49,8 +49,8 @@ type GrantLookup =
 /**
  * The caller's active Wisp grant the panel can speak under: the partner-wide
  * grant first, then one scoped to the organization selected in the header
- * (the order WispLinkButton uses). A 404 `no_active_grant` is the ordinary
- * "no grant here"; any other failure is reported as `failed` and the panel
+ * (the order WispLinkButton uses). `isNoActiveGrant` (200 `{ data: null }`,
+ * #10200) is the ordinary "no grant here"; any other failure is reported as `failed` and the panel
  * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
  * loudly (Review Focus 2).
  */
