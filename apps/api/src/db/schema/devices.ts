@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { ipClassEnum, organizations, sites } from './orgs';
+import { ipClassEnum, organizations, partners, sites } from './orgs';
 import { users } from './users';
 import { aiInitiatorKindEnum } from './aiInitiator';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
@@ -684,13 +684,20 @@ export const deviceConfigState = pgTable('device_config_state', {
 
 export const deviceGroups = pgTable('device_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
+  // Plan D3: DB nullable since 2027-01-12-200000; the type flips in W2a.
+  // No partner row can be created through the application before W3's create route.
   orgId: uuid('org_id').notNull().references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   siteId: uuid('site_id').references(() => sites.id),
   name: varchar('name', { length: 255 }).notNull(),
   type: deviceGroupTypeEnum('type').notNull().default('static'),
   rules: jsonb('rules'),
   filterConditions: jsonb('filter_conditions'),
   filterFieldsUsed: text('filter_fields_used').array().default([]),
+  filterRevision: integer('filter_revision').notNull().default(1),
+  evaluatedRevision: integer('evaluated_revision').notNull().default(0),
+  evaluatedAt: timestamp('evaluated_at'),
+  evaluationFailedOrgs: integer('evaluation_failed_orgs').notNull().default(0),
   parentId: uuid('parent_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
@@ -698,6 +705,7 @@ export const deviceGroups = pgTable('device_groups', {
   // Composite-FK target for contract_lines(device_group_id, org_id) (#3205 W02).
   // Created in SQL migration 2026-10-06-100100; declared here for db:check-drift.
   idOrgUnique: uniqueIndex('device_groups_id_org_id_uniq').on(table.id, table.orgId),
+  partnerIdIdx: index('device_groups_partner_id_idx').on(table.partnerId).where(sql`partner_id IS NOT NULL`),
 }));
 
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
@@ -709,21 +717,13 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   addedBy: membershipSourceEnum('added_by').notNull().default('manual')
 }, (table) => ({
   pk: primaryKey({ columns: [table.deviceId, table.groupId] }),
-  // #3182 — the row's org_id alone is what RLS gates on, so without these the
-  // group_id and device_id are free to name a DIFFERENT org's group/device.
-  // Together they pin the triangle: group.org_id = membership.org_id =
-  // device.org_id. Created in SQL migration
-  // 2026-10-09-000200-device-group-memberships-composite-tenant-fks.sql, which
-  // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
-  // foreignKey() builder has no deferrable option, so that detail lives in the
-  // migration only) and adds the detach — to breeze_cascade_device_org_id(),
-  // an AFTER trigger — that drops these rows on a cross-org device move.
-  // Declared here for db:check-drift.
-  groupOrgFk: foreignKey({
-    columns: [table.groupId, table.orgId],
-    foreignColumns: [deviceGroups.id, deviceGroups.orgId],
-    name: 'device_group_memberships_group_org_fk',
-  }),
+  // #3182 / #10521 W1: membership.org_id remains the device's organization.
+  // The device composite FK is DEFERRABLE INITIALLY DEFERRED in
+  // 2026-10-09-000200 (Drizzle has no deferrable option). The deferred owner
+  // trigger in 2027-01-12-200100-device-group-membership-owner-integrity.sql
+  // replaces the group composite FK: an org group must match membership.org_id;
+  // a partner group must match that organization's partner. Both checks wait
+  // until COMMIT so the device-move detach and merge repoints can finish.
   deviceOrgFk: foreignKey({
     columns: [table.deviceId, table.orgId],
     foreignColumns: [devices.id, devices.orgId],
