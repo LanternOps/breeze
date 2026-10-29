@@ -2,16 +2,18 @@
  * #10692: a partner-owned device-group delete racing an org merge of one of
  * that partner's orgs must not deadlock (40P01).
  *
- * The delete (#10521 W3, PR #10690) takes the group row FOR UPDATE and then the
- * partner-export org locks over every org of the partner. The merge takes the
- * export locks of its two orgs first, and its loser-membership repoint fires
- * the deferred `device_group_memberships_group_owner_check` trigger, which
- * takes FOR KEY SHARE on the group row at COMMIT. Without a group-row lock
- * taken BEFORE the export locks, the two orders cross.
+ * The delete (`deleteDeviceGroup(groupId, { partnerId })`, #10521 W3) takes the
+ * group row FOR UPDATE and then the partner-export org locks over every org of
+ * the partner plus every org with a membership in the group. The merge takes
+ * the export locks of its two orgs, and its loser-membership repoint fires the
+ * deferred `device_group_memberships_group_owner_check` trigger, which takes
+ * FOR KEY SHARE on the group row at COMMIT. Unless the merge takes the group
+ * row BEFORE its export locks, the two orders cross.
  *
- * `deletePartnerGroup` below mirrors the transactional part of the W3
- * `deleteDeviceGroup(groupId, { partnerId })` lock for lock. Swap it for the
- * real service once #10690 is on main.
+ * The first test drives the real service. The second needs the delete paused
+ * between its FOR UPDATE and its export locks, which the service offers no
+ * seam for, so `deletePartnerGroupPausable` reproduces that part of its lock
+ * order (group FOR UPDATE, then the same export-lock set) with a pause hook.
  */
 import './setup';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +21,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog, organizations } from '../../db/schema';
 import * as orgMerge from '../../services/orgMerge';
+import { deleteDeviceGroup } from '../../services/deviceGroupDelete';
 import { shutdownDeviceGroupJobs } from '../../jobs/deviceGroupJobs';
 import { closeRedis } from '../../services/redis';
 import { createPartner } from './db-utils';
@@ -32,14 +35,18 @@ beforeEach(() => { vi.stubEnv('ORG_MERGE_FENCE_DRAIN_MS', '0'); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 afterAll(async () => { await shutdownDeviceGroupJobs(); await closeRedis(); });
 
-/** Lock order of the W3 partner delete: group FOR UPDATE, export org locks, deletes. */
-async function deletePartnerGroup(groupId: string, partnerId: string, onLocked?: (pid: number) => void) {
+/** `deleteDeviceGroup`'s partner lock order (group FOR UPDATE, export org locks, deletes) with a pause after the row lock. */
+async function deletePartnerGroupPausable(
+  groupId: string,
+  partnerId: string,
+  onLocked: (pid: number) => Promise<void>,
+) {
   return runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx) => {
     await tx.execute(sql`SET LOCAL statement_timeout = '20s'`);
     const [group] = await tx.select({ id: deviceGroups.id }).from(deviceGroups)
       .where(eq(deviceGroups.id, groupId)).for('update');
     if (!group) throw new Error('group not found');
-    onLocked?.(await backendPid());
+    await onLocked(await backendPid());
     await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
       SELECT org_id FROM (
         SELECT ${organizations.id} AS org_id FROM ${organizations}
@@ -108,27 +115,22 @@ describe('org merge racing a partner-group delete (#10692)', () => {
     let remove: Promise<void> | undefined;
     try {
       await waitForStart(mergeLocked.promise, merge);
-      let deletePid = 0;
-      const deleteStarted = gate();
-      // Without the fix the delete gets its FOR UPDATE and blocks on the
-      // export lock; with it, it blocks on the group row. Either way it waits.
-      remove = deletePartnerGroup(f.group.id, f.partnerId, (pid) => { deletePid = pid; deleteStarted.release(); });
+      // Without the fix the delete gets its FOR UPDATE and waits on the export
+      // lock; with it, it waits on the group row. Either way it must queue
+      // behind the merge before the merge is released.
+      remove = deleteDeviceGroup(f.group.id, { partnerId: f.partnerId }).then(() => undefined);
       void remove.catch(() => {});
-      const deletePidNow = await Promise.race([
-        deleteStarted.promise.then(() => deletePid),
-        (async () => {
-          // With the fix the delete blocks before it reports a pid; find it by query.
-          const deadline = Date.now() + 5000;
-          while (Date.now() < deadline) {
-            const rows = await getTestDb().execute<{ pid: number }>(sql`
-              SELECT pid FROM pg_stat_activity
-               WHERE ${mergePid}::int = ANY(pg_blocking_pids(pid)) AND query ILIKE '%device_groups%for update%'`);
-            if (rows[0]) return rows[0].pid;
-            await new Promise(resolve => setTimeout(resolve, 20));
-          }
-          return 0;
-        })(),
-      ]);
+      let deletePidNow = 0;
+      const deadline = Date.now() + 15000;
+      while (deletePidNow === 0 && Date.now() < deadline) {
+        const rows = await getTestDb().execute<{ pid: number }>(sql`
+          SELECT pid FROM pg_stat_activity
+           WHERE ${mergePid}::int = ANY(pg_blocking_pids(pid))
+             AND (query ILIKE '%device_groups%for update%'
+                  OR query ILIKE '%breeze_partner_export_lock_orgs_exclusive%')`);
+        if (rows[0]) deletePidNow = rows[0].pid;
+        else await new Promise(resolve => setTimeout(resolve, 20));
+      }
       expect(deletePidNow).not.toBe(0);
       await waitForBlock(deletePidNow, mergePid);
     } finally {
@@ -146,17 +148,12 @@ describe('org merge racing a partner-group delete (#10692)', () => {
     const deleteLocked = gate();
     const releaseDelete = gate();
     let deletePid = 0;
-    const remove = runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx) => {
-      await tx.execute(sql`SET LOCAL statement_timeout = '20s'`);
-      await tx.select({ id: deviceGroups.id }).from(deviceGroups).where(eq(deviceGroups.id, f.group.id)).for('update');
-      deletePid = await backendPid();
+    // Paused between its FOR UPDATE and its export locks.
+    const remove = deletePartnerGroupPausable(f.group.id, f.partnerId, async (pid) => {
+      deletePid = pid;
       deleteLocked.release();
       await releaseDelete.promise;
-      await tx.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
-        SELECT id FROM organizations WHERE partner_id = ${f.partnerId}::uuid ORDER BY id)::uuid[])`);
-      await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, f.group.id));
-      await tx.delete(deviceGroups).where(eq(deviceGroups.id, f.group.id));
-    })));
+    });
     void remove.catch(() => {});
     let merge: ReturnType<typeof orgMerge.executeOrgMerge> | undefined;
     try {
@@ -165,15 +162,21 @@ describe('org merge racing a partner-group delete (#10692)', () => {
         loserOrgId: f.loser.orgId, survivorOrgId: f.survivor.orgId, partnerId: f.partnerId, performedBy: actor,
       });
       void merge.catch(() => {});
-      // The merge blocks either on the group row (fixed) or on nothing until
-      // commit (unfixed); give it time to reach whichever it hits first.
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
+      // Do not release the delete until the merge is provably waiting on it:
+      // on the group row's KEY SHARE before its export locks (fixed), or on
+      // the deferred owner check's KEY SHARE at COMMIT (unfixed). Releasing
+      // earlier would let the two run one after the other and pass vacuously.
+      const deadline = Date.now() + 15000;
+      let mergeBlocked = false;
+      while (!mergeBlocked && Date.now() < deadline) {
         const [row] = await getTestDb().execute<{ n: number }>(sql`
-          SELECT count(*)::int AS n FROM pg_stat_activity WHERE ${deletePid}::int = ANY(pg_blocking_pids(pid))`);
-        if ((row?.n ?? 0) > 0) break;
-        await new Promise(resolve => setTimeout(resolve, 20));
+          SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE ${deletePid}::int = ANY(pg_blocking_pids(pid))
+             AND (query ILIKE '%device_groups%' OR query ILIKE 'commit%')`);
+        mergeBlocked = (row?.n ?? 0) > 0;
+        if (!mergeBlocked) await new Promise(resolve => setTimeout(resolve, 20));
       }
+      expect(mergeBlocked).toBe(true);
     } finally {
       releaseDelete.release();
     }

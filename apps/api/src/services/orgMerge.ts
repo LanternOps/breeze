@@ -783,7 +783,11 @@ export async function unfenceLoser(loser: OrgMergeCandidate): Promise<void> {
 // Phase B — the registry walk
 // ---------------------------------------------------------------------------
 
-/** Lock existing partner-owned groups before acquiring merge export locks. */
+/**
+ * Step 1 of the Phase B lock order (see `executeOrgMerge`): FOR KEY SHARE on
+ * the partner's partner-owned groups as of this read. Not a complete set: a
+ * group created after the read is not locked (the residual gap noted there).
+ */
 export async function lockMergePartnerGroupRows(partnerId: string): Promise<void> {
   const rows = await dbModule.db.execute<{ id: string }>(sql`
     SELECT id FROM device_groups
@@ -1320,10 +1324,17 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // Phase B lock order (#10692):
         // 1. All of the partner's partner-owned group rows FOR KEY SHARE,
         //    id-ascending via acquirePartnerGroupRowLocks. The deferred
-        //    membership owner check takes KEY SHARE at COMMIT, after export
-        //    locks. A partner-group delete takes FOR UPDATE then export locks;
+        //    membership owner check takes KEY SHARE on the group at COMMIT,
+        //    i.e. after the export locks, while a partner-group delete
+        //    (deleteDeviceGroup) takes FOR UPDATE on the group THEN the export
+        //    locks. Taking the row here first makes the two orders agree. The
         //    W2b evaluators (partnerGroupEvaluation.ts / groupMembership.ts)
-        //    also take the group row first. Taking it here makes orders agree.
+        //    also take the group row before the export lock; their KEY SHARE
+        //    never conflicts with ours. Every partner group is locked, not just
+        //    those with loser memberships: the membership set is only stable
+        //    under the export locks, which come after. The cost is that a
+        //    delete (or owner change) of any of the partner's groups queues
+        //    behind the merge.
         // 2. Both orgs' exclusive partner-export locks, UUID-ascending:
         //    breeze_partner_export_lock_orgs_exclusive raises P0001 on
         //    out-of-order acquisition (migrations/2026-07-22-partner-export-lock-
@@ -1338,11 +1349,14 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // exactly why `organizations` itself is NOT written in this
         // transaction — see `stampTerminalShell`.
         //
-        // A group CREATED after step 1's read is not locked. It can only have
-        // loser-org memberships if an evaluator inserted them before step 2:
-        // the window is the milliseconds between the read and the export lock.
-        // Deleting such a group in that window can still cause 40P01; Postgres
-        // detects it and the merge rolls back and unfences as for any Phase B failure.
+        // Residual gap: a partner group CREATED after step 1's read is not
+        // locked. It matters only if a membership writer (evaluator or manual
+        // assign) gives it a loser-org membership before step 2 is granted,
+        // including any time spent waiting on the export lock, and the group is
+        // then deleted before this merge commits. That can still 40P01;
+        // Postgres aborts one side. If it is the merge, it rolls back and
+        // unfences as for any Phase B failure; if it is the delete, the caller
+        // sees 40P01.
         await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
         await dbModule.db.execute(
