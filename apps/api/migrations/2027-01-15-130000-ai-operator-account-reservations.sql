@@ -21,7 +21,8 @@
 -- LIFECYCLE (released_at IS NULL = active):
 --  - held while the task is live (queued/running/waiting/paused/stopping);
 --  - released by the trigger at the bottom of this file the moment the task
---    reaches a terminal state, UNLESS its outcome is `unknown_effect`;
+--    reaches a terminal state, UNLESS its outcome is `unknown_effect` or an
+--    operation it dispatched has not settled;
 --  - an `unknown_effect` reservation is released by the reconciler once no
 --    operation of the task can still land ('effects_settled'), or by a person
 --    through the API after confirming the provider ('released_by_user');
@@ -122,9 +123,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ai_operator_account_reservations TO bree
 -- writer's own transaction and RLS context; the writer could update the task,
 -- so it can see the task's reservations.
 --
--- `unknown_effect` keeps them: the task is terminal but an action it sent may
--- still land on the account. The task's own outcome is written in the same
--- UPDATE as its state (taskCoordinator `settle`), so NEW.outcome is final here.
+-- Kept when the outcome is `unknown_effect` (an action it sent may still land
+-- on the account), AND kept whatever the outcome when an operation of the
+-- task was dispatched and has not settled: a terminal writer that chose a
+-- different outcome must not free an account under an effect in flight. The
+-- reconciler releases those once the operation settles. The task's own
+-- outcome is written in the same UPDATE as its state (taskCoordinator
+-- `settle`), so NEW.outcome is final here.
 -- It touches no org_id and is AFTER UPDATE, so it is benign to the org-merge
 -- repoint (ai_operator_tasks is not repointed at all).
 -- ---------------------------------------------------------------------------
@@ -134,6 +139,11 @@ BEGIN
   IF NEW.state IN ('completed', 'partial', 'handed_off', 'cancelled', 'failed', 'expired')
      AND OLD.state IS DISTINCT FROM NEW.state
      AND NEW.outcome IS DISTINCT FROM 'unknown_effect'
+     AND NOT EXISTS (
+           SELECT 1 FROM ai_operator_operations o
+            WHERE o.org_id = NEW.org_id AND o.task_id = NEW.id
+              AND o.result_state IN ('pending', 'unknown')
+              AND (o.dispatch_state = 'dispatched' OR o.execution_ref_id IS NOT NULL))
   THEN
     UPDATE ai_operator_account_reservations
        SET released_at = now(),
@@ -155,8 +165,8 @@ CREATE TRIGGER ai_operator_tasks_release_account_reservations
 -- ---------------------------------------------------------------------------
 -- Backfill: the accounts of tasks that hold one today.
 --
--- Live tasks, and `unknown_effect` tasks with an operation that can still land
--- (the same predicate the reconciler releases on). Oldest task first, so when
+-- Live tasks, and terminal tasks with an operation that can still land (the
+-- trigger's and the reconciler's predicate, whatever the outcome). Oldest task first, so when
 -- the bug already let two live tasks share an account, the first admitted one
 -- holds it; the other is counted and reported, not failed.
 -- ---------------------------------------------------------------------------
@@ -174,7 +184,7 @@ BEGIN
       FROM ai_operator_task_target_accounts a
       JOIN ai_operator_tasks t ON t.id = a.task_id AND t.org_id = a.org_id
      WHERE t.state IN ('queued', 'running', 'waiting', 'paused', 'stopping')
-        OR (t.outcome = 'unknown_effect' AND EXISTS (
+        OR (EXISTS (
               SELECT 1 FROM ai_operator_operations o
                WHERE o.org_id = t.org_id AND o.task_id = t.id
                  AND o.result_state IN ('pending', 'unknown')

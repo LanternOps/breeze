@@ -14,7 +14,7 @@
  *  - held while the task is live, and while it is terminal with outcome
  *    `unknown_effect` (an action it sent may still land);
  *  - released by the `ai_operator_tasks_release_account_reservations` trigger
- *    on any other terminal, by `releaseSettledAccountReservations` (the
+ *    on any other terminal with nothing dispatched still unsettled, by `releaseSettledAccountReservations` (the
  *    reconciler) once nothing of a terminal task can still land, or by a
  *    person through `releaseTaskAccountReservations`.
  *  - NO time-based expiry. An operation whose result is `unknown` stays
@@ -66,6 +66,18 @@ export function sortAccountKeys(keys: readonly AccountKey[]): AccountKey[] {
 
 function lockKey(orgId: string, k: AccountKey): string {
   return `ai_operator_account:${orgId}:${k.provider}:${k.externalId}`;
+}
+
+/**
+ * Rows from a raw `db.execute`. THROWS on a shape it does not recognise: the
+ * conflict check must fail closed, never read an unexpected driver result as
+ * "no conflict".
+ */
+function execRows<T>(raw: unknown): T[] {
+  if (Array.isArray(raw)) return raw as T[];
+  const rows = (raw as { rows?: unknown } | null)?.rows;
+  if (Array.isArray(rows)) return rows as T[];
+  throw new Error('[aiOperator] accountReservations: unrecognised db.execute result shape');
 }
 
 /** One active reservation that blocks the caller. */
@@ -125,11 +137,10 @@ export async function lockAndCheckAccountReservations(
      ORDER BY (r.org_id = ${orgId}::uuid) DESC, r.reserved_at, r.task_id
      LIMIT 1
   `);
-  const rows = ((raw as { rows?: unknown[] }).rows ?? (raw as unknown[])) as Array<{
+  const [row] = execRows<{
     task_id: string; org_id: string; provider: AiOperatorAccountProvider; external_id: string;
     principal_label: string; state: string; outcome: string | null;
-  }>;
-  const row = Array.isArray(rows) ? rows[0] : undefined;
+  }>(raw);
   if (!row) return null;
   return {
     taskId: row.task_id,
@@ -229,9 +240,9 @@ export const RESERVATION_RELEASE_SCAN_LIMIT = 50;
  * to decide `unknown_effect`). An operation that never dispatched cannot run
  * any more: the dispatch claim refuses a task that is not live.
  *
- * This is how an `unknown_effect` handoff gets its account back once the late
- * result lands (the reconciler's set 4 writes it onto the operation). It also
- * catches any terminal task the trigger did not release, whatever its outcome.
+ * This is how an `unknown_effect` handoff — or any terminal task the trigger
+ * kept because an operation was still in flight — gets its account back once
+ * the late result lands (the reconciler's set 4 writes it onto the operation).
  * An operation left `unknown` past the chase horizon keeps its reservation:
  * only `releaseTaskAccountReservations` (a person) frees it.
  */
@@ -257,8 +268,7 @@ export async function releaseSettledAccountReservations(): Promise<number> {
          AND r.released_at IS NULL
       RETURNING r.id
     `);
-    const rows = ((raw as { rows?: unknown[] }).rows ?? (raw as unknown[])) as unknown[];
-    return Array.isArray(rows) ? rows.length : 0;
+    return execRows(raw).length;
   }));
 }
 

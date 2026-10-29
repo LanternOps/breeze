@@ -40,7 +40,7 @@ import {
 import { M365_PERMISSION_PROFILES } from '@breeze/shared/m365';
 import { admitTask, type AdmitTaskInput } from '../../services/aiOperator/taskService';
 import {
-  lockAndCheckAccountReservations, releaseTaskAccountReservations,
+  lockAndCheckAccountReservations, releaseTaskAccountReservations, reserveTaskAccount,
 } from '../../services/aiOperator/accountReservations';
 import { runReconcilerPass } from '../../services/aiOperator/taskReconciler';
 import { replayMigration } from './replayMigration';
@@ -166,6 +166,20 @@ describe('one task per provider account (#9981)', () => {
     const released = await reservationsOf(first);
     expect(released).toHaveLength(2);
     expect(released.every((r) => r.releasedAt !== null && r.releaseReason === 'task_settled')).toBe(true);
+    expect((await admitTask(input(t, { contactId: c2 }))).ok).toBe(true);
+  });
+
+  runDb('ANY terminal with a dispatched operation still unsettled keeps the accounts, whatever outcome its writer chose', async () => {
+    const t = await seed();
+    const [c1, c2] = await twoContactsOneAccount(t);
+    const first = taskIdOf(await admitTask(input(t, { contactId: c1 })));
+    const op = await inFlightOperation(t, first);
+    await settleTask(first, 'failed', 'unresolved');
+    expect(await admitTask(input(t, { contactId: c2 }))).toMatchObject({ ok: false, refusal: 'account_reserved', existingTaskId: first });
+    // Once it settles, the reconciler hands the account back.
+    await system(() => db.update(aiOperatorOperations).set({ resultState: 'failed', resultAt: new Date() })
+      .where(eq(aiOperatorOperations.id, op)));
+    await runReconcilerPass();
     expect((await admitTask(input(t, { contactId: c2 }))).ok).toBe(true);
   });
 
@@ -311,6 +325,28 @@ describe('releasing a reservation an unknown_effect handoff kept', () => {
   });
 });
 
+describe('admission against a non-admission reserver (the onboarding freeze)', () => {
+  runDb('an admission that starts while another transaction holds the account lock waits and refuses cleanly', async () => {
+    const t = await seed();
+    const holderTask = taskIdOf(await admitTask(input(t, { contactId: await contact(t, 'sam@customer.example') })));
+    const key = { provider: 'm365' as const, externalId: 'm365-dana@customer.example' };
+    let locked!: () => void;
+    const lockedP = new Promise<void>((r) => { locked = r; });
+    // What commitOnboardingStageTransition does: lock + check, then freeze (reserve), outside the org admission lock.
+    const holder = system(async () => {
+      expect(await lockAndCheckAccountReservations(db, t.orgId, [key])).toBeNull();
+      await reserveTaskAccount(db, { orgId: t.orgId, taskId: holderTask, ...key, principalLabel: 'dana@customer.example' });
+      locked();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await lockedP;
+    const [c1] = await twoContactsOneAccount(t);
+    const admitted = await admitTask(input(t, { contactId: c1 }));
+    await holder;
+    expect(admitted).toMatchObject({ ok: false, refusal: 'account_reserved', existingTaskId: holderTask });
+  });
+});
+
 describe('lock order', () => {
   runDb('two transactions locking the same accounts in opposite input order never deadlock', async () => {
     const t = await seed();
@@ -338,10 +374,14 @@ describe('the migration backfill', () => {
     await dropAll();
     const newer = taskIdOf(await admitTask(input(t, { contactId: c2 })));
     await dropAll();
-    // A handoff whose effect may still land, and one that settled cleanly.
+    // A handoff whose effect may still land, a FAILED task with a dispatched
+    // operation still unsettled, and one that settled cleanly.
     const inFlight = taskIdOf(await admitTask(input(t, { contactId: await contact(t, 'sam@customer.example') })));
     await inFlightOperation(t, inFlight);
     await settleTask(inFlight, 'handed_off', 'unknown_effect');
+    const failedInFlight = taskIdOf(await admitTask(input(t, { contactId: await contact(t, 'kim@customer.example') })));
+    await inFlightOperation(t, failedInFlight);
+    await settleTask(failedInFlight, 'failed', 'unresolved');
     const settled = taskIdOf(await admitTask(input(t, { contactId: await contact(t, 'lee@customer.example') })));
     await settleTask(settled, 'completed', 'verified_resolved');
     await dropAll();
@@ -354,6 +394,7 @@ describe('the migration backfill', () => {
     expect(holders(older)).toEqual(['google', 'm365']);
     expect(holders(newer)).toEqual([]);
     expect(holders(inFlight)).toEqual(['google', 'm365']);
+    expect(holders(failedInFlight)).toEqual(['google', 'm365']);
     expect(holders(settled)).toEqual([]);
 
     // Re-applying changes nothing.

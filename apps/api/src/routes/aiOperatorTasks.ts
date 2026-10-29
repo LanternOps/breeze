@@ -610,13 +610,19 @@ aiOperatorTasksRoutes.post(
       orgId: task.orgId, taskId: task.id, userId: auth.user?.id ?? null, note,
     });
     if (!result.ok) {
-      if (result.reason === 'task_live') {
-        return c.json({
-          error: 'This task is still running. Stop it to release the accounts it holds.',
-          code: 'OPERATOR_TASK_LIVE',
-        }, 409);
+      switch (result.reason) {
+        case 'task_live':
+          return c.json({
+            error: 'This task is still running. Stop it to release the accounts it holds.',
+            code: 'OPERATOR_TASK_LIVE',
+          }, 409);
+        case 'task_not_found':
+          return c.json({ error: 'Task not found' }, 404);
+        default: {
+          const unhandled: never = result.reason;
+          throw new Error(`unhandled release refusal ${String(unhandled)}`);
+        }
       }
-      return c.json({ error: 'Task not found' }, 404);
     }
     writeRouteAudit(c, {
       orgId: task.orgId,

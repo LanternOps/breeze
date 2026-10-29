@@ -109,7 +109,7 @@ export interface ReconcilerPassResult {
   terminalUnsettled: number;
   /** Set 5 (recipe library E3): overdue human-work steps reminded this pass. */
   humanWorkReminders: number;
-  /** Set 6 (#9981): account reservations of terminal tasks with nothing left in flight, released. */
+  /** Set 6 (#9981): account reservations of terminal tasks with nothing left in flight, released; -1 when the pass failed. */
   accountReservationsReleased: number;
 }
 
@@ -142,7 +142,13 @@ export async function runReconcilerPass(now: Date = new Date()): Promise<Reconci
   // found onto the operation rows, so this runs right after it: a task with
   // nothing left in flight gets its accounts back in the same pass. An
   // operation still `unknown` keeps them; a person releases those.
-  result.accountReservationsReleased = await releaseSettledAccountReservations();
+  // Guarded: a failure here must not skip set 5 and the census. Reported as -1.
+  try {
+    result.accountReservationsReleased = await releaseSettledAccountReservations();
+  } catch (error) {
+    result.accountReservationsReleased = -1;
+    console.error('[aiOperatorReconciler] account reservation release pass failed', { error });
+  }
 
   // SET 5 — human-work steps past their reminder clock (recipe library E3).
   //
