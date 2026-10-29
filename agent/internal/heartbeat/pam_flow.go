@@ -167,6 +167,9 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		promptWinSession = session.WinSessionID
 	}
 	answer, flow, prompted := h.askElevationPrompt(ctx, promptWinSession, outcome, ev)
+	// Runs before the recover above (LIFO): a flow that never reached its
+	// waiting card is withdrawn.
+	defer h.finishElevationFlow(flow)
 	if prompted {
 		dialog, dialogErr, declineReason = answer.dialog, answer.err, answer.decline
 		if dialogErr != nil {

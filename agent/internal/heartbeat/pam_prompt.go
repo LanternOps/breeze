@@ -99,6 +99,10 @@ type elevationFlow struct {
 	mu       sync.Mutex
 	phase    elevationPhase
 	answered bool
+	// applying counts pam_apply_v2 handlers past admission for this
+	// request: Cancel request is refused while one is under way, so a
+	// launch never lands behind a "cancelled" card.
+	applying int
 }
 
 func (f *elevationFlow) settle(a elevationAnswer) {
@@ -395,21 +399,31 @@ func (h *Heartbeat) awaitElevationAnswer(ctx context.Context, flow *elevationFlo
 // never engages the fail-closed gate.
 func (h *Heartbeat) elevationSendRequested(flow *elevationFlow) {
 	proven := h.dismissRecordedPamConsent(flow.requestID, "request sent to IT", "-sent-consent")
+	// Move to waiting first, then update outside flow.mu (Update sends to
+	// renderers and may run host callbacks): an outcome landing in between
+	// replaces the card, and the waiting Update then fails harmlessly.
 	flow.mu.Lock()
-	defer flow.mu.Unlock()
 	if flow.phase != elevationSent {
-		return // an outcome or a cancel won meanwhile
-	}
-	patch, err := flow.e.WaitingPatch(proven)
-	if err != nil {
-		log.Error("pam: elevation waiting card could not be rendered", "elevationRequestId", flow.requestID, "error", err.Error())
-		return
-	}
-	if err := h.promptHost.Update(flow.e.ID(), patch); err != nil {
-		log.Warn("pam: elevation waiting card not shown", "elevationRequestId", flow.requestID, "error", err.Error())
-		return
+		flow.mu.Unlock()
+		return // an outcome won meanwhile
 	}
 	flow.phase = elevationWaiting
+	flow.mu.Unlock()
+	patch, err := flow.e.WaitingPatch(proven)
+	if err == nil {
+		err = h.promptHost.Update(flow.e.ID(), patch)
+	}
+	if err != nil {
+		// No card: end the flow so every outcome takes the #8928 notice.
+		flow.mu.Lock()
+		if flow.phase == elevationWaiting {
+			flow.phase = elevationDone
+		}
+		flow.mu.Unlock()
+		h.pamElevations.remove(flow)
+		log.Warn("pam: elevation waiting card not shown; outcomes fall back to the notices", "elevationRequestId", flow.requestID, "error", err.Error())
+		return
+	}
 	log.Info("pam: elevation waiting card shown", "elevationRequestId", flow.requestID, "uacDismissProven", proven,
 		"onAssist", h.elevationOnAssist(flow))
 }
@@ -471,14 +485,15 @@ func (h *Heartbeat) elevationOutcomeLocked(flow *elevationFlow, state ipc.Prompt
 // the server as user_cancelled. It refuses once an outcome was shown.
 func (h *Heartbeat) cancelElevationRequest(flow *elevationFlow, role ipc.HelperRole) bool {
 	flow.mu.Lock()
-	if flow.phase != elevationWaiting {
+	if flow.phase != elevationWaiting || flow.applying > 0 {
+		// Decided, or an approved launch is already under way (its outcome
+		// will replace the card).
 		flow.mu.Unlock()
 		return false
 	}
-	flow.phase = elevationDone
-	flow.mu.Unlock()
-	h.pamElevations.remove(flow)
-
+	// Record the decline before the flow reads as done, under flow.mu, so an
+	// apply that starts after this point is refused by the decline record
+	// (elevationApplyStarted waits on flow.mu).
 	store := h.pamDeclineStore()
 	// The hand-off removed the awaiting entry: record it as a pending
 	// request again, then decline it, so the withdraw drain sends it.
@@ -489,13 +504,75 @@ func (h *Heartbeat) cancelElevationRequest(flow *elevationFlow, role ipc.HelperR
 		// A persist failure still refuses in this process.
 		log.Error("pam: could not persist the cancelled elevation request", "elevationRequestId", flow.requestID, "error", err.Error())
 	}
+	flow.phase = elevationDone
+	flow.mu.Unlock()
+	h.pamElevations.remove(flow)
+
 	h.rememberPamWithdrawRenderer(flow.requestID, elevationRendererLabel(role))
 	h.pamTracker().Remove(flow.requestID)
-	h.pamPendingConsents.take(flow.requestID)
+	// A UAC prompt whose dismissal was not proven at Send request is still
+	// recorded: try again now (outside the host's action lock; the
+	// dismissal can take pamDismissTimeout). Nothing is left recorded for
+	// an approved launch that will never come.
+	if _, recorded := h.pamPendingConsents.peek(flow.requestID); recorded {
+		h.elevationCancelDismissWG.Add(1)
+		go func() {
+			defer h.elevationCancelDismissWG.Done()
+			if !h.dismissRecordedPamConsent(flow.requestID, "request cancelled by the user", "-cancel-consent") {
+				h.pamPendingConsents.take(flow.requestID)
+			}
+		}()
+	}
 	h.kickPamWithdrawDrain()
 	log.Info("pam: the user cancelled the elevation request; withdrawing it", "elevationRequestId", flow.requestID,
 		"renderer", elevationRendererLabel(role))
 	return true
+}
+
+// elevationApplyStarted marks a pam_apply_v2 for requestID as under way
+// (Cancel request is refused meanwhile) and returns the function that ends
+// the mark. A cancel that won first already recorded its decline, which the
+// apply's own decline check then refuses.
+func (h *Heartbeat) elevationApplyStarted(requestID string) (done func()) {
+	flow := h.pamElevations.get(requestID)
+	if flow == nil {
+		return func() {}
+	}
+	flow.mu.Lock()
+	flow.applying++
+	flow.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			flow.mu.Lock()
+			flow.applying--
+			flow.mu.Unlock()
+		})
+	}
+}
+
+// finishElevationFlow runs when RunPamFlow returns: a flow that never got
+// past Send request (an early return or a recovered panic before the
+// waiting card) is withdrawn, so no prompt or registry entry is left
+// behind; outcomes then take the #8928 notices.
+func (h *Heartbeat) finishElevationFlow(flow *elevationFlow) {
+	if flow == nil {
+		return
+	}
+	flow.mu.Lock()
+	stuck := flow.phase == elevationFirst || flow.phase == elevationSent
+	if stuck {
+		flow.phase = elevationDone
+	}
+	flow.mu.Unlock()
+	if !stuck {
+		return
+	}
+	h.pamElevations.remove(flow)
+	if h.promptHost != nil {
+		_ = h.promptHost.Close(flow.e.ID(), ipc.PromptCloseWithdrawn)
+	}
+	log.Warn("pam: elevation flow ended before its waiting card; prompt withdrawn", "elevationRequestId", flow.requestID)
 }
 
 // pamWithdrawRenderers remembers, in memory only, which renderer carried a

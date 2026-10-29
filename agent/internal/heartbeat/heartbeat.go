@@ -684,6 +684,9 @@ type Heartbeat struct {
 	pamConsentExited        func(etwlua.ConsentInstance) (bool, error)
 	elevationConsentPoll    time.Duration
 	pamWithdrawRenderersMap sync.Map
+	// elevationCancelDismissWG tracks UAC dismissals retried after Cancel
+	// request (tests wait on it).
+	elevationCancelDismissWG sync.WaitGroup
 	// pamSupportNameCached is the MSP support name last returned by a
 	// successful elevation submit (pam_support_name.go), loaded from its
 	// sidecar in SetStatePath. Guarded by pamSupportNameMu.
