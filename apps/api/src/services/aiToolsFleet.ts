@@ -2575,9 +2575,15 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (toggleDenied) return JSON.stringify({ error: toggleDenied });
 
         const enabled = action === 'enable';
-        await db.update(automations)
+        // Re-checked after any lock wait: a switch that committed since the read above wins (#10685).
+        const toggled = await db.update(automations)
           .set({ enabled, updatedAt: new Date() })
-          .where(eq(automations.id, existing.id));
+          .where(and(eq(automations.id, existing.id), isNull(automations.convertedToFlowId)))
+          .returning({ id: automations.id });
+        if (toggled.length === 0) {
+          const [now] = await db.select({ flowId: automations.convertedToFlowId }).from(automations).where(eq(automations.id, existing.id)).limit(1);
+          return JSON.stringify(now?.flowId ? { error: 'automation_converted', flowId: now.flowId } : { error: 'Automation not found or access denied' });
+        }
 
         return JSON.stringify({ success: true, message: `Automation "${existing.name}" ${enabled ? 'enabled' : 'disabled'}` });
       }

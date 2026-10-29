@@ -379,6 +379,15 @@ function convertedAutomationResponse(
   return c.json({ error: 'automation_converted', flowId: automation.convertedToFlowId }, 409);
 }
 
+/** Rolls back a write whose row changed (switched or deleted) since the route read it. */
+class AutomationChangedSinceRead extends Error {}
+
+/** A write matched no row: the Job was switched (409, frozen) or deleted (404) since it was read. */
+async function convertedSinceReadResponse(c: Context, automationId: string, auth: AuthContext): Promise<Response> {
+  const current = await getAutomationWithOrgCheck(automationId, auth);
+  return (current && convertedAutomationResponse(c, current)) || c.json({ error: 'Automation not found' }, 404);
+}
+
 async function getAutomationWithOrgCheck(automationId: string, auth: AuthContext) {
   const [automation] = await db
     .select()
@@ -1618,10 +1627,12 @@ async function handleUpdateAutomation(c: Context) {
         effectiveActions,
         effectiveNotificationTargets,
       );
+      // `converted_to_flow_id IS NULL` is re-evaluated after any lock wait: a switch
+      // that committed after the frozen check above leaves nothing to update (#10685).
       const [row] = await tx
         .update(automations)
         .set(updates)
-        .where(eq(automations.id, automationId))
+        .where(and(eq(automations.id, automationId), isNull(automations.convertedToFlowId)))
         .returning();
       if (!row) return null;
       await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
@@ -1631,7 +1642,7 @@ async function handleUpdateAutomation(c: Context) {
     });
 
     if (!updated) {
-      return c.json({ error: 'Automation not found' }, 404);
+      return convertedSinceReadResponse(c, automationId, auth);
     }
 
     writeRouteAudit(c, {
@@ -1733,13 +1744,26 @@ automationRoutes.delete(
       }, 409);
     }
 
-    await db
-      .delete(automationRuns)
-      .where(eq(automationRuns.automationId, automationId));
-
-    await db
-      .delete(automations)
-      .where(eq(automations.id, automationId));
+    // One transaction, and the row delete re-checks `converted_to_flow_id IS NULL` after
+    // any lock wait: a switch that committed after the frozen check above leaves the
+    // Job (and its run history) in place (#10685).
+    const deleted = await db.transaction(async (tx) => {
+      await tx
+        .delete(automationRuns)
+        .where(eq(automationRuns.automationId, automationId));
+      const rows = await tx
+        .delete(automations)
+        .where(and(eq(automations.id, automationId), isNull(automations.convertedToFlowId)))
+        .returning({ id: automations.id });
+      if (rows.length === 0) throw new AutomationChangedSinceRead();
+      return true;
+    }).catch((error: unknown) => {
+      if (error instanceof AutomationChangedSinceRead) return false;
+      throw error;
+    });
+    if (!deleted) {
+      return convertedSinceReadResponse(c, automationId, auth);
+    }
 
     writeRouteAudit(c, {
       orgId: automation.orgId,
@@ -1945,7 +1969,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
   // two read-only lookups: this one (the automation row, before the secret
   // check) and the owner's tenant context (after it). Every write runs as the
   // automation's owner, never as system.
-  const automation = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const lookup = () => runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [row] = await db
       .select()
       .from(automations)
@@ -1953,6 +1977,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
       .limit(1);
     return row ?? null;
   }, 'automations.webhook.lookup'));
+  let automation = await lookup();
 
   // #5221 B6 — a Job switched to a flow keeps its URL: the delivery goes to the
   // flow's ingest (its verification, replay protection and claims), before any
@@ -1963,6 +1988,8 @@ automationWebhookRoutes.post('/:id', async (c) => {
     const { forwardLegacyWebhook } = await import('../services/flows/conversion/legacyWebhookForward');
     const forwarded = await forwardLegacyWebhook(c, automationId);
     if (forwarded) return forwarded;
+    // A revert committed since the lookup: legacy takes the delivery, with the row as it is now.
+    automation = await lookup();
   }
 
   if (!automation || !automation.enabled) {
@@ -2076,6 +2103,8 @@ automationWebhookRoutes.post('/:id', async (c) => {
       .from(automations)
       .where(eq(automations.id, automationId))
       .limit(1);
+    // A switch committed since the lookup: the delivery is the flow's (forwarded below).
+    if (current?.convertedToFlowId) return 'switched' as const;
     if (
       !current
       || !current.enabled
@@ -2124,6 +2153,10 @@ automationWebhookRoutes.post('/:id', async (c) => {
     }
   }));
 
+  if (admitted === 'switched') {
+    const { forwardLegacyWebhook } = await import('../services/flows/conversion/legacyWebhookForward');
+    return (await forwardLegacyWebhook(c, automationId)) ?? c.json({ error: 'Automation not found' }, 404);
+  }
   if (!admitted) {
     return c.json({ error: 'Automation not found' }, 404);
   }

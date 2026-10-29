@@ -67,6 +67,7 @@ const SWITCH_STATUS: Record<string, Status> = {
   shadow_too_new: 409,
   shadow_too_short: 409,
   shadow_divergent: 409,
+  automation_disabled: 409,
   partner_wide_forbidden: 403,
   interactive_session_required: 403,
   delegation_scope_restricted: 403,

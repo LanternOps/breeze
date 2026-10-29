@@ -10,10 +10,11 @@
  * for a partner-wide Job; a site-limited token or membership is refused):
  *
  *  1. Locks in the order every writer of these rows uses (switch.ts): the Job
- *     `FOR UPDATE`, then the flow, then the ledger row; re-reads all three.
+ *     `FOR NO KEY UPDATE`, then the flow, then the ledger row; re-reads all three.
  *  2. The ledger becomes `reverted` with `revert_at = now()` (the immutability
  *     trigger admits only switched → reverted; switch_at stays).
- *  3. The Job is re-enabled exactly as the switch found it: `enabled = true`,
+ *  3. The Job is re-enabled exactly as the switch found it (only an enabled Job
+ *     switches): `enabled = true`,
  *     `retired_at` / `retired_reason` / `converted_to_flow_id` NULL. The Job
  *     could not be edited while switched, so its source is the converted one.
  *

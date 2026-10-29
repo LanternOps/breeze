@@ -89,10 +89,17 @@ async function withinSiteCeiling(auth: AuthContext, row: AutomationRow): Promise
   return check.ok;
 }
 
-/** The Job if `auth` reaches it (owner rule, then the site ceiling); `lock` takes it FOR UPDATE. Shared with switch.ts. */
+/**
+ * The Job if `auth` reaches it (owner rule, then the site ceiling); `lock` takes it
+ * FOR NO KEY UPDATE. Shared with switch.ts and revert.ts. NO KEY UPDATE, not FOR UPDATE:
+ * create/switch/revert never change the row's key, and FOR UPDATE would conflict with
+ * the FOR KEY SHARE a flow admission's claim INSERT takes through the claim FK while it
+ * holds the flow FOR SHARE — revert (Job, then flow FOR UPDATE) would deadlock against
+ * it. NO KEY UPDATE still serialises with legacy admission and with route writes.
+ */
 export async function readReachableAutomation(auth: AuthContext, automationId: string, lock: boolean): Promise<AutomationRow | null> {
   const q = db.select().from(automations).where(eq(automations.id, automationId));
-  const [row] = lock ? await q.for('update').limit(1) : await q.limit(1);
+  const [row] = lock ? await q.for('no key update').limit(1) : await q.limit(1);
   if (!row || !canReachAutomation(auth, row)) return null;
   if (!(await withinSiteCeiling(auth, row))) return null;
   return row;

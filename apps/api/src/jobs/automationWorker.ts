@@ -7,6 +7,7 @@
  * - execution of automation runs
  */
 
+import { captureException } from '../services/sentry';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { groupOwnerMatchesMembershipOrg } from '../services/deviceGroupOwnership';
@@ -617,6 +618,7 @@ async function observeShadowAfterRun(
     });
   } catch (err) {
     console.error(`[AutomationWorker] shadow observation failed for automation ${automation.id}`, err);
+    captureException(err);
   }
 }
 
@@ -633,6 +635,7 @@ async function observeShadowTrigger(
     if (verdict) await recordShadow(conversionId, { ...verdict, documentDigest: shadow.documentDigest });
   } catch (err) {
     console.error(`[AutomationWorker] shadow trigger comparison failed for conversion ${conversionId}`, err);
+    captureException(err);
   }
 }
 

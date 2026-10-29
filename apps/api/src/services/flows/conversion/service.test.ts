@@ -150,7 +150,7 @@ describe('createConversion', () => {
     queueCreate(row());
     const org = await createConversion(orgAuth(), row().id, { expectedSourceDigest: automationSourceDigest(row()) });
     expect(org.ok).toBe(true);
-    expect(dbh.locks).toEqual(['update']);
+    expect(dbh.locks).toEqual(['no key update']);
     expect(saveDraftFlow).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ ownerScope: 'organization', orgId: ORG }));
     expect(dbh.inserts.at(-1)).toMatchObject({ orgId: ORG, partnerId: null, automationId: row().id, flowId: FLOW, convertedBy: USER.id });
 

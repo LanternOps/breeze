@@ -8,7 +8,7 @@
  * carried webhook secret, the publication, the ledger and the Job):
  *
  *  1. Locks, in the order every other writer of these rows uses — the Job row
- *     `FOR UPDATE`, then the flow row, then the ledger row — and re-reads all
+ *     `FOR NO KEY UPDATE`, then the flow row, then the ledger row — and re-reads all
  *     three. (Plan deviation: the plan locks the ledger first. The automation
  *     PUT locks the Job and then resets the ledger; a draft save locks the flow
  *     and then resets the ledger; admission locks only the Job. Ledger-first
@@ -87,7 +87,7 @@ export type SwitchConversionResult =
       ok: false;
       error: 'conversion_not_found' | 'interactive_session_required' | 'partner_wide_forbidden' | 'delegation_scope_restricted'
         | 'not_shadow' | 'source_changed' | 'version_conflict' | 'shadow_too_new' | 'shadow_too_short' | 'shadow_divergent'
-        | 'scope_widening_not_accepted';
+        | 'scope_widening_not_accepted' | 'automation_disabled';
     }
   | { ok: false; error: 'unconvertible'; findings: FlowConversionFinding[] }
   | { ok: false; error: 'draft_rejected'; reason: string | null; validation?: FlowValidationResult }
@@ -194,6 +194,8 @@ export async function switchConversion(
 
       // 2. Checks.
       if (ledger.state !== 'shadow') return refuse({ ok: false, error: 'not_shadow' });
+      // A disabled Job never becomes an enabled flow (and revert restores `enabled = true`).
+      if (!job.enabled) return refuse({ ok: false, error: 'automation_disabled' });
       const liveDigest = automationSourceDigest(job);
       if (job.orgId !== preJob.orgId || job.partnerId !== preJob.partnerId || liveDigest !== ledger.sourceDigest) {
         return refuse({ ok: false, error: 'source_changed' });

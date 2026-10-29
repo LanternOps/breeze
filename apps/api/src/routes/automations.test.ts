@@ -1180,6 +1180,16 @@ describe('automations routes', () => {
     expect(vi.mocked(db.update)).toHaveBeenCalled();
   });
 
+  /** DELETE runs in one transaction; the row delete returns the deleted id (#10685). */
+  function mockDeleteTransaction() {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db));
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockReturnValue(Object.assign(Promise.resolve(undefined), {
+        returning: vi.fn().mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111' }]),
+      })),
+    } as any);
+  }
+
   it('should delete an automation', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -1198,9 +1208,7 @@ describe('automations routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 0 }])
         })
       } as any);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
-    } as any);
+    mockDeleteTransaction();
 
     const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
@@ -1272,9 +1280,7 @@ describe('automations routes', () => {
     // stayed refused the row would be unremovable by any product path and
     // every disable+recreate cycle would strand another one.
     mockManagedDeleteSelects('33333333-3333-4333-8333-333333333333', [{ disabledAt: new Date() }]);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
-    } as any);
+    mockDeleteTransaction();
 
     const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
@@ -1824,6 +1830,44 @@ describe('automations routes', () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'Duplicate webhook delivery' });
       expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    });
+
+    // #10685 review — a switch or revert committing mid-request never 404s the delivery on both engines.
+    function rowsInTurn(...rows: Array<Record<string, unknown>>) {
+      let n = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(async () => [rows[Math.min(n++, rows.length - 1)]]),
+          }),
+        }),
+      }) as any);
+    }
+    const LIVE = {
+      id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: true, convertedToFlowId: null,
+      trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+    };
+    const SWITCHED = { ...LIVE, enabled: false, retiredReason: 'converted_to_flow', convertedToFlowId: '33333333-3333-4333-8333-333333333333' };
+
+    it('a switch committed between the lookup and the write phase forwards the delivery to the flow', async () => {
+      const req = signedRequest('dlv-race-switch');
+      rowsInTurn(LIVE, SWITCHED);
+      vi.mocked(forwardLegacyWebhook).mockReset().mockImplementationOnce(async (c: any) => c.json({ status: 'accepted', runId: 'fr-9' }, 202));
+      const res = await req.send();
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ status: 'accepted', runId: 'fr-9' });
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+    });
+
+    it('a revert committed between the lookup and the forward continues on legacy with the re-read row', async () => {
+      const req = signedRequest('dlv-race-revert');
+      rowsInTurn(SWITCHED, LIVE, LIVE);
+      vi.mocked(forwardLegacyWebhook).mockReset().mockResolvedValue(null);
+      runRecordCallingHook();
+      const res = await req.send();
+      expect(forwardLegacyWebhook).toHaveBeenCalledTimes(1);
+      expect(res.status).toBe(202);
+      expect(createAutomationRunRecord).toHaveBeenCalledTimes(1);
     });
 
     it('a delivery id the flow side cannot carry is left out of the claim', async () => {

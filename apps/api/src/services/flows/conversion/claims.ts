@@ -20,13 +20,14 @@
  * Lock order (no cycle with the conversion writers):
  *  - legacy locks the automation row (`currentConversionForAutomation`,
  *    `FOR NO KEY UPDATE`), reads the ledger without a lock, then inserts the
- *    claim. Creating a conversion (B1) takes the automation row `FOR UPDATE`,
- *    which conflicts, so a conversion appears either before the admission
- *    reads the state or after it commits.
+ *    claim. Creating, switching and reverting a conversion take the automation
+ *    row `FOR NO KEY UPDATE` too, which conflicts, so a conversion appears
+ *    either before the admission reads the state or after it commits.
  *    `FOR NO KEY UPDATE` rather than the plan's `FOR SHARE`: the same admission
  *    later UPDATEs the row (`run_count`), and a SHARE lock upgraded by two
  *    concurrent admissions of one automation deadlocks. NO KEY UPDATE does not
- *    block the claim insert's FK `KEY SHARE`, so the flow side never waits on it.
+ *    block the claim insert's FK `KEY SHARE`, so the flow side never waits on
+ *    it — nor on switch or revert, which take the same strength (#10685 review).
  *  - the flow side takes no automation lock: it reads the ledger by flow id
  *    and relies on the unique index alone.
  *

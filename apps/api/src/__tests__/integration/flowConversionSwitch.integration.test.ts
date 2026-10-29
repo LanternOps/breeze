@@ -21,11 +21,12 @@
  * Mocked: only the flow-run slice enqueue (a slice is driven directly).
  * All tenants are synthetic.
  */
-import './setup';
+import { getTestDb } from './setup';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHmac, randomUUID } from 'node:crypto';
 import { eq, like, sql } from 'drizzle-orm';
 import type { Job } from 'bullmq';
+import { Hono } from 'hono';
 import { SWITCH_LEAD_MS, type ConversionSwitchRequest } from '@breeze/shared';
 
 vi.mock('../../jobs/flowRunQueue', async (importOriginal) => ({
@@ -54,6 +55,9 @@ import { createConversion } from '../../services/flows/conversion/service';
 import { saveDraftFlow } from '../../services/flows/service';
 import { flowDocumentDigest, resetShadowIfChanged } from '../../services/flows/conversion/ledger';
 import { switchConversion } from '../../services/flows/conversion/switch';
+import { revertConversion } from '../../services/flows/conversion/revert';
+import { automationRoutes } from '../../routes/automations';
+import { createAccessToken } from '../../services/jwt';
 import { fleetScriptMaterialFromSnapshot } from '../../services/flows/fleetPreApproval';
 import { assessPreApprovals } from '../../services/flows/preApproval';
 import { startManualRun } from '../../services/flows/runService';
@@ -607,7 +611,90 @@ describe('flow conversion switch (real Postgres, #5221 B3)', () => {
     expect(await generatedScripts(row)).toEqual([]);
     expect(automationSourceDigest(await automationRow(row.id))).toBe(automationSourceDigest(row));
   });
+
+  // ── review round (#10685) ────────────────────────────────────────────────
+
+  runDb('a switch of a disabled Job is automation_disabled and writes nothing', async () => {
+    const t = await tenant();
+    const row = await job(t, { enabled: false });
+    const s = await converted(t, row, {});
+    expect(await t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ acknowledgeDivergence: true }))))
+      .toEqual({ ok: false, error: 'automation_disabled' });
+    expect(await generatedScripts(row)).toEqual([]);
+    expect((await ledgerRow(s.conversionId)).state).toBe('shadow');
+    expect((await flowRow(s.flowId)).status).toBe('draft');
+  });
+
+  runDb('switch and revert never wait on a flow admission holding KEY SHARE on the Job (the claim FK)', async () => {
+    const t = await tenant();
+    const row = await job(t, {});
+    const s = await converted(t, row, {});
+    // A flow-side admission's claim INSERT holds FOR KEY SHARE on the automations row
+    // (automation_occurrence_claims_automation_fk) while it holds the flow FOR SHARE.
+    // Switch and revert must not queue behind it, or revert (Job lock → flow FOR UPDATE) deadlocks.
+    const underKeyShare = <T>(fn: () => Promise<T>) => getTestDb().transaction(async (htx) => {
+      await htx.execute(sql`SELECT 1 FROM automations WHERE id = ${row.id} FOR KEY SHARE`);
+      return withTimeout(fn(), 5_000);
+    });
+    const sw = await underKeyShare(() => t.asOrg(() => switchConversion(t.orgAuth(), s.conversionId, req({ acknowledgeDivergence: true }))));
+    expect(sw.ok, JSON.stringify(sw)).toBe(true);
+    const rv = await underKeyShare(() => t.asOrg(() => revertConversion(t.orgAuth(), s.conversionId)));
+    expect(rv.ok, JSON.stringify(rv)).toBe(true);
+  }, 30_000);
+
+  for (const method of ['PATCH', 'DELETE'] as const) {
+    runDb(`a ${method} that read the Job before a switch committed does not land on the switched row`, async () => {
+      const t = await tenant();
+      const row = await job(t, {});
+      const s = await converted(t, row, {});
+      const token = await createAccessToken({
+        sub: t.switcher.id, email: t.switcher.email, roleId: t.orgRoleId, orgId: t.orgId, partnerId: t.partnerId,
+        scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+      });
+      const app = new Hono();
+      app.route('/automations', automationRoutes);
+
+      // The switch's lock on the Job is held while the request reads the row (unconverted),
+      // passes its frozen check and reaches its write; then the switch's writes commit.
+      const response = await getTestDb().transaction(async (htx) => {
+        await htx.execute(sql`SELECT 1 FROM automations WHERE id = ${row.id} FOR NO KEY UPDATE`);
+        const pending = app.request(`/automations/${row.id}`, {
+          method,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          ...(method === 'PATCH' ? { body: JSON.stringify({ enabled: true, description: 'edited after the switch' }) } : {}),
+        });
+        await waitForLockedWrite(row.id);
+        await htx.execute(sql`UPDATE automations SET enabled = false, retired_at = now(), retired_reason = 'converted_to_flow',
+          converted_to_flow_id = ${s.flowId} WHERE id = ${row.id}`);
+        return { pending };
+      }).then(({ pending }) => pending);
+
+      expect(response.status, await response.clone().text()).toBe(409);
+      expect(await response.json()).toEqual({ error: 'automation_converted', flowId: s.flowId });
+      const after = await automationRow(row.id);
+      expect(after).toMatchObject({ enabled: false, convertedToFlowId: s.flowId });
+      expect(after.description).not.toBe('edited after the switch');
+    }, 30_000);
+  }
 });
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`still waiting after ${ms} ms (lock wait)`)), ms))]);
+}
+
+/** Until a breeze_app backend is blocked on a lock while writing (UPDATE/DELETE) the automations table. */
+async function waitForLockedWrite(automationId: string): Promise<void> {
+  void automationId;
+  for (let i = 0; i < 100; i += 1) {
+    const rows = await getTestDb().execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND (query ILIKE 'update "automations"%' OR query ILIKE 'delete from "automations"%'
+        OR query ILIKE 'select%from "automations"%for update%')`);
+    if ((rows[0]?.n ?? 0) > 0) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error('the request never reached its write on the automations row');
+}
 
 class RollbackProbe extends Error {}
 
