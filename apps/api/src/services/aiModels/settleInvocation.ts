@@ -231,7 +231,12 @@ export function consistentPromptVariant(variant: string | null, surface: AiSurfa
  * the bound model) cannot tell the fallback key from the helper key, so every
  * unbound key stays a fallback there.
  */
-export function isBackgroundCall(b: TurnBinding, outcome: TurnOutcome, model: string): boolean {
+export function isBackgroundCall(b: TurnBinding, outcome: TurnOutcome, p: Pick<BilledUsage, 'model' | 'providerModel'>): boolean {
+  // Only the Agent SDK reports no provider model, and only its CLI makes a
+  // helper call: a Messages API row (which names the model that served it) is
+  // never background, so an alias/dated-id mismatch cannot hide a fallback.
+  if (p.providerModel !== null) return false;
+  const model = p.model;
   if (model === b.wireModel || model === outcome.servedModel) return false;
   if (b.refusalFallback && model === b.refusalFallback.wireModel) return false;
   if (b.carriedRates?.some((c) => c.wireModel === model)) return false;
@@ -264,7 +269,7 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
     // #10413: the CLI's own helper call is billed (at its own rate, via the
     // unbound-model path) but is not a fallback: nothing served the turn in
     // its place.
-    const background = isBackgroundCall(b, outcome, p.model);
+    const background = isBackgroundCall(b, outcome, p);
     const servedByFallback = !background && (p.unboundModel || (outcome.fallbackUsed && p.model !== b.wireModel));
     const modelRole: AiInvocationModelRole = background ? 'background' : servedByFallback ? 'fallback' : 'primary';
     const refusedLeg = outcome.fallbackUsed && multi && p.model === b.wireModel;

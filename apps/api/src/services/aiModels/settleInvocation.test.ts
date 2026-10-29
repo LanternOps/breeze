@@ -535,6 +535,17 @@ describe('#10413 follow-up: the CLI background call is attributed as background,
     ]);
   });
 
+  it('a Messages API row (provider-reported model) is never background: only the Agent SDK CLI makes a helper call', () => {
+    const rows = rowsOf(base({
+      usage: [use('claude-sonnet-5-5', { providerModel: 'claude-sonnet-5-5' }), use(BG, { providerModel: BG })],
+      outcome: { ...OK, fallbackUsed: true, refusalCategory: 'cyber', servedModel: 'claude-haiku-4-5' },
+    }));
+    expect(roles(rows)).toEqual([
+      ['claude-sonnet-5-5', 'primary', false],
+      [BG, 'fallback', true],
+    ]);
+  });
+
   it('a carried model\'s late delta is primary, not background', () => {
     const binding = withCarriedRates(B, [{ wireModel: 'claude-opus-4-8', rateSnapshot: { source: 'platform', standard: OTHER } }]);
     const rows = rowsOf(base({ binding, usage: [use('claude-sonnet-5-5'), use('claude-opus-4-8')] }));
