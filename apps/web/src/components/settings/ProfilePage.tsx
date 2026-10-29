@@ -1736,7 +1736,40 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         data-testid="passkey-card"
         className="space-y-4 rounded-md border bg-muted/30 p-4"
       >
+        <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-medium">{t('profilePage.passkeys')}</h3>
+        <div>
+          {isPasswordless && !hasSsoReauthGrant ? (
+            <button
+              type="button"
+              data-testid="passkey-sso-reauth"
+              onClick={() => { void handleSsoReauthStart('passkey'); }}
+              disabled={isAddingPasskey || isStartingSsoReauth}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('profilePage.verifyWithYourIdentityProvider')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="passkey-add"
+              onClick={() => {
+                setPasskeyPassword('');
+                setPasskeyError(undefined);
+                setPasskeySuccess(undefined);
+                setPasskeyDialog({ kind: 'add' });
+              }}
+              disabled={
+                isAddingPasskey
+                || !!mutatingPasskeyId
+              }
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-60"
+            >
+              {t('profilePage.addPasskey')}
+            </button>
+          )}
+        </div>
+        </div>
 
         <div className="space-y-3">
           {isLoadingPasskeys ? (
@@ -1827,37 +1860,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           )}
         </div>
 
-        <div>
-          {isPasswordless && !hasSsoReauthGrant ? (
-            <button
-              type="button"
-              data-testid="passkey-sso-reauth"
-              onClick={() => { void handleSsoReauthStart('passkey'); }}
-              disabled={isAddingPasskey || isStartingSsoReauth}
-              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {t('profilePage.verifyWithYourIdentityProvider')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              data-testid="passkey-add"
-              onClick={() => {
-                setPasskeyPassword('');
-                setPasskeyError(undefined);
-                setPasskeySuccess(undefined);
-                setPasskeyDialog({ kind: 'add' });
-              }}
-              disabled={
-                isAddingPasskey
-                || !!mutatingPasskeyId
-              }
-              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-60"
-            >
-              {t('profilePage.addPasskey')}
-            </button>
-          )}
-        </div>
+
 
         {passkeySuccess && (
           <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">
