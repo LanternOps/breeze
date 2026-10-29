@@ -83,6 +83,21 @@ describe('localBinaryBuild (#7516)', () => {
       await expect(getLocalBinariesBuildVersion()).resolves.toBe('0.118.2');
     });
 
+    it('retries an unreadable VERSION file after a short TTL, not the full 60 s', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        localMode(null);
+        process.env.BINARY_VERSION_FILE = versionFile; // not written yet
+        process.env.BREEZE_VERSION = '0.118.3';
+        await expect(getLocalBinariesBuildVersion()).resolves.toBe('0.118.3');
+        writeFileSync(versionFile, '0.118.2\n'); // binaries-init finished
+        vi.setSystemTime(Date.now() + 6_000);
+        await expect(getLocalBinariesBuildVersion()).resolves.toBe('0.118.2');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('returns null when nothing names the build (no file, env unresolvable)', async () => {
       localMode(null);
       await expect(getLocalBinariesBuildVersion()).resolves.toBeNull();
@@ -120,6 +135,9 @@ describe('localBinaryBuild (#7516)', () => {
     it('treats a leading "v" on either side as the same release', async () => {
       localMode('v0.118.2');
       await expect(isUpgradeTargetServable({ ...where, version: '0.118.2' })).resolves.toBe(true);
+      __resetLocalBinaryBuildForTests();
+      localMode('0.118.2');
+      await expect(isUpgradeTargetServable({ ...where, version: 'v0.118.2' })).resolves.toBe(true);
     });
 
     it('applies to every component the volume holds (backup, user-helper, watchdog, helper)', async () => {

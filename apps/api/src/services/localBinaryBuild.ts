@@ -29,8 +29,14 @@ import { getBinariesVersion, getBinarySource } from './binarySource';
  * window without an API restart.
  */
 const BUILD_VERSION_CACHE_TTL_MS = 60_000;
+/**
+ * A configured VERSION file that could not be read (e.g. mid-recreate of the
+ * binaries volume) yields the env fallback, which may not describe the disk;
+ * keep that answer only briefly so the file is retried soon.
+ */
+const FALLBACK_CACHE_TTL_MS = 5_000;
 
-let cached: { value: string | null; readAt: number } | null = null;
+let cached: { value: string | null; readAt: number; ttlMs: number } | null = null;
 const warnedUnreadableFiles = new Set<string>();
 const warnedWithheld = new Set<string>();
 
@@ -45,18 +51,22 @@ function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/, '');
 }
 
-async function readBuildVersion(): Promise<string | null> {
+async function readBuildVersion(): Promise<{ value: string | null; ttlMs: number }> {
   // The VERSION file is written by binaries-init alongside the binaries, and
   // binarySync registers every local agent_versions row under its content —
   // it describes the bytes on disk. The env (BINARY_VERSION / paired /
   // BREEZE_VERSION) describes what the operator INTENDED, which differs from
   // the disk exactly when the volume is stale; prefer the disk.
   const versionFile = process.env.BINARY_VERSION_FILE?.trim();
+  let ttlMs = BUILD_VERSION_CACHE_TTL_MS;
   if (versionFile) {
     try {
       const content = (await readFile(versionFile, 'utf-8')).trim();
-      if (content && content !== 'unknown') return normalizeVersion(content);
+      if (content && content !== 'unknown') {
+        return { value: normalizeVersion(content), ttlMs };
+      }
     } catch (err) {
+      ttlMs = FALLBACK_CACHE_TTL_MS;
       if (!warnedUnreadableFiles.has(versionFile)) {
         warnedUnreadableFiles.add(versionFile);
         console.warn(
@@ -68,7 +78,7 @@ async function readBuildVersion(): Promise<string | null> {
     }
   }
   const envVersion = getBinariesVersion();
-  return envVersion === 'latest' ? null : normalizeVersion(envVersion);
+  return { value: envVersion === 'latest' ? null : normalizeVersion(envVersion), ttlMs };
 }
 
 /**
@@ -78,9 +88,9 @@ async function readBuildVersion(): Promise<string | null> {
  */
 export async function getLocalBinariesBuildVersion(): Promise<string | null> {
   const now = Date.now();
-  if (cached && now - cached.readAt < BUILD_VERSION_CACHE_TTL_MS) return cached.value;
-  const value = await readBuildVersion();
-  cached = { value, readAt: now };
+  if (cached && now - cached.readAt < cached.ttlMs) return cached.value;
+  const { value, ttlMs } = await readBuildVersion();
+  cached = { value, readAt: now, ttlMs };
   return value;
 }
 
