@@ -627,7 +627,7 @@
       },
       "refresh": "Refresh grant",
       "revoke": "Turn off Wisp",
-      "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
+      "revokeConfirm": "Turn off Wisp for this scope? Wisp stops working for you and its threads close. Their conversations, concerns and activity are no longer shown.",
       "widening": "You can do more than this grant allows — refresh it to let Wisp keep up.",
       "refreshKeepsTerms": "This conversation keeps the previous grant terms. Start a new conversation to use the refreshed grant.",
       "startNewConversation": "Start a new conversation",
@@ -836,7 +836,8 @@
       "workersTitle": "Workers",
       "workersEmpty": "No specialists running.",
       "allRuns": "All runs",
-      "details": "Details"
+      "details": "Details",
+      "ended": "This delegation has ended, so its concerns, workers and activity are no longer shown."
     },
     "composer": {
       "placeholder": "Message Wisp",

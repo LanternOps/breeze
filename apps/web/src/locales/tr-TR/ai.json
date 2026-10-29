@@ -627,7 +627,7 @@
       },
       "refresh": "Yetkiyi yenile",
       "revoke": "Wisp'i kapat",
-      "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Açık konular okunabilir kalır.",
+      "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Wisp sizin için çalışmayı bırakır ve konuları kapanır. Bu konuların sohbetleri, sorunları ve etkinlikleri artık gösterilmez.",
       "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin.",
       "refreshKeepsTerms": "Bu konuşma önceki yetki koşullarını korur. Yenilenen yetkiyi kullanmak için yeni bir konuşma başlatın.",
       "startNewConversation": "Yeni bir konuşma başlat",
@@ -836,7 +836,8 @@
       "workersTitle": "Çalışanlar",
       "workersEmpty": "Çalışan uzman yok.",
       "allRuns": "Tüm çalıştırmalar",
-      "details": "Ayrıntılar"
+      "details": "Ayrıntılar",
+      "ended": "Bu yetki sona erdi; bu nedenle sorunları, çalışanları ve etkinlikleri artık gösterilmiyor."
     },
     "composer": {
       "placeholder": "Wisp'e mesaj",

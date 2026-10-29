@@ -627,7 +627,7 @@
       },
       "refresh": "Renouveler l’autorisation",
       "revoke": "Désactiver Wisp",
-      "revokeConfirm": "Désactiver Wisp pour ce périmètre ? Les fils ouverts restent consultables.",
+      "revokeConfirm": "Désactiver Wisp pour ce périmètre ? Wisp cesse de travailler pour vous et ses fils sont fermés. Leurs conversations, préoccupations et activités ne sont plus affichées.",
       "widening": "Vous pouvez faire plus que ce que cette autorisation permet ; renouvelez-la pour que Wisp suive.",
       "refreshKeepsTerms": "Cette conversation conserve les conditions précédentes de l’autorisation. Démarrez une nouvelle conversation pour utiliser l’autorisation renouvelée.",
       "startNewConversation": "Démarrer une nouvelle conversation",
@@ -836,7 +836,8 @@
       "workersTitle": "Exécutants",
       "workersEmpty": "Aucun spécialiste en cours.",
       "allRuns": "Toutes les exécutions",
-      "details": "Détails"
+      "details": "Détails",
+      "ended": "Cette autorisation est terminée : ses préoccupations, exécutants et activités ne sont donc plus affichés."
     },
     "composer": {
       "placeholder": "Message à Wisp",

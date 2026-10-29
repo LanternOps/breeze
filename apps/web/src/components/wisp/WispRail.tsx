@@ -65,6 +65,10 @@ export default function WispRail({
   activityKey,
 }: WispRailProps) {
   const { t } = useTranslation(['ai', 'pages']);
+  // #10104: an ended delegation (revoked or expired) authorizes no reads; the
+  // concerns, activity and links routes answer 409 grant_inactive. Say so once
+  // instead of mounting panes that can only fail.
+  const ended = wisp.status === 'revoked' || wisp.status === 'expired';
 
   return (
     <div className="space-y-4" data-testid="wisp-rail">
@@ -85,25 +89,33 @@ export default function WispRail({
         </WispIdentityCard>
       </div>
 
-      {needsYou !== null && (
-        <div className={NEEDS_YOU_BODY}>
-          <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={needsYou} refreshKey={activityKey} />
-        </div>
+      {ended ? (
+        <p className={`${BOX} px-4 py-3 text-sm text-muted-foreground`} data-testid="wisp-rail-ended" role="status">
+          {t('ai:wisp.rail.ended')}
+        </p>
+      ) : (
+        <>
+          {needsYou !== null && (
+            <div className={NEEDS_YOU_BODY}>
+              <WispNeedsYou key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} initial={needsYou} refreshKey={activityKey} />
+            </div>
+          )}
+
+          <div className={BOX}>
+            <WispWorkersPanel threadId={wisp.threadId} refreshKey={activityKey} />
+          </div>
+
+          {links !== null && (
+            <div className={BOX}>
+              <WispLinksPanel threadId={wisp.threadId} links={links} onLinksChange={onLinksChange} canAdd={wisp.status === 'active'} />
+            </div>
+          )}
+
+          <section id="activity" className={BOX}>
+            <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} collapsible />
+          </section>
+        </>
       )}
-
-      <div className={BOX}>
-        <WispWorkersPanel threadId={wisp.threadId} refreshKey={activityKey} />
-      </div>
-
-      {links !== null && (
-        <div className={BOX}>
-          <WispLinksPanel threadId={wisp.threadId} links={links} onLinksChange={onLinksChange} canAdd={wisp.status === 'active'} />
-        </div>
-      )}
-
-      <section id="activity" className={BOX}>
-        <WispActivityPanel threadId={wisp.threadId} refreshKey={activityKey} collapsible />
-      </section>
 
       <nav className="flex flex-wrap items-center gap-1 text-sm" aria-label={t('pages:titles.wisp')} data-testid="wisp-rail-nav">
         <a href={CHATS_HREF} data-testid="wisp-home-chats" className="flex items-center gap-1.5 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground">

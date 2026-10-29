@@ -145,4 +145,28 @@ describe('WispRail', () => {
     rerender(<WispRail {...mkProps({ wisp: mkWisp({ status: 'paused' }) })} />);
     expect(h.linksProps?.canAdd).toBe(false);
   });
+
+  // #10104: an ended delegation authorizes no reads (the API answers 409
+  // grant_inactive), so the rail says so instead of three "Couldn't load" panes.
+  it.each(['revoked', 'expired'] as const)('a %s grant shows the ended notice and mounts no reading section', (status) => {
+    const { container } = render(<WispRail {...mkProps({ wisp: mkWisp({ status }) })} />);
+    const notice = screen.getByTestId('wisp-rail-ended');
+    expect(notice.textContent).toBe('This delegation has ended, so its concerns, workers and activity are no longer shown.');
+    expect(h.needsYouProps).toBeNull();
+    expect(h.workersProps).toBeNull();
+    expect(h.linksProps).toBeNull();
+    expect(h.activityProps).toBeNull();
+    for (const id of ['needs-you', 'links']) expect(container.querySelector(`#${id}`)).toBeNull();
+    // The grant controls and the way out stay.
+    expect(within(screen.getByTestId('wisp-identity')).getByTestId('wisp-thread-header')).toBeTruthy();
+    expect(screen.getByTestId('wisp-rail-nav')).toBeTruthy();
+  });
+
+  it('a paused grant keeps its reading sections and shows no ended notice', () => {
+    render(<WispRail {...mkProps({ wisp: mkWisp({ status: 'paused' }) })} />);
+    expect(screen.queryByTestId('wisp-rail-ended')).toBeNull();
+    expect(h.needsYouProps).not.toBeNull();
+    expect(h.workersProps).not.toBeNull();
+    expect(h.activityProps).not.toBeNull();
+  });
 });
