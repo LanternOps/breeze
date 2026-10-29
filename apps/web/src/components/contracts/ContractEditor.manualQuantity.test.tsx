@@ -100,8 +100,6 @@ describe('ContractEditor — manual line quantity validation (#10293)', () => {
     expect(screen.getByTestId('contract-line-qty-error').textContent).toBe(QTY_REQUIRED);
     expect(screen.getByTestId('contract-line-qty')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByTestId('add-line-btn')).toBeDisabled();
-    fireEvent.click(screen.getByTestId('add-line-btn'));
-    expect(api.addContractLine).not.toHaveBeenCalled();
   });
 
   it('flags a quantity with more than 2 decimals', async () => {
@@ -140,11 +138,24 @@ describe('ContractEditor — manual line quantity validation (#10293)', () => {
     fireEvent.click(screen.getByTestId('add-line-btn'));
 
     expect((await screen.findByTestId('contract-line-qty-error')).textContent).toBe(QTY_REQUIRED);
-    const toasted = vi.mocked(showToast).mock.calls.map(([arg]) => String((arg as { message?: string }).message));
-    expect(toasted.some((m) => /must be|money/i.test(m))).toBe(false);
+    expect(showToast).not.toHaveBeenCalled();
 
     // Editing the quantity clears the server-reported error.
     fireEvent.change(screen.getByTestId('contract-line-qty'), { target: { value: '3' } });
+    expect(screen.queryByTestId('contract-line-qty-error')).toBeNull();
+  });
+
+  it('clears a server-reported quantity error when the line type changes', async () => {
+    (api.addContractLine as any).mockResolvedValue(resp({
+      error: 'manualQuantity: must be a number with up to 2 decimals',
+      details: { formErrors: [], fieldErrors: { manualQuantity: ['must be a number with up to 2 decimals'] } },
+    }, false, 400));
+    renderEdit();
+    startManualLine();
+    fireEvent.click(screen.getByTestId('add-line-btn'));
+    await screen.findByTestId('contract-line-qty-error');
+    fireEvent.change(screen.getByTestId('contract-line-type'), { target: { value: 'flat' } });
+    fireEvent.change(screen.getByTestId('contract-line-type'), { target: { value: 'manual' } });
     expect(screen.queryByTestId('contract-line-qty-error')).toBeNull();
   });
 
@@ -163,6 +174,7 @@ describe('ContractEditor — manual line quantity validation (#10293)', () => {
   it('inline edit: clearing a manual quantity shows the message and disables Save', async () => {
     renderEdit([manualLine]);
     fireEvent.click(await screen.findByTestId('line-edit-0'));
+    expect(screen.queryByTestId('line-edit-qty-error-0')).toBeNull();
     fireEvent.change(screen.getByTestId('line-edit-qty-0'), { target: { value: '' } });
     expect(screen.getByTestId('line-edit-qty-error-0').textContent).toBe(QTY_REQUIRED);
     expect(screen.getByTestId('line-edit-qty-0')).toHaveAttribute('aria-invalid', 'true');

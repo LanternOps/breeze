@@ -1671,7 +1671,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                       value={lineType}
                       onChange={(e) => {
                         setLineType(e.target.value as ContractLineType);
-                        setLineSiteId(''); setLineRoles([]); setLineGroupId('');
+                        setLineSiteId(''); setLineRoles([]); setLineGroupId(''); setLineQtyServerError(false);
                         setLineAllowanceOn(false); setLineIncludedQty(''); setLineOveragePrice(''); setLineOverageMode('bill');
                         setLineBlockHours(''); setLineBlockRollover('none'); setLineBlockCap(''); setLineBlockAlert('');
                       }}
