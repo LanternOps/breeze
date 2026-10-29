@@ -43,10 +43,18 @@ type EventLogCollector struct {
 	// Sources fall back to lastCollectTime until their first success, which
 	// preserves the reliability collector's initial-lookback seeding.
 	sourceWatermarks map[string]time.Time
-	maxEvents        int
-	categories       []string
-	minimumLevel     string
-	intervalMinutes  int
+	// Windows bookmarks advance only through consumed records. Persistent
+	// collectors stage each pass until the heartbeat acknowledges its upload.
+	bookmarks       map[string]eventLogBookmark
+	pending         map[string]eventLogBookmark
+	bookmarkPath    string
+	bookmarksLoaded bool
+	ackRequired     bool
+	failedSends     int
+	maxEvents       int
+	categories      []string
+	minimumLevel    string
+	intervalMinutes int
 }
 
 // NewEventLogCollector creates a new EventLogCollector
@@ -222,4 +230,11 @@ func filterByLevel(events []EventLogEntry, minLevel string) []EventLogEntry {
 		}
 	}
 	return filtered
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

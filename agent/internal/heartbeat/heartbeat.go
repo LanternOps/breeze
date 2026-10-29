@@ -1238,7 +1238,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		patchCol:                       collectors.NewPatchCollector(),
 		patchMgr:                       patching.NewDefaultManager(cfg),
 		connectionsCol:                 collectors.NewConnectionsCollector(),
-		eventLogCol:                    collectors.NewEventLogCollector(),
+		eventLogCol:                    collectors.NewPersistentEventLogCollector(filepath.Join(config.GetDataDir(), "eventlog_bookmarks.json")),
 		bootCol:                        collectors.NewBootPerformanceCollector(),
 		reliabilityCol:                 collectors.NewReliabilityCollector(),
 		agentVersion:                   version,
@@ -4496,7 +4496,7 @@ func (h *Heartbeat) sendConnectionsInventory() {
 
 func (h *Heartbeat) sendEventLogs() {
 	if !h.loopReady("PUT", h.agentRouteURL("eventlogs")) {
-		return // before Collect: the watermark advances at collect
+		return // Avoid collecting while this upload route is deferred.
 	}
 	events, err := collectors.Guard("eventLogs", h.eventLogCol.Collect)
 	if err != nil {
@@ -4505,10 +4505,15 @@ func (h *Heartbeat) sendEventLogs() {
 	}
 
 	if len(events) == 0 {
+		h.eventLogCol.CompletePass(true)
 		return
 	}
 
-	h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	err = h.sendInventoryData("eventlogs", map[string]any{"events": events}, fmt.Sprintf("event logs (%d events)", len(events)))
+	if errors.Is(err, ErrDeferred) {
+		return
+	}
+	h.eventLogCol.CompletePass(err == nil)
 }
 
 // sendSecurityStatus uploads security posture. The 5-minute tick passes

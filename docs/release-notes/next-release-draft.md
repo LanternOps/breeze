@@ -162,3 +162,11 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 
 - Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
 - Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.
+
+### Agent event-log collection
+
+- **Windows event logs are no longer skipped.** The collector keeps a record-ID bookmark per query in `eventlog_bookmarks.json` in the agent data directory and advances it only past events it uploaded. A failed, timed-out or capped query, or a failed upload, is retried on the next pass instead of being dropped. Queries read oldest-first, so a backlog drains over passes; a bookmark more than 24 hours behind skips the older events and logs a warning.
+- **Upgrade behaviour:** the first pass after upgrade starts 15 minutes before the agent started, so events from the restart gap of a default interval are collected; duplicates are ignored by the server. Older events are not back-filled.
+- **The Security category now collects audit events.** It reads Audit Failure events (failed logons and others) plus account lockout, audit log cleared, audit policy changed, user created or deleted, and members added to security groups. These Level 0 audit events are reported as `warning`, so the `minimumLevel` setting and event-log monitors apply to them.
+- **Events without message text are no longer sent empty.** The agent uses the event's insertion strings, or a placeholder naming the provider and event ID.
+- No migration, environment variable or setting.

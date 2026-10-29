@@ -331,13 +331,6 @@ func mapSyslogPriority(priority string) string {
 	}
 }
 
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 func parseJournalJSONLines(output []byte) []journalEntry {
 	var entries []journalEntry
 	scanner := newCollectorScanner(output)
