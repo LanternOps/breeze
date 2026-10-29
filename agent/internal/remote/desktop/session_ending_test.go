@@ -164,3 +164,64 @@ func TestWatchdogNotifiesTheViewerBeforeAnIdleStop(t *testing.T) {
 		t.Fatal("the watchdog stopped the session without telling the viewer why")
 	}
 }
+
+// runWatchdogCapturingNotice runs the watchdog until it stops the session and
+// returns the session_ending notice it sent first.
+func runWatchdogCapturingNotice(t *testing.T, id string, lease RevocationLease, policy SessionPolicy, before func(m *SessionManager)) map[string]any {
+	t.Helper()
+	m := NewSessionManager()
+	s := newWatchdogTestSession(id, lease)
+	notices := make(chan map[string]any, 1)
+	m.notifyEnding = func(_ *Session, body map[string]any) {
+		select {
+		case notices <- body:
+		default:
+		}
+	}
+	stopped := runWatchdog(t, m, id, s, policy)
+	if before != nil {
+		before(m)
+	}
+	waitForStop(t, stopped, true)
+	select {
+	case body := <-notices:
+		return body
+	default:
+		t.Fatal("the watchdog stopped the session without telling the viewer why")
+		return nil
+	}
+}
+
+func TestWatchdogNotifiesTheRevocationReason(t *testing.T) {
+	got := runWatchdogCapturingNotice(t, "sess-revoked-notice", RevocationLease{
+		ExpiresAt:    time.Now().Add(time.Hour),
+		HardDeadline: time.Now().Add(time.Hour),
+		Grace:        time.Hour,
+		RenewEvery:   time.Hour,
+	}, SessionPolicy{
+		MaxDuration:     time.Hour,
+		RevocationLease: &RevocationLease{RenewEvery: time.Hour},
+	}, func(m *SessionManager) {
+		m.RevokeSession("sess-revoked-notice", "permissions_changed")
+	})
+	want := map[string]any{"type": "session_ending", "reason": "revoked", "detail": "permissions_changed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("notice = %#v, want %#v", got, want)
+	}
+}
+
+func TestWatchdogLeaseHardDeadlineNoticeCarriesNoPolicyLength(t *testing.T) {
+	got := runWatchdogCapturingNotice(t, "sess-deadline-notice", RevocationLease{
+		ExpiresAt:    time.Now().Add(time.Hour),
+		HardDeadline: time.Now().Add(-time.Second),
+		Grace:        time.Hour,
+		RenewEvery:   time.Hour,
+	}, SessionPolicy{
+		MaxDuration:     2 * time.Hour,
+		RevocationLease: &RevocationLease{RenewEvery: time.Hour},
+	}, nil)
+	want := map[string]any{"type": "session_ending", "reason": "max_session_duration_exceeded"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("notice = %#v, want %#v", got, want)
+	}
+}

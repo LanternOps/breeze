@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"encoding/json"
+	"log/slog"
 	"time"
 )
 
@@ -79,15 +81,28 @@ func waitForControlFlush(dc bufferedAmounter, timeout, poll time.Duration) bool 
 // sessionEndingFlushTimeout, for it to leave the send buffer, so the Stop that
 // follows does not close the channel under it. A session with no control
 // channel returns at once.
+//
+// Unlike routine control replies, a lost notice is logged at Warn: without it
+// the viewer falls back to the 401 path and cannot say why the session ended.
 func (s *Session) notifySessionEnding(body map[string]any) {
-	s.sendControlJSON(body)
 	s.mu.RLock()
 	dc := s.controlDC
 	s.mu.RUnlock()
 	if dc == nil {
 		return
 	}
-	waitForControlFlush(dc, sessionEndingFlushTimeout, 10*time.Millisecond)
+	msg, err := json.Marshal(body)
+	if err != nil {
+		slog.Warn("Failed to marshal session_ending notice", "session", s.id, "reason", body["reason"], "error", err.Error())
+		return
+	}
+	if err := dc.SendText(string(msg)); err != nil {
+		slog.Warn("Failed to tell the viewer why the session is ending", "session", s.id, "reason", body["reason"], "error", err.Error())
+		return
+	}
+	if !waitForControlFlush(dc, sessionEndingFlushTimeout, 10*time.Millisecond) {
+		slog.Warn("session_ending notice not flushed before stop", "session", s.id, "reason", body["reason"], "timeout", sessionEndingFlushTimeout)
+	}
 }
 
 // sendSessionEnding is the watchdog's call; tests swap notifyEnding to observe it.
