@@ -94,8 +94,9 @@ function makeInput(pdfData: Buffer, mime: string, over: Partial<CertifiedAgreeme
     agreement: { name: 'Business Associate Agreement', templateName: 'Business Associate Agreement', versionNumber: 3 },
     parties: { seller: 'Acme MSP', client: 'Example Clinic LLC' },
     source: { kind: 'request', requestId: REQUEST_ID },
-    how: { kind: 'customer', channel: 'emailed_link', method: 'typed-signature' },
+    how: { kind: 'customer', channel: 'signing_link', method: 'typed-signature' },
     pageSize: 'letter',
+    certificateVersion: 2,
     ...rest,
   };
 }
@@ -315,8 +316,8 @@ describe('certificate content (spec §3.8 table)', () => {
 
 describe('"How" wording — one case per origin, never "signed by"', () => {
   const cases: Array<[string, CertifiedAgreementInput['how'], string[]]> = [
-    ['customer via the emailed link', { kind: 'customer', channel: 'emailed_link', method: 'typed-signature' },
-      ['Electronically accepted via emailed link: typed full legal name + consent checkbox']],
+    ['customer via the signing link', { kind: 'customer', channel: 'signing_link', method: 'typed-signature' },
+      ['Electronically accepted via signing link: typed full legal name + consent checkbox']],
     ['customer via the portal', { kind: 'customer', channel: 'portal', method: 'typed-signature' },
       ['Electronically accepted via portal: typed full legal name + consent checkbox']],
     ['recorded on behalf of the client', { kind: 'on_behalf', recordedByName: 'Sam Tech', method: 'purchase_order', reference: 'PO 4471' },
@@ -409,6 +410,61 @@ describe('legacy row without evidence', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Certificate versions (#10513): signed evidence never changes after the fact.
+// A document signed before certificate v2 keeps the v1 wording, frozen.
+// ---------------------------------------------------------------------------
+
+describe('certificate versions (#10513)', () => {
+  const linkHow = { kind: 'customer', channel: 'signing_link', method: 'typed-signature' } as const;
+
+  it('v1 (signed before #10513): the token channel keeps "via emailed link", exactly as it always printed', async () => {
+    const input = makeInput(await makePdf(1), 'application/pdf', { how: linkHow, certificateVersion: 1 });
+    const text = certificateText(buildCertificateContent(input));
+    expect(text).toContain('Electronically accepted via emailed link: typed full legal name + consent checkbox');
+    expect(text.join('\n')).not.toContain('signing link');
+    const { drawn } = await drawnStrings(() => renderCertifiedAgreementPdf(input));
+    expect(drawn).toContain('Electronically accepted via emailed link: typed full legal name + consent checkbox');
+  });
+
+  it('v2: the token channel prints the neutral "via signing link" (a copied link was never emailed)', async () => {
+    const input = makeInput(await makePdf(1), 'application/pdf', { how: linkHow, certificateVersion: 2 });
+    const text = certificateText(buildCertificateContent(input));
+    expect(text).toContain('Electronically accepted via signing link: typed full legal name + consent checkbox');
+    expect(text.join('\n')).not.toMatch(/emailed/i);
+    const { drawn } = await drawnStrings(() => renderCertifiedAgreementPdf(input));
+    expect(drawn).toContain('Electronically accepted via signing link: typed full legal name + consent checkbox');
+    expect(drawn.join('\n')).not.toMatch(/emailed/i);
+  });
+
+  it('v1 and v2 differ ONLY in the token-channel wording: portal, unknown, staff and upload certificates are identical', async () => {
+    const pdf = await makePdf(1);
+    const hows: CertifiedAgreementInput['how'][] = [
+      { kind: 'customer', channel: 'portal', method: 'typed-signature' },
+      { kind: 'customer', channel: 'unknown', method: 'typed-signature' },
+      { kind: 'on_behalf', recordedByName: 'Sam Tech', method: 'verbal', reference: 'call' },
+      { kind: 'external_upload', recordedByName: 'Sam Tech', method: 'signed_document', reference: 'wet ink' },
+      { kind: 'unavailable' },
+    ];
+    for (const how of hows) {
+      expect(buildCertificateContent(makeInput(pdf, 'application/pdf', { how, certificateVersion: 1 })), how.kind)
+        .toEqual(buildCertificateContent(makeInput(pdf, 'application/pdf', { how, certificateVersion: 2 })));
+    }
+    const v1 = certificateText(buildCertificateContent(makeInput(pdf, 'application/pdf', { how: linkHow, certificateVersion: 1 })));
+    const v2 = certificateText(buildCertificateContent(makeInput(pdf, 'application/pdf', { how: linkHow, certificateVersion: 2 })));
+    expect(v1.filter((line) => !v2.includes(line))).toEqual(['Electronically accepted via emailed link: typed full legal name + consent checkbox']);
+  });
+
+  it('a non-typed-signature method on the token channel follows the version too', async () => {
+    const how = { kind: 'customer', channel: 'signing_link', method: 'other' } as const;
+    const pdf = await makePdf(1);
+    expect(certificateText(buildCertificateContent(makeInput(pdf, 'application/pdf', { how, certificateVersion: 1 }))))
+      .toContain('Electronically accepted via emailed link — method other');
+    expect(certificateText(buildCertificateContent(makeInput(pdf, 'application/pdf', { how, certificateVersion: 2 }))))
+      .toContain('Electronically accepted via signing link — method other');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Loader: one system-scope read; classifies HOW from stored columns only.
 // ---------------------------------------------------------------------------
 
@@ -451,6 +507,7 @@ function loaderRow(over: Record<string, unknown> = {}) {
     orgName: 'Example Clinic (live name)',
     partnerName: 'Acme MSP (live name)',
     partnerPageSize: 'letter',
+    certificateVersion: 2,
     ...over,
   };
 }
@@ -462,10 +519,10 @@ describe('loadCertifiedAgreementInput', () => {
     expect(contexts.max).toBe(1);
   });
 
-  it('request-sourced customer accept through the public link → emailed link; party names from the request snapshot', async () => {
+  it('request-sourced customer accept through the public link → signing link; party names from the request snapshot', async () => {
     dbResults.push([loaderRow()]);
     const input = (await loadCertifiedAgreementInput(DOC_ID))!;
-    expect(input.how).toEqual({ kind: 'customer', channel: 'emailed_link', method: 'typed-signature' });
+    expect(input.how).toEqual({ kind: 'customer', channel: 'signing_link', method: 'typed-signature' });
     expect(input.parties).toEqual({ seller: 'Acme MSP', client: 'Example Clinic LLC' });
     expect(input.source).toEqual({ kind: 'request', requestId: REQUEST_ID });
     expect(input.agreement).toEqual({ name: 'BAA', templateName: 'BAA', versionNumber: 2 });
@@ -504,11 +561,11 @@ describe('loadCertifiedAgreementInput', () => {
     expect((await loadCertifiedAgreementInput(DOC_ID))!.how).toMatchObject({ kind: 'customer', channel: 'portal' });
   });
 
-  it('quote-sourced: token jti → emailed link; acceptance row without one → portal; acceptance gone → unknown', async () => {
+  it('quote-sourced: token jti → signing link; acceptance row without one → portal; acceptance gone → unknown', async () => {
     const quote = { sourceKind: 'quote', agreementRequestId: null, quoteId: 'q1', quoteNumber: 'Q-7', requestSeller: null, requestClient: null, requestPublicResponseJti: null, quoteSeller: { name: 'Acme MSP' }, quoteBillTo: 'Example Clinic LLC' };
     dbResults.push([loaderRow({ ...quote, quoteAcceptanceExists: true, quoteAcceptanceTokenJti: 'q-jti' })]);
     const viaLink = (await loadCertifiedAgreementInput(DOC_ID))!;
-    expect(viaLink.how).toMatchObject({ kind: 'customer', channel: 'emailed_link' });
+    expect(viaLink.how).toMatchObject({ kind: 'customer', channel: 'signing_link' });
     expect(viaLink.source).toEqual({ kind: 'quote', quoteNumber: 'Q-7' });
     expect(viaLink.parties).toEqual({ seller: 'Acme MSP', client: 'Example Clinic LLC' });
     dbResults.push([loaderRow({ ...quote, quoteAcceptanceExists: true, quoteAcceptanceTokenJti: null })]);
@@ -546,6 +603,49 @@ describe('loadCertifiedAgreementInput', () => {
   it('no signed_at → evidence unavailable (legacy back-fill gap)', async () => {
     dbResults.push([loaderRow({ sourceKind: 'quote', signerName: null, signedAt: null, acceptanceOrigin: null, acceptanceMethod: null })]);
     expect((await loadCertifiedAgreementInput(DOC_ID))!.how).toEqual({ kind: 'unavailable' });
+  });
+
+  describe('certificate version (#10513) — read from the document row, NULL = v1', () => {
+    const quote = { sourceKind: 'quote', agreementRequestId: null, quoteId: 'q1', quoteNumber: 'Q-7', requestSeller: null, requestClient: null, requestPublicResponseJti: null, quoteSeller: { name: 'Acme MSP' }, quoteBillTo: 'Example Clinic LLC', quoteAcceptanceExists: true, quoteAcceptanceTokenJti: 'q-jti' };
+    const howText = async (over: Record<string, unknown>) => {
+      dbResults.push([loaderRow(over)]);
+      const input = (await loadCertifiedAgreementInput(DOC_ID))!;
+      return { input, text: certificateText(buildCertificateContent(input)).join('\n') };
+    };
+
+    it('request-sourced: a row signed before #10513 (NULL) keeps "via emailed link"', async () => {
+      const { input, text } = await howText({ certificateVersion: null });
+      expect(input.certificateVersion).toBe(1);
+      expect(text).toContain('Electronically accepted via emailed link');
+      expect(text).not.toContain('signing link');
+    });
+
+    it('request-sourced: a v2 row prints "via signing link"', async () => {
+      const { input, text } = await howText({ certificateVersion: 2 });
+      expect(input.certificateVersion).toBe(2);
+      expect(text).toContain('Electronically accepted via signing link');
+      expect(text).not.toMatch(/emailed/i);
+    });
+
+    it('quote-sourced: a row signed before #10513 (NULL) keeps "via emailed link"', async () => {
+      const { input, text } = await howText({ ...quote, certificateVersion: null });
+      expect(input.certificateVersion).toBe(1);
+      expect(text).toContain('Electronically accepted via emailed link');
+    });
+
+    it('quote-sourced: a v2 row prints "via signing link"', async () => {
+      const { input, text } = await howText({ ...quote, certificateVersion: 2 });
+      expect(input.certificateVersion).toBe(2);
+      expect(text).toContain('Electronically accepted via signing link');
+      expect(text).not.toMatch(/emailed/i);
+    });
+
+    it('a version this build does not know fails loudly instead of printing another version\'s wording', async () => {
+      dbResults.push([loaderRow({ certificateVersion: 3 })]);
+      await expect(loadCertifiedAgreementInput(DOC_ID)).rejects.toThrow(/certificate version 3/i);
+      dbResults.push([loaderRow({ certificateVersion: 1 })]);
+      await expect(loadCertifiedAgreementInput(DOC_ID)).rejects.toThrow(/certificate version 1/i);
+    });
   });
 
   it('partner page size A4 / unknown → resolvePageSize', async () => {
