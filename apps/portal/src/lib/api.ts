@@ -863,6 +863,31 @@ export interface PublicQuoteDetail {
   payOnAccept?: boolean;
 }
 
+/** #3740: what paying an accepted quote's invoice charges now (deposit-first). */
+export interface PublicQuotePayment {
+  amount: string;
+  currencyCode: string;
+  isDeposit: boolean;
+  invoiceNumber: string | null;
+}
+
+/** GET /quotes/public/:token/payment — the accepted quote's payment step.
+ *  `payment` is null when nothing can be paid online. */
+export interface PublicQuoteAccepted {
+  partnerName: string | null;
+  payment: PublicQuotePayment | null;
+}
+
+export interface PublicQuoteAcceptResult {
+  status: string;
+  invoiceNumber: string | null;
+  invoiceUrl: string | null;
+  checkoutUrl?: string | null;
+  payDeferred?: boolean;
+  /** Present when payDeferred: the payment step to show in place of the invoice page. */
+  payment?: PublicQuotePayment | null;
+}
+
 /** The public (token-gated) invoice payload — /invoices/public/:token. A VOID
  *  invoice deliberately carries only identity fields (no amounts), so most
  *  money fields are optional here. */
@@ -1512,13 +1537,28 @@ export const portalApi = {
     token: string,
     signerName: string,
     signerEmail?: string
-  ): Promise<ApiResponse<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>> => {
-    return apiPost<{ data: { status: string; invoiceNumber: string | null; invoiceUrl: string | null; checkoutUrl?: string | null; payDeferred?: boolean } }>(
+  ): Promise<ApiResponse<{ data: PublicQuoteAcceptResult }>> => {
+    return apiPost<{ data: PublicQuoteAcceptResult }>(
       `/quotes/public/${encodeURIComponent(token)}/accept`,
       { signerName, signerEmail },
       { redirectOnUnauthorized: false }
     );
   },
+
+  // #3740: an accepted quote's link still reaches its invoice's payment (and
+  // only that), including after accepting spent the link.
+  getPublicQuotePayment: async (
+    token: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PublicQuoteAccepted }>> => {
+    return apiGet<{ data: PublicQuoteAccepted }>(
+      `/quotes/public/${encodeURIComponent(token)}/payment`,
+      { ...config, redirectOnUnauthorized: false }
+    );
+  },
+
+  payPublicQuote: async (token: string): Promise<ApiResponse<{ data: { url: string } }>> =>
+    apiPost<{ data: { url: string } }>(`/quotes/public/${encodeURIComponent(token)}/pay`, {}, { redirectOnUnauthorized: false }),
 
   declinePublicQuote: async (
     token: string,

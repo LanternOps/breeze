@@ -20,8 +20,14 @@ import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
-import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl } from '../services/quoteAcceptCheckout';
+import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl, publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
 import { assembleCustomerQuoteDocument } from '../services/customerQuoteDocument';
+import { getConvertedInvoicePayment, type ConvertedQuotePayment } from '../services/quotePay';
+import { createInvoicePayLink } from '../services/invoiceCheckout';
+import { InvoiceServiceError } from '../services/invoiceTypes';
+import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
+import { getRedis } from '../services/redis';
+import { rateLimiter } from '../services/rate-limit';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -275,7 +281,12 @@ quotesPublicRoutes.post('/:token/accept', zValidator('param', tokenParam), zVali
     const checkoutUrl = await resolveAcceptCheckoutUrl(res, invoiceUrl, {
       ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
     });
-    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, checkoutUrl, payDeferred, pax8OrderId: res.pax8OrderId } });
+    // #3740: with no durable invoice page to land on, the confirmation page
+    // must still make payment the next step rather than a passive "accepted".
+    // It shows what is due and pays through POST /:token/pay, which this
+    // (now spent) token may still use because it is the token that accepted.
+    const payment = payDeferred ? await readPaymentBestEffort(res.invoiceId, res.quote.orgId) : null;
+    return c.json({ data: { status: res.quote.status, invoiceNumber: null, invoiceUrl, checkoutUrl, payDeferred, payment, pax8OrderId: res.pax8OrderId } });
   } catch (err) {
     if (err instanceof QuoteServiceError) {
       if (err.code === 'RESPONSE_CONSUMED') {
@@ -353,4 +364,153 @@ quotesPublicRoutes.post('/:token/decline', zValidator('param', tokenParam), zVal
   // SMTP latency must not delay the customer's response; errors are swallowed.
   void notifyQuoteOutcome({ quoteId: claims.quoteId, outcome: 'declined', source: 'customer' });
   return c.json({ data: { status: 'declined' } });
+});
+
+// ---------------------------------------------------------------------------
+// Payment after acceptance (#3740)
+//
+// Accepting spends the token: its jti is revoked in Redis and recorded on the
+// row (public_response_jti + outcome), so every route above answers 401 to it
+// and a revisit of the quote link had no way back to payment. These two routes
+// are the ONLY ones that tolerate a spent token, and only the token that
+// accepted THIS quote. They reach exactly one thing — the quote's converted
+// invoice's payment — never the proposal document, its assets, or accept /
+// decline:
+//   GET  /:token/payment  what is due now (display), or payment:null
+//   POST /:token/pay      mint the Stripe Checkout for that invoice
+// Spent-token rule: a revoked jti is accepted only when the row's durable
+// consumption record names this jti with outcome 'accepted' AND the quote is
+// converted. A live (unspent) token on a converted quote is accepted too — it
+// is the recipient's own link and can already open the document. Everything
+// else gets the same generic 401 the strict routes give.
+// Tenancy: the row is matched on the signed quoteId AND the token org's merge
+// chain (resolveMergedOrgIds); the invoice is the row's own
+// converted_invoice_id, read and minted under the ROW's org (the mint refuses
+// any invoice outside accessibleOrgIds). Signature, expiry and the org gate
+// apply exactly as on every other route.
+// ---------------------------------------------------------------------------
+
+/** Verify + gate for the payment routes: like resolve(), but a revoked jti is
+ *  reported (spent) instead of refused; the row decides whether it may pay. */
+async function resolvePaymentAccess(c: { req: { valid: (k: 'param') => { token: string } } }): Promise<{ claims: QuoteAcceptClaims; orgIds: string[]; gate: PublicLinkOrgGate; spent: boolean } | null> {
+  const { token } = c.req.valid('param');
+  const claims = await verifyQuoteAcceptToken(token);
+  if (!claims) return null;
+  // Fails closed (true) on a Redis outage: a live token then needs the same
+  // accepted-by-this-jti record a spent one does — never a wider door.
+  const spent = await isQuoteAcceptJtiRevoked(claims.jti);
+  const orgIds = await resolveMergedOrgIds(claims.orgId, claims.partnerId);
+  const gate = await resolveQuoteLinkOrgGate(claims.quoteId, orgIds);
+  return { claims, orgIds, gate, spent };
+}
+
+type PayableQuote = { orgId: string; partnerId: string; convertedInvoiceId: string };
+
+/** The token's converted quote, or why the token may not pay through it. */
+async function loadPayableQuote(
+  claims: QuoteAcceptClaims, orgIds: string[], spent: boolean,
+): Promise<{ ok: true; quote: PayableQuote } | { ok: false; reason: 'invalid' | 'not_converted' }> {
+  const [q] = await db.select({
+    ...publicLinkColumns, orgId: quotes.orgId, partnerId: quotes.partnerId,
+    convertedInvoiceId: quotes.convertedInvoiceId,
+    publicResponseJti: quotes.publicResponseJti, publicResponseOutcome: quotes.publicResponseOutcome,
+  }).from(quotes).where(and(eq(quotes.id, claims.quoteId), inArray(quotes.orgId, orgIds))).limit(1);
+  if (!q || isPublicLinkDead(q)) return { ok: false, reason: 'invalid' };
+  const acceptedByThisToken = q.publicResponseOutcome === 'accepted' && q.publicResponseJti === claims.jti;
+  if (spent && !acceptedByThisToken) return { ok: false, reason: 'invalid' };
+  if (q.status !== 'converted' || !q.convertedInvoiceId) return { ok: false, reason: spent ? 'invalid' : 'not_converted' };
+  return { ok: true, quote: { orgId: q.orgId, partnerId: q.partnerId, convertedInvoiceId: q.convertedInvoiceId } };
+}
+
+const invalidLink = { error: 'This link is invalid or has expired' } as const;
+const notConverted = { error: 'This proposal has not been accepted yet', code: 'NOT_CONVERTED' } as const;
+
+/** Display read for the payment step. A failure only hides the Pay button
+ *  (the page then points at the partner), so it is captured, not thrown. */
+async function readPaymentBestEffort(invoiceId: string, orgId: string): Promise<ConvertedQuotePayment | null> {
+  try {
+    return await getConvertedInvoicePayment(invoiceId, orgId);
+  } catch (err) {
+    console.error('[quotesPublic] converted-invoice payment read failed', { invoiceId, err });
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/** Per-invoice cap on Checkout mints from the quote link. Same Redis bucket as
+ *  the public invoice page's Pay (invoice-public:pay:<invoiceId>), so the two
+ *  surfaces share one budget. Fail-open on a Redis outage, as there: the mint
+ *  is idempotency-keyed, so availability wins over a strict cap. */
+async function overPublicPayLimit(invoiceId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return !(await rateLimiter(redis, `invoice-public:pay:${invoiceId}`, 10, 60)).allowed;
+  } catch {
+    return false;
+  }
+}
+
+// GET /:token/payment — what the accepted quote's invoice would charge now.
+quotesPublicRoutes.get('/:token/payment', zValidator('param', tokenParam), async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const access = await resolvePaymentAccess(c);
+  if (!access) return c.json(invalidLink, 401);
+  if (access.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  const { claims, orgIds, spent } = access;
+  const loaded = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const r = await loadPayableQuote(claims, orgIds, spent);
+    if (!r.ok) return r;
+    const [p] = await db.select({ name: partners.name }).from(partners).where(eq(partners.id, r.quote.partnerId)).limit(1);
+    return { ...r, partnerName: p?.name ?? null };
+  }));
+  if (!loaded.ok) return loaded.reason === 'not_converted' ? c.json(notConverted, 409) : c.json(invalidLink, 401);
+  // Read AFTER the context above closed: it opens its own.
+  const payment = await readPaymentBestEffort(loaded.quote.convertedInvoiceId, loaded.quote.orgId);
+  return c.json({ data: { partnerName: loaded.partnerName, payment } });
+});
+
+// POST /:token/pay — mint the Stripe Checkout for the accepted quote's invoice.
+// The PUBLIC-LINK session family (publicInvoiceCheckoutUrls): session-id-only
+// return urls landing on the invoice's durable page, and the same idempotency
+// key as Sign & pay and the invoice page's own Pay, so the three never mint
+// competing sessions for one charge.
+quotesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async (c) => {
+  c.header('Cache-Control', 'no-store');
+  // Same-origin fetch shape (as /invoices/public/:token/pay): a cross-site form
+  // cannot set a JSON content type, and there is no ambient credential anyway.
+  if (!(c.req.header('content-type') ?? '').includes('application/json')) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+  const access = await resolvePaymentAccess(c);
+  if (!access) return c.json(invalidLink, 401);
+  if (access.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  const { claims, orgIds, spent } = access;
+  const loaded = await runOutsideDbContext(() => withSystemDbAccessContext(() => loadPayableQuote(claims, orgIds, spent)));
+  if (!loaded.ok) return loaded.reason === 'not_converted' ? c.json(notConverted, 409) : c.json(invalidLink, 401);
+  const { quote } = loaded;
+  if (await overPublicPayLimit(quote.convertedInvoiceId)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
+  try {
+    // createInvoicePayLink owns every payment guard (org access, PAYABLE,
+    // collection in progress / held money, pending revocation, charge-now > 0,
+    // Stripe connected) and opens its own short DB contexts — none is held here.
+    const link = await createInvoicePayLink(
+      quote.convertedInvoiceId,
+      { userId: null, partnerId: null, accessibleOrgIds: [quote.orgId] },
+      { ...publicInvoiceCheckoutUrls(), ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null },
+    );
+    return c.json({ data: { url: link.url } });
+  } catch (err) {
+    if (err instanceof InvoiceServiceError) {
+      // Customer-facing wording, as on the public invoice page: never name the
+      // partner's Stripe setup to their customer.
+      if (err.code === 'COLLECTION_IN_PROGRESS') return c.json({ error: 'A payment is already processing', code: err.code }, 409);
+      if (err.code === 'STRIPE_NOT_CONNECTED') {
+        return c.json({ error: 'Online payment is not available for this invoice — please contact the sender', code: err.code }, 409);
+      }
+      if (err.code === 'STRIPE_CURRENCY_UNSUPPORTED') return c.json({ error: CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE, code: err.code }, 409);
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
+    throw err;
+  }
 });
