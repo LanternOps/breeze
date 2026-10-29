@@ -92,6 +92,33 @@ export function seedDatabase(project: string): void {
     { cwd: ROOT, input: readFileSync(SEED_SQL, 'utf8'), stdio: ['pipe', 'inherit', 'inherit'] });
 }
 
+function composeLsNames(): string[] {
+  const out = execFileSync('docker', ['compose', 'ls', '-a', '--format', 'json'], { encoding: 'utf8' });
+  return (JSON.parse(out) as Array<{ Name: string }>).map((p) => p.Name);
+}
+
+/** Breeze compose projects Docker knows about, including stopped ones. */
+export function listBreezeProjects(): string[] {
+  return composeLsNames().filter((n) => n === 'breeze' || n.startsWith('breeze-wt-'));
+}
+
+/**
+ * #9864 — true when the project still has containers or volumes. `compose ls`
+ * drops a project once its containers are gone, so a stack taken down with
+ * `--keep-volumes` is found through its volume labels.
+ */
+export function composeProjectExists(project: string): boolean {
+  if (composeLsNames().includes(project)) return true;
+  const vols = execFileSync('docker', ['volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], { encoding: 'utf8' });
+  return vols.trim().length > 0;
+}
+
+/** #9864 — compose project label of each running container publishing `port` ('' when unlabelled). */
+export function portOwners(port: number): string[] {
+  const out = execFileSync('docker', ['ps', '--filter', `publish=${port}`, '--format', 'owner={{.Label "com.docker.compose.project"}}'], { encoding: 'utf8' });
+  return out.split('\n').filter((l) => l.startsWith('owner=')).map((l) => l.slice('owner='.length).trim());
+}
+
 export function composeDown(project: string, removeVolumes: boolean): void {
   const args = [...composeArgs(project), 'down'];
   if (removeVolumes) args.push('-v');

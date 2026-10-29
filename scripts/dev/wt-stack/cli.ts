@@ -1,9 +1,12 @@
 // scripts/dev/wt-stack/cli.ts
 import { execFileSync } from 'node:child_process';
-import { deriveProjectName, descriptorPath } from './project';
-import { writeDescriptor, readDescriptor, type StackDescriptor } from './descriptor';
+import { resolveProject, downCandidates, pickExistingProject, assertCaddyPortAvailable, descriptorPath } from './project';
+import { writeDescriptor, readDescriptor, readRecordedProject, removeDescriptor } from './descriptor';
 import { writeEnvStack, readStackEnvValue, pinWebAuthnForStack, caddyPortPin } from './env';
-import { composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown, recreateService } from './compose';
+import {
+  composeUp, waitHealthy, publishedPort, containerName, seedDatabase, composeDown, recreateService,
+  listBreezeProjects, composeProjectExists, portOwners,
+} from './compose';
 import { upStack } from './up';
 
 const ADMIN = { email: 'admin@breeze.local', password: 'BreezeAdmin123!' };
@@ -17,9 +20,15 @@ function currentBranch(): string | undefined {
 
 function up(shared: boolean, rebuild: boolean): void {
   const worktreePath = process.cwd();
-  const project = deriveProjectName({ worktreePath, branch: currentBranch(), shared });
-  console.log(`[wt-stack] project=${project} engine=${dockerContext()}`);
-  const descriptor = upStack({ worktreePath, project, rebuild, admin: ADMIN, pinnedCaddyPort: caddyPortPin() }, {
+  // #9864 — reuse the project this worktree's descriptor recorded, so a
+  // checkout (detached HEAD, branch switch) re-ups the same stack, not a second one.
+  const { project, source } = resolveProject({
+    worktreePath, shared, recordedProject: readRecordedProject(worktreePath), override: process.env.BREEZE_WT_PROJECT,
+  });
+  console.log(`[wt-stack] project=${project} (from ${source}) engine=${dockerContext()}`);
+  const pinnedCaddyPort = caddyPortPin();
+  if (pinnedCaddyPort !== null) assertCaddyPortAvailable(pinnedCaddyPort, project, portOwners(pinnedCaddyPort));
+  const descriptor = upStack({ worktreePath, project, rebuild, admin: ADMIN, pinnedCaddyPort }, {
     writeEnvStack, composeUp, waitHealthy, seedDatabase, publishedPort,
     pinWebAuthnForStack, recreateService, containerName, writeDescriptor,
   });
@@ -36,8 +45,21 @@ function info(): void {
 }
 
 function down(keepVolumes: boolean): void {
-  const project = deriveProjectName({ worktreePath: process.cwd(), branch: currentBranch(), shared: process.argv.includes('--shared') });
+  const worktreePath = process.cwd();
+  const recordedProject = readRecordedProject(worktreePath);
+  // #9864 — target the project `up` recorded; fall back to derived names only
+  // without a descriptor, and fail loudly rather than `compose down` a project
+  // that does not exist (which exits 0 and leaves the real stack running).
+  const candidates = downCandidates({
+    worktreePath, shared: process.argv.includes('--shared'), branch: currentBranch(),
+    recordedProject, override: process.env.BREEZE_WT_PROJECT,
+  });
+  const project = pickExistingProject(candidates, composeProjectExists, listBreezeProjects());
+  console.log(`[wt-stack] down project=${project}${keepVolumes ? ' (keeping volumes)' : ''}`);
   composeDown(project, !keepVolumes);
+  // Keep the descriptor with --keep-volumes so the next `up` reattaches the
+  // same volumes under the same project.
+  if (!keepVolumes && recordedProject === project) removeDescriptor(worktreePath);
 }
 
 function test(passthrough: string[]): void {
@@ -95,4 +117,9 @@ function main(): void {
   }
 }
 
-main();
+try {
+  main();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+}
