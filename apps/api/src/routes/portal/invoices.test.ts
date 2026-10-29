@@ -1,5 +1,12 @@
 const portalSentry=vi.hoisted(()=>vi.fn());
 vi.mock('../../services/sentry',()=>({captureException:portalSentry}));
+// The detail route preloads the partner's autopay rollout flag (#9585); keep that read
+// off this file's queue-driven db mock. The real-DB behaviour is in
+// portalInvoiceDbContext.integration.test.ts.
+vi.mock('../../services/autopay/autopayGate', async (original) => ({
+  ...await original<typeof import('../../services/autopay/autopayGate')>(),
+  isAutopayEnabledForPartner: vi.fn(async () => true),
+}));
 const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
 vi.mock('../../services/autopay/bankPayment',async original=>({
  ...await original<typeof import('../../services/autopay/bankPayment')>(),
@@ -513,7 +520,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
   it('GET /invoices/:id/pdf renders on demand if no artifact exists', async () => {
     getPortalInvoiceRowMock.mockResolvedValue(invoiceRow());
     getInvoicePdfMock.mockResolvedValueOnce(null).mockResolvedValueOnce(Buffer.from('%PDF-rendered'));
-    const partnerContext = { partner: { id: 'p1' }, onlinePaymentAvailable: false };
+    const partnerContext = { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: false };
     renderPartnerContextMock.mockResolvedValueOnce(partnerContext);
     const res = await app().request(`/invoices/${INV_ID}/pdf`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -855,7 +862,7 @@ describe('GET /invoices/:id carries how this invoice will be paid (D-4)', () => 
     expect(body.autopayStatus).toEqual(scheduled);
     expect(body.autopayEnrolled).toBe(true);
     expect(body.autopay).toBeNull();
-    expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID });
+    expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID }, { partnerAutopayEnabled: expect.any(Function) });
   });
   // R9: unknown enrollment fails closed: no setup or bank offer, and the failure is reported.
   it('a failed status read offers nothing that saves a method and reports it', async () => {
@@ -995,7 +1002,7 @@ describe('portal invoice detail and PDF own their DB context (#9585)', () => {
     onlinePayMock.mockImplementation(async () => { track('onlinePay'); return true; });
     portalAutopay.offer.mockImplementation(async () => { track('cardOffer'); return { eligible: true } as never; });
     bankRoutes.offer.mockImplementation(async () => { track('bankOffer'); return { available: true } as never; });
-    renderPartnerContextMock.mockImplementation(async () => { track('renderPartnerContext'); return { partner: { id: 'p1' }, onlinePaymentAvailable: true }; });
+    renderPartnerContextMock.mockImplementation(async () => { track('renderPartnerContext'); return { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: true }; });
     renderInvoicePdfMock.mockImplementation(async () => { track('render'); return {}; });
     getInvoicePdfMock.mockReset();
   });
@@ -1044,7 +1051,7 @@ describe('portal invoice detail and PDF own their DB context (#9585)', () => {
     expect(at.row).toEqual([1]);
     expect(at.render).toEqual([1]);
     expect(renderPartnerContextMock).toHaveBeenCalledWith('p1');
-    expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID, { partnerContext: { partner: { id: 'p1' }, onlinePaymentAvailable: true } });
+    expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID, { partnerContext: { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: true } });
     for (const opened of ctx.orgContexts) expect(opened).toEqual(PORTAL_ORG_CTX);
   });
 

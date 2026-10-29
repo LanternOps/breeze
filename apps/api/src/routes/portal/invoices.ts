@@ -6,6 +6,7 @@ import { paymentIntentDescription } from '../../services/autopay/paymentDescript
 import { assertNoActiveCollection, holdsClientMoney, readInFlightCollection } from '../../services/autopay/reservation';
 import { releaseInvoiceConfirmation } from '../../services/autopay/confirmPayment';
 import { getCustomerInvoiceAutopay } from '../../services/autopay/customerInvoiceStatus';
+import { isAutopayEnabledForPartner } from '../../services/autopay/autopayGate';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -130,7 +131,7 @@ invoiceRoutes.get('/invoices', zValidator('query', listSchema), async (c) => {
 // the middleware's scope: portalOrgDbAccessContext) and every system-context read
 // with no transaction open:
 //   1. org tx: authorize the row (RLS + the explicit org guard), refuse a draft;
-//   2. no tx:  branding + availability, keyed on that authorized row;
+//   2. no tx:  branding, availability and the autopay rollout flag, keyed on that row;
 //   3. org tx: assemble, stamp the view, read in-flight and autopay status;
 //   4. no tx:  the autopay offers, gated on the status read in 3 as before.
 invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async (c) => {
@@ -154,6 +155,17 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   } catch (err) {
     console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: invoice.partnerId, err });
   }
+
+  // The partner's autopay rollout flag, which the autopay status read in step 3 needs
+  // for an open schedule; under the org scope it would escape to a second connection.
+  // A failure is held and surfaces inside that read, so it fails closed as before (R9).
+  const autopayFlag = await runOutsideDbContext(() => withSystemDbAccessContext(() => isAutopayEnabledForPartner(db, invoice.partnerId)))
+    .then((enabled) => ({ enabled }), (error: unknown) => ({ error }));
+  const partnerAutopayEnabled = async (partnerId: string): Promise<boolean> => {
+    if (partnerId !== invoice.partnerId) throw new Error(`autopay flag preloaded for ${invoice.partnerId}, asked for ${partnerId}`);
+    if ('error' in autopayFlag) throw autopayFlag.error;
+    return autopayFlag.enabled;
+  };
 
   const { doc, collectionInProgress, customerAutopay, autopayKnown } = await inPortalOrgScope(orgId, async () => {
     // Header, customer-visible lines, branding and the document locale — the same
@@ -185,7 +197,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     let customerAutopay: Awaited<ReturnType<typeof getCustomerInvoiceAutopay>> = { enrolled: false, status: null };
     let autopayKnown = true;
     try {
-      customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId });
+      customerAutopay = await getCustomerInvoiceAutopay(db, { invoiceId: id, orgId }, { partnerAutopayEnabled });
     } catch (err) {
       autopayKnown = false;
       console.error('[portal/invoices] autopay status lookup failed', { invoiceId: id, err });
@@ -195,9 +207,12 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   });
 
   // Both offers read partner-axis settings in system contexts of their own, keyed on
-  // the authenticated org (getBankAutopayOffer re-filters the invoice by it too).
+  // the authenticated org (getBankAutopayOffer re-filters the invoice by it too). No
+  // transaction is open here; runOutsideDbContext only keeps getBankAutopayOffer's plain
+  // withSystemDbAccessContext from silently inheriting an ambient org scope should this
+  // handler ever run under one (it then takes the old second connection, not a 0-row read).
   const autopay = customerAutopay.enrolled || !autopayKnown ? null : await getInvoiceAutopayOffer(orgId, id);
-  const bankAutopay = autopayKnown ? await getBankAutopayOffer(id, orgId) : null;
+  const bankAutopay = autopayKnown ? await runOutsideDbContext(() => getBankAutopayOffer(id, orgId)) : null;
 
   return c.json({
     invoice: doc.invoice,

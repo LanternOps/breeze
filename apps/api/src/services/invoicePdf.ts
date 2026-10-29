@@ -382,6 +382,8 @@ async function loadDeviceAppendix(invoiceId: string): Promise<InvoiceDeviceAppen
  * (#9585): the partner row and whether the partner can take online payment.
  */
 export interface RenderPartnerContext {
+  /** The partner both answers were read for; must be the rendered invoice's partner. */
+  partnerId: string;
   partner: typeof partners.$inferSelect | null;
   onlinePaymentAvailable: boolean;
 }
@@ -398,7 +400,7 @@ export async function loadInvoiceRenderPartnerContext(partnerId: string): Promis
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [partner] = await db.select().from(partners).where(eq(partners.id, partnerId)).limit(1);
     const onlinePaymentAvailable = await isPartnerOnlinePaymentAvailableOnCallerConnection(partnerId);
-    return { partner: partner ?? null, onlinePaymentAvailable };
+    return { partnerId, partner: partner ?? null, onlinePaymentAvailable };
   }));
 }
 
@@ -422,8 +424,9 @@ export async function loadInvoiceForRender(invoiceId: string, partnerContext?: R
 } | null> {
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
-  if (partnerContext?.partner && partnerContext.partner.id !== invoice.partnerId) {
-    throw new Error(`Preloaded partner ${partnerContext.partner.id} is not invoice ${invoiceId}'s partner`);
+  if (partnerContext && (partnerContext.partnerId !== invoice.partnerId
+    || (partnerContext.partner && partnerContext.partner.id !== invoice.partnerId))) {
+    throw new Error(`Preloaded partner context ${partnerContext.partnerId} is not invoice ${invoiceId}'s partner`);
   }
   const [partner] = partnerContext
     ? [partnerContext.partner ?? undefined]

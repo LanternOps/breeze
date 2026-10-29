@@ -47,7 +47,7 @@ vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockR
 
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { invoiceDocuments, invoices } from '../../db/schema';
+import { invoiceAutopaySchedules, invoiceDocuments, invoices, orgAutopayEnrollments, partners } from '../../db/schema';
 import { portalBranding } from '../../db/schema/portal';
 import { stripeConnectAccounts } from '../../db/schema/stripePayments';
 import { createPartner, createOrganization } from './db-utils';
@@ -113,6 +113,35 @@ describe('portal invoice detail and PDF: no system context inside the org transa
     // markViewed still wrote under the org scope.
     const [row] = await withSystemDbAccessContext(() => db.select({ viewedAt: invoices.viewedAt }).from(invoices).where(eq(invoices.id, fx.own)));
     expect(row!.viewedAt).not.toBeNull();
+  });
+
+  runDb('GET /invoices/:id with a scheduled autopay reads the partner rollout flag outside the org transaction', async () => {
+    // getCustomerInvoiceAutopay asks isAutopayEnabledForPartner for an open schedule; under the
+    // org scope that read escapes to a system context (readWithPartnerAxisVisibility).
+    const fx = await seed();
+    await withSystemDbAccessContext(async () => {
+      await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, fx.partner.id));
+      const [connection] = await db.select({ id: stripeConnectAccounts.id, account: stripeConnectAccounts.stripeAccountId })
+        .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, fx.partner.id));
+      const [enrollment] = await db.insert(orgAutopayEnrollments).values({
+        orgId: fx.org.id, partnerId: fx.partner.id, stripeConnectionId: connection!.id, stripeAccountId: connection!.account,
+      }).returning();
+      await db.insert(invoiceAutopaySchedules).values({
+        orgId: fx.org.id, invoiceId: fx.own, enrollmentId: enrollment!.id, enrollmentGeneration: 1, eligible: true,
+        state: 'scheduled', collectOn: '2026-10-31', termsSnapshot: { kind: 'unknown' },
+      });
+    });
+    const scheduledApp = app(fx.org.id, fx.partner.id);
+    const res = await scheduledApp.request(`/api/v1/portal/invoices/${fx.own}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(track.nested).toEqual([]);
+    expect((await res.json()).autopayStatus).toMatchObject({ state: 'scheduled' });
+
+    // The rollout flag still decides: switched off, the schedule reads as on hold.
+    await withSystemDbAccessContext(() => db.update(partners).set({ autopayEnabled: false }).where(eq(partners.id, fx.partner.id)));
+    const held = await (await scheduledApp.request(`/api/v1/portal/invoices/${fx.own}`, { method: 'GET' })).json();
+    expect(held.autopayStatus).toMatchObject({ state: 'delayed', reason: 'on_hold' });
+    expect(track.nested).toEqual([]);
   });
 
   runDb('GET /invoices/:id/pdf renders with the preloaded partner bundle and no nested system context', async () => {
