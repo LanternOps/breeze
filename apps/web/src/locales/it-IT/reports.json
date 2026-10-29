@@ -153,7 +153,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Ultimi 30 giorni",
       "downtime": "Downtime {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Finestre di manutenzione escluse",
+        "maintenanceSkipped": "Finestre di manutenzione non escluse: troppi dispositivi da verificare",
+        "maintenanceUnavailable": "Finestre di manutenzione non escluse: stato non disponibile",
+        "none": "Nessuna esclusione",
+        "title": "Esclusioni",
+        "weekends": "Fine settimana esclusi"
+      },
       "incidents": "{{count}} incidenti",
+      "noDevices": "Nessun dispositivo ancora misurato",
       "status": {
         "atRisk": "A rischio",
         "breach": "Violazione",
@@ -161,6 +170,33 @@
       },
       "targetUptime": "Obiettivo {{target}}% uptime",
       "title": "Conformità SLA"
+    },
+    "slaEmptyState": {
+      "create": "Crea definizione SLA",
+      "created": "Definizione SLA creata",
+      "description": "Una definizione SLA stabilisce l'obiettivo di disponibilità con cui questa scheda misura i tuoi dispositivi. Creane una per iniziare a monitorare la conformità.",
+      "errors": {
+        "create": "Impossibile creare la definizione SLA"
+      },
+      "form": {
+        "cancel": "Annulla",
+        "excludeMaintenance": "Escludi i dispositivi in una finestra di manutenzione",
+        "excludeWeekends": "Escludi i fine settimana",
+        "measurementWindow": "Periodo di misurazione",
+        "name": "Nome",
+        "organization": "Organizzazione",
+        "scopeNote": "Misura tutti i dispositivi dell'organizzazione.",
+        "selectOrganization": "Seleziona un'organizzazione",
+        "submit": "Crea",
+        "uptimeTarget": "Obiettivo di disponibilità (%)",
+        "windows": {
+          "daily": "Giornaliero",
+          "monthly": "Mensile",
+          "weekly": "Settimanale"
+        }
+      },
+      "noPermission": "Chiedi a un amministratore con accesso alla gestione delle organizzazioni di creare una definizione SLA.",
+      "title": "Nessuna definizione SLA"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtra",

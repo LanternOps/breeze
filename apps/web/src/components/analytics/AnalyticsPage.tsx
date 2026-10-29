@@ -17,7 +17,8 @@ import ChartWidget from './ChartWidget';
 import GaugeWidget from './GaugeWidget';
 import QueryBuilder, { type QueryResult } from './QueryBuilder';
 import CapacityForecast, { type ForecastPoint } from './CapacityForecast';
-import SLAComplianceCard from './SLAComplianceCard';
+import SLAComplianceCard, { type SlaExclusions } from './SLAComplianceCard';
+import SLAEmptyState from './SLAEmptyState';
 import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
 import { FilterSelect } from '../shared/FilterSelect';
@@ -83,10 +84,12 @@ type CapacityState = {
 };
 
 type SlaSummary = {
-  uptime: number;
+  /** Null when the definition targets no measurable device yet. */
+  uptime: number | null;
   target?: number;
   /** Name of the SLA definition the figures belong to. */
   name?: string;
+  exclusions?: SlaExclusions;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -340,6 +343,33 @@ const normalizeSla = (raw: unknown): SlaSummary | null => {
   };
 };
 
+/**
+ * Exclusions as the compliance route reports them (`exclusions`), falling back
+ * to the definition's own flags when that call is unavailable.
+ */
+const normalizeSlaExclusions = (
+  complianceExclusions: unknown,
+  definition: Record<string, unknown>
+): SlaExclusions => {
+  if (isRecord(complianceExclusions)) {
+    const maintenance = complianceExclusions.maintenanceWindows;
+    return {
+      weekends: complianceExclusions.weekends === true,
+      maintenance: maintenance === 'applied'
+        ? 'applied'
+        : maintenance === 'skipped_too_many_devices'
+          ? 'skipped'
+          : maintenance === 'unavailable'
+            ? 'unavailable'
+            : 'off'
+    };
+  }
+  return {
+    weekends: definition.excludeWeekends === true,
+    maintenance: definition.excludeMaintenanceWindows === true ? 'applied' : 'off'
+  };
+};
+
 const fetchJson = async (url: string) => {
   const response = await fetchWithAuth(url);
   if (!response.ok) {
@@ -489,6 +519,9 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
   const [complianceStats, setComplianceStats] = useState<ComplianceStats>({ complianceRate: 0 });
   const [capacityForecast, setCapacityForecast] = useState<CapacityState>({ currentValue: 0, data: [] });
   const [slaSummary, setSlaSummary] = useState<SlaSummary | null>(null);
+  // The SLA listing loaded and holds no definition (#9940) — distinct from a
+  // load failure, which the error banner reports instead.
+  const [slaEmpty, setSlaEmpty] = useState(false);
   const [fleetSummary, setFleetSummary] = useState<FleetSummary>({
     totalDevices: 0,
     onlineDevices: 0,
@@ -684,16 +717,20 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             // live one call deeper. Prefer live compliance for the first
             // definition, falling back to whatever the listing carried.
             const definitions = getRecord(slaData).data;
-            const firstDefinition = getRecord(Array.isArray(definitions) ? definitions[0] : undefined);
+            const definitionList = Array.isArray(definitions) ? definitions : [];
+            const firstDefinition = getRecord(definitionList[0]);
             if (typeof firstDefinition.id === 'string') {
               try {
                 const compliance = getRecord(await fetchJson(`/analytics/sla/${firstDefinition.id}/compliance`));
                 const uptime = pickOptionalNumber(compliance.liveUptime);
-                if (uptime !== undefined) {
+                // `liveUptime: null` = the definition targets no device yet;
+                // still show its card rather than nothing (#9940).
+                if (uptime !== undefined || compliance.liveUptime === null) {
                   summary = {
-                    uptime,
+                    uptime: uptime ?? null,
                     target: pickOptionalNumber(compliance.uptimeTarget, firstDefinition.uptimeTarget) ?? summary?.target,
-                    name: typeof firstDefinition.name === 'string' ? firstDefinition.name : undefined
+                    name: typeof firstDefinition.name === 'string' ? firstDefinition.name : undefined,
+                    exclusions: normalizeSlaExclusions(compliance.exclusions, firstDefinition)
                   };
                 }
               } catch {
@@ -704,11 +741,16 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                 if (summary === null) errors.push('sla');
               }
             }
+            if (summary && !summary.exclusions && definitionList.length > 0) {
+              summary = { ...summary, exclusions: normalizeSlaExclusions(undefined, firstDefinition) };
+            }
 
             setSlaSummary(summary);
+            setSlaEmpty(definitionList.length === 0 && summary === null);
           } catch (err) {
             errors.push('sla');
             setSlaSummary(null);
+            setSlaEmpty(false);
           }
         })(),
         (async () => {
@@ -988,7 +1030,10 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
       uptime={slaSummary.uptime}
       target={slaSummary.target}
       definitionName={slaSummary.name}
+      exclusions={slaSummary.exclusions}
     />
+  ) : slaEmpty ? (
+    <SLAEmptyState onCreated={() => void fetchAnalyticsData()} />
   ) : null;
 
   const capacityCard = (

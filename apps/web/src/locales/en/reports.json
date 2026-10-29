@@ -153,7 +153,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Last 30 days",
       "downtime": "Downtime {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Maintenance windows excluded",
+        "maintenanceSkipped": "Maintenance windows not excluded: too many devices to check",
+        "maintenanceUnavailable": "Maintenance windows not excluded: status unavailable",
+        "none": "No exclusions",
+        "title": "Exclusions",
+        "weekends": "Weekends excluded"
+      },
       "incidents": "{{count}} incidents",
+      "noDevices": "No devices measured yet",
       "status": {
         "atRisk": "At risk",
         "breach": "Breach",
@@ -161,6 +170,33 @@
       },
       "targetUptime": "Target {{target}}% uptime",
       "title": "SLA Compliance"
+    },
+    "slaEmptyState": {
+      "create": "Create SLA definition",
+      "created": "SLA definition created",
+      "description": "An SLA definition sets the uptime target this tab measures your devices against. Create one to start tracking compliance.",
+      "errors": {
+        "create": "Failed to create SLA definition"
+      },
+      "form": {
+        "cancel": "Cancel",
+        "excludeMaintenance": "Exclude devices in a maintenance window",
+        "excludeWeekends": "Exclude weekends",
+        "measurementWindow": "Measurement window",
+        "name": "Name",
+        "organization": "Organization",
+        "scopeNote": "Measures every device in the organization.",
+        "selectOrganization": "Select an organization",
+        "submit": "Create",
+        "uptimeTarget": "Uptime target (%)",
+        "windows": {
+          "daily": "Daily",
+          "monthly": "Monthly",
+          "weekly": "Weekly"
+        }
+      },
+      "noPermission": "Ask an administrator with organization management access to create an SLA definition.",
+      "title": "No SLA definition yet"
     },
     "tableWidget": {
       "filterPlaceholder": "Filter",
