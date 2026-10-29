@@ -66,6 +66,24 @@
 #      origin/main makes the check pass vacuously rather than fail; freshness
 #      is the hook's job, not this script's.
 #
+#   5. A migration that exists on origin/main has shipped (or is about to),
+#      and is keyed on its FILENAME in the `breeze_migrations` ledger. It must
+#      never be renamed or deleted: a rename orphans its ledger row and
+#      re-applies the file under the new name on every migrated database.
+#      Both --staged and --against-ref therefore:
+#        - judge only migrations this branch AUTHORS. --staged skips a staged
+#          addition that already exists on the base ref (origin/main,
+#          overridable with BREEZE_MIGRATION_BASE_REF) or on any MERGE_HEAD;
+#          --against-ref skips one that already exists on <ref>. A merge of
+#          main stages main's newer migrations as additions relative to HEAD;
+#          they are main's files, and judging them told a fixer to rename a
+#          shipped one (#10015 — #9997 renamed the shipped
+#          2027-01-04-110000-ticket-merge.sql to make this hook pass).
+#        - fail loudly on a staged/branch DELETION of a migration that exists
+#          on the base ref (a rename shows up as delete + add).
+#      Every remedy names the branch's own file and says outright that a file
+#      on origin/main is never the one to rename.
+#
 # Filename format: YYYY-MM-DD-HHMMSS-<slug>.sql is preferred for new work — the
 # time component orders same-day migrations natively and removes the need for
 # the `-a-`/`-b-` infix, whose hand-assigned letters are what produced the
@@ -74,7 +92,7 @@
 # Usage:
 #   check-migration-naming.sh --staged             # newly ADDED staged files (pre-commit)
 #   check-migration-naming.sh                      # every file in the migrations dir (CI)
-#   check-migration-naming.sh --against-ref <ref>  # HEAD's new migrations vs <ref> (pre-push)
+#   check-migration-naming.sh --against-ref <ref>  # HEAD's new migrations vs <ref> (pre-push, CI)
 #
 # The reserved-block manifest below is duplicated in apps/api/src/db/
 # autoMigrate.test.ts, which parses this array and asserts the two copies are
@@ -118,9 +136,15 @@ is_reserved_block_member() {
 # disagrees with it on exactly the punctuation these filenames are full of.
 # A guard that ordered differently from the runner would bless files that then
 # replay in a different order than it checked.
+#
+# Takes one or more refs (default HEAD) and returns the max over their union —
+# on a merge commit "already committed" is HEAD plus every MERGE_HEAD.
 committed_max_migration() {
-  local ref="${1:-HEAD}"
-  git ls-tree --name-only "$ref" "$MIGRATIONS_DIR/" 2>/dev/null \
+  local ref
+  [ "$#" -gt 0 ] || set -- HEAD
+  for ref in "$@"; do
+    git ls-tree --name-only "$ref" "$MIGRATIONS_DIR/" 2>/dev/null
+  done \
     | sed 's#.*/##' \
     | grep -E '^[0-9]{4}-.*\.sql$' \
     | node -e '
@@ -136,6 +160,61 @@ sorts_strictly_after() {
     const a = process.env.BREEZE_CANDIDATE, b = process.env.BREEZE_REFERENCE;
     process.exit(a.localeCompare(b) > 0 ? 0 : 1);
   '
+}
+
+# Exit 0 when `$MIGRATIONS_DIR/<base>` exists in the tree of `ref`.
+exists_on_ref() {
+  git cat-file -e "$1:$MIGRATIONS_DIR/$2" 2>/dev/null
+}
+
+# Only top-level .sql files are migrations: optional/ is not auto-applied and
+# README.md etc. are not migrations.
+is_core_migration_path() {
+  case "$1" in
+    "$MIGRATIONS_DIR"/*/*) return 1 ;;
+    "$MIGRATIONS_DIR"/*.sql) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The ref whose migrations count as shipped. Overridable for tests and forks.
+# When it does not resolve locally (offline clone, no remote) --staged falls
+# back to MERGE_HEAD alone rather than failing; the pre-push hook and CI run
+# --against-ref against the real base and stay the backstop.
+BASE_REF="${BREEZE_MIGRATION_BASE_REF:-origin/main}"
+
+# Remedy text for every "sorts too early" violation. The file it names is
+# always one this branch authored (files already on the base ref are never
+# judged), so renaming IT is safe. It says the opposite, loudly, about anything
+# on the base ref: "make the hook pass by renaming the other file" is exactly
+# the wrong fix #9997 committed.
+print_rename_remedy() {
+  local base="$1" after="$2"
+  echo "             Remedy: rename $base (new on this branch, not on" >&2
+  echo "             $BASE_REF) to sort after $after, e.g. a" >&2
+  echo "             YYYY-MM-DD-HHMMSS-<slug>.sql dated past it." >&2
+  echo "             NEVER rename or delete a migration that already exists on" >&2
+  if exists_on_ref "$BASE_REF" "$after"; then
+    echo "             $BASE_REF (including $after) to make this pass:" >&2
+  else
+    echo "             $BASE_REF to make this pass:" >&2
+  fi
+  echo "             its breeze_migrations ledger row is keyed on the filename," >&2
+  echo "             so a rename orphans that row and re-applies the file on" >&2
+  echo "             every migrated database." >&2
+}
+
+report_shipped_deletion() {
+  local base="$1" ref="$2"
+  echo "  VIOLATION  $base — exists on $ref and is DELETED or RENAMED here." >&2
+  echo "             A migration on $ref has shipped (or is about to); its" >&2
+  echo "             breeze_migrations ledger row is keyed on this exact filename." >&2
+  echo "             Renaming it orphans that row and re-applies the file under" >&2
+  echo "             the new name on every migrated database. Restore it unchanged:" >&2
+  echo "               git checkout $ref -- $MIGRATIONS_DIR/$base" >&2
+  echo "             If one of YOUR migrations sorts before it, rename yours," >&2
+  echo "             never this one." >&2
+  violations=$((violations + 1))
 }
 
 violations=0
@@ -174,16 +253,63 @@ if [ "${1:-}" = "--staged" ]; then
     echo "check-migration-naming: 'git diff --cached' failed; refusing to pass." >&2
     exit 1
   fi
-  max_committed="$(committed_max_migration)"
+  if ! staged_deleted="$(git diff --cached --no-renames --diff-filter=D --name-only)"; then
+    echo "check-migration-naming: 'git diff --cached' failed; refusing to pass." >&2
+    exit 1
+  fi
+
+  # Refs whose migrations this commit does not author: the base ref (what has
+  # shipped) and, while a merge is being concluded, every MERGE_HEAD (what the
+  # merge brings in — MERGE_HEAD holds one sha per line, several for an
+  # octopus merge). A merge of origin/main stages main's newer migrations as
+  # additions relative to HEAD. They are main's files; judging them is what
+  # told fixers to rename a shipped one (#10015).
+  foreign_refs=()
+  if git rev-parse --verify -q "${BASE_REF}^{commit}" >/dev/null; then
+    foreign_refs+=("$BASE_REF")
+  fi
+  merge_heads=()
+  merge_head_file="$(git rev-parse --git-path MERGE_HEAD)"
+  if [ -f "$merge_head_file" ]; then
+    while IFS= read -r sha; do
+      [ -n "$sha" ] && merge_heads+=("$sha")
+    done < "$merge_head_file"
+  fi
+  foreign_refs+=(${merge_heads[@]+"${merge_heads[@]}"})
+
+  # "Already committed" = HEAD plus whatever the merge brings in, so a file
+  # authored inside the merge commit itself still has to sort after main's
+  # newest.
+  max_committed="$(committed_max_migration HEAD ${merge_heads[@]+"${merge_heads[@]}"})"
+
+  # First foreign ref holding `base`, or nothing.
+  foreign_ref_with() {
+    local ref
+    for ref in ${foreign_refs[@]+"${foreign_refs[@]}"}; do
+      if exists_on_ref "$ref" "$1"; then
+        echo "$ref"
+        return 0
+      fi
+    done
+    return 1
+  }
 
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    case "$file" in
-      "$MIGRATIONS_DIR"/*/*) continue ;;         # optional/ is not auto-applied
-      "$MIGRATIONS_DIR"/*.sql) ;;                # only .sql is a migration
-      *) continue ;;                             # README.md etc. are not
-    esac
+    is_core_migration_path "$file" || continue
     base="$(basename "$file")"
+    if holder="$(foreign_ref_with "$base")"; then
+      report_shipped_deletion "$base" "$holder"
+    fi
+  done <<< "$staged_deleted"
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    is_core_migration_path "$file" || continue
+    base="$(basename "$file")"
+    # Not authored here (merged in, or cherry-picked from main): not this
+    # commit's to judge, and never something to tell anyone to rename.
+    foreign_ref_with "$base" >/dev/null && continue
     check_filename "$base"
     if [ -n "$max_committed" ] && ! sorts_strictly_after "$base" "$max_committed"; then
       echo "  VIOLATION  $base — sorts BEFORE an already-committed migration." >&2
@@ -194,8 +320,8 @@ if [ "${1:-}" = "--staged" ]; then
       echo "             fresh one if it depends on anything newer." >&2
       echo "             NOTE: today's date is NOT guaranteed to sort last."  >&2
       echo "             Shipped filenames ran ahead of real time and cannot be" >&2
-      echo "             renamed. Pick a name after the one above, e.g." >&2
-      echo "             YYYY-MM-DD-HHMMSS-<slug>.sql dated past it." >&2
+      echo "             renamed." >&2
+      print_rename_remedy "$base" "$max_committed"
       violations=$((violations + 1))
     fi
   done <<< "$staged_added"
@@ -222,23 +348,42 @@ elif [ "${1:-}" = "--against-ref" ]; then
     exit 1
   fi
 
+  # Migrations on the merge base that this branch deletes. A rename of a
+  # shipped file is delete + add, and the add half can pass the ordering check
+  # below on its own (#9997 renamed 110000 to a LATER 110400), so the delete
+  # half is what has to fail.
+  if ! deleted_on_head="$(git diff --no-renames --diff-filter=D --name-only "$ref"...HEAD -- "$MIGRATIONS_DIR")"; then
+    echo "check-migration-naming: 'git diff $ref...HEAD' failed; refusing to pass." >&2
+    exit 1
+  fi
+
   max_on_ref="$(committed_max_migration "$ref")"
+  BASE_REF="$ref"   # remedy text names the ref actually checked against
 
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    case "$file" in
-      "$MIGRATIONS_DIR"/*/*) continue ;;         # optional/ is not auto-applied
-      "$MIGRATIONS_DIR"/*.sql) ;;                # only .sql is a migration
-      *) continue ;;                             # README.md etc. are not
-    esac
+    is_core_migration_path "$file" || continue
     base="$(basename "$file")"
+    # If $ref itself dropped the file since the merge base, the branch is not
+    # renaming a shipped file.
+    if exists_on_ref "$ref" "$base"; then
+      report_shipped_deletion "$base" "$ref"
+    fi
+  done <<< "$deleted_on_head"
+
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    is_core_migration_path "$file" || continue
+    base="$(basename "$file")"
+    # Also present on $ref (e.g. cherry-picked from it): $ref's file, not this
+    # branch's to rename.
+    exists_on_ref "$ref" "$base" && continue
     if [ -n "$max_on_ref" ] && ! sorts_strictly_after "$base" "$max_on_ref"; then
       echo "  VIOLATION  $base — sorts before or equal to the newest migration on $ref." >&2
       echo "             Newest on $ref: $max_on_ref" >&2
       echo "             $ref gained a migration after this branch was cut that" >&2
       echo "             this new file would replay ahead of on a fresh database." >&2
-      echo "             Remedy: rename $base to sort after $max_on_ref, e.g. a" >&2
-      echo "             YYYY-MM-DD-HHMMSS-<slug>.sql dated past it." >&2
+      print_rename_remedy "$base" "$max_on_ref"
       violations=$((violations + 1))
     fi
   done <<< "$new_on_head"
