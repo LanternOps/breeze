@@ -10,9 +10,15 @@
  *   - backup_health     an active `backup_configs` row for the org, OR at
  *                       least one synced `backup_provider_devices` row for the
  *                       org under an active `backup_provider_connections` row.
- *                       These are exactly what `get_backup_status` reports
+ *                       Both are data `get_backup_status` reports
  *                       (aiToolsBackup.ts: Breeze configs/jobs, and the
- *                       provider leg of backupHealthReadModel). A vendor
+ *                       provider leg of backupHealthReadModel; a stale sync
+ *                       still reports, as health 'unknown'). The tool also
+ *                       shows rows under an inactive connection; readiness
+ *                       does not count those, which errs toward "can't
+ *                       watch". Runs in system scope on purpose:
+ *                       backup_provider_connections is partner-axis, so an
+ *                       org-scoped read would drop every vendor row. A vendor
  *                       customer that is mapped but has no synced devices is
  *                       NOT serviceable — the tool would report nothing — and
  *                       gets its own reason instead of "no integration"
@@ -79,7 +85,7 @@ export const READINESS_TICKET_WINDOW_DAYS = 90;
 type CheckKey = 'backup' | 'security' | 'patch' | 'tickets' | 'alerts';
 
 /** backup_health reason when a vendor is mapped but nothing has synced (#10404). */
-const BACKUP_VENDOR_NOT_SYNCED_REASON = 'backup vendor mapped but no devices synced yet';
+const BACKUP_VENDOR_NOT_SYNCED_REASON = 'backup vendor mapped but no devices synced';
 
 type Coverage = Record<CheckKey, Set<string>> & {
   /** Orgs with a backup-vendor customer mapped under an active connection. */

@@ -11,12 +11,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  */
 const rm = vi.hoisted(() => ({
   summarize: vi.fn(),
-  attention: vi.fn(),
+  list: vi.fn(),
   coverage: vi.fn(),
 }));
 vi.mock('./backupHealthReadModel', () => ({
   summarizeBackupHealth: rm.summarize,
-  getProviderAttentionItems: rm.attention,
+  listBackupHealthRows: rm.list,
   getProviderCoverageForDevices: rm.coverage,
 }));
 vi.mock('../db', () => ({
@@ -84,12 +84,18 @@ const vendorSummary = {
   byRecency: { under_24h: 2, under_48h: 0, over_48h: 1, never: 0 },
 };
 
+const criticalRow = {
+  key: 'provider:p1', source: 'provider', orgId: 'org-1', orgName: 'Acme', deviceId: null,
+  name: 'FRONTDESK', status: 'failed', health: 'critical', stale: false,
+  lastSuccessAt: '2026-10-20T00:00:00.000Z', errorsCount: 3, history28d: [],
+};
+
+const ATTENTION_QUERY = { sources: ['provider'], filter: { health: ['critical'] }, page: { limit: 10 } };
+
 beforeEach(() => {
   vi.clearAllMocks();
   rm.summarize.mockResolvedValue(vendorSummary);
-  rm.attention.mockResolvedValue([
-    { id: 'provider:p1', title: 'FRONTDESK: external backup needs attention', description: 'FRONTDESK (Acme) — failed', severity: 'critical' },
-  ]);
+  rm.list.mockResolvedValue({ rows: [criticalRow], nextCursor: null });
   rm.coverage.mockResolvedValue(new Map());
 });
 
@@ -100,23 +106,70 @@ describe('get_backup_status — vendor backups (#10404)', () => {
 
     expect(out.configs).toEqual({ total: 0, active: 0 });
     expect(rm.summarize).toHaveBeenCalledWith({ orgIds: ['org-1'] }, { sources: ['provider'] });
-    expect(rm.attention).toHaveBeenCalledWith('org-1', { allowedDeviceIds: null, limit: 10 });
+    expect(rm.list).toHaveBeenCalledWith({ orgIds: ['org-1'] }, ATTENTION_QUERY);
     expect(out.vendorBackups).toEqual({
       endpoints: vendorSummary.endpoints,
+      // Unlinked vendor devices and M365 accounts are not in `endpoints`; an
+      // org protected only by those must not read as zero.
+      providerOnly: 1,
+      m365Accounts: 0,
       byHealth: vendorSummary.byHealth,
       byStatus: vendorSummary.byStatus,
       byRecency: vendorSummary.byRecency,
-      needsAttention: [{ title: 'FRONTDESK: external backup needs attention', description: 'FRONTDESK (Acme) — failed' }],
+      needsAttention: [{
+        orgName: 'Acme', name: 'FRONTDESK', status: 'failed', lastSuccessAt: '2026-10-20T00:00:00.000Z', errorsCount: 3,
+      }],
+      needsAttentionTruncated: false,
     });
   });
 
-  it('a partner caller spanning several orgs gets the summary for all of them, without per-org attention reads', async () => {
+  it('flags the attention list as truncated when more critical rows exist', async () => {
+    emptyNative();
+    rm.list.mockResolvedValue({ rows: [criticalRow], nextCursor: 'c1' });
+    const out = JSON.parse(await handler()({}, makeAuth()));
+    expect(out.vendorBackups.needsAttentionTruncated).toBe(true);
+  });
+
+  it('a partner caller spanning several orgs gets the summary and attention list for all of them in one read each', async () => {
     emptyNative();
     const auth = makeAuth({ orgId: null, scope: 'partner', accessibleOrgIds: ['org-1', 'org-2'] } as Partial<AuthContext>);
     const out = JSON.parse(await handler()({}, auth));
     expect(rm.summarize).toHaveBeenCalledWith({ orgIds: ['org-1', 'org-2'] }, { sources: ['provider'] });
-    expect(rm.attention).not.toHaveBeenCalled();
-    expect(out.vendorBackups.needsAttention).toEqual([]);
+    expect(rm.list).toHaveBeenCalledTimes(1);
+    expect(rm.list).toHaveBeenCalledWith({ orgIds: ['org-1', 'org-2'] }, ATTENTION_QUERY);
+    expect(out.vendorBackups.needsAttention).toHaveLength(1);
+  });
+
+  it('a vendor read failure keeps the Breeze-native data and says vendors could not be read', async () => {
+    emptyNative();
+    rm.summarize.mockRejectedValue(new Error('statement timeout'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = JSON.parse(await handler()({}, makeAuth()));
+    expect(out.error).toBeUndefined();
+    expect(out.configs).toEqual({ total: 0, active: 0 });
+    expect(out.vendorBackups).toBeNull();
+    expect(out.vendorBackupsNote).toMatch(/could not be read/i);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('a site- or device-restricted caller is refused before any vendor read', async () => {
+    emptyNative();
+    for (const o of [{ allowedSiteIds: ['s1'] }, { allowedDeviceIds: ['d1'] }]) {
+      const out = JSON.parse(await handler()({}, makeAuth(o as Partial<AuthContext>)));
+      expect(String(out.error)).toMatch(/deviceId/);
+    }
+    expect(rm.summarize).not.toHaveBeenCalled();
+    expect(rm.list).not.toHaveBeenCalled();
+  });
+
+  it('a caller with no accessible orgs says vendor backups were not read', async () => {
+    emptyNative();
+    const auth = makeAuth({ orgId: null, scope: 'partner', accessibleOrgIds: [] } as Partial<AuthContext>);
+    const out = JSON.parse(await handler()({}, auth));
+    expect(rm.summarize).not.toHaveBeenCalled();
+    expect(out.vendorBackups).toBeNull();
+    expect(out.vendorBackupsNote).toMatch(/not read/i);
   });
 
   it('a caller with no finite org list says vendor backups were not read rather than reporting none', async () => {
@@ -137,9 +190,28 @@ describe('get_backup_status — vendor backups (#10404)', () => {
     expect(out.vendorBackup).toEqual({ covered: true, health: 'healthy' });
   });
 
-  it('a device with no vendor backup reports vendorBackup null', async () => {
+  it('device vendor coverage is read in the device\'s own org, not the caller\'s', async () => {
+    emptyNative({ id: 'd1', orgId: 'org-9', siteId: 's1' });
+    const auth = makeAuth({ orgId: null, scope: 'partner', accessibleOrgIds: ['org-1', 'org-9'] } as Partial<AuthContext>);
+    await handler()({ deviceId: 'd1' }, auth);
+    expect(rm.coverage).toHaveBeenCalledWith('org-9', ['d1']);
+  });
+
+  it('a device with no linked vendor backup reports vendorBackup null', async () => {
     emptyNative({ id: 'd1', orgId: 'org-1', siteId: 's1' });
     const out = JSON.parse(await handler()({ deviceId: 'd1' }, makeAuth()));
     expect(out.vendorBackup).toBeNull();
+    expect(out.vendorBackupNote).toBeUndefined();
+  });
+
+  it('a device vendor read failure keeps the device job data and says vendors could not be read', async () => {
+    emptyNative({ id: 'd1', orgId: 'org-1', siteId: 's1' });
+    rm.coverage.mockRejectedValue(new Error('boom'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = JSON.parse(await handler()({ deviceId: 'd1' }, makeAuth()));
+    expect(out.deviceId).toBe('d1');
+    expect(out.vendorBackup).toBeNull();
+    expect(out.vendorBackupNote).toMatch(/could not be read/i);
+    err.mockRestore();
   });
 });

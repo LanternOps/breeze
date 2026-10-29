@@ -20,11 +20,12 @@ const sumStoredSnapshotBytesMock = vi.hoisted(() => vi.fn(async (..._args: unkno
 vi.mock('./backupStoredBytes', () => ({ sumStoredSnapshotBytes: sumStoredSnapshotBytesMock }));
 // The vendor-backup leg (#10404) reads the unified backup read model, whose
 // SQL is covered by its own tests; stubbed empty here.
-vi.mock('./backupHealthReadModel', () => ({
+const readModel = vi.hoisted(() => ({
   summarizeBackupHealth: vi.fn(async () => ({ endpoints: { total: 0, covered: 0, uncovered: 0 }, byHealth: {}, byStatus: {}, byRecency: {} })),
-  getProviderAttentionItems: vi.fn(async () => []),
+  listBackupHealthRows: vi.fn(async () => ({ rows: [], nextCursor: null })),
   getProviderCoverageForDevices: vi.fn(async () => new Map()),
 }));
+vi.mock('./backupHealthReadModel', () => readModel);
 
 import { db } from '../db';
 import { registerBackupTools } from './aiToolsBackup';
@@ -103,6 +104,9 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
     expect(parsed.storage).toBeUndefined();
     expect(String(parsed.error)).toMatch(/deviceId/);
     expect(aggregateScanRan).toBe(false);
+    // The vendor leg (#10404) is org-wide too: it must not run before the refusal.
+    expect(readModel.summarizeBackupHealth).not.toHaveBeenCalled();
+    expect(readModel.listBackupHealthRows).not.toHaveBeenCalled();
   });
 
   it('device-LESS analysis shape (no site axis) also gets no org-wide aggregate', async () => {
@@ -117,6 +121,9 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
     expect(parsed.storage).toBeUndefined();
     expect(String(parsed.error)).toMatch(/deviceId/);
     expect(aggregateScanRan).toBe(false);
+    // The vendor leg (#10404) is org-wide too: it must not run before the refusal.
+    expect(readModel.summarizeBackupHealth).not.toHaveBeenCalled();
+    expect(readModel.listBackupHealthRows).not.toHaveBeenCalled();
   });
 
   it('device-bound caller still gets its OWN device summary', async () => {
@@ -157,6 +164,7 @@ describe('get_backup_status — exact-device axis (finding 9a)', () => {
       makeAuth({ allowedDeviceIds: ['dev-1'], allowedSiteIds: ['site-1'] }),
     );
     expect(JSON.parse(raw).error).toBe('Device not found or access denied');
+    expect(readModel.getProviderCoverageForDevices).not.toHaveBeenCalled();
   });
 
   it('unrestricted caller still gets the org-wide aggregate (no regression)', async () => {

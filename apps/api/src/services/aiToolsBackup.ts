@@ -38,8 +38,8 @@ import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
 import { sumStoredSnapshotBytes } from './backupStoredBytes';
 import {
-  getProviderAttentionItems,
   getProviderCoverageForDevices,
+  listBackupHealthRows,
   summarizeBackupHealth,
 } from './backupHealthReadModel';
 
@@ -57,31 +57,48 @@ function orgWhere(auth: AuthContext, orgIdCol: ReturnType<typeof sql.raw> | any)
   return auth.orgCondition(orgIdCol) ?? undefined;
 }
 
-/** Vendor rows needing attention listed in get_backup_status (single-org scope). */
+/** Critical vendor rows listed in get_backup_status's org summary. */
 const VENDOR_ATTENTION_LIMIT = 10;
+
+const VENDOR_NOT_READ_NOTE = 'Vendor backups were not read: this caller has no accessible organizations.';
+const VENDOR_READ_FAILED_NOTE = 'Vendor backups could not be read (error). Do not conclude there are none.';
 
 /**
  * Third-party (vendor) backup health for get_backup_status's org summary,
  * from the unified backup read model's provider leg — the same rows Wisp
  * readiness counts when it says backups are watchable (#10404). Returns null
- * when the caller has no finite org list (system scope), so the tool says it
- * did not read vendors instead of implying there are none.
+ * when the caller has no accessible org list (system scope, or none), so the
+ * tool says it did not read vendors instead of implying there are none.
  */
 async function vendorBackupSummary(auth: AuthContext) {
   const orgIds = auth.orgId ? [auth.orgId] : auth.accessibleOrgIds;
-  if (!orgIds) return null;
-  const summary = await summarizeBackupHealth({ orgIds }, { sources: ['provider'] });
-  // Attention items are read per org; only fetched for a single-org scope so a
-  // partner-wide call does not fan out one query per customer.
-  const attention = orgIds.length === 1
-    ? await getProviderAttentionItems(orgIds[0]!, { allowedDeviceIds: null, limit: VENDOR_ATTENTION_LIMIT })
-    : [];
+  if (!orgIds || orgIds.length === 0) return null;
+  const scope = { orgIds };
+  const summary = await summarizeBackupHealth(scope, { sources: ['provider'] });
+  // Critical rows straight from the read model's health filter (it walks past
+  // healthy rows in batches), one read across every org in scope.
+  const attention = await listBackupHealthRows(scope, {
+    sources: ['provider'],
+    filter: { health: ['critical'] },
+    page: { limit: VENDOR_ATTENTION_LIMIT },
+  });
   return {
     endpoints: summary.endpoints,
+    // Unlinked vendor devices and M365 accounts are counted here, not in
+    // `endpoints`; an org protected only by those must not read as zero.
+    providerOnly: summary.providerOnly,
+    m365Accounts: summary.m365Accounts,
     byHealth: summary.byHealth,
     byStatus: summary.byStatus,
     byRecency: summary.byRecency,
-    needsAttention: attention.map((a) => ({ title: a.title, description: a.description })),
+    needsAttention: attention.rows.map((r) => ({
+      orgName: r.orgName,
+      name: r.name,
+      status: r.status,
+      lastSuccessAt: r.lastSuccessAt,
+      errorsCount: r.errorsCount,
+    })),
+    needsAttentionTruncated: attention.nextCursor !== null,
   };
 }
 
@@ -419,7 +436,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
 
         // Third-party backup coverage for this device (#10404). The device
         // passed the org and site checks above, so its own org is the scope.
-        const vendorCoverage = await getProviderCoverageForDevices(device.orgId, [deviceId]);
+        // A vendor read failure must not discard the Breeze job data above.
+        let vendorBackup: { covered: boolean; health: string } | null = null;
+        let vendorBackupNote: string | undefined;
+        try {
+          vendorBackup = (await getProviderCoverageForDevices(device.orgId, [deviceId])).get(deviceId) ?? null;
+        } catch (err) {
+          console.error('[backup:get_backup_status] vendor coverage read failed', { deviceId }, err);
+          vendorBackupNote = VENDOR_READ_FAILED_NOTE;
+        }
 
         return JSON.stringify({
           deviceId,
@@ -427,7 +452,9 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           lastSuccessfulBackup: lastSuccess?.completedAt ?? null,
           snapshotCount: snapshotStats.count,
           totalBackupSize: snapshotStats.totalBytes,
-          vendorBackup: vendorCoverage.get(deviceId) ?? null,
+          // null = no vendor backup linked to this device.
+          vendorBackup,
+          ...(vendorBackupNote ? { vendorBackupNote } : {}),
         });
       }
 
@@ -470,7 +497,16 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         snapshotConditions.length > 0 ? and(...snapshotConditions) : undefined,
       );
 
-      const vendorBackups = await vendorBackupSummary(auth);
+      // A vendor read failure must not discard the Breeze-native data above.
+      let vendorBackups: Awaited<ReturnType<typeof vendorBackupSummary>> = null;
+      let vendorBackupsNote: string | undefined;
+      try {
+        vendorBackups = await vendorBackupSummary(auth);
+        if (!vendorBackups) vendorBackupsNote = VENDOR_NOT_READ_NOTE;
+      } catch (err) {
+        console.error('[backup:get_backup_status] vendor backup summary failed', { orgId: auth.orgId }, err);
+        vendorBackupsNote = VENDOR_READ_FAILED_NOTE;
+      }
 
       return JSON.stringify({
         configs: {
@@ -484,7 +520,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         },
         // Third-party backup vendors (e.g. Cove) synced into Breeze (#10404).
         vendorBackups,
-        ...(vendorBackups ? {} : { vendorBackupsNote: 'Vendor backups were not read: this caller has no finite organization list.' }),
+        ...(vendorBackupsNote ? { vendorBackupsNote } : {}),
       });
     }),
   });

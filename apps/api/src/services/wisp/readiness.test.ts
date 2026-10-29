@@ -162,10 +162,23 @@ describe('readinessInventory', () => {
     expect(check(r, 'backup_health')).toEqual({
       watchKind: 'backup_health',
       serviceable: false,
-      reason: 'backup vendor mapped but no devices synced yet',
+      reason: 'backup vendor mapped but no devices synced',
     });
     expect(r?.missingIntegrations).toEqual(['edr/vulnerability']);
-    expect(renderReadinessSummary(r!)).toContain('backups (backup vendor mapped but no devices synced yet)');
+    expect(renderReadinessSummary(r!)).toContain('backups (backup vendor mapped but no devices synced)');
+  });
+
+  it('a backup config plus a mapped-but-unsynced vendor is serviceable with no reason', async () => {
+    h.rowsByTable.set(backupConfigs, [{ orgId: ORG_A }]);
+    h.rowsByTable.set(backupProviderCustomers, [{ orgId: ORG_A }]);
+    const [r] = await readinessInventory(ceiling([ORG_A]));
+    expect(check(r, 'backup_health')).toEqual({ watchKind: 'backup_health', serviceable: true, reason: null });
+  });
+
+  it('the mapped-customer read only counts customers under an active connection', async () => {
+    await readinessInventory(ceiling([ORG_A]));
+    const join = h.joinsByTable.get(backupProviderCustomers)?.[0];
+    expect(compile(join).sql).toContain('"backup_provider_connections"."is_active"');
   });
 
   it('synced vendor devices for one org do not make another org watchable', async () => {
