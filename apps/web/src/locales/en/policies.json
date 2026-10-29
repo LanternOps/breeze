@@ -1999,7 +1999,8 @@
       "overriddenHint": "Each device follows one software policy. On the devices this policy is assigned to, {{names}} wins.",
       "partlyOverriddenHint": "Each device follows one software policy. {{names}} wins on the other assigned devices.",
       "anotherPolicy": "another software policy",
-      "partnerWide": "partner-wide {{name}}"
+      "partnerWide": "partner-wide {{name}}",
+      "unavailable": "Coverage unavailable"
     }
   }
 }

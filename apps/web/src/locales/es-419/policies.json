@@ -1999,7 +1999,8 @@
       "overriddenHint": "Cada dispositivo sigue una sola política de software. En los dispositivos a los que está asignada esta política, prevalece {{names}}.",
       "partlyOverriddenHint": "Cada dispositivo sigue una sola política de software. En los demás dispositivos asignados prevalece {{names}}.",
       "anotherPolicy": "otra política de software",
-      "partnerWide": "{{name}} (de todo el partner)"
+      "partnerWide": "{{name}} (de todo el partner)",
+      "unavailable": "Cobertura no disponible"
     }
   }
 }

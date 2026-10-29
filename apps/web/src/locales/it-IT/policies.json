@@ -1999,7 +1999,8 @@
       "overriddenHint": "Ogni dispositivo segue un solo criterio software. Sui dispositivi a cui è assegnato questo criterio prevale {{names}}.",
       "partlyOverriddenHint": "Ogni dispositivo segue un solo criterio software. Sugli altri dispositivi assegnati prevale {{names}}.",
       "anotherPolicy": "un altro criterio software",
-      "partnerWide": "{{name}} (a livello di partner)"
+      "partnerWide": "{{name}} (a livello di partner)",
+      "unavailable": "Copertura non disponibile"
     }
   }
 }

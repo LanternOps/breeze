@@ -1999,7 +1999,8 @@
       "overriddenHint": "Chaque appareil suit une seule stratégie logicielle. Sur les appareils auxquels cette stratégie est attribuée, {{names}} l'emporte.",
       "partlyOverriddenHint": "Chaque appareil suit une seule stratégie logicielle. {{names}} l'emporte sur les autres appareils attribués.",
       "anotherPolicy": "une autre stratégie logicielle",
-      "partnerWide": "{{name}} (tout le partenaire)"
+      "partnerWide": "{{name}} (tout le partenaire)",
+      "unavailable": "Couverture indisponible"
     }
   }
 }

@@ -68,6 +68,40 @@ describe("SoftwarePolicyCoverageBadge", () => {
     expect(badge.getAttribute("data-state")).toBe("applies");
   });
 
+  it("says coverage is unavailable (not 'fine') when the request fails", async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: "boom" }, 500));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    render(<SoftwarePolicyCoverageBadge policyId="p-err" />);
+
+    const badge = await screen.findByTestId("software-policy-coverage");
+    expect(badge.getAttribute("data-state")).toBe("unavailable");
+    expect(badge.textContent).toContain("Coverage unavailable");
+    warn.mockRestore();
+  });
+
+  it("labels a partner-wide winner and an unreadable winner", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({
+        data: {
+          assignedDeviceCount: 2,
+          appliesToDeviceCount: 0,
+          overriddenBy: [
+            { ...WINNER, name: "MSP Blocklist", partnerWide: true, deviceCount: 1 },
+            { ...WINNER, policyId: null, name: null, deviceCount: 1 },
+          ],
+        },
+      }),
+    );
+
+    render(<SoftwarePolicyCoverageBadge policyId="p-y" />);
+
+    const by = await screen.findByTestId("software-policy-overridden-by");
+    expect(by.textContent).toContain('partner-wide "MSP Blocklist"');
+    expect(by.textContent).toContain("another software policy");
+    expect(screen.getByTestId("software-policy-coverage").getAttribute("data-state")).toBe("overridden");
+  });
+
   it("says a policy with no assignment is not assigned, not overridden", async () => {
     fetchMock.mockResolvedValueOnce(
       json({ data: { assignedDeviceCount: 0, appliesToDeviceCount: 0, overriddenBy: [] } }),

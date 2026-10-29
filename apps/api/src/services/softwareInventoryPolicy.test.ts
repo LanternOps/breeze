@@ -201,6 +201,9 @@ describe('softwareInventoryPolicy writes', () => {
     const result = await approveInventorySoftware({ auth, orgId: ORG, softwareName: 'Zoom', actorUserId: USER, audit: vi.fn() });
 
     expect(result).toEqual({ status: 201, body: { success: true, policyId: 'p-new', overrides } });
+    expect(checkDefaultListPlacement).toHaveBeenCalledWith({
+      orgId: ORG, mode: 'allowlist', policyName: 'Default Allowlist', configPolicyName: 'Default Allowlist Config',
+    });
   });
 
   it('clear locks both default rows FOR UPDATE and reports cleared', async () => {

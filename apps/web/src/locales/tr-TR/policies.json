@@ -1999,7 +1999,8 @@
       "overriddenHint": "Her cihaz tek bir yazılım ilkesini izler. Bu ilkenin atandığı cihazlarda {{names}} geçerlidir.",
       "partlyOverriddenHint": "Her cihaz tek bir yazılım ilkesini izler. Atanan diğer cihazlarda {{names}} geçerlidir.",
       "anotherPolicy": "başka bir yazılım ilkesi",
-      "partnerWide": "{{name}} (iş ortağı genelinde)"
+      "partnerWide": "{{name}} (iş ortağı genelinde)",
+      "unavailable": "Kapsam kullanılamıyor"
     }
   }
 }

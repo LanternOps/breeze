@@ -1999,7 +1999,8 @@
       "overriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den Geräten, denen diese Richtlinie zugewiesen ist, gilt {{names}}.",
       "partlyOverriddenHint": "Jedes Gerät folgt genau einer Softwarerichtlinie. Auf den übrigen zugewiesenen Geräten gilt {{names}}.",
       "anotherPolicy": "eine andere Softwarerichtlinie",
-      "partnerWide": "partnerweite Richtlinie {{name}}"
+      "partnerWide": "partnerweite Richtlinie {{name}}",
+      "unavailable": "Abdeckung nicht verfügbar"
     }
   }
 }

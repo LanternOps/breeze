@@ -14,7 +14,13 @@
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { configPolicyAssignments, configurationPolicies, devices, softwarePolicies } from '../db/schema';
+import {
+  configPolicyAssignments,
+  configPolicyEffectiveFeatureLinks,
+  configurationPolicies,
+  devices,
+  softwarePolicies,
+} from '../db/schema';
 import {
   compareByHierarchy,
   resolveSoftwarePolicyCoverage,
@@ -114,7 +120,14 @@ function describeCompetitor(c: SoftwarePolicyCompetitor): string {
  * policies a NEW assignment takes devices from (e.g. a partner-wide policy the
  * org default now overrides), so the caller can say so.
  *
- * An org with no devices passes: there is nothing to evaluate yet.
+ * An org with no devices yet is checked structurally: an unfiltered
+ * org-level software policy assignment that outranks ours would win every
+ * device that enrolls, so that refuses too.
+ *
+ * Known gap: the check runs before the write and holds no lock, so two
+ * simultaneous first-time Approve and Deny calls in one org can both pass and
+ * tie. The coverage indicator then shows the loser as "applies to 0 devices",
+ * and the next write into it is refused.
  */
 export async function checkDefaultListPlacement(params: {
   orgId: string;
@@ -165,14 +178,55 @@ export async function checkDefaultListPlacement(params: {
     .select({ id: devices.id })
     .from(devices)
     .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
-  if (orgDevices.length === 0) return { ok: true, overrides: [] };
-
   // The org-level assignment the write ends up relying on.
   const ours = {
     assignmentLevel: 'organization',
     assignmentPriority: existingAssignment?.priority ?? 0,
     assignmentCreatedAt: existingAssignment?.createdAt ?? new Date(),
   };
+  const isOurs = (w: { assignmentId: string; configPolicyId: string; featurePolicyId: string | null }) =>
+    (existingAssignment !== undefined && w.assignmentId === existingAssignment.id)
+    // ensureDefaultConfigPolicyLink repoints this config policy's link to our
+    // list, so any assignment of it (at any level) ends up ours.
+    || (configPolicy !== undefined && w.configPolicyId === configPolicy.id)
+    || (existingPolicy !== undefined && w.featurePolicyId === existingPolicy.id);
+
+  if (orgDevices.length === 0) {
+    // No device to resolve yet, but an unfiltered org-level software policy
+    // assignment that outranks ours would win every device that enrolls.
+    const orgLevel = await db
+      .select({
+        assignmentId: configPolicyAssignments.id,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+        configPolicyId: configurationPolicies.id,
+        featurePolicyId: configPolicyEffectiveFeatureLinks.featurePolicyId,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(configurationPolicies, and(
+        eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+        eq(configurationPolicies.status, 'active'),
+      ))
+      .innerJoin(configPolicyEffectiveFeatureLinks, and(
+        eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
+        eq(configPolicyEffectiveFeatureLinks.featureType, 'software_policy'),
+      ))
+      .where(and(
+        eq(configPolicyAssignments.level, 'organization'),
+        eq(configPolicyAssignments.targetId, orgId),
+        isNull(configPolicyAssignments.roleFilter),
+        isNull(configPolicyAssignments.osFilter),
+      ));
+    const outranking = orgLevel
+      .filter((a) => !isOurs(a) && compareByHierarchy(a, ours) < 0)
+      .sort(compareByHierarchy);
+    if (outranking.length === 0) return { ok: true, overrides: [] };
+    const top = outranking[0]!;
+    return refusal(params, 0, await labelCompetitors([
+      { softwarePolicyId: top.featurePolicyId, configPolicyId: top.configPolicyId, deviceCount: 0 },
+    ]));
+  }
   // Once the assignment exists, whatever it overrides was overridden by an
   // earlier write: the first device it wins is enough.
   const established = Boolean(existingAssignment);
@@ -191,10 +245,7 @@ export async function checkDefaultListPlacement(params: {
     const batch = orgDevices.slice(i, i + BATCH_SIZE);
     const winners = await Promise.all(batch.map((d) => resolveSoftwarePolicyWinnerForDevice(d.id)));
     for (const winner of winners) {
-      const alreadyOurs = winner !== null && (
-        (existingAssignment !== undefined && winner.assignmentId === existingAssignment.id)
-        || (existingPolicy !== undefined && winner.featurePolicyId === existingPolicy.id)
-      );
+      const alreadyOurs = winner !== null && isOurs(winner);
       if (winner === null || alreadyOurs || compareByHierarchy(ours, winner) < 0) {
         wins += 1;
         if (winner !== null && !alreadyOurs) tally(displaced, winner);
@@ -210,11 +261,21 @@ export async function checkDefaultListPlacement(params: {
   }
 
   const winners = (await labelCompetitors(Array.from(losses.values()))).sort((a, b) => b.deviceCount - a.deviceCount);
+  return refusal(params, orgDevices.length, winners);
+}
+
+function refusal(
+  params: { mode: 'allowlist' | 'blocklist'; policyName: string },
+  total: number,
+  winners: SoftwarePolicyCompetitor[],
+): DefaultListPlacement {
+  const { mode, policyName } = params;
   const sameMode = winners.every((w) => w.mode === mode);
   const primary = winners[0]!;
-  const total = orgDevices.length;
   const names = winners.map(describeCompetitor).join(', ');
-  const devicesText = total === 1 ? 'the 1 device' : `all ${total} devices`;
+  const devicesText = total === 0
+    ? 'every device that enrolls'
+    : total === 1 ? 'the 1 device' : `all ${total} devices`;
   const advice = sameMode && primary.name
     ? `To ${mode === 'allowlist' ? 'approve' : 'block'} this title, add it to "${primary.name}" in Software Policies instead.`
     : `To use "${policyName}", change or remove the assignment of ${primary.configPolicyName ? `configuration policy "${primary.configPolicyName}"` : 'the winning configuration policy'} in Configuration Policies, then try again.`;

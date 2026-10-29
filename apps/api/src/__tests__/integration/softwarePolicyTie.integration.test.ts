@@ -199,6 +199,49 @@ describe('#9635 software policy tie — live Postgres', () => {
     expect(rules.software.map((r) => r.name)).toEqual(['Seeded']);
   });
 
+  it('an org with no devices yet: the org-level tie is still refused (it would bite once devices enroll)', async () => {
+    const f = await seed();
+    await withSystemDbAccessContext(() => db.update(devices).set({ isEphemeral: true }).where(inArray(devices.id, f.deviceIds)));
+    const ctx = orgContext(f.orgId, f.partnerId);
+
+    const approved = await withDbAccessContext(ctx, () => approveInventorySoftware(writeParams(f.orgId, 'Zoom')));
+    expect(approved.status).toBe(201);
+
+    const denied = await withDbAccessContext(ctx, () => denyInventorySoftware(writeParams(f.orgId, 'TeamViewer')));
+    expect(denied.status).toBe(409);
+    expect(denied.body.code).toBe(SOFTWARE_POLICY_WOULD_NOT_APPLY);
+    expect(denied.body.deviceCount).toBe(0);
+    expect(denied.body.winners).toEqual([expect.objectContaining({ name: 'Default Allowlist' })]);
+    expect(await defaultPolicy(f, 'Default Blocklist')).toBeNull();
+
+    // A second approve into the established allowlist is not refused.
+    const again = await withDbAccessContext(ctx, () => approveInventorySoftware(writeParams(f.orgId, 'Slack')));
+    expect(again.status).toBe(200);
+  });
+
+  it('the default config policy also assigned at a closer level still counts as ours', async () => {
+    const f = await seed();
+    const ctx = orgContext(f.orgId, f.partnerId);
+    const approved = await withDbAccessContext(ctx, () => approveInventorySoftware(writeParams(f.orgId, 'Zoom')));
+    expect(approved.status).toBe(201);
+    // Hand-assign "Default Allowlist Config" at site level too, then point its
+    // link somewhere foreign: the next approve repoints it back, so it is ours.
+    await withSystemDbAccessContext(async () => {
+      const [cfg] = await db.select({ id: configurationPolicies.id }).from(configurationPolicies)
+        .where(and(eq(configurationPolicies.orgId, f.orgId), eq(configurationPolicies.name, 'Default Allowlist Config')));
+      const [device] = await db.select({ siteId: devices.siteId }).from(devices).where(eq(devices.id, f.deviceIds[0]!));
+      await db.insert(configPolicyAssignments).values({ configPolicyId: cfg!.id, level: 'site', targetId: device!.siteId, priority: 0 });
+      const [other] = await db.insert(softwarePolicies)
+        .values({ orgId: f.orgId, name: 'Stray', mode: 'blocklist', rules: { software: [] } })
+        .returning({ id: softwarePolicies.id });
+      await db.update(configPolicyFeatureLinks).set({ featurePolicyId: other!.id })
+        .where(eq(configPolicyFeatureLinks.configPolicyId, cfg!.id));
+    });
+
+    const again = await withDbAccessContext(ctx, () => approveInventorySoftware(writeParams(f.orgId, 'Slack')));
+    expect(again.status).toBe(200);
+  });
+
   it('a same-mode winner is named so the technician can add the title there instead', async () => {
     const f = await seed();
     const ctx = orgContext(f.orgId, f.partnerId);

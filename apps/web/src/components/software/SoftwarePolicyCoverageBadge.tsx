@@ -13,21 +13,25 @@ import { competitorList, type SoftwarePolicyCoverage } from "./softwarePolicyCom
 export default function SoftwarePolicyCoverageBadge({ policyId }: { policyId: string }) {
   const { t } = useTranslation("policies");
   const [coverage, setCoverage] = useState<SoftwarePolicyCoverage | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setCoverage(null);
+    setFailed(false);
+    // A failure must not read as "nothing to flag" on a badge whose job is to
+    // warn that a policy governs no device: show "Coverage unavailable".
+    const fail = (detail: unknown) => {
+      if (cancelled) return;
+      console.warn(`[SoftwarePolicyCoverageBadge] coverage for ${policyId} unavailable:`, detail);
+      setFailed(true);
+    };
     // Promise.resolve().then: a synchronous throw from the fetch helper lands in
     // .catch instead of crashing the row the badge sits in.
     Promise.resolve()
       .then(() => fetchWithAuth(`/software-policies/${policyId}/coverage`))
       .then(async (res) => {
-        if (!res?.ok) {
-          if (!cancelled) {
-            console.warn(`[SoftwarePolicyCoverageBadge] coverage for ${policyId} answered ${res?.status}`);
-          }
-          return;
-        }
+        if (!res?.ok) return fail(`HTTP ${res?.status}`);
         const json = await res.json();
         const data = json?.data;
         if (
@@ -36,23 +40,33 @@ export default function SoftwarePolicyCoverageBadge({ policyId }: { policyId: st
           typeof data.assignedDeviceCount !== "number" ||
           !Array.isArray(data.overriddenBy)
         ) {
-          console.warn(`[SoftwarePolicyCoverageBadge] malformed coverage for ${policyId}`);
-          return;
+          return fail("malformed response");
         }
         if (!cancelled) setCoverage(data as SoftwarePolicyCoverage);
       })
-      .catch((err) => {
-        console.warn(`[SoftwarePolicyCoverageBadge] failed to load coverage for ${policyId}:`, err);
-      });
+      .catch(fail);
     return () => {
       cancelled = true;
     };
   }, [policyId]);
 
+  const chip = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium";
+
+  if (failed) {
+    return (
+      <span
+        data-testid="software-policy-coverage"
+        data-state="unavailable"
+        className={`${chip} border-muted bg-muted/40 text-muted-foreground`}
+      >
+        {t("software.policyCoverage.unavailable")}
+      </span>
+    );
+  }
+
   if (!coverage) return null;
 
   const names = competitorList(coverage.overriddenBy);
-  const chip = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium";
 
   if (coverage.appliesToDeviceCount > 0) {
     return (
