@@ -62,7 +62,7 @@ describe('partner-owned device groups lifecycle (#10521 W1)', () => {
       .toEqual([{ org_id: f.b.orgId }]);
   });
 
-  it('full partner purge succeeds, and a retry after partial progress succeeds', async () => {
+  it('full partner purge succeeds and a second run is an idempotent no-op', async () => {
     const f = await seedFixture();
     const control = await createPartner();
     const departed = await seedOrg(f.partnerId);
@@ -82,9 +82,10 @@ describe('partner-owned device groups lifecycle (#10521 W1)', () => {
       VALUES (${policy!.id}, 'device_group', ${f.groupId})`);
     expect(await query(sql`SELECT org_id FROM device_group_memberships WHERE group_id = ${f.groupId}`)).toHaveLength(2);
 
-    // Prove the membership pre-clear's statement-level touch trigger locks the
-    // complete two-org set before updating either device. Roll back the probe
-    // so the real purge below still starts with both memberships intact.
+    // The membership pre-clear deletes rows of two orgs in one statement; its
+    // statement-level touch trigger must not abort on partner-export lock
+    // ordering. This only proves the statement succeeds (it does not observe
+    // lock order). Roll back so the real purge below starts with both rows.
     const rollbackProbe = new Error('rollback multi-org membership pre-clear probe');
     await expect(withSystemDbAccessContext(async () => {
       await db.execute(sql`DELETE FROM device_group_memberships

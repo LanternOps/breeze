@@ -112,6 +112,13 @@ CREATE CONSTRAINT TRIGGER device_groups_membership_owner_revalidate
   WHEN (OLD.org_id IS DISTINCT FROM NEW.org_id OR OLD.partner_id IS DISTINCT FROM NEW.partner_id)
   EXECUTE FUNCTION public.breeze_revalidate_device_group_memberships();
 
+-- Runs PER ROW and takes partner-export partner locks per row, so it sorts one
+-- (OLD, NEW) partner pair at a time. Reparenting is test-only today and every
+-- writer updates one organization per statement. A future bulk reparent that
+-- moves several orgs with different old partners in ONE statement could visit
+-- rows out of ascending-UUID order and raise; such a feature must either keep
+-- one org per statement or pre-acquire the whole partner set first (same rule
+-- as breeze_cascade_device_org_id's per-row org locks).
 CREATE OR REPLACE FUNCTION public.breeze_detach_partner_group_memberships_on_reparent()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE

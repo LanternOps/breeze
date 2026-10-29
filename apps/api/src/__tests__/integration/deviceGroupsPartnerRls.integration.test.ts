@@ -99,6 +99,21 @@ describe('partner-owned device groups RLS (#10521 W1)', () => {
     expect(reachedCommit).toBe(true);
   });
 
+  it('an existing org group re-parented under a partner group fails at COMMIT', async () => {
+    const f = await fixture();
+    const parent = await partnerGroup(f.p);
+    const child = await orgGroup(f.a);
+    await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.update(deviceGroups).set({ parentId: parent }).where(eq(deviceGroups.id, child));
+    }), '23514', 'device_groups_parent_owner_kind');
+  });
+
+  it("org token of partner P inserting a partner_id = P group → 42501 (the SELECT branch never admits writes)", async () => {
+    const f = await fixture();
+    await expectSqlState(() => withDbAccessContext(orgContext(f.a, f.p), () => db.execute(sql`
+      INSERT INTO device_groups (partner_id, name) VALUES (${f.p}, 'Org-forged partner group')`)), '42501');
+  });
+
   it('partner A context inserting partner_id = B → 42501', async () => {
     const f = await fixture();
     await expectSqlState(() => withDbAccessContext(partnerContext(f.p, [f.a, f.b]), () => db.execute(sql`
