@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const queueDeliveryMock = vi.hoisted(() => vi.fn());
-const startMock = vi.hoisted(() => vi.fn(async () => {}));
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../db', () => ({
@@ -12,16 +11,13 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn()
 }));
 
-vi.mock('../services/redis', () => ({
-  createBlockingRedisConnection: () => ({}),
-  getRedisConnection: () => ({})
-}));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: queueDeliveryMock }));
 
 vi.mock('../services/sentry', () => ({
   captureException: captureExceptionMock
 }));
 
-import { configureWebhookFanout, handleWebhookFanoutEvent, getWebhookWorker } from './webhookDelivery';
+import { configureWebhookFanout, handleWebhookFanoutEvent } from './webhookDelivery';
 
 const EVENT = {
   id: 'event-1',
@@ -67,8 +63,6 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   beforeEach(() => {
     queueDeliveryMock.mockReset();
     captureExceptionMock.mockReset();
-    vi.spyOn(getWebhookWorker(), 'queueDelivery').mockImplementation(queueDeliveryMock);
-    vi.spyOn(getWebhookWorker(), 'start').mockImplementation(startMock);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -96,16 +90,6 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
     // Two attempts, one outbound POST: the customer's endpoint must not be
     // hit twice for one event.
     expect(createDeliveryRecord).toHaveBeenCalledTimes(2);
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('still queues blind when no delivery-record creator is configured', async () => {
-    configureWebhookFanout({ getWebhooksForEvent: async () => [WEBHOOK] as never });
-
-    await handleWebhookFanoutEvent(EVENT as never);
-
-    // No creator means no dedupe surface exists; skipping here would drop the
-    // delivery entirely rather than de-duplicate it.
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
   });
 
@@ -151,7 +135,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
   it('a `failed` original is a benign dedupe too, not a warn', async () => {
     // `failed` is terminal: the original owns the event's outcome and the retry
-    // ladder (or a hand retry) drives it. Only the UNRESOLVED statuses warn.
+    // history remains available for manual replay. Only UNRESOLVED statuses warn.
     const createDeliveryRecord = vi.fn().mockResolvedValue(deduped({
       id: 'delivery-1',
       status: 'failed',
@@ -189,7 +173,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   });
 
   it('treats a `retrying` original as unresolved too, not as a benign dedupe', async () => {
-    // `retrying` is one of the two statuses the recovery sweep treats as
+    // `retrying` is one of the three statuses the recovery sweep treats as
     // UNRESOLVED, so a duplicate deferring to one is deferring to a delivery
     // that may itself be stuck. Logging it at info would bury it next to
     // genuinely delivered rows.
@@ -229,7 +213,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
   // ---------------------------------------------------------------------------
 
   it('rethrows when the webhook lookup fails, reporting the whole-event fan-out loss', async () => {
-    configureWebhookFanout({ getWebhooksForEvent: async () => { throw new Error('db exploded'); } });
+    configureWebhookFanout({ getWebhooksForEvent: async () => { throw new Error('db exploded'); }, createDeliveryRecord: vi.fn() });
 
     await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow('db exploded');
 
@@ -248,7 +232,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
   it('does not claim a transient DB error will be retried locally — it also rethrows', async () => {
     configureWebhookFanout({
-      getWebhooksForEvent: async () => { throw new Error('CONNECTION_DESTROYED while querying'); }
+      getWebhooksForEvent: async () => { throw new Error('CONNECTION_DESTROYED while querying'); }, createDeliveryRecord: vi.fn()
     });
 
     await expect(handleWebhookFanoutEvent(EVENT as never)).rejects.toThrow('CONNECTION_DESTROYED');
@@ -283,7 +267,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
     expect(createDeliveryRecord).toHaveBeenCalledTimes(2);
     expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
-    expect(queueDeliveryMock.mock.calls[0]![0]).toBe('webhook-2');
+    expect(queueDeliveryMock.mock.calls[0]![0].webhookId).toBe('webhook-2');
 
     const payload = structured(consoleLines(errorSpy), 'WEBHOOK_DELIVERY_ROUTING_FAILED');
     expect(payload).toMatchObject({ webhookId: 'webhook-1', eventId: 'event-1' });
@@ -295,7 +279,7 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
       .mockResolvedValueOnce(recorded('delivery-1'))
       .mockResolvedValueOnce(recorded('delivery-2'));
     queueDeliveryMock
-      .mockRejectedValueOnce(new Error('LPUSH failed'))
+      .mockRejectedValueOnce(new Error('enqueue failed'))
       .mockResolvedValueOnce('delivery-2');
 
     configureWebhookFanout({
@@ -309,9 +293,9 @@ describe('webhook delivery is one-per-(webhook, event)', () => {
 
     // webhook-1 is now a recorded-but-never-enqueued orphan — that is the
     // recovery sweep's job. What must NOT happen is webhook-2 losing its
-    // delivery because webhook-1's LPUSH died first.
+    // delivery because webhook-1's enqueue died first.
     expect(queueDeliveryMock).toHaveBeenCalledTimes(2);
-    expect(queueDeliveryMock.mock.calls[1]![0]).toBe('webhook-2');
+    expect(queueDeliveryMock.mock.calls[1]![0].webhookId).toBe('webhook-2');
   });
 
   it('does not throw when every webhook in the fan-out succeeds', async () => {

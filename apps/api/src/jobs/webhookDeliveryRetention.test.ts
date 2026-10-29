@@ -89,8 +89,16 @@ describe('webhook_deliveries retention (#9128)', () => {
     // A failed row is deletable only if: never attempted, a newer attempted failure
     // exists for the webhook, or the webhook has succeeded since.
     expect(sqlText).toContain(`status = 'delivered' OR attempts = 0`);
-    expect(sqlText).toContain("n.status = 'failed' AND n.attempts > 0 AND n.created_at > webhook_deliveries.created_at");
-    expect(sqlText).toContain('w.last_success_at > webhook_deliveries.created_at');
+    expect(sqlText).toContain("n.status = 'failed' AND n.attempts > 0 AND COALESCE(n.failed_at, n.created_at) > COALESCE(webhook_deliveries.failed_at, webhook_deliveries.created_at)");
+    expect(sqlText).toContain('w.last_success_at > COALESCE(webhook_deliveries.failed_at, webhook_deliveries.created_at)');
+  });
+
+  it('only lets a newer health-eligible failure replace tracked evidence', async () => {
+    await runWebhookDeliveryRetention({ retentionDays: 30 });
+    const sqlText = flat(new PgDialect().sqlToQuery(pruneMock.mock.calls[0]![0].where as SQL).sql);
+    // An edited delivery can have earlier attempts but is excluded by health;
+    // it must not make the actual last endpoint failure eligible for deletion.
+    expect(sqlText).toContain("AND ((n.error_message IS NULL OR n.error_message NOT LIKE 'superseded\\_by\\_edit:%') OR n.error_message = 'superseded_by_edit: webhook credentials could not be decrypted')");
   });
 
   it('registers a daily cron slot', async () => {

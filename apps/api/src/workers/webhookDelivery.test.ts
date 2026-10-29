@@ -5,16 +5,6 @@ const { safeFetchMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => 
   validateWebhookUrlSafetyWithDnsMock: vi.fn(),
 }));
 
-const { getRedisConnectionMock, createBlockingRedisConnectionMock } = vi.hoisted(() => ({
-  getRedisConnectionMock: vi.fn(),
-  createBlockingRedisConnectionMock: vi.fn(),
-}));
-
-vi.mock('../services/redis', () => ({
-  getRedisConnection: getRedisConnectionMock,
-  createBlockingRedisConnection: createBlockingRedisConnectionMock,
-}));
-
 vi.mock('../services/eventBus', () => ({
   getEventBus: vi.fn(() => ({ subscribe: vi.fn() })),
 }));
@@ -37,10 +27,6 @@ const { dbSelectMock, toWebhookConfigMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../db', () => ({
-  // Most tests in this file exercise the LEGACY job shape (`job.webhook`
-  // embedded), which resolveDeliveryWebhookConfig delivers from directly —
-  // db.select is never reached for those. The new-shape (webhookId +
-  // generation) describe block below drives dbSelectMock directly.
   db: { select: dbSelectMock },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -50,55 +36,34 @@ vi.mock('../services/webhookConfig', () => ({
 }));
 
 import { SsrfBlockedError } from '../services/urlSafety';
-import { deliverWebhook, getWebhookWorker, type WebhookDeliveryJob } from './webhookDelivery';
+import { deliverWebhook, type WebhookDeliveryJob } from './webhookDelivery';
 import { MAX_OPERATOR_ERROR_LENGTH } from '../services/httpFailureMessage';
 
+const webhookConfig = {
+  id: 'webhook-1', orgId: 'org-1', name: 'Webhook', status: 'active', approvalGeneration: 3,
+  url: 'https://hooks.example.test/events', secret: 'signing-secret', events: ['device.created'],
+  headers: { Authorization: 'Bearer token' },
+};
 function makeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-  return {
-    id: 'delivery-1',
-    webhookId: 'webhook-1',
-    webhook: {
-      id: 'webhook-1',
-      orgId: 'org-1',
-      name: 'Webhook',
-      url: 'https://hooks.example.test/events',
-      secret: 'signing-secret',
-      events: ['device.created'],
-      headers: { Authorization: 'Bearer token' },
-    },
-    event: {
-      id: 'event-1',
-      orgId: 'org-1',
-      type: 'device.created',
-      payload: { deviceId: 'device-1' },
-      metadata: { timestamp: '2026-05-02T00:00:00.000Z' },
-    } as any,
-    attempts: 0,
-    createdAt: '2026-05-02T00:00:00.000Z',
-    ...overrides,
-  };
+  return { id: 'delivery-1', webhookId: 'webhook-1', generation: 3, payloadVersion: 1, attempts: 0,
+    event: { id: 'event-1', type: 'device.created', payload: { deviceId: 'device-1' }, timestamp: '2026-05-02T00:00:00.000Z' }, ...overrides };
 }
 
 describe('webhook delivery worker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
+    dbSelectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [webhookConfig] }) }) });
+    toWebhookConfigMock.mockImplementation((row: unknown) => row);
   });
 
   it('delivers with safeFetch so DNS resolution is pinned at connection time', async () => {
     safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
 
-    const result = await deliverWebhook(makeJob({
-      webhook: {
-        ...makeJob().webhook!,
-        headers: {
-          Authorization: 'Bearer token',
-          Host: '169.254.169.254',
-          'X-Breeze-Event-Type': 'forged',
-          'X-Custom': 'ok'
-        }
-      }
-    }));
+    toWebhookConfigMock.mockReturnValueOnce({ ...webhookConfig, headers: {
+      Authorization: 'Bearer token', Host: '169.254.169.254', 'X-Breeze-Event-Type': 'forged', 'X-Custom': 'ok'
+    } });
+    const result = await deliverWebhook(makeJob());
 
     expect(result.success).toBe(true);
     expect(safeFetchMock).toHaveBeenCalledWith(
@@ -198,15 +163,14 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
       id: 'delivery-1',
       webhookId: 'webhook-1',
       generation: 3,
+      payloadVersion: 1,
       event: {
         id: 'event-1',
-        orgId: 'org-1',
         type: 'device.created',
         payload: { deviceId: 'device-1' },
-        metadata: { timestamp: '2026-05-02T00:00:00.000Z' },
+        timestamp: '2026-05-02T00:00:00.000Z',
       } as any,
       attempts: 0,
-      createdAt: '2026-05-02T00:00:00.000Z',
       ...overrides,
     };
   }
@@ -220,6 +184,8 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
   beforeEach(() => {
     vi.clearAllMocks();
     validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
+    dbSelectMock.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [webhookConfig] }) }) });
+    toWebhookConfigMock.mockImplementation((row: unknown) => row);
     toWebhookConfigMock.mockImplementation((row: any) => ({
       id: row.id,
       orgId: row.orgId,
@@ -292,82 +258,15 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     expect(safeFetchMock).toHaveBeenCalledWith('https://hooks.example.test/events', expect.any(Object));
   });
 
-  it('skips the generation comparison entirely when the job carries no generation (legacy producer, opt-in only)', async () => {
+  it('delivers when a legacy row is re-driven with the current generation', async () => {
     mockRow({
       id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 99,
       url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
     });
     safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
 
-    const result = await deliverWebhook(newShapeJob({ generation: undefined }));
+    const result = await deliverWebhook(newShapeJob({ generation: 99 }));
 
     expect(result.success).toBe(true);
-  });
-});
-
-describe('DLQ entry (site-ceiling gate contract §7E, finding 4)', () => {
-  // A legacy-shaped job (pre-dating this deploy) embeds the full decrypted
-  // WebhookConfig — url/secret/headers — inline. `resolveDeliveryWebhookConfig`
-  // delivers from it once and never re-serializes it on RETRY (see the
-  // `retryJob` construction, which deliberately drops `webhook`), but before
-  // this fix the DLQ push re-serialized the raw `job` unchanged, so a
-  // legacy job that exhausted its retries on the very first attempt landed
-  // in the DLQ still carrying the decrypted secret at rest in Redis.
-  function legacyJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-    return {
-      id: 'delivery-1',
-      webhookId: 'webhook-1',
-      webhook: {
-        id: 'webhook-1',
-        orgId: 'org-1',
-        name: 'Webhook',
-        url: 'https://hooks.example.test/events',
-        secret: 'top-secret-value',
-        events: ['device.created'],
-        headers: { Authorization: 'Bearer legacy-token' },
-      },
-      event: {
-        id: 'event-1',
-        orgId: 'org-1',
-        type: 'device.created',
-        payload: { deviceId: 'device-1' },
-        metadata: { timestamp: '2026-05-02T00:00:00.000Z' },
-      } as any,
-      // MAX_RETRIES is 5 — attempts + 1 >= 5 routes straight to the DLQ.
-      attempts: 4,
-      createdAt: '2026-05-02T00:00:00.000Z',
-      ...overrides,
-    };
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    validateWebhookUrlSafetyWithDnsMock.mockResolvedValue([]);
-  });
-
-  it('never re-serializes the decrypted legacy webhook config into the DLQ entry', async () => {
-    const lpushMock = vi.fn(async (_key: string, _value: string) => 1);
-    const fakeRedis = {
-      lpush: lpushMock,
-      brpop: vi.fn(async () => ['breeze:webhooks:queue', JSON.stringify(legacyJob())]),
-    };
-    getRedisConnectionMock.mockReturnValue(fakeRedis);
-    createBlockingRedisConnectionMock.mockReturnValue(fakeRedis);
-    safeFetchMock.mockRejectedValueOnce(new Error('destination unreachable'));
-
-    const worker = getWebhookWorker();
-    await (worker as unknown as { processNextJob: () => Promise<void> }).processNextJob();
-
-    const dlqCall = lpushMock.mock.calls.find((call) => String(call[0]).includes('dlq'));
-    expect(dlqCall).toBeDefined();
-
-    const dlqEntry = JSON.parse(dlqCall![1] as string);
-    expect(dlqEntry.job.webhook).toBeUndefined();
-    const serialized = JSON.stringify(dlqEntry);
-    expect(serialized).not.toContain('top-secret-value');
-    expect(serialized).not.toContain('Bearer legacy-token');
-    // Identity fields must still make it through so the DLQ entry is usable.
-    expect(dlqEntry.job.webhookId).toBe('webhook-1');
-    expect(dlqEntry.job.id).toBe('delivery-1');
   });
 });

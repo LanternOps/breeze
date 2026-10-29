@@ -5,15 +5,16 @@
  * DELETE-only sweep removes TERMINAL rows (`delivered`, `failed`) whose
  * `created_at` is past the retention window.
  *
- * Deliberately never touches `pending` / `retrying`: those are owned by
- * `webhookDeliveryRecovery`, which re-queues them.
+ * Deliberately never touches `pending` / `scheduled` / `retrying`: recovery re-drives
+ * pending and scheduled rows and resolves abandoned in-flight attempts.
  *
  * The connection-health webhook source (services/connectionHealth/sources/
  * webhook.ts) has two reads: the broken scan (failed rows in the last
  * TERMINAL_FAILURE_WINDOW_MS, 1 h; untouched by any window >= 1 day) and the
  * tracked lookup, which takes a webhook's latest attempted failure of ANY age
  * and reads its absence as "healthy". So a failed row is kept while it is the
- * newest attempted failure of its webhook and the webhook has not succeeded
+ * newest attempted failure (failed_at, falling back to created_at on legacy
+ * rows) of its webhook and the webhook has not succeeded
  * since; otherwise an endpoint that died and receives no more events would
  * auto-resolve (a false recovery) once its only evidence aged out.
  *
@@ -90,6 +91,8 @@ export async function runWebhookDeliveryRetention(
   // column is `timestamp` written in UTC, so bind an ISO string.
   const cutoff = new Date(startedAt - retentionDays * DAY_MS).toISOString();
 
+  // Match the tracked health source's terminal predicate: a later superseded
+  // edit can carry prior attempts but cannot replace endpoint-failure evidence.
   const pruned = await pruneInCtidBatches({
     table: TABLE,
     where: sql`status IN ('delivered', 'failed') AND created_at < ${cutoff}::timestamp AND (
@@ -97,11 +100,13 @@ export async function runWebhookDeliveryRetention(
       OR EXISTS (
         SELECT 1 FROM webhook_deliveries n
         WHERE n.webhook_id = webhook_deliveries.webhook_id AND n.status = 'failed'
-          AND n.attempts > 0 AND n.created_at > webhook_deliveries.created_at
+          AND n.attempts > 0 AND COALESCE(n.failed_at, n.created_at) > COALESCE(webhook_deliveries.failed_at, webhook_deliveries.created_at)
+          AND ((n.error_message IS NULL OR n.error_message NOT LIKE 'superseded\\_by\\_edit:%')
+            OR n.error_message = 'superseded_by_edit: webhook credentials could not be decrypted')
       )
       OR EXISTS (
         SELECT 1 FROM webhooks w
-        WHERE w.id = webhook_deliveries.webhook_id AND w.last_success_at > webhook_deliveries.created_at
+        WHERE w.id = webhook_deliveries.webhook_id AND w.last_success_at > COALESCE(webhook_deliveries.failed_at, webhook_deliveries.created_at)
       )
     )`,
     batchSize,

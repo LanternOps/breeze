@@ -46,7 +46,7 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
 
         // Site-ceiling gate contract §7E: no decryption here. `events` is a
         // plain (non-encrypted) column, and the fan-out/dedupe path never
-        // needed url/secret/headers — only `queueDelivery` and
+        // needed url/secret/headers — only `enqueueWebhookAttempt` and
         // `recordWebhookDelivery` consume this, and use only the
         // identity, approval generation and payload version. Decryption now happens
         // exactly once, inside the delivery worker at send time

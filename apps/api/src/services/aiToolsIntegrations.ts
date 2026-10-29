@@ -6,7 +6,7 @@
  * org-scoped isolation.
  */
 
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
   webhooks,
@@ -20,7 +20,8 @@ import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { decryptForColumn } from './secretCrypto';
 import { describeEndpointUrl, type EndpointUrlView } from '../utils/endpointDisplay';
-import { getWebhookWorker } from '../workers/webhookDelivery';
+import { enqueueWebhookAttempt } from '../jobs/webhookDeliveryQueue';
+import { captureException } from './sentry';
 
 // webhooks.url is encrypted at rest, and for chat-provider endpoints the PATH
 // is what authorizes a post, so AI tools show only the origin plus a short
@@ -288,9 +289,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       }
       const webhookId = input.webhookId as string;
 
-      // Verify webhook exists and belongs to org. Select the full row — the
-      // worker config mapper needs orgId/secret/headers/events/retryPolicy,
-      // not just id/name/url.
+      // Scope the lookup before creating a delivery so cross-org ids cannot send.
       const conditions: SQL[] = [eq(webhooks.id, webhookId)];
       const orgCond = auth.orgCondition(webhooks.orgId);
       if (orgCond) conditions.push(orgCond);
@@ -318,6 +317,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
           eventId,
           payload,
           payloadVersion: webhook.payloadVersion,
+          webhookGeneration: webhook.approvalGeneration,
           eventTimestamp: now,
           status: 'pending',
           attempts: 0,
@@ -326,45 +326,20 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
 
       if (!delivery) return JSON.stringify({ error: 'Failed to create test delivery record' });
 
-      // Mirror routes/webhooks.ts POST /:id/test — an inserted 'pending' row
-      // with no worker dispatch never actually sends anything. Queue the
-      // delivery the same way the route does, and mark it 'failed' on a queue
-      // error instead of leaving a permanently-stuck 'pending' row.
-      const event = {
-        id: eventId,
-        type: eventType,
-        orgId: webhook.orgId,
-        source: 'webhook.test',
-        priority: 'normal',
-        payload,
-        metadata: {
-          timestamp: now.toISOString(),
-          userId: auth.user.id,
-        },
-      };
-
-      try {
-        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
-          payloadVersion: webhook.payloadVersion === 2 ? 2 : 1,
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-        await db
-          .update(webhookDeliveries)
-          .set({
-            status: 'failed',
-            attempts: 1,
-            errorMessage,
-            deliveredAt: new Date(),
-          })
-          .where(eq(webhookDeliveries.id, delivery.id));
-
-        return JSON.stringify({
-          error: 'Failed to queue webhook delivery',
+      // The worker must read the committed row; recovery can re-drive it if Redis is down.
+      runAfterDbContextCommit('ai.test_webhook', () => enqueueWebhookAttempt({
+        deliveryId: delivery.id,
+        webhookId: webhook.id,
+        generation: webhook.approvalGeneration,
+        attemptsMade: 0,
+      }, new Date()).catch((error) => {
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        console.error(`[integrations:test_webhook] enqueue-failed ${JSON.stringify({
+          errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
           deliveryId: delivery.id,
           webhookId: webhook.id,
-        });
-      }
+        })}`);
+      }));
 
       const endpoint = describeWebhookEndpoint(webhook.url);
       return JSON.stringify({
