@@ -192,13 +192,15 @@ Live discovery is done (see [Live verification](#live-verification-2026-10-27-ou
 2. **W02, surfaces:** SaaS grouping, the portal count fix, and report and posture evidence.
 3. **W03, live verification** on our account, then release notes and docs (`apps/docs` integration page with setup steps: partner portal → Settings → API Settings; works for Pax8 and other sub-reseller accounts).
 
-## Open decisions
+## Decisions
+
+Items 2–5 were defaulted on 2026-10-29 when implementation was dispatched; any of them can still be revisited in review.
 
 1. **Live account: resolved.** Our own account is a Pax8 sub-reseller. That means GET calls only, which is all phase 1 needs, and phase 2 writes are off the table unless we become a Direct Partner.
-2. **Granularity.** Per-workload rollup (recommended) or per-item rows.
-3. **Per-customer failure semantics.** Is extending the adapter contract to "all or nothing per customer" acceptable, or should one revoked customer fail the whole sync, as Cove does?
-4. **Domain-based mapping suggestion.** Include it in phase 1 or defer?
-5. **Naming in UI.** "Dropsuite", "NinjaOne SaaS Backup", or both ("NinjaOne SaaS Backup (Dropsuite)")? The API host and docs still say Dropsuite, and the product page says NinjaOne.
+2. **Granularity: one rollup row per customer and workload.** The capped `failingItems` list answers which mailbox is failing.
+3. **Per-customer failures are isolated.** `listDevices` returns `{ devices, failedCustomerIds }`. A failed customer's existing rows are kept, and an admin-token failure still fails the whole run. Cove returns no failed customers, so its behaviour is unchanged.
+4. **The domain-based mapping suggestion is deferred** to after W03.
+5. **UI name: "NinjaOne SaaS Backup (Dropsuite)".** The API host and docs still say Dropsuite, and the product page says NinjaOne.
 
 ## Phase 2
 
