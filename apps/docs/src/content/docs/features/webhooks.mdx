@@ -105,7 +105,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `alert.resolved` | An alert condition has cleared |
 | `alert.suppressed` | Breeze AI has suppressed an alert. Suppressing an alert from the dashboard or `POST /alerts/:id/suppress` does not publish this event yet |
 
-`alert.escalated` is not sent by Breeze; the API rejects a new subscription to it with `400`, and a stored one shows as "Never delivered" in the dashboard and is removed the next time the webhook is saved.
+`alert.escalated` is not sent by Breeze; the API rejects a new subscription to it with `400`; a stored one shows as "Never delivered" in the dashboard, and the dashboard edit form removes it on save.
 
 ### Script Events
 
@@ -249,7 +249,7 @@ The original v1 JSON POST body has this structure. See [Payload versions](#paylo
 
 ## Payload versions
 
-Each webhook has a `payloadVersion`: `1` or `2`. Webhooks created before this release stay on `1`; their payload is unchanged byte for byte. New webhooks default to `2`.
+Each webhook has a `payloadVersion`: `1` or `2`. Webhooks created before this release stay on `1`; their payload is unchanged byte for byte. New webhooks default to `2`. Webhooks created through the API without `payloadVersion` also default to `2`.
 
 Choose the version in the edit form, or send `PATCH /webhooks/:id` with `{ "payloadVersion": 2 }`. You can switch back to `1`. Each delivery keeps the version it was recorded with, including retries and replays.
 
@@ -269,13 +269,13 @@ Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, and `alert.suppr
 | `severity` | string | Alert severity |
 | `title` | string | Alert title |
 | `message` | string | Alert message |
-| `monitorId` | string, when present | Monitor id for monitor alerts |
-| `kind` | string, when present | Monitor kind or producer-specific kind |
-| `episodeId` | string, when present | Episode id for the subject-key path |
+| `monitorId` | string or null | Always present on alert-service paths; null when there is no monitor |
+| `kind` | string or null | Always present on alert-service paths; null when there is no monitor |
+| `episodeId` | string or null, when present | Episode id for the subject-key path |
 | `subjectKey` | string or null, when present | Subject identity; null on the ordinary rule-alert path |
 | `responsesOwner` | boolean, when present | Whether this alert owns the response actions |
 | `source` | string, when present | Source of a rule-less or sourced alert |
-| Producer-specific extra keys | varies | Rule-less or sourced alerts can add fields such as `networkChangeEventId`, `vendor`, `connectionId`, `provider`, `detectionId`, and `requiresHuman` |
+| Producer-specific extra keys | varies | Some producers add extra keys such as `networkChangeEventId`, `vendor`, `connectionId`, `provider`, `detectionId`, `requiresHuman`, `automationId`, `runId`, `flowRunId`, and `anomalyId` |
 
 #### v1: alert.acknowledged
 
@@ -288,18 +288,19 @@ Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, and `alert.suppr
 
 #### v1: alert.resolved
 
-Both the alert service and the REST resolve route publish this event.
+Several paths publish this event: the alert service, REST resolve, bulk actions, mobile, correlation-group actions, Breeze AI, warranty checks, and the subject-alert outbox. Fields vary by producer.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `alertId` | string | Alert id; both paths |
-| `ruleId` | string or null | Rule id; both paths |
-| `deviceId` | string | Device id; both paths |
-| `resolutionNote` | string or null | Resolution note; both paths |
-| `resolvedAt` | ISO 8601 string | Resolution time; both paths |
-| `resolvedBy` | string or null | Resolving user id; both paths |
-| `triggeredAt` | ISO 8601 string | Trigger time; both paths |
-| `resolutionReason` | string or null | Resolution reason; alert service only, absent from the REST resolve event |
+| `alertId` | string | Alert id; always present |
+| `ruleId` | string or null, when present | Rule id; omitted by some producers |
+| `deviceId` | string | Device id; always present |
+| `resolutionNote` | string or null, when present | Resolution note; omitted by some producers |
+| `resolvedAt` | ISO 8601 string | Resolution time; always present |
+| `resolvedBy` | string or null | Resolving user id; always present, null for system resolutions |
+| `triggeredAt` | ISO 8601 string | Trigger time; always present |
+| `resolutionReason` | string or null, when present | Resolution reason; alert-service paths only |
+| `subjectKey` | string, when present | Subject identity; subject recoveries only |
 
 #### v1: alert.suppressed
 
@@ -311,14 +312,14 @@ The AI suppression tool publishes this event. The REST suppress route does not p
 | `ruleId` | string or null | Rule id |
 | `deviceId` | string | Device id |
 | `suppressedBy` | string | Suppressing user id |
-| `suppressedUntil` | ISO 8601 string | Suppression end time |
-| `durationHours` | number | Suppression duration in hours |
+| `suppressedUntil` | ISO 8601 string or null | Suppression end time; null for indefinite suppression |
+| `durationHours` | number or null | Suppression duration in hours; null for indefinite suppression |
 
 #### v2: all four alert events
 
 Every key below is always present. A value that does not apply or is unavailable is `null`. The status comes from the event type, even if the alert has since changed. Valid payload values take precedence over the current alert row.
 
-Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means Breeze could not read the alert, device, site, or organization when it built the payload, so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site alone can also leave those fields `null` without setting this flag. The flag is set when the alert row is missing or the enrichment read fails.
+Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means the alert row could not be read (it was not yet committed, the id was invalid, or the enrichment query failed), so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site leaves its fields `null` without setting the flag.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -342,7 +343,7 @@ Hostname, site, and organization name are read when the delivery is first record
 | `externalTickets` | array of objects | Each object has string `source` and `externalId`, plus nullable string `externalUrl` and `externalNumber`. Always `[]` until a later release fills it |
 | `acknowledgedByPrincipalId` | string or null | Always `null` until a later release fills it |
 | `resolvedByPrincipalId` | string or null | Always `null` until a later release fills it |
-| `enrichmentIncomplete` | boolean | The alert row was unavailable or an enrichment read failed |
+| `enrichmentIncomplete` | boolean | The alert row could not be read or the enrichment query failed; missing device or site alone does not set it |
 | `subjectKey` | string or null | Alert subject identity |
 | `resolutionNote` | string or null | Resolution note |
 | `resolvedBy` | string or null | Resolving user id |
@@ -841,7 +842,7 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `event_type` | varchar(100) | The event type that triggered this delivery |
 | `event_id` | varchar(100) | The unique event ID |
 | `payload` | JSONB | The stored event data sent to the endpoint |
-| `payload_version` | smallint | Recorded payload version; default `1` for legacy rows |
+| `payload_version` | smallint | Recorded payload version; default `1` for legacy rows. A NOT VALID CHECK permits only `1` or `2` for new or updated rows without scanning the existing table |
 | `event_timestamp` | timestamptz, nullable | Stored wire event timestamp; legacy null values fall back to delivery creation time |
 | `replay_root_event_id` | varchar(100), nullable | Original event id for manual replays; null for original deliveries |
 | `status` | enum | `pending`, `delivered`, `failed`, or `retrying` |

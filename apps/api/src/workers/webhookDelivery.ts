@@ -77,8 +77,9 @@ export interface WebhookDeliveryJob {
    * job already queued at deploy time still delivers correctly for one
    * release. `resolveDeliveryWebhookConfig` logs `legacy_webhook_payload`,
    * delivers using this embedded config once, and NEVER re-serializes it —
-   * a retry always converts to the current shape (`webhookId`/`generation`
-   * only), so the plaintext cannot re-enter the queue on a retry/DLQ replay.
+   * a retry always converts to the current shape, carrying `webhookId`,
+   * `generation`, `payloadVersion` and `replayOf`, so the plaintext cannot
+   * re-enter the queue on a retry/DLQ replay.
    */
   webhook?: WebhookConfig;
   event: BreezeEvent;
@@ -100,7 +101,8 @@ export interface WebhookDeliveryJob {
 /**
  * Site-ceiling gate contract §7E. The fan-out lookup and delivery-record
  * dedupe never needed decrypted credentials — both only ever read `.id`
- * (and `.orgId`/`.approvalGeneration` for enqueueing) — so this lean,
+ * (and `.orgId`/`.approvalGeneration` for enqueueing, plus `.payloadVersion`
+ * for the envelope and payload projection) — so this lean,
  * UNDECRYPTED shape replaces `WebhookConfig` on that path entirely.
  * Decryption now happens exactly once, inside `resolveDeliveryWebhookConfig`,
  * right before the actual HTTP POST.

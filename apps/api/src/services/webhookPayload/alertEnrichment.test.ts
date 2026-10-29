@@ -56,6 +56,7 @@ beforeEach(() => {
   vi.stubEnv('DASHBOARD_URL', 'https://app.example.com/');
   vi.stubEnv('PUBLIC_APP_URL', '');
   __resetAlertUrlWarningForTests();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   rows();
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -130,6 +131,7 @@ describe('alert webhook enrichment', () => {
     vi.stubEnv('DASHBOARD_URL', '');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect((await buildAlertWebhookProjections(event())).org.alertUrl).toBe(`/alerts/${ALERT}`);
+    rows();
     expect((await buildAlertWebhookProjections(event())).org.alertUrl).toBe(`/alerts/${ALERT}`);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(alertWebhookUrl('')).toBe('/alerts');
@@ -143,15 +145,42 @@ describe('alert webhook enrichment', () => {
   });
 
   it('degrades a failed read to payload-only projections with one diagnostic', async () => {
-    const error = new Error('database unavailable');
+    const error = Object.assign(new Error('database unavailable'), { code: '08006' });
     mocks.select.mockImplementation(() => { throw error; });
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { org, partner } = await buildAlertWebhookProjections(event('alert.triggered', { title: 'Payload title' }));
     expect(org).toMatchObject({ alertId: ALERT, deviceId: DEVICE, title: 'Payload title', severity: null, deviceHostname: null, siteId: null, siteName: null, orgName: null, enrichmentIncomplete: true });
     expect(partner.orgExternalIds).toEqual([]);
-    expect(mocks.captureException).toHaveBeenCalledExactlyOnceWith(error, undefined, expect.objectContaining({ errorId: 'WEBHOOK_ALERT_ENRICHMENT_FAILED', eventId: 'event-1', orgId: ORG, eventType: 'alert.triggered' }));
+    expect(mocks.captureException).toHaveBeenCalledExactlyOnceWith(error, undefined, expect.objectContaining({ errorId: 'WEBHOOK_ALERT_ENRICHMENT_FAILED', eventId: 'event-1', orgId: ORG, eventType: 'alert.triggered' }), { fingerprint: ['webhook-alert-enrichment-failed'] });
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0]![0]).toMatch(/^\[WebhookAlertEnrichment\] enrichment-failed \{/);
+    expect(JSON.parse(String(log.mock.calls[0]![0]).split('enrichment-failed ')[1]!)).toMatchObject({ error: 'database unavailable', code: '08006' });
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { reason: 'alert_id_invalid', alertId: 'not-a-uuid', found: [{ ...row, alertId: null }] },
+    { reason: 'org_not_found', alertId: ALERT, found: [] },
+    { reason: 'alert_not_visible', alertId: ALERT, found: [{ ...row, alertId: null }] },
+  ])('warns once without Sentry when enrichment is incomplete: $reason', async ({ reason, alertId, found }) => {
+    rows(found);
+    const { org, partner } = await buildAlertWebhookProjections(event('alert.triggered', { alertId }));
+    expect(org.enrichmentIncomplete).toBe(true);
+    expect(partner.enrichmentIncomplete).toBe(true);
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(`[WebhookAlertEnrichment] enrichment-incomplete ${JSON.stringify({
+      errorId: 'WEBHOOK_ALERT_ENRICHMENT_INCOMPLETE', eventId: 'event-1', orgId: ORG, eventType: 'alert.triggered', reason,
+    })}`);
+  });
+
+  it.each([undefined, null, 'invalid', 42, []].map((payload) => ({ payload })))('tolerates a missing or non-object payload ($payload)', async ({ payload }) => {
+    rows([{ ...row, alertId: null, deviceId: null, title: null, severity: null, triggeredAt: null }]);
+    const malformed = { ...event(), payload } as unknown as BreezeEvent;
+    await expect(buildAlertWebhookProjections(malformed)).resolves.toMatchObject({
+      org: { alertId: null, deviceId: null, title: null, enrichmentIncomplete: true, details: {}, alertUrl: 'https://app.example.com/alerts' },
+    });
+    expect(mocks.captureException).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"reason":"alert_id_invalid"'));
   });
 
   it('discards all enrichment if the external-link read fails', async () => {

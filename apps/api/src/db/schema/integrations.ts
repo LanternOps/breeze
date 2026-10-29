@@ -119,6 +119,7 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deliveredAt: timestamp('delivered_at')
 }, (table) => ({
+  payloadVersionCheck: check('webhook_deliveries_payload_version_chk', sql`${table.payloadVersion} IN (1, 2)`),
   // One delivery per (webhook, event). The '*' subscriber creates a row and
   // queues an outbound POST per matching webhook, so without this a redelivered
   // event POSTs to the customer's endpoint twice (2026-09-11-a migration).

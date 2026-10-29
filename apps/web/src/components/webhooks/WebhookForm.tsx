@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -135,6 +135,8 @@ export default function WebhookForm({
     Array.from(new Set((defaultValues?.events ?? []).filter(event => !catalogEventValues.has(event))))
   );
   const hasAllEvents = unlistedEvents.includes(ALL_EVENTS);
+  const hasNeverDeliveredEvents = unlistedEvents.some(event => NEVER_DELIVERED_EVENTS.includes(event));
+  const neverDeliveredExplanationId = useId();
   const storedEvents = defaultValues?.events ?? [];
   const onlyNeverDelivered = storedEvents.length > 0
     && storedEvents.every(event => NEVER_DELIVERED_EVENTS.includes(event));
@@ -249,6 +251,7 @@ export default function WebhookForm({
                   <span
                     key={event}
                     data-testid={neverDelivered ? 'webhook-never-delivered-chip' : undefined}
+                    aria-describedby={neverDelivered ? neverDeliveredExplanationId : undefined}
                     title={neverDelivered ? t('longTail.webhooks.WebhookForm.neverDelivered.explanation') : undefined}
                     className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-xs font-medium"
                   >
@@ -266,6 +269,11 @@ export default function WebhookForm({
                 );
               })}
             </div>
+            {hasNeverDeliveredEvents && (
+              <p id={neverDeliveredExplanationId} data-testid="webhook-never-delivered-explanation" className="text-xs text-muted-foreground">
+                {t('longTail.webhooks.WebhookForm.neverDelivered.explanation')}
+              </p>
+            )}
             {hasAllEvents && (
               <p className="text-xs text-muted-foreground">
                 {t('longTail.webhooks.WebhookForm.otherEvents.allEventsHint')}

@@ -18,6 +18,19 @@ describe('v1 wire golden fixtures', () => {
     expect((await deliverWebhook(job)).success).toBe(true);
     expect(safeFetchMock.mock.calls[0]![1].body).toBe(expectedBody);
   });
+  it.each(fixtures)('v1 replay preserves $event.type golden bytes and identifies its root', async ({ event, expectedBody }) => {
+    const job = {
+      id: 'delivery-1', webhookId: 'webhook-1', attempts: 0, createdAt: event.timestamp,
+      payloadVersion: 1, replayOf: 'root-event',
+      webhook: { id: 'webhook-1', orgId: event.orgId, name: 'Golden', url: 'https://hooks.example.com/events', events: ['*'] },
+      event: { id: event.id, type: event.type, orgId: event.orgId, payload: event.data, metadata: { timestamp: event.timestamp } },
+    } as WebhookDeliveryJob;
+    expect((await deliverWebhook(job)).success).toBe(true);
+    const request = safeFetchMock.mock.calls[0]![1];
+    expect(request.body).toBe(expectedBody);
+    expect(request.headers['X-Breeze-Replay-Of']).toBe('root-event');
+  });
+
 });
 
 it.each(fixtures)('v1 envelope preserves $event.type golden bytes', async ({ event, expectedBody }) => {

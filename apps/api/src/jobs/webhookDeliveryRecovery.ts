@@ -420,8 +420,9 @@ export async function runWebhookDeliveryRecoverySweep(
       // The original event, reconstructed from the row. `id` MUST stay the
       // original `event_id`: it goes out as `X-Breeze-Event-Id`, which is the
       // customer's own idempotency key, and it is what the unique index dedupes
-      // on. Restore the stored event timestamp; only legacy rows with NULL
-      // event_timestamp use created_at as the closest recorded approximation.
+      // on. Restore the stored event timestamp. NULL event_timestamp means a
+      // legacy row or an event whose timestamp was missing/unparseable; use
+      // created_at as the closest recorded approximation in those cases.
       const event: BreezeEvent = {
         id: candidate.eventId,
         type: candidate.eventType as EventType,

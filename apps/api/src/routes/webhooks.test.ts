@@ -221,6 +221,17 @@ describe('webhook routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
     });
+    it('allows pausing a stored never-delivered subscription without changing its events', async () => {
+      const stored = row({ events: ['alert.escalated'] });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([stored]) as any);
+      const set = vi.fn((data: Record<string, unknown>) => ({ where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...stored, ...data }]) })) }));
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+      const res = await request({ status: 'paused' }, 'PATCH', `/webhooks/${WEBHOOK_ID_1}`);
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0]).toHaveProperty('status', 'disabled');
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('events');
+      expect(await res.json()).toMatchObject({ status: 'paused', events: ['alert.escalated'] });
+    });
     it('stores an explicit v1 choice on creation', async () => {
       const values = insert();
       expect((await request({ ...createBody, payloadVersion: 1 })).status).toBe(201);
@@ -260,17 +271,30 @@ describe('webhook routes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toHaveProperty('payloadVersion', 1);
     });
-    it('pins sample delivery version and timestamp without enriching the payload', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any);
+    it.each([1, 2])('pins v%s sample delivery version and timestamp without enriching the payload', async (version) => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row({ payloadVersion: version })]) as any);
       const values = insert();
       const payload = { sample: true };
       const res = await request({ payload }, 'POST', `/webhooks/${WEBHOOK_ID_1}/test`);
       expect(res.status).toBe(202);
       const recorded = values.mock.calls[0]![0];
-      expect(recorded).toMatchObject({ payloadVersion: 2, eventTimestamp: expect.any(Date), payload });
+      expect(recorded).toMatchObject({ payloadVersion: version, eventTimestamp: expect.any(Date), payload });
       expect(queueDeliveryMock).toHaveBeenCalledWith(WEBHOOK_ID_1, 1,
         expect.objectContaining({ payload, metadata: expect.objectContaining({ timestamp: (recorded.eventTimestamp as Date).toISOString() }) }),
-        WEBHOOK_ID_1, { payloadVersion: 2 });
+        WEBHOOK_ID_1, { payloadVersion: version });
+    });
+    it.each([undefined, 3])('coerces unexpected persisted version %s at the test and retry queue boundaries', async (version) => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row({ payloadVersion: version })]) as any);
+      insert();
+      expect((await request({ payload: { sample: true } }, 'POST', `/webhooks/${WEBHOOK_ID_1}/test`)).status).toBe(202);
+      expect(queueDeliveryMock.mock.calls[0]![4]).toEqual({ payloadVersion: 1 });
+
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any)
+        .mockReturnValueOnce(mockSelectLimit([{ id: DELIVERY_ID_1, webhookId: WEBHOOK_ID_1,
+          status: 'failed', payloadVersion: version, eventType: 'alert.triggered', eventId: 'event-root', payload: {} }]) as any);
+      insert();
+      expect((await request({}, 'POST', `/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`)).status).toBe(202);
+      expect(queueDeliveryMock.mock.calls[1]![4]).toEqual({ payloadVersion: 1, replayOf: 'event-root' });
     });
     it.each([
       { root: null, version: 1 }, { root: 'original-root-event', version: 1 },

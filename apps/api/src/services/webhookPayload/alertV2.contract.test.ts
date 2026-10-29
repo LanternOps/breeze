@@ -12,20 +12,25 @@ import { buildAlertWebhookProjections } from './alertEnrichment';
 const FROZEN_V2_KEYS = {
   alertId: 'string|null', ruleId: 'string|null', monitorId: 'string|null', deviceId: 'string|null', episodeId: 'string|null',
   status: 'enum(active,acknowledged,resolved,suppressed)', severity: 'enum(critical,high,medium,low,info)|null',
-  title: 'string|null', message: 'string|null', triggeredAt: 'string|null', acknowledgedAt: 'string|null', resolvedAt: 'string|null',
+  title: 'string|null', message: 'string|null', triggeredAt: 'string(datetime)|null', acknowledgedAt: 'string(datetime)|null', resolvedAt: 'string(datetime)|null',
   deviceHostname: 'string|null', siteId: 'string|null', siteName: 'string|null', orgName: 'string|null', alertUrl: 'string',
-  externalTickets: 'array', acknowledgedByPrincipalId: 'string|null', resolvedByPrincipalId: 'string|null', enrichmentIncomplete: 'boolean',
+  externalTickets: 'array<object{externalId:string,externalNumber:string|null,externalUrl:string|null,source:string}>', acknowledgedByPrincipalId: 'string|null', resolvedByPrincipalId: 'string|null', enrichmentIncomplete: 'boolean',
   subjectKey: 'string|null', resolutionNote: 'string|null', resolvedBy: 'string|null', resolutionReason: 'string|null',
-  acknowledgedBy: 'string|null', suppressedBy: 'string|null', suppressedUntil: 'string|null', responsesOwner: 'boolean|null',
+  acknowledgedBy: 'string|null', suppressedBy: 'string|null', suppressedUntil: 'string(datetime)|null', responsesOwner: 'boolean|null',
   kind: 'string|null', source: 'string|null', details: 'record',
 } as const;
 
 function describeType(type: z.ZodType): string {
   if (type instanceof z.ZodNullable) return `${describeType(type.unwrap() as z.ZodType)}|null`;
   if (type instanceof z.ZodEnum) return `enum(${type.options.join(',')})`;
-  if (type instanceof z.ZodString) return 'string';
+  if (type instanceof z.ZodString) return type.format ? `string(${type.format})` : 'string';
   if (type instanceof z.ZodBoolean) return 'boolean';
-  if (type instanceof z.ZodArray) return 'array';
+  if (type instanceof z.ZodArray) return `array<${describeType(type.element as z.ZodType)}>`;
+  if (type instanceof z.ZodObject) {
+    const fields = Object.entries(type.shape).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, field]) => `${key}:${describeType(field as z.ZodType)}`);
+    return `object{${fields.join(',')}}`;
+  }
   if (type instanceof z.ZodRecord) return 'record';
   return `unexpected:${type.constructor.name}`;
 }
@@ -40,9 +45,10 @@ beforeEach(() => {
     return chain;
   });
   vi.stubEnv('DASHBOARD_URL', 'https://app.example.com');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('frozen alert v2 contract', () => {
   it('pins every field and type, rejecting unknown top-level keys', () => {
@@ -58,6 +64,7 @@ describe('frozen alert v2 contract', () => {
   });
   it('limits the partner contract to v2 plus external IDs', () => {
     expect(Object.keys(alertWebhookDataV2PartnerSchema.shape).sort()).toEqual([...Object.keys(FROZEN_V2_KEYS), 'orgExternalIds'].sort());
+    expect(describeType(alertWebhookDataV2PartnerSchema.shape.orgExternalIds)).toBe('array<object{externalId:string,system:string}>');
   });
   it('preserves the subject-key triggered variant at the top level', async () => {
     const fixture = fixtures.find(({ name }) => name === 'alert.triggered.json')!.event;

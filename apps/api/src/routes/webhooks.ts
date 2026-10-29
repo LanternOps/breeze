@@ -366,12 +366,13 @@ function rejectUnsupportedAuthFields(
 }
 
 // Registered event names. The webhook-delivery subscriber listens on `*`
-// (services/eventSubscribers.ts); the explicit deny-list below excludes names
-// that are registered but have no publisher.
+// (services/eventSubscribers.ts). Registration alone does not guarantee that
+// a publisher exists.
 const PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set<string>(Object.values(EVENT_TYPES));
 
-// In EVENT_TYPES but no code publishes it (#10500). A follow-up implements it;
-// remove it from this set in the same PR that adds a publisher.
+// Registered names known to have no publisher; currently only alert.escalated
+// (#10500). A follow-up implements it. Remove it from this set in the same PR
+// that adds a publisher.
 export const NEVER_PUBLISHED_EVENT_TYPES: ReadonlySet<string> = new Set(['alert.escalated']);
 
 // Names that were offered for subscription but are not what the bus publishes.
@@ -931,7 +932,7 @@ webhookRoutes.post(
 
     try {
       await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
-        payloadVersion: webhook.payloadVersion as 1 | 2,
+        payloadVersion: webhook.payloadVersion === 2 ? 2 : 1,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
@@ -1055,7 +1056,7 @@ const { id: webhookId, deliveryId } = c.req.valid('param');
 
     try {
       await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, retryEvent as any, retryDelivery.id, {
-        payloadVersion: delivery.payloadVersion as 1 | 2,
+        payloadVersion: delivery.payloadVersion === 2 ? 2 : 1,
         replayOf: replayRootEventId,
       });
     } catch (error) {

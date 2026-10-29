@@ -1560,7 +1560,10 @@ describe('webhook payload version migration', () => {
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS replay_root_event_id varchar(100) NULL;');
     const statements = migration.replace(/--[^\n]*/g, '');
     expect(statements).not.toMatch(/\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
-    expect(statements).not.toMatch(/ALTER TABLE public.webhook_deliveries[^;]*CHECK/i);
+    expect(statements).toContain("conname = 'webhook_deliveries_payload_version_chk'");
+    expect(statements).toContain("conrelid = 'public.webhook_deliveries'::regclass");
+    expect(statements).toMatch(/ADD CONSTRAINT webhook_deliveries_payload_version_chk CHECK \(payload_version IN \(1, 2\)\) NOT VALID;/);
+    expect(statements).not.toMatch(/VALIDATE CONSTRAINT/i);
   });
   it('models defaults, the webhook check, and nullable persisted wire identity in Drizzle', async () => {
     const { webhooks, webhookDeliveries } = await import('./schema/integrations');
@@ -1568,6 +1571,7 @@ describe('webhook payload version migration', () => {
     expect(webhooks.payloadVersion.notNull).toBe(true);
     expect(getTableConfig(webhooks).checks.map(check => check.name)).toContain('webhooks_payload_version_chk');
     expect(webhookDeliveries.payloadVersion.default).toBe(1);
+    expect(getTableConfig(webhookDeliveries).checks.map(check => check.name)).toContain('webhook_deliveries_payload_version_chk');
     expect(webhookDeliveries.eventTimestamp.notNull).toBe(false);
     expect(webhookDeliveries.replayRootEventId.notNull).toBe(false);
   });

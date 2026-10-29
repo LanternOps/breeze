@@ -27,8 +27,8 @@ function webhook(events: string[]) {
   };
 }
 
-async function openEdit(events: string[]) {
-  const row = webhook(events);
+async function openEdit(events: string[], payloadVersion?: 1 | 2) {
+  const row = { ...webhook(events), ...(payloadVersion ? { payloadVersion } : {}) };
   fetchWithAuth.mockImplementation((rawUrl: unknown, init?: RequestInit) => {
     const url = String(rawUrl);
     if (init?.method === 'PATCH') return json(row);
@@ -62,11 +62,33 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     expect((await save()).payloadVersion).toBe(2);
   });
 
+  it('keeps stored v2 when only the URL changes', async () => {
+    await openEdit(['alert.triggered'], 2);
+    expect((screen.getByTestId('webhook-payload-version-2') as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/b' } });
+    expect((await save()).payloadVersion).toBe(2);
+  });
+
   it('marks never-delivered stored events and removes them on save', async () => {
     await openEdit(['alert.escalated', 'alert.triggered']);
-    expect(screen.getByTestId('webhook-never-delivered-chip').textContent).toContain('Never delivered');
+    const chip = screen.getByTestId('webhook-never-delivered-chip');
+    expect(chip.textContent).toContain('Never delivered');
+    const explanation = screen.getByTestId('webhook-never-delivered-explanation');
+    expect(explanation).toBeVisible();
+    expect(explanation.textContent).toBe('Breeze never sends this event. It will be removed when you save this webhook.');
+    expect(explanation.id).not.toBe('');
+    expect(chip.getAttribute('aria-describedby')).toBe(explanation.id);
+    expect(chip.getAttribute('title')).toBe(explanation.textContent);
     expect(screen.queryByTestId('webhook-never-delivered-banner')).toBeNull();
     expect((await save()).events).toEqual(['alert.triggered']);
+  });
+
+  it('removes the explanation when the last never-delivered chip is removed', async () => {
+    await openEdit(['alert.escalated', 'custom.thing']);
+    expect(screen.getByTestId('webhook-never-delivered-explanation')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove alert.escalated' }));
+    expect(screen.queryByTestId('webhook-never-delivered-explanation')).toBeNull();
+    expect(document.querySelector('form')!.textContent).toContain('custom.thing');
   });
 
   it('warns when only never-delivered events are stored and requires another event', async () => {

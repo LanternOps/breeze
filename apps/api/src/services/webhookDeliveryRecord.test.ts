@@ -137,6 +137,32 @@ describe('recordDeliveryOutcome', () => {
 });
 
 describe('recordWebhookDelivery wire identity', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['invalid', 'x'.repeat(150), 123, { unexpected: true }, null])('warns once for an invalid present timestamp %j', async timestamp => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const values = vi.fn(() => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }));
+    state.insert.mockReturnValue({ values });
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 2 }, {
+      id: 'event-1', type: 'alert.triggered', payload: {}, metadata: { timestamp }
+    } as never);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ eventTimestamp: null }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(structured(lines(warn), 'WEBHOOK_DELIVERY_EVENT_TIMESTAMP_INVALID')).toEqual({
+      errorId: 'WEBHOOK_DELIVERY_EVENT_TIMESTAMP_INVALID', eventId: 'event-1', webhookId: 'hook-1',
+      timestamp: JSON.stringify(timestamp).slice(0, 100)
+    });
+  });
+
+  it('does not warn when the timestamp is absent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.insert.mockReturnValue({ values: () => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }) });
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 }, {
+      id: 'event-1', type: 'device.offline', payload: {}, metadata: {}
+    } as never);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it.each(['2026-10-28T12:00:00.000Z', 'invalid', undefined])('stores version, payload and event timestamp %s', async timestamp => {
     const values = vi.fn(() => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }));
     state.insert.mockReturnValue({ values });

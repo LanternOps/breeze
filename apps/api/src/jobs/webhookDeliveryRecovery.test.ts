@@ -177,6 +177,14 @@ describe('webhook delivery recovery sweep', () => {
     }), 'delivery-1', { payloadVersion: 2, replayOf: 'root-event' });
   });
 
+  it.each([[1, 1], [2, 2], [3, 1]])('normalizes stored payload version %s to %s with no replay root', async (stored, expected) => {
+    state.candidates = [orphan({ payloadVersion: stored, replayRootEventId: null })];
+    state.updateResults = [claimWon(1)];
+    await runWebhookDeliveryRecoverySweep(NOW);
+    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(queueDeliveryMock.mock.calls[0]![4]).toEqual({ payloadVersion: expected, replayOf: null });
+  });
+
   it('leases the row it claimed so a concurrent sweep cannot re-queue it', async () => {
     state.candidates = [orphan()];
     state.updateResults = [claimWon(1)];

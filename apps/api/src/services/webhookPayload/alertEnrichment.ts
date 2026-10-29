@@ -35,7 +35,14 @@ const validTimestamp = (value: unknown): string | null => {
   return isoSchema.safeParse(value).success ? value as string : null;
 };
 
+function eventPayload(event: BreezeEvent): Record<string, unknown> {
+  return event.payload !== null && typeof event.payload === 'object' && !Array.isArray(event.payload)
+    ? event.payload
+    : {};
+}
+
 async function readEnrichment(event: BreezeEvent) {
+  const payload = eventPayload(event);
   const [row] = await db.select({
     alertId: alerts.id,
     ruleId: alerts.ruleId,
@@ -62,9 +69,9 @@ async function readEnrichment(event: BreezeEvent) {
   }).from(organizations)
     // Publishers may still be in a transaction. The org anchors the read so a
     // not-yet-visible alert does not prevent enrichment by payload deviceId.
-    .leftJoin(alerts, and(eq(alerts.id, sql`${validUuid(event.payload.alertId)}::uuid`), eq(alerts.orgId, organizations.id)))
+    .leftJoin(alerts, and(eq(alerts.id, sql`${validUuid(payload.alertId)}::uuid`), eq(alerts.orgId, organizations.id)))
     .leftJoin(devices, and(
-      eq(devices.id, sql`COALESCE(${alerts.deviceId}, ${validUuid(event.payload.deviceId)}::uuid)`),
+      eq(devices.id, sql`COALESCE(${alerts.deviceId}, ${validUuid(payload.deviceId)}::uuid)`),
       eq(devices.orgId, organizations.id),
     ))
     .leftJoin(sites, and(
@@ -87,7 +94,7 @@ type EnrichmentRow = Awaited<ReturnType<typeof readEnrichment>>['row'];
 const topLevelKeys = new Set(Object.keys(alertWebhookDataV2Schema.shape));
 
 function project(event: BreezeEvent, row: EnrichmentRow, incomplete: boolean): AlertWebhookDataV2 {
-  const payload = event.payload;
+  const payload = eventPayload(event);
   const text = (key: keyof AlertWebhookDataV2): string | null =>
     stringOrNull(payload[key]) ?? stringOrNull(row?.[key as keyof NonNullable<EnrichmentRow>]);
   const time = (key: 'triggeredAt' | 'acknowledgedAt' | 'resolvedAt' | 'suppressedUntil'): string | null =>
@@ -134,15 +141,30 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
 }> {
   let row: EnrichmentRow;
   let orgExternalIds: { system: string; externalId: string }[] = [];
+  let readFailed = false;
   try {
     ({ row, orgExternalIds } = await runWithSystemDbAccess(() => readEnrichment(event)));
   } catch (error) {
     const context = { errorId: 'WEBHOOK_ALERT_ENRICHMENT_FAILED', eventId: event.id, orgId: event.orgId, eventType: event.type };
-    captureException(error, undefined, context);
-    console.error(`[WebhookAlertEnrichment] enrichment-failed ${JSON.stringify(context)}`);
+    readFailed = true;
+    captureException(error, undefined, context, { fingerprint: ['webhook-alert-enrichment-failed'] });
+    const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    console.error(`[WebhookAlertEnrichment] enrichment-failed ${JSON.stringify({
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+      ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}),
+    })}`);
     row = undefined;
     orgExternalIds = [];
   }
-  const data = project(event, row, !row?.alertId);
+  const reason = !validUuid(eventPayload(event).alertId) ? 'alert_id_invalid'
+    : !row ? 'org_not_found'
+      : !row.alertId ? 'alert_not_visible' : null;
+  if (!readFailed && reason) {
+    console.warn(`[WebhookAlertEnrichment] enrichment-incomplete ${JSON.stringify({
+      errorId: 'WEBHOOK_ALERT_ENRICHMENT_INCOMPLETE', eventId: event.id, orgId: event.orgId, eventType: event.type, reason,
+    })}`);
+  }
+  const data = project(event, row, readFailed || reason !== null);
   return { org: frozenCopy(data), partner: frozenCopy({ ...data, orgExternalIds }) };
 }

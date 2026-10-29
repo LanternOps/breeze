@@ -21,6 +21,19 @@ function job(extra: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
 beforeEach(() => { vi.clearAllMocks(); mocks.enrich.mockResolvedValue({ org, partner: { ...org, orgExternalIds: [] } }); mocks.fetch.mockResolvedValue(new Response('ok')); });
 afterEach(() => vi.restoreAllMocks());
 describe('per-delivery payload version', () => {
+  it('still records and queues v1 when v2 enrichment rejects', async () => {
+    const v1 = target('hook-v1', 1);
+    const v2 = target('hook-v2', 2);
+    mocks.enrich.mockRejectedValue(new Error('enrichment unavailable'));
+    const record = vi.fn(async () => ({ created: true as const, deliveryId: 'delivery-v1' }));
+    const queue = vi.spyOn(getWebhookWorker(), 'queueDelivery').mockResolvedValue('delivery-v1');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    configureWebhookFanout({ getWebhooksForEvent: async () => [v2, v1], createDeliveryRecord: record });
+    await expect(handleWebhookFanoutEvent(event)).rejects.toThrow(/^webhook fan-out failed for 1\/2 webhooks: hook-v2$/);
+    expect(record).toHaveBeenCalledExactlyOnceWith(v1, event);
+    expect(queue).toHaveBeenCalledExactlyOnceWith('hook-v1', 1, event, 'delivery-v1', { payloadVersion: 1, replayOf: null });
+  });
+
   it.each([{ versions: [1] }, { versions: [1, 2, 2] }] as const)('enriches lazily once for targets $versions', async ({ versions }) => {
     const targets = versions.map((v, i) => target(`hook-${i}`, v));
     const record = vi.fn(async () => ({ created: true as const, deliveryId: 'delivery-1' }));

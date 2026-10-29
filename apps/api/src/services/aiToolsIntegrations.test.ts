@@ -326,6 +326,20 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     expect(values.eventTimestamp.toISOString()).toBe(mocks.queueDelivery.mock.calls[0]![2].metadata.timestamp);
   });
 
+  it.each([1, 2, undefined, 3])('queues test deliveries with a supported wire version for stored %s', async (version) => {
+    mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
+      { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Versioned hook', url: 'https://hooks.example.com/test', approvalGeneration: 1, payloadVersion: version },
+    ]));
+    mocks.dbInsert.mockReturnValueOnce(makeInsertChain([{ id: DELIVERY_ID, createdAt: new Date() }]));
+    const result = await toolMap.get('test_webhook')!.handler({ webhookId: WEBHOOK_ID }, makeAuth());
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mocks.queueDelivery.mock.calls[0]![4]).toEqual({ payloadVersion: version === 2 ? 2 : 1 });
+    if (version === 1 || version === 2) {
+      const values = mocks.dbInsert.mock.results[0]!.value.values.mock.calls[0][0];
+      expect(values).toMatchObject({ payloadVersion: version, eventTimestamp: expect.any(Date) });
+    }
+  });
+
   it('masks encrypted URL in test_webhook — ciphertext not echoed', async () => {
     const encryptedUrl = 'enc:v1:CIPHERTEXT_XYZ';
     const decryptedUrl = 'https://user:token99@hooks.example.com/cb';
