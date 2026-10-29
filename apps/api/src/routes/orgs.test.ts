@@ -368,7 +368,14 @@ vi.mock('drizzle-orm', async (importActual) => {
 // `resource:action` pairs so a test can withhold ONE permission (e.g.
 // sites:write) while the rest stay granted. Hoisted because the vi.mock
 // factory below references it. Reset to granted/empty in beforeEach.
-const permissionMockState = vi.hoisted(() => ({ granted: true, denied: new Set<string>() }));
+// `throwStatus`, when set, makes the mock THROW an HTTPException with that
+// status the way the real requirePermission does (it never returns a
+// Response) — used by the #9528 gate tests, whose probe catches only a 403.
+const permissionMockState = vi.hoisted(() => ({
+  granted: true,
+  denied: new Set<string>(),
+  throwStatus: null as null | 401 | 403 | 500,
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -393,6 +400,10 @@ vi.mock('../middleware/auth', () => ({
   }),
   requirePartner: vi.fn((c: any, next: any) => next()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionMockState.throwStatus !== null) {
+      const { HTTPException } = await import('hono/http-exception');
+      throw new HTTPException(permissionMockState.throwStatus, { message: 'Permission denied' });
+    }
     if (!permissionMockState.granted || permissionMockState.denied.has(`${resource}:${action}`)) {
       return c.json({ error: 'Permission denied' }, 403);
     }
@@ -494,6 +505,7 @@ describe('org routes', () => {
     vi.mocked(countMfaPolicyLockouts).mockReset().mockResolvedValue(0);
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
+    permissionMockState.throwStatus = null;
     selectedOrgIds.current = [];
     isHoldingOrg.mockReset().mockResolvedValue(false);
     setAuthContext();
@@ -3741,6 +3753,67 @@ describe('org routes', () => {
         for (const row of body.data) {
           expect(Object.keys(row).sort()).toEqual(['id', 'name', 'slug', 'status']);
         }
+      });
+
+      // The real requirePermission THROWS a 403 HTTPException rather than
+      // returning a Response; the gate's probe must catch exactly that and
+      // fall back to the name-level list.
+      it('serves the name-level list when the strict gate throws a 403', async () => {
+        permissionMockState.throwStatus = 403;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(pageQuery([{ id: 'org-a', name: 'Alpha', slug: 'alpha', status: 'active' }]));
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data.map((o: { id: string }) => o.id)).toEqual(['org-a']);
+        expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, ['org-a']);
+        expect(Object.keys(vi.mocked(db.select).mock.calls[2]?.[0] as Record<string, unknown>).sort())
+          .toEqual(['id', 'name', 'slug', 'status']);
+      });
+
+      it.each([401, 500] as const)('propagates a non-403 failure (%i) from the strict gate instead of degrading to the name list', async (status) => {
+        permissionMockState.throwStatus = status;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(status);
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('still 403s an automation principal when the strict gate throws', async () => {
+        permissionMockState.throwStatus = 403;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'flow' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
       });
 
       it('returns no orgs for a partner user with no org access', async () => {
