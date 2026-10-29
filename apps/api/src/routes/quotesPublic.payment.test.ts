@@ -29,7 +29,9 @@ vi.mock('../services/publicLinkOrgGate', async (importActual) => {
 vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
 vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
-vi.mock('../services/redis', () => ({ getRedis: () => null }));
+const { redisHolder, rateLimiterMock } = vi.hoisted(() => ({ redisHolder: { redis: null as unknown }, rateLimiterMock: vi.fn() }));
+vi.mock('../services/redis', () => ({ getRedis: () => redisHolder.redis }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
 vi.mock('../services/portalUrl', () => ({ portalBase: () => 'https://portal.example.com/portal' }));
 vi.mock('../services/quotePay', () => ({ getConvertedInvoicePayment: vi.fn() }));
 vi.mock('../services/invoiceCheckout', () => ({ createInvoicePayLink: vi.fn() }));
@@ -198,6 +200,29 @@ describe('POST /quotes/public/:token/pay (#3740)', () => {
       { ...publicInvoiceCheckoutUrls(), ip: null, userAgent: 'UA' },
     );
     expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('429s past the per-invoice budget it shares with the invoice page, before any mint', async () => {
+    setToken({ spent: true });
+    dbResults.push([acceptedRow()]);
+    redisHolder.redis = {};
+    rateLimiterMock.mockResolvedValue({ allowed: false });
+    try {
+      const res = await postPay();
+      expect(res.status).toBe(429);
+      expect(rateLimiterMock).toHaveBeenCalledWith({}, `invoice-public:pay:${INVOICE_ID}`, 10, 60);
+      expect(createInvoicePayLink).not.toHaveBeenCalled();
+    } finally {
+      redisHolder.redis = null;
+    }
+  });
+
+  it('sends the public-link privacy headers', async () => {
+    setToken({ spent: true });
+    dbResults.push([acceptedRow()]);
+    const res = await postPay();
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('x-robots-tag')).toContain('noindex');
   });
 
   it('refuses a spent token that did not accept this quote', async () => {

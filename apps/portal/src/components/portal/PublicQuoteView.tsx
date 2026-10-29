@@ -70,7 +70,7 @@ export function PublicQuoteView({ token, initial, error, superseded, accepted, c
           <p>
             {payment
               ? 'This proposal has been accepted.'
-              : `This proposal has been accepted. There is nothing to pay online here${accepted.partnerName ? ` — contact ${accepted.partnerName} with any questions` : ''}.`}
+              : `This proposal has been accepted. No online payment is available from this page right now${accepted.partnerName ? ` — contact ${accepted.partnerName} with any questions` : ''}.`}
           </p>
         </div>
         {payment && <PublicQuotePaymentStep token={token} payment={payment} />}

@@ -451,9 +451,16 @@ async function overPublicPayLimit(invoiceId: string): Promise<boolean> {
   }
 }
 
+/** Same no-store / no-referrer / noindex set as the public invoice routes. */
+function applyPaymentRouteHeaders(c: { header: (k: string, v: string) => void }): void {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive');
+}
+
 // GET /:token/payment — what the accepted quote's invoice would charge now.
 quotesPublicRoutes.get('/:token/payment', zValidator('param', tokenParam), async (c) => {
-  c.header('Cache-Control', 'no-store');
+  applyPaymentRouteHeaders(c);
   const access = await resolvePaymentAccess(c);
   if (!access) return c.json(invalidLink, 401);
   if (access.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
@@ -476,7 +483,7 @@ quotesPublicRoutes.get('/:token/payment', zValidator('param', tokenParam), async
 // key as Sign & pay and the invoice page's own Pay, so the three never mint
 // competing sessions for one charge.
 quotesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async (c) => {
-  c.header('Cache-Control', 'no-store');
+  applyPaymentRouteHeaders(c);
   // Same-origin fetch shape (as /invoices/public/:token/pay): a cross-site form
   // cannot set a JSON content type, and there is no ambient credential anyway.
   if (!(c.req.header('content-type') ?? '').includes('application/json')) {

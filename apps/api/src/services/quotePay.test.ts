@@ -56,7 +56,7 @@ describe('getConvertedInvoicePayment (#3740)', () => {
     expect(await getConvertedInvoicePayment(INVOICE_ID, ORG_ID)).toMatchObject({ amount: '77.20', isDeposit: true });
   });
 
-  it('returns null when the invoice is not in the quote org (never another tenant\'s invoice)', async () => {
+  it('returns null when the returned invoice row belongs to another org (defence in depth behind the SQL org filter)', async () => {
     dbResults.push([invoiceRow({ orgId: 'some-other-org' })]);
     expect(await getConvertedInvoicePayment(INVOICE_ID, ORG_ID)).toBeNull();
     expect(isPayOnAcceptAvailable).not.toHaveBeenCalled();
