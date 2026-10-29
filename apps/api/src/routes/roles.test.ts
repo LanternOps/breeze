@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { roleRoutes } from './roles';
 
@@ -108,6 +108,45 @@ function mockOrgTypeLookup(type: 'customer' | 'quick_support' = 'customer') {
       where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ type }]) })
     })
   } as any);
+}
+
+// #9600 depth-bound tests. Serves every db.select by chain shape:
+//   - `.where().limit()` role-row reads: the queued `leadRows` first (the
+//     route's own role / parent lookups), then an inheritance chain of
+//     `chainLength` roles, repeating for each lineage walk;
+//   - an awaited `.where()` (children of a role): a linear subtree
+//     `subtreeHeight` deep, repeating for each traversal;
+//   - `.innerJoin().where()` grant reads: none.
+function mockInheritanceTopology(opts: { leadRows: unknown[]; chainLength: number; subtreeHeight: number }) {
+  const lead = [...opts.leadRows];
+  let hop = 0;
+  let level = 0;
+  const nextRoleRow = () => {
+    if (lead.length > 0) return [lead.shift()];
+    const i = hop++ % opts.chainLength;
+    return [{
+      name: `Ancestor ${i}`,
+      scope: 'partner',
+      partnerId: 'partner-123',
+      orgId: null,
+      isSystem: false,
+      parentRoleId: i === opts.chainLength - 1 ? null : `ancestor-${hop}`
+    }];
+  };
+  const nextChildren = () => {
+    const i = level++ % (opts.subtreeHeight + 1);
+    return i < opts.subtreeHeight ? [{ id: `descendant-${level}` }] : [];
+  };
+  vi.mocked(db.select).mockImplementation((() => ({
+    from: () => ({
+      where: () => ({
+        limit: () => Promise.resolve(nextRoleRow()),
+        then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+          Promise.resolve(nextChildren()).then(resolve, reject)
+      }),
+      innerJoin: () => ({ where: () => Promise.resolve([]) })
+    })
+  })) as any);
 }
 
 describe('role routes', () => {
@@ -519,6 +558,72 @@ describe('role routes', () => {
       } finally {
         vi.mocked(db.select).mockImplementation(defaultSelect);
       }
+    });
+
+    describe('inheritance depth bound at the limit (#9600)', () => {
+      const parentId = '55555555-5555-4555-8555-555555555555';
+      const parentRow = { id: parentId, scope: 'partner', isSystem: false, partnerId: 'partner-123', orgId: null };
+      const depthError = async (res: Response) => (await res.json().catch(() => ({}))).error;
+      let defaultSelect: any;
+
+      beforeEach(async () => {
+        defaultSelect = vi.mocked(db.select).getMockImplementation();
+      });
+      afterEach(() => {
+        vi.mocked(db.select).mockImplementation(defaultSelect);
+      });
+
+      it.each([
+        [8, false],
+        [9, true]
+      ] as const)('POST: a parent whose lineage is %i roles long is refused=%s', async (chainLength, refused) => {
+        const { MAX_ROLE_INHERITANCE_DEPTH } = await import('../services/roleInheritance');
+        mockInheritanceTopology({ leadRows: [parentRow], chainLength, subtreeHeight: 0 });
+
+        const res = await app.request('/roles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Edge', parentRoleId: parentId, permissions: [] })
+        });
+
+        const msg = `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep`;
+        if (refused) {
+          expect(res.status).toBe(400);
+          expect(await depthError(res)).toBe(msg);
+          expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+        } else {
+          expect(await depthError(res)).not.toBe(msg);
+          expect(vi.mocked(db.transaction)).toHaveBeenCalled();
+        }
+      });
+
+      it.each([
+        [5, false],
+        [6, true]
+      ] as const)('PATCH: re-parenting a role with a 3-deep subtree under a %i-role lineage is refused=%s', async (chainLength, refused) => {
+        const { MAX_ROLE_INHERITANCE_DEPTH } = await import('../services/roleInheritance');
+        const editedRole = {
+          id: 'role-2', name: 'Edited', scope: 'partner', isSystem: false,
+          partnerId: 'partner-123', orgId: null, parentRoleId: null
+        };
+        mockInheritanceTopology({ leadRows: [editedRole, parentRow], chainLength, subtreeHeight: 3 });
+
+        const res = await app.request('/roles/role-2', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentRoleId: parentId })
+        });
+
+        const msg = `Role inheritance cannot be more than ${MAX_ROLE_INHERITANCE_DEPTH} levels deep`;
+        if (refused) {
+          expect(res.status).toBe(400);
+          expect(await depthError(res)).toBe(msg);
+          expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+        } else {
+          expect(await depthError(res)).not.toBe(msg);
+          expect(vi.mocked(db.transaction)).toHaveBeenCalled();
+        }
+      });
     });
 
     // #3524: a partner admin targets a specific org so the role is ORGANIZATION-

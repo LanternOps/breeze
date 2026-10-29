@@ -130,7 +130,13 @@ export async function resolveRoleLineage(roleId: string): Promise<RoleLineageEnt
       break;
     }
     const parent = await loadRole(parentId);
-    if (!parent) break;
+    if (!parent) {
+      console.warn('[roleInheritance] parent role not found or not visible; not inherited', {
+        roleId,
+        missingParentRoleId: parentId,
+      });
+      break;
+    }
     if (!isPermittedParentRole(child, parent)) {
       console.warn('[roleInheritance] parent role outside the child role\'s tenant or scope; not inherited', {
         roleId,
@@ -172,7 +178,11 @@ export async function getLineagePermissionGrants(
  * did not already grant.
  */
 export async function getEffectiveRolePermissionSources(roleId: string): Promise<EffectiveRolePermission[]> {
-  const lineage = await resolveRoleLineage(roleId);
+  // A role row that is not visible still has its own grants read, as before
+  // inheritance was honoured: an empty set here would let an assignment
+  // ceiling pass vacuously.
+  const resolved = await resolveRoleLineage(roleId);
+  const lineage = resolved.length > 0 ? resolved : [{ id: roleId, name: '' }];
   const seen = new Set<string>();
   const result: EffectiveRolePermission[] = [];
   for (const [index, entry] of lineage.entries()) {
