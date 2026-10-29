@@ -1877,6 +1877,15 @@ type EvaluateConfigPolicyComplianceOptions = {
   deferred?: DeferredRemediationEnqueues;
   /** Collects the policy.* events for the caller's `afterCommit` instead of publishing them (see `DeferredPolicyEvent`). */
   deferredEvents?: DeferredPolicyEvent[];
+  /**
+   * #10401 — when set, each rule set runs in its own savepoint: a rule set that
+   * throws rolls back alone, is reported here, and the device's other rule
+   * sets still commit. Without it a rule-set error propagates to the caller.
+   */
+  onRuleSetError?: (
+    complianceRule: typeof configPolicyComplianceRules.$inferSelect,
+    error: unknown,
+  ) => void;
 };
 
 export function __isComplianceCheckDue(
@@ -2052,7 +2061,14 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
   const results: ConfigPolicyEvaluationResult[] = [];
 
-  for (const complianceRule of complianceRules) {
+  // One rule set: its upsert, its remediation and its policy.* events. A
+  // closure rather than a helper so the remediation reader stays inside this
+  // entry point (retiredSourceReaders.contract.test.ts).
+  const evaluateRuleSet = async (
+    complianceRule: (typeof complianceRules)[number],
+    deferred: DeferredRemediationEnqueues | undefined,
+    deferredEvents: DeferredPolicyEvent[] | undefined,
+  ): Promise<ConfigPolicyEvaluationResult> => {
     const { status, details: ruleDetails } = evaluateConfigPolicyComplianceRule(
       complianceRule,
       deviceId,
@@ -2107,7 +2123,7 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         if (rem.type === 'script' && typeof rem.scriptId === 'string') {
           // Bridge: pass scriptId via legacy field until triggerConfigPolicyRemediation is refactored
           const tempRule = { ...complianceRule, remediationScriptId: rem.scriptId };
-          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice, options.deferred);
+          const triggered = await triggerConfigPolicyRemediation(tempRule, targetDevice, deferred);
           if (triggered) remediationTriggered = true;
         } else if (rem.type === 'software_deploy' && typeof rem.catalogId === 'string') {
           console.warn(`[ConfigPolicyCompliance] Software deploy remediation for rule="${complianceRule.name}" catalogId=${rem.catalogId} on device=${targetDevice.id} — not yet implemented`);
@@ -2116,18 +2132,9 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
 
       // Fallback: check legacy remediationScriptId on the rule set
       if (!remediationTriggered && complianceRule.remediationScriptId) {
-        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice, options.deferred);
+        remediationTriggered = await triggerConfigPolicyRemediation(complianceRule, targetDevice, deferred);
       }
     }
-
-    results.push({
-      deviceId,
-      complianceRuleId: complianceRule.id,
-      complianceRuleName: complianceRule.name,
-      status,
-      enforcementLevel: complianceRule.enforcementLevel,
-      remediationTriggered,
-    });
 
     const eventPayload = {
       configPolicyComplianceRuleId: complianceRule.id,
@@ -2149,10 +2156,51 @@ export async function evaluateDeviceComplianceFromConfigPolicy(
         source,
       },
     ];
-    if (options.deferredEvents) {
-      options.deferredEvents.push(...events);
+    if (deferredEvents) {
+      deferredEvents.push(...events);
     } else {
       await publishPolicyEventsInOrder(events);
+    }
+
+    return {
+      deviceId,
+      complianceRuleId: complianceRule.id,
+      complianceRuleName: complianceRule.name,
+      status,
+      enforcementLevel: complianceRule.enforcementLevel,
+      remediationTriggered,
+    };
+  };
+
+  const { onRuleSetError } = options;
+  for (const complianceRule of complianceRules) {
+    if (!onRuleSetError) {
+      results.push(await evaluateRuleSet(complianceRule, options.deferred, options.deferredEvents));
+      continue;
+    }
+
+    // #10401 — isolated: the rule set runs in its own savepoint and keeps its
+    // remediation runs and events in its own buffers until the savepoint is
+    // released, so a rule set that fails rolls back alone and hands on nothing.
+    const ruleDeferred: DeferredRemediationEnqueues = [];
+    const ruleEvents: DeferredPolicyEvent[] = [];
+    let result: ConfigPolicyEvaluationResult;
+    try {
+      result = await inSavepoint(() => evaluateRuleSet(complianceRule, ruleDeferred, ruleEvents));
+    } catch (error) {
+      onRuleSetError(complianceRule, error);
+      continue;
+    }
+    results.push(result);
+    if (options.deferred) {
+      options.deferred.push(...ruleDeferred);
+    } else {
+      for (const run of ruleDeferred) await enqueueRemediationRun(run.runId, run.deviceId);
+    }
+    if (options.deferredEvents) {
+      options.deferredEvents.push(...ruleEvents);
+    } else {
+      await publishPolicyEventsInOrder(ruleEvents);
     }
   }
 
@@ -2370,15 +2418,21 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   rulesScanned: number;
   /** Devices the scan attempted, including any in `devicesFailed`. */
   devicesEvaluated: number;
-  /** Devices whose evaluation failed and rolled back (#10401). */
+  /**
+   * Devices that produced no result because of a failure: the device's own
+   * evaluation threw and rolled back, or every rule set it attempted failed
+   * (#10401).
+   */
   devicesFailed: number;
+  /** Rule sets whose evaluation failed and rolled back alone (#10401). */
+  ruleSetsFailed: number;
   results: ConfigPolicyEvaluationResult[];
 } & RemediationAfterCommit> {
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
   const deferredEvents: DeferredPolicyEvent[] | undefined = options.deferEnqueue ? [] : undefined;
   const dueChecks = await scanDueComplianceChecks();
   if (dueChecks.length === 0) {
-    return { rulesScanned: 0, devicesEvaluated: 0, devicesFailed: 0, results: [] };
+    return { rulesScanned: 0, devicesEvaluated: 0, devicesFailed: 0, ruleSetsFailed: 0, results: [] };
   }
 
   const nowMs = Date.now();
@@ -2432,51 +2486,73 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   const allDeviceIds = Array.from(dueRuleIdsByDeviceId.keys());
   const allResults: ConfigPolicyEvaluationResult[] = [];
   const failures: unknown[] = [];
+  let devicesFailed = 0;
+  let ruleSetsFailed = 0;
 
   for (const deviceId of allDeviceIds) {
     // #10401 — the worker runs this whole scan in ONE system transaction. A
-    // statement error in one device's evaluation aborts that transaction, and
-    // postgres.js re-throws it at COMMIT even though the catch below swallowed
-    // it: nothing any device wrote persists, no policy.* event goes out, and
-    // the next scan hits the same device. Every compliance alert in the fleet
-    // stays as it was for as long as that one device keeps failing. Each
-    // device runs in its own savepoint instead, and keeps its remediation runs
-    // and events in its own buffers until the savepoint is released, so a
-    // device that fails rolls back alone and contributes nothing.
+    // statement error in one evaluation aborts that transaction, and
+    // postgres.js re-throws it at COMMIT even though a catch swallowed it:
+    // nothing the scan wrote persists, no policy.* event goes out, and the next
+    // scan hits the same error. Each device runs in its own savepoint, and each
+    // of its rule sets in a savepoint nested inside that one
+    // (`onRuleSetError`). A failed rule set rolls back alone and the device's
+    // other rule sets commit; a failure outside any rule set (loading the
+    // device or its telemetry) rolls back the device alone. Each level keeps
+    // its remediation runs and events in its own buffers until its savepoint
+    // is released, so a failure hands on nothing.
     const deviceDeferred: DeferredRemediationEnqueues | undefined = deferred ? [] : undefined;
     const deviceEvents: DeferredPolicyEvent[] | undefined = deferredEvents ? [] : undefined;
+    let deviceRuleSetFailures = 0;
     try {
       const dueRuleIds = Array.from(dueRuleIdsByDeviceId.get(deviceId) ?? []);
-      const deviceResults = await inDeviceSavepoint(() => evaluateDeviceComplianceFromConfigPolicy(
+      const deviceResults = await inSavepoint(() => evaluateDeviceComplianceFromConfigPolicy(
         deviceId,
-        { ruleIds: dueRuleIds, deferred: deviceDeferred, deferredEvents: deviceEvents },
+        {
+          ruleIds: dueRuleIds,
+          deferred: deviceDeferred,
+          deferredEvents: deviceEvents,
+          onRuleSetError: (complianceRule, error) => {
+            deviceRuleSetFailures++;
+            failures.push(error);
+            console.error(
+              `[ConfigPolicyCompliance] Failed to evaluate rule set ${complianceRule.id} on device ${deviceId}:`,
+              error,
+            );
+            reportScanFailure(error, 'rule_set');
+          },
+        },
       ));
       allResults.push(...deviceResults);
       if (deferred && deviceDeferred) deferred.push(...deviceDeferred);
       if (deferredEvents && deviceEvents) deferredEvents.push(...deviceEvents);
+      ruleSetsFailed += deviceRuleSetFailures;
+      // Every rule set it attempted failed: nothing about this device moved.
+      if (deviceRuleSetFailures > 0 && deviceResults.length === 0) devicesFailed++;
     } catch (error) {
+      // The device's savepoint rolled back, rule sets that succeeded inside it
+      // included; any rule-set failures it recorded are still failures.
+      ruleSetsFailed += deviceRuleSetFailures;
+      devicesFailed++;
       failures.push(error);
       console.error(`[ConfigPolicyCompliance] Failed to evaluate device ${deviceId}:`, error);
-      // A failed device is retried on every scan, so group its events under a
-      // bounded fingerprint (SQLSTATE, never an id) rather than one per device.
-      captureException(error, undefined, { job: 'config-policy-compliance-scan' }, {
-        fingerprint: ['config-policy-compliance-device', pgErrorCode(error) ?? 'unknown'],
-      });
+      reportScanFailure(error, 'device');
     }
   }
 
   if (failures.length > 0) {
     console.error(
-      `[ConfigPolicyCompliance] ${failures.length} of ${allDeviceIds.length} device evaluation(s) failed this scan`,
+      `[ConfigPolicyCompliance] ${devicesFailed} of ${allDeviceIds.length} device(s) and ${ruleSetsFailed} rule set(s) failed this scan`,
     );
-    // Every device failing is not one bad device: it is a fault the whole scan
-    // shares (schema drift, a broken query). Fail the job, as it did before the
-    // per-device savepoints, instead of committing an empty scan that looks
-    // healthy.
-    if (failures.length === allDeviceIds.length) {
+    // Every evaluation failing is not one bad device or rule set: it is a fault
+    // the whole scan shares (schema drift, a broken query). Fail the job, as it
+    // did before the savepoints, instead of committing an empty scan that looks
+    // healthy. A device counts as failed when it threw outright or when every
+    // rule set it attempted failed.
+    if (devicesFailed === allDeviceIds.length) {
       throw new AggregateError(
         failures,
-        `[ConfigPolicyCompliance] every device evaluation failed (${failures.length})`,
+        `[ConfigPolicyCompliance] every compliance evaluation failed (${devicesFailed} device(s), ${ruleSetsFailed} rule set(s))`,
       );
     }
   }
@@ -2484,19 +2560,31 @@ export async function scanAndEvaluateConfigPolicyCompliance(
   return {
     rulesScanned: dueChecks.length,
     devicesEvaluated: allDeviceIds.length,
-    devicesFailed: failures.length,
+    devicesFailed,
+    ruleSetsFailed,
     results: allResults,
     ...afterCommitOf(deferred, deferredEvents),
   };
 }
 
 /**
- * One device's share of the compliance scan, in a driver-owned savepoint when a
- * transaction is open (see the loop in scanAndEvaluateConfigPolicyCompliance).
- * With no DB context each statement autocommits on its own, so a failure
- * cannot reach any other device and there is nothing to isolate.
+ * A failed evaluation is retried on every scan, so its Sentry events group
+ * under a bounded fingerprint (SQLSTATE, never an id) rather than one per
+ * device or rule set. `stage` is a tag, not part of the fingerprint.
  */
-function inDeviceSavepoint<T>(fn: () => Promise<T>): Promise<T> {
+function reportScanFailure(error: unknown, stage: 'device' | 'rule_set'): void {
+  captureException(error, undefined, { job: 'config-policy-compliance-scan', stage }, {
+    fingerprint: ['config-policy-compliance-device', pgErrorCode(error) ?? 'unknown'],
+  });
+}
+
+/**
+ * Runs `fn` in a driver-owned savepoint when a transaction is open (the
+ * compliance scan nests one per device and one per rule set inside it). With
+ * no DB context each statement autocommits on its own, so a failure cannot
+ * reach any other evaluation and there is nothing to isolate.
+ */
+function inSavepoint<T>(fn: () => Promise<T>): Promise<T> {
   return hasDbAccessContext() ? withDbTransaction(fn) : fn();
 }
 
