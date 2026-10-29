@@ -257,6 +257,19 @@ describe('toProviderHealthRow', () => {
     expect(toProviderHealthRow(providerLeg({ accountType: 'm365' }), { now: NOW, labels: 'vendor' }).accountType).toBe('m365');
   });
 
+  it('preserves gws account type and excludes linked and unlinked SaaS rows from endpoint counts', () => {
+    const rows = [null, DEVICE].map(breezeDeviceId => toProviderHealthRow(
+      providerLeg({ provider: 'dropsuite', accountType: 'gws', breezeDeviceId, dataSources: ['gws_drive'] }),
+      { now: NOW, labels: 'vendor' },
+    ));
+    expect(rows.map(row => row.accountType)).toEqual(['gws', 'gws']);
+    const summary = foldBackupHealthSummary(rows);
+    expect(summary.endpoints).toEqual({ total: 0, covered: 0, uncovered: 0 });
+    expect(summary.providerOnly).toBe(0);
+    expect(summary.m365Accounts).toBe(2);
+    expect(summary.byStatus.completed).toBe(2);
+  });
+
   it('forces health unknown and covered false when the sync is stale, and says so', () => {
     const row = toProviderHealthRow(
       providerLeg({ connectionLastSyncAt: '2026-09-15T09:00:00.000Z' }), // 3h > 2 x 30min

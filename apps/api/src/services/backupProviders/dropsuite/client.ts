@@ -4,7 +4,8 @@ import { ProviderRequestError } from '../types';
 export const DROPSUITE_PAGE_SIZE = 100;
 export const DROPSUITE_MAX_PAGES = 200;
 const MAX_RETRIES = 3;
-const MAX_REQUESTS = 10_000;
+const MAX_CUSTOMER_REQUESTS = 500;
+const MAX_ADMIN_REQUESTS = 1000;
 type CredentialScope = 'admin' | 'customer';
 
 /** Only these failures may omit one customer's inventory from a snapshot. */
@@ -88,7 +89,9 @@ export class DropsuiteClient {
   private readonly fetchImpl: DropsuiteFetchImpl;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly timeoutMs: number;
-  private requests = 0;
+  private adminRequests = 0;
+  private readonly customerRequests = new Map<string, number>();
+  private aborted = false;
 
   constructor(options: DropsuiteClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '') + '/';
@@ -98,13 +101,24 @@ export class DropsuiteClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
+  /** Shared by both workers; in-flight calls may finish but no new request starts. */
+  abort(): void { this.aborted = true; }
+
   async get(path: string, accessToken?: string, scope: CredentialScope = 'admin'): Promise<unknown> {
     const relativePath = path.replace(/^\/+/, '');
     const url = new URL(relativePath, this.baseUrl).toString();
     const headers: Record<string, string> = { 'X-Reseller-Token': this.resellerToken, Accept: 'application/json' };
     if (accessToken) headers['X-Access-Token'] = accessToken;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (++this.requests > MAX_REQUESTS) throw failure('request_budget', 'Dropsuite request budget exceeded');
+      if (this.aborted) throw failure('aborted', 'Dropsuite enumeration aborted');
+      if (scope === 'customer') {
+        const key = accessToken ?? '';
+        const requests = (this.customerRequests.get(key) ?? 0) + 1;
+        this.customerRequests.set(key, requests);
+        if (requests > MAX_CUSTOMER_REQUESTS) throw new CustomerRequestError('Dropsuite customer request budget exceeded', 'request_budget');
+      } else if (++this.adminRequests > MAX_ADMIN_REQUESTS) {
+        throw failure('request_budget', 'Dropsuite admin request budget exceeded');
+      }
       let response: DropsuiteFetchResponse;
       let body: string;
       try {
@@ -122,7 +136,7 @@ export class DropsuiteClient {
         const code = `http_${status}`;
         const message = `Dropsuite returned HTTP ${status}`;
         const unauthorized = status === 401 || status === 403;
-        if (scope === 'customer' && (unauthorized || (status === 400 && /not authori[sz]ed/i.test(body)))) {
+        if (scope === 'customer' && (unauthorized || status === 400 || status === 404)) {
           throw new CustomerRequestError(message, code);
         }
         if (unauthorized) throw new ProviderRequestError(message, { code, reauth: scope === 'admin' });
@@ -153,27 +167,53 @@ export class DropsuiteClient {
   async list(path: string, accessToken?: string, scope: CredentialScope = 'admin'): Promise<Record<string, unknown>[]> {
     const result: Record<string, unknown>[] = [];
     const firstItems = new Set<string>();
+    const seen = new Set<string>();
+    const identityKey = path.replace(/^\/+/, '').split('?')[0] === 'googledrives' ? 'drive_account_id' : 'id';
+    const identity = (row: Record<string, unknown>): string => JSON.stringify(row[identityKey] ?? row);
+    const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+    const isEnvelope = (value: unknown): value is Record<string, unknown> => isRecord(value) && (Array.isArray(value.result_set) || Array.isArray(value.data));
+    const positive = (value: unknown): number | null => {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
     for (let page = 1; page <= DROPSUITE_MAX_PAGES; page++) {
       const separator = path.includes('?') ? '&' : '?';
       const payload = await this.get(`${path}${separator}page=${page}&per_page=${DROPSUITE_PAGE_SIZE}`, accessToken, scope);
-      const envelope = payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? payload as Record<string, unknown> : null;
-      const rows = Array.isArray(payload) ? payload : envelope?.result_set ?? envelope?.data;
-      if (!Array.isArray(rows) || rows.some((row) => !row || typeof row !== 'object' || Array.isArray(row))) {
+      const envelopes = Array.isArray(payload)
+        ? payload.length && payload.every(isEnvelope) ? payload : null
+        : isEnvelope(payload) ? [payload] : null;
+      const groups = envelopes ? envelopes.map(envelope => envelope.result_set ?? envelope.data) : [payload];
+      if (groups.some(rows => !Array.isArray(rows) || rows.some(row => !isRecord(row)))) {
         throw failure('malformed_response', 'Dropsuite did not return a list');
       }
-      if (!rows.length) return result;
-      const first = rows[0] as Record<string, unknown>;
-      const identity = JSON.stringify(first.id ?? first.drive_account_id ?? first);
-      if (firstItems.has(identity)) return result;
-      firstItems.add(identity);
-      result.push(...rows as Record<string, unknown>[]);
-      const pagination = envelope?.pagination as Record<string, unknown> | undefined;
-      const reportedSize = Number(pagination?.per_page);
-      const pageSize = Number.isFinite(reportedSize) && reportedSize > 0 ? reportedSize : DROPSUITE_PAGE_SIZE;
-      const totalPages = Number(pagination?.total_pages);
-      const currentPage = Number(pagination?.current_page ?? page);
-      if (rows.length < pageSize || (Number.isFinite(totalPages) && currentPage >= totalPages)) return result;
+      const pages = groups as Record<string, unknown>[][];
+      const rows = pages.flat();
+      // Each envelope can advance independently; an unchanged first envelope
+      // must not hide new rows in the remaining envelopes.
+      if (rows.length) {
+        const first = JSON.stringify(pages.map(items => items[0] ? identity(items[0]) : null));
+        if (firstItems.has(first)) return result;
+        firstItems.add(first);
+        for (const row of rows) {
+          const id = identity(row);
+          if (!seen.has(id)) { seen.add(id); result.push(row); }
+        }
+      }
+      if (!envelopes) {
+        // Bare arrays do not report the server's page size.
+        if (!rows.length) return result;
+        continue;
+      }
+      const more = envelopes.some((envelope, index) => {
+        const pagination = isRecord(envelope.pagination) ? envelope.pagination : {};
+        const totalPages = positive(pagination.total_pages);
+        const currentPage = positive(pagination.current_page) ?? page;
+        if (pagination.next_link != null || (totalPages !== null && currentPage < totalPages)) return true;
+        if (totalPages !== null || 'next_link' in pagination) return false;
+        const size = positive(pagination.per_page);
+        return size !== null ? pages[index]!.length >= size : pages[index]!.length > 0;
+      });
+      if (!more) return result;
     }
     throw failure('too_many_pages', 'Dropsuite exceeded 200 pages');
   }

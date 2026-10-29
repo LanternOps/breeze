@@ -14,9 +14,11 @@ const { authState, gates, adapterState, dbState } = vi.hoisted(() => ({
     test: { ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 3 } as Record<string, unknown>,
     /** Runs during the vendor round-trip — simulates a concurrent writer. */
     onTest: null as null | (() => void),
+    customers: [] as Array<{ vendorCustomerId: string }>,
   },
   dbState: {
     connections: [] as Array<Record<string, unknown>>,
+    customers: [] as Array<Record<string, unknown>>,
     inserted: [] as Array<Record<string, unknown>>,
     updated: [] as Array<Record<string, unknown>>,
     deleted: 0,
@@ -61,10 +63,10 @@ function referencesColumn(node: unknown, marker: string): boolean {
  */
 function selectChain(columns: Record<string, unknown> | undefined) {
   return {
-    from: vi.fn(() => ({
+    from: vi.fn((table: { vendorCustomerId?: string }) => ({
       where: vi.fn((..._a: unknown[]) => {
         dbState.capturedSelectWheres.push(_a[0]);
-        const rows = () => dbState.connections.map((row) => projectRow(columns, row));
+        const rows = () => (table.vendorCustomerId ? dbState.customers : dbState.connections).map((row) => projectRow(columns, row));
         const build = (): unknown => Object.assign(Promise.resolve(rows()), {
           limit: vi.fn(() => build()),
           orderBy: vi.fn(async () => rows()),
@@ -189,7 +191,7 @@ vi.mock('../../db/schema', () => ({
     lastSyncLinkedDevices: 'last_sync_linked_devices', lastSyncAmbiguousDevices: 'last_sync_ambiguous_devices',
     createdBy: 'created_by', createdAt: 'created_at', updatedAt: 'updated_at',
   },
-  backupProviderCustomers: { id: 'id', connectionId: 'connection_id', partnerId: 'partner_id', orgId: 'org_id' },
+  backupProviderCustomers: { vendorCustomerId: 'vendor_customer_id', id: 'id', connectionId: 'connection_id', partnerId: 'partner_id', orgId: 'org_id' },
   backupProviderDevices: { id: 'id', connectionId: 'connection_id', orgId: 'org_id', portalShowProviderName: 'portal_show_provider_name' },
   organizations: { id: 'id', name: 'name', partnerId: 'partner_id' },
   devices: { id: 'id', orgId: 'org_id', hostname: 'hostname', displayName: 'display_name', siteId: 'site_id', status: 'status' },
@@ -241,6 +243,7 @@ vi.mock('../../services/backupProviders/registry', () => ({
       label: key === 'cove' ? 'Cove Data Protection' : 'NinjaOne SaaS Backup (Dropsuite)',
       defaultBaseUrl: key === 'cove' ? 'https://api.backup.management/jsonapi' : undefined,
       defaultSyncIntervalMinutes: key === 'cove' ? 30 : 60,
+      rootContinuity: key === 'dropsuite' ? 'customer_overlap' : undefined,
       validateBaseUrl: key === 'dropsuite'
         ? (url: string) => new URL(url).hostname === 'backup.dropsuite.com' ? null : 'Host is not allowed'
         : undefined,
@@ -258,7 +261,7 @@ vi.mock('../../services/backupProviders/registry', () => ({
         adapterState.onTest?.();
         return adapterState.test;
       }),
-      listCustomers: vi.fn(async () => []),
+      listCustomers: vi.fn(async () => adapterState.customers),
       listDevices: vi.fn(async () => ({ devices: [], failedCustomerIds: [] })),
     };
   }),
@@ -327,6 +330,8 @@ describe('backup provider connection routes', () => {
     authState.accessibleOrgIds = [];
     adapterState.test = { ok: true, rootId: '1000', rootName: 'OliveTech', customerCount: 3 };
     adapterState.onTest = null;
+    adapterState.customers = [];
+    dbState.customers = [];
     dbState.connections = [];
     dbState.inserted = [];
     dbState.updated = [];
@@ -585,6 +590,50 @@ describe('backup provider connection routes', () => {
     const patchCreds = () => app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials: CREDS }),
+    });
+
+    describe('Dropsuite customer continuity', () => {
+      const newCredentials = { resellerToken: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', authToken: 'rotated-admin' };
+      const rotate = () => app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ credentials: newCredentials }),
+      });
+      beforeEach(() => {
+        dbState.connections = [connectionRow({ provider: 'dropsuite', vendorRootId: 'old-token-hash' })];
+        adapterState.test = { ok: true, rootId: 'dropsuite', rootName: 'Dropsuite reseller', customerCount: 1 };
+      });
+
+      it('rotates Dropsuite credentials when a stored customer overlaps despite a changed root ID', async () => {
+        dbState.customers = [{ vendorCustomerId: 'customer-1' }, { vendorCustomerId: 'customer-2' }];
+        adapterState.customers = [{ vendorCustomerId: 'customer-2' }, { vendorCustomerId: 'customer-3' }];
+        expect((await rotate()).status).toBe(200);
+        expect(dbState.updated[0]).toMatchObject({ vendorRootId: 'dropsuite', status: 'connected' });
+        expect(dbState.locks).toBeGreaterThan(0);
+        expect(dbState.capturedSelectWheres.some(condition => referencesColumn(condition, 'connection_id') && referencesColumn(condition, 'partner_id'))).toBe(true);
+      });
+
+      it('rejects a different Dropsuite account with 409 even when the constant root IDs match', async () => {
+        dbState.connections[0]!.vendorRootId = 'dropsuite';
+        dbState.customers = [{ vendorCustomerId: 'customer-1' }];
+        adapterState.customers = [{ vendorCustomerId: 'customer-other' }];
+        const response = await rotate();
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH' });
+        expect(dbState.updated).toHaveLength(0);
+        expect(encryptMock).not.toHaveBeenCalled();
+      });
+
+      it('rotates Dropsuite credentials for an empty connection', async () => {
+        expect((await rotate()).status).toBe(200);
+        expect(dbState.updated[0]).toMatchObject({ vendorRootId: 'dropsuite' });
+      });
+
+      it('tests existing Dropsuite credentials using customer continuity for a legacy root hash', async () => {
+        dbState.customers = [{ vendorCustomerId: 'customer-1' }];
+        adapterState.customers = [{ vendorCustomerId: 'customer-1' }];
+        const response = await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
+        expect(response.status).toBe(200);
+      });
     });
 
     it('credentials resolving to a DIFFERENT vendorRootId -> 409 VENDOR_ROOT_MISMATCH, nothing written, audited', async () => {

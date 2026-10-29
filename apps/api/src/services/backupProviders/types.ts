@@ -98,6 +98,8 @@ export interface BackupProviderAdapter {
   readonly defaultBaseUrl?: string;
   validateBaseUrl?(url: string): string | null;
   readonly defaultSyncIntervalMinutes?: number;
+  /** Credential rotation proves continuity by root ID unless the vendor lacks a stable root identity. */
+  readonly rootContinuity?: 'root_id' | 'customer_overlap';
   testConnection(creds: unknown, baseUrl: string): Promise<ProviderTestResult>;
   /** The whole subtree under `rootId`, flattened. */
   listCustomers(creds: unknown, baseUrl: string, rootId: string): Promise<VendorCustomer[]>;

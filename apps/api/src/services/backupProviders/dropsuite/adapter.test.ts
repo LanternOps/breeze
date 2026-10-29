@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { deriveBackupHealth } from '@breeze/shared';
+import * as clientModule from './client';
+import missingAccount from './__fixtures__/error-account-not-found.json';
 import { dropsuiteAdapter as adapter, dropsuiteCredentialsSchema, __setDropsuiteClientFactoryForTests, mapDropsuiteStatus, rollupWorkload } from './adapter';
 import { DropsuiteClient, type DropsuiteFetchImpl } from './client';
 import users from './__fixtures__/users.json';
@@ -28,7 +30,7 @@ function fakeVendor(override?: (path: string, token: string | undefined) => { st
   __setDropsuiteClientFactoryForTests((baseUrl, resellerToken) => new DropsuiteClient({ baseUrl, resellerToken, fetchImpl: fetch, sleepImpl: async () => {} }));
   return fetch;
 }
-afterEach(() => { __setDropsuiteClientFactoryForTests(null); vi.useRealTimers(); });
+afterEach(() => { __setDropsuiteClientFactoryForTests(null); vi.useRealTimers(); vi.restoreAllMocks(); });
 describe('configuration', () => {
   it('validates credentials and defaults', () => {
     expect(dropsuiteCredentialsSchema.parse({ ...CREDS, authToken: ' admin ' })).toEqual({ ...CREDS, authToken: 'admin' });
@@ -57,6 +59,26 @@ describe('rollup', () => {
     expect(row).toMatchObject({ vendorDeviceId: '10001-14:m365_mail', accountType: 'm365', status: 'completed_with_errors', usedBytes: 7168, errorsCount: 1, lastSuccessAt: new Date('2026-10-27T04:00:00Z'), lastSessionAt: new Date('2026-10-27T05:00:00Z') });
     expect(row?.raw).toMatchObject({ itemCount: 3, deactivatedCount: 1, statusCounts: { completed: 1, completed_with_errors: 1, in_progress: 1 } });
   });
+  it('uses newest successful Teams backup so unchanged teams do not make health critical', () => {
+    const old = new Date(NOW.getTime() - 5 * 86400_000).toISOString();
+    const row = rollupWorkload(users[0]!, 'm365_teams', [
+      { id: 1, current_backup_status: 'Completed', last_backup: old },
+      { id: 2, current_backup_status: 'Completed', last_backup: NOW.toISOString() },
+      { id: 3, current_backup_status: 'Connecting', last_backup: new Date(NOW.getTime() + 1000).toISOString() },
+    ], NOW, [])!;
+    expect(row.lastSuccessAt).toEqual(NOW);
+    expect(deriveBackupHealth({ status: row.status, lastSuccessAt: row.lastSuccessAt, errorsCount: row.errorsCount, now: NOW }).health).not.toBe('critical');
+    expect(row.raw.failingItems).toEqual([]);
+  });
+  it.each(['m365_mail', 'gws_mail', 'm365_onedrive', 'm365_sharepoint', 'gws_drive', 'gws_shared_drive'] as const)('includes stuck active items in oldest backup for %s', workload => {
+    const old = new Date(NOW.getTime() - 14 * 86400_000);
+    const row = rollupWorkload(users[0]!, workload, [
+      { id: 1, current_backup_status: 'Connecting', last_backup: old.toISOString() },
+      { id: 2, current_backup_status: 'Completed', last_backup: NOW.toISOString() },
+      { id: 3, current_backup_status: 'Completed', last_backup: '2020-01-01', deactivated_since: '2021-01-01' },
+    ], NOW, [])!;
+    expect(row.lastSuccessAt).toEqual(old);
+  });
   it('caps details and error lengths, counting unknown vocabulary', () => {
     const row = rollupWorkload(users[0]!, 'm365_mail', Array.from({length: 60}, (_, id) => ({ id, current_backup_status: 'Novel', errors: 'x'.repeat(500) })), NOW, [])!;
     expect(row.raw.vendorStatuses).toEqual({ Novel: 60 });
@@ -75,9 +97,10 @@ describe('rollup', () => {
   });
 });
 describe('adapter over HTTP fixtures', () => {
-  it('tests status with reseller only then users with admin, hashing reseller identity', async () => {
+  it('keeps reseller root identity stable across credential rotation', async () => {
     const fetch = fakeVendor();
-    await expect(adapter.testConnection(CREDS, BASE)).resolves.toEqual({ ok: true, rootId: createHash('sha256').update(CREDS.resellerToken).digest('hex').slice(0, 8), rootName: 'Dropsuite reseller', customerCount: 2 });
+    expect(adapter.rootContinuity).toBe('customer_overlap');
+    await expect(adapter.testConnection(CREDS, BASE)).resolves.toEqual({ ok: true, rootId: 'dropsuite', rootName: 'Dropsuite reseller', customerCount: 2 });
     expect(vi.mocked(fetch).mock.calls[0]![1].headers['X-Access-Token']).toBeUndefined();
     expect(vi.mocked(fetch).mock.calls[1]![1].headers['X-Access-Token']).toBe(CREDS.authToken);
   });
@@ -102,6 +125,69 @@ describe('adapter over HTTP fixtures', () => {
     const result = await adapter.listDevices(CREDS, BASE, 'root');
     expect(result.failedCustomerIds).toEqual([users[0]!.id]); expect(result.devices).toHaveLength(6);
     expect(result.devices.every(d => d.vendorCustomerId === users[1]!.id)).toBe(true);
+  });
+  it('rolls up fixture Google Drives by drive_account_id even when id is shared', async () => {
+    fakeVendor(path => path === 'googledrives' ? { body: googledrives.map(item => ({ ...item, id: 'not-the-identity' })) } : undefined);
+    const result = await adapter.listDevices(CREDS, BASE, 'root');
+    expect(result.devices.filter(row => row.dataSources.includes('gws_drive'))).toHaveLength(2);
+    expect(result.devices.find(row => row.dataSources.includes('gws_drive'))).toMatchObject({ usedBytes: 600, raw: { itemCount: 3 } });
+  });
+  it('rejects Google Drive rows missing drive_account_id rather than accepting id', async () => {
+    fakeVendor(path => path === 'googledrives' ? { body: [{ id: 1, last_backup: NOW.toISOString() }] } : undefined);
+    await expect(adapter.listDevices(CREDS, BASE, 'root')).rejects.toMatchObject({ code: 'malformed_response' });
+  });
+  it.each([400, 404])('isolates account-not-found customer HTTP %s while updating the other', async status => {
+    fakeVendor((path, token) => path === 'accounts' && token === users[0]!.authentication_token ? { status, body: missingAccount } : undefined);
+    const result = await adapter.listDevices(CREDS, BASE, 'root');
+    expect(result.failedCustomerIds).toEqual([users[0]!.id]);
+    expect(result.devices).toHaveLength(6);
+  });
+  it('fails retryably when every customer is skipped', async () => {
+    fakeVendor(path => path === 'accounts' ? { status: 401, body: missingAccount } : undefined);
+    await expect(adapter.listDevices(CREDS, BASE, 'root')).rejects.toMatchObject({ name: 'ProviderRequestError', reauth: false, code: 'all_customers_failed' });
+  });
+  it('scrubs each customer with only admin reseller and its own token', async () => {
+    fakeVendor();
+    const scrub = vi.spyOn(clientModule, 'scrubTokens');
+    await adapter.listCustomers(CREDS, BASE, 'root');
+    await adapter.listDevices(CREDS, BASE, 'root');
+    expect(scrub.mock.calls.some(([value]) => Array.isArray(value) && value === users)).toBe(false);
+    for (const [, tokens = []] of scrub.mock.calls) {
+      expect(tokens.length).toBeLessThanOrEqual(3);
+      expect(tokens).toContain(CREDS.authToken);
+      expect(tokens).toContain(CREDS.resellerToken);
+    }
+  });
+  it('skips only the customer exceeding 500 requests and preserves the other workload results', async () => {
+    const fetch = fakeVendor((path, token) => {
+      if (token !== users[0]!.authentication_token) return undefined;
+      if (path === 'sharepoints/domains' || path === 'teams_and_groups/domains') return { body: Array.from({ length: 199 }, (_, id) => ({ id })) };
+      if (path.startsWith('sharepoints/domains/') || path.startsWith('teams_and_groups/domains/')) return { body: [{ id: path, current_backup_status: 'Completed', last_backup: NOW.toISOString() }] };
+      return undefined;
+    });
+    const result = await adapter.listDevices(CREDS, BASE, 'root');
+    expect(result.failedCustomerIds).toEqual([users[0]!.id]);
+    expect(result.devices).toHaveLength(6);
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init.headers['X-Access-Token'] === users[0]!.authentication_token)).toHaveLength(500);
+  });
+  it('stops the other worker before its next request after a fatal failure', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const calls: string[] = [];
+    const fetch: DropsuiteFetchImpl = async (url, init) => {
+      const path = new URL(url).pathname.replace('/api/', '');
+      const token = init.headers['X-Access-Token'];
+      calls.push(`${token}:${path}`);
+      if (path.endsWith('/tenants') && token === users[1]!.authentication_token) await gate;
+      const body = path === 'users' ? users : path === 'accounts' ? '<html>fatal</html>' : [];
+      return { ok: true, status: 200, text: async () => typeof body === 'string' ? body : JSON.stringify(body) };
+    };
+    __setDropsuiteClientFactoryForTests((baseUrl, resellerToken) => new DropsuiteClient({ baseUrl, resellerToken, fetchImpl: fetch }));
+    await expect(adapter.listDevices(CREDS, BASE, 'root')).rejects.toMatchObject({ code: 'malformed_response' });
+    const before = calls.length;
+    release();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(calls).toHaveLength(before);
   });
   it('admin rejection fails the run and requests reauth', async () => {
     fakeVendor(path => path === 'users' ? { status: 401, body: 'denied' } : undefined);

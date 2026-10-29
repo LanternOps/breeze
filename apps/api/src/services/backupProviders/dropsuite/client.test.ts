@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { CustomerRequestError, DropsuiteClient, scrubTokens, type DropsuiteFetchImpl } from './client';
 import accounts from './__fixtures__/accounts-paged-p1.json';
 import tenants from './__fixtures__/tenants.json';
+import usersP1 from './__fixtures__/users-paged-envelopes-p1.json';
+import usersP2 from './__fixtures__/users-paged-envelopes-p2.json';
+import missingAccount from './__fixtures__/error-account-not-found.json';
 const BASE = 'https://example.dropsuite.us/api///';
 function setup(bodies: unknown[], statuses: number[] = [], retryAfter?: string) {
   let index = 0;
@@ -17,9 +20,47 @@ function setup(bodies: unknown[], statuses: number[] = [], retryAfter?: string) 
 const page = (start: number) => Array.from({ length: 100 }, (_, i) => ({ id: start + i }));
 describe('Dropsuite client', () => {
   it('joins paths and sends GET with credentials and pagination', async () => {
-    const { client, fetchImpl } = setup([[{ id: 1 }]]);
+    const { client, fetchImpl } = setup([[{ id: 1 }], []]);
     await expect(client.list('/users', 'admin')).resolves.toEqual([{ id: 1 }]);
     expect(fetchImpl).toHaveBeenCalledWith('https://example.dropsuite.us/api/users?page=1&per_page=100', expect.objectContaining({ method: 'GET', headers: { 'X-Reseller-Token': 'reseller', 'X-Access-Token': 'admin', Accept: 'application/json' } }));
+  });
+  it('concatenates arrays of user envelopes and follows any next_link', async () => {
+    const { client, fetchImpl } = setup([usersP1, usersP2]);
+    expect(await client.list('users', 'admin')).toEqual([...usersP1[1]!.result_set, ...usersP2[1]!.result_set]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it('follows any envelope total_pages even when another envelope is finished', async () => {
+    const { client } = setup([
+      [{ result_set: [], pagination: { total_pages: 1, current_page: 1 } }, { result_set: [{ id: 1 }], pagination: { total_pages: 2, current_page: 1, per_page: 100 } }],
+      [{ result_set: [{ id: 2 }], pagination: { total_pages: 2, current_page: 2 } }],
+    ]);
+    expect(await client.list('users', 'admin')).toEqual([{ id: 1 }, { id: 2 }]);
+  });
+  it('pages short bare arrays until empty and deduplicates overlapping identities', async () => {
+    const { client, fetchImpl } = setup([[{ id: 1 }, { id: 2 }], [{ id: 3 }, { id: 2 }], []]);
+    expect(await client.list('accounts', 'customer', 'customer')).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+  it.each([null, 0, -1, 'invalid'])('ignores invalid pagination counts %s', async count => {
+    const { client, fetchImpl } = setup([
+      { result_set: [{ id: 1 }], pagination: { per_page: count, total_pages: count, next_link: '/api/users?page=2' } },
+      { result_set: [{ id: 2 }], pagination: { per_page: count, total_pages: count } },
+      { result_set: [], pagination: { per_page: count, total_pages: count } },
+    ]);
+    expect(await client.list('users', 'admin')).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+  it.each([400, 404])('isolates account-not-found HTTP %s for a customer', async status => {
+    await expect(setup([missingAccount], [status]).client.list('accounts', 'customer', 'customer')).rejects.toMatchObject({ name: 'CustomerRequestError', code: `http_${status}`, reauth: false });
+  });
+  it('budgets 500 requests independently for each customer and 1000 for admin', async () => {
+    const { client, fetchImpl } = setup(Array.from({ length: 2005 }, () => []));
+    for (let i = 0; i < 500; i++) await client.get('accounts', 'first', 'customer');
+    await expect(client.get('accounts', 'first', 'customer')).rejects.toMatchObject({ name: 'CustomerRequestError', code: 'request_budget' });
+    for (let i = 0; i < 500; i++) await client.get('accounts', 'second', 'customer');
+    for (let i = 0; i < 1000; i++) await client.get('users', 'admin', 'admin');
+    await expect(client.get('users', 'admin', 'admin')).rejects.toMatchObject({ name: 'ProviderRequestError', code: 'request_budget', reauth: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(2000);
   });
   it('accepts plain status with reseller token only', async () => {
     const { client, fetchImpl } = setup(['OK']);
@@ -61,9 +102,9 @@ describe('Dropsuite client', () => {
     await expect(setup([{}], [status]).client.list('users', 'admin')).rejects.toMatchObject({ reauth: true });
     await expect(setup([{}], [status]).client.list('accounts', 'customer', 'customer')).rejects.toBeInstanceOf(CustomerRequestError);
   });
-  it('classifies customer 400 not authorized but not unrelated 400', async () => {
+  it('classifies all customer 400 responses as customer failures', async () => {
     await expect(setup([{ errors: { user: ['not authorized secret'] } }], [400]).client.list('accounts', 'customer', 'customer')).rejects.toMatchObject({ name: 'CustomerRequestError', reauth: false, message: 'Dropsuite returned HTTP 400' });
-    await expect(setup([{ errors: 'invalid input' }], [400]).client.list('accounts', 'customer', 'customer')).rejects.toMatchObject({ name: 'ProviderRequestError', reauth: false });
+    await expect(setup([{ errors: 'invalid input' }], [400]).client.list('accounts', 'customer', 'customer')).rejects.toMatchObject({ name: 'CustomerRequestError', reauth: false });
   });
   it.each([['2', 2000], ['120', 60000]] as const)('honors bounded Retry-After %s', async (header, wait) => {
     const { client, sleepImpl } = setup([{}, []], [429, 200], header);

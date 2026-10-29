@@ -293,7 +293,7 @@ export function toProviderHealthRow(
     name: row.name,
     computerName: row.computerName,
     osType: row.osType,
-    accountType: row.accountType === 'm365' ? 'm365' : 'endpoint',
+    accountType: row.accountType === 'm365' || row.accountType === 'gws' ? row.accountType : 'endpoint',
     status: row.status,
     // Stale evidence is not a verdict. The status and timestamps stay as last
     // observed so the UI can still say WHAT it last saw and WHEN, but the
@@ -412,7 +412,7 @@ export function foldBackupHealthSummary(rows: readonly BackupHealthRow[]): Backu
     summary.byHealth[row.health] += 1;
     summary.byRecency[row.recency] += 1;
 
-    if (row.accountType === 'm365') {
+    if (row.accountType === 'm365' || row.accountType === 'gws') {
       summary.m365Accounts += 1;
       continue;
     }

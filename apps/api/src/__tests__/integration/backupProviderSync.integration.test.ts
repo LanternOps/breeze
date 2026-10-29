@@ -336,6 +336,79 @@ describe('backup provider sync (real Postgres + Redis)', () => {
     expect(after.connection!.status).toBe('connected');
   });
 
+  runDb('a partial customer failure preserves its customer and device rows while updating the other customer', async () => {
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const fixture = await seed(unique);
+    const secondOrgId = await withSystemDbAccessContext(async () => {
+      const [org] = await db.insert(organizations).values({
+        currencyCode: 'USD', partnerId: fixture.partnerId, name: `BP Second Org ${unique}`,
+        slug: `bp-second-org-${unique}`, type: 'customer', status: 'active',
+      }).returning({ id: organizations.id });
+      return org!.id;
+    });
+    const firstCustomer = customer(fixture.orgId);
+    const secondCustomer = { ...customer(secondOrgId), vendorCustomerId: 'vc-2', name: 'Second customer' };
+    const successfulBackup = { status: 'completed', vendorStatusCode: 5, lastSuccessAt: new Date(), errorsCount: 0 };
+    listCustomers.mockResolvedValue([firstCustomer, secondCustomer]);
+    listDevices.mockResolvedValue({
+      devices: [
+        vendorDevice({ ...successfulBackup, name: `srv-${unique}` }),
+        vendorDevice({ ...successfulBackup, vendorCustomerId: 'vc-2', vendorDeviceId: 'vd-2', name: 'Second device' }),
+      ],
+      failedCustomerIds: [],
+    });
+    await syncConnectionById(fixture.connectionId);
+
+    const readInventory = () => withSystemDbAccessContext(async () => ({
+      customers: await db.select().from(backupProviderCustomers)
+        .where(eq(backupProviderCustomers.connectionId, fixture.connectionId)),
+      devices: await db.select().from(backupProviderDevices)
+        .where(eq(backupProviderDevices.connectionId, fixture.connectionId)),
+      history: await db.select().from(backupProviderDeviceHistory)
+        .where(eq(backupProviderDeviceHistory.orgId, fixture.orgId)),
+    }));
+    const before = await readInventory();
+    expect(before.customers).toHaveLength(2);
+    expect(before.devices).toHaveLength(2);
+    expect(before.history).toHaveLength(1);
+
+    // The admin list still sees the failed customer, but its changed metadata
+    // must not overwrite the last complete observation or clear its device count.
+    listCustomers.mockResolvedValue([
+      { ...firstCustomer, name: 'Failed customer must retain its old name' },
+      { ...secondCustomer, name: 'Second customer updated' },
+    ]);
+    listDevices.mockResolvedValue({
+      devices: [vendorDevice({
+        ...successfulBackup, vendorCustomerId: 'vc-2', vendorDeviceId: 'vd-2',
+        name: 'Second device updated', usedBytes: 4096,
+      })],
+      failedCustomerIds: ['vc-1'],
+    });
+    await syncConnectionById(fixture.connectionId);
+
+    const after = await readInventory();
+    expect(after.customers).toHaveLength(2);
+    expect(after.devices).toHaveLength(2);
+    expect(after.customers.find(row => row.vendorCustomerId === 'vc-1'))
+      .toEqual(before.customers.find(row => row.vendorCustomerId === 'vc-1'));
+    expect(after.devices.find(row => row.vendorDeviceId === 'vd-1'))
+      .toEqual(before.devices.find(row => row.vendorDeviceId === 'vd-1'));
+    expect(after.history).toEqual(before.history);
+    expect(after.customers.find(row => row.vendorCustomerId === 'vc-2')).toMatchObject({
+      vendorCustomerName: 'Second customer updated', deviceCount: 1, orgId: secondOrgId,
+    });
+    expect(after.devices.find(row => row.vendorDeviceId === 'vd-2')).toMatchObject({
+      vendorDeviceName: 'Second device updated', usedBytes: 4096, orgId: secondOrgId,
+    });
+    const [connection] = await withSystemDbAccessContext(() => db.select().from(backupProviderConnections)
+      .where(eq(backupProviderConnections.id, fixture.connectionId)));
+    expect(connection).toMatchObject({
+      lastSyncStatus: 'success', lastSyncCustomers: 2, lastSyncDevices: 2,
+    });
+    expect(connection!.lastSyncError).toContain('1 customer(s) skipped');
+  });
+
   runDb('a device under an UNMAPPED customer is counted but never stored', async () => {
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const fixture = await seed(unique);
