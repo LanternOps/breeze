@@ -1366,13 +1366,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
     // Captured before the request so a logout that races it is detectable.
     const generation = useAuthStore.getState().sessionGeneration;
+    let stepUpGrantId: string | undefined;
+    let deleteRequestPending = false;
     try {
       setMutatingPasskeyId(passkeyId);
       const retryGrant = passkeyDeleteRetryGrant?.passkeyId === passkeyId
         && passkeyDeleteRetryGrant.sessionGeneration === generation
         ? passkeyDeleteRetryGrant
         : null;
-      let stepUpGrantId = retryGrant?.grantId;
+      stepUpGrantId = retryGrant?.grantId;
       if (!retryGrant) {
         setPasskeyDeleteRetryGrant(null);
         let stepUpBody: Record<string, unknown>;
@@ -1422,13 +1424,15 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       // runaction-exempt: inline-feedback handler, step 3 of 3 — see the options call above.
+      deleteRequestPending = true;
       const response = await fetchWithAuth(`/auth/passkeys/${encodeURIComponent(passkeyId)}`, {
         method: 'DELETE',
         body: JSON.stringify({ ...manageProof(passkeyPassword), stepUpGrantId })
       });
+      deleteRequestPending = false;
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setPasskeyDeleteRetryGrant(data.code === 'invalid_credentials' && stepUpGrantId
+        setPasskeyDeleteRetryGrant((data.code === 'invalid_credentials' || response.status === 409) && stepUpGrantId
           ? { passkeyId, grantId: stepUpGrantId, sessionGeneration: generation }
           : null);
         throw new Error(
@@ -1449,6 +1453,9 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setPasskeyFactorCode('');
       setPasskeySuccess(withReauthNotice(t('profilePage.passkeyDeleted'), deleteReplacementAdopted));
     } catch (error) {
+      if (deleteRequestPending && stepUpGrantId) {
+        setPasskeyDeleteRetryGrant({ passkeyId, grantId: stepUpGrantId, sessionGeneration: generation });
+      }
       setPasskeyError(error instanceof Error ? error.message : t('profilePage.failedToDeletePasskey'));
     } finally {
       setMutatingPasskeyId(null);
