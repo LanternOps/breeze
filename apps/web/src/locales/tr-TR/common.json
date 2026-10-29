@@ -1292,7 +1292,7 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "PSA Biletleri",
         "unlinked": "Bağlantı kaldırıldı"
       }
     },

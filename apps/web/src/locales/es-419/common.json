@@ -1292,7 +1292,7 @@
           "waiting": "En espera"
         },
         "ticketCount": "{{filtered}} de entradas {{total}}",
-        "title": "Entradas sincronizadas",
+        "title": "Tickets de PSA",
         "unlinked": "Desvinculado"
       }
     },

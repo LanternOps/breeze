@@ -115,13 +115,9 @@ describe('PsaConnectionsPage round-trip contract', () => {
         username: 'admin@acme.com',
         apiToken: 'tok-123',
       },
-      settings: {
-        syncEnabled: true,
-        syncInterval: '1h',
-        syncDirection: 'bidirectional',
-        syncOnClose: true,
-        includeNotes: true,
-      },
+      // #9947: ticket sync is not implemented, so the form must not post the
+      // hidden sync defaults (syncEnabled/interval/direction/onClose/notes).
+      settings: {},
     });
     // Flat form fields must NOT leak to the top level, and empty secrets must
     // not appear as empty-string credential keys.
@@ -196,13 +192,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
         baseUrl: 'https://acme.atlassian.net',
         username: 'admin@acme.com',
       },
+      // #9947: stored sync keys are neither echoed back nor overwritten — the
+      // server-side PATCH merge keeps whatever is already stored.
       settings: {
         defaultQueue: 'OPS',
-        syncEnabled: false,
-        syncInterval: '6h',
-        syncDirection: 'outbound',
-        syncOnClose: false,
-        includeNotes: false,
       },
     });
     // PATCH must not send provider, and untouched secrets must be omitted so
@@ -579,5 +572,14 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(screen.queryByLabelText(/sync interval/i)).toBeNull();
     expect(screen.queryByLabelText(/sync direction/i)).toBeNull();
     expect(screen.getByTestId('psa-ticket-sync-unavailable')).toBeTruthy();
+  });
+
+  it('titles the ticket card for what it shows, not as synced tickets (#9947)', async () => {
+    installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+    render(<PsaConnectionsPage />);
+
+    expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
+    expect(screen.queryByText(/synced tickets/i)).toBeNull();
   });
 });
