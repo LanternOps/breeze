@@ -100,6 +100,19 @@ interface InsertPhaseResult {
   forwardEvents: ForwardEvent[] | null;
 }
 
+// For a rejected `level` / `category` (agent-defined enums, never free text),
+// echo the first 32 chars of the received value so an agent build that ships a
+// new enum value is diagnosable from the log line. Never applied to `message`
+// or `details`.
+const ECHOED_ENUM_FIELDS = new Set(['level', 'category']);
+function rejectedEnumValue(row: unknown, path: PropertyKey[]): string {
+  const field = path.length === 1 ? path[0] : undefined;
+  if (typeof field !== 'string' || !ECHOED_ENUM_FIELDS.has(field)) return '';
+  if (typeof row !== 'object' || row === null) return '';
+  const value = (row as Record<string, unknown>)[field];
+  return `=${JSON.stringify(String(value).slice(0, 32))}`;
+}
+
 function validateEventLogRows(submitted: unknown[]) {
   const events: Array<ReturnType<typeof eventLogRowSchema.parse>> = [];
   let invalidDropped = 0;
@@ -113,7 +126,7 @@ function validateEventLogRows(submitted: unknown[]) {
       for (const issue of parsed.error.issues) {
         if (issues.length >= 5) break;
         const path = issue.path.length > 0 ? `.${issue.path.join('.')}` : '';
-        issues.push(`events[${index}]${path}:${issue.code}`);
+        issues.push(`events[${index}]${path}:${issue.code}${rejectedEnumValue(row, issue.path)}`);
       }
       continue;
     }
@@ -379,7 +392,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
             message: event.message,
             timestamp: row.timestamp.toISOString(),
             // The agent's structured per-event context lives in `details`
-            // (see submitEventLogsSchema). The forward payload historically
+            // (see eventLogRowSchema). The forward payload historically
             // read `event.rawData`, a field the schema strips — so it was
             // always `undefined` and nothing reached the SIEM. Forward the
             // persisted `row.details` so the SIEM matches what was stored
