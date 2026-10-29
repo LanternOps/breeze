@@ -89,10 +89,12 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every 15 min (server can set 1 to 60): event logs, up to four concurrent Get-WinEvent queries. Every 15 min: dsregcmd /status.',
+    text: 'Every 15 min (server can set 1 to 60): event logs, up to five concurrent Get-WinEvent queries, each resuming from a saved record-ID bookmark. Every 15 min: dsregcmd /status.',
     anchors: [
       { file: 'internal/collectors/eventlogs.go', contains: ['intervalMinutes: 15', 'intervalMinutes >= 1 && intervalMinutes <= 60'] },
-      { file: 'internal/collectors/eventlogs_windows.go', contains: ['Get-WinEvent', 'wg.Add(len(active))'] },
+      { file: 'internal/collectors/eventlogs_winquery.go', contains: ['Get-WinEvent', '-Oldest'] },
+      { file: 'internal/collectors/eventlogs_winstreams.go', contains: ['wg.Add(1)'] },
+      { file: 'internal/collectors/eventlogs_bookmarks.go', contains: ['NewPersistentEventLogCollector', 'readEventLogBookmarks'] },
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendPosture := now.Sub(h.lastPostureUpdate) > 15*time.Minute'] },
       { file: 'internal/mgmtdetect/deep_identity_windows.go', contains: ['"dsregcmd", "/status"'] },
     ],
