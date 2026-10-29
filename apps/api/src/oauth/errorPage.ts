@@ -86,7 +86,7 @@ export function createOauthErrorRenderer(consentUrlBase: string) {
     out: { error?: unknown },
     err: unknown,
   ): Promise<void> {
-    // 303 so a POSTed authorization request is followed with a GET.
+    // 303 See Other: the browser GETs the error page whatever method failed.
     ctx.status = 303;
     ctx.redirect(buildOauthErrorPageUrl(consentUrlBase, oauthErrorPageReason(out, err)));
   };

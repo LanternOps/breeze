@@ -49,7 +49,8 @@ describe('oauthErrorCopy', () => {
       for (const view of views) {
         const { headingKey, bodyKey } = oauthErrorCopy(view);
         for (const key of [headingKey, bodyKey, 'oauthErrorPage.nextStep', 'titles.oauthError']) {
-          if (typeof lookup(bundle, key) !== 'string') problems.push(`${locale}: ${key}`);
+          const value = lookup(bundle, key);
+          if (typeof value !== 'string' || value.trim() === '') problems.push(`${locale}: ${key}`);
         }
       }
     }
@@ -69,6 +70,10 @@ describe('the /oauth/consent/error page', () => {
   it('renders in the auth layout the consent screen uses', () => {
     expect(src).toMatch(/import AuthLayout from '..\/..\/..\/layouts\/AuthLayout.astro'/);
     expect(src).toMatch(/<AuthLayout titleKey="titles\.oauthError">/);
+  });
+
+  it('answers with an error status, not 200', () => {
+    expect(src).toMatch(/Astro\.response\.status = 400;/);
   });
 
   it('reads only the reason param and never renders raw HTML', () => {

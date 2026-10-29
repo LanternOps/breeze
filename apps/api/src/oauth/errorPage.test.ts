@@ -160,6 +160,12 @@ describe('authorization endpoint errors against a real provider', () => {
     expect(res.location).toBe(`${CONSENT_BASE}/oauth/consent/error?reason=invalid_request`);
   });
 
+  it('an interaction resume without its session cookie says the sign-in expired', async () => {
+    const res = await fetch(`${origin}/oauth/auth/not-a-real-uid`, { redirect: 'manual', headers: { accept: 'text/html' } });
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe(`${CONSENT_BASE}/oauth/consent/error?reason=session_expired`);
+  });
+
   it('a request for the error page itself that reaches the API does not redirect to itself', async () => {
     // A proxy that sends /oauth/consent/* to the API instead of web must not
     // loop (renderError -> 303 to the same path). oidc-provider answers an
