@@ -20,7 +20,7 @@ vi.mock('../db/schema', () => ({
   deviceWarranty: { deviceId: 'deviceWarranty.deviceId' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
-  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil' },
+  alerts: { deviceId: 'alerts.deviceId', configItemName: 'alerts.configItemName', status: 'alerts.status', id: 'alerts.id', orgId: 'alerts.orgId', context: 'alerts.context', suppressedUntil: 'alerts.suppressedUntil', severity: 'alerts.severity' },
   configPolicyEffectiveFeatureLinks: { id: 'configPolicyEffectiveFeatureLinks.id', featureType: 'configPolicyEffectiveFeatureLinks.featureType', inlineSettings: 'configPolicyEffectiveFeatureLinks.inlineSettings', configPolicyId: 'configPolicyEffectiveFeatureLinks.configPolicyId', sourcePolicyId: 'configPolicyEffectiveFeatureLinks.sourcePolicyId', inherited: 'configPolicyEffectiveFeatureLinks.inherited' },
   configPolicyAssignments: { configPolicyId: 'configPolicyAssignments.configPolicyId', targetId: 'configPolicyAssignments.targetId', level: 'configPolicyAssignments.level', priority: 'configPolicyAssignments.priority' },
   configurationPolicies: { id: 'configurationPolicies.id', status: 'configurationPolicies.status', orgId: 'configurationPolicies.orgId', partnerId: 'configurationPolicies.partnerId' },
@@ -35,6 +35,17 @@ vi.mock('./sentry', async (importOriginal) => ({
 
 const publishEventMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('./eventBus', () => ({ publishEvent: (...args: unknown[]) => publishEventMock(...args) }));
+
+const writeAuditEventMock = vi.fn();
+vi.mock('./auditEvents', () => ({
+  writeAuditEvent: (...args: unknown[]) => writeAuditEventMock(...args),
+  requestLikeFromSnapshot: () => ({}),
+}));
+
+const cancelAlertEscalationsMock = vi.fn().mockResolvedValue(0);
+vi.mock('./notificationDispatcher', () => ({
+  cancelAlertEscalations: (...args: unknown[]) => cancelAlertEscalationsMock(...args),
+}));
 
 import { evaluateWarrantyAlerts } from './warrantyAlertEvaluator';
 
@@ -403,6 +414,88 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(result).toBeNull();
     expect(insertMock).not.toHaveBeenCalled();
     expect(publishEventMock).not.toHaveBeenCalled();
+  });
+
+  // #10371 option (c): an OPEN warranty alert whose stored severity no longer
+  // matches the ladder is re-graded in place. Silent by design — no
+  // alert.triggered (that would re-fan-out the baseline notification set), no
+  // new event at all — but recorded in the audit log, and a DOWNGRADE cancels
+  // any escalation step still delayed from the old, higher grade.
+  function queueRegradeRun(days: number, openAlert: Record<string, unknown>) {
+    selectMock.mockReturnValueOnce(queueSelect([{ ...baseWarranty, warrantyEndDate: inDays(days) }]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([{ partnerId: null }]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(
+      queueSelect([{ inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'organization', priority: 0 }])
+    );
+    // 7: existing open warranty alert(s)
+    selectMock.mockReturnValueOnce(queueSelect([openAlert]));
+  }
+
+  it('re-grades an open legacy CRITICAL alert down to medium silently: audit row, escalations cancelled, no event (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-legacy-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, {
+      id: 'alert-legacy-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical',
+      title: 'Warranty expired: Test Mac', context: { source: 'warranty_evaluator' },
+    });
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(result).toBeNull();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      severity: 'medium',
+      title: 'Warranty expired: Test Mac',
+      context: expect.objectContaining({ previousSeverity: 'critical', source: 'warranty_evaluator' }),
+    }));
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).toHaveBeenCalledWith('alert-legacy-1');
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID,
+      action: 'alert.severity_regraded',
+      resourceType: 'alert',
+      resourceId: 'alert-legacy-1',
+      actorType: 'system',
+      details: expect.objectContaining({ previousSeverity: 'critical', severity: 'medium' }),
+    }));
+  });
+
+  it('re-grades UP the ladder (info → low) without cancelling escalations or publishing (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([{ id: 'alert-info-1' }])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(10, { id: 'alert-info-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'info', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ severity: 'low' }));
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an open alert already at the ladder severity alone (#10371)', async () => {
+    queueRegradeRun(10, { id: 'alert-low-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'low', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('skips the audit row and escalation cancel when the re-grade CAS loses the race (#10371)', async () => {
+    const set = vi.fn().mockReturnValue({ where: vi.fn(() => casWhere([])) });
+    updateMock.mockReturnValue({ set });
+    queueRegradeRun(-5, { id: 'alert-raced-1', orgId: ORG_ID, deviceId: DEVICE_ID, status: 'active', severity: 'critical', title: 'x', context: null });
+
+    await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(set).toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+    expect(cancelAlertEscalationsMock).not.toHaveBeenCalled();
   });
 
   it('auto-resolves a stale TIMED-SUPPRESSED expiry alert when the device is now a subscription (#1320)', async () => {

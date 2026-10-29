@@ -158,3 +158,65 @@ runDb('auto-resolve leaves a FOREVER-suppressed alert suppressed but resolves a 
     expect(activeRow!.status).toBe('resolved');
   });
 });
+
+// #10371 option (c): the evaluator re-grades OPEN warranty alerts in place on
+// every run. Alerts opened under the old ladder (critical/high) would otherwise
+// stay critical forever: the dedupe gate never touches an open alert and an
+// expired warranty never auto-resolves.
+runDb('re-grades an OPEN critical warranty alert to the current ladder and leaves a RESOLVED one untouched', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const endDate = inDays(-5); // expired → medium
+  const { orgId, deviceId } = await seed(unique, { enableAlerting: true, endDate });
+
+  const base = { deviceId, orgId, configItemName: 'warranty_expiry', severity: 'critical' as const, title: 'Warranty expired (legacy)' };
+  const ids = await withSystemDbAccessContext(async () => {
+    const [open] = await db.insert(alerts).values({ ...base, status: 'active', context: { warrantyEndDate: endDate, source: 'warranty_evaluator' } }).returning({ id: alerts.id });
+    const [resolved] = await db.insert(alerts).values({ ...base, status: 'resolved', resolvedAt: new Date() }).returning({ id: alerts.id });
+    return { open: open!.id, resolved: resolved!.id };
+  });
+
+  const created = await withSystemDbAccessContext(() => evaluateWarrantyAlerts(deviceId));
+  expect(created).toBeNull(); // re-graded in place, no second alert
+
+  await withSystemDbAccessContext(async () => {
+    const [openRow] = await db.select().from(alerts).where(eq(alerts.id, ids.open));
+    expect(openRow!.status).toBe('active');
+    expect(openRow!.severity).toBe('medium');
+    expect(openRow!.title).toMatch(/^Warranty expired: /);
+    expect((openRow!.context as Record<string, unknown>).previousSeverity).toBe('critical');
+
+    const [resolvedRow] = await db.select().from(alerts).where(eq(alerts.id, ids.resolved));
+    expect(resolvedRow!.status).toBe('resolved');
+    expect(resolvedRow!.severity).toBe('critical');
+  });
+  expect(await openWarrantyAlerts(deviceId)).toHaveLength(2); // the open one + the resolved one; nothing new
+});
+
+runDb('steps an open warranty alert up the ladder as the device moves windows (info → low), acknowledged and suppressed included, dismissed untouched', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { orgId, deviceId } = await seed(unique, { enableAlerting: true, endDate: inDays(10) }); // criticalDays window → low
+
+  const base = { deviceId, orgId, configItemName: 'warranty_expiry', severity: 'info' as const, title: 'Warranty expires in 80 days' };
+  const ids = await withSystemDbAccessContext(async () => {
+    const [ack] = await db.insert(alerts).values({ ...base, status: 'acknowledged' }).returning({ id: alerts.id });
+    const [forever] = await db.insert(alerts).values({ ...base, status: 'suppressed', suppressedUntil: null }).returning({ id: alerts.id });
+    const [dismissed] = await db.insert(alerts).values({ ...base, status: 'dismissed' }).returning({ id: alerts.id });
+    return { ack: ack!.id, forever: forever!.id, dismissed: dismissed!.id };
+  });
+
+  await withSystemDbAccessContext(() => evaluateWarrantyAlerts(deviceId));
+
+  await withSystemDbAccessContext(async () => {
+    const [ackRow] = await db.select().from(alerts).where(eq(alerts.id, ids.ack));
+    expect(ackRow!.status).toBe('acknowledged');
+    expect(ackRow!.severity).toBe('low');
+
+    const [foreverRow] = await db.select().from(alerts).where(eq(alerts.id, ids.forever));
+    expect(foreverRow!.status).toBe('suppressed');
+    expect(foreverRow!.severity).toBe('low');
+
+    const [dismissedRow] = await db.select().from(alerts).where(eq(alerts.id, ids.dismissed));
+    expect(dismissedRow!.status).toBe('dismissed');
+    expect(dismissedRow!.severity).toBe('info'); // terminal: never touched
+  });
+});

@@ -14,8 +14,21 @@ import {
 import { eq, and, getTableColumns, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { buildResolveAlertCas, createSourcedAlert } from './alertService';
 import { publishEvent } from './eventBus';
+import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
+import { cancelAlertEscalations } from './notificationDispatcher';
 import { resolveEffectiveWarrantyInlineSettings } from './warrantyPolicyResolution';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+
+type AlertRow = typeof alerts.$inferSelect;
+type AlertSeverity = AlertRow['severity'];
+type WarrantySeverity = Extract<AlertSeverity, 'medium' | 'low' | 'info'>;
+
+// The statuses the dedupe gate treats as "open". 'resolved' and 'dismissed'
+// are terminal and never re-graded.
+const OPEN_WARRANTY_ALERT_STATUSES: AlertRow['status'][] = ['active', 'acknowledged', 'suppressed'];
+
+// Higher = more severe. Used only to tell a downgrade from an upgrade.
+const SEVERITY_RANK: Record<AlertSeverity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -138,10 +151,11 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   // half of the scale instead: warnDays → info, criticalDays → low,
   // expired → medium. (The `criticalDays` knob keeps its stored name; it now
   // means "the closer, more urgent window", not "critical severity".)
-  // Severity is fixed when the alert opens: the dedupe gate below skips any
-  // device that already has an open warranty alert, so an `info` alert does
-  // not step up to `low` as expiry approaches.
-  let severity: 'medium' | 'low' | 'info' | null = null;
+  // An alert that is already open is re-graded in place to this ladder on
+  // every run (regradeOpenWarrantyAlerts, below), so the stored severity
+  // tracks the device as it moves warn → urgent → expired, and alerts opened
+  // under an older ladder are corrected rather than stranded.
+  let severity: WarrantySeverity | null = null;
   let title = '';
   let message = '';
   const deviceName = device.displayName || device.hostname;
@@ -166,20 +180,30 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
     return null;
   }
 
-  // Check for existing open warranty alert for this device
-  const [existingAlert] = await db
+  // Check for existing open warranty alert(s) for this device
+  const openAlerts = await db
     .select()
     .from(alerts)
     .where(
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.configItemName, 'warranty_expiry'),
-        inArray(alerts.status, ['active', 'acknowledged', 'suppressed'])
+        inArray(alerts.status, OPEN_WARRANTY_ALERT_STATUSES)
       )
-    )
-    .limit(1);
+    );
 
-  if (existingAlert) {
+  if (openAlerts.length > 0) {
+    await regradeOpenWarrantyAlerts(openAlerts, {
+      severity,
+      title,
+      message,
+      context: {
+        warrantyEndDate: warranty.warrantyEndDate,
+        daysRemaining,
+        manufacturer: warranty.manufacturer,
+        serialNumber: warranty.serialNumber,
+      },
+    });
     return null;
   }
 
@@ -231,6 +255,114 @@ export async function evaluateWarrantyAlerts(deviceId: string): Promise<string |
   }
 
   return null;
+}
+
+/**
+ * Re-grade open warranty alerts to the severity the current ladder gives the
+ * device (#10371, option c). Without this, an open alert keeps the severity it
+ * was born with: the dedupe gate never touches it and an expired warranty
+ * never auto-resolves, so alerts raised under the old critical/high ladder
+ * would stay critical forever, and an `info` alert would never step up to
+ * `low`/`medium` as the warranty runs out.
+ *
+ * Notification semantics, deliberately:
+ *   - No event is published, in either direction. Delivery (baseline sends,
+ *     routing by severity, escalation scheduling) is driven solely by
+ *     `alert.triggered`; re-publishing it would re-fan-out the full baseline
+ *     notification set for an alert technicians already saw. The re-grade is
+ *     a correction of an existing alert, not a new occurrence — the same
+ *     "silent state change" stance as the suppression-expiry reaper.
+ *   - A DOWNGRADE cancels any escalation step still delayed from the old,
+ *     higher grade, so correcting a legacy critical alert cannot page anyone
+ *     on the old critical-keyed escalation policy. Best-effort: a Redis
+ *     failure is logged and never blocks the re-grade.
+ *   - The change is recorded as an `alert.severity_regraded` audit row
+ *     (system actor) and as `previousSeverity`/`regradedAt` on the alert's
+ *     context, so it is visible on the alert itself.
+ *
+ * Runs on the ambient `db` like the rest of this evaluator (and like
+ * autoResolveWarrantyAlerts): the warranty worker calls it under system scope
+ * and the agent inventory route under the device's request scope.
+ */
+async function regradeOpenWarrantyAlerts(
+  openAlerts: AlertRow[],
+  target: {
+    severity: WarrantySeverity;
+    title: string;
+    message: string;
+    context: Record<string, unknown>;
+  },
+): Promise<void> {
+  for (const alert of openAlerts) {
+    if (alert.severity === target.severity) continue;
+
+    const previousSeverity = alert.severity;
+    const regradedAt = new Date().toISOString();
+    const priorContext = (alert.context && typeof alert.context === 'object' && !Array.isArray(alert.context))
+      ? alert.context as Record<string, unknown>
+      : {};
+
+    // Compare-and-swap on (status still open, severity unchanged since the
+    // read): a technician resolving/dismissing the alert, or a concurrent
+    // evaluator run, wins and this write matches nothing.
+    const written = await db
+      .update(alerts)
+      .set({
+        severity: target.severity,
+        title: target.title,
+        message: target.message,
+        context: {
+          ...priorContext,
+          ...target.context,
+          source: priorContext.source ?? 'warranty_evaluator',
+          previousSeverity,
+          regradedAt,
+        },
+      })
+      .where(
+        and(
+          eq(alerts.id, alert.id),
+          eq(alerts.severity, previousSeverity),
+          inArray(alerts.status, OPEN_WARRANTY_ALERT_STATUSES),
+        )
+      )
+      .returning({ id: alerts.id });
+
+    if (written.length === 0) continue;
+
+    try {
+      writeAuditEvent(requestLikeFromSnapshot({}), {
+        orgId: alert.orgId,
+        action: 'alert.severity_regraded',
+        resourceType: 'alert',
+        resourceId: alert.id,
+        resourceName: target.title,
+        actorType: 'system',
+        actorId: null,
+        result: 'success',
+        details: {
+          previousSeverity,
+          severity: target.severity,
+          daysRemaining: target.context.daysRemaining,
+          reason: 'warranty_severity_ladder',
+        },
+      });
+    } catch (err) {
+      console.error(`[WarrantyAlertEvaluator] Failed to write re-grade audit event for alert ${alert.id}:`, err);
+    }
+
+    if (SEVERITY_RANK[target.severity] < SEVERITY_RANK[previousSeverity]) {
+      try {
+        await cancelAlertEscalations(alert.id);
+      } catch (err) {
+        console.error(`[WarrantyAlertEvaluator] Failed to cancel escalations for re-graded alert ${alert.id}:`, err);
+      }
+    }
+
+    console.log(
+      `[WarrantyAlertEvaluator] Re-graded warranty alert ${alert.id} ${previousSeverity} → ${target.severity}`
+    );
+  }
 }
 
 /**
