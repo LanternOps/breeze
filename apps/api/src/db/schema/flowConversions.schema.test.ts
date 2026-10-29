@@ -99,10 +99,12 @@ describe('flow conversion schema (#5221)', () => {
     const sql = migrationSql();
     const flat = sql.replace(/\s+/g, ' ');
 
-    it('sorts after every other migration', () => {
+    // Ordering against later migrations is the naming hook's job; this only
+    // pins that the file exists and sorts after the W05 migrations it builds on.
+    it('exists and sorts after the W05 flow migrations', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
       expect(files.indexOf(MIGRATION)).toBeGreaterThanOrEqual(0);
-      expect(files.filter((f) => f > MIGRATION && !f.startsWith('2027-01-09-100100'))).toEqual([]);
+      expect(MIGRATION > '2027-01-08-140000-flow-ai-step-egress-surface.sql').toBe(true);
     });
 
     it('swaps each widened CHECK with DROP … IF EXISTS before ADD', () => {

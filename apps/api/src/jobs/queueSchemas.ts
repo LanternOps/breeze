@@ -628,3 +628,12 @@ export const flowRunJobDataSchema = z.object({
   runId: z.string().uuid(),
 }).strict();
 export type FlowRunJobData = z.infer<typeof flowRunJobDataSchema>;
+
+// The delivery row owns the payload and retry state; Redis carries references only.
+export const webhookAttemptJobDataSchema = z.object({
+  deliveryId: z.string().uuid(),
+  webhookId: z.string().uuid(),
+  generation: z.number().int().min(0),
+  attemptsMade: z.number().int().min(0),
+}).strict();
+export type WebhookAttemptJobData = z.infer<typeof webhookAttemptJobDataSchema>;

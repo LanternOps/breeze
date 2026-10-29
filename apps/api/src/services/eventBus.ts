@@ -19,10 +19,15 @@ export type EventType =
   | 'device.reinstalled' // #8318: a reinstalled machine reattached to its existing record
   // Alert events
   | 'alert.triggered'
+  // `acknowledgedByPrincipalId` (uuid) is present only when a Partner API
+  // service principal acknowledged; `acknowledgedBy` is then null.
   | 'alert.acknowledged'
   // C2 fix (P2-1 wave B, task 16d): every publisher SHOULD include
-  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null — null means a
-  // system/auto resolve), and `triggeredAt` (ISO string) on the payload,
+  // `resolvedAt` (ISO string), `resolvedBy` (uuid | null), and `triggeredAt`
+  // (ISO string) on the payload. `resolvedByPrincipalId` (uuid) is present
+  // only when a Partner API service principal resolved; `resolvedBy` is then
+  // null and the resolve is human-equivalent, NOT a system resolve. Only a
+  // resolve without either actor is a system/auto resolve. Fields are
   // sourced from the row the publisher's own UPDATE just wrote/returned —
   // never from a second read. This lets a subscriber (see
   // `alertVerdictSubscriber.ts`'s contract comment) gate on the PUBLISHED
@@ -217,6 +222,8 @@ export type EventType =
   | 'elevation.activated'
   | 'elevation.expired'
   | 'elevation.revoked'
+  // #8971: the end user declined a pending request on the device.
+  | 'elevation.withdrawn'
   // AI operator agents (spec 2026-08-22 §7). Wave 1 publishes policy_changed;
   // the run.* members are reserved for the wave-3 runner.
   | 'ai.agent.policy_changed'
@@ -796,6 +803,7 @@ export const EVENT_TYPES = {
   ELEVATION_ACTIVATED: 'elevation.activated' as const,
   ELEVATION_EXPIRED: 'elevation.expired' as const,
   ELEVATION_REVOKED: 'elevation.revoked' as const,
+  ELEVATION_WITHDRAWN: 'elevation.withdrawn' as const,
   // AI agents
   AI_AGENT_POLICY_CHANGED: 'ai.agent.policy_changed' as const,
   AI_AGENT_RUN_QUEUED: 'ai.agent.run.queued' as const,

@@ -444,7 +444,7 @@ describe('groups routes', () => {
         SITE_ID,
         ORG_ID,
         expect.anything(),
-        { deferPeripheralReconciliation: true },
+        { deferPeripheralReconciliation: true, group: expect.objectContaining({ id: GROUP_ID, orgId: ORG_ID }) },
       );
       expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
         DEVICE_ID,

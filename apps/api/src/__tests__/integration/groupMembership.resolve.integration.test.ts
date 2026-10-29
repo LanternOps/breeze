@@ -96,7 +96,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
   });
 
   // Was: 'a membership row carrying another org_id is ignored'. Since #3182 the
-  // row cannot exist to be ignored — device_group_memberships_group_org_fk
+  // row cannot exist to be ignored — device_group_memberships_group_owner_check
   // rejects it — so the contract is now the stronger one: the resolver's input
   // is structurally incapable of holding a foreign device.
   runDb('a membership row carrying another org_id is refused outright', async () => {
@@ -107,7 +107,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
       INSERT INTO device_group_memberships (device_id, group_id, org_id) VALUES (${f.otherOrgDev}::uuid, ${g.id}::uuid, ${f.orgB}::uuid)
     `)).then(() => null, (err: Error) => err);
     expect(forged, 'the forged membership must be rejected (#3182)').toBeInstanceOf(Error);
-    expect(JSON.stringify(forged)).toContain('device_group_memberships_group_org_fk');
+    expect(JSON.stringify(forged)).toContain('device_group_memberships_group_owner_check');
 
     const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
     expect(ids(r.matched)).toEqual([f.wsA]);

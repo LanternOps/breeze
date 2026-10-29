@@ -323,6 +323,17 @@ export const heartbeatSchema = z.object({
     // change, not a migration.
     deferralsUsed: z.number().int().min(0).max(10).optional().catch(undefined),
     maxDeferrals: z.number().int().min(0).max(10).optional().catch(undefined),
+    // #10190 W05 — the most recent decision the person at the keyboard made
+    // on the restart prompt. The agent re-sends it on every beat while the
+    // restart stays scheduled, so it is an audit INPUT (deduped per
+    // atUnixMs in services/rebootUserActionAudit.ts), never a stored column.
+    // A malformed value degrades to undefined on its own: it must never fail
+    // the heartbeat or drop the schedule it rides on.
+    lastUserAction: z.object({
+      action: z.enum(['postponed', 'restart_now']),
+      atUnixMs: z.number().int().nonnegative(),
+      renderer: z.enum(['assist', 'native', 'headless']),
+    }).optional().catch(undefined),
   }).nullish().catch(undefined),
   lastUser: z.string().max(255).optional().catch(undefined),
   uptime: z.number().int().min(0).optional().catch(undefined),
@@ -421,6 +432,8 @@ export const heartbeatSchema = z.object({
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
     pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliationResetProtocolVersion: z.number().int().optional().catch(undefined),
+    // #8928: PAM outcome notices (pam_request_notify). Same tolerant contract.
+    pamUserNotifyProtocolVersion: z.number().int().optional().catch(undefined),
     // Revocation lease (fail-closed desktop session revalidation). Same
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".

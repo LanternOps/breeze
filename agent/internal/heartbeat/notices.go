@@ -170,16 +170,7 @@ func (h *Heartbeat) showNotice(p prompthost.Prompt, owners []prompthost.Owner, l
 	// Stamp and show with no scope change in progress: a notice shown while
 	// a change is taking down the old scope's prompts would otherwise be
 	// created under that scope after its purge.
-	var err error
-	if h.promptIdentity != nil {
-		h.promptIdentity.WithSettledIdentity(func(id promptidentity.Identity, ok bool) {
-			stampIdentity(&p, id, ok)
-			err = host.Show(p)
-		})
-	} else {
-		err = host.Show(p)
-	}
-	if err != nil {
+	if err := h.showStamped(&p); err != nil {
 		if errors.Is(err, prompthost.ErrTombstoned) {
 			// Acknowledged (or, for a one-off notice, closed) within the
 			// last 24 h: the person has seen it, and it stays in the list.

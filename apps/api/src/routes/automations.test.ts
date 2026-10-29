@@ -3294,6 +3294,19 @@ describe('automations routes — target validation on write (#8598)', () => {
     app.route('/automations', automationRoutes);
   });
 
+  it.each(['POST', 'PATCH', 'PUT'])('%s returns the partner-group refusal code with 400 before persisting', async (method) => {
+    if (method !== 'POST') mockSelectAutomationOnce(orgAutomation);
+    validateAutomationTargetConditionsMock.mockResolvedValueOnce({ ...invalidGroup, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED' });
+    const res = await send(method, method === 'POST' ? '/automations' : `/automations/${AUTOMATION_ID}`, {
+      ...(method === 'POST' ? { name: 'Group target', trigger: { type: 'manual' }, actions: [{ type: 'create_alert', alertSeverity: 'medium', alertMessage: 'x' }] } : {}),
+      conditions: { type: 'groups', groupIds: [G1] },
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it('create validates the conditions against the resolved owner and rejects with 400 before writing', async () => {
     validateAutomationTargetConditionsMock.mockResolvedValueOnce(invalidGroup);
 

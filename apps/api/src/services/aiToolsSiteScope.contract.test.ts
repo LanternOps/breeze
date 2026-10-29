@@ -199,6 +199,13 @@ const SITE_TABLE_EXCEPTIONS: readonly string[] = [
   // ids of ONE deployment only to check them against a device-bound session's exact-device allowlist (an extra, stricter
   // axis); it returns a boolean, and the deployment itself is then read through the route's own site-scoped services.
   'aiToolsSoftwareDeployments.ts:deploymentResults#0',
+  // Full-control W13 PR B (#6783, W13-D8). `manage_support_sessions`: Quick Support sessions and their temporary
+  // devices live in the partner's hidden Quick Support org, which has no site of the caller's. The tool refuses every
+  // site- or device-restricted session before any read (scopeDenied) and pins the partner in SQL; the device and
+  // remote-session reads only probe the online / live status of the session devices just read.
+  'aiToolsSupportSessions.ts:supportSessions#0',
+  'aiToolsSupportSessions.ts:devices#0',
+  'aiToolsSupportSessions.ts:remoteSessions#0',
   // Full-control W11 (#6781). `manage_access_reviews` `isScopeMember`: an existence check that a create's
   // `reviewerId` is a member of the review's own partner or org (W11-D7). Only reached after `reviewOwner`, which
   // refuses every site- or device-restricted session; it selects no member data.

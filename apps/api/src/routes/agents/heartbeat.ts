@@ -39,6 +39,7 @@ import { recordWorkstationCapabilities } from '../../services/callerVerification
 import { notePromptHostReportDropped, recordPromptHostObservation } from '../../services/promptHostObservation';
 import { enabledPromptKinds } from '../../services/promptHostConfig';
 import { buildHeartbeatPromptIdentity } from '../../services/promptIdentity';
+import { noteRebootUserActionDropped, recordRebootUserAction } from '../../services/rebootUserActionAudit';
 import { callerVerificationEnabled } from '../../config/env';
 import type { PolicyProbeConfigUpdate } from './schemas';
 import {
@@ -397,6 +398,14 @@ export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
 /** Normalize the only PAM lifetime protocol version implemented here. */
 export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
   return value === 2 ? 2 : 0;
+}
+
+/**
+ * #8928 — normalize the PAM user-notify protocol (pam_request_notify outcome
+ * notices). Anything other than exactly 1 means "not capable".
+ */
+export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
 }
 
 /**
@@ -1163,6 +1172,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       data.securityCapabilities?.pamLifetimeProtocolVersion,
     ),
     pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+    pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+      data.securityCapabilities?.pamUserNotifyProtocolVersion,
+    ),
     // Revocation-lease capability, same non-sticky contract: rewritten every
     // beat so an agent DOWNGRADE stops the dispatch gate trusting a stale claim
     // and desktop sessions are refused again until the agent is back.
@@ -2001,6 +2013,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         data.securityCapabilities?.pamLifetimeProtocolVersion,
       ),
       pamReconciliationResetProtocolVersion: data.securityCapabilities?.pamReconciliationResetProtocolVersion === 1 ? 1 : 0,
+      pamUserNotifyProtocolVersion: normalizePamUserNotifyProtocolVersion(
+        data.securityCapabilities?.pamUserNotifyProtocolVersion,
+      ),
     },
   );
 
@@ -2450,6 +2465,37 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       }
     }
     await recordPromptHostObservation(scoped.deviceId, promptHostReport);
+  }
+
+  // #10190 W05 — the restart decision the person at the keyboard made
+  // (Postpone / Restart now). The agent re-sends it on every beat while the
+  // restart is scheduled; the service writes one audit row per decision
+  // (Redis NX on device + decision time). Keyed by the authenticated device
+  // and its org (the row's, not the token's), after the org transaction
+  // released, and NOT awaited: the beat's answer never waits on Redis or the
+  // audit writer, and the service never throws (the catch is belt and braces
+  // for the floating promise). A schedule whose lastUserAction the schema
+  // dropped is logged (throttled); Hono caches the parsed body, so the
+  // re-read is free.
+  const rebootStatus = data.rebootStatus;
+  const lastUserAction = rebootStatus?.lastUserAction;
+  if (agent.role !== 'watchdog' && rebootStatus && !lastUserAction) {
+    try {
+      noteRebootUserActionDropped(scoped.deviceId, await c.req.json(), lastUserAction);
+    } catch {
+      // Raw body unavailable — nothing to report.
+    }
+  }
+  if (agent.role !== 'watchdog' && rebootStatus && lastUserAction) {
+    void recordRebootUserAction(scoped.deviceId, scoped.deviceOrgId, lastUserAction, {
+      c,
+      agentId,
+      scheduledAt: rebootStatus.scheduledAt,
+      deferralsUsed: rebootStatus.deferralsUsed,
+      maxDeferrals: rebootStatus.maxDeferrals,
+    }).catch((err) => {
+      console.error('[heartbeat] restart decision audit failed', { deviceId: scoped.deviceId, err });
+    });
   }
 
   // Self-health is independent from reachability and is persisted only after

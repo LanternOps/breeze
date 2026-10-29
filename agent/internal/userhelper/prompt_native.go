@@ -11,9 +11,12 @@
 // timeout into a decision, render operator text on a breeze-class kind, keep
 // a dialog up the agent closed, or draw a second copy of a prompt.
 //
-// W04 advertises notice.info@1 (the user helper only); any other kind that
-// arrives anyway is answered prompt_closed{render_failed} (spec §3.1 rule 4).
-// A notice is live only where the server also enables it.
+// W04 advertises notice.info@1 and W05 restart.prompt@1 / restart.final@1
+// (the user helper only); W06 adds remote.consent@1 (wherever the native
+// dialog can default to Deny) and remote.session@1 (Windows, the native pill:
+// prompt_native_indicator.go). Any other kind that arrives anyway is answered
+// prompt_closed{render_failed} (spec §3.1 rule 4). A kind is live only where
+// the server also enables it.
 package userhelper
 
 import (
@@ -22,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,20 +55,53 @@ func helperRendererVersion() string {
 }
 
 // advertisedNativePromptKinds is what the native renderer advertises at
-// auth ("<kind>@<n>"). Kinds are added by the wave that ships each one (plan
-// P2): W04 adds notice.info@1 for the user helper. The SYSTEM helper's
-// renderer (elevation) ships in W07 (P14).
+// auth ("<kind>@<n>") on this machine.
 func advertisedNativePromptKinds(role ipc.HelperRole) []string {
-	if role == ipc.HelperRoleUser {
-		return []string{"notice.info@1"}
+	return nativePromptKindsFor(role, runtime.GOOS, consentUISupported())
+}
+
+// nativePromptKindsFor is what a native helper of role advertises on goos.
+// Kinds are added by the wave that ships each one (plan P2), append-only:
+//   - W04: notice.info@1;
+//   - W05: restart.prompt@1 and its closing card restart.final@1 (drawn
+//     natively as a TaskDialogIndirect / display dialog / zenity question
+//     with the safe action — Postpone or OK — as the default), on every OS;
+//   - W06: remote.consent@1 where the native dialog can draw a Deny-default
+//     decision — the same condition as SupportsConsentUI (Windows and macOS
+//     always; Linux with zenity and a display) — and remote.session@1 on
+//     Windows, the only OS with a native session pill.
+//
+// Only the user helper renders natively; the SYSTEM helper's renderer
+// (elevation) ships in W07 (P14).
+func nativePromptKindsFor(role ipc.HelperRole, goos string, canDrawConsent bool) []string {
+	if role != ipc.HelperRoleUser {
+		return []string{}
 	}
-	return []string{}
+	kinds := []string{
+		"notice.info@1",
+		"restart.prompt@1", // W05
+		"restart.final@1",  // W05
+	}
+	if canDrawConsent {
+		kinds = append(kinds, "remote.consent@1")
+	}
+	if goos == "windows" {
+		kinds = append(kinds, "remote.session@1")
+	}
+	return kinds
 }
 
 // NativePromptAdvertisement is what a native helper of this build advertises
 // at auth for a role: AuthRequest.PromptProtocolVersion and PromptKinds.
 func NativePromptAdvertisement(role ipc.HelperRole) (protocol int, kinds []string) {
 	return nativePromptProtocolFor(role), advertisedNativePromptKinds(role)
+}
+
+// NativePromptAdvertisementOn is NativePromptAdvertisement for a helper on
+// goos that can (or cannot) draw a native consent dialog: the same rule,
+// for skew tests that must not depend on the machine running them.
+func NativePromptAdvertisementOn(role ipc.HelperRole, goos string, canDrawConsent bool) (protocol int, kinds []string) {
+	return nativePromptProtocolFor(role), nativePromptKindsFor(role, goos, canDrawConsent)
 }
 
 // nativePromptProtocolFor is the prompt protocol a helper role advertises.
@@ -151,11 +188,19 @@ func buildNativePromptModel(p ipc.PromptShow, now time.Time, loc *time.Location)
 	if len(p.Facts) > 0 {
 		lines := make([]string, 0, len(p.Facts))
 		for _, f := range p.Facts {
-			lines = append(lines, f.Label+": "+f.Value)
+			// A fact value may carry {time:<unixMs>} (the session's start):
+			// filled here like any copy, never shown raw.
+			lines = append(lines, f.Label+": "+render(f.Value))
 		}
 		parts = append(parts, strings.Join(lines, "\n"))
 	}
-	for _, s := range []string{p.Copy.Consequence, p.Copy.StateDetail} {
+	consequence := []string{p.Copy.Consequence, p.Copy.StateDetail}
+	if p.Timing.Expiry != nil {
+		// What happens if nobody answers (consent: per policy). A native
+		// dialog cannot tick, so the countdown is the one at drawing time.
+		consequence = append(consequence, p.Timing.Expiry.Text)
+	}
+	for _, s := range consequence {
 		if s != "" {
 			parts = append(parts, render(s))
 		}
@@ -483,6 +528,8 @@ type nativeShowFunc func(ctx context.Context, m nativePromptModel, presented fun
 type nativeActive struct {
 	show   ipc.PromptShow
 	cancel context.CancelFunc
+	// indicator is set for a session pill (prompt_native_indicator.go).
+	indicator *nativeIndicatorState
 }
 
 // maxEndedNativePrompts bounds the memory of dialogs that ended on screen.
@@ -517,11 +564,17 @@ type nativePromptRenderer struct {
 	// is failing, and how many failure streaks were warned about.
 	noticeStateFailing  bool
 	noticeStateWarnings int
+
+	// The session pill (prompt_native_indicator.go): draw or relabel it for
+	// a prompt (false: it cannot be drawn here), and take it down.
+	indicatorShow func(promptID string, m nativeIndicatorModel, onClick func()) bool
+	indicatorHide func(promptID string)
 }
 
 func newNativePromptRenderer(advertised []string, show nativeShowFunc, send func(string, any) error, now func() time.Time) *nativePromptRenderer {
 	r := &nativePromptRenderer{advertised: map[string]bool{}, show: show, send: send, now: now, active: map[string]*nativeActive{}, ended: map[string]ipc.PromptShow{},
-		noticeState: platformNotificationState, toast: showNotification, noticeRepoll: defaultNoticeRepoll}
+		noticeState: platformNotificationState, toast: showNotification, noticeRepoll: defaultNoticeRepoll,
+		indicatorShow: showNativeIndicator, indicatorHide: hideNativeIndicator}
 	for _, ad := range advertised {
 		r.advertised[ad] = true
 	}
@@ -706,6 +759,10 @@ func (r *nativePromptRenderer) takeDown(promptID string) {
 }
 
 func (r *nativePromptRenderer) draw(p ipc.PromptShow) {
+	if p.Presentation == ipc.PromptPresentationIndicator && !p.State.Terminal() {
+		r.drawIndicator(p)
+		return
+	}
 	if p.Presentation == ipc.PromptPresentationListOnly || p.State.Terminal() {
 		// A list entry (a reconnect replay, a rate-limited card) or a
 		// finished outcome: a native helper has no list, so nothing is

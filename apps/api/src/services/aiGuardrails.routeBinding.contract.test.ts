@@ -429,6 +429,57 @@ const BINDINGS: readonly Binding[] = [
     toolOnly: { extra: [], reason: 'Adds the exact-device axis and the parked-device rule (W13-D12).' },
   },
   { tool: 'manage_device_warranty', action: 'refresh', routeFile: 'devices/warranty.ts', method: 'post', path: '/:id/warranty/refresh' },
+  // Full-control W13 PR B (#6783).
+  { tool: 'browse_device_event_log', action: 'list_logs', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs', parents: ['systemTools/index.ts'] },
+  {
+    tool: 'browse_device_event_log', action: 'query', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel (REST gates only the Security log behind devices:execute, already the floor); the raw event XML is never returned.' },
+  },
+  {
+    tool: 'browse_device_event_log', action: 'get_event', routeFile: 'systemTools/eventLogs.ts', method: 'get', path: '/devices/:deviceId/eventlogs/:name/events/:recordId', parents: ['systemTools/index.ts'],
+    toolOnly: { extra: [], reason: 'Supervised for every channel; the raw event XML is never returned.' },
+  },
+  { tool: 'manage_tenant_variables', action: 'list', routeFile: 'tenantVariables.ts', method: 'get', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Refused to device-bound sessions; a secret value is never returned (W13-D7).' } },
+  { tool: 'manage_tenant_variables', action: 'create', routeFile: 'tenantVariables.ts', method: 'post', path: '/tenant-variables', toolOnly: { extra: [], reason: 'Never a secret (no isSecret input); refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'update', routeFile: 'tenantVariables.ts', method: 'put', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'A secret or an existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D7/D13).' } },
+  { tool: 'manage_tenant_variables', action: 'delete', routeFile: 'tenantVariables.ts', method: 'delete', path: '/tenant-variables/:id', toolOnly: { extra: [], reason: 'An existing partner-wide row is refused; refused to site- and device-restricted sessions (W13-D13).' } },
+  { tool: 'manage_support_sessions', action: 'list', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'get', routeFile: 'remote/supportSessions.ts', method: 'get', path: '/support-sessions/:id', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, partner pinned in SQL (REST: RLS only); no code hash or claiming IP (W13-D8).' } },
+  { tool: 'manage_support_sessions', action: 'end', routeFile: 'remote/supportSessions.ts', method: 'post', path: '/support-sessions/:id/end', parents: ['remote/index.ts'], toolOnly: { extra: [], reason: 'Partner scope only, restricted sessions refused, the session loaded under the partner predicate before the system-context end (W13-D8).' } },
+  // Full-control W14 (#6784, PR A).
+  { tool: 'manage_billing_profiles', action: 'list', routeFile: 'billingProfiles.ts', method: 'get', path: '/' },
+  { tool: 'manage_billing_profiles', action: 'get', routeFile: 'billingProfiles.ts', method: 'get', path: '/', toolOnly: { extra: [], reason: 'REST returns the card inside the list; the tool reads one card by id with the same service and grant.' } },
+  { tool: 'manage_billing_profiles', action: 'list_work_types', routeFile: 'billingProfiles.ts', method: 'get', path: '/work-types' },
+  { tool: 'manage_billing_profiles', action: 'create', routeFile: 'billingProfiles.ts', method: 'post', path: '/' },
+  { tool: 'manage_billing_profiles', action: 'update', routeFile: 'billingProfiles.ts', method: 'patch', path: '/:id', toolOnly: { extra: [], reason: 'Refuses an AI-coverage change that would delete the AI price list (quorum QW3).' } },
+  { tool: 'manage_billing_profiles', action: 'archive', routeFile: 'billingProfiles.ts', method: 'delete', path: '/:id' },
+  { tool: 'manage_billing_profiles', action: 'set_rows', routeFile: 'billingProfiles.ts', method: 'put', path: '/:id/rows' },
+  { tool: 'manage_billing_profiles', action: 'clone', routeFile: 'billingProfiles.ts', method: 'post', path: '/:id/clone' },
+  { tool: 'manage_billing_profiles', action: 'create_work_type', routeFile: 'billingProfiles.ts', method: 'post', path: '/work-types' },
+  { tool: 'manage_billing_profiles', action: 'update_work_type', routeFile: 'billingProfiles.ts', method: 'patch', path: '/work-types/:id', toolOnly: { extra: [], reason: 'Refuses isActive:false (archive clears ticket-category defaults; web app only, W14-D4).' } },
+  { tool: 'manage_billing_profiles', action: 'get_org_profile', routeFile: 'orgBillingProfile.ts', method: 'get', path: '/organizations/:id/billing-profile' },
+  { tool: 'manage_billing_profiles', action: 'set_org_profile', routeFile: 'orgBillingProfile.ts', method: 'put', path: '/organizations/:id/billing-profile', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (org-wide configuration, W14-D8).' } },
+  { tool: 'manage_billing_profiles', action: 'clear_org_profile', routeFile: 'orgBillingProfile.ts', method: 'delete', path: '/organizations/:id/billing-profile', toolOnly: { extra: [], reason: 'Refused to device-bound sessions (org-wide configuration, W14-D8).' } },
+  { tool: 'manage_billing_settings', action: 'get_partner', routeFile: 'orgs.ts', method: 'get', path: '/partners/me', toolOnly: { extra: [], reason: 'An explicit billing-settings projection of the same partner row.' } },
+  { tool: 'manage_billing_settings', action: 'get_org', routeFile: 'orgs.ts', method: 'get', path: '/organizations/:id', toolOnly: { extra: [], reason: 'An explicit billing-settings projection of the same org row; refused to device-bound sessions.' } },
+  { tool: 'manage_billing_settings', action: 'currency_impact', routeFile: 'invoices/settings.ts', method: 'get', path: '/orgs/:orgId/billing-settings/currency-impact' },
+  { tool: 'manage_billing_settings', action: 'update_partner', routeFile: 'invoices/settings.ts', method: 'patch', path: '/partner/billing-settings', toolOnly: { extra: [], reason: 'Never carries the agreement-reminder keys (W14-D4), so the conditional agreements:send gate never applies.' } },
+  { tool: 'manage_billing_settings', action: 'update_org', routeFile: 'invoices/settings.ts', method: 'patch', path: '/orgs/:orgId/billing-settings', toolOnly: { extra: [], reason: 'Never carries billingProfileId or a currency change (W14-D4); refused to device-bound sessions.' } },
+  { tool: 'manage_contract_templates', action: 'list', routeFile: 'contracts/templates.ts', method: 'get', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'No version body; refused to device-bound sessions (W14-D6/D8).' } },
+  { tool: 'manage_contract_templates', action: 'get', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Versions without body or bytes (W14-D6).' } },
+  { tool: 'manage_contract_templates', action: 'get_version', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id/versions/:versionId', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Body clipped; never the uploaded bytes (W14-D6).' } },
+  { tool: 'manage_contract_templates', action: 'usage', routeFile: 'contracts/templates.ts', method: 'get', path: '/:id/usage', parents: ['contracts/index.ts'] },
+  { tool: 'manage_contract_templates', action: 'create', routeFile: 'contracts/templates.ts', method: 'post', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Org-owned creates refused to site- and device-restricted sessions (W14-D8).' } },
+  { tool: 'manage_contract_templates', action: 'update', routeFile: 'contracts/templates.ts', method: 'patch', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'The call asserts ownerScope and a mismatch is refused (W14-D5); org templates refused to restricted sessions.' } },
+  { tool: 'manage_contract_templates', action: 'create_version', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/versions', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5 / quorum QW2).' } },
+  { tool: 'manage_contract_templates', action: 'publish', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/versions/:versionId/publish', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5).' } },
+  { tool: 'manage_contract_templates', action: 'archive', routeFile: 'contracts/templates.ts', method: 'post', path: '/:id/archive', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Refused for a partner-wide template (irreversible + partner-wide, W14-D5).' } },
+  { tool: 'manage_contract_documents', action: 'list', routeFile: 'contracts/documents.ts', method: 'get', path: '/', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'No signer email or acceptance reference (W14-D6); refused to device-bound sessions.' } },
+  { tool: 'manage_contract_documents', action: 'link', routeFile: 'contracts/documents.ts', method: 'patch', path: '/:id', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Identifiers only in the result (QW4); refused to site- and device-restricted sessions.' } },
+  { tool: 'get_device_billing', routeFile: 'devices/billing.ts', method: 'get', path: '/:id/billing' },
+  { tool: 'get_contract', routeFile: 'contracts/periods.ts', method: 'get', path: '/:id/periods/:periodId/outcome', parents: ['contracts/index.ts'] },
+  { tool: 'list_contracts', routeFile: 'contracts/reports.ts', method: 'get', path: '/currency-mismatches', parents: ['contracts/index.ts'] },
+  { tool: 'get_invoice', routeFile: 'invoices/evidence.ts', method: 'get', path: '/:id/lines/:lineId/devices', parents: ['invoices/index.ts'] },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -853,6 +904,12 @@ const BINDINGS: readonly Binding[] = [
  * an entry here is a tool whose route evidence is still only a comment.
  */
 const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> = [
+  // Full-control W14 (#6784): GET /billing/reporting-totals is deliberately permission-free at REST (public FX
+  // reference facts, routes/invoices/settings.ts), so there is no route grant to bind; the tool floor is invoices:read.
+  {
+    tool: 'manage_billing_settings', action: 'reporting_totals',
+    reason: 'GET /billing/reporting-totals carries no requirePermission (public FX facts); the AI tool requires invoices:read, stronger than REST.',
+  },
   // Full-control W12 (#6782): PATCH /devices/:id/custom-fields is gated by dualAuth('devices:write', DEVICES_WRITE,
   // { mfa: true }) (routes/devices/customFieldValues.ts), a helper the binder cannot parse; the tool floor is devices:write.
   {

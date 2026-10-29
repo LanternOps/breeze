@@ -266,6 +266,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/pamObservations.ts': { exempt: 'agent_transport' },
   'agents/pamReconciliation.ts': { exempt: 'agent_transport' },
   'agents/pamElevationUnable.ts': { exempt: 'agent_transport' },
+  'agents/elevationWithdraw.ts': { exempt: 'agent_transport' },
   'agents/patches.ts': { exempt: 'agent_transport' },
   'agents/peripherals.ts': { exempt: 'agent_transport' },
   'agents/processSample.ts': { exempt: 'agent_transport' },
@@ -385,7 +386,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'autopay/public.ts': { exempt: 'portal', note: 'Customer token-authorized enrollment and stop flow; not an MCP surface.' },
   'portal/paymentMethods.ts': { exempt: 'portal', note: 'Customer portal payment-method and autopay controls; not an MCP surface.' },
   'billingPaymentSettings.ts': { exempt: 'human_only_autopay', note: 'Partner/org autopay policy settings; AI/MCP writes are excluded by the autopay v1 design (§3).' },
-  'billingProfiles.ts': { gap: '#6784' },
+  'billingProfiles.ts': { tools: ['manage_billing_profiles'] }, // W14 (#6784): rate cards + work types; work-type archive web-app only (W14-D4)
   'billingStepUp.ts': { exempt: 'internal_plumbing', note: 'Second-factor confirmation shared by the charge-now, partner and organization payment-settings and autopay request routes; no endpoint of its own.' },
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
   // #8973 W4 business-hours calendars: read-only list_business_calendars; writes are human-only in v1 (spec §5.7).
@@ -428,14 +429,14 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'contracts/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/cancel; the single-item equivalents already have tools.' },
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
-  'contracts/documents.ts': { gap: '#6784' },
+  'contracts/documents.ts': { tools: ['manage_contract_documents'] }, // W14 (#6784): list + link; PDF download not built
   'contracts/generate.ts': { gap: '#6784' },
   'contracts/hourPeriods.ts': { tools: ['get_contract'] },
   'contracts/lifecycle.ts': { tools: ['manage_contracts'] },
   'contracts/lines.ts': { tools: ['manage_contracts'] },
-  'contracts/periods.ts': { gap: '#6784' },
-  'contracts/reports.ts': { gap: '#6784' },
-  'contracts/templates.ts': { gap: '#6784' },
+  'contracts/periods.ts': { tools: ['get_contract'] }, // W14 (#6784): get_contract periodId
+  'contracts/reports.ts': { tools: ['list_contracts'] }, // W14 (#6784): list_contracts view currency_mismatches
+  'contracts/templates.ts': { tools: ['manage_contract_templates'] }, // W14 (#6784): PDF upload / file download not built
   'customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
   'customFields.ts': { tools: ['query_custom_fields', 'manage_custom_fields'] }, // W12 (#6782): definition writes (#6141 gap)
   'deliverableTemplates.ts': { tools: ['list_deliverable_templates'] },
@@ -449,7 +450,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/aiOrigin.ts': { tools: ['get_device_ai_activity'] }, // W10 (#6780): ai-activity count and ai-origin summary
   'devices/alerts.ts': { tools: ['manage_alerts'] },
   'devices/anomalies.ts': { tools: ['manage_device_anomalies'] }, // W07 (#6777): per-row anomalies; anomaly EPISODES (list/get/action) are not exposed yet
-  'devices/billing.ts': { gap: '#6784' },
+  'devices/billing.ts': { tools: ['get_device_billing'] }, // W14 (#6784)
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
   'devices/bulkSite.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk site move (#9796); the single-device move (PATCH /devices/:id) is covered by core.ts tools.' },
@@ -539,12 +540,12 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'invoices/assembly.ts': { tools: ['manage_invoices'] },
   'invoices/autopay.ts': { exempt: 'human_only_autopay', note: 'Invoice collection controls are human-only under autopay v1 (§3).' },
   'invoices/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/issue/void; the single-item equivalents already have tools.' },
-  'invoices/evidence.ts': { gap: '#6784' },
+  'invoices/evidence.ts': { tools: ['get_invoice'] }, // W14 (#6784): get_invoice lineId
   'invoices/invoices.ts': { tools: ['list_invoices', 'get_invoice', 'manage_invoices'] },
   'invoices/lifecycle.ts': { tools: ['manage_invoices'] },
   'invoices/payments.ts': { tools: ['manage_invoices'] },
   'invoices/pdf.ts': { exempt: 'ui_file_transfer', note: "Binary PDF download; revisit if a tool can return a binary artifact. From #6798." },
-  'invoices/settings.ts': { gap: '#6784' },
+  'invoices/settings.ts': { tools: ['manage_billing_settings'] }, // W14 (#6784)
   'invoices/stripe.ts': { tools: ['manage_invoices'] },
   'invoicesPublic.ts': { exempt: 'portal' },
   'lifecycle.ts': { exempt: 'identity' },
@@ -579,7 +580,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'orgArchive.ts': { exempt: 'human_only_tenant_restructure', note: 'Archive/restore an organization -- tenant-restructure decision.' },
   'orgAuditRetentionSettings.ts': { gap: '#6789' },
   // Per-org billing profile read/write/delete; no AI tool surfaces it yet.
-  'orgBillingProfile.ts': { gap: '#6784' },
+  'orgBillingProfile.ts': { tools: ['manage_billing_profiles'] }, // W14 (#6784): get / set / clear_org_profile
   'orgContacts.ts': { tools: ['list_org_contacts', 'manage_organizations'] },
   'orgContactResponsibilities.ts': { exempt: 'tool_in_later_wave', note: 'Read-only resolved responsibilities for a Site/Device (UI view, spec #8087). No AI tool yet.' },
   'orgDocuments.ts': { tools: ['list_org_documents', 'manage_org_documents'] },
@@ -601,6 +602,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'partnerSettingsInheritance.ts': { exempt: 'tool_in_later_wave', note: 'Partner-settings inheritance read model (#9170 W3); read tool tracked in #9763.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
+  'partnerApi/alertWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API alert acknowledge and resolve for service principals; in-product alert writes already have tools (manage_alerts).' },
   'partnerApi/ticketWrites.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API ticket writes for service principals; in-product ticket writes already have tools (manage_tickets).' },
   'partnerApi/audit.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'partnerApi/configuration.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
@@ -673,7 +675,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'remote/deviceActiveSessions.ts': { tools: ['list_remote_sessions'] },
   'remote/index.ts': { exempt: 'internal_plumbing' },
   'remote/sessions.ts': { tools: ['create_remote_session', 'list_remote_sessions'] },
-  'remote/supportSessions.ts': { gap: '#6783' },
+  'remote/supportSessions.ts': { tools: ['manage_support_sessions'] }, // W13 (#6783): list / get / end; create not built (W13-D14)
   'reports/core.ts': { tools: ['generate_report'] },
   'reports/data.ts': { tools: ['generate_report'] },
   'reports/generate.ts': { tools: ['generate_report'] },
@@ -724,7 +726,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'stripeConnect/index.ts': { exempt: 'vendor_console_admin' },
   'supportPublic.ts': { exempt: 'portal' },
   'system.ts': { exempt: 'internal_plumbing', note: "Version/config-status reads are low AI value; setup-complete is onboarding UI. From #6807." },
-  'systemTools/eventLogs.ts': { gap: '#6783' },
+  'systemTools/eventLogs.ts': { tools: ['browse_device_event_log'] }, // W13 (#6783)
   'systemTools/fileBrowser.ts': { tools: ['file_operations'] },
   'systemTools/helpers.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'systemTools/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -733,7 +735,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'systemTools/scheduledTasks.ts': { tools: ['manage_scheduled_tasks'] },
   'systemTools/services.ts': { tools: ['manage_services'] },
   'tags.ts': { tools: ['manage_tags'] },
-  'tenantVariables.ts': { gap: '#6783' },
+  'tenantVariables.ts': { tools: ['manage_tenant_variables'] }, // W13 (#6783): never secret values
   'terminalWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'thirdPartyCatalog/list.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },
   'thirdPartyCatalog/operations.ts': { exempt: 'platform_admin', note: 'Behind platformAdminMiddleware (mis-registered as a gap).' },

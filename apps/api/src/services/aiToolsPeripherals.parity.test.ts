@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
@@ -48,6 +54,34 @@ beforeEach(() => {
 });
 
 describe('manage_peripheral_policy REST parity', () => {
+  it.each(['create', 'update'])('%s refuses partner-group peripheral targets without writes and checks the supplied group ids', async (action) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    const out = JSON.parse(await handler({
+      action, policy_id: 'p1', name: 'Policy', device_class: 'storage', policy_action: 'block',
+      target_type: 'group', target_ids: { groupIds: [groupId] },
+    }, auth));
+    expect(out).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('update refuses a retained partner-group target before persisting', async () => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([]).mockResolvedValueOnce([groupId]);
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([
+        { ...stored, targetType: 'group', targetIds: { groupIds: [groupId] } },
+      ]) }) }),
+    });
+    const out = JSON.parse(await handler({ action: 'update', policy_id: 'p1', name: 'Renamed' }, auth));
+    expect(out).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it('update: switching target_type without target_ids clears stored ids (#9620)', async () => {
     const out = JSON.parse(await handler({ action: 'update', policy_id: 'p1', target_type: 'group' }, auth));
     expect(out.success).toBe(true);

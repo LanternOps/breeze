@@ -67,7 +67,7 @@ export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | '
 export class GroupEvaluationError extends Error {
   constructor(
     public readonly groupId: string,
-    public readonly reason: 'invalid_filter' | 'engine_error',
+    public readonly reason: 'invalid_filter' | 'engine_error' | 'unsupported_owner',
     cause?: unknown,
   ) {
     super(`device group ${groupId}: ${reason}`, cause === undefined ? undefined : { cause });
@@ -98,6 +98,10 @@ const SLOW_GROUP_EVALUATION_MS = 250;
  *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
  */
 export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
+  // Partner-owned groups have no single org to evaluate in (per-org evaluation
+  // lands in W2b of #10521). Callers are org-scoped (contract billing), so an
+  // empty set would silently under-bill: fail loudly instead (#3205 rule).
+  if (group.orgId === null) throw new GroupEvaluationError(group.id, 'unsupported_owner');
   const filterConditions = group.filterConditions;
   let dynamicFilter: FilterConditionGroup | null = null;
   if (group.type === 'dynamic' && filterConditions !== null && filterConditions !== undefined) {
@@ -169,7 +173,7 @@ export type DeviceForMembership = {
  * org_id and this group's id is visible to a system context.
  */
 export async function groupIncludesDevice(group: GroupForResolution, device: DeviceForMembership): Promise<boolean> {
-  if (device.orgId !== group.orgId || device.isEphemeral) return false;
+  if (group.orgId === null || device.orgId !== group.orgId || device.isEphemeral) return false;
 
   const filter = group.filterConditions;
   const hasFilter = filter !== null && filter !== undefined;
@@ -288,6 +292,11 @@ export async function evaluateDeviceMembershipForGroup(
     .where(eq(deviceGroups.id, groupId))
     .limit(1);
 
+  if (group?.orgId === null) {
+    console.warn(`[groupMembership] partner group ${group.id} skipped until W2b evaluation`);
+    return { evaluatedGroups: 0, added: 0, removed: 0 };
+  }
+
   if (!group || group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
     return { evaluatedGroups: 0, added: 0, removed: 0 };
   }
@@ -398,10 +407,16 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     return { evaluatedGroups: 0, added: 0, removed: 0, matched: 0, materialized: 0 };
   }
 
+  if (group.orgId === null) {
+    console.warn(`[groupMembership] partner group ${group.id} skipped until W2b evaluation`);
+    return { evaluatedGroups: 0, added: 0, removed: 0 };
+  }
+
   if (group.type !== 'dynamic' || !isFilterConditionGroup(group.filterConditions)) {
     return { evaluatedGroups: 0, added: 0, removed: 0 };
   }
 
+  const orgId = group.orgId;
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
@@ -435,7 +450,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
         toAdd.map(deviceId => ({
           deviceId,
           groupId,
-          orgId: group.orgId,
+          orgId,
           addedBy: 'dynamic_rule' as const
         }))
       )
@@ -492,6 +507,23 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   };
 }
 
+type GroupOwner = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId'>;
+
+/** Defense in depth for internal callers; routes reject partner writes earlier. */
+async function requireOrgOwnedGroup(
+  groupId: string,
+  database: GroupMembershipDatabase,
+  loadedGroup?: GroupOwner,
+): Promise<void> {
+  const group = loadedGroup ?? (await database
+    .select({ id: deviceGroups.id, orgId: deviceGroups.orgId })
+    .from(deviceGroups)
+    .where(eq(deviceGroups.id, groupId))
+    .limit(1))[0];
+  if (!group || group.id !== groupId) throw new Error('device group not found');
+  if (group.orgId === null) throw new Error('partner-owned device groups are read-only');
+}
+
 /**
  * Remove every membership whose device no longer belongs to a site's group.
  * This intentionally removes pinned as well as dynamic memberships: pinning
@@ -503,8 +535,9 @@ export async function pruneGroupMembershipsOutsideSite(
   siteId: string,
   orgId: string,
   database: GroupMembershipDatabase = db,
-  options: { deferPeripheralReconciliation?: boolean } = {},
+  options: { deferPeripheralReconciliation?: boolean; group?: GroupOwner } = {},
 ): Promise<{ removed: number; deviceIds?: string[] }> {
+  await requireOrgOwnedGroup(groupId, database, options.group);
   const memberships = await database
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -616,8 +649,10 @@ export async function pinDeviceToGroup(
   groupId: string,
   deviceId: string,
   pinned: boolean,
-  orgId: string
+  orgId: string,
+  loadedGroup?: GroupOwner,
 ): Promise<void> {
+  await requireOrgOwnedGroup(groupId, db, loadedGroup);
   const [membership] = await db
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -801,12 +836,14 @@ export interface ManualMembershipWrite {
  */
 export async function addManualGroupMemberships(params: {
   groupId: string;
+  group?: GroupOwner;
   orgId: string;
   deviceIds: readonly string[];
 }, database: GroupMembershipDatabase = db): Promise<ManualMembershipWrite> {
   const { groupId, orgId } = params;
   const requested = [...new Set(params.deviceIds)];
   if (requested.length === 0) return { added: [], skipped: 0 };
+  await requireOrgOwnedGroup(groupId, database, params.group);
 
   const existing = await database
     .select({ deviceId: deviceGroupMemberships.deviceId })

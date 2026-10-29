@@ -400,6 +400,17 @@ function DeviceInfoView({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * The session prompt's locale and the remote session id in
+ * `#request-support/<locale>/<sessionId>` (#10190 W06), or null. Both must
+ * be of the shapes Rust checked before setting the hash
+ * (`request_support_script`); anything else is ignored.
+ */
+export function parseRequestSupportHash(hash: string): { locale: string; sessionId: string } | null {
+  const m = /^#request-support\/([a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)\/([A-Za-z0-9._:-]{1,200})$/.exec(hash);
+  return m ? { locale: m[1]!, sessionId: m[2]! } : null;
+}
+
 // The persistent files-first shell: ONE header (drag region + traffic-light
 // spacer + status dot + title + a Files/Chat/History SegmentedControl + the
 // chat-scoped Flag/New actions) over a single main region that swaps on
@@ -506,6 +517,28 @@ export default function AppShell() {
       enter('notifications');
     }).then((fn: () => void) => { unlisten = fn; });
     return () => { unlisten?.(); };
+  }, []);
+
+  // "Report a problem" on the remote-session pill (#10190 W06, OD-6 (b)):
+  // after the agent accepted it, Rust (lib.rs `open_request_support`) sets
+  // `#request-support/<locale>/<sessionId>` and shows this window. Open
+  // Request Support (the chat) with a draft naming the session, in the
+  // session prompt's locale (shared catalog), then clear the hash so a reload
+  // does not repeat it. Read on mount too: the hash may be set before the
+  // shell is up (connecting, username prompt).
+  useEffect(() => {
+    const take = () => {
+      const req = parseRequestSupportHash(window.location.hash);
+      if (!req) return;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setChatPanelOpen(false);
+      enter('chat');
+      const prefill = `${chromeString('chrome.remoteReportDraft', req.locale, { sessionId: req.sessionId })} `;
+      setDraft((cur) => (cur.trim() ? `${prefill}${cur}` : prefill));
+    };
+    take();
+    window.addEventListener('hashchange', take);
+    return () => window.removeEventListener('hashchange', take);
   }, []);
 
   // The tab exists only while there is something in the list (or the user is

@@ -188,7 +188,7 @@ export interface NarrativeContext {
     available: boolean;
     created: number;
     resolved: number;
-    /** Resolved with no `resolved_by` — nobody clicked, the condition cleared. */
+    /** Resolved with neither user nor principal attribution (system resolve). */
     autoResolved: number;
     critical: number;
     /** CURRENT state, not a window count — see `STRUCTURALLY_UNAVAILABLE`. */
@@ -771,9 +771,9 @@ async function loadHeader(orgId: string): Promise<RawOrgHeader & { partnerId: st
  * Alerts: four statements, all pinned on `alerts.org_id` (`alerts` carries a
  * direct `org_id`, tenancy shape 1).
  *
- * `resolved_by IS NULL` on a resolved alert is what "auto-resolved" means in
- * this schema — nobody clicked, the condition cleared and the reaper closed
- * it. `currently_suppressed` is a CURRENT-state count because there is no
+ * A resolved alert with neither user nor principal attribution counts as
+ * auto-resolved. A Partner API principal resolve is human-equivalent.
+ * `currently_suppressed` is a CURRENT-state count because there is no
  * `suppressed_at` to window on (see `STRUCTURALLY_UNAVAILABLE`).
  */
 async function loadAlerts(scope: Scope, window: Window): Promise<RawAlertInputs> {
@@ -787,7 +787,7 @@ async function loadAlerts(scope: Scope, window: Window): Promise<RawAlertInputs>
     SELECT
       COUNT(*) FILTER (WHERE a.created_at >= ${start} AND a.created_at < ${end})::int AS created,
       COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end})::int AS resolved,
-      COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end} AND a.resolved_by IS NULL)::int AS auto_resolved,
+      COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end} AND a.resolved_by IS NULL AND a.resolved_by_principal_id IS NULL)::int AS auto_resolved,
       COUNT(*) FILTER (WHERE a.created_at >= ${start} AND a.created_at < ${end} AND a.severity = 'critical')::int AS critical,
       COUNT(*) FILTER (WHERE a.status = 'suppressed')::int AS currently_suppressed
     FROM alerts a

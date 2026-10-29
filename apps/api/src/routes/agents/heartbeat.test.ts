@@ -287,6 +287,15 @@ vi.mock('../../services/auditEvents', () => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// #10190 W05 — restart-decision audit. Its dedupe and freshness rules live in
+// services/rebootUserActionAudit.test.ts; here only the wiring is pinned.
+const recordRebootUserActionMock = vi.hoisted(() => vi.fn(async () => 'written'));
+const noteRebootUserActionDroppedMock = vi.hoisted(() => vi.fn(() => false));
+vi.mock('../../services/rebootUserActionAudit', () => ({
+  recordRebootUserAction: recordRebootUserActionMock,
+  noteRebootUserActionDropped: noteRebootUserActionDroppedMock,
+}));
+
 vi.mock('../../services/deviceIpHistory', () => ({
   processDeviceIPHistoryUpdate: vi.fn(),
 }));
@@ -470,7 +479,7 @@ vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputa
 
 import { and, eq, notInArray, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
+import { heartbeatRoutes, normalizePamUserNotifyProtocolVersion, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { createReliabilityBaseline } from '../../services/reliabilityBaselines';
@@ -4028,6 +4037,32 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(update.pamLifetimeProtocolVersion).toBe(0);
   });
 
+  // #8928 — the user-outcome notice capability is same-heartbeat, non-sticky
+  // truth like every other protocol column: anything but exactly 1 is 0.
+  it.each([
+    [1, 1], [0, 0], [2, 0], ['1', 0], [undefined, 0], [1.5, 0], [null, 0],
+  ])('normalizePamUserNotifyProtocolVersion(%j) === %j', (input, expected) => {
+    expect(normalizePamUserNotifyProtocolVersion(input)).toBe(expected);
+  });
+
+  it.each([
+    { capabilities: { pamUserNotifyProtocolVersion: 1 }, expected: 1 },
+    { capabilities: undefined, expected: 0 },
+    { capabilities: {}, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 0 }, expected: 0 },
+    { capabilities: { pamUserNotifyProtocolVersion: 2 }, expected: 0 },
+  ])('rewrites the PAM user-notify capability every beat: %j', async ({ capabilities, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, securityCapabilities: capabilities }),
+    });
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.pamUserNotifyProtocolVersion).toBe(expected);
+  });
+
   // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
   // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
   // unknown, fractional and string values all persist as 0 so an agent
@@ -7474,7 +7509,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...minimalHeartbeatBody,
-        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1, pamUserNotifyProtocolVersion: 1 },
       }),
     });
 
@@ -7486,7 +7521,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
       { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined,
-      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1, pamUserNotifyProtocolVersion: 1 },
     );
   });
 
@@ -7525,7 +7560,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       10,
       'agent',
       ['self_uninstall'],
-      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0 },
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0, pamUserNotifyProtocolVersion: 0 },
     );
   });
 
@@ -8515,6 +8550,95 @@ describe('POST /agents/:id/heartbeat — reboot status (#3207 W5)', () => {
     expect(updateArg.rebootSource).toBeNull();
     expect(updateArg.rebootDeferralsUsed).toBeNull();
     expect(updateArg.rebootMaxDeferrals).toBeNull();
+  });
+
+  // #10190 W05 — the restart decision the person made on the device.
+  it('hands lastUserAction to the restart-decision audit with the snapshot counters', async () => {
+    arrange();
+    const lastUserAction = { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' };
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        deadline: DEADLINE,
+        source: 'patch_job',
+        deferralsUsed: 2,
+        maxDeferrals: 3,
+        lastUserAction,
+      },
+    });
+
+    expect(resp.status).toBe(200);
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    const [deviceId, orgId, action, context] = recordRebootUserActionMock.mock.calls[0]! as unknown as [
+      string, string, unknown, Record<string, unknown>,
+    ];
+    // The authenticated device and its org, never a body-supplied identity.
+    expect(deviceId).toBe('device-1');
+    expect(orgId).toBe('org-1');
+    expect(action).toEqual(lastUserAction);
+    expect(context).toMatchObject({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, agentId: 'device-1' });
+    expect(context.c).toBeDefined();
+    expect(noteRebootUserActionDroppedMock).not.toHaveBeenCalled();
+  });
+
+  it("attributes the restart-decision audit to the device row's org", async () => {
+    // The row's org (the org transaction's), never the token's cached org:
+    // after an org move the audit must land in the device's current tenant.
+    arrange({ orgId: 'org-2' });
+    await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(recordRebootUserActionMock).toHaveBeenCalledTimes(1);
+    expect((recordRebootUserActionMock.mock.calls[0] as unknown[])[1]).toBe('org-2');
+  });
+
+  it('does not hold the heartbeat response on the restart-decision audit', async () => {
+    arrange();
+    recordRebootUserActionMock.mockReturnValueOnce(new Promise(() => {}));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      },
+    });
+    expect(resp.status).toBe(200);
+  });
+
+  it('checks for a dropped lastUserAction when a schedule arrives without one', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 1, maxDeferrals: 3 } });
+    expect(noteRebootUserActionDroppedMock).toHaveBeenCalledTimes(1);
+    const [deviceId, raw, parsed] = noteRebootUserActionDroppedMock.mock.calls[0] as unknown as [string, any, unknown];
+    expect(deviceId).toBe('device-1');
+    expect(raw.rebootStatus.scheduledAt).toBe(SCHEDULED_AT);
+    expect(parsed).toBeUndefined();
+  });
+
+  it('does not call the restart-decision audit when there is no lastUserAction', async () => {
+    arrange();
+    await beat({ rebootStatus: { scheduledAt: SCHEDULED_AT, deferralsUsed: 0, maxDeferrals: 3 } });
+    await beat({ rebootStatus: null });
+    await beat({ pendingReboot: true });
+    expect(recordRebootUserActionMock).not.toHaveBeenCalled();
+  });
+
+  it('a failing restart-decision audit does not fail the heartbeat', async () => {
+    const setSpy = arrange();
+    recordRebootUserActionMock.mockRejectedValueOnce(new Error('audit path exploded'));
+    const resp = await beat({
+      rebootStatus: {
+        scheduledAt: SCHEDULED_AT,
+        lastUserAction: { action: 'restart_now', atUnixMs: 1_788_349_000_000, renderer: 'native' },
+      },
+    });
+    expect(resp.status).toBe(200);
+    // The schedule itself still landed.
+    expect(updateArgOf(setSpy).rebootScheduledAt).toEqual(new Date(SCHEDULED_AT));
+    // The lastUserAction member is an audit input, never a device column.
+    expect(Object.hasOwn(updateArgOf(setSpy), 'lastUserAction')).toBe(false);
   });
 
   // NOTE: the zod-level drops (malformed scheduledAt, out-of-range counters,

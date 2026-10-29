@@ -1386,6 +1386,8 @@ const REPOINT_TABLES: readonly string[] = [
   "user_risk_events",
   "users",
   "vault_snapshot_inventory",
+  // Repoint event ownership; the stored payload stays a send-time snapshot.
+  "webhook_deliveries",
   "webhooks",
   // Wisp W05a (#9911). Partner-level rows (org_id NULL) never match the
   // `WHERE org_id = <loser>` repoint. No unique key is org-scoped in a way a

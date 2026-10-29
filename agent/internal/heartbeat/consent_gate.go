@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -48,6 +49,21 @@ func rememberDesktopPrompt(sessionID string, prompt *ipc.DesktopPrompt) {
 	desktopPromptStarted[sessionID] = time.Now()
 	desktopPromptsMu.Unlock()
 }
+
+// desktopPromptActive reports, without taking it, whether sessionID still
+// has a remembered prompt: the session has not ended yet.
+func desktopPromptActive(sessionID string) bool {
+	desktopPromptsMu.Lock()
+	defer desktopPromptsMu.Unlock()
+	_, ok := desktopPrompts[sessionID]
+	return ok
+}
+
+// indicatorLifecycleMu serializes a session's end against a re-show of its
+// indicator after a failed user end: either the end runs first and the
+// re-show sees the session gone, or the re-show runs first and the end
+// closes what it showed. Never held by anything the prompt host calls.
+var indicatorLifecycleMu sync.Mutex
 
 func takeDesktopPrompt(sessionID string) *ipc.DesktopPrompt {
 	prompt, _ := takeDesktopPromptWithStart(sessionID)
@@ -173,6 +189,10 @@ func (h *Heartbeat) runConsentGate(sessionID string, prompt *ipc.DesktopPrompt, 
 		"outcome", v.outcome,
 		"occupancy", v.occupancy,
 		"detail", v.detail,
+		// What drew the prompt (assist | native). Reported here, not in
+		// the start result: the API's strict desk-* result object has no
+		// renderer field yet, and an unknown key would drop the result.
+		"renderer", att.renderer,
 	)
 	return v
 }
@@ -250,6 +270,11 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 	}
 	answerWait := time.Duration(prompt.ConsentTimeoutMs+consentTimeoutGraceMs) * time.Millisecond
 
+	// remote.consent through the prompt host when all three switches are on
+	// for this user's session (W06); otherwise exactly today's request.
+	if att, ok := h.solicitConsentPrompt(ctx, session, req, prompt); ok {
+		return att
+	}
 	var att consentAttempt
 	if session.ConsentProtocolVersion >= ipc.ConsentProtocolVersion {
 		att = solicitConsentV2(ctx, session, "consent-"+sessionID, req, answerWait)
@@ -257,6 +282,7 @@ func (h *Heartbeat) solicitConsent(sessionID string, prompt *ipc.DesktopPrompt, 
 		att = solicitConsentLegacy(ctx, session, "consent-"+sessionID, req, answerWait)
 	}
 	att.helper = session
+	att.renderer = consentRendererLabel(session.HelperRole)
 	return att
 }
 
@@ -621,7 +647,9 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 		h.sendSessionNotify(connectedNotifyBody(prompt), targetWinSession)
 	}
 	if prompt.ShowIndicator {
-		h.sendBannerShow(sessionID, prompt, targetWinSession)
+		// remote.session where the session's renderer draws it and the
+		// server enables it (#10190 W06); otherwise exactly today's banner.
+		h.showSessionIndicator(sessionID, prompt, targetWinSession)
 	}
 }
 
@@ -630,18 +658,38 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 // targetWinSession keeps the legacy machine-global selection; a non-empty one
 // routes strictly to that Windows session (see sessionNoticeTarget).
 func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
-	if h.sessionBroker == nil || body == "" {
-		return
+	_ = h.sendSessionNotifyTitled("Breeze Agent", body, targetWinSession)
+}
+
+// Why sendSessionNotifyTitled did not hand a notice to a helper.
+var (
+	errNoticeNoSessionBroker = errors.New("no session broker")
+	errNoticeEmptyBody       = errors.New("notice body is empty")
+	errNoticeNoNotifyHelper  = errors.New("no notify-capable helper in the target session")
+)
+
+// sendSessionNotifyTitled is sendSessionNotify with a caller-chosen title. The
+// PAM outcome notices (#8928) use it so the toast headline is the outcome
+// ("Request approved") rather than the product name. It returns nil only when
+// the notice was handed to a helper; the PAM callers report that as "shown".
+func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string) error {
+	if h.sessionBroker == nil {
+		return errNoticeNoSessionBroker
+	}
+	if body == "" {
+		return errNoticeEmptyBody
 	}
 	session := h.sessionNoticeTarget(targetWinSession)
 	if session == nil {
-		log.Warn("no notify-capable helper for session notice")
-		return
+		log.Warn("no notify-capable helper for session notice", "title", title, "targetWinSession", targetWinSession)
+		return errNoticeNoNotifyHelper
 	}
-	req := sessionNoticeRequest(body)
+	req := sessionNoticeRequest(title, body)
 	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
+		return fmt.Errorf("send session notify: %w", err)
 	}
+	return nil
 }
 
 // sendBannerShow tells the consent-UI helper (assist app, or the native
@@ -696,7 +744,12 @@ func (h *Heartbeat) sendBannerHide(sessionID, targetWinSession string) {
 func (h *Heartbeat) handleConsentSessionEnd(sessionID string) {
 	targetWinSession := h.takeDesktopTarget(sessionID)
 
+	indicatorLifecycleMu.Lock()
 	prompt, startedAt := takeDesktopPromptWithStart(sessionID)
+	if prompt != nil && prompt.ShowIndicator {
+		h.closeSessionIndicator(sessionID)
+	}
+	indicatorLifecycleMu.Unlock()
 	if prompt == nil {
 		return
 	}
@@ -836,9 +889,9 @@ func (h *Heartbeat) sessionNoticeTarget(targetWinSession string) *sessionbroker.
 // cannot be shown (toasts can be disabled, suppressed by Focus Assist, or
 // unavailable to the process). It carries no Actions: it is an announcement,
 // not a prompt.
-func sessionNoticeRequest(body string) ipc.NotifyRequest {
+func sessionNoticeRequest(title, body string) ipc.NotifyRequest {
 	return ipc.NotifyRequest{
-		Title:          "Breeze Agent",
+		Title:          title,
 		Body:           body,
 		Urgency:        "normal",
 		FallbackDialog: true,

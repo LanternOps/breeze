@@ -492,7 +492,7 @@ describe('loadNarrativeContext', () => {
     await loadNarrativeContext(ORG);
     const { sql } = stmt('FROM alerts a WHERE');
     expect(orgPins(sql)).toBe(1);
-    expect(sql).toContain('a.resolved_by IS NULL');
+    expect(sql).toContain('a.resolved_by IS NULL AND a.resolved_by_principal_id IS NULL');
     expect(sql).toContain("a.severity = 'critical'");
     // Suppression is a CURRENT-STATE count: there is no suppressed_at column
     // to window on (reported via `unavailable`).

@@ -207,6 +207,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_configuration_policy',
   'get_contract',
   'get_device_ai_activity', // W10 (#6780) Tier-1 read, own device for a device-bound run
+  'get_device_billing', // Full-control W14 (#6784): tier-1 contract lines billing one device (partner scope only in the handler)
   'get_device_context',
   'get_device_details',
   'get_device_events', // Full-control W13 (#6783): tier-1 device audit timeline, device-scoped
@@ -1006,10 +1007,14 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall and the W13 device-function set, each with a real reason', () => {
+  it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
       // W11-D8 (#6781, quorum QW5/QW9): users-FK writes a user-owned release would run without the run's ceiling.
       'manage_audit_baselines:create', 'manage_audit_baselines:request_apply',
+      // W14 (#6784): agreement templates and signed agreements are the legal documents customers sign.
+      'manage_contract_documents:link',
+      'manage_contract_templates:archive', 'manage_contract_templates:create', 'manage_contract_templates:create_version',
+      'manage_contract_templates:publish', 'manage_contract_templates:update',
       // W13 (#6783): function is an allowed execution-targeting filter -> dynamic groups -> run scope.
       'manage_device_function:set',
       // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
@@ -1017,6 +1022,8 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
       // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
       'manage_groups:add_devices', 'manage_groups:remove_devices',
       'manage_tags:add', 'manage_tags:remove',
+      // W13 PR B (#6783): tenant-variable values are script inputs.
+      'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',
     ]);
     for (const reason of AGENT_HUMAN_ONLY_ACTIONS.values()) expect(reason.length).toBeGreaterThanOrEqual(20);
   });
@@ -1114,6 +1121,56 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
     const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
     expect(check.disposition).toBe('deny');
+  });
+
+  describe('W14 (#6784)', () => {
+    it.each(['create', 'update', 'create_version', 'publish', 'archive'])('denies an allowlisted manage_contract_templates:%s (legal documents)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contract_templates', `manage_contract_templates:${action}`] });
+      const check = checkAgentGuardrails('manage_contract_templates', { action, templateId: 't-1', name: 'n' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('denies an allowlisted manage_contract_documents:link', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contract_documents', 'manage_contract_documents:link'] });
+      expect(checkAgentGuardrails('manage_contract_documents', { action: 'link', documentId: 'd', contractId: 'c' }, policy).disposition).toBe('deny');
+    });
+
+    it('control: template / document / rate-card / settings reads reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_contract_templates', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_contract_documents', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_profiles', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_settings', { action: 'get_partner' }, policy).disposition).toBe('allow');
+    });
+
+    it('rate-card and settings writes are proposals, never direct', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_billing_profiles:update', 'manage_billing_settings:update_org'] });
+      expect(checkAgentGuardrails('manage_billing_profiles', { action: 'update', profileId: 'p' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_billing_settings', { action: 'update_org', orgId: 'o' }, policy).disposition).not.toBe('allow');
+    });
+  });
+
+  describe('W13 PR B (#6783)', () => {
+    it.each(['create', 'update', 'delete'])('denies an allowlisted manage_tenant_variables:%s (script inputs)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_tenant_variables', `manage_tenant_variables:${action}`] });
+      const check = checkAgentGuardrails('manage_tenant_variables', { action, key: 'k', value: 'v' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it('control: tenant-variable list and support-session list reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_tenant_variables', { action: 'list' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'list' }, policy).disposition).toBe('allow');
+    });
+
+    it('event-log list_logs is read-only to an agent; query and support-session end become proposals', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['browse_device_event_log:query', 'manage_support_sessions:end'] });
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'list_logs', deviceId: 'dev-1' }, policyWith({ mode: 'act', toolAllowlist: [] })).disposition).toBe('allow');
+      expect(checkAgentGuardrails('browse_device_event_log', { action: 'query', deviceId: 'dev-1', logName: 'Security' }, policy).disposition).not.toBe('allow');
+      expect(checkAgentGuardrails('manage_support_sessions', { action: 'end', sessionId: 's-1' }, policy).disposition).not.toBe('allow');
+    });
   });
 
   describe('W13 device inventory and ops (#6783)', () => {

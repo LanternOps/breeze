@@ -476,7 +476,42 @@ describe('W12 software tool wiring (#6782)', () => {
 const W13_TOOLS = [
   'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',
   'manage_device_function', 'manage_device_links', 'manage_manual_assets', 'manage_device_warranty',
+  // PR B.
+  'browse_device_event_log', 'manage_tenant_variables', 'manage_support_sessions',
 ] as const;
+
+const W14_TOOLS = [
+  'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents',
+  'get_device_billing',
+] as const;
+
+describe('W14 billing lifecycle wiring (#6784, PR A)', () => {
+  it.each(W14_TOOLS)('%s: TOOL_TIERS === registry tier 1, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    expect(getToolTier(name)).toBe(1);
+    expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it.each([
+    ['get_contract', 'periodId'], ['list_contracts', 'view'], ['list_contracts', 'cursor'],
+    ['get_invoice', 'lineId'], ['get_invoice', 'limit'], ['get_invoice', 'cursor'],
+  ])('%s carries the additive %s selector on all three input surfaces', (name, key) => {
+    const props = (aiTools.get(name)!.definition.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(props)).toContain(key);
+    expect(Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape)).toContain(key);
+    expect(Object.keys(declaredToolsByName().get(name)!.inputSchema)).toContain(key);
+  });
+});
 
 describe('W13 device inventory and ops wiring (#6783)', () => {
   it.each(W13_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {

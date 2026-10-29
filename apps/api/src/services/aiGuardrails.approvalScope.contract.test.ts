@@ -878,6 +878,10 @@ const W13_EXPECTED: Record<string, Record<string, W02Class>> = {
   manage_device_links: { list: 't1', get: 't1', for_device: 't1', create: 't2', update: 't2', dissolve: 't2' },
   manage_manual_assets: { list: 't1', create: 't2', update: 't2', link: 't2', unlink: 't2', delete: 'supervised' },
   manage_device_warranty: { get: 't1', expiring: 't1', refresh: 'supervised' },
+  // W13 PR B (#6783).
+  browse_device_event_log: { list_logs: 't2', query: 'supervised', get_event: 'supervised' },
+  manage_tenant_variables: { list: 't1', create: 'supervised', update: 'supervised', delete: 'supervised' },
+  manage_support_sessions: { list: 't1', get: 't1', end: 'supervised' },
 };
 const W13_WHOLE_TOOL: Record<string, W02Class> = {
   get_device_events: 't1',
@@ -906,6 +910,59 @@ describe('W13 class rows (#6783)', () => {
 
   it('search_agent_logs stays tier 1 with the W13 source filter', () => {
     expect(classOf('search_agent_logs', { source: 'watchdog' })).toBe('t1');
+  });
+});
+
+// ── W14 class rows (#6784, PR A; W14 plan class review + quorum) ──────────
+const W14_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_billing_profiles: {
+    list: 't1', get: 't1', list_work_types: 't1', get_org_profile: 't1',
+    create: 'supervised', update: 'supervised', archive: 'supervised', set_rows: 'supervised', clone: 'supervised',
+    create_work_type: 'supervised', update_work_type: 'supervised',
+    set_org_profile: 'supervised', clear_org_profile: 'supervised',
+  },
+  manage_billing_settings: {
+    get_partner: 't1', get_org: 't1', currency_impact: 't1', reporting_totals: 't1',
+    update_partner: 'supervised', update_org: 'supervised',
+  },
+  manage_contract_templates: {
+    list: 't1', get: 't1', get_version: 't1', usage: 't1',
+    // Org-owned (no / 'organization' ownerScope); the partner-wide arm is pinned below.
+    create: 't2', update: 't2',
+    create_version: 'supervised', publish: 'supervised', archive: 'supervised',
+  },
+  manage_contract_documents: { list: 't1', link: 'supervised' },
+};
+
+describe('W14 class rows (#6784)', () => {
+  it.each(Object.keys(W14_EXPECTED))('%s: W14_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W14_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W14_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(['create', 'update'])('manage_contract_templates:%s is supervised when it asserts a partner-wide template, t2 for an org one', (action) => {
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'partner' })).toBe('supervised');
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'organization' })).toBe('t2');
+    // A non-literal value cannot address a partner-wide template (the handler compares it to the row).
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'PARTNER' })).toBe('t2');
+  });
+
+  it('get_device_billing (whole tool) is t1 and has no action enum', () => {
+    expect(toolActionEnum('get_device_billing') ?? []).toEqual([]);
+    expect(classOf('get_device_billing', { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe('t1');
+  });
+
+  it('the read selectors leave get_contract / list_contracts / get_invoice wholly read-only tier 2', () => {
+    expect(classOf('get_contract', { contractId: 'c', periodId: 'p' })).toBe('t2');
+    expect(classOf('list_contracts', { view: 'currency_mismatches' })).toBe('t2');
+    expect(classOf('get_invoice', { invoiceId: 'i', lineId: 'l' })).toBe('t2');
   });
 });
 

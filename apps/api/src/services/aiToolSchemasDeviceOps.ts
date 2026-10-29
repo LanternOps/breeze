@@ -23,6 +23,14 @@ export const DEVICE_LINK_ACTIONS = ['list', 'get', 'for_device', 'create', 'upda
 export const MANUAL_ASSET_ACTIONS = ['list', 'create', 'update', 'delete', 'link', 'unlink'] as const;
 export const DEVICE_WARRANTY_ACTIONS = ['get', 'expiring', 'refresh'] as const;
 export const LINK_GROUP_KIND_VALUES = ['multiboot', 'vm_host'] as const;
+// W13 PR B (#6783).
+export const EVENT_LOG_ACTIONS = ['list_logs', 'query', 'get_event'] as const;
+export const EVENT_LOG_LEVELS = ['information', 'warning', 'error', 'critical', 'verbose'] as const;
+/** The agent's own page cap for an event-log query (agent/internal/remote/tools/result_limits.go). */
+export const MAX_EVENT_LOG_PAGE = 20;
+export const TENANT_VARIABLE_ACTIONS = ['list', 'create', 'update', 'delete'] as const;
+/** W13-D8 / W13-D14: `create` is not built (the join code needs a sealed reveal path). */
+export const SUPPORT_SESSION_ACTIONS = ['list', 'get', 'end'] as const;
 export const DEVICE_EVENT_CATEGORIES = [
   'device', 'agent', 'script', 'patch', 'alert', 'policy', 'deployment', 'backup',
   'discovery', 'automation', 'maintenance', 'monitoring', 'ai', 'software', 'system',
@@ -131,5 +139,36 @@ export const deviceOpsToolSchemas: Record<string, z.ZodType> = {
     deviceId: uuid.optional(),
     days: z.number().int().min(1).max(365).optional(),
     limit: z.number().int().min(1).max(200).optional(),
+  }).strict(),
+
+  // ── W13 PR B ────────────────────────────────────────────────────────────
+  browse_device_event_log: z.object({
+    action: z.enum(EVENT_LOG_ACTIONS),
+    deviceId: uuid,
+    logName: z.string().min(1).max(256).optional(),
+    level: z.enum(EVENT_LOG_LEVELS).optional(),
+    source: z.string().max(255).optional(),
+    eventId: z.number().int().min(0).max(0xffff).optional(),
+    page: z.number().int().min(1).max(MAX_EVENT_LOG_PAGE).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    recordId: z.number().int().min(0).optional(),
+  }).strict(),
+
+  // W13-D7: no `isSecret` input — the tool never creates, reads or edits a secret value.
+  manage_tenant_variables: z.object({
+    action: z.enum(TENANT_VARIABLE_ACTIONS),
+    variableId: uuid.optional(),
+    orgId: uuid.optional(),
+    scope: z.enum(['partner', 'org', 'all']).optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
+    key: z.string().min(1).max(64).optional(),
+    value: z.string().max(4096).optional(),
+    description: z.string().max(500).nullable().optional(),
+  }).strict(),
+
+  manage_support_sessions: z.object({
+    action: z.enum(SUPPORT_SESSION_ACTIONS),
+    sessionId: uuid.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }).strict(),
 };

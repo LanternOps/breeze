@@ -459,6 +459,30 @@ describe('W11 security policy tools in the agent catalog (#6781)', () => {
 
 /** Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and records are offered (deletes and refresh become
  * proposals); manage_device_function:set is AGENT_HUMAN_ONLY_ACTIONS, so the tool itself stays offered. */
+describe('W13 PR B tools in the agent catalog (#6783)', () => {
+  it.each([
+    ['browse_device_event_log', 'scripts_commands'], ['manage_tenant_variables', 'scripts_commands'],
+    ['manage_support_sessions', 'remote_access'],
+  ])('%s is mapped to %s and offered (writes are proposals or human-only actions)', (name, capability) => {
+    expect(TOOL_CAPABILITY[name]).toBe(capability);
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
+/** Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle tools are offered beside the contract / invoice tools (their
+ * partner-only handlers refuse an org-scoped agent run); template and signed-agreement writes are
+ * AGENT_HUMAN_ONLY_ACTIONS, so the tools themselves stay offered. */
+describe('W14 billing lifecycle tools in the agent catalog (#6784)', () => {
+  it.each([
+    'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents', 'get_device_billing',
+  ])('%s is mapped to business and offered to an agent', (name) => {
+    expect(TOOL_CAPABILITY[name]).toBe('business');
+    expect(listAgentReachableTools()).toContain(name);
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain(name);
+  });
+});
+
 describe('W13 device inventory and ops tools in the agent catalog (#6783)', () => {
   it.each([
     'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',

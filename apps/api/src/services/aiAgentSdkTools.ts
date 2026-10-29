@@ -712,6 +712,17 @@ export const TOOL_TIERS = {
   manage_device_links: 1,
   manage_manual_assets: 1,
   manage_device_warranty: 1,
+  // W13 PR B (#6783): live event-log browse, tenant variables, Quick Support sessions (classed per action).
+  browse_device_event_log: 1,
+  manage_tenant_variables: 1,
+  manage_support_sessions: 1,
+  // Spec 2026-09-23 W14 (#6784): billing lifecycle. Every tool is tier 1 at the registry; per-action classes live in
+  // aiGuardrails (W14 class review: billing writes supervised, org-owned template drafts tier 2).
+  manage_billing_profiles: 1,
+  manage_billing_settings: 1,
+  manage_contract_templates: 1,
+  manage_contract_documents: 1,
+  get_device_billing: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -3964,6 +3975,66 @@ export function buildBreezeSdkTools(
       makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W13 (#6783, PR B): event-log query / get_event, tenant-variable writes and support-session end
+    // are supervised; tenant-variable writes are agent-human-only.
+    tool(
+      'browse_device_event_log',
+      registryDescription('browse_device_event_log'),
+      inputShape('browse_device_event_log'),
+      makeHandler('browse_device_event_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tenant_variables',
+      registryDescription('manage_tenant_variables'),
+      inputShape('manage_tenant_variables'),
+      makeHandler('manage_tenant_variables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_support_sessions',
+      registryDescription('manage_support_sessions'),
+      inputShape('manage_support_sessions'),
+      makeHandler('manage_support_sessions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle. Writes are supervised (org-owned template drafts tier 2);
+    // template and signed-agreement writes are agent-human-only.
+    tool(
+      'manage_billing_profiles',
+      registryDescription('manage_billing_profiles'),
+      inputShape('manage_billing_profiles'),
+      makeHandler('manage_billing_profiles', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_billing_settings',
+      registryDescription('manage_billing_settings'),
+      inputShape('manage_billing_settings'),
+      makeHandler('manage_billing_settings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_contract_templates',
+      registryDescription('manage_contract_templates'),
+      inputShape('manage_contract_templates'),
+      makeHandler('manage_contract_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_contract_documents',
+      registryDescription('manage_contract_documents'),
+      inputShape('manage_contract_documents'),
+      makeHandler('manage_contract_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_billing',
+      registryDescription('get_device_billing'),
+      inputShape('get_device_billing'),
+      makeHandler('get_device_billing', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
     // Classes live in aiGuardrails (W04 class review); every device write is
     // supervised, remote sessions and elevation requests four-eyes.
@@ -4935,9 +5006,8 @@ export function buildBreezeSdkTools(
     tool(
       'get_invoice',
       registryDescription('get_invoice'),
-      {
-        invoiceId: uuid,
-      },
+      // W14 (#6784): lineId / limit / cursor (billed devices) — the toolInputSchemas shape.
+      inputShape('get_invoice'),
       makeHandler('get_invoice', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -5018,20 +5088,16 @@ export function buildBreezeSdkTools(
     tool(
       'list_contracts',
       registryDescription('list_contracts'),
-      {
-        orgId: uuid.optional(),
-        status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-      },
+      // W14 (#6784): view / cursor (currency mismatches) — the toolInputSchemas shape.
+      inputShape('list_contracts'),
       makeHandler('list_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'get_contract',
       registryDescription('get_contract'),
-      {
-        contractId: uuid,
-      },
+      // W14 (#6784): periodId (period outcome) — the toolInputSchemas shape.
+      inputShape('get_contract'),
       makeHandler('get_contract', getAuth, onPreToolUse, onPostToolUse)
     ),
 

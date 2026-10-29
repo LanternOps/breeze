@@ -225,7 +225,8 @@ function assignmentEffectiveOrgSql(partnerId: string): SQL {
           SELECT 1 FROM public.sites st WHERE st.id = a.target_id AND st.org_id = eo.id
         ))
         OR (a.level = 'device_group' AND EXISTS (
-          SELECT 1 FROM public.device_groups dg WHERE dg.id = a.target_id AND dg.org_id = eo.id
+          SELECT 1 FROM public.device_groups dg WHERE dg.id = a.target_id
+            AND (dg.org_id = eo.id OR (dg.org_id IS NULL AND dg.partner_id = ${partnerId}::uuid))
         ))
         OR (a.level = 'device' AND EXISTS (
           SELECT 1 FROM public.devices dv WHERE dv.id = a.target_id AND dv.org_id = eo.id

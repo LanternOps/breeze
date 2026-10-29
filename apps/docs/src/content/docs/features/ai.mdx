@@ -652,10 +652,16 @@ These tools read a device's activity timeline, agent health and recorded process
 | `manage_manual_assets` (delete) | 3 | Permanently delete a hand-entered asset. Retire it instead to keep the record |
 | `manage_device_warranty` (get/expiring) | 1 | One device's warranty, or devices whose warranty ends within a number of days |
 | `manage_device_warranty` (refresh) | 3 | Re-check one device's warranty with its manufacturer now. The device's serial number is sent to the manufacturer, so the refresh is approved. Devices whose warranty the agent collects (HP) are refused |
+| `browse_device_event_log` (list_logs) | 2 | List a Windows device's event logs, read live from its agent (runs without a prompt, with an audit row) |
+| `browse_device_event_log` (query/get_event) | 3 | Read event text from a device's live event logs. Security and Application logs can hold credentials and personal data, so every read is approved. `search_logs` reads the ingested copy without reaching the device |
+| `manage_tenant_variables` (list) | 1 | Tenant variables that scripts receive as `{{var.key}}`. Secret values are never shown |
+| `manage_tenant_variables` (create/update/delete) | 3 | Change a value that every script on the organization's devices receives. Secret variables and partner-wide variables are changed in the web app; a partner-wide variable can be created here |
+| `manage_support_sessions` (list/get) | 1 | Quick Support sessions and whether their temporary client is online |
+| `manage_support_sessions` (end) | 3 | End a Quick Support session: the temporary client removes itself from the person's machine. Sessions are started in the web app |
 
-Every write needs a session that has completed MFA.
+Every write, and every live event-log read, needs a session that has completed MFA. A session limited to some sites or devices cannot change tenant variables or use Quick Support sessions.
 
-AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
+AI agents can read these tools. Their link-group and manual-asset writes need an allowlist entry; a manual-asset delete and a warranty refresh become proposals that a person approves. Agents are never offered `manage_tenant_variables` writes (an agent that runs scripts must not also choose their inputs) or `manage_device_function` (set): a device's function decides dynamic-group membership, which can widen what an agent may act on. A session bound to specific devices cannot change link groups or use manual assets, and its reads only show the devices it may see.
 
 ---
 
@@ -732,6 +738,31 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (test)` | 2 | Check a channel's configuration (sends nothing) |
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
+
+### Billing lifecycle tools
+
+These tools read and change how your organizations are billed: rate cards and work types, invoice defaults and each organization's tax, terms and billing contact, the agreement templates customers sign, signed agreements, and which contract lines bill a device. They are available in AI chat and over MCP. Rate-card, settings and device-billing tools need a partner-scoped session, as the matching pages do. Template text, rate-card names and notes, invoice footers and signer names are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
+| `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
+| `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |
+| `manage_billing_settings` (get_partner/get_org/currency_impact/reporting_totals) | 1 | Invoice defaults, one organization's tax, terms, billing contact and address, a preview of what an organization currency change would leave behind, and approximate totals across currencies |
+| `manage_billing_settings` (update_partner) | 3 | Change invoice defaults for every organization: currency, tax, invoice prefix and terms, footer, terms and conditions, automatic emails and the seller contact. Needs full partner access. Agreement reminder defaults are set on Billing → Agreements |
+| `manage_billing_settings` (update_org) | 3 | Change one organization's tax, payment terms, billing contact (who receives its quotes and invoices) or billing address. A currency change and the rate-card assignment are made elsewhere |
+| `manage_contract_templates` (list/get/get_version/usage) | 1 | Agreement templates, their versions and where each is used. Version bodies are read one at a time with `get_version` |
+| `manage_contract_templates` (create/update) | 2 | Create or rename an organization's agreement template. For a partner-wide template, pass `ownerScope: partner`; the change is then approved and needs full partner access |
+| `manage_contract_templates` (create_version/publish/archive) | 3 | Add a draft version, publish it so quotes and signature requests can use it, or archive the template. None of these can be undone. Partner-wide templates are versioned, published and archived in the web app |
+| `manage_contract_documents` (list) | 1 | Signed agreements and whether each is filed under a contract. Signer email addresses are not returned |
+| `manage_contract_documents` (link) | 3 | File a signed agreement under a contract of the same organization. It cannot be undone |
+| `get_device_billing` | 1 | Which active contract lines bill a device, or why it is not billable |
+
+The existing contract and invoice reads gained one view each: `get_contract` with `periodId` returns that billing period's outcome (devices billed, uncovered and flagged, overages), `list_contracts` with `view: currency_mismatches` lists contracts whose currency differs from their organization's, and `get_invoice` with `lineId` pages the devices one invoice line billed.
+
+Rate-card, work-type and settings writes need a session that has completed MFA. A session limited to some sites or devices cannot change an organization's rate card, billing settings or agreement templates, or file a signed agreement.
+
+AI agents can read these tools. Rate-card and settings writes become proposals that a person approves. Agents are never offered template writes or `manage_contract_documents` (link): agreement templates and signed agreements are the legal documents customers sign. Generating an invoice from a contract and pushing invoices to an accounting system are not available yet.
 
 #### PSA configuration and ticket operations
 

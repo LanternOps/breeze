@@ -47,6 +47,10 @@ Stored credentials are encrypted at rest and masked when the settings screen rel
   Which categories of event logs are collected (and therefore forwarded) is governed separately under **Configuration Policies**, where you choose the categories -- security, application, system, and hardware -- along with a minimum severity, collection interval, and retention. The forwarding screen links you to Configuration Policies for those collection-side controls.
 </Aside>
 
+### Which Application-log events are collected
+
+Windows Application-log events at Error and Critical level are collected from every provider. Warning and Information Application events are collected only from a built-in provider list: `MsiInstaller` (software install/uninstall) and `APCPBEAgent` (APC PowerChute Business Edition UPS events). Other providers' Warning and Information events are not collected, so they are neither forwarded nor matched by an `event_log` monitor. The policy's minimum severity filters what was collected; setting it to Information does not widen this list. A policy-level provider list is tracked in [#10493](https://github.com/LanternOps/breeze/issues/10493).
+
 ---
 
 ## Per-Organization Configuration

@@ -127,6 +127,13 @@ import { registerCustomFieldTools } from './aiToolsCustomFields';
 import { registerDeviceInventoryTools } from './aiToolsDeviceInventory';
 import { registerDeviceLinkTools } from './aiToolsDeviceLinks';
 import { registerManualAssetTools } from './aiToolsManualAssets';
+import { registerDeviceEventLogTools } from './aiToolsDeviceEventLog';
+import { registerTenantVariableTools } from './aiToolsTenantVariables';
+import { registerSupportSessionTools } from './aiToolsSupportSessions';
+import { registerBillingProfileTools } from './aiToolsBillingProfiles';
+import { registerBillingSettingsTools } from './aiToolsBillingSettings';
+import { registerContractTemplateTools } from './aiToolsContractTemplates';
+import { registerDeviceBillingTools } from './aiToolsDeviceBilling';
 import { registerTicketConfigTools } from './aiToolsTicketConfig';
 import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
 import { registerTicketInboxTools } from './aiToolsTicketInbox';
@@ -455,6 +462,16 @@ registerCustomFieldTools(aiTools);
 registerDeviceInventoryTools(aiTools);
 registerDeviceLinkTools(aiTools);
 registerManualAssetTools(aiTools);
+// Full-control W13 (#6783, PR B): live event-log browse, tenant variables, Quick Support sessions.
+registerDeviceEventLogTools(aiTools);
+registerTenantVariableTools(aiTools);
+registerSupportSessionTools(aiTools);
+// Full-control W14 (#6784, PR A): billing lifecycle — rate cards, billing settings, agreement templates, signed
+// agreements, device billing (the contract / invoice read selectors live in aiToolsContracts / aiToolsBilling).
+registerBillingProfileTools(aiTools);
+registerBillingSettingsTools(aiTools);
+registerContractTemplateTools(aiTools);
+registerDeviceBillingTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
