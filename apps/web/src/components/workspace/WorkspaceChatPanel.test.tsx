@@ -231,3 +231,38 @@ describe('WorkspaceChatPanel - chat mode label (#10142)', () => {
     expect(screen.queryByTestId('workspace-chat-mode')).toBeNull();
   });
 });
+
+describe('WorkspaceChatPanel - one voice under a Wisp grant (#10195)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('a Wisp tab labels replies Wisp, greets as Wisp and asks "Message Wisp"', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBe('Wisp');
+    expect(inputHarness.props?.placeholder).toBe('Message Wisp');
+    // The empty state is Wisp's own (its suggestions), not the generic Breeze AI prompts.
+    render(<>{messagesHarness.props?.emptyState}</>);
+    expect(screen.getByTestId('wisp-welcome')).toHaveTextContent("I'm looking around All organizations.");
+    expect(screen.getAllByTestId('wisp-suggestion').length).toBeGreaterThan(0);
+    // "Your first brief arrives…" belongs to the home's first visit, not a new conversation.
+    expect(screen.getByTestId('wisp-welcome')).not.toHaveTextContent('first brief');
+  });
+
+  it('a Wisp suggestion sends into this tab', () => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp: { kind: 'wisp', grantId: 'g', orgId: null } }) as any} />);
+    render(<>{messagesHarness.props?.emptyState}</>);
+    fireEvent.click(screen.getAllByTestId('wisp-suggestion')[0]);
+    expect(store.sendMessage).toHaveBeenCalledWith('t', expect.any(String));
+  });
+
+  it.each([
+    ['a plain chat', { kind: 'plain' }],
+    ['a tab still finding out', undefined],
+  ])('%s keeps the Breeze AI defaults', (_name, wisp) => {
+    render(<WorkspaceChatPanel tab={baseTab({ wisp }) as any} />);
+    expect(messagesHarness.props?.assistantLabel).toBeUndefined();
+    expect(messagesHarness.props?.emptyState).toBeUndefined();
+    expect(inputHarness.props?.placeholder).toBeUndefined();
+  });
+});
