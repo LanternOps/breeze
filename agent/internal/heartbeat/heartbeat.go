@@ -935,6 +935,11 @@ type Heartbeat struct {
 	badSignatureVer string
 	badSignatureAt  time.Time
 
+	// Exponential per-target backoff after a deterministic artifact failure
+	// (checksum or manifest) on the agent, backup, user-helper and watchdog
+	// download paths. See artifact_backoff.go. Issue #7516.
+	artifactBackoff updater.TargetBackoff
+
 	// Path to the agent state file, set by main after startup.
 	statePath                   string
 	pamLifetimeManager          pamlifetime.Manager
@@ -8270,6 +8275,14 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 			"targetVersion", targetVersion)
 		return
 	}
+	// #7516: a deterministic artifact failure grows the wait past the flat
+	// cooldown above, exponentially per target.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentWatchdog, targetVersion); active {
+		h.watchdogUpgradeMu.Unlock()
+		log.Debug("watchdog upgrade skipped: this version's artifact recently failed verification; backing off",
+			"targetVersion", targetVersion)
+		return
+	}
 	h.watchdogLastAttemptVer = targetVersion
 	h.watchdogLastAttemptAt = time.Now()
 	h.watchdogUpgradeMu.Unlock()
@@ -8299,9 +8312,16 @@ func (h *Heartbeat) handleWatchdogUpgrade(targetVersion string) {
 		// SafeDownloadErrorFields for why err.Error() must not be logged
 		// directly.
 		key, value := updater.SafeDownloadErrorFields(err)
+		if updater.IsDeterministicArtifactFailure(err) {
+			n, delay := h.artifactBackoff.NoteFailure(artifactComponentWatchdog, targetVersion)
+			log.Error("failed to update watchdog: the artifact the server serves for this version does not verify; backing off",
+				"targetVersion", targetVersion, "consecutiveFailures", n, "retryAfter", delay.String(), key, value)
+			return
+		}
 		log.Error("failed to update watchdog", "targetVersion", targetVersion, key, value)
 		return
 	}
+	h.artifactBackoff.Clear(artifactComponentWatchdog)
 	h.watchdogUpgradeMu.Lock()
 	h.watchdogInstalledVersion = targetVersion
 	h.watchdogUpgradeMu.Unlock()
@@ -8399,6 +8419,15 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		return nil
 	}
 
+	// #7516: a target whose user-helper artifact recently failed verification
+	// would fail the same way again; skip it (agent-only, as on any failure)
+	// until its backoff lifts. A new target is fetched immediately.
+	if _, active := h.artifactBackoff.Remaining(artifactComponentUserHelper, targetVersion); active {
+		log.Debug("user-helper prefetch skipped: this version's artifact recently failed verification; proceeding with agent-only upgrade",
+			"targetVersion", targetVersion)
+		return nil
+	}
+
 	download := h.userHelperDownloader
 	if download == nil {
 		helperCfg := &updater.Config{
@@ -8416,6 +8445,9 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 
 	tempPath, dlErr := download(targetVersion)
 	if dlErr != nil {
+		if updater.IsDeterministicArtifactFailure(dlErr) {
+			h.artifactBackoff.NoteFailure(artifactComponentUserHelper, targetVersion)
+		}
 		key, value := updater.SafeDownloadErrorFields(dlErr)
 		log.Warn(
 			"user-helper download failed; proceeding with agent-only upgrade",
@@ -8425,6 +8457,7 @@ func (h *Heartbeat) prefetchUserHelper(targetVersion, binaryPath string) *update
 		)
 		return nil
 	}
+	h.artifactBackoff.Clear(artifactComponentUserHelper)
 
 	pair := &updater.BinaryPair{
 		Temp:   tempPath,
@@ -8675,6 +8708,13 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 			"targetVersion", targetVersion)
 		return
 	}
+	// #7516: same reason again, for an agent (or blocking backup) artifact
+	// that failed checksum/manifest verification. Exponential per target, so
+	// an unsatisfiable offer costs a handful of downloads, not one a minute,
+	// while a NEW offer is attempted on the very next heartbeat.
+	if h.upgradeDeferredByArtifactBackoff(targetVersion) {
+		return
+	}
 
 	log.Info("upgrade requested", "targetVersion", targetVersion)
 
@@ -8804,6 +8844,12 @@ func (h *Heartbeat) doUpgrade(targetVersion string) {
 				"targetVersion", targetVersion,
 				"error", err.Error(),
 				"retryAfter", codeSignatureRetryCooldown.String())
+			return
+		}
+		// The downloaded agent artifact failed checksum or manifest
+		// verification. Retrying immediately fetches the same bytes and fails
+		// the same way (#7516), so back off this target exponentially.
+		if h.noteAgentUpgradeArtifactFailure(targetVersion, err) {
 			return
 		}
 		// A download failure here may carry a *netpolicy.PolicyError, or be a
