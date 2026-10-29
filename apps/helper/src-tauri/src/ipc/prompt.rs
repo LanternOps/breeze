@@ -10,7 +10,7 @@
 //!
 //! A kind is drawn only when [`ADVERTISED_PROMPT_KINDS`] lists it (W04:
 //! `notice.info@1`; W05: `restart.prompt@1`, `restart.final@1`; W06:
-//! `remote.consent@1`, `remote.session@1`). The agent sends a kind only to a
+//! `remote.consent@1`, `remote.session@1`; W07: `elevation.request@1`). The agent sends a kind only to a
 //! session that advertised it and only when the server enables it; one that
 //! arrives anyway is answered `prompt_closed{render_failed, unadvertised_kind}`.
 //!
@@ -46,12 +46,16 @@ pub const PROMPT_PROTOCOL_VERSION: u32 = 1;
 /// cards (`src/prompt/kinds/notice.tsx`). W05: restart cards
 /// (`src/prompt/kinds/restart.tsx`). W06: the remote consent card
 /// (`kinds/consent.tsx`) and the remote session pill (`kinds/session.tsx`).
+/// W07: the elevation request cards (`kinds/elevation.tsx`): the first
+/// question when UAC is not on the secure desktop, then waiting, approved,
+/// denied, expired, failed and cancelled.
 pub const ADVERTISED_PROMPT_KINDS: &[&str] = &[
     "notice.info@1",
     "restart.prompt@1",
     "restart.final@1",
     "remote.consent@1",
     "remote.session@1",
+    "elevation.request@1",
 ];
 
 // The agent -> helper types are matched by literal in `client.rs` (its source
@@ -470,9 +474,22 @@ fn resurfaces_on_reshow(kind: &str) -> bool {
 /// prompt"), and OK, its safe action when Postpone is not offered ("got it":
 /// the agent answers `accepted` and changes nothing). The next warning rung
 /// brings the card back. Restart now is not here: it lingers, then closes.
+///
+/// W07: Hide on the elevation waiting card. The agent answers `accepted` and
+/// changes nothing; the request stays with IT and Cancel request stays
+/// reachable from the list. Cancel request is not here: the agent answers
+/// with the `cancelled` state, which the card shows until the agent closes it.
 fn collapses_after_accepted(kind: &str, action_id: &str) -> bool {
-    kind == "restart.prompt" && matches!(action_id, "postpone" | "ok")
+    match kind {
+        "restart.prompt" => matches!(action_id, "postpone" | "ok"),
+        "elevation.request" => action_id == ELEVATION_HIDE_ACTION,
+        _ => false,
+    }
 }
+
+/// `elevation.request` "Hide" (W07): a wire action the agent answers
+/// `accepted` with no state change, after which the card collapses.
+pub const ELEVATION_HIDE_ACTION: &str = "hide";
 
 // ---------------------------------------------------------------------------
 // Window identity
@@ -1609,7 +1626,8 @@ pub enum ResultEffect {
     /// The action was released; the view (card or list entry) shows the outcome.
     Applied,
     /// Released, and the card collapsed to its list entry (an accepted
-    /// Postpone or OK on a restart card): the caller closes its window.
+    /// Postpone or OK on a restart card, or Hide on an elevation card): the
+    /// caller closes its window.
     Collapsed,
     /// Released, and the agent accepted the person's own "Report a problem"
     /// on the session pill (W06, OD-6 (b)): the caller opens Request Support
@@ -2023,11 +2041,12 @@ mod tests {
 
     #[test]
     fn unadvertised_kind_render_failed() {
-        // The production tracker advertises notice.info (W04), the restart
-        // kinds (W05) and the remote kinds (W06): an elevation request is
-        // still refused, a notice renders.
+        // The production tracker advertises every registry kind at version 1
+        // (W04-W07): a version it does not advertise is refused, a notice renders.
         let mut t = PromptTracker::default();
-        assert_eq!(t.on_show(NOW, &elevation()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+        let mut v2 = elevation();
+        v2.kind_version = 2;
+        assert_eq!(t.on_show(NOW, &v2), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
         assert!(rendered(&PromptTracker::default().on_show(NOW, &notice())));
         // The refusal frame is exactly the golden fixture.
         let frame = closed_frame("env-1", &notice().reference(), ClosedReason::RenderFailed, Some(DETAIL_UNADVERTISED_KIND));
@@ -2371,8 +2390,8 @@ mod tests {
         // W05's restart kinds render beside them (merge of #10347 + #10348).
         assert!(rendered(&t.on_show(NOW, &restart())));
         assert!(rendered(&t.on_show(NOW, &restart_final())));
-        // A later-wave kind (W07) stays unadvertised.
-        assert_eq!(t.on_show(NOW, &elevation()), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+        // W07's elevation card renders beside them.
+        assert!(rendered(&t.on_show(NOW, &elevation())));
     }
 
     #[test]
@@ -2968,6 +2987,189 @@ mod tests {
             ResultEffect::Ignored
         );
         assert!(b.tracker().view("restart:42", NOW).unwrap().card);
+    }
+
+    // ----- elevation.request (W07, Task 7.3) -----
+
+    const ELEVATION_ID: &str = "elevation:00000000-0000-4000-8000-0000000000e1";
+
+    /// The first question on Assist (`PromptOnSecureDesktop` = 0, W07
+    /// contract): a focused modal decision, Send request (proceed) and Cancel
+    /// (safe, the default), 90 s from presentation.
+    fn elevation_first_question() -> PromptShow {
+        let mut s = elevation();
+        s.rev = 1;
+        s.state = PromptState::Pending;
+        s.presentation = Presentation::Modal;
+        s.focus = FocusMode::Steal;
+        s.copy = PromptCopy {
+            title: "Ask your IT support team for administrator access?".into(),
+            body: Some("7-Zip File Manager needs administrator rights.".into()),
+            ..PromptCopy::default()
+        };
+        s.actions =
+            vec![spec("send_request", "Send request", ActionRole::Proceed), spec("cancel", "Cancel", ActionRole::Safe)];
+        s.default_action_id = Some("cancel".into());
+        s.timing = PromptTiming {
+            present_within_ms: 10_000,
+            deadline_unix_ms: None,
+            response_ms: Some(90_000),
+            expiry: Some(PromptExpiry { action_id: None, text: "If you don't answer in {remaining}, nothing is sent.".into() }),
+        };
+        s
+    }
+
+    #[test]
+    fn advertises_elevation_v1() {
+        // W07 appends elevation.request@1 after W06's two kinds (append-only).
+        assert_eq!(
+            ADVERTISED_PROMPT_KINDS,
+            &[
+                "notice.info@1",
+                "restart.prompt@1",
+                "restart.final@1",
+                "remote.consent@1",
+                "remote.session@1",
+                "elevation.request@1",
+            ]
+        );
+        // The production tracker draws the golden waiting card and the first question.
+        assert!(rendered(&PromptTracker::default().on_show(NOW, &elevation())));
+        assert!(rendered(&PromptTracker::default().on_show(NOW, &elevation_first_question())));
+        // Another version is still unadvertised.
+        let mut v2 = elevation();
+        v2.kind_version = 2;
+        assert_eq!(PromptTracker::default().on_show(NOW, &v2), ShowOutcome::RenderFailed(DETAIL_UNADVERTISED_KIND));
+    }
+
+    #[test]
+    fn elevation_first_question_is_a_focused_modal_and_esc_cancels() {
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        let w = window_of(b.tracker().on_show(NOW, &elevation_first_question()));
+        assert_eq!(w.presentation, Presentation::Modal);
+        assert!(w.focused, "a modal answering what the user just did may take focus");
+        let v = b.tracker().view(ELEVATION_ID, NOW).unwrap();
+        assert!(v.decision);
+        assert_eq!(v.safe_action_id.as_deref(), Some("cancel"));
+        // Esc / the close box answer Cancel, never Send request.
+        assert_eq!(b.dismiss(NOW, ELEVATION_ID, ActionVia::Keyboard), Ok(DismissEffect::ActionSent));
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(sent.payload["actionId"], "cancel");
+        // An accepted Cancel does not collapse: the agent moves the prompt on.
+        assert_eq!(
+            b.action_result(&sent.id, &result(ELEVATION_ID, "cancel", 1, ActionResultKind::Accepted)),
+            ResultEffect::Applied
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(b.tracker().view(ELEVATION_ID, NOW).unwrap().card);
+    }
+
+    #[test]
+    fn elevation_waiting_card_hide_collapses_to_the_list() {
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        let w = window_of(b.tracker().on_show(NOW, &elevation()));
+        assert_eq!(w.presentation, Presentation::Card);
+        assert!(!w.focused, "the waiting card never takes focus");
+        let before = b.tracker().view(ELEVATION_ID, NOW).unwrap();
+        assert!(!before.decision, "waiting is not a decision");
+        b.act(NOW, ELEVATION_ID, "hide", ActionVia::Click).unwrap();
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(sent.payload["actionId"], "hide");
+        assert_eq!(
+            b.action_result(&sent.id, &result(ELEVATION_ID, "hide", 2, ActionResultKind::Accepted)),
+            ResultEffect::Collapsed
+        );
+        let hidden = rx.try_recv().expect("the agent is told the card was hidden");
+        assert_eq!(hidden.payload["reason"], "hidden");
+        let v = b.tracker().view(ELEVATION_ID, NOW).unwrap();
+        assert!(!v.card && !v.closed);
+        assert_eq!(v.actions, before.actions, "Cancel request stays reachable from the list");
+        assert_eq!(b.tracker().list(NOW).len(), 1);
+
+        // A rejected Hide collapses nothing.
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        assert!(rendered(&b.tracker().on_show(NOW, &elevation())));
+        b.act(NOW, ELEVATION_ID, "hide", ActionVia::Click).unwrap();
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(
+            b.action_result(&sent.id, &result(ELEVATION_ID, "hide", 2, ActionResultKind::RejectedStale)),
+            ResultEffect::Applied
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(b.tracker().view(ELEVATION_ID, NOW).unwrap().card);
+    }
+
+    #[test]
+    fn elevation_cancel_request_accepted_keeps_the_card_and_close_box_hides() {
+        let b = PromptBridge::with_tracker(PromptTracker::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        b.set_sender(tx);
+        assert!(rendered(&b.tracker().on_show(NOW, &elevation())));
+        b.act(NOW, ELEVATION_ID, "cancel_request", ActionVia::Click).unwrap();
+        let sent = rx.try_recv().unwrap();
+        assert_eq!(
+            b.action_result(&sent.id, &result(ELEVATION_ID, "cancel_request", 2, ActionResultKind::Accepted)),
+            ResultEffect::Applied,
+            "the agent answers with the cancelled state; the card shows it"
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(b.tracker().view(ELEVATION_ID, NOW).unwrap().card);
+        // The close box on the waiting card hides it; it never cancels the request.
+        assert_eq!(b.dismiss(NOW, ELEVATION_ID, ActionVia::Click), Ok(DismissEffect::Hidden));
+        let hidden = rx.try_recv().unwrap();
+        assert_eq!(hidden.typ, TYPE_PROMPT_CLOSED);
+        assert_eq!(hidden.payload["reason"], "hidden");
+    }
+
+    #[test]
+    fn elevation_terminal_card_stays_until_the_agent_closes_it() {
+        let mut t = PromptTracker::default();
+        assert!(rendered(&t.on_show(NOW, &elevation())));
+        let mut u = update(ELEVATION_ID, 3);
+        u.state = Some(PromptState::Approved);
+        u.copy = Some(PromptCopy {
+            title: "Request approved".into(),
+            body: Some("Approved by Alex at Example IT.".into()),
+            ..PromptCopy::default()
+        });
+        u.actions = Some(vec![]);
+        assert_eq!(t.on_update(NOW, &u), UpdateOutcome::Applied { card_open: true });
+        // Eight seconds later Assist has not taken it down on its own.
+        let v = t.view(ELEVATION_ID, NOW + 8_000).unwrap();
+        assert!(v.card && !v.closed);
+        assert!(v.actions.is_empty());
+        assert_eq!(v.state, PromptState::Approved);
+        // The agent's close after its linger takes the card down; the outcome stays listed.
+        assert_eq!(
+            t.on_close(NOW + 8_000, &close(ELEVATION_ID, 3, CloseReason::Resolved)),
+            CloseOutcome::Closed { had_card: true }
+        );
+        let v = t.view(ELEVATION_ID, NOW + 8_000).unwrap();
+        assert!(v.closed && !v.card);
+        assert_eq!(t.list(NOW + 8_000).len(), 1);
+    }
+
+    #[test]
+    fn elevation_first_question_fenced_then_waiting_card_gets_a_card_window() {
+        // send_request moves the prompt onto a new lease: the agent fences the
+        // modal and shows the waiting card, which stacks bottom-right and does
+        // not take focus.
+        let mut t = PromptTracker::default();
+        let w = window_of(t.on_show(NOW, &elevation_first_question()));
+        assert_eq!(w.presentation, Presentation::Modal);
+        assert_eq!(t.on_close(NOW, &close(ELEVATION_ID, 1, CloseReason::Fenced)), CloseOutcome::Closed { had_card: true });
+        let mut waiting = elevation();
+        waiting.lease.epoch = 2;
+        let w = window_of(t.on_show(NOW, &waiting));
+        assert_eq!(w.presentation, Presentation::Card);
+        assert!(!w.focused);
+        assert_eq!(t.view(ELEVATION_ID, NOW).unwrap().state, PromptState::Waiting);
     }
 
     // ----- change notices (W04 event exposure fix) -----
