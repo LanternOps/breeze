@@ -18,7 +18,7 @@ import { friendlyFetchError } from '../../lib/utils';
 import { useScrollToError } from '../../lib/scrollToError';
 import BackupVerificationTab from './BackupVerificationTab';
 import ExternalBackupCard from './ExternalBackupCard';
-import { formatNumber } from '@/lib/i18n/format';
+import { formatBytes } from './backupDashboardHelpers';
 import DeviceVaultStatus from './DeviceVaultStatus';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useTranslation } from 'react-i18next';
@@ -111,14 +111,6 @@ const vssStateConfig: Record<string, { className: string; label: string }> = {
   unknown: { className: 'text-muted-foreground bg-muted', label: 'Unknown' },
 };
 
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return '-';
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${formatNumber(bytes / Math.pow(k, i), { maximumFractionDigits: 1 })} ${sizes[i]}`;
-}
 
 function formatTime(iso: string | null | undefined, timezone?: string | null): string {
   return formatDateTime(iso, {
@@ -587,7 +579,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                         {formatDuration(job.startedAt, job.completedAt)}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {formatBytes(job.totalSize)}
+                        {formatBytes(job.totalSize, '-')}
                       </td>
                       <td className="py-2">
                         {errorCount > 0 ? (
@@ -772,7 +764,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                     <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                       {t('deviceBackupTab.snapshotDetails')} </div>
                     <div className="mt-2 space-y-1 text-foreground">
-                      <div>{t('deviceBackupTab.size2')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                      <div>{t('deviceBackupTab.size2')} {formatBytes(selectedSnapshot.sizeBytes, '-')}</div>
                       <div>{t('deviceBackupTab.files')} {selectedSnapshot.fileCount ?? '-'}</div>
                       <div>{t('deviceBackupTab.protection')} {protectionSummary(selectedSnapshot)}</div>
                     </div>
@@ -939,7 +931,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                     </td>
                     <td className="py-2 pr-4 text-muted-foreground">{formatTime(snap.expiresAt, effectiveZone)}</td>
                     <td className="py-2 pr-4 text-muted-foreground">
-                      {formatBytes(snap.sizeBytes)}
+                      {formatBytes(snap.sizeBytes, '-')}
                     </td>
                     <td className="py-2 pr-4">
                       <SnapshotIntegrityBadge status={snap.integrityStatus} />
