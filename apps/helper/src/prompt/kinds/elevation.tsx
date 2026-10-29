@@ -27,15 +27,18 @@ import type { PromptFact } from '../types';
  *     with no actions. It stays on screen until the agent closes it after its
  *     8 s linger; the outcome stays in the Notifications list.
  *
- * A command line can be very long: a fact value longer than
- * FACT_PREVIEW_CHARS code points is cut with an ellipsis and a Show more /
- * Show less toggle. Values are plain text and never placeholder targets.
+ * A command line can be very long: once the request is sent (waiting and the
+ * outcomes), a fact value longer than FACT_PREVIEW_CHARS code points is cut
+ * with an ellipsis and a Show more / Show less toggle. The first question
+ * (`pending`) is the consent surface and never cuts a fact: the person sees
+ * the whole command line before Send request. Values are plain text and
+ * never placeholder targets.
  */
 
 /** Code points shown of a long fact value before Show more. */
 export const FACT_PREVIEW_CHARS = 120;
 
-function ElevationFacts({ facts, locale }: { facts: PromptFact[]; locale: string }) {
+function ElevationFacts({ facts, locale, cut }: { facts: PromptFact[]; locale: string; cut: boolean }) {
   const [open, setOpen] = useState<ReadonlySet<number>>(new Set());
   const toggle = (i: number) =>
     setOpen((prev) => {
@@ -48,7 +51,7 @@ function ElevationFacts({ facts, locale }: { facts: PromptFact[]; locale: string
     <dl className="prompt-facts">
       {facts.map((f, i) => {
         const chars = Array.from(f.value);
-        const long = chars.length > FACT_PREVIEW_CHARS;
+        const long = cut && chars.length > FACT_PREVIEW_CHARS;
         const expanded = open.has(i);
         const valueId = `elevation-fact-${i}`;
         return (
@@ -84,7 +87,9 @@ export function ElevationCard(props: PromptCardProps) {
     <PromptCard
       {...props}
       activation={props.view.decision ? 'focus' : 'none'}
-      renderFacts={(facts, locale) => <ElevationFacts key={props.view.promptId} facts={facts} locale={locale} />}
+      renderFacts={(facts, locale) => (
+        <ElevationFacts key={props.view.promptId} facts={facts} locale={locale} cut={props.view.state !== 'pending'} />
+      )}
     />
   );
 }

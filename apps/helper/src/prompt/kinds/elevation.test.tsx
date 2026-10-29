@@ -112,15 +112,24 @@ describe('elevation.request card', () => {
   });
 
   it('Cancel request is safe and Hide is neutral', () => {
-    const { onAction } = renderCard(waiting);
-    const buttons = within(screen.getByTestId('prompt-card')).getAllByRole('button');
+    // A waiting card never moves keyboard focus (non-activating window):
+    // nothing in it is focused on paint, not even the safe action.
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    let onAction: ReturnType<typeof vi.fn>;
+    try {
+      ({ onAction } = renderCard(waiting));
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+    }
+    const card = screen.getByTestId('prompt-card');
+    expect(card.getAttribute('data-activation')).toBe('none');
+    expect(card.getAttribute('role')).toBe('dialog');
+    const buttons = within(card).getAllByRole('button');
     const actions = buttons.filter((b) => b.classList.contains('prompt-action'));
     expect(actions.map((b) => b.textContent)).toEqual(['Cancel request', 'Hide']);
     expect(actions[0]!.classList.contains('is-safe')).toBe(true);
     expect(actions[1]!.classList.contains('is-neutral')).toBe(true);
-    // A waiting card never moves keyboard focus (non-activating window).
-    expect(document.activeElement).not.toBe(actions[0]);
-    expect(document.activeElement).not.toBe(actions[1]);
     fireEvent.click(actions[1]!, { detail: 1 });
     expect(onAction).toHaveBeenCalledWith('hide', 'click');
     fireEvent.click(actions[0]!, { detail: 1 });
@@ -144,6 +153,24 @@ describe('elevation.request card', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onAction).toHaveBeenCalledTimes(1);
     expect(onAction).toHaveBeenCalledWith('cancel', 'keyboard');
+  });
+
+  it('Esc while an action is on its way sends nothing', () => {
+    const { onAction, onHide } = renderCard({ ...firstQuestion, pendingActionId: 'send_request' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onAction).not.toHaveBeenCalled();
+    expect(onHide).not.toHaveBeenCalled();
+    // The buttons are disabled meanwhile.
+    const actions = within(screen.getByTestId('prompt-card'))
+      .getAllByRole('button')
+      .filter((b) => b.classList.contains('prompt-action'));
+    expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it('the first question never cuts a fact: the whole command line is shown before Send request', () => {
+    renderCard({ ...firstQuestion, facts: [{ label: 'Command line', value: LONG_COMMAND }] });
+    expect(screen.getByText(LONG_COMMAND)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
   it('facts truncate with Show more', () => {

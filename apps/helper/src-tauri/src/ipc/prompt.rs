@@ -949,7 +949,7 @@ impl PromptTracker {
             return CloseOutcome::DropStale;
         }
         let had_card = !t.closed && matches!(t.surface, Surface::Card { .. });
-        let keep = matches!(close.reason, CloseReason::Resolved | CloseReason::Expired)
+        let keep =matches!(close.reason, CloseReason::Resolved | CloseReason::Expired)
             && t.show.list_entry.persistent
             && !list_expired(&t.show, now_ms);
         if keep {
@@ -3103,6 +3103,42 @@ mod tests {
         );
         assert!(rx.try_recv().is_err());
         assert!(b.tracker().view(ELEVATION_ID, NOW).unwrap().card);
+    }
+
+    /// The agent (7B) delivers approved / denied / expired / failed by
+    /// re-placing the prompt: `prompt_close{fenced}`, then a new
+    /// `prompt_show` at a higher rev on a new lease. A waiting card the
+    /// person hid must come back with the outcome: the person sees it.
+    #[test]
+    fn elevation_outcome_after_hide_resurfaces_as_a_card() {
+        for state in [PromptState::Approved, PromptState::Denied, PromptState::Expired, PromptState::Failed] {
+            let b = PromptBridge::with_tracker(PromptTracker::default());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            b.set_sender(tx);
+            assert!(rendered(&b.tracker().on_show(NOW, &elevation())));
+            b.act(NOW, ELEVATION_ID, "hide", ActionVia::Click).unwrap();
+            let sent = rx.try_recv().unwrap();
+            assert_eq!(
+                b.action_result(&sent.id, &result(ELEVATION_ID, "hide", 2, ActionResultKind::Accepted)),
+                ResultEffect::Collapsed
+            );
+            assert!(!b.tracker().view(ELEVATION_ID, NOW).unwrap().card, "{state:?}: collapsed");
+            // Fenced: the collapsed copy is dropped.
+            assert_eq!(b.tracker().on_close(NOW, &close(ELEVATION_ID, 2, CloseReason::Fenced)), CloseOutcome::Closed { had_card: false });
+            let mut outcome = elevation();
+            outcome.rev = 3;
+            outcome.lease.epoch = 2;
+            outcome.state = state;
+            outcome.copy = PromptCopy { title: format!("{state:?}"), ..PromptCopy::default() };
+            outcome.actions = vec![];
+            outcome.default_action_id = None;
+            let w = window_of(b.tracker().on_show(NOW, &outcome));
+            assert_eq!(w.presentation, Presentation::Card, "{state:?}");
+            assert!(!w.focused, "{state:?}: an outcome never takes focus");
+            let v = b.tracker().view(ELEVATION_ID, NOW).unwrap();
+            assert!(v.card && !v.closed, "{state:?}: the outcome is on screen");
+            assert_eq!(v.state, state);
+        }
     }
 
     #[test]
