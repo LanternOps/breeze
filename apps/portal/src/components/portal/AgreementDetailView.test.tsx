@@ -60,6 +60,16 @@ describe('AgreementDetailView', () => {
     expect(text).toContain(longDay(2026, 10, 1));
   });
 
+  it('shows the signed date as the calendar day in the org zone', () => {
+    render(<AgreementDetailView detail={detail(
+      { timezone: 'America/Denver', signedAgreementId: DOC },
+      { status: 'signed', signedAt: '2026-11-10T06:59:59.999Z' },
+    )} />);
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(longDay(2026, 10, 9));
+    expect(text).not.toContain(longDay(2026, 10, 10));
+  });
+
   it('shows the sign panel to a named recipient with no email field', () => {
     render(<AgreementDetailView detail={detail()} />);
     expect(screen.getByTestId('agreement-sign')).toBeTruthy();

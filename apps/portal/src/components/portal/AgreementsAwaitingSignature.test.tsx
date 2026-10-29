@@ -14,17 +14,17 @@ const row = (id: string, canSign: boolean): PortalAgreementSummary => ({
 
 describe('AgreementsAwaitingSignature', () => {
   it('renders nothing for an empty list', () => {
-    const { container } = render(<AgreementsAwaitingSignature agreements={[]} />);
+    const { container } = render(<AgreementsAwaitingSignature timezone="UTC" agreements={[]} />);
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when no row is signable by this user', () => {
-    const { container } = render(<AgreementsAwaitingSignature agreements={[row('a', false)]} />);
+    const { container } = render(<AgreementsAwaitingSignature timezone="UTC" agreements={[row('a', false)]} />);
     expect(container.innerHTML).toBe('');
   });
 
   it('lists only the signable rows, linked, with a view-all link', () => {
-    render(<AgreementsAwaitingSignature agreements={[row('a', true), row('b', false), row('c', true)]} />);
+    render(<AgreementsAwaitingSignature timezone="UTC" agreements={[row('a', true), row('b', false), row('c', true)]} />);
     const card = screen.getByTestId('dashboard-agreements-awaiting');
     expect(card.textContent).toContain('Awaiting your signature');
     expect(screen.getByTestId('dashboard-agreements-awaiting-row-a').getAttribute('href')).toContain('/agreements/a');

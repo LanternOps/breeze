@@ -10,7 +10,7 @@ interface AgreementListProps {
   signed: PortalSignedAgreement[];
   error?: string | null;
   /** The org zone from the API; this list is SSR-only, so without it dates print in the server's zone (#10291). */
-  timezone?: string;
+  timezone: string;
 }
 
 function sourceLine(a: PortalSignedAgreement): string {

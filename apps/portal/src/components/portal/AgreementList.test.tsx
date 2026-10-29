@@ -21,7 +21,7 @@ const signed = (over: Partial<PortalSignedAgreement> = {}): PortalSignedAgreemen
 
 describe('AgreementList', () => {
   it('lists a signable pending agreement with a Review & sign link', () => {
-    render(<AgreementList pending={[pending()]} signed={[]} />);
+    render(<AgreementList timezone="UTC" pending={[pending()]} signed={[]} />);
     const row = screen.getByTestId('agreements-pending-row-p1');
     expect(row.textContent).toContain('Master Services Agreement');
     expect(row.textContent).toContain('Expires');
@@ -48,7 +48,7 @@ describe('AgreementList', () => {
   });
 
   it('shows View and a muted note for an agreement sent to another contact', () => {
-    render(<AgreementList pending={[pending({ canSign: false })]} signed={[]} />);
+    render(<AgreementList timezone="UTC" pending={[pending({ canSign: false })]} signed={[]} />);
     const row = screen.getByTestId('agreements-pending-row-p1');
     expect((row.querySelector('a') as HTMLAnchorElement).textContent).toBe('View');
     expect(row.textContent).toContain('Sent to another contact');
@@ -56,7 +56,7 @@ describe('AgreementList', () => {
 
   it('describes signed agreements by source and links both copies', () => {
     render(
-      <AgreementList
+      <AgreementList timezone="UTC"
         pending={[]}
         signed={[
           signed(),
@@ -77,7 +77,7 @@ describe('AgreementList', () => {
   });
 
   it('shows an empty state per section', () => {
-    render(<AgreementList pending={[]} signed={[]} />);
+    render(<AgreementList timezone="UTC" pending={[]} signed={[]} />);
     expect(screen.getByTestId('agreements-pending-empty')).toBeTruthy();
     expect(screen.getByTestId('agreements-signed-empty')).toBeTruthy();
     expect(screen.queryByTestId('agreements-pending-list')).toBeNull();
@@ -85,7 +85,7 @@ describe('AgreementList', () => {
   });
 
   it('shows the error banner instead of the lists', () => {
-    render(<AgreementList pending={[]} signed={[]} error="Could not load" />);
+    render(<AgreementList timezone="UTC" pending={[]} signed={[]} error="Could not load" />);
     expect(screen.getByTestId('agreements-load-error').textContent).toContain('Could not load');
     expect(screen.queryByTestId('agreements-pending-empty')).toBeNull();
   });

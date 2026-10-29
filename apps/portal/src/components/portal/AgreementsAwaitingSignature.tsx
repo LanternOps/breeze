@@ -6,7 +6,7 @@ import { LINK } from './ui';
 interface AgreementsAwaitingSignatureProps {
   agreements: PortalAgreementSummary[];
   /** The org zone (the dashboard's `timezone`); the card is SSR-only (#10291). */
-  timezone?: string;
+  timezone: string;
 }
 
 /** Dashboard card: agreements this user can sign right now. Renders nothing when there are none. */
