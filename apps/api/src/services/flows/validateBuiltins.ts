@@ -275,6 +275,7 @@ export function fleetBuiltinReferences(name: string, input: Record<string, unkno
     case 'resolve_targets':
       target(input.target);
       conditions(input.conditions);
+      if (Array.isArray(input.deviceIds)) input.deviceIds.forEach((v, i) => out.push({ kind: 'device', value: v, path: `/deviceIds/${i}` }));
       break;
     case 'create_alert':
       out.push({ kind: 'device', value: input.deviceId, path: '/deviceId' });
