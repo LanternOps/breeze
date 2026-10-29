@@ -62,9 +62,7 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
-  'routes/groups.ts': 'refuses any org_id IS NULL group before writing (PARTNER_GROUP_READ_ONLY); create stays org-only until W3 adds the canManagePartnerWidePolicies gate (#10521)',
   'routes/devices/groups.ts': 'legacy org-only API; refuses partner-owned groups (#10521 W2a)',
-  'services/aiToolsFleet.ts': 'manage_groups refuses partner-owned groups (#10521 W2a; W3 adds the gate)',
   'services/deviceGroupDelete.ts': 'data access; gate in routes/groups.ts',
   'services/fleetDesign/apply.ts': 'org-scoped fleet design; never touches org_id IS NULL rows',
   'services/groupMembership.ts': 'system-context evaluator; partner memberships derive from the device organization and eligible partner ownership',

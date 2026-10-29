@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@breeze/shared';
-import { and, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, organizations } from '../db/schema';
 
@@ -132,4 +132,30 @@ export async function acquireGroupOrgMembershipLocks(
 /** Match org-move/merge order: export admission must precede membership rows. */
 export async function acquireMembershipExportOrgLock(orgId: string): Promise<void> {
   await db.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${orgId}]::uuid[])`);
+}
+
+/** Resolve only the caller's own organization under its existing RLS context. */
+export async function resolveOrgSessionPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, orgId)).limit(1);
+  return org?.partnerId ?? null;
+}
+
+export type OrgSessionPartnerGroupRow = Pick<typeof deviceGroups.$inferSelect,
+  'id' | 'partnerId' | 'name' | 'type' | 'createdAt' | 'updatedAt'>;
+
+/**
+ * OD5 read view only. Callers resolve partnerId from their own org first.
+ * Filters and evaluation metadata never leave the database in this projection.
+ */
+export async function readPartnerGroupsForOrgSession(
+  partnerId: string, opts: { groupId?: string },
+): Promise<OrgSessionPartnerGroupRow[]> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({
+    id: deviceGroups.id, partnerId: deviceGroups.partnerId, name: deviceGroups.name,
+    type: deviceGroups.type, createdAt: deviceGroups.createdAt, updatedAt: deviceGroups.updatedAt,
+  }).from(deviceGroups).where(and(
+    isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId),
+    opts.groupId ? eq(deviceGroups.id, opts.groupId) : undefined,
+  ))));
 }

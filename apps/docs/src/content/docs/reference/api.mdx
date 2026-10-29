@@ -123,9 +123,9 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/groups` | List groups |
+| `GET` | `/groups` | List groups; `ownerScope=organization` (default), `partner`, or `all` |
 | `GET` | `/groups/:id` | Get group details |
-| `POST` | `/groups` | Create group (static or dynamic) |
+| `POST` | `/groups` | Create group; body `ownerScope=organization` (default) or `partner` (dynamic only) |
 | `PATCH` | `/groups/:id` | Update group |
 | `DELETE` | `/groups/:id` | Delete group |
 | `GET` | `/groups/:id/devices` | List devices in group |

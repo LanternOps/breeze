@@ -91,7 +91,7 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 
 - **Server (PR A).** New elevation status `withdrawn` with `withdrawn_at` / `withdrawn_reason` (`user_denied`, `user_timeout`, `dialog_error`). New agent route `POST /api/v1/agents/:id/elevation-requests/:requestId/withdraw` moves the calling device's own pending UAC request to `withdrawn` under a row lock, writes an `elevation_audit` `withdrawn` row (actor `end_user`) and the audit-log action `pam.elevation_request.withdrawn`, expires the request's phone approvals and publishes `elevation.withdrawn`. Exactly one of approve / deny / withdraw / TTL expiry wins. A technician who approves a withdrawn request gets a 409 whose body now carries `currentStatus` (also on a lost race, re-read rather than the stale `pending`). `GET /pam/elevation-requests?status=withdrawn` and the AI tool `get_elevation_history` accept the new status.
 - **Agent (PR B).** The agent records the user's answer in a durable local file, `pam-declined-requests.json`, next to `pam-lifetime-ledger.json`, before it dismisses consent.exe. `pam_apply_v2` and the legacy `actuate_elevation` refuse a declined request with failure code `user_declined` (`pam_actuations.failure_code`), wait up to 100 s when an approval lands while the dialog is still open (`user_decision_pending` if no answer), and refuse every remote apply for 24 h after the file is found corrupt (`user_decline_record_untrusted`; the file is moved to `.corrupt` and an Error is logged). The agent retries the withdraw until the server answers, across restarts and offline periods. Against a server without the route (404) the local refusal still holds.
-- **Web (PR C).** "Withdrawn" badge and filter, the reason under it, "Declined on the device" on an approved or auto-approved request the agent refused, and a respond-dialog message when the user withdrew the request.
+- **Web (PR C).** "Withdrawn" badge and filter, the reason under it, "Declined on the device" on an approved or auto-approved request the agent refused, and a respond-dialog message when the user withdrew the request (submit stays disabled; closing refreshes the list). Distinct lines for "No answer on the device" (`user_decision_pending`) and "Refused: device decision record unavailable" (`user_decline_record_untrusted`). The PAM audit CSV export gains two trailing columns, `withdrawnAt` and `withdrawnReason`; existing column positions are unchanged.
 - **Residual risk for old agents (accepted).** Agents without PR B never call the route, so for them the 15–20 minute pending-TTL window from #8971 stays open until the device runs an agent with PR B. No server-side mitigation is sound: the server cannot tell "the user is still deciding" from "the user declined" unless the agent says so. Shortening `PAM_PENDING_REQUEST_TTL_MINUTES` narrows the window and is an operator option, not a code change. PR B ships to endpoints only with a release and fleet promote, gated on the Windows lab run.
 - **Migrations** `2027-01-10-100000-pam-elevation-withdrawn-enum.sql` (adds `withdrawn` to `elevation_status` and `elevation_audit_event_type`; unused in that file) and `2027-01-10-100100-pam-elevation-withdrawn-columns.sql` (two nullable columns, the named CHECK `elevation_requests_withdrawn_reason_chk`, and `elevation_requests_status_timestamps_chk` re-created with a `withdrawn` clause). DDL only, no backfill. Re-adding both CHECKs scans `elevation_requests` once to validate existing rows (no rewrite).
 
@@ -156,3 +156,17 @@ A UAC elevation the end user declines on the device (Deny, the PAM dialog times 
 - Partner-owned dynamic groups now have per-device and revisioned per-org evaluation, excluding Quick Support and holding organizations.
 - Still dark: nothing user-visible until W3 adds the create route. No migration, setting or environment variable.
 - A six-hour retry sweep repairs missed evaluations; it is a retry cadence, with no freshness SLA.
+
+
+### Device groups (partner-owned) — W3 API
+
+- Partner administrators with access to all organizations can create, edit, preview, and delete partner-owned dynamic device groups through the API.
+- Organization users can read their partner's group names and All orgs ownership fields, with only their own organization's members and counts; filter rules stay hidden.
+- Partner-owned configuration policies can target their partner's groups, using device-group assignment precedence.
+- Unsupported group filter references return `PARTNER_GROUP_FILTER_UNSUPPORTED`; manual membership changes and pinning remain unavailable for partner groups.
+- No migration, setting, or environment variable is required for this wave.
+
+#### Review fixes
+
+- Partner-group previews that time out before evaluating any organization now return the standard `422 filter_query_timeout` response; successful partial previews report whether a timeout or the preview budget stopped evaluation.
+- Group create, edit, and add-device requests with malformed JSON now return an explicit `400 Malformed JSON in request body` error.
