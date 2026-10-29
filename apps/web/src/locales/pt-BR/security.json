@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Varrer dispositivos em busca de correspondências de IOC",
       "ruleSets": "Conjuntos de regras: {{names}}",
-      "rescopeNote": "Uma varredura não guarda seus dispositivos. Escolha o escopo novamente; os conjuntos de regras e o tipo de verificação são mantidos.",
+      "rescopeNote": "Uma varredura não guarda seus dispositivos. Escolha o escopo novamente; os conjuntos de regras, o tipo de verificação e os caminhos personalizados são mantidos.",
       "back": "Voltar",
       "next": "Avançar",
       "previewAction": "Pré-visualizar",

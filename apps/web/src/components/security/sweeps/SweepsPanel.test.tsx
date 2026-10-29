@@ -36,6 +36,7 @@ function sweep(over: Partial<SweepSummary> = {}): SweepSummary {
     orgName: 'Acme',
     ruleSets: [{ id: 'set-1', name: 'EICAR set', version: 1 }],
     scanType: 'quick',
+    paths: null,
     state: 'active',
     targeted: 10,
     skipped: { agent_too_old: 2 },
@@ -160,6 +161,18 @@ describe('SweepsPanel', () => {
     expect(screen.getByTestId('sweep-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog-rescope-note')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog').textContent).toContain('EICAR set');
+  });
+
+  it('a re-sweep of a custom-paths sweep carries the original paths into the dialog (#10079)', async () => {
+    publishedVersions = { 'set-1': 2 };
+    listRows = [sweep({ scanType: 'custom', paths: ['C:\\Users\\Public', '/tmp/drop'] })];
+    await renderPanel();
+    fireEvent.click(screen.getByTestId('sweep-resweep-sw-1'));
+    expect(screen.getByTestId('sweep-dialog-rescope-note').textContent).toMatch(/paths/i);
+    fireEvent.click(screen.getByTestId('sweep-dialog-scope-all'));
+    fireEvent.click(screen.getByTestId('sweep-dialog-next'));
+    expect((screen.getByTestId('sweep-dialog-scan-type') as HTMLSelectElement).value).toBe('custom');
+    expect((screen.getByTestId('sweep-dialog-paths') as HTMLTextAreaElement).value).toBe('C:\\Users\\Public\n/tmp/drop');
   });
 
   it('reads the current versions once per list, not once per row', async () => {

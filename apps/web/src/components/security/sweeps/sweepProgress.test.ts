@@ -10,7 +10,7 @@ function sweep(over: Partial<Omit<SweepSummary, 'progress'>> & { progress?: Part
   const { progress, ...rest } = over;
   return {
     id: 's1', groupId: 'g1', orgId: 'o1', orgName: 'Org', ruleSets: [{ id: 'r1', name: 'Set', version: 1 }],
-    scanType: 'quick', state: 'active', targeted: 10, skipped: {}, origin: 'web', createdBy: null,
+    scanType: 'quick', paths: null, state: 'active', targeted: 10, skipped: {}, origin: 'web', createdBy: null,
     createdAt: '2026-10-24T00:00:00Z', expiresAt: '2026-10-25T00:00:00Z', completedAt: null,
     ...rest,
     progress: { ...zero, ...progress },

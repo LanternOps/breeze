@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Barrer dispositivos en busca de coincidencias de IOC",
       "ruleSets": "Conjuntos de reglas: {{names}}",
-      "rescopeNote": "Un barrido no recuerda sus dispositivos. Elija el alcance de nuevo; se conservan los conjuntos de reglas y el tipo de análisis.",
+      "rescopeNote": "Un barrido no recuerda sus dispositivos. Elija el alcance de nuevo; se conservan los conjuntos de reglas, el tipo de análisis y las rutas personalizadas.",
       "back": "Atrás",
       "next": "Siguiente",
       "previewAction": "Vista previa",

@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Sweep devices for IOC matches",
       "ruleSets": "Rule sets: {{names}}",
-      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets and scan type are kept.",
+      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets, scan type and any custom paths are kept.",
       "back": "Back",
       "next": "Next",
       "previewAction": "Preview",

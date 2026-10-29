@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Cihazlarda IOC eşleşmesi tara",
       "ruleSets": "Kural kümeleri: {{names}}",
-      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri ve tarama türü korunur.",
+      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri, tarama türü ve özel yollar korunur.",
       "back": "Geri",
       "next": "İleri",
       "previewAction": "Önizle",

@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Balayer les appareils à la recherche de correspondances IOC",
       "ruleSets": "Ensembles de règles: {{names}}",
-      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles et le type d'analyse sont conservés.",
+      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles, le type d'analyse et les chemins personnalisés sont conservés.",
       "back": "Retour",
       "next": "Suivant",
       "previewAction": "Aperçu",

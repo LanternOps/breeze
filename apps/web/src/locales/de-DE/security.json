@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Geräte auf IOC-Treffer prüfen",
       "ruleSets": "Regelsätze: {{names}}",
-      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze und Scan-Typ bleiben erhalten.",
+      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze, Scan-Typ und benutzerdefinierte Pfade bleiben erhalten.",
       "back": "Zurück",
       "next": "Weiter",
       "previewAction": "Vorschau",

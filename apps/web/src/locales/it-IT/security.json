@@ -2428,7 +2428,7 @@
     "dialog": {
       "title": "Cerca corrispondenze IOC sui dispositivi",
       "ruleSets": "Set di regole: {{names}}",
-      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole e tipo di scansione vengono mantenuti.",
+      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole, tipo di scansione e percorsi personalizzati vengono mantenuti.",
       "back": "Indietro",
       "next": "Avanti",
       "previewAction": "Anteprima",
