@@ -857,10 +857,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               dropBubble({
                 isStreaming: false,
                 composerDraft: trimmed,
-                error: extractApiError(
-                  data,
-                  res.status === 409 ? 'Another response is still in progress.' : 'Failed to send message',
-                ),
+                error: extractApiError(data, 'Failed to send message'),
               });
               return;
             }

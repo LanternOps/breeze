@@ -381,6 +381,27 @@ describe('workspace store sendMessage refused before the turn ran (#10108)', () 
     expect(t.error).toBe('Session is closed');
     expect(t.isStreaming).toBe(false);
   });
+
+  it('a credits refusal (402) drops the bubble and restores the draft', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Out of AI credits', code: 'insufficient_credits' }, false, 402));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    const t = useWorkspaceStore.getState().tabs[0]!;
+    expect(t.messages).toEqual([]);
+    expect(t.composerDraft).toBe('hello');
+    expect(t.error).toBe('Out of AI credits');
+  });
+
+  it('a refusal with no error text falls back to the generic message', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ code: 'session_closed' }, false, 409));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(useWorkspaceStore.getState().tabs[0]!.error).toBe('Failed to send message');
+  });
 });
 
 describe('workspace store title_updated SSE handling', () => {
