@@ -6,7 +6,7 @@ import { cleanDisplayName } from '../sanitize';
 import type { HealthObservation, HealthSource } from '../types';
 import { observeRows, toHealthObservation, validUuids } from './observeRows';
 
-// Outbound webhooks (spec §3, W4). Org-owned, one incident per webhook.
+// Outbound webhooks (spec §3, W4). Org- or partner-owned, one incident per webhook.
 //
 // What counts as a terminal failure: a webhook_deliveries row in `failed` whose
 // endpoint attempt ended terminally. Between attempts the row is `scheduled`;
@@ -57,7 +57,7 @@ const TERMINAL = sql`((d.attempts > 0 AND ${NOT_SUPERSEDED}) OR d.error_message 
 
 export type WebhookRow = {
   id: string;
-  orgId: string;
+  orgId: string | null;
   partnerId: string;
   name: string;
   status: string;
@@ -111,7 +111,7 @@ function brokenWebhooksQuery(now: Date): SQL {
 }
 
 type DbRow = {
-  id: string; org_id: string; partner_id: string; name: string; status: string; created_at: Date | string;
+  id: string; org_id: string | null; partner_id: string; name: string; status: string; created_at: Date | string;
   failed_at: Date | string | null; recovered: boolean; error_message: string | null; response_status: number | null;
 };
 
@@ -119,11 +119,11 @@ type DbRow = {
 /** Tracked-path query: one row per webhook id with its latest terminal failure. `ids` must already be valid uuids. */
 export function trackedWebhooksQuery(ids: string[]): SQL {
   return sql`
-    SELECT w.id, w.org_id, o.partner_id, w.name, w.status, w.created_at,
+    SELECT w.id, w.org_id, COALESCE(w.partner_id, o.partner_id) AS partner_id, w.name, w.status, w.created_at,
       COALESCE(f.failed_at, f.created_at) AS failed_at, f.error_message, f.response_status,
       (COALESCE(f.failed_at, f.created_at) IS NOT NULL AND w.last_success_at IS NOT NULL AND w.last_success_at > COALESCE(f.failed_at, f.created_at)) AS recovered
     FROM webhooks w
-    JOIN organizations o ON o.id = w.org_id
+    LEFT JOIN organizations o ON o.id = w.org_id
     LEFT JOIN LATERAL (
       SELECT d.failed_at, d.created_at, d.error_message, d.response_status
       FROM webhook_deliveries d

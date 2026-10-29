@@ -5,7 +5,7 @@ description: Push signed JSON event notifications to external HTTP endpoints wit
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks are scoped to an organization and support custom headers, HMAC-SHA256 signature verification, automatic retries on a fixed schedule, and a full delivery history with per-delivery status tracking.
+Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks belong to an organization or a partner and support custom headers, HMAC-SHA256 signature verification, automatic retries on a fixed schedule, and a full delivery history with per-delivery status tracking.
 
 ---
 
@@ -68,17 +68,21 @@ Webhooks let you push real-time event notifications from Breeze to any external 
 | `payloadVersion` | `1` or `2` | No | Payload version; defaults to `2` |
 | `secret` | string | With HMAC | Signing secret; use a Bearer token header instead when appropriate |
 | `headers` | array of key/value objects | No | Custom request headers |
-| `orgId` | UUID string | For partner or system scope | Organization that owns the webhook |
+| `ownerScope` | `organization` or `partner` | No | Owner of the webhook; defaults to `organization` |
+| `orgId` | UUID string | For organization webhooks created in partner or system scope | Organization that owns the webhook; omit for partner webhooks |
+| `partnerId` | UUID string | For partner webhooks created in system scope | Partner that owns the webhook; partner sessions use their authenticated partner |
 
 ### Organization Scoping
 
-Webhooks follow the standard multi-tenant access model:
+Webhooks belong to one organization or to a partner. Organization webhooks receive that organization's events. Organization sessions use their authenticated organization; partner and system sessions supply `orgId` when creating an organization webhook.
 
-| Auth Scope | Behavior |
-|------------|----------|
-| **Organization** | `orgId` is set automatically from the authenticated context. |
-| **Partner** | `orgId` must be provided in the request body. The API verifies the partner has access to that organization. |
-| **System** | `orgId` must be provided in the request body. |
+Partner administrators with access to **all** of their partner's organizations can choose **All organizations** when creating a webhook (`ownerScope: "partner"`, without `orgId`). System sessions also supply `partnerId`. Ownership cannot be changed after creation. Organization users and partner users with access to selected organizations cannot see partner webhooks or their delivery history.
+
+Partner webhooks receive events from every live organization belonging to their partner. Holding organizations (the unassigned pool), quick-support organizations, and suspended or deleted organizations are excluded. The delivery envelope's `orgId` identifies the event's organization. Receivers can filter on that value; this release has no per-organization subscription filter. If an organization leaves the partner, its queued deliveries are stopped before sending.
+
+New partner webhooks default to payload v2. Their v2 alert payloads include `orgExternalIds`, which lets receivers map the organization to external systems. Test sends from partner webhooks carry `orgId: null` and appear as **Test** in delivery history.
+
+An organization's tenant export includes delivery metadata for its own events sent through partner webhooks. The stored payload and receiver response text are excluded, as are the partner's webhook configuration and secrets.
 
 ---
 
@@ -207,10 +211,10 @@ Integration events report the health of an organization's own connections: an in
 
 ## Delivery Mechanism
 
-When an event is emitted on the Breeze event bus, the webhook delivery system routes it to all active webhooks in the same organization that are subscribed to that event type. Each delivery follows this sequence:
+When an event is emitted on the Breeze event bus, the webhook delivery system routes it to subscribed active webhooks owned by that organization and, for live organizations, its partner. Each delivery follows this sequence:
 
 <Steps>
-1. The event bus fires the event. The webhook subscriber matches the event type against all configured webhooks for the organization.
+1. The event bus fires the event. The webhook subscriber matches the event type against eligible organization and partner webhooks.
 
 2. A delivery record is created in the `webhook_deliveries` table with status `pending` and `attempts` set to `0`.
 
@@ -244,7 +248,7 @@ The original v1 JSON POST body has this structure. See [Payload versions](#paylo
 | `id` | Unique event ID (UUID) |
 | `type` | The event type string (e.g., `alert.triggered`) |
 | `timestamp` | ISO 8601 timestamp of when the event was created |
-| `orgId` | The organization the event belongs to |
+| `orgId` | The organization the event belongs to; `null` for partner-webhook test sends |
 | `data` | Event-specific payload; contents vary by event type |
 
 ## Payload versions
@@ -765,7 +769,7 @@ Breeze validates webhook URLs at both creation time and delivery time to prevent
 
 | Method | Path | Description |
 |--------|------|-------------|
-| **GET** | `/webhooks` | List webhooks for the organization (paginated, filterable by `status` and `orgId`) |
+| **GET** | `/webhooks` | List accessible webhooks (paginated, filterable by `status`, `ownerScope`, and `orgId`; an `orgId` filter returns only that organization's own webhooks) |
 | **POST** | `/webhooks` | Create a new webhook |
 | **GET** | `/webhooks/:id` | Get webhook details including delivery statistics |
 | **PATCH** | `/webhooks/:id` | Update webhook name, URL, secret, events, headers, status, or payload version |
@@ -858,7 +862,7 @@ The worker re-validates the URL before each delivery attempt. On hosted Breeze, 
 The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `scheduled`, `retrying`, or already `delivered` cannot be retried through this endpoint.
 
 **"Organization context required" error.**
-Webhook routes require an organization scope. If you are authenticated with a partner or system scope, pass the `orgId` query parameter (for list) or include it in the request body (for create) to specify which organization's webhooks you are managing.
+For an organization webhook created in partner or system scope, include `orgId` in the request body. For a partner webhook, use `ownerScope: "partner"` without `orgId`; system sessions must also provide `partnerId`. A list request with an `orgId` filter returns only that organization's own webhooks. Omit that filter to include partner webhooks your session can manage.
 
 **Response body is truncated.**
 Webhook delivery response bodies are truncated to 1,000 characters to prevent excessive storage consumption. If you need the full response for debugging, check your endpoint's own logs.

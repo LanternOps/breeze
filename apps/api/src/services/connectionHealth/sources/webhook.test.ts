@@ -115,3 +115,11 @@ describe('webhook source', () => {
     expect(q.sql).toContain(`d.error_message = '${DECRYPT_FAILED_MESSAGE}'`);
   });
 });
+
+
+it('retains partner webhooks without an org join and attributes their incident to the partner', () => {
+  const query = new PgDialect().sqlToQuery(trackedWebhooksQuery([ID]));
+  expect(query.sql).toContain('LEFT JOIN organizations o ON o.id = w.org_id');
+  expect(query.sql).toContain('COALESCE(w.partner_id, o.partner_id) AS partner_id');
+  expect(webhookObservation({ ...row, orgId: null }, NOW)).toMatchObject({ partnerId: P, orgId: null, state: 'broken' });
+});

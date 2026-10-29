@@ -40,12 +40,12 @@ import { deliverWebhook, type WebhookDeliveryJob } from './webhookDelivery';
 import { MAX_OPERATOR_ERROR_LENGTH } from '../services/httpFailureMessage';
 
 const webhookConfig = {
-  id: 'webhook-1', orgId: 'org-1', name: 'Webhook', status: 'active', approvalGeneration: 3,
+  id: 'webhook-1', orgId: 'org-1', partnerId: null, name: 'Webhook', status: 'active', approvalGeneration: 3,
   url: 'https://hooks.example.test/events', secret: 'signing-secret', events: ['device.created'],
   headers: { Authorization: 'Bearer token' },
 };
 function makeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-  return { id: 'delivery-1', webhookId: 'webhook-1', generation: 3, payloadVersion: 1, attempts: 0,
+  return { orgId: 'org-1', id: 'delivery-1', webhookId: 'webhook-1', generation: 3, payloadVersion: 1, attempts: 0,
     event: { id: 'event-1', type: 'device.created', payload: { deviceId: 'device-1' }, timestamp: '2026-05-02T00:00:00.000Z' }, ...overrides };
 }
 
@@ -160,6 +160,7 @@ describe('webhook delivery worker', () => {
 describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling gate contract §7E)', () => {
   function newShapeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
     return {
+      orgId: 'org-1',
       id: 'delivery-1',
       webhookId: 'webhook-1',
       generation: 3,
@@ -189,6 +190,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
     toWebhookConfigMock.mockImplementation((row: any) => ({
       id: row.id,
       orgId: row.orgId,
+      partnerId: row.partnerId,
       name: row.name,
       url: row.url,
       secret: row.secret,
@@ -246,7 +248,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
 
   it('reloads, decrypts, and delivers when the generation matches (real network attempt)', async () => {
     mockRow({
-      id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 3,
+      id: 'webhook-1', orgId: 'org-1', partnerId: null, name: 'Hook', status: 'active', approvalGeneration: 3,
       url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
     });
     safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));
@@ -260,7 +262,7 @@ describe('deliverWebhook — new job shape (webhookId + generation, site-ceiling
 
   it('delivers when a legacy row is re-driven with the current generation', async () => {
     mockRow({
-      id: 'webhook-1', orgId: 'org-1', name: 'Hook', status: 'active', approvalGeneration: 99,
+      id: 'webhook-1', orgId: 'org-1', partnerId: null, name: 'Hook', status: 'active', approvalGeneration: 99,
       url: 'https://hooks.example.test/events', secret: 'shh', events: ['device.created'], headers: {}, retryPolicy: null,
     });
     safeFetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }));

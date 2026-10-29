@@ -61,7 +61,8 @@ export const pluginInstances = pgTable('plugin_instances', {
 
 export const webhooks = pgTable('webhooks', {
   id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  orgId: uuid('org_id').references(() => organizations.id),
+  partnerId: uuid('partner_id').references(() => partners.id),
   name: varchar('name', { length: 255 }).notNull(),
   url: text('url').notNull(),
   secret: text('secret'),
@@ -86,12 +87,16 @@ export const webhooks = pgTable('webhooks', {
    */
   approvalGeneration: integer('approval_generation').notNull().default(1)
 }, (table) => ({
+  oneOwnerCheck: check('webhooks_one_owner_chk', sql`(${table.orgId} IS NULL) <> (${table.partnerId} IS NULL)`),
+  partnerActiveIdx: index('webhooks_partner_active_idx').on(table.partnerId).where(sql`${table.status} = 'active'`),
   payloadVersionCheck: check('webhooks_payload_version_chk', sql`${table.payloadVersion} IN (1, 2)`)
 }));
 
 export const webhookDeliveries = pgTable('webhook_deliveries', {
   id: uuid('id').primaryKey().defaultRandom(),
   webhookId: uuid('webhook_id').notNull().references(() => webhooks.id, { onDelete: 'cascade' }),
+  // Event org for erasure/merge/export; read authority remains the webhook owner.
+  orgId: uuid('org_id').references(() => organizations.id),
   eventType: varchar('event_type', { length: 100 }).notNull(),
   eventId: varchar('event_id', { length: 100 }).notNull(),
   payload: jsonb('payload').notNull(),
@@ -125,6 +130,8 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deliveredAt: timestamp('delivered_at')
 }, (table) => ({
+  orgIdCheck: check('webhook_deliveries_org_id_chk', sql`${table.orgId} IS NOT NULL OR ${table.eventId} LIKE 'test-%'`),
+  orgIdx: index('webhook_deliveries_org_idx').on(table.orgId),
   payloadVersionCheck: check('webhook_deliveries_payload_version_chk', sql`${table.payloadVersion} IN (1, 2)`),
   // One delivery per (webhook, event). The '*' subscriber creates a row and
   // queues an outbound POST per matching webhook, so without this a redelivered

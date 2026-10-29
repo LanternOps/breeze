@@ -29,8 +29,8 @@ const EVENT = {
   metadata: { correlationId: 'c1', timestamp: new Date().toISOString() }
 };
 
-const WEBHOOK = { id: 'webhook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 as const };
-const WEBHOOK_B = { id: 'webhook-2', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 as const };
+const WEBHOOK = { id: 'webhook-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 as const };
+const WEBHOOK_B = { id: 'webhook-2', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 as const };
 
 const recorded = (deliveryId: string) => ({ created: true as const, deliveryId });
 const deduped = (existing: {

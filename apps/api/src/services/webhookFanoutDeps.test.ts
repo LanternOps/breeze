@@ -1,7 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { and, eq } from 'drizzle-orm';
-import { webhooks } from '../db/schema';
 
 /**
  * `buildWebhookFanoutDeps` — extracted from `index.ts` (wave 3.5d-b, #4086).
@@ -68,23 +66,20 @@ describe('buildWebhookFanoutDeps', () => {
   });
 
   describe('getWebhooksForEvent', () => {
-    it('queries for org-scoped, active webhooks only (compiled WHERE clause)', async () => {
+    it('queries active org owners plus partner owners of eligible event orgs', async () => {
       mockRows([]);
-
-      const deps = buildWebhookFanoutDeps();
-      await deps.getWebhooksForEvent('org-1', 'device.offline');
-
-      const expected = renderSqlQuery(
-        and(eq(webhooks.orgId, 'org-1'), eq(webhooks.status, 'active'))
-      );
+      await buildWebhookFanoutDeps().getWebhooksForEvent('org-1', 'device.offline');
       const actual = renderSqlQuery(mockRows.lastCondition);
-      expect(actual).toEqual(expected);
+      expect(actual.sql).toContain('"webhooks"."org_id" is null');
+      expect(actual.sql).toContain('"webhooks"."partner_id" IN');
+      expect(actual.sql).toContain('"organizations"."deleted_at" is null');
+      expect(actual.params).toEqual(expect.arrayContaining(['org-1', 'active', 'trial', 'quick_support', 'unassigned_pool']));
     });
 
     it('filters to webhooks subscribed to the exact event type', async () => {
       mockRows([
-        { id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: ['device.offline'] },
-        { id: 'wh-2', orgId: 'org-1', approvalGeneration: 1, events: ['device.online'] },
+        { id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: ['device.offline'] },
+        { id: 'wh-2', orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: ['device.online'] },
       ]);
 
       const deps = buildWebhookFanoutDeps();
@@ -94,11 +89,11 @@ describe('buildWebhookFanoutDeps', () => {
       // UNDECRYPTED WebhookFanoutTarget — id/orgId/approvalGeneration only.
       // `events` is consumed to FILTER but never appears in the output; no
       // decryption happens on this path at all any more.
-      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 }]);
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 }]);
     });
 
     it('includes wildcard-subscribed webhooks for any event type', async () => {
-      mockRows([{ id: 'wh-wild', orgId: 'org-1', approvalGeneration: 1, events: ['*'] }]);
+      mockRows([{ id: 'wh-wild', orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: ['*'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'anything.happened');
@@ -108,7 +103,7 @@ describe('buildWebhookFanoutDeps', () => {
     });
 
     it('excludes webhooks with no matching event and no wildcard', async () => {
-      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: ['other.event'] }]);
+      mockRows([{ id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: ['other.event'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
@@ -117,7 +112,7 @@ describe('buildWebhookFanoutDeps', () => {
     });
 
     it('treats a null events column as subscribed to nothing', async () => {
-      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 1, events: null }]);
+      mockRows([{ id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: null }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
@@ -130,12 +125,12 @@ describe('buildWebhookFanoutDeps', () => {
       // happens exactly once, inside the delivery worker at send time. This
       // path cannot throw a decrypt error, so there is nothing to skip/report;
       // the old "skips a row whose decrypt throws" behavior no longer applies.
-      mockRows([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3, events: ['device.offline'] }]);
+      mockRows([{ id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 3, events: ['device.offline'] }]);
 
       const deps = buildWebhookFanoutDeps();
       const result = await deps.getWebhooksForEvent('org-1', 'device.offline');
 
-      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', approvalGeneration: 3, payloadVersion: 1 }]);
+      expect(result).toEqual([{ id: 'wh-1', orgId: 'org-1', partnerId: null, approvalGeneration: 3, payloadVersion: 1 }]);
       expect(captureExceptionMock).not.toHaveBeenCalled();
     });
 
@@ -151,6 +146,6 @@ describe('buildWebhookFanoutDeps', () => {
 });
 
 it('returns only supported payload versions, falling back to v1', async () => {
-  mockRows([1, 2, 3, undefined].map((payloadVersion, i) => ({ id: String(i), orgId: 'org-1', approvalGeneration: 1, events: ['*'], payloadVersion })));
+  mockRows([1, 2, 3, undefined].map((payloadVersion, i) => ({ id: String(i), orgId: 'org-1', partnerId: null, approvalGeneration: 1, events: ['*'], payloadVersion })));
   expect((await buildWebhookFanoutDeps().getWebhooksForEvent('org-1', 'alert.triggered')).map(w => w.payloadVersion)).toEqual([1, 2, 1, 1]);
 });

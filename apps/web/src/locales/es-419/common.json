@@ -1297,6 +1297,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propiedad",
+        "allOrganizations": "Todas las organizaciones",
+        "thisOrganizationOnly": "Solo esta organización",
+        "all": "Todas",
+        "organization": "Organización",
+        "test": "Prueba"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} intentos de entrega",
         "empty": "Aún no hay intentos de entrega.",
