@@ -156,11 +156,15 @@ export async function generateInvoiceAction(
     }
     const result = await generateDueInvoice(contractId);
     if (!result.generated || !result.invoiceId || !result.actor) {
+      // The locked preview said due and the generator skipped: the two disagree, which is a bug signal.
+      console.warn('[manage_contracts:generate_invoice] generator skipped a period the locked preview called due', `contractId=${contractId}`, result.skipped);
+      captureException(new Error(`generate_invoice preview/generator divergence: skipped ${result.skipped ?? 'unknown'}`));
       return { kind: 'skipped', skipped: result.skipped ?? 'not_due' };
     }
     const [inv] = await db.select({ total: invoices.total }).from(invoices).where(eq(invoices.id, result.invoiceId)).limit(1);
+    if (!inv) throw new Error(`generate_invoice: generated invoice ${result.invoiceId} is not readable in its own transaction`);
     return {
-      kind: 'generated', invoiceId: result.invoiceId, total: inv?.total ?? '', preview, actor: result.actor,
+      kind: 'generated', invoiceId: result.invoiceId, total: inv.total, preview, actor: result.actor,
       priceBookGaps: result.priceBookGaps, overages: result.overages,
     };
   }));
@@ -183,16 +187,34 @@ export async function generateInvoiceAction(
     priceBookGaps: outcome.priceBookGaps, overages: outcome.overages,
   };
   if (!preview.autoIssue) return JSON.stringify({ ...base, status: 'draft' });
+  const diverged = (stage: string, total: string): void => {
+    // The preview mirrors the generator; a different total after the locked check is either a concurrent edit (a
+    // device added in the same milliseconds, a person editing the draft) or a mirror bug. Either way, say so.
+    console.warn('[manage_contracts:generate_invoice] total differs from the approved one', `stage=${stage}`, `invoiceId=${invoiceId}`, `approved=${expected.expectedTotal}`, `actual=${total}`);
+    captureException(new Error(`generate_invoice total diverged at ${stage}`));
+  };
   if (toCents(outcome.total) !== toCents(expected.expectedTotal)) {
+    diverged('generated', outcome.total);
     return JSON.stringify({ ...base, status: 'draft', autoIssueWithheld: 'total_changed' });
   }
+  let issued = false;
   try {
-    const issuedTotal = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const issue = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      // Re-checked in the issue context itself (review): the draft is editable between the billing commit and here.
+      const [draft] = await db.select({ total: invoices.total }).from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+      if (!draft || toCents(draft.total) !== toCents(expected.expectedTotal)) return { withheld: draft?.total ?? null };
       await issueInvoice(invoiceId, outcome.actor);
       const [row] = await db.select({ total: invoices.total }).from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
-      return row?.total ?? '';
+      return { issuedTotal: row?.total ?? null };
     }));
-    if (toCents(issuedTotal) !== toCents(expected.expectedTotal)) {
+    if ('withheld' in issue) {
+      diverged('before_issue', String(issue.withheld));
+      return JSON.stringify({ ...base, status: 'draft', autoIssueWithheld: 'total_changed' });
+    }
+    issued = true;
+    const issuedTotal = issue.issuedTotal;
+    if (issuedTotal === null || toCents(issuedTotal) !== toCents(expected.expectedTotal)) {
+      diverged('issued', String(issuedTotal));
       return JSON.stringify({ ...base, total: issuedTotal, status: 'issued', emailWithheld: 'total_changed' });
     }
     if (expected.expectedRecipients.length === 0) {
@@ -204,8 +226,15 @@ export async function generateInvoiceAction(
       ...base, status: 'issued', emailSent: sent.emailed, ...(sent.reason ? { emailReason: sent.reason } : {}),
     });
   } catch (err) {
-    console.error('[manage_contracts:generate_invoice] post-commit issue/send failed', `invoiceId=${invoiceId}`, err instanceof Error ? err.message : err);
+    // Review: say which step failed and what state the invoice is in. After a successful issue the email's own
+    // outcome is unknown (the send may have gone out before a later step threw), so it is reported as null, never
+    // false — a blind resend would email the customer twice.
+    console.error('[manage_contracts:generate_invoice] post-commit issue/send failed', `invoiceId=${invoiceId}`, `contractId=${contractId}`, `issued=${issued}`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
-    return JSON.stringify({ ...base, emailSent: false, issueOrSendFailed: true });
+    const errorCode = typeof (err as { code?: unknown })?.code === 'string' ? (err as { code: string }).code : 'INTERNAL_ERROR';
+    return JSON.stringify({
+      ...base, status: issued ? 'issued' : 'draft', failedStep: issued ? 'email' : 'issue', errorCode,
+      emailSent: issued ? null : false,
+    });
   }
 }

@@ -35,10 +35,12 @@ const h = vi.hoisted(() => {
     push: vi.fn(),
     enqueueMapping: vi.fn(),
     enqueueInvoicePush: vi.fn(),
+    capture: vi.fn(),
   };
 });
 
 vi.mock('../db', () => ({ db: { select: h.select } }));
+vi.mock('./sentry', () => ({ captureException: h.capture }));
 vi.mock('../middleware/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../middleware/auth')>()),
   withAuthDbAccessContext: (_auth: unknown, fn: () => unknown) => fn(),
@@ -49,6 +51,7 @@ vi.mock('./aiToolsSoftwareShared', async (importOriginal) => ({
 }));
 vi.mock('./accounting/providerRegistry', () => ({
   findAccountingProvider: h.findProvider, getAccountingProvider: h.getProvider, providerSupports: h.supports,
+  accountingProviderDisplayName: (id: string) => (id === 'xero' ? 'Xero' : 'QuickBooks'),
 }));
 vi.mock('./accounting/accountingMappingService', () => {
   class AccountingMappingError extends Error {
@@ -74,6 +77,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerAccountingSyncTools } from './aiToolsAccountingSync';
 import { AccountingInvoicePushError } from './accounting/accountingInvoicePushErrors';
+import { AccountingProviderError } from './accounting/accountingProviderError';
 
 const tools = new Map<string, AiTool>();
 registerAccountingSyncTools(tools);
@@ -293,7 +297,53 @@ describe('push and push_bulk', () => {
     h.push.mockRejectedValueOnce(new AccountingInvoicePushError('rate_limited', 429, 'slow down', { retryAfterMs: 5000 }));
     const out = await run({ action: 'push_bulk', ...base, invoiceIds: [INV_A, INV_B, INV_C] });
     expect(h.push).toHaveBeenCalledTimes(1);
-    expect(out.results).toEqual([{ invoiceId: INV_A, code: 'rate_limited', error: 'slow down' }]);
+    expect(out.results).toEqual([{ invoiceId: INV_A, code: 'rate_limited', error: 'slow down', retryAfterSeconds: 5 }]);
     expect(out.notAttempted).toEqual([INV_B, INV_C]);
+  });
+
+  const bulkAudit = () => h.audit.mock.calls.map((c) => c[1]).find((a: any) => a.action === 'accounting.invoice.push_bulk');
+
+  it('push_bulk: a non-throttle coded error on A does not stop B and C', async () => {
+    h.rows.push([{ id: INV_A }, { id: INV_B }, { id: INV_C }]);
+    h.push.mockRejectedValueOnce(new AccountingInvoicePushError('customer_not_mapped', 409, 'map the customer first'));
+    const out = await run({ action: 'push_bulk', ...base, invoiceIds: [INV_A, INV_B, INV_C] });
+    expect(h.push).toHaveBeenCalledTimes(3);
+    expect(out.results[0]).toMatchObject({ invoiceId: INV_A, code: 'customer_not_mapped' });
+    expect(out.pushed).toBe(2);
+    expect(out.notAttempted).toEqual([]);
+  });
+
+  it('push_bulk: an uncoded error on B keeps A, records INTERNAL_ERROR, stops, captures and still audits', async () => {
+    h.rows.push([{ id: INV_A }, { id: INV_B }, { id: INV_C }]);
+    h.push.mockResolvedValueOnce(pushOutcome).mockRejectedValueOnce(new Error('socket hang up'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const out = await run({ action: 'push_bulk', ...base, invoiceIds: [INV_A, INV_B, INV_C] });
+    expect(h.push).toHaveBeenCalledTimes(2);
+    expect(out.results[0]).toMatchObject({ invoiceId: INV_A, syncStatus: 'synced' });
+    expect(out.results[1]).toMatchObject({ invoiceId: INV_B, code: 'INTERNAL_ERROR' });
+    expect(out.results).toHaveLength(2);
+    expect(out.notAttempted).toEqual([INV_C]);
+    expect(out.pushed).toBe(1);
+    expect(h.capture).toHaveBeenCalledTimes(1);
+    expect(bulkAudit().details).toMatchObject({ requested: 3, pushed: 1, failed: 1, notAttempted: 1 });
+  });
+
+  it('push_bulk: a raw provider reauth error stops the loop with provider_reauth_required', async () => {
+    h.rows.push([{ id: INV_A }, { id: INV_B }]);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.push.mockRejectedValueOnce(new AccountingProviderError({ kind: 'reauth', provider: 'quickbooks', operation: 'createInvoice' }));
+    const out = await run({ action: 'push_bulk', ...base, invoiceIds: [INV_A, INV_B] });
+    expect(h.push).toHaveBeenCalledTimes(1);
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]).toMatchObject({ invoiceId: INV_A, code: 'provider_reauth_required' });
+    expect(out.notAttempted).toEqual([INV_B]);
+    expect(bulkAudit().details).toMatchObject({ requested: 2, pushed: 0, failed: 1, notAttempted: 1 });
+  });
+
+  it('remote_candidates: a raw provider reauth error maps to provider_reauth_required', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    impl.listRemoteCustomers.mockRejectedValue(new AccountingProviderError({ kind: 'reauth', provider: 'quickbooks', operation: 'listCustomers' }));
+    const out = await run({ action: 'remote_candidates', ...base, entityType: 'org' });
+    expect(out.code).toBe('provider_reauth_required');
   });
 });

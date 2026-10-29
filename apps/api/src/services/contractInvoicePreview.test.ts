@@ -140,6 +140,48 @@ describe('previewDueInvoice', () => {
   });
 });
 
+describe('previewDueInvoice allowance overage and not-due reasons', () => {
+  const allowance = { billed: 5, included: 5, overage: 2, overageMode: 'bill', counted: 7, live: true };
+
+  it('bills an allowance line plus its overage, and taxes the overage too', async () => {
+    queue(contract(), [line('l1', { lineType: 'per_device', unitPrice: '10.00', overageUnitPrice: '7.50', taxable: true })]);
+    h.resolveLineQty.mockResolvedValueOnce(allowance);
+    const p = await due();
+    expect(p.lines[0]).toMatchObject({
+      quantity: '5.00', unitPrice: '10.00', lineTotal: '50.00',
+      overage: { quantity: '2.00', unitPrice: '7.50', lineTotal: '15.00' },
+    });
+    expect(p.subtotal).toBe('65.00');
+    expect(p.taxTotal).toBe('6.50'); // 10% of 50.00 + 15.00, not of 50.00 alone
+    expect(p.total).toBe('71.50');
+  });
+
+  it('a null overageUnitPrice bills no overage', async () => {
+    queue(contract(), [line('l1', { lineType: 'per_device', unitPrice: '10.00', overageUnitPrice: null })]);
+    h.resolveLineQty.mockResolvedValueOnce(allowance);
+    const p = await due();
+    expect(p.lines[0]!.overage).toBeNull();
+    expect(p.subtotal).toBe('50.00');
+  });
+
+  it('expired: endDate before the period start and no auto-renew', async () => {
+    h.rows.push([contract({ endDate: '2026-01-15', autoRenew: false })]);
+    expect(await previewDueInvoice(CONTRACT, ASOF)).toMatchObject({ due: false, reason: 'expired' });
+    expect(h.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('renewal_pending: past its end date but auto-renewing with a term', async () => {
+    h.rows.push([contract({ endDate: '2026-01-15', autoRenew: true, renewalTermMonths: 12 })]);
+    expect(await previewDueInvoice(CONTRACT, ASOF)).toMatchObject({ due: false, reason: 'renewal_pending' });
+  });
+
+  it('no_billable_lines: only a retired hour_block line', async () => {
+    queue(contract(), [line('hb', { lineType: 'hour_block', hourBlockRetiredAt: new Date() })]);
+    expect(await previewDueInvoice(CONTRACT, ASOF)).toMatchObject({ due: false, reason: 'no_billable_lines' });
+    expect(h.resolveLineQty).not.toHaveBeenCalled();
+  });
+});
+
 describe('previewDigestMaterial', () => {
   const basePreview = async (): Promise<Extract<InvoicePreview, { due: true }>> => {
     queue(contract({ autoIssue: true }), [line('l1')], { billingContact: { email: 'ap@example.test' } });
@@ -170,5 +212,18 @@ describe('previewDigestMaterial', () => {
     const a = previewDigestMaterial({ due: false, contractId: 'c', orgId: 'o', reason: 'not_due', nextBillingAt: null });
     const b = previewDigestMaterial({ due: false, contractId: 'c', orgId: 'o', reason: 'expired', nextBillingAt: null });
     expect(a).not.toBe(b);
+  });
+
+  it('changes when one overage lineTotal or pricedFrom changes; independent of recipient order', async () => {
+    queue(contract({ autoIssue: true }), [line('l1', { lineType: 'per_device', unitPrice: '10.00', overageUnitPrice: '7.50' })],
+      { billingContact: { email: 'ap@example.test' } });
+    h.resolveLineQty.mockResolvedValueOnce({ billed: 5, included: 5, overage: 2, overageMode: 'bill', counted: 7, live: true });
+    const p = await due();
+    expect(p.lines[0]!.overage).not.toBeNull();
+    expect(changed(p, (c) => { c.lines[0]!.overage!.lineTotal = '16.00'; })).toBe(true);
+    expect(changed(p, (c) => { c.lines[0]!.pricedFrom = 'price_book'; })).toBe(true);
+    const ab = { ...structuredClone(p), recipients: ['a@example.test', 'b@example.test'] };
+    const ba = { ...structuredClone(p), recipients: ['b@example.test', 'a@example.test'] };
+    expect(previewDigestMaterial(ab)).toBe(previewDigestMaterial(ba));
   });
 });

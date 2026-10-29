@@ -32,7 +32,7 @@ vi.mock('../../services/accounting/providerRegistry', async (orig) => {
 import type { DbAccessContext } from '../../db';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
-  accountingConnections, contractBillingPeriods, contractLines, contracts, invoices,
+  accountingConnections, accountingEntityMappings, contractBillingPeriods, contractLines, contracts, invoices, organizations,
 } from '../../db/schema';
 import { executeTool } from '../../services/aiTools';
 import { checkGuardrails } from '../../services/aiGuardrails';
@@ -298,5 +298,37 @@ describe('manage_accounting_sync', () => {
     const after = await digest('manage_accounting_sync', args);
     expect(after.kind).toBe('pinned');
     expect(after).not.toEqual(first);
+  });
+
+  // Review (PR B, test analyzer): the push pin covers the destination, the mappings and the customer payload, not
+  // only the invoice row — and never the token columns.
+  runDb('the push digest moves with the destination settings, the customer mapping and the customer payload, never with a token', async () => {
+    const [conn] = await getTestDb().insert(accountingConnections).values({
+      partnerId: f.partnerId, provider: 'quickbooks', status: 'connected', ...SECRETS,
+    } as typeof accountingConnections.$inferInsert).returning({ id: accountingConnections.id });
+    const args = { action: 'push', provider: 'quickbooks', invoiceId: f.invoiceA };
+    let last = await digest('manage_accounting_sync', args);
+    expect(last.kind).toBe('pinned');
+    const moved = async (why: string, change: () => Promise<unknown>) => {
+      await change();
+      const next = await digest('manage_accounting_sync', args);
+      expect(next.kind, why).toBe('pinned');
+      expect(next, why).not.toEqual(last);
+      last = next;
+    };
+    await moved('income account', () => getTestDb().update(accountingConnections)
+      .set({ defaultIncomeAccountRef: 'ACC-77' }).where(eq(accountingConnections.id, conn!.id)));
+    await moved('customer mapping appears', () => getTestDb().insert(accountingEntityMappings).values({
+      integrationId: conn!.id, partnerId: f.partnerId, breezeEntityType: 'org', breezeEntityId: f.orgA,
+      remoteEntityType: 'Customer', remoteEntityId: 'QB-1', linkStatus: 'confirmed', syncStatus: 'synced',
+    } as typeof accountingEntityMappings.$inferInsert));
+    await moved('customer mapping retargeted', () => getTestDb().update(accountingEntityMappings)
+      .set({ remoteEntityId: 'QB-2' }).where(eq(accountingEntityMappings.breezeEntityId, f.orgA)));
+    await moved('customer billing address', () => getTestDb().update(organizations)
+      .set({ billingAddressLine1: '1 Changed Street' }).where(eq(organizations.id, f.orgA)));
+    // A token refresh is not a change of what lands in the books.
+    await getTestDb().update(accountingConnections)
+      .set({ accessTokenEncrypted: 'enc:access-ROTATED' }).where(eq(accountingConnections.id, conn!.id));
+    expect(await digest('manage_accounting_sync', args)).toEqual(last);
   });
 });

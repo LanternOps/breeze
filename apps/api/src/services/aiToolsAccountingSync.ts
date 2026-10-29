@@ -53,8 +53,11 @@ import {
 import { AccountingImportError, listAccountingCustomersAnnotated } from './accounting/accountingCustomerImport';
 import { pushInvoiceToAccounting } from './accounting/accountingInvoicePush';
 import { AccountingInvoicePushError } from './accounting/accountingInvoicePushErrors';
-import { findAccountingProvider, getAccountingProvider, providerSupports } from './accounting/providerRegistry';
-import { isAccountingProviderError, rateLimitRetryAfterMs } from './accounting/accountingProviderError';
+import { accountingProviderDisplayName, findAccountingProvider, getAccountingProvider, providerSupports } from './accounting/providerRegistry';
+import {
+  isAccountingProviderError, providerPermissionMessage, rateLimitRetryAfterMs, refusalCodeOf,
+} from './accounting/accountingProviderError';
+import { captureException } from './sentry';
 import type { AccountingCapability, AccountingProviderId } from './accounting/types';
 import { enqueueAccountingMappingSync } from '../jobs/accountingSyncWorker';
 import { ACCOUNTING_PROVIDERS, ACCOUNTING_SYNC_ACTIONS, ACCOUNTING_PUSH_BULK_MAX } from './aiToolSchemasBilling';
@@ -105,26 +108,54 @@ function providerRefusal(provider: AccountingProviderId, action: Action): string
   return null;
 }
 
-/** The route's error mapping (routeErrors.ts / handleInvoicePushError), as tool JSON. */
-function serviceError(err: unknown): string | null {
+type CodedError = { error: string; code: string; details?: unknown; retryAfterSeconds?: number };
+
+/** Provider fault kinds the model can act on, each with its own code (REST: routeErrors.ts + handleMappingError). */
+const PROVIDER_KIND_CODES: Readonly<Record<string, string>> = {
+  reauth: 'provider_reauth_required',
+  validation: 'provider_validation',
+  not_found: 'provider_not_found',
+  stale_version: 'provider_stale_version',
+  payment_linked: 'provider_payment_linked',
+  duplicate_doc_number: 'provider_duplicate_doc_number',
+  transient: 'provider_transient',
+};
+
+/**
+ * The route's error mapping (routeErrors.ts / handleInvoicePushError), as an object (review: one copy, no JSON
+ * round trip, so push_bulk keeps details and the retry hint). Null for an error this tool does not own.
+ */
+function serviceErrorBody(err: unknown): CodedError | null {
+  const retryAfterMs = rateLimitRetryAfterMs(err);
+  const retry = retryAfterMs !== null ? { retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) } : {};
   if (err instanceof AccountingMappingError || err instanceof AccountingImportError || err instanceof AccountingInvoicePushError) {
-    const retryAfterMs = rateLimitRetryAfterMs(err);
     const details = (err as { details?: unknown }).details;
-    return JSON.stringify({
-      error: err.message, code: err.code,
-      ...(details ? { details } : {}),
-      ...(retryAfterMs !== null ? { retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) } : {}),
-    });
+    return { error: err.message, code: err.code, ...(details ? { details } : {}), ...retry };
+  }
+  if (refusalCodeOf(err) === 'insufficient_scope' && isAccountingProviderError(err)) {
+    return { error: providerPermissionMessage(accountingProviderDisplayName(err.provider)), code: 'provider_permission' };
   }
   if (isAccountingProviderError(err)) {
-    const retryAfterMs = rateLimitRetryAfterMs(err);
-    if (retryAfterMs !== null) {
-      return jsonError('The accounting provider is rate limiting requests; try again shortly', 'rate_limited');
-    }
-    return jsonError('The accounting provider returned an error', 'provider_error');
+    if (retryAfterMs !== null) return { error: 'The accounting provider is rate limiting requests; try again shortly', code: 'rate_limited', ...retry };
+    // A raw provider fault (remote_candidates calls the provider directly): log the server-side body, return the
+    // PII-free fault class (providerMessage is the class, never the provider's Detail).
+    console.error(`[${TOOL}] provider error`, err.provider, err.operation, err.kind, err.logBody ?? '');
+    const label = accountingProviderDisplayName(err.provider);
+    return {
+      error: `${label} returned an error${err.providerMessage ? ` (${err.providerMessage})` : ''}`,
+      code: PROVIDER_KIND_CODES[err.kind] ?? 'provider_error',
+    };
   }
   return null;
 }
+
+function serviceError(err: unknown): string | null {
+  const body = serviceErrorBody(err);
+  return body ? JSON.stringify(body) : null;
+}
+
+/** A push_bulk refusal that will refuse every later invoice too: stop and report the rest as not attempted. */
+const STOPS_BULK: ReadonlySet<string> = new Set(['rate_limited', 'provider_reauth_required', 'provider_permission', 'reauth_required', 'not_connected']);
 
 /** The route's toMappingResponse: never the internal id, connection or optimistic-concurrency token. */
 function mappingView(m: {
@@ -319,7 +350,9 @@ async function push(partnerId: string, provider: AccountingProviderId, input: Re
 /**
  * PR B quorum QB5: pushed here, one by one, at release — never handed to the queue, whose job would reload the
  * invoice later, outside the approval the effect digest pinned. Capped at ACCOUNTING_PUSH_BULK_MAX (REST: 100).
- * One invoice's refusal does not stop the rest; each reports its own outcome.
+ * One invoice's refusal does not stop the rest (each reports its own outcome), except a refusal that would repeat for
+ * every later invoice (throttle, reauth, permission, not connected) or an unexpected failure: those stop the loop and
+ * the rest are reported as not attempted.
  */
 async function pushBulk(partnerId: string, provider: AccountingProviderId, input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const ids = Array.isArray(input.invoiceIds) ? [...new Set(input.invoiceIds.filter((v): v is string => typeof v === 'string'))] : [];
@@ -333,12 +366,17 @@ async function pushBulk(partnerId: string, provider: AccountingProviderId, input
     try {
       results.push(await pushOne(partnerId, provider, invoiceId, auth));
     } catch (error) {
-      const coded = serviceError(error);
-      if (!coded) throw error;
-      const { error: message, code } = JSON.parse(coded) as { error: string; code: string };
-      results.push({ invoiceId, code, error: message });
-      // A throttle will refuse the rest too: stop and say which were not attempted.
-      if (code === 'rate_limited') break;
+      const coded = serviceErrorBody(error);
+      if (!coded) {
+        // Review: an unexpected failure must not discard what already reached the books. Its own state is unknown,
+        // so stop, say so, and report the rest as not attempted (the results and audit below always run).
+        console.error(`[${TOOL}] push_bulk unexpected failure`, invoiceId, error);
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        results.push({ invoiceId, code: 'INTERNAL_ERROR', error: 'Unexpected failure; check in the books whether this invoice arrived before retrying' });
+        break;
+      }
+      results.push({ invoiceId, ...coded });
+      if (STOPS_BULK.has(coded.code)) break;
     }
   }
   const pushed = results.filter((r) => typeof r.syncStatus === 'string').length;

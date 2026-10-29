@@ -81,8 +81,8 @@ beforeEach(() => {
   h.generate.mockResolvedValue(generated());
   h.issue.mockResolvedValue(undefined);
   h.send.mockResolvedValue({ emailed: true });
-  // invoice total read after generate, then after issue
-  h.rows.push([{ total: '100.00' }], [{ total: '100.00' }]);
+  // invoice total read after generate, the draft re-check before issue, then after issue
+  h.rows.push([{ total: '100.00' }], [{ total: '100.00' }], [{ total: '100.00' }]);
 });
 
 const nothingRan = () => {
@@ -171,7 +171,7 @@ describe('generateInvoiceAction post-commit', () => {
 
   it('withholds the email when the issued total differs', async () => {
     h.rows.length = 0;
-    h.rows.push([{ total: '100.00' }], [{ total: '130.00' }]);
+    h.rows.push([{ total: '100.00' }], [{ total: '100.00' }], [{ total: '130.00' }]);
     const out = await gen();
     expect(h.issue).toHaveBeenCalledTimes(1);
     expect(out).toMatchObject({ status: 'issued', emailWithheld: 'total_changed', total: '130.00' });
@@ -186,12 +186,48 @@ describe('generateInvoiceAction post-commit', () => {
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it('reports issueOrSendFailed and captures the exception when issuing throws', async () => {
-    h.issue.mockRejectedValue(new Error('pdf exploded'));
+  it('a draft whose total changed before issue is withheld and never issued', async () => {
+    h.rows.length = 0;
+    h.rows.push([{ total: '100.00' }], [{ total: '140.00' }]);
     const out = await gen();
-    expect(out).toMatchObject({ generated: true, issueOrSendFailed: true, emailSent: false });
+    expect(out).toMatchObject({ status: 'draft', autoIssueWithheld: 'total_changed' });
+    expect(h.issue).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+    expect(h.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('issueInvoice throwing INVALID_STATE leaves a draft, failedStep issue, emailSent false', async () => {
+    h.issue.mockRejectedValue(Object.assign(new Error('not a draft'), { code: 'INVALID_STATE' }));
+    const out = await gen();
+    expect(out).toMatchObject({ generated: true, status: 'draft', failedStep: 'issue', errorCode: 'INVALID_STATE', emailSent: false });
+    expect(out).not.toHaveProperty('issueOrSendFailed');
     expect(h.capture).toHaveBeenCalledTimes(1);
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('an uncoded issue failure reports INTERNAL_ERROR', async () => {
+    h.issue.mockRejectedValue(new Error('pdf exploded'));
+    const out = await gen();
+    expect(out).toMatchObject({ status: 'draft', failedStep: 'issue', errorCode: 'INTERNAL_ERROR', emailSent: false });
+  });
+
+  it('sendInvoiceEmail throwing after the issue reports issued, failedStep email, emailSent null', async () => {
+    h.send.mockRejectedValue(new Error('smtp down'));
+    const out = await gen();
+    expect(h.issue).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ generated: true, status: 'issued', failedStep: 'email', errorCode: 'INTERNAL_ERROR', emailSent: null });
+    expect(out.emailSent).toBeNull();
+    expect(h.capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('a generator that skips after a due preview is generated:false with skipped, warned and captured', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.generate.mockResolvedValue({ generated: false, skipped: 'not_due', priceBookGaps: [], overages: [] });
+    const out = await gen();
+    expect(out).toEqual({ generated: false, skipped: 'not_due' });
+    expect(h.capture).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    expect(h.issue).not.toHaveBeenCalled();
   });
 });
 
