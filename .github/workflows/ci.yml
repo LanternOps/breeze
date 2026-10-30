@@ -3294,7 +3294,7 @@ jobs:
       # Restore the cached .deb closure so a normal run never touches the Ubuntu
       # mirror (#9753). The key lives in the shared composite action. Caches
       # are ref-scoped and CI does not run on push to main, so this job only
-      # READS what `tauri-apt-cache-seed.yml` saves from main; a run that
+      # READS what `ci-cache-seed.yml` saves from main; a run that
       # misses falls back to the network path below (and its own save is
       # visible only to that ref).
       - name: Cache Tauri apt packages

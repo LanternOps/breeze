@@ -11,16 +11,18 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Resolve Go build cache dir
+    - name: Resolve Go cache dirs
       id: go
       shell: bash
-      run: echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
 
     - name: Restore Go cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
-          ~/go/pkg/mod
+          ${{ steps.go.outputs.gomodcache }}
           ${{ steps.go.outputs.gocache }}
         key: go-${{ runner.os }}-${{ hashFiles(inputs.go-sum-path) }}
         restore-keys: |

@@ -1,0 +1,349 @@
+name: CI cache seed
+
+# GitHub Actions caches are ref-scoped: a run can restore caches saved on its
+# own ref or the default branch, never from another PR or from merge-queue refs,
+# and every cache a PR or queue ref saves only evicts main's (the repo sat at
+# 15.7 GB against a 10 GB limit). So ci.yml and its composites only RESTORE;
+# this workflow, running on main, is the single place that SAVES (#10744).
+# Every key and path below must match what ci.yml / the composites restore;
+# .github/scripts/ci-cache-policy.test.mjs enforces it.
+#
+# Entries unused for 7 days are evicted, so the daily schedule also restores
+# each entry (which counts as a use) and only re-warms on a miss. Trigger by
+# hand with:
+#   gh workflow run "CI cache seed" --ref main
+on:
+  push:
+    branches: [main]
+    paths:
+      - pnpm-lock.yaml
+      - agent/go.sum
+      - .github/tauri-apt-packages.txt
+      - docker/**
+      - .github/actions/**
+      - .github/workflows/ci-cache-seed.yml
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cache-seed
+  cancel-in-progress: false
+
+env:
+  PNPM_VERSION: '10.34.5'
+  GO_VERSION: '1.26.10'
+
+jobs:
+  seed-pnpm:
+    name: Seed pnpm cache (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      - name: Resolve pnpm store path
+        id: pnpm
+        shell: bash
+        run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
+
+      - name: Warm pnpm store
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if pnpm install --frozen-lockfile; then
+              exit 0
+            fi
+            echo "::warning::pnpm install failed (attempt ${attempt}/${attempts}); retrying"
+            sleep $((attempt * 20))
+          done
+          echo "::error::pnpm install failed after ${attempts} attempts."
+          exit 1
+
+      - name: Save pnpm cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+  seed-go:
+    name: Seed Go cache (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Resolve Go cache dirs
+        id: go
+        shell: bash
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Go cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.gomodcache }}
+            ${{ steps.go.outputs.gocache }}
+          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-
+
+      - name: Warm Go caches
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        working-directory: agent
+        run: |
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if go mod download; then
+              break
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              echo "::error::go mod download failed after ${attempts} attempts."
+              exit 1
+            fi
+            echo "::warning::go mod download failed (attempt ${attempt}/${attempts}); retrying"
+            sleep $((attempt * 20))
+          done
+          go build ./...
+          go vet ./...
+
+      - name: Save Go cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ steps.go.outputs.gomodcache }}
+            ${{ steps.go.outputs.gocache }}
+          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum') }}
+
+  seed-golangci-lint:
+    name: Seed golangci-lint binary cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Restore golangci-lint binary
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-v2.12.2-${{ runner.os }}
+
+      # Keep the version in lockstep with ci.yml's lint-agent job; the key
+      # carries it, so a bump there needs the same bump here and in the key.
+      - name: Install golangci-lint
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2; then
+              echo "golangci-lint installed (attempt ${attempt})."
+              exit 0
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              echo "::error::golangci-lint install failed after ${attempts} attempts."
+              exit 1
+            fi
+            echo "::warning::golangci-lint install failed (attempt ${attempt}/${attempts}); retrying"
+            sleep $((attempt * 15))
+          done
+
+      - name: Save golangci-lint binary
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-v2.12.2-${{ runner.os }}
+
+  seed-tauri-apt:
+    name: Seed Tauri apt cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The composite only restores. It is used here for the restore and the
+      # cache-hit/dir outputs; the explicit save below recomputes its key, so
+      # the two ids must stay identical (the policy test pins key and path).
+      - name: Resolve runner image for apt cache key
+        id: image
+        shell: bash
+        run: echo "id=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Tauri apt cache
+        id: cache
+        uses: ./.github/actions/tauri-apt-cache
+
+      # Same distro release + same package list as the CI job, so `--download-only`
+      # fetches the same closure CI's install would (modulo archive drift). Not on any PR's
+      # critical path, so generous retries are fine.
+      - name: Download Tauri system dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          TAURI_DEBS_DIR: ${{ steps.cache.outputs.dir }}
+        run: |
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          CI_APT_DIR=$(mktemp -d)
+          TAURI_ARCHIVES=$(mktemp -d)
+          chmod 755 "$TAURI_ARCHIVES"
+          trap 'rm -rf -- "$CI_APT_DIR" "$TAURI_ARCHIVES"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
+          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
+          download() {
+            sudo timeout --kill-after=30s 3m apt-get update "${APT_SOURCES[@]}" \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
+            sudo timeout --kill-after=30s 8m apt-get install -y --download-only --no-install-recommends "${APT_SOURCES[@]}" \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
+              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
+          }
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if download && ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1; then
+              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+              sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/
+              sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"
+              echo "Seeded $(ls "${TAURI_DEBS_DIR}" | wc -l) .deb files."
+              exit 0
+            fi
+            echo "::warning::apt download failed (attempt ${attempt}/${attempts}); retrying"
+            sleep $((attempt * 20))
+          done
+          echo "::error::Failed to download Tauri system dependencies after ${attempts} attempts."
+          exit 1
+
+      - name: Save Tauri apt cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tauri-debs
+          key: tauri-apt-${{ steps.image.outputs.id }}-${{ hashFiles('.github/tauri-apt-packages.txt') }}
+
+  # Buildkit layer caches (type=gha) are scoped like every other cache, so PR
+  # builds read what main exports here. Builds mirror ci.yml's, no push.
+  seed-smoke-images:
+    name: Seed smoke image layers (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            dockerfile: docker/Dockerfile.api
+            build-args: ''
+          - image: web
+            dockerfile: docker/Dockerfile.web
+            build-args: PUBLIC_API_URL=
+          - image: portal
+            dockerfile: apps/portal/Dockerfile
+            build-args: |
+              PORTAL_BASE_PATH=/portal
+              PUBLIC_API_URL=
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build smoke image and export layer cache
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=gha,scope=ci-smoke-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=ci-smoke-${{ matrix.image }}
+
+  seed-workspace-runtime:
+    name: Seed workspace runtime layers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build analysis runtime and export layer cache
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: docker/ai-workspace
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=workspace-runtime
+          cache-to: type=gha,mode=max,scope=workspace-runtime
