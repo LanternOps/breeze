@@ -53,7 +53,7 @@ W01 and W03 run in parallel. Each wave is one PR targeting `main`; never stack. 
 ### Task 1: Migration, schema and registries
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-07-150000-wisp-thread-links-working-set.sql`
+- Create: `apps/api/migrations/2027-01-17-110000-wisp-thread-links-working-set.sql`
 - Modify: `apps/api/src/db/schema/wispThreadLinks.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts:1125`
 - Test: `apps/api/src/__tests__/integration/wispThreadLinks.integration.test.ts` (extend)
 

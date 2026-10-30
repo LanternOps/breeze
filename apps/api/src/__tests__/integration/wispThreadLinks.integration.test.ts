@@ -172,7 +172,7 @@ describe('thread links working-set migration (real Postgres)', () => {
       // Route the standard replay helper through this rollback-only transaction.
       const connection = vi.spyOn(testSetup, 'getTestDb').mockReturnValue(tx);
       try {
-        await replayMigration('2027-01-10-110000-wisp-thread-links-working-set.sql');
+        await replayMigration('2027-01-17-110000-wisp-thread-links-working-set.sql');
         const rows = await tx.execute(sql`SELECT source, touch_count,
           last_touched_at = created_at AS recency_backfilled
           FROM wisp_thread_links WHERE thread_id = ${env.thread.id} ORDER BY source`);
@@ -190,7 +190,7 @@ describe('thread links working-set migration (real Postgres)', () => {
         })).rejects.toMatchObject({ cause: { code: '23514' } });
         await tx.execute(sql`UPDATE wisp_thread_links SET source = 'auto', touch_count = 7,
           last_touched_at = '2026-02-03T04:05:06Z' WHERE thread_id = ${env.thread.id}`);
-        await replayMigration('2027-01-10-110000-wisp-thread-links-working-set.sql');
+        await replayMigration('2027-01-17-110000-wisp-thread-links-working-set.sql');
         const replayed = await tx.execute(sql`SELECT source, touch_count,
           last_touched_at = '2026-02-03T04:05:06Z'::timestamptz AS recency_preserved
           FROM wisp_thread_links WHERE thread_id = ${env.thread.id}`);
