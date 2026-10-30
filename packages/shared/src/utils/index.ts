@@ -66,3 +66,4 @@ export * from './discoverySubnetLimit';
 export * from './networkProxyOptIn';
 export * from './forceReboot';
 export * from './businessTime';
+export * from './evidenceCursor';
