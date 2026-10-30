@@ -2408,7 +2408,9 @@
       "completed": "Terminée",
       "failed": "Échec",
       "queued": "En file d’attente",
-      "running": "En cours"
+      "running": "En cours",
+      "cancelled": "Annulée",
+      "expired": "Expirée"
     },
     "scanType": "Analyse {{type}}",
     "scanTypes": {
@@ -2430,7 +2432,13 @@
       "quarantined": "En quarantaine",
       "removed": "Supprimé"
     },
-    "threatsFound": "Menaces trouvées : {{count}}"
+    "threatsFound": "Menaces trouvées : {{count}}",
+    "waitingForSlot": "En attente d'un créneau d'analyse libre. Expire le {{date}}.",
+    "cancelScan": "Annuler l'analyse",
+    "scanCancelled": "Analyse annulée",
+    "cancelScanFailed": "Impossible d'annuler l'analyse",
+    "scanAlreadyRunning": "L'analyse est déjà en cours sur l'appareil et ne peut pas être annulée.",
+    "scanAlreadyQueued": "Une analyse est déjà en file d'attente pour cet appareil."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Ajoutez une balise...",
