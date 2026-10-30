@@ -8,6 +8,7 @@
  * - Interpolate template strings
  */
 
+import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
 import type { MonitorKind, AlertResolutionReason } from '@breeze/shared';
 import { db, withDbTransaction } from '../db';
@@ -249,7 +250,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
   // Check override or template cooldown
   const overrides = rule.overrideSettings as Record<string, unknown> | null;
   const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-    template?.cooldownMinutes ?? 5;
+    template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
 
   // Check cooldown
   const cooldownActive = await isCooldownActive(ruleId, deviceId, subjectKey);
@@ -933,7 +934,7 @@ export async function resolveAlert(
       eventId: randomUUID(),
       eventType: 'alert.resolved',
       siteId: await resolveDeviceSiteId(alert.deviceId),
-      cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? 15,
+      cooldownMinutes: (overrides?.cooldownMinutes as number) ?? template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES,
       payload: {
         alertId, ruleId: alert.ruleId, deviceId: alert.deviceId, subjectKey: alert.subjectKey, resolutionNote,
         resolvedAt: alert.resolvedAt!.toISOString(), resolvedBy: alert.resolvedBy,
@@ -980,7 +981,7 @@ export async function resolveAlert(
 
       const overrides = rule.overrideSettings as Record<string, unknown> | null;
       const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-        template?.cooldownMinutes ?? 15;
+        template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
       await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
     }
   }

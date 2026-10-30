@@ -197,3 +197,6 @@ export * from './softwareInstallTimeouts';
 
 // AI model registry W01 (#7599): AI surfaces and roles. Leaf module.
 export * from './aiSurfaces';
+
+// Alert lifecycle cooldown fallback
+export * from './alertLifecycle';
