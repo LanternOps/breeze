@@ -24,7 +24,7 @@ import {
   monitorDeviceState
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
-import { evaluateConditions, evaluateAutoResolveConditions, evidenceLeafPaths, interpolateTemplate } from './alertConditions';
+import { evaluateConditions, evaluateAutoResolveConditions, evidenceLeafPaths, interpolateTemplate, type EvaluateOptions } from './alertConditions';
 import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { publishEvent } from './eventBus';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
@@ -34,6 +34,7 @@ import { resolveMonitorsForDevice } from './monitors/monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
 import {
   recordMonitorEvaluation,
+  recordRecoveryObservation,
   detachMonitorFromDevice,
   linkEpisodeAlert,
   type MonitorObservation,
@@ -42,7 +43,11 @@ import { fireEscalationLatch } from './monitors/escalationLatch';
 import { isSubjectMonitorKind } from './monitors/subjectMonitorKinds';
 import { evaluateSubjectAlerts } from './alertSubjects';
 import { resolveMaintenanceConfigForDevice, isInMaintenanceWindow } from './featureConfigResolver';
-import { readClosedCursors, advanceOpenRuleCursors, type LeafCursors, type ClosedCursorEntry } from './alertLifecycle/cursor';
+import {
+  readClosedCursors, readOpenCursors, advanceOpenCursors, advanceOpenRuleCursors,
+  mergeCursors, freezeRecoveryCursor, resolveSideCursors, contextWithCursorSql,
+  type LeafCursors, type ClosedCursorEntry,
+} from './alertLifecycle/cursor';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -513,6 +518,18 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   return alertId;
 }
 
+async function anchoredTriggerOpts(ruleId: string, deviceId: string, triggerConditions: unknown) {
+  const paths = evidenceLeafPaths(triggerConditions);
+  if (paths.length === 0) return { paths, opts: undefined };
+  const entry = (await readClosedCursors(deviceId, [ruleId])).get(ruleId);
+  const opts: EvaluateOptions = {
+    side: 'trigger',
+    cursors: entry?.cursors ?? undefined,
+    legacyIngestedBefore: entry?.legacy ? entry.closedAt : undefined,
+  };
+  return { paths, opts };
+}
+
 /**
  * Check if an alert should be auto-resolved
  * Evaluates auto-resolve conditions and resolves if met
@@ -527,7 +544,7 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     .where(eq(alerts.id, alertId))
     .limit(1);
 
-  if (!alert || alert.status !== 'active') {
+  if (!alert || !RESOLVABLE_ALERT_STATUSES.some(status => status === alert.status)) {
     return false;
   }
 
@@ -581,24 +598,59 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
   const autoResolveConditions = (overrides?.autoResolveConditions as unknown) ??
     template.autoResolveConditions;
 
+  const triggerConditions = (overrides?.conditions as unknown) ?? template.conditions;
+
   if (!autoResolveConditions) {
     // If no specific auto-resolve conditions, use inverse of trigger conditions
-    const triggerConditions = (overrides?.conditions as unknown) ?? template.conditions;
-    const result = await evaluateConditions(triggerConditions, alert.deviceId);
+    const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+    const result = paths.length
+      ? await evaluateConditions(triggerConditions, alert.deviceId, opts)
+      : await evaluateConditions(triggerConditions, alert.deviceId);
 
     // Auto-resolve if trigger conditions are NO LONGER met.
     // Report what resolveAlert's compare-and-swap actually did: returning a bare
     // `true` here made every caller that LOST the race look like a resolver, which
     // is what inflates `checkAllAutoResolve`'s count (#4094).
-    if (!result.triggered) {
+    if (!result.triggered && result.dataState !== 'unknown') {
       return await resolveAlert(alertId, 'Auto-resolved: conditions cleared', undefined, false, 'condition_cleared');
     }
   } else {
-    // Evaluate specific auto-resolve conditions
-    const result = await evaluateAutoResolveConditions(autoResolveConditions, alert.deviceId);
+    let current = await readOpenCursors(alert.id);
+    let triggerPaths: string[];
+    try {
+      const { paths, opts } = await anchoredTriggerOpts(rule.id, alert.deviceId, triggerConditions);
+      triggerPaths = paths;
+      if (paths.length) {
+        const trigger = await evaluateConditions(triggerConditions, alert.deviceId, opts);
+        if (trigger.triggered) {
+          await advanceOpenCursors(alert.id, trigger.evidenceWatermarks);
+          current = mergeCursors(current, trigger.evidenceWatermarks).merged;
+        }
+      }
+    } catch (error) {
+      console.error(`[AlertService] Failed to refresh trigger cursor for alert ${alertId}:`, error);
+      captureException(error, undefined, { errorId: 'alert-rearm-refresh-failed', alertId });
+      return false;
+    }
+    const recoveryPaths = evidenceLeafPaths(autoResolveConditions);
+    const result = await evaluateAutoResolveConditions(autoResolveConditions, alert.deviceId,
+      recoveryPaths.length ? { side: 'resolve', cursors: resolveSideCursors(current, recoveryPaths) } : undefined);
 
-    if (result.shouldResolve) {
-      return await resolveAlert(alertId, `Auto-resolved: ${result.reason}`, undefined, false, 'condition_cleared');
+    if (result.shouldResolve && result.dataState !== 'unknown') {
+      const recoveryCursor = (triggerPaths.length || Object.keys(current).length || Object.keys(result.evidenceWatermarks).length)
+        ? freezeRecoveryCursor(current, triggerPaths, result.evidenceWatermarks)
+        : undefined;
+      const resolved = await resolveAlert(alertId, `Auto-resolved: ${result.reason}`, undefined, false,
+        'condition_cleared', undefined, recoveryCursor);
+      if (resolved && rule.managedByMonitorId) {
+        try {
+          await recordRecoveryObservation(rule.managedByMonitorId, alert.deviceId, alert.orgId);
+        } catch (error) {
+          console.error(`[AlertService] Failed to record recovery for alert ${alertId}:`, error);
+          captureException(error, undefined, { area: 'monitors', issue: 'recovery_observation_failed' });
+        }
+      }
+      return resolved;
     }
   }
 
@@ -828,6 +880,7 @@ export async function resolveAlert(
   // as NOT a recovery (fail closed). See ALERT_RESOLUTION_REASONS.
   resolutionReason?: AlertResolutionReason,
   resolvedByPrincipalId?: string,
+  recoveryCursor?: LeafCursors,
 ): Promise<boolean> {
   const reason: AlertResolutionReason | null = resolutionReason ?? ((resolvedBy || resolvedByPrincipalId) ? 'manual' : null);
   // Winner-takes-all. The status predicate IS the concurrency control: reading
@@ -843,7 +896,7 @@ export async function resolveAlert(
   // RETURNING replaces the previous SELECT. Note it returns the POST-update
   // row: safe only because nothing below reads a column this SET writes
   // (status / resolvedAt / resolvedBy / resolvedByPrincipalId / resolutionNote /
-  // resolutionReason). Adding such a read
+  // resolutionReason, plus context when a recovery cursor is passed). Adding such a read
   // later would silently observe the new value.
   const [alert] = await db
     .update(alerts)
@@ -854,6 +907,7 @@ export async function resolveAlert(
       resolvedByPrincipalId: resolvedByPrincipalId ?? null,
       resolutionNote: resolutionNote ?? null,
       resolutionReason: reason,
+      ...(recoveryCursor !== undefined ? { context: contextWithCursorSql(recoveryCursor) } : {}),
     })
     .where(buildResolveAlertCas(alertId))
     .returning();
@@ -1512,14 +1566,14 @@ async function detachUnresolvedMonitors(
 }
 
 /**
- * Check all active alerts for auto-resolution
+ * Check all open alerts for auto-resolution
  * Returns count of resolved alerts
  */
 export async function checkAllAutoResolve(orgId?: string): Promise<number> {
-  // Get active alerts (optionally filtered by org)
+  // Get open alerts (optionally filtered by org)
   // #5290 — a requires-human alert is never auto-resolved, so it is excluded in
   // the SELECT rather than skipped per-row: the sweep must not even load it.
-  const conditions = [eq(alerts.status, 'active'), eq(alerts.requiresHuman, false)];
+  const conditions = [inArray(alerts.status, [...RESOLVABLE_ALERT_STATUSES]), eq(alerts.requiresHuman, false)];
   if (orgId) {
     conditions.push(eq(alerts.orgId, orgId));
   }
