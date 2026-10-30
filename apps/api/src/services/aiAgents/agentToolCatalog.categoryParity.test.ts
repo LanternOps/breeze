@@ -145,7 +145,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'm365_query_users',
   'manage_backup_configs',
   'manage_browser_policy',
-  'manage_contracts',
   'manage_deliverables',
   'manage_invoices',
   'manage_key_dates',

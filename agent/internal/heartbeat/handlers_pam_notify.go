@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -35,6 +37,9 @@ type pamRequestNotifyPayload struct {
 	RequestID string  `json:"requestId"`
 	Outcome   string  `json:"outcome"`
 	Reason    *string `json:"reason"`
+	// DecidedBy (#10190 W07) is who decided, as the server's identity level
+	// allows; display-only.
+	DecidedBy *pamlifetime.DecidedBy `json:"decidedBy"`
 }
 
 func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
@@ -45,10 +50,27 @@ func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
+	// #10190 W07: the elevation prompt shows the outcome first (it also ends
+	// a first question still on screen). When Assist holds it, the notice is
+	// not shown too.
+	state := ipc.PromptStateExpired
+	reason := ""
+	if payload.Outcome == pamNotifyOutcomeDenied {
+		state = ipc.PromptStateDenied
+		if payload.Reason != nil {
+			reason = *payload.Reason
+		}
+	}
+	onAssist := h.elevationOutcome(payload.RequestID, state, payload.DecidedBy.Technician(), reason)
+
 	tracker := h.pamTracker()
 	entry, claimed := tracker.ClaimNotify(payload.RequestID)
 	// The server's outcome is final: forget the request either way.
 	tracker.Remove(payload.RequestID)
+	if onAssist {
+		log.Info("pam: outcome shown on the elevation prompt", "elevationRequestId", payload.RequestID, "outcome", payload.Outcome)
+		return tools.NewSuccessResult(map[string]any{"shown": true, "renderer": elevationRendererAssist}, time.Since(start).Milliseconds())
+	}
 	if !claimed {
 		log.Info("pam: outcome notice for a request this agent is not tracking (or already notified); not shown",
 			"elevationRequestId", payload.RequestID, "outcome", payload.Outcome)

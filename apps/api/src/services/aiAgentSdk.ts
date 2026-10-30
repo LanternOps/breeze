@@ -25,7 +25,9 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
-import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
+import {
+  attachProposalToSession, loadProposalGuardrailContext, loadProposalGuardrailContextInReach, resolveProposalOrgInReach,
+} from './scriptProposals';
 import {
   guardrailCheckForTenantTool,
   tenantToolPermissionRequirement,
@@ -293,7 +295,7 @@ export async function settleBlockedTurnForNewMessage(
  * match already makes), so a single pending id per session is sufficient.
  * WeakMap so an evicted/closed session's entry is GC'd with it.
  */
-const pendingIntentBySession = new WeakMap<ActiveSession, string>();
+const pendingIntentBySession = new WeakMap<ActiveSession, { intentId: string; orgId: string }>();
 
 /**
  * How the most recent tier>=2 call for a session was authorized, so the
@@ -979,6 +981,20 @@ async function runWispCeilingGate(
 }
 
 /**
+ * The org reach of ONE tool call: the session's tool auth, cut to the Wisp
+ * ceiling when a grant governs the session (the same narrowing the allowed
+ * exit of `createSessionPreToolUse` hands the handler). Used to resolve a
+ * record the call names by id (#10384) without reaching further than the
+ * handler itself could.
+ */
+function callReach(session: ActiveSession, wispState: WispCallState | null): AuthContext {
+  const toolAuth = session.toolAuth ?? session.auth;
+  return wispState
+    ? wispState.narrow(toolAuth, wispState.ceiling, session.breezeSessionId, wispState.permissionKeys)
+    : toolAuth;
+}
+
+/**
  * #10144 — the coordinator's cheap, deterministic gates for one
  * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
@@ -1060,6 +1076,14 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // carried on the terminal `return` so postToolUse can seal against the
     // right intent without relying solely on pendingIntentBySession.
     let createdIntentId: string | undefined;
+
+    // The org a Tier-3 action intent for this call lives in. The session org,
+    // except for a run_script whose reviewed proposal resolves to another org
+    // in reach (#10384): the intent must share the proposal's org, because
+    // consumeProposalForIntent, loadProposalForRelease and the release ceiling
+    // all key on `action_intents.org_id`. Every intent-scoped write below
+    // (terminal CAS + outbox, pinned card read) uses this, never session.orgId.
+    let intentOrgId = session.orgId;
 
     // Material the inline RELEASE below resolved and verified against the
     // intent's pinned effect digest (#3409 PR4c-1). It rides the same terminal
@@ -1167,6 +1191,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
     // four_eyes; every other tool call passes `undefined` and is unchanged. A
     // tenant (BYO MCP) tool has no proposal/action-escalation shape of its
     // own — it maps straight to guardrailCheckForTenantTool's tier.
+    //
+    // #10384: a run_script proposal is resolved within THIS call's reach (the
+    // session's tool auth, cut to the Wisp ceiling under a grant), not pinned
+    // to the session org: propose_script files a proposal under its target
+    // device's org, which a partner-scope session can reach without being
+    // bound to it. Everything keyed on the proposal below (the card summary,
+    // the action intent, the intent's terminal writes) uses its org.
+    const proposalReach = !flowTool && !tenant && toolName === 'run_script' ? callReach(session, wispCall.current) : null;
+    const runScriptProposal = proposalReach
+      ? await loadProposalGuardrailContextInReach(input, (orgId) => proposalReach.canAccessOrg(orgId))
+      : null;
+    if (runScriptProposal?.proposalOrgId) intentOrgId = runScriptProposal.proposalOrgId;
     let guardrailCheck = flowTool
       ? (await import('./flows/flowToolGate')).guardrailCheckForFlowTool(flowTool)
       : tenant
@@ -1174,7 +1210,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       : checkGuardrails(
         toolName,
         input,
-        chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId)),
+        chatGuardrailContext(
+          session,
+          runScriptProposal ? runScriptProposal.context : await loadProposalGuardrailContext(input, session.orgId),
+        ),
       );
 
     if (!guardrailCheck.allowed) {
@@ -1843,7 +1882,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
       // proposal-backed run_script carries a trimmed summary on the event.
       // Non-fatal and null for every other tool.
       const scriptProposal = toolName === 'run_script'
-        ? await loadProposalApprovalSummary(input as Record<string, unknown>, session.orgId)
+        ? await loadProposalApprovalSummary(input as Record<string, unknown>, intentOrgId)
         : null;
 
       const baseDescription = specialistOrgName
@@ -1916,7 +1955,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
-              orgId: flowBinding ? flowBinding.orgId : session.orgId,
+              orgId: flowBinding ? flowBinding.orgId : intentOrgId,
               ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
               // configured interactive approval window, not a fixed 5 min,
@@ -2005,10 +2044,10 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // the group's resolved deviceIds (plus a count + id hash in its
           // reason), and THAT is what the approver must read, not `{groupId}`.
           const pinnedCard = toolName === 'diagnose_connectivity'
-            ? await loadPinnedApprovalCard(session.orgId, intent.id, 'Run one approved topology connectivity check')
+            ? await loadPinnedApprovalCard(intentOrgId, intent.id, 'Run one approved topology connectivity check')
             : toolName === 'run_script' && (input as Record<string, unknown>).groupId != null
               ? await loadPinnedApprovalCard(
-                session.orgId,
+                intentOrgId,
                 intent.id,
                 'Device-group script run: the resolved device list could not be loaded here. Review it in the Approvals queue before approving.',
               )
@@ -2266,13 +2305,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 errorCode: revalidation.errorCode,
                 ...(callerRefusalResult ? { result: callerRefusalResult } : {}),
               },
-              session.orgId,
+              intentOrgId,
               'intent_failed',
             );
             if (!revalidationCasWon) {
               reportLostTerminalCas({
                 intentId: intent.id,
-                orgId: session.orgId,
+                orgId: intentOrgId,
                 toolName,
                 intendedStatus: 'failed',
                 casLabel: 'ai_sdk_inline_revalidation_failed',
@@ -2308,13 +2347,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 intent.id,
                 'failed',
                 { errorCode: 'wisp_ceiling_refused' },
-                session.orgId,
+                intentOrgId,
                 'intent_failed',
               );
               if (!wispCasWon) {
                 reportLostTerminalCas({
                   intentId: intent.id,
-                  orgId: session.orgId,
+                  orgId: intentOrgId,
                   toolName,
                   intendedStatus: 'failed',
                   casLabel: 'ai_sdk_inline_wisp_ceiling_refused',
@@ -2355,18 +2394,18 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // every pinned release would have been content_changed). One
           // predicate, one behavior, in one place.
           // Mandatory pin (M4-D3): same explicit refusal as the durable worker.
-          if (!hasPinnedDigest(intentRow) && requiresPinnedEffectDigest(intentRow.actionName)) {
+          if (!hasPinnedDigest(intentRow) && requiresPinnedEffectDigest(intentRow.actionName, intentRow.arguments as Record<string, unknown> | null)) {
             const requiredCasWon = await transitionIntentAndPublish(
               intent.id,
               'failed',
               { errorCode: 'digest_required' },
-              session.orgId,
+              intentOrgId,
               'intent_failed',
             );
             if (!requiredCasWon) {
               reportLostTerminalCas({
                 intentId: intent.id,
-                orgId: session.orgId,
+                orgId: intentOrgId,
                 toolName,
                 intendedStatus: 'failed',
                 casLabel: 'ai_sdk_inline_digest_required',
@@ -2389,13 +2428,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 intent.id,
                 'failed',
                 { errorCode: 'content_changed' },
-                session.orgId,
+                intentOrgId,
                 'intent_failed',
               );
               if (!digestCasWon) {
                 reportLostTerminalCas({
                   intentId: intent.id,
-                  orgId: session.orgId,
+                  orgId: intentOrgId,
                   toolName,
                   intendedStatus: 'failed',
                   casLabel: 'ai_sdk_inline_content_changed',
@@ -2428,13 +2467,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               intent.id,
               'failed',
               { errorCode: 'checkpoint_unavailable' },
-              session.orgId,
+              intentOrgId,
               'intent_failed',
             );
             if (!checkpointCasWon) {
               reportLostTerminalCas({
                 intentId: intent.id,
-                orgId: session.orgId,
+                orgId: intentOrgId,
                 toolName,
                 intendedStatus: 'failed',
                 casLabel: 'ai_sdk_inline_checkpoint_unavailable',
@@ -2466,7 +2505,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // Won the release: track the intent id so createSessionPostToolUse can
           // CAS it executing -> completed|failed once the inline tool call
           // actually finishes (see pendingIntentBySession above).
-          pendingIntentBySession.set(session, intent.id);
+          pendingIntentBySession.set(session, { intentId: intent.id, orgId: intentOrgId });
           createdIntentId = intent.id;
 
           // The step is now genuinely authorized: the intent was approved, we
@@ -2512,13 +2551,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 wonIntentId,
                 'failed',
                 { errorCode: 'execution_error' },
-                session.orgId,
+                intentOrgId,
                 'intent_failed',
               );
               if (!selfHealCasWon) {
                 reportLostTerminalCas({
                   intentId: wonIntentId,
-                  orgId: session.orgId,
+                  orgId: intentOrgId,
                   toolName,
                   intendedStatus: 'failed',
                   casLabel: 'ai_sdk_inline_self_heal',
@@ -2868,23 +2907,36 @@ function isScriptApplyTool(toolName: string): boolean {
  * attachProposalToSession, so a foreign-org id in the output cannot be claimed.
  * Best-effort: a failure here must not break the tool_result the UI already
  * received. Exported for its unit test.
+ *
+ * #10384: the org is the PROPOSAL's, resolved within the session's tool reach,
+ * not `session.orgId`. propose_script files a proposal under its target
+ * device's org, which for a partner-scope session can be any org the session
+ * reaches; pinning the update to the session org left every such proposal
+ * unattributed. A proposal outside that reach is never claimed.
  */
 export async function attachChatProposalToSession(
-  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId'>,
+  session: Pick<ActiveSession, 'orgId' | 'breezeSessionId' | 'toolAuth'>,
   parsedOutput: Record<string, unknown>,
 ): Promise<void> {
   const proposalId = parsedOutput.proposalId;
   if (typeof proposalId !== 'string' || proposalId.length === 0) return;
   try {
+    const orgId = await resolveProposalOrgInReach(proposalId, (id) => session.toolAuth.canAccessOrg(id));
+    if (orgId === null) {
+      // The id came from this session's own propose_script output, so a
+      // proposal that is missing or outside the session's reach is a wiring
+      // fault, not a benign retry: keep it distinguishable from the warn below.
+      console.error(`[AI-SDK] script proposal ${proposalId} from session ${session.breezeSessionId} is missing or outside the session's reach; not attributed`);
+      return;
+    }
     const attached = await withDbAccessContext(
-      { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-      () => attachProposalToSession(proposalId, session.orgId, session.breezeSessionId),
+      { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
+      () => attachProposalToSession(proposalId, orgId, session.breezeSessionId),
     );
     if (!attached) {
-      // Not an error (an idempotent retry lands here too), but a proposal the
-      // handler just created that is NOT attributable is worth a trace: it
-      // means the id in the output and the session's org disagree.
-      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (foreign org or already attributed)`);
+      // Not an error: an idempotent retry of an already-attributed proposal
+      // lands here.
+      console.warn(`[AI-SDK] script proposal ${proposalId} not attributed to session ${session.breezeSessionId} (already attributed)`);
     }
   } catch (err) {
     console.error('[AI-SDK] Failed to attach script proposal to session:', err instanceof Error ? err.message : err);
@@ -3035,7 +3087,18 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // the call on, and an ungated flow call is treated as Tier 3.
     const guardrailCheck: { tier: number } = isFlowToolName(toolName)
       ? { tier: session.flowToolGatedTiers?.get(toolName) ?? 3 }
-      : checkGuardrails(toolName, input, chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId)));
+      // #10384: a run_script proposal is resolved by reach, as in the pre hook.
+      // A session-org lookup would answer `proposal_not_found` for a proposal
+      // in another org, which checkGuardrails fails closed to tier 4, and the
+      // audit event below would record a tier-4 call that ran at tier 3. Only
+      // `.tier` is read here, for a call the pre hook already gated under the
+      // narrowed per-call reach, so the session tool auth is enough.
+      : checkGuardrails(toolName, input, chatGuardrailContext(
+        session,
+        toolName === 'run_script'
+          ? (await loadProposalGuardrailContextInReach(input, (orgId) => session.toolAuth.canAccessOrg(orgId))).context
+          : await loadProposalGuardrailContext(input, session.orgId),
+      ));
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
     // the editor via this SSE tool_result event, NOT the chat transcript.
@@ -3193,7 +3256,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
       // execution is authorized would be wrong, since the tool hasn't run
       // yet at that point. A lost CAS here just means a reaper or the worker
       // already terminalized the intent first; nothing more to do.
-      const pendingIntentId = sealed?.intentId ?? pendingIntentBySession.get(session);
+      const pending = pendingIntentBySession.get(session);
+      const pendingIntentId = sealed?.intentId ?? pending?.intentId;
+      // #10384: the intent's own org (a cross-org run_script proposal's intent
+      // lives in the proposal's org), recorded when the pre hook won the
+      // release. A sealed id the map does not hold falls back to the session
+      // org: `sealed` comes only from secret-bearing tools, never run_script,
+      // and every chat intent other than a cross-org proposal run lives there.
+      const pendingIntentOrgId = pending && pending.intentId === pendingIntentId ? pending.orgId : session.orgId;
       if (pendingIntentId) {
         pendingIntentBySession.delete(session);
         // Secret-bearing tools (Task 1/5) hand back a `sealed` result whose
@@ -3251,7 +3321,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               pendingIntentId,
               'failed',
               { executedAt: new Date(), errorCode: SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE },
-              session.orgId,
+              pendingIntentOrgId,
               'intent_failed',
             );
             if (!guardCasWon) {
@@ -3261,7 +3331,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               // the guard trip. Loudest possible case for the marker.
               reportLostTerminalCas({
                 intentId: pendingIntentId,
-                orgId: session.orgId,
+                orgId: pendingIntentOrgId,
                 toolName,
                 intendedStatus: 'failed',
                 casLabel: 'ai_sdk_inline_plaintext_guard',
@@ -3303,7 +3373,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                     }
                   : { result: sizedResult }),
               },
-              session.orgId,
+              pendingIntentOrgId,
               isError ? 'intent_failed' : 'intent_completed',
             );
             if (!completionCasWon) {
@@ -3314,7 +3384,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
               // would double-execute the side effect.
               reportLostTerminalCas({
                 intentId: pendingIntentId,
-                orgId: session.orgId,
+                orgId: pendingIntentOrgId,
                 toolName,
                 intendedStatus: isError ? 'failed' : 'completed',
                 casLabel: 'ai_sdk_inline_completion',

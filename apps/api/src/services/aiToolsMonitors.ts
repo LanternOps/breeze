@@ -58,10 +58,10 @@ import {
   APPLICATION_INFO_EVENT_PROVIDERS,
   MONITOR_KINDS,
   monitorConditionSchemas,
-  monitorEventLogCollectionWarnings,
   type MonitorKind,
 } from '@breeze/shared';
 import { z } from 'zod';
+import { policyAwareMonitorEventLogWarnings } from './monitorEventLogWarnings';
 import { presentEndpointTarget } from '../utils/endpointDisplay';
 import { definitionReplacesCondition, resolveMonitorDefinitionInput } from './aiToolsMonitorEndpointInput';
 
@@ -107,14 +107,14 @@ function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
  */
 const EVENT_LOG_COLLECTION_GUIDANCE =
   'What the Windows agent collects for event_log: application = Application log error/critical from every provider, ' +
-  `plus warning/information from these providers only: ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')} (#8174); ` +
+  `plus warning/information from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')} and providers listed in the winning Event Logs configuration policy; ` +
   'system = System log error/critical from providers other than the hardware ones, plus unexpected-shutdown events; ' +
   'hardware = System log error/critical from disk, NTFS, volume/storage-controller, WHEA machine-check and thermal providers; ' +
   'security = Security log warning and above.';
 
 const EVENT_LOG_APP_PRESENCE_HINT =
   'Valid event_log levels are info, warning, error and critical ("information" is not a level). ' +
-  `Information-level Application events are collected only from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')}, so an info or warning rule on any other Application source only matches that source's error/critical events. ` +
+  `Information and Warning Application events are collected from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')} plus providers added under Configuration policy → Event Logs → Application providers. Other providers are collected only at Error/Critical. ` +
   'To detect a missing or removed app, prefer a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName }';
 
 const EVENT_LOG_LEVELS: readonly string[] = ['info', 'warning', 'error', 'critical'];
@@ -539,7 +539,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
-        const warnings = monitorEventLogCollectionWarnings(created.kind, created.condition);
+        const warnings = await policyAwareMonitorEventLogWarnings(created);
         return JSON.stringify({
           success: true,
           monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) },
@@ -576,7 +576,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
-        const warnings = action === 'update' ? monitorEventLogCollectionWarnings(updated.kind, updated.condition) : [];
+        const warnings = action === 'update' ? await policyAwareMonitorEventLogWarnings(updated) : [];
         return JSON.stringify({
           success: true,
           monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) },

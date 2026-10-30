@@ -2372,7 +2372,7 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['FLOWS_ENABLED'],
         message:
-          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (set false to keep Flows off).',
       });
     }
 

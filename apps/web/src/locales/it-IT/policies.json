@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Provider applicazioni (Avviso e Informazioni)",
+        "applicationProvidersHelp": "Gli eventi applicazione di livello Errore e Critico vengono raccolti da tutti i provider; quelli di livello Avviso e Informazioni solo dai provider integrati ({{providers}}) e da quelli elencati qui. Usa il nome esatto del provider mostrato nella colonna \"Origine\" del Visualizzatore eventi o da Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Per ogni dispositivo si applica solo il criterio Registri eventi con precedenza. Gli elenchi dei provider non vengono combinati tra criteri.",
+        "providerNameLabel": "Nome del provider di eventi applicazione",
+        "addProvider": "Aggiungi provider",
+        "removeProvider": "Rimuovi",
+        "removeProviderNamed": "Rimuovi {{provider}}",
+        "providerNameInvalid": "Usa da 1 a {{max}} caratteri, iniziando con una lettera o una cifra. Sono consentiti lettere, cifre, spazi, punti, trattini bassi, simboli del dollaro, parentesi tonde e trattini.",
+        "providerLimitReached": "Puoi aggiungere fino a {{max}} provider aggiuntivi. Rimuovine uno per aggiungerne un altro.",
+        "providerAlreadyListed": "Questo provider è già presente nell’elenco.",
+        "providerLimit": "{{total}} di {{max}} provider aggiuntivi"
       },
       "featureTabShell": {
         "override": "Sovrascrivi",
@@ -1219,6 +1230,20 @@
         "title": "I dispositivi di questa policy genereranno avvisi doppi",
         "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Gruppi di dispositivi (tutte le org.)",
+      "description": "Seleziona come destinazione un gruppo di dispositivi a livello di partner. Un’assegnazione di gruppo si applica a livello di gruppo di dispositivi e ha quindi precedenza sulle assegnazioni di altri criteri a livello di organizzazione e sito.",
+      "selectGroup": "Seleziona un gruppo di dispositivi",
+      "assign": "Assegna",
+      "remove": "Rimuovi",
+      "assigned": "Gruppo di dispositivi assegnato",
+      "removed": "Assegnazione del gruppo di dispositivi rimossa",
+      "failedToLoad": "Impossibile caricare i gruppi di dispositivi",
+      "failedToAssign": "Impossibile assegnare il gruppo di dispositivi",
+      "failedToRemove": "Impossibile rimuovere l’assegnazione del gruppo di dispositivi",
+      "empty": "Non ci sono ancora gruppi di dispositivi a livello di partner. Creane uno in Gruppi di dispositivi → Tutte le org.",
+      "loading": "Caricamento dei gruppi di dispositivi…"
     }
   },
   "software": {

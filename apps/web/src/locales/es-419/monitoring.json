@@ -247,8 +247,8 @@
     "nameserver": "Servidor DNS",
     "degradedIsFailure": "Tratar degradado como falla",
     "maxResponseMs": "Fallar si tarda más de (ms)",
-    "eventLogCollectionNoSource": "Los eventos de Aplicación de nivel Información y Advertencia solo se recopilan de {{providers}}. Los eventos de otros orígenes solo activan esta regla en nivel Error o Crítico.",
-    "eventLogCollectionSourceNotCollected": "El agente no recopila eventos de Aplicación de nivel Información o Advertencia de \"{{source}}\", así que esta regla solo coincidirá con sus eventos de Error o Crítico. Proveedores recopilados: {{providers}}."
+    "eventLogCollectionNoSource": "Los eventos de aplicación de nivel Información y Advertencia solo se recopilan de {{providers}}. Los eventos de otros orígenes solo coinciden con esta regla en los niveles Error o Crítico, a menos que una directiva de configuración de registros de eventos incluya el origen (Directiva de configuración → Registros de eventos → Proveedores de aplicaciones).",
+    "eventLogCollectionSourceNotCollected": "El agente no recopila eventos de aplicación de nivel Información o Advertencia de «{{source}}», a menos que una directiva de configuración de registros de eventos lo incluya (Directiva de configuración → Registros de eventos → Proveedores de aplicaciones). De lo contrario, esta regla solo coincide con sus eventos de Error o Crítico. Proveedores integrados: {{providers}}."
   },
   "operators": {
     "gt": "mayor que",
@@ -333,10 +333,13 @@
     "cancel": "Cancelar",
     "detachConfirm": "¿Separar de {{policy}}?",
     "errors": {
+      "loadGroups": "No se pudieron cargar los grupos de dispositivos.",
       "attach": "No se pudo adjuntar el monitor",
       "detach": "No se pudo separar el monitor",
       "linkedFeature": "Los monitores de esta política provienen de una política de función compartida. Edite esa política o elija otra."
-    }
+    },
+    "partnerWideGroups": "Todas las org. (de todo el socio)",
+    "organizationGroups": "Grupos de la organización"
   },
   "policyTab": {
     "title": "Monitores",
