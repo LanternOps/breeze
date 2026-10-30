@@ -72,6 +72,14 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     expect(authMocks.login).not.toHaveBeenCalled();
   });
 
+  it.each([[undefined], [{ intent: 'x' }]])('links plain /login when sign-in recovery carries no valid signup intent: %j', async (signupIntent) => {
+    localStorage.clear();
+    authMocks.apiVerifyEmail.mockResolvedValue({ success: false, status: 'sign_in', ...(signupIntent ? { signupIntent } : {}) });
+    render(<VerifyEmailPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+  });
+
   it('logs in a verified signup and follows the server billing redirect without browser-held selection', async () => {
     localStorage.clear();
     authMocks.apiVerifyEmail.mockResolvedValue({ success: true, user: { id: 'new-user' }, tokens: { accessToken: 'new-token' }, redirectUrl: '/billing/plans' });

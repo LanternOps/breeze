@@ -112,22 +112,21 @@ export default function PartnerRegisterForm({
         )}
         {offer?.kind === 'cloud_per_device' && (
           <p className="text-sm text-muted-foreground">
-            {t('partnerRegister.purchase.perDeviceFloor', {
-              defaultValue: '{{floor}} a month for fewer than {{devices}} devices.',
-              floor: money(offer.floorCents),
-              devices: count(offer.floorUnder),
-            })}{' '}
-            {offer.tiers.map(([from, cents], i) => i === 0
-              ? t('partnerRegister.purchase.perDeviceFirst', {
-                defaultValue: 'From {{from}}: {{price}} a device a month',
-                from: count(from),
+            {offer.tiers.map(([from, cents], i) => i === 0 && from === 1
+              ? t('partnerRegister.purchase.perDeviceRate', {
+                defaultValue: '{{price}} a device a month',
                 price: money(cents),
               })
               : t('partnerRegister.purchase.perDeviceTier', {
-                defaultValue: '{{price}} from {{from}}',
+                defaultValue: '{{price}} from {{from}} devices',
                 from: count(from),
                 price: money(cents),
-              })).join(', ')}.
+              })).join(', ')}.{' '}
+            {t('partnerRegister.purchase.perDeviceFloor', {
+              defaultValue: '{{floor}} a month minimum under {{devices}} devices.',
+              floor: money(offer.floorCents),
+              devices: count(offer.floorUnder),
+            })}
           </p>
         )}
         {signupIntent.intent === 'wisp' && (

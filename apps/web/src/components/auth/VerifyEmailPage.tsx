@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_SIGNUP_INTENT, signupIntentHandoffQuery } from '@breeze/shared';
+import { signupIntentSchema, signupIntentHandoffQuery } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import StatusIcon from './StatusIcon';
 import { apiVerifyEmail, useAuthStore } from '../../stores/auth';
@@ -82,7 +82,12 @@ export default function VerifyEmailPage() {
       // SR2-21: the address already had an account by step 2. Nothing was
       // created; point the holder at sign-in rather than an error.
       if (result.status === 'sign_in') {
-        setState({ phase: 'sign_in', loginUrl: `/login?next=${encodeURIComponent(`/billing/plans?${signupIntentHandoffQuery(result.signupIntent ?? DEFAULT_SIGNUP_INTENT)}`)}` });
+        // A bare sign_in is an existing account holder with no recorded intent:
+        // plain /login. Only a valid intent resumes the billing destination.
+        const intent = signupIntentSchema.safeParse(result.signupIntent);
+        setState({ phase: 'sign_in', loginUrl: intent.success
+          ? `/login?next=${encodeURIComponent(`/billing/plans?${signupIntentHandoffQuery(intent.data)}`)}`
+          : '/login' });
         return;
       }
       // Network is the only failure the client can distinguish; it warrants a

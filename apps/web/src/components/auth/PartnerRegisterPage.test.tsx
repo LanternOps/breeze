@@ -142,9 +142,8 @@ describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
     render(<PartnerRegisterPage />);
     const section = await screen.findByTestId('register-purchase-selection');
     await waitFor(() => expect(section).toHaveTextContent('$199'));
-    expect(section).toHaveTextContent('$2.50');
-    expect(section).toHaveTextContent('fewer than 50 devices');
-    expect(section).toHaveTextContent('$3 from 1,000');
+    expect(section).toHaveTextContent('$4 a device a month, $3 from 1,000 devices, $2.50 from 2,500 devices. $199 a month minimum under 50 devices.');
+    expect(section).not.toHaveTextContent('From 1');
     expect(section).not.toHaveTextContent('$99');
   });
 
