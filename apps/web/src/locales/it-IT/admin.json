@@ -1033,6 +1033,7 @@
       "fix_memory": "Memoria delle correzioni",
       "fleet_finding": "Rilevamento della flotta",
       "flow": "Flusso",
+      "flow_automation_conversion": "Conversione da automazione a flusso",
       "flow_run": "Esecuzione del flusso",
       "google_workspace_connection": "Connessione Google Workspace",
       "huntress_integration": "Integrazione Huntress",

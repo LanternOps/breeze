@@ -1033,6 +1033,7 @@
       "fix_memory": "Düzeltme belleği",
       "fleet_finding": "Filo bulgusu",
       "flow": "Akış",
+      "flow_automation_conversion": "Otomasyondan akışa dönüştürme",
       "flow_run": "Akış çalıştırması",
       "google_workspace_connection": "Google Workspace bağlantısı",
       "huntress_integration": "Huntress entegrasyonu",

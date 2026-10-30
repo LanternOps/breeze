@@ -5,8 +5,9 @@ import '@/lib/i18n';
 // Audit rows carry a stable machine `resourceType` (`saved_filter`,
 // `patch_compliance_report`, ...). Showing that token as a target read as a
 // bug (#9856), so it is rendered through the `admin:audit.resourceTypes`
-// catalog, keyed by the stored type. `auditResourceType.test.ts` scans the API
-// source and fails when a type the API can write has no label.
+// catalog, keyed by the stored type. apps/api/src/services/
+// auditResourceTypeLabels.test.ts scans the API source and fails when a type
+// the API can write has no label.
 //
 // The catch-all audit middleware derives a type from the first URL segment
 // (`getResourceTypeFromPath` in apps/api/src/index.ts), so the set is open:
