@@ -109,7 +109,7 @@ describe('deviceEvents', () => {
     expect(mockUpdateDeviceMemberships).toHaveBeenCalledWith(
       DEVICE_ID,
       ORG_ID,
-      ['software.installed', 'software.notInstalled'],
+      ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'],
     );
   });
 

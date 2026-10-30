@@ -295,7 +295,7 @@ describe('partner device group evaluation', () => {
       expect(ingested.acceptedForInventory).toBe(true);
       const job = await awaitQueuedJob(member.deviceId);
       expect(job.data).toMatchObject({ eventType: 'device.updated', reason: 'software_inventory_change' });
-      expect(job.data.changedFields.sort()).toEqual(['software.installed', 'software.notInstalled']);
+      expect(job.data.changedFields.sort()).toEqual(['software.installed', 'software.notInstalled', 'software.vendor', 'software.version']);
       await runDeviceGroupReevaluationJob(job.data);
       await job.remove();
       const effective = await withDbAccessContext({ scope: 'organization', orgId: member.orgId,

@@ -376,7 +376,9 @@ describe('manage_groups peripheral reconciliation', () => {
       limit: vi.fn().mockResolvedValue([{ id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null }]),
     }) }) } as any);
     const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, { ...auth, scope: 'partner', partnerId: 'partner-1', partnerOrgAccess: 'all' }));
-    expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY', error: 'Partner-wide device groups are read-only here' });
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY' });
+    expect(result.error).toContain('read-only for the AI assistant');
+    expect(result.error).toContain('Device Groups → All orgs');
     expect(db.insert).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
     expect(db.delete).not.toHaveBeenCalled();

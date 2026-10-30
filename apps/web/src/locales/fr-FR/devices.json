@@ -390,7 +390,9 @@
     "filterRules": "Règles de filtrage",
     "cancel": "Annuler",
     "creating": "Création…",
-    "createGroup": "Créer un groupe"
+    "createGroup": "Créer un groupe",
+    "created": "Groupe d’appareils créé",
+    "missingGroupId": "Le groupe a été créé, mais la réponse du serveur ne contenait pas son identifiant. Veuillez actualiser la page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} retirés masqués",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Attribuer une politique à",
     "policy2": "Politique",
     "selectAPolicy": "Sélectionnez une stratégie",
-    "applying": "En postulant..."
+    "applying": "En postulant...",
+    "ownerFilterAll": "Tous les groupes",
+    "ownerFilterOrganization": "Groupes d’organisation",
+    "ownerFilterPartner": "Toutes les org.",
+    "noGroupsMatchFilter": "Aucun groupe ne correspond à ce filtre.",
+    "managedByPartner": "Géré par votre prestataire de services. Les règles d’appartenance ne sont pas affichées ; vous voyez les appareils de votre organisation.",
+    "partnerDynamicType": "Dynamique · Toutes les org.",
+    "partnerDeleteWarning": "Cette action supprime le groupe de toutes les organisations et supprime ses affectations de politiques."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Impossible de récupérer l’inventaire matériel",
@@ -2862,7 +2871,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -2932,7 +2943,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -3019,7 +3032,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -4666,5 +4681,28 @@
       "authorityDevice": "Cet actif est désormais lié à un appareil géré. Modifiez l'emplacement sur l'appareil.",
       "mfaRequired": "L'authentification multifacteur est requise pour modifier l'emplacement physique."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Propriétaire du groupe",
+    "organization": "Cette organisation",
+    "partner": "Toutes les organisations",
+    "dynamicOnly": "à l’échelle du partenaire, dynamique uniquement",
+    "scopeHint": "L’appartenance est évaluée dans chaque organisation que vous gérez ; l’appartenance statique, les sites et les conditions de filtre par groupe ou organisation ne sont pas disponibles.",
+    "allOrgs": "Toutes les org.",
+    "pending": "Mise à jour des membres…",
+    "current": "Dernière évaluation : {{time}}",
+    "notEvaluated": "Pas encore évalué",
+    "partial_one": "{{count}} organisation non évaluée · dernière évaluation réussie {{time}}",
+    "partial_other": "{{count}} organisations non évaluées · dernière évaluation réussie {{time}}",
+    "retryHint": "Breeze réessaie automatiquement pour ces organisations. L’enregistrement du filtre du groupe lance une nouvelle évaluation.",
+    "showMembers": "Afficher les membres",
+    "hideMembers": "Masquer les membres",
+    "device": "Appareil",
+    "organizationColumn": "Organisation",
+    "status": "État",
+    "loading": "Chargement des membres…",
+    "membersError": "Impossible de charger les membres du groupe.",
+    "retry": "Réessayer",
+    "emptyMembers": "Aucun appareil dans ce groupe."
   }
 }
