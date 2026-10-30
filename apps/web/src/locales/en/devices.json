@@ -2076,11 +2076,14 @@
     "loading": "Loading patch status...",
     "notDownloadedTitle": "Not yet downloaded -- install will take longer",
     "notices": {
+      "installCommandEnded": "The install command ended ({{status}}) before the device reported a result. Check the device's command history for details.",
+      "installFinishedWithIssues": "Install finished: {{installed}} installed, {{failed}} failed, {{awaitingRestart}} awaiting a restart, {{unresolved}} not yet confirmed. Check the patch rows for details.",
       "installLongerThanExpected": "Install is taking longer than expected. macOS updates can take 30+ minutes. Refresh the page later to check status.",
       "installPatchFailed": "Failed to install {{name}}",
       "installPatchQueued": "Install queued for \"{{name}}\"",
       "installPatchQueuedDetail": "Install queued for \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} queued for {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Could not check the install status: the patch list failed to load. Refresh the page to see the latest status.",
       "installedSuccessfully": "{{installed}} patch(es) installed successfully. {{pending}} still pending.",
       "installingPolling": "Installing patches... Polling for updates.",
       "noPendingForLabel": "No pending patches available for {{label}}.",
@@ -2126,6 +2129,7 @@
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedUserScopeTitle": "Not installable: this is a per-user install that Breeze cannot apply yet, so no patch run will install it.",
       "excludedFeatureUpdateTitle": "Update ring {{ring}} blocks this Windows feature release (or pins devices to a different one), so scheduled patch runs skip it.",
       "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
@@ -2617,9 +2621,18 @@
       "refreshFailed": "Warranty refresh failed: {{error}}",
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
-      "updated": "Warranty information updated."
+      "updated": "Warranty information updated.",
+      "agentCollected": "This device's warranty is collected by the Breeze agent, so a vendor refresh can't add anything newer.",
+      "noVendorLookupKept": "No vendor warranty lookup is available for this manufacturer. The existing warranty data was kept."
     },
-    "lookUp": "Look up"
+    "lookUp": "Look up",
+    "sources": {
+      "agentCmsl": "Agent (HP CMSL)",
+      "agentPlist": "Agent (macOS plist)",
+      "import": "Imported",
+      "importVendorEarlier": "Imported (vendor reports earlier end date)",
+      "provider": "Vendor API"
+    }
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -2759,6 +2772,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} devices are now at {{site}}",
       "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
       "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (its site changed after the list loaded; the list has been refreshed, so try again)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (you do not have access to its site or to the target site)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (no longer found; it may have been deleted)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (an unexpected error occurred; try again)",
       "deviceMovedToSite": "{{hostname}} moved to a new site"
     },
     "tryAgain": "Try again",
@@ -2963,8 +2980,10 @@
     "title": "Filter shortcuts"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Pick a value to see matching devices",
     "counting": "…counting",
-    "matches": "~{{count}} devices match",
+    "matches_one": "~{{count}} device matches",
+    "matches_other": "~{{count}} devices match",
     "unavailable": "preview unavailable"
   },
   "filterSentenceBuilder": {
@@ -4319,6 +4338,7 @@
       "pending": "Not checked yet",
       "private": "Private registry — credentials required",
       "unsupported_registry": "Registry not supported",
+      "provenance_unknown": "Provenance unknown — the image name is not sent to any registry",
       "error": "Registry check failed — will retry",
       "behind": "A newer image is published for this tag",
       "current": "Matches the registry",

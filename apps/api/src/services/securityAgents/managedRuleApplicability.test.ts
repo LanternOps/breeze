@@ -148,6 +148,23 @@ describe('loadManagedRuleApplicability', () => {
     orgReadiness.mockResolvedValueOnce(new Map());
     const a = await loadManagedRuleApplicability(POLICY, []);
     expect(a.filterViolations('ghost', [missing(HUNTRESS_CATALOG)]).violations).toEqual([]);
+    expect(a.isRuleApplicable('ghost', HUNTRESS_CATALOG)).toBe(false);
+  });
+
+  it('isRuleApplicable answers per (device, rule catalogId) with the same readiness as filterViolations (#10126)', async () => {
+    prime();
+    orgReadiness.mockResolvedValueOnce(new Map([['org-1', { ok: true }], ['org-2', { ok: false, reason: 'org_not_mapped' }]]));
+    const a = await loadManagedRuleApplicability(POLICY, [
+      { deviceId: 'd1', orgId: 'org-1', osType: 'windows' },
+      { deviceId: 'd2', orgId: 'org-2', osType: 'windows' },
+      { deviceId: 'd-mac', orgId: 'org-1', osType: 'macos' },
+    ]);
+    expect(a.isRuleApplicable('d1', HUNTRESS_CATALOG)).toBe(true);
+    expect(a.isRuleApplicable('d2', HUNTRESS_CATALOG)).toBe(false);
+    // Platform beats org, exactly as in filterViolations.
+    expect(a.isRuleApplicable('d-mac', HUNTRESS_CATALOG)).toBe(false);
+    // Fail closed: a catalog id that is not one of this policy's vendor rules.
+    expect(a.isRuleApplicable('d1', UNKNOWN_CATALOG)).toBe(false);
   });
 });
 

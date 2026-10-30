@@ -1208,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
         "generateAlertsWhenFixedTermDeviceWarranties": "Générez des alertes lorsque les garanties à durée déterminée des dispositifs approchent de leur expiration.",
         "warningThresholdDays": "Seuil d’avertissement (jours)",
-        "generateAWarningAlertWhenWarrantyExpires": "Générez une alerte lorsque la garantie expire dans ce délai de jours.",
-        "criticalThresholdDays": "Seuil critique (jours)",
-        "generateACriticalAlertWhenWarrantyExpires": "Générez une alerte critique lorsque la garantie expire dans ce délai de jours.",
+        "warnThresholdHelp": "Générez une alerte de gravité Information lorsque la garantie expire dans ce délai de jours.",
+        "urgentThresholdDays": "Seuil d’urgence (jours)",
+        "urgentThresholdHelp": "Générez une alerte de gravité Faible lorsque la garantie expire dans ce délai de jours. Une garantie expirée génère une alerte de gravité Moyenne.",
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
         "criticalDays": "Critical Days",
@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} appareils sur {{total}} terminés",
       "setupNeeded": "Configuration requise",
       "managerUnavailableSummary_one": "Le gestionnaire de paquets est absent sur {{count}} appareil. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
-      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera."
+      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS) ; d'ici là, tout déploiement par gestionnaire de paquets échouera.",
+      "deviceOutputTail": "Sortie de l’appareil (dernières lignes)"
     },
     "deploymentWizard": {
       "selectSoftware": "Logiciel sélectionné",

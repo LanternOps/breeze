@@ -2076,11 +2076,14 @@
     "loading": "Patch-Status wird geladen...",
     "notDownloadedTitle": "Noch nicht heruntergeladen – die Installation dauert länger",
     "notices": {
+      "installCommandEnded": "Der Installationsbefehl wurde beendet ({{status}}), bevor das Gerät ein Ergebnis gemeldet hat. Details finden Sie im Befehlsverlauf des Geräts.",
+      "installFinishedWithIssues": "Installation abgeschlossen: {{installed}} installiert, {{failed}} fehlgeschlagen, {{awaitingRestart}} warten auf einen Neustart, {{unresolved}} noch nicht bestätigt. Details finden Sie in den Patch-Zeilen.",
       "installLongerThanExpected": "Die Installation dauert länger als erwartet. macOS-Updates können mehr als 30 Minuten dauern. Aktualisieren Sie die Seite später, um den Status zu überprüfen.",
       "installPatchFailed": "Die Installation von {{name}} ist fehlgeschlagen",
       "installPatchQueued": "Installation steht für „{{name}}“ in der Warteschlange",
       "installPatchQueuedDetail": "Installation steht für „{{name}}“{{dispatchSuffix}} in der Warteschlange.",
       "installQueuedForPatches": "{{label}} in der Warteschlange für {{count}} Patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Der Installationsstatus konnte nicht geprüft werden, da die Patch-Liste nicht geladen wurde. Aktualisieren Sie die Seite, um den aktuellen Status zu sehen.",
       "installedSuccessfully": "{{installed}} Patches wurden erfolgreich installiert. {{pending}} steht noch aus.",
       "installingPolling": "Patches werden installiert... Updates werden abgefragt.",
       "noPendingForLabel": "Für {{label}} sind keine ausstehenden Patches verfügbar.",
@@ -2126,6 +2129,7 @@
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
       "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
+      "excludedUserScopeTitle": "Nicht installierbar: Es handelt sich um eine Installation pro Benutzer, die Breeze noch nicht anwenden kann, daher installiert kein Patch-Lauf sie.",
       "excludedFeatureUpdateTitle": "Update-Ring {{ring}} blockiert diese Windows-Funktionsversion (oder heftet Geräte an eine andere an), daher überspringen geplante Patch-Läufe sie.",
       "excludedDeclinedTitle": "Abgelehnt: Dieser Patch wurde ausdrücklich abgelehnt, daher installiert ihn die automatische Genehmigung des Rings nicht. Genehmigen Sie ihn erneut, um ihn zuzulassen.",
       "pending": "Genehmigung ausstehend",
@@ -2617,9 +2621,18 @@
       "refreshFailed": "Garantieaktualisierung fehlgeschlagen: {{error}}",
       "refreshing": "Garantie wird aktualisiert…",
       "stillInProgress": "Die Garantieaktualisierung ist noch im Gange; Die Karte wird aktualisiert, wenn der Vorgang abgeschlossen ist.",
-      "updated": "Garantieinformationen aktualisiert."
+      "updated": "Garantieinformationen aktualisiert.",
+      "agentCollected": "Die Garantie dieses Geräts wird vom Breeze-Agenten erfasst, daher kann eine Herstellerabfrage nichts Neueres liefern.",
+      "noVendorLookupKept": "Für diesen Hersteller ist keine Garantieabfrage verfügbar. Die vorhandenen Garantiedaten wurden beibehalten."
     },
-    "lookUp": "Abfragen"
+    "lookUp": "Abfragen",
+    "sources": {
+      "agentCmsl": "Agent (HP-CMSL)",
+      "agentPlist": "Agent (macOS-plist)",
+      "import": "Importiert",
+      "importVendorEarlier": "Importiert (Hersteller meldet früheres Enddatum)",
+      "provider": "Hersteller-API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Geräten.",
@@ -2754,6 +2767,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} Geräte befinden sich jetzt am Standort {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} von {{total}} Geräten nach {{site}} verschoben. Nicht verschoben: {{devices}}",
       "bulkMoveSiteAllFailed": "Es wurden keine Geräte nach {{site}} verschoben. Nicht verschoben: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (der Standort hat sich nach dem Laden der Liste geändert; die Liste wurde aktualisiert, bitte erneut versuchen)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (kein Zugriff auf den aktuellen Standort oder den Zielstandort)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (nicht mehr gefunden; das Gerät wurde möglicherweise gelöscht)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (ein unerwarteter Fehler ist aufgetreten; bitte erneut versuchen)",
       "deviceMovedToSite": "{{hostname}} an einen neuen Standort verschoben"
     },
     "tryAgain": "Versuchen Sie es erneut",
@@ -2963,8 +2980,10 @@
     "title": "Verknüpfungen filtern"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Wählen Sie einen Wert, um passende Geräte zu sehen",
     "counting": "…zählen",
-    "matches": "~{{count}} Geräte stimmen überein",
+    "matches_one": "~{{count}} Gerät stimmt überein",
+    "matches_other": "~{{count}} Geräte stimmen überein",
     "unavailable": "Vorschau nicht verfügbar"
   },
   "filterSentenceBuilder": {
@@ -4319,6 +4338,7 @@
       "pending": "Noch nicht geprüft",
       "private": "Private Registry – Anmeldedaten erforderlich",
       "unsupported_registry": "Registry wird nicht unterstützt",
+      "provenance_unknown": "Herkunft unbekannt — der Image-Name wird an keine Registry gesendet",
       "error": "Registry-Prüfung fehlgeschlagen – wird wiederholt",
       "behind": "Für diesen Tag ist ein neueres Image veröffentlicht",
       "current": "Entspricht der Registry",

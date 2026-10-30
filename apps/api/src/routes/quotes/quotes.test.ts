@@ -55,6 +55,8 @@ vi.mock('../../services/contractTemplateRender', () => ({
   // ADMIN-only authoring fields for the editor. Default empty map so every other
   // GET /:id test is unaffected (no `authoring` merged onto contract blocks).
   loadContractBlockAuthoring: vi.fn(async () => new Map()),
+  // #9867: the editor's resolved auto-variable values. Display-only.
+  resolveQuoteEditorAutoVariables: vi.fn(() => ({ 'client.name': 'Acme Co' })),
   // Real implementation (not a bare vi.fn()) — mirrors contractTemplateRender.ts's
   // attachContractAuthoring exactly, so the "merges authoring onto contract
   // blocks" test below exercises the actual merge semantics the route relies on.
@@ -138,7 +140,7 @@ import { quoteRoutes } from './index';
 import * as svc from '../../services/quoteService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs } from '../../services/contractTemplateRender';
+import { renderContractBlocksForClient, loadContractBlockAuthoring, loadContractPdfInputs, resolveQuoteEditorAutoVariables } from '../../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { getConnection } from '../../services/stripeConnectService';
 
@@ -812,6 +814,31 @@ describe('quote crud + lines routes', () => {
       const body = await res.json();
       expect(body.data.stripeConnected).toBeNull();
       expect(body.data.currencyWarning).toBeNull();
+    });
+  });
+
+  describe('GET /:id — contractAutoValues (#9867)', () => {
+    it('returns the resolved auto-variable values, built from the bill-to, live seller and branding locale', async () => {
+      const billTo = { name: 'Acme Co', address: null, taxId: null };
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [], billTo });
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.contractAutoValues).toEqual({ 'client.name': 'Acme Co' });
+      const [quoteArg, opts] = vi.mocked(resolveQuoteEditorAutoVariables).mock.calls.at(-1)!;
+      expect((quoteArg as { id: string }).id).toBe(QUOTE_ID);
+      expect(opts).toEqual(expect.objectContaining({ billTo, locale: expect.any(String) }));
+      expect(opts).toHaveProperty('seller');
+    });
+
+    it('a resolver failure degrades to null instead of failing the quote load', async () => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+      vi.mocked(resolveQuoteEditorAutoVariables).mockImplementationOnce(() => { throw new Error('boom'); });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.contractAutoValues).toBeNull();
+      expect(errSpy).toHaveBeenCalled();
+      errSpy.mockRestore();
     });
   });
 

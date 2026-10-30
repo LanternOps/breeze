@@ -2076,11 +2076,14 @@
     "loading": "Carregando o status dos patches...",
     "notDownloadedTitle": "Ainda não foi baixado — a instalação demorará mais",
     "notices": {
+      "installCommandEnded": "O comando de instalação terminou ({{status}}) antes que o dispositivo informasse um resultado. Verifique o histórico de comandos do dispositivo para mais detalhes.",
+      "installFinishedWithIssues": "Instalação concluída: {{installed}} instalados, {{failed}} com falha, {{awaitingRestart}} aguardando reinicialização, {{unresolved}} ainda não confirmados. Verifique as linhas dos patches para mais detalhes.",
       "installLongerThanExpected": "A instalação está demorando mais do que o esperado. As atualizações do macOS podem levar mais de 30 minutos. Atualize a página mais tarde para verificar o status.",
       "installPatchFailed": "Falha ao instalar {{name}}",
       "installPatchQueued": "Instalação de \"{{name}}\" adicionada à fila",
       "installPatchQueuedDetail": "Instalação de \"{{name}}\" adicionada à fila{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} adicionado à fila para {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Não foi possível verificar o status da instalação: a lista de patches não carregou. Atualize a página para ver o status mais recente.",
       "installedSuccessfully": "Instalações concluídas: {{installed}}. Ainda pendentes: {{pending}}.",
       "installingPolling": "Instalando patches... Consultando atualizações.",
       "noPendingForLabel": "Nenhum patch pendente disponível para {{label}}.",
@@ -2126,6 +2129,7 @@
       "excludedCategoryTitle": "O anel de atualização {{ring}} exclui a categoria deste patch, então as execuções agendadas o ignoram.",
       "excludedAppRuleTitle": "Uma regra de bloqueio ou fixação de aplicativo do anel de atualização vinculado retém este patch, então as execuções agendadas o ignoram.",
       "excludedRingReferenceTitle": "Retido: a política de patches deste dispositivo vincula um anel de atualização que não existe mais ou não está disponível para este parceiro. Corrija o anel de atualização da política para retomar a aplicação de patches.",
+      "excludedUserScopeTitle": "Não instalável: é uma instalação por usuário que o Breeze ainda não consegue aplicar, portanto nenhuma execução de patches a instalará.",
       "excludedFeatureUpdateTitle": "O anel de atualização {{ring}} bloqueia esta versão de recursos do Windows (ou fixa os dispositivos em outra), então as execuções de patch agendadas a ignoram.",
       "excludedDeclinedTitle": "Recusado: este patch foi recusado explicitamente, portanto a aprovação automática do anel não o instalará. Aprove-o novamente para permitir.",
       "pending": "Aprovação pendente",
@@ -2617,9 +2621,18 @@
       "refreshFailed": "Falha ao atualizar a garantia: {{error}}",
       "refreshing": "Atualizando a garantia…",
       "stillInProgress": "A atualização da garantia ainda está em andamento; o cartão será atualizado quando ela for concluída.",
-      "updated": "Informações da garantia atualizadas."
+      "updated": "Informações da garantia atualizadas.",
+      "agentCollected": "A garantia deste dispositivo é coletada pelo agente Breeze, então uma consulta ao fabricante não pode trazer dados mais recentes.",
+      "noVendorLookupKept": "Nenhuma consulta de garantia está disponível para este fabricante. Os dados de garantia existentes foram mantidos."
     },
-    "lookUp": "Consultar"
+    "lookUp": "Consultar",
+    "sources": {
+      "agentCmsl": "Agente (HP CMSL)",
+      "agentPlist": "Agente (plist do macOS)",
+      "import": "Importado",
+      "importVendorEarlier": "Importado (o fabricante informa uma data de término anterior)",
+      "provider": "API do fabricante"
+    }
   },
   "devicesPage": {
     "accessDenied": "Você não tem permissão para visualizar dispositivos.",
@@ -2758,6 +2771,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} dispositivos agora estão em {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} de {{total}} dispositivos movidos para {{site}}. Não movidos: {{devices}}",
       "bulkMoveSiteAllFailed": "Nenhum dispositivo foi movido para {{site}}. Não movidos: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (o site mudou depois que a lista foi carregada; a lista foi atualizada, tente novamente)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (você não tem acesso ao site atual ou ao site de destino)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (não encontrado; pode ter sido excluído)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (ocorreu um erro inesperado; tente novamente)",
       "deviceMovedToSite": "{{hostname}} movido para um novo site"
     },
     "tryAgain": "Tentar novamente",
@@ -2963,8 +2980,10 @@
     "title": "Atalhos de filtro"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Escolha um valor para ver os dispositivos correspondentes",
     "counting": "…contando",
-    "matches": "~{{count}} dispositivos correspondem",
+    "matches_one": "~{{count}} dispositivo corresponde",
+    "matches_other": "~{{count}} dispositivos correspondem",
     "unavailable": "prévia indisponível"
   },
   "filterSentenceBuilder": {
@@ -4319,6 +4338,7 @@
       "pending": "Ainda não verificada",
       "private": "Registro privado — credenciais necessárias",
       "unsupported_registry": "Registro não suportado",
+      "provenance_unknown": "Origem desconhecida — o nome da imagem não é enviado a nenhum registro",
       "error": "Falha na verificação do registro — será repetida",
       "behind": "Uma imagem mais recente foi publicada para esta tag",
       "current": "Corresponde ao registro",

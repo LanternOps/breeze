@@ -50,9 +50,15 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
     );
   }
   const { summary, timeSeries } = data;
+  // #10198: labels, not raw enum values (`rejected` is a person's Deny).
+  const statusLabel = (status: string): string =>
+    t(/* i18n-dynamic */ `aiRiskApprovalHistoryFeed.status.${status}`, {
+      defaultValue: status,
+    });
   const statusPieData = Object.entries(summary.byStatus).map(
     ([status, count]) => ({
       name: status,
+      label: statusLabel(status),
       value: count,
     }),
   );
@@ -104,19 +110,19 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                     dataKey="completed"
                     stackId="a"
                     fill="#22c55e"
-                    name="Completed"
+                    name={statusLabel("completed")}
                   />
                   <Bar
                     dataKey="failed"
                     stackId="a"
                     fill="#ef4444"
-                    name="Failed"
+                    name={statusLabel("failed")}
                   />
                   <Bar
                     dataKey="rejected"
                     stackId="a"
                     fill="#f59e0b"
-                    name="Rejected"
+                    name={statusLabel("rejected")}
                   />
                   <Bar
                     dataKey="refused"
@@ -177,7 +183,7 @@ export function ToolExecutionAnalytics({ data, loading }: Props) {
                   <Pie
                     data={statusPieData}
                     dataKey="value"
-                    nameKey="name"
+                    nameKey="label"
                     cx="50%"
                     cy="50%"
                     innerRadius={50}

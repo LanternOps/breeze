@@ -234,6 +234,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
+  'get_huntress_agents', // #10393 Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)

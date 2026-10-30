@@ -1208,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Enable warranty expiry alerts",
         "generateAlertsWhenFixedTermDeviceWarranties": "Generate alerts when fixed-term device warranties are approaching expiry.",
         "warningThresholdDays": "Warning threshold (days)",
-        "generateAWarningAlertWhenWarrantyExpires": "Generate a warning alert when warranty expires within this many days.",
-        "criticalThresholdDays": "Critical threshold (days)",
-        "generateACriticalAlertWhenWarrantyExpires": "Generate a critical alert when warranty expires within this many days.",
+        "warnThresholdHelp": "Alert at info severity when warranty expires within this many days.",
+        "urgentThresholdDays": "Urgent threshold (days)",
+        "urgentThresholdHelp": "Alert at low severity when warranty expires within this many days. An expired warranty alerts at medium.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} of {{total}} devices finished",
       "setupNeeded": "Setup needed",
       "managerUnavailableSummary_one": "{{count}} device is missing its package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) there; until then every package-manager deployment to it will fail.",
-      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail."
+      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail.",
+      "deviceOutputTail": "Device output (last lines)"
     },
     "deploymentWizard": {
       "selectSoftware": "Select Software",

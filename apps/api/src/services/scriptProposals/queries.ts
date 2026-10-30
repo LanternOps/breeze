@@ -62,6 +62,23 @@ export function selectProposalExecutions(proposalId: string) {
     .orderBy(desc(scriptExecutions.startedAt));
 }
 
+/**
+ * A proposal's newest MODEL review, read in the CALLER's context (RLS-scoped)
+ * for the same reason as `selectProposalExecutions` above: the
+ * `get_script_proposal` AI tool reads it inside its per-call transaction
+ * (#10399), where escaping to system scope would hold a second pooled
+ * connection under the first. Same row `waitForReviewCompletion` returns.
+ */
+export async function selectLatestModelReview(proposalId: string) {
+  const [row] = await db
+    .select()
+    .from(scriptProposalReviews)
+    .where(and(eq(scriptProposalReviews.proposalId, proposalId), eq(scriptProposalReviews.reviewerKind, 'model')))
+    .orderBy(desc(scriptProposalReviews.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function loadProposalExecutions(proposalId: string) {
   return runOutsideDbContext(() => withSystemDbAccessContext(() => selectProposalExecutions(proposalId)));
 }

@@ -1208,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Abilita avvisi di scadenza garanzia",
         "generateAlertsWhenFixedTermDeviceWarranties": "Genera avvisi quando le garanzie dei dispositivi a termine fisso si avvicinano alla scadenza.",
         "warningThresholdDays": "Soglia di avviso (giorni)",
-        "generateAWarningAlertWhenWarrantyExpires": "Genera un avviso quando la garanzia scade entro questo numero di giorni.",
-        "criticalThresholdDays": "Soglia critica (giorni)",
-        "generateACriticalAlertWhenWarrantyExpires": "Genera un avviso critico quando la garanzia scade entro questo numero di giorni.",
+        "warnThresholdHelp": "Genera un avviso con gravità Info quando la garanzia scade entro questo numero di giorni.",
+        "urgentThresholdDays": "Soglia di urgenza (giorni)",
+        "urgentThresholdHelp": "Genera un avviso con gravità Bassa quando la garanzia scade entro questo numero di giorni. Una garanzia scaduta genera un avviso con gravità Media.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} dispositivi su {{total}} completati",
       "setupNeeded": "Configurazione necessaria",
       "managerUnavailableSummary_one": "Su {{count}} dispositivo manca il gestore di pacchetti. È una configurazione una tantum del dispositivo: installa winget (Windows) o Homebrew (macOS); fino ad allora ogni distribuzione tramite gestore di pacchetti fallirà.",
-      "managerUnavailableSummary_other": "Su {{count}} dispositivi manca il gestore di pacchetti. È una configurazione una tantum dei dispositivi: installa winget (Windows) o Homebrew (macOS); fino ad allora ogni distribuzione tramite gestore di pacchetti fallirà."
+      "managerUnavailableSummary_other": "Su {{count}} dispositivi manca il gestore di pacchetti. È una configurazione una tantum dei dispositivi: installa winget (Windows) o Homebrew (macOS); fino ad allora ogni distribuzione tramite gestore di pacchetti fallirà.",
+      "deviceOutputTail": "Output del dispositivo (ultime righe)"
     },
     "deploymentWizard": {
       "selectSoftware": "Seleziona software",

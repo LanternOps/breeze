@@ -172,6 +172,8 @@ describe('useSiteCrud', () => {
     // depend on that staying true.
     expect((postCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
+    // #10084: a successful create confirms itself instead of just closing.
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.created' });
   });
 
   it('submit() in edit mode PATCHes /orgs/sites/:id', async () => {
@@ -191,6 +193,7 @@ describe('useSiteCrud', () => {
     );
     expect(patchCall).toBeTruthy();
     expect((patchCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.saved' });
   });
 
   it('confirmDelete() DELETEs the selected site, then refreshes and closes', async () => {
@@ -211,6 +214,7 @@ describe('useSiteCrud', () => {
     expect(deleteCall).toBeTruthy();
     expect((deleteCall![1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_ID);
     expect(result.current.siteModalMode).toBe('closed');
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'settings:sites.toasts.deleted' });
   });
 
   it('a non-401 submit failure leaves the modal open and surfaces a toast (via runAction, not a thrown rejection)', async () => {

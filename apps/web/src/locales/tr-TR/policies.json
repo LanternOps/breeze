@@ -1208,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Garanti sona erme uyarılarını etkinleştir",
         "generateAlertsWhenFixedTermDeviceWarranties": "Sabit süreli cihaz garantilerinin sona ermesi yaklaştığında uyarı oluşturun.",
         "warningThresholdDays": "Uyarı eşiği (gün)",
-        "generateAWarningAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda bir uyarı uyarısı oluşturun.",
-        "criticalThresholdDays": "Kritik eşik (gün)",
-        "generateACriticalAlertWhenWarrantyExpires": "Garantinin süresi bu kadar gün içinde dolduğunda kritik bir uyarı oluşturun.",
+        "warnThresholdHelp": "Garantinin süresi bu kadar gün içinde dolduğunda Bilgi önem düzeyinde bir uyarı oluşturun.",
+        "urgentThresholdDays": "Acil durum eşiği (gün)",
+        "urgentThresholdHelp": "Garantinin süresi bu kadar gün içinde dolduğunda Düşük önem düzeyinde bir uyarı oluşturun. Süresi dolmuş bir garanti Orta önem düzeyinde uyarı oluşturur.",
         "enabled": "etkin",
         "warnDays": "warnDays",
         "criticalDays": "kritikDayler",
@@ -1551,7 +1551,8 @@
       "devicesFinished": "{{finished}} / {{total}} cihaz tamamlandı",
       "setupNeeded": "Kurulum gerekli",
       "managerUnavailableSummary_one": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihaza winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar cihaza yapılan her paket yöneticisi dağıtımı başarısız olacaktır.",
-      "managerUnavailableSummary_other": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihazlara winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar bu cihazlara yapılan her paket yöneticisi dağıtımı başarısız olacaktır."
+      "managerUnavailableSummary_other": "{{count}} cihazda paket yöneticisi eksik. Bu, tek seferlik bir cihaz kurulum işidir — o cihazlara winget (Windows) veya Homebrew (macOS) yükleyin; o zamana kadar bu cihazlara yapılan her paket yöneticisi dağıtımı başarısız olacaktır.",
+      "deviceOutputTail": "Cihaz çıktısı (son satırlar)"
     },
     "deploymentWizard": {
       "selectSoftware": "Yazılımı Seçin",

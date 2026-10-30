@@ -713,6 +713,23 @@ jobs:
       - name: Migration filename convention guard
         run: bash scripts/check-migration-naming.sh
 
+      # Non-bypassable backstop for the pre-push hook (`--against-ref`): the
+      # migrations this PR / queue entry ADDS must sort after the newest one
+      # on its base, and it must not delete or rename a migration that exists
+      # on its base (a shipped file's ledger row is keyed on its filename —
+      # #10015, where #9997 renamed one to appease the commit hook). Files the
+      # base already has — e.g. main's migrations a branch merged in — are
+      # never judged. pull_request checks out the merge commit, so HEAD^1 is
+      # the base it was built on; a queue entry names its base explicitly.
+      - name: Migration order and shipped-rename guard vs base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          base_ref="${MERGE_GROUP_BASE_SHA:-HEAD^1}"
+          echo "Base for this check: $base_ref = $(git rev-parse --short "$base_ref")"
+          bash scripts/check-migration-naming.sh --against-ref "$base_ref"
+
       - name: Apply migrations against empty Postgres
         run: pnpm --filter @breeze/api run check:migrations
 
@@ -2199,6 +2216,27 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # #9597: the Windows password-policy collector queried Win32_AccountPolicy,
+      # a WMI class that exists on no Windows build, so every device reported
+      # no policy. These run the real secedit export and NetUserModalsGet on
+      # this elevated runner and require the two sources to agree. Only these
+      # tests run: internal/security's other tests have never been verified on
+      # Windows. The secedit test skips on a filtered token, so assert no skips.
+      - name: Run Windows password policy reader tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/security -run '^TestLivePasswordPolicy' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the password policy tests SKIPPED - the runner token is not elevated, so secedit has no live coverage here" }
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running

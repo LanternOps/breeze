@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
@@ -189,6 +190,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // Only the full-page /tickets/[id] view names the page: the /tickets split
   // pane embeds this too, and naming there would relabel the list itself.
   usePageItemName(expanded && ticket ? [ticket.internalNumber, ticket.subject].filter(Boolean).join(' ') : undefined);
+  useRecordPageContext(ticket ? { kind: 'ticket', id: ticket.id, orgId: ticket.orgId, label: [ticket.internalNumber ?? ticket.id.slice(0, 8), ticket.subject].filter(Boolean).join(' ') } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<'not-found' | 'load' | undefined>();
@@ -1928,9 +1930,22 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             <div className="space-y-3">
               {/* Per-target SLA timers; renders nothing (no gap) when the ticket has no SLA targets. */}
               <SlaTimers ticket={ticket} />
-              <TicketTimeBilling ticketId={ticket.id} />
-              <TicketApprovalRail ticketId={ticket.id} />
-              <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} />
+              {/* #10073: time, budget and part writes on a tombstone all answer
+                  409 TICKET_MERGED, so the cards below go read-only and this
+                  says why, pointing at the ticket that took the work. */}
+              {merged && ticket.mergedIntoTicketId && (
+                <div className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1.5 text-xs" role="note" data-testid="ticket-rail-merged-readonly">
+                  <p>{t('ticketWorkbench.mergedBanner.railReadOnly')}</p>
+                  {mergedInto?.state !== 'missing' && (
+                    <a href={`/tickets/${ticket.mergedIntoTicketId}`} className="mt-0.5 inline-block font-medium text-primary hover:underline" data-testid="ticket-rail-merged-link">
+                      {t('ticketWorkbench.mergedBanner.open', { number: mergedInto?.number ?? ticket.mergedIntoTicketId.slice(0, 8) })}
+                    </a>
+                  )}
+                </div>
+              )}
+              <TicketTimeBilling ticketId={ticket.id} readOnly={merged} />
+              <TicketApprovalRail ticketId={ticket.id} readOnly={merged} />
+              <TicketPartsCard ticketId={ticket.id} currencyCode={orgs.find((o) => o.id === ticket.orgId)?.currencyCode} readOnly={merged} />
               <dl className="space-y-3">
                 <div>
                   <dt className="text-xs text-muted-foreground">{t('ticketWorkbench.requester.label')}</dt>

@@ -15,6 +15,7 @@ import { useJwtClaims } from "@/lib/authScope";
 import { useWispEnabled } from "@/lib/wispVisibility";
 import { fetchWispThread, isNoActiveGrant } from "@/lib/wispGrant";
 import { useEntitlement } from "@/hooks/useEntitlement";
+import { useOnWindowReturn } from "@/hooks/useOnWindowReturn";
 import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
@@ -34,6 +35,9 @@ import { showToast } from "../shared/Toast";
 import BuyCreditsLink from "./BuyCreditsLink";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
+import WispWelcome from "../wisp/WispWelcome";
+import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
+import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -49,8 +53,8 @@ type GrantLookup =
 /**
  * The caller's active Wisp grant the panel can speak under: the partner-wide
  * grant first, then one scoped to the organization selected in the header
- * (the order WispLinkButton uses). A 404 `no_active_grant` is the ordinary
- * "no grant here"; any other failure is reported as `failed` and the panel
+ * (the order WispLinkButton uses). `isNoActiveGrant` (200 `{ data: null }`,
+ * #10200) is the ordinary "no grant here"; any other failure is reported as `failed` and the panel
  * stays Breeze AI without offering "Meet Wisp" — nothing about it fails
  * loudly (Review Focus 2).
  */
@@ -120,7 +124,10 @@ export default function AiChatSidebar() {
     enterWispMode,
     topologySiteId,
     joinedMidResponse,
+    recheckPendingApproval,
   } = useAiStore();
+  // #9431: an approval card may have been decided in another window meanwhile.
+  useOnWindowReturn(() => recheckPendingApproval?.());
   const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
   const wispScopeOrgName = useOrgStore((s) =>
     wisp?.scopeOrgId ? (s.organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null : null,
@@ -200,6 +207,34 @@ export default function AiChatSidebar() {
   // The selected org ("" = none) the panel last asked about; null = ask on the next open.
   const grantLookupKeyRef = useRef<string | null>(null);
 
+  // #10195: the panel follows the grant live, not only as it stood when the
+  // panel opened. When the grant it speaks under goes away from the shared
+  // store — revoked on /wisp (the home's exitWispMode), a create the server
+  // refused as unusable, a plain chat picked from History — the answer from
+  // before is stale: forget it and ask again, so Meet Wisp (or another live
+  // grant) is what the panel shows. That grant itself is not re-entered on
+  // the strength of that one read (whatever dropped it knew better); the guard
+  // is spent by it, so a later open, org change or New conversation decides
+  // afresh.
+  // (A grant created on /wisp reaches the panel through the home binding the
+  // shared store to its thread, WispHomeThread.)
+  const wispGrantId = wisp?.grantId ?? null;
+  const shownGrantIdRef = useRef<string | null>(wispGrantId);
+  const endedGrantIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = shownGrantIdRef.current;
+    shownGrantIdRef.current = wispGrantId;
+    if (previous === wispGrantId) return;
+    // Entering a grant (fresh, or switching to another thread) is not an end.
+    if (wispGrantId !== null) {
+      endedGrantIdRef.current = null;
+      return;
+    }
+    endedGrantIdRef.current = previous;
+    grantLookupKeyRef.current = null;
+    setGrantLookup({ kind: "idle" });
+  }, [wispGrantId]);
+
   // Once per page and selected org, the first time the panel is open with
   // every gate passed (a failed read is asked again on the next open). An
   // active grant gives a panel with no conversation the Wisp voice at once.
@@ -212,17 +247,20 @@ export default function AiChatSidebar() {
     if (grantLookupKeyRef.current === key) return;
     grantLookupKeyRef.current = key;
     if (useAiStore.getState().wisp) return;
+    const justEnded = endedGrantIdRef.current;
+    endedGrantIdRef.current = null;
     void lookUpActiveGrant(selectedOrgId).then((result) => {
       // The org changed while this was in flight: the newer lookup owns the answer.
       if (grantLookupKeyRef.current !== key) return;
       if (result.kind === "failed") grantLookupKeyRef.current = null;
       setGrantLookup(result);
       if (result.kind !== "active") return;
+      if (result.grant.grantId === justEnded) return;
       const now = useAiStore.getState();
       if (now.wisp || now.sessionId || now.isLoading) return;
       void now.enterWispMode(result.grant);
     });
-  }, [isOpen, wispEligible, selectedOrgId]);
+  }, [isOpen, wispEligible, selectedOrgId, wispGrantId]);
 
   // Wisp is on here but there is no active grant (none, paused, ended, or the
   // plan lacks Wisp): point at the home, which explains and starts or resumes one.
@@ -232,6 +270,9 @@ export default function AiChatSidebar() {
     partnerToken &&
     wispServerOn &&
     (wispEntitlement.state === "locked" || (wispEntitlement.state === "enabled" && grantLookup.kind === "none"));
+
+  // #10195: under a Wisp header the whole panel is Wisp — replies, empty state, composer.
+  const wispScopeLabel = useWispScopeLabel(wisp ? wispSessionOrgId(wisp) : null);
 
   const boundConnection = boundM365ConnectionId
     ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
@@ -482,6 +523,11 @@ export default function AiChatSidebar() {
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
               assistantLabel={wisp ? t("wisp.title") : undefined}
+              emptyState={
+                wisp ? (
+                  <WispWelcome scopeLabel={wispScopeLabel} onSuggest={sendMessage} briefNote={false} />
+                ) : undefined
+              }
             />
 
             {/* Continuation prompt, what ran, thinking, model menu (W05) */}
@@ -499,6 +545,7 @@ export default function AiChatSidebar() {
               disabled={isLoading}
               isStreaming={isStreaming}
               isInterrupting={isInterrupting}
+              placeholder={wisp ? t("wisp.composer.placeholder") : undefined}
             />
 
             {showMeetWisp && (

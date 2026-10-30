@@ -2,12 +2,13 @@ import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { replaceLocation } from '@/lib/replaceLocation';
 import { useMemo, useState } from 'react';
 import { QuoteDocumentView, quoteAgreementLinks, type DocumentHostComponents } from '@breeze/document-ui';
-import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
+import { portalApi, publicApiPath, type PublicQuoteAccepted, type PublicQuoteDetail, type PublicQuotePayment } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { money } from '@/lib/format';
 import { quoteModelFor } from '@/lib/quoteDocument';
 import { portalQuoteHostComponents, quoteAssetSource } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
+import { PublicQuotePaymentStep } from './PublicQuotePaymentStep';
 
 interface PublicQuoteViewProps {
   token: string;
@@ -17,15 +18,22 @@ interface PublicQuoteViewProps {
    *  by a newer revision and its link was revoked. Carries only the partner's
    *  name — the server withholds everything else, including the successor's id. */
   superseded?: { partnerName?: string | null } | null;
+  /** #3740: the quote is accepted and this link may still pay its invoice
+   *  (GET /quotes/public/:token/payment). Alone (initial null) when accepting
+   *  spent the link: the page then shows only the payment step, never the
+   *  proposal again. */
+  accepted?: PublicQuoteAccepted | null;
   /** Test seam: parity tests inject deterministic stand-ins for the asset components. */
   components?: DocumentHostComponents;
 }
 
-export function PublicQuoteView({ token, initial, error, superseded, components }: PublicQuoteViewProps) {
+export function PublicQuoteView({ token, initial, error, superseded, accepted, components }: PublicQuoteViewProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
+  // What is payable now, when this page offers the payment step (#3740).
+  const [payment, setPayment] = useState<PublicQuotePayment | null>(accepted?.payment ?? null);
   // The model follows the status this page moved the proposal into (accepted, declined),
   // so the header pill changes without a refetch.
   const model = useMemo(() => (initial ? quoteModelFor(initial, status) : null), [initial, status]);
@@ -49,6 +57,23 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
           This proposal has been replaced by an updated version — please use the link in the latest email
           {superseded.partnerName ? `, or contact ${superseded.partnerName}` : ''}.
         </p>
+      </div>
+    );
+  }
+
+  // #3740: a revisit of a link that accepting spent. Only the payment step
+  // (or a plain "accepted") — the proposal itself is no longer served to it.
+  if (!initial && accepted) {
+    return (
+      <div className="mx-auto w-full max-w-lg space-y-4 p-4">
+        <div data-testid="public-quote-accepted" role="status" className="rounded-md bg-success/10 p-4 text-sm text-success-on-tint">
+          <p>
+            {payment
+              ? 'This proposal has been accepted.'
+              : `This proposal has been accepted. No online payment is available from this page right now${accepted.partnerName ? ` — contact ${accepted.partnerName} with any questions` : ''}.`}
+          </p>
+        </div>
+        {payment && <PublicQuotePaymentStep token={token} payment={payment} />}
       </div>
     );
   }
@@ -123,11 +148,19 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
       replaceLocation(invoiceUrl);
       return;
     }
-    setMsg(
-      res.data?.data?.payDeferred
-        ? "Signed and accepted. We'll email you your invoice shortly."
-        : 'Signed and accepted. Thank you.'
-    );
+    // No invoice page to land on. payDeferred = an invoice was issued but its
+    // link could not be minted just now: when something is payable, payment is
+    // the next step right here (#3740) — this link may still pay it. No email
+    // is promised: the auto-send is a partner setting and best-effort.
+    if (res.data?.data?.payDeferred) {
+      const due = res.data.data.payment ?? null;
+      setPayment(due);
+      setMsg(due
+        ? 'Signed and accepted.'
+        : `Signed and accepted. Your invoice isn't ready to open yet — come back to this link later, or contact ${branding.partnerName}.`);
+      return;
+    }
+    setMsg('Signed and accepted. Thank you.');
   };
 
   // The reason comes from SignaturePanel's inline confirm block, which is the only
@@ -189,6 +222,7 @@ export function PublicQuoteView({ token, initial, error, superseded, components 
           <p>{msg ?? 'This proposal has already been accepted.'}</p>
         </div>
       )}
+      {status === 'converted' && payment && <PublicQuotePaymentStep token={token} payment={payment} />}
       {status === 'declined' && msg && (
         <div role="status" className="rounded-md bg-muted p-3 text-sm">{msg}</div>
       )}

@@ -796,6 +796,10 @@
       "watchdog": "Bekçi köpeği hedefi"
     },
     "inheritDefault": "İş ortağı varsayılanını devral ({{version}})",
+    "inheritDefaultLatest": "İş ortağı varsayılanını devral (en son tanıtılan)",
+    "latestOverride": "Her zaman en son tanıtılan, iş ortağı sabitlemesini yoksay",
+    "latestOverrideVersion": "Her zaman en son tanıtılan ({{version}}), iş ortağı sabitlemesini yoksay",
+    "latestOrganization": "Bu kuruluş için ayarlandı: her zaman en son tanıtılan",
     "latestVersion": "En son tanıtılan ({{version}})",
     "latest": "En son tanıtılanlar",
     "pinnedAll": "Tüm kuruluşlar için sabitlendi",
@@ -907,12 +911,12 @@
     "logoPreview": "Logo önizlemesi",
     "noLogo": "Logo yok",
     "uploadImage": "Resim yükle",
-    "imageHelp": "PNG, JPEG veya WebP · kodlamadan sonra maksimum 400 KB · 256×256'ya sığacak şekilde yeniden boyutlandırıldı",
+    "imageHelp": "PNG, JPEG veya WebP, kodlamadan sonra en fazla 400 KB; büyük görseller 800 piksele küçültülür.",
     "invalidSavedLogo": "Kaydedilen logo verileri geçersiz. Kaldırın veya yenisini yükleyin.",
     "pasteUrl": "Veya bir resim URL'si yapıştırın",
     "customCss": "Özel CSS",
     "customCssPlaceholder": "/* Tüm alt kuruluşlara uygulanan özel CSS */",
-    "customCssHelp": "CSS geçersiz kılmaları portala tüm alt kuruluşlar için uygulandı."
+    "customCssHelp": "Her müşterinin portalına, kuruluşun kendi Özel CSS'inden önce eklenir; kuruluşun CSS'i bunu geçersiz kılabilir. @import ve HTTPS olmayan url() kullanılamaz."
   },
   "partnerSecurity": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
@@ -1616,7 +1620,18 @@
       "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
       "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
       "ticket_approval_decided": "İş onayı kararı",
-      "ticket_merged": "Bilet birleştirildi"
+      "ticket_merged": "Bilet birleştirildi",
+      "ticket_comment_notification": "Herkese açık yanıt bildirimi",
+      "ticket_autoresponse": "Bilet alındı onayı",
+      "ticket_resolved": "Bilet çözüldü",
+      "quote_send": "Teklif",
+      "agreement_request_send": "Anlaşma talebi",
+      "invoice_send": "Fatura",
+      "portal_invite": "Portal daveti",
+      "staff_invite": "Personel daveti",
+      "invoice_autopay": "Otomatik ödeme bildirimi içeren fatura",
+      "payment_reminder": "Ödeme hatırlatması",
+      "payment_overdue": "Gecikmiş ödeme hatırlatması"
     }
   },
   "inboundEmail": {
@@ -1845,7 +1860,11 @@
     },
     "colors": {
       "primary": "Ana renk",
-      "secondary": "İkincil renk"
+      "secondary": "İkincil renk",
+      "primaryInheritedSource": "İş ortağı marka rengi",
+      "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
+      "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "theme": {
       "title": "Tema",
@@ -1888,6 +1907,12 @@
     "description": "{{organization}} için varsayılan politikaları ve kayıt davranışını ayarlayın.",
     "save": "Varsayılanları kaydet",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
+    "inheritance": {
+      "inherited": "Devralınan varsayılan",
+      "overridden": "Bu kuruluş için ayarlandı",
+      "reset": "Varsayılana sıfırla",
+      "resetLabel": "{{setting}} ayarını varsayılana sıfırla"
+    },
     "policies": {
       "title": "Varsayılan politikalar",
       "fields": {
@@ -2075,6 +2100,49 @@
         "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
         "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
         "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      },
+      "tiles": {
+        "awaitingYou": "Müşterinizi bekleyenler",
+        "devicesProtected": "Uç nokta koruması",
+        "securityScore": "Güvenlik puanı",
+        "actionItems": "Yapılacak işlemler",
+        "patchesApplied": "Bu ay uygulanan yamalar",
+        "backup": "Son doğrulanan yedek",
+        "service": "Sunulan hizmet (90 gün)",
+        "support": "Destek"
+      },
+      "tileStatus": {
+        "noData": "Henüz mevcut değil",
+        "notConfigured": "Ayarlanmadı",
+        "stale": "Güncel olmayabilir"
+      },
+      "bands": {
+        "strong": "Güçlü",
+        "good": "İyi",
+        "fair": "Orta",
+        "at_risk": "Risk altında"
+      },
+      "values": {
+        "protectedOfTotal": "{{total}} cihazdan {{protected}} korumalı",
+        "awaitingCounts": "Teklifler: {{proposals}} · Faturalar: {{invoices}}",
+        "serviceCounts": "Zamanında: {{onTime}} · Geç: {{late}} · Kaçırılan: {{missed}}",
+        "nextDue": "Sonraki son tarih: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} açık talep",
+        "openRequests_other": "{{count}} açık talep",
+        "threatCounts": "Algılanan: {{detected}} · Çözülen: {{resolved}}",
+        "unknownAll": "{{total}} cihazın tümü için henüz bilinmiyor",
+        "unknownSome_one": "{{count}} cihaz henüz bilinmiyor",
+        "unknownSome_other": "{{count}} cihaz henüz bilinmiyor"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Açık güvenlik açıkları",
+        "knownExploited": "Bilinen istismar edilenler (KEV)",
+        "threatEvents": "Uç nokta tehdit olayları"
+      },
+      "backupRows": {
+        "devices": "Yedeklenen cihazlar",
+        "breaches": "Açık RPO / RTO ihlalleri",
+        "providers": "Üçüncü taraf yedekleme"
       }
     },
     "loading": "Portal ayarları yükleniyor…",
@@ -2219,6 +2287,7 @@
       "email": "Destek e-postası",
       "phone": "Destek telefonu",
       "welcomeMessage": "Hoş geldiniz mesajı",
+      "welcomeMessageHelp": "Portalda müşterinin ana sayfasının üstünde ve kuruluş doğrulanmış bir özel alan adı kullandığında portal oturum açma sayfasında gösterilir. Düz metin; satır sonları korunur.",
       "footerText": "Altbilgi metni",
       "footerTextHelp": "Müşteri portalının altında gösterilir ve bu kuruluşun fiyat tekliflerine ve faturalarına iş ortağı belge altbilgisi yerine basılır. İş ortağı altbilgisini basmak için boş bırakın.",
       "footerTextInheritedSource": "İş ortağı belge altbilgisi"
@@ -3091,6 +3160,7 @@
           "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
+          "unsupported_user_scope": "Breeze'in henüz uygulayamadığı kullanıcı başına yükleme",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
         },
         "failureClasses": {
@@ -4270,7 +4340,9 @@
     "active": "Aktif",
     "revoked": "İptal edildi",
     "expired": "Süresi dolmuş",
-    "statusFilterLabel": "Anahtar durumu"
+    "statusFilterLabel": "Anahtar durumu",
+    "expires": "Son geçerlilik",
+    "neverExpires": "Hiçbir zaman"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -4311,7 +4383,8 @@
     "rotating": "Dönüyor...",
     "rotateKey": "Döndürme Tuşu",
     "revoking": "İptal ediliyor...",
-    "revokeKey": "Anahtarı İptal Et"
+    "revokeKey": "Anahtarı İptal Et",
+    "revokedToast": "\"{{name}}\" API anahtarı iptal edildi"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Bu cihaz artık istekleri onaylayabilir",
@@ -4965,6 +5038,11 @@
     "eGOktaProduction": "örneğin Okta Üretimi",
     "providerPreset": "Sağlayıcı ön ayarı",
     "selectAPresetToAutoFillRecommendedSettings": "Önerilen ayarları otomatik olarak doldurmak için bir ön ayar seçin",
+    "replacePresetFields": {
+      "title": "{{preset}} varsayılanlarıyla değiştirilsin mi?",
+      "message": "{{preset}} ön ayarını uygulamak, değişiklikleriniz dahil mevcut kapsamları ve özellik eşlemesini değiştirir ve ön ayarın belirlemediği her talebi (ör. gruplar özelliği) temizler. Sağlayıcıyı kaydedene kadar hiçbir şey kaydedilmez.",
+      "confirm": "Değiştir"
+    },
     "connectionSettings": "Bağlantı Ayarları",
     "issuerURL": "Veren URL'si",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6234,6 +6312,11 @@
       "fleetAddDescription": "Yeni bir site ekleyin ve ait olduğu kuruluşu seçin.",
       "empty": "Henüz site yok. Başlamak için bir kuruluşa site ekleyin.",
       "viewDevicesAt": "{{name}} konumundaki cihazları görüntüle"
+    },
+    "toasts": {
+      "created": "{{name}} sitesi oluşturuldu",
+      "saved": "{{name}} sitesi kaydedildi",
+      "deleted": "{{name}} sitesi silindi"
     }
   },
   "siteList": {
@@ -6409,7 +6492,11 @@
       "label": "Etiket",
       "notes": "Notlar"
     },
-    "empty": "Henüz bilinen misafir yok."
+    "empty": "Henüz bilinen misafir yok.",
+    "removeConfirm": {
+      "title": "Bilinen misafir kaldırılsın mı?",
+      "message": "{{label}} ({{mac}}) kaldırılsın mı? Bu MAC adresine sahip cihazlar yönetilen kuruluşlarınızda artık otomatik olarak onaylanmayacak."
+    }
   },
   "userInviteForm": {
     "title": "Kullanıcıyı davet et",
@@ -6430,7 +6517,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "isim@şirket.com"
+      "email": "isim@şirket.com",
+      "role": "Bir rol seçin"
     },
     "orgAccess": {
       "title": "Kuruluş erişimi",
@@ -6530,7 +6618,8 @@
       "copyLink": "Bağlantıyı kopyala",
       "mfaReset": "{{email}} için MFA sıfırlandı",
       "roleUpdated": "Rol güncellendi",
-      "orgAccessUpdated": "Kuruluş erişimi güncellendi"
+      "orgAccessUpdated": "Kuruluş erişimi güncellendi",
+      "userRemoved": "{{name}} kaldırıldı"
     },
     "resetMfa": {
       "title": "MFA sıfırlansın mı?",

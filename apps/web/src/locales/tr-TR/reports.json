@@ -32,7 +32,8 @@
       "subtitle": "Filonuz ve hizmetleriniz hakkında bilgiler",
       "title": "Analitik",
       "trend": {
-        "operationalHealth": "Operasyonel sağlık"
+        "operationalHealth": "Operasyonel sağlık",
+        "weekOf": "{{date}} haftası"
       },
       "widgets": {
         "alertTable": {
@@ -153,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Son 30 gün",
       "downtime": "Kesinti {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Bakım pencereleri hariç",
+        "maintenanceSkipped": "Bakım pencereleri hariç tutulmadı: kontrol edilecek cihaz sayısı çok fazla",
+        "maintenanceUnavailable": "Bakım pencereleri hariç tutulmadı: durum kullanılamıyor",
+        "none": "Hariç tutulan yok",
+        "title": "Hariç tutulanlar",
+        "weekends": "Hafta sonları hariç"
+      },
       "incidents": "{{count}} olaylar",
+      "noDevices": "Henüz ölçülen cihaz yok",
       "status": {
         "atRisk": "Risk altında",
         "breach": "İhlal",
@@ -161,6 +171,34 @@
       },
       "targetUptime": "%{{target}} kesintisiz çalışma süresini hedefleyin",
       "title": "SLA Uyumluluk"
+    },
+    "slaEmptyState": {
+      "create": "SLA tanımı oluştur",
+      "created": "SLA tanımı oluşturuldu",
+      "description": "SLA tanımı, bu sekmenin cihazlarınızı ölçtüğü çalışma süresi hedefini belirler. Uyumluluğu izlemeye başlamak için bir tane oluşturun.",
+      "errors": {
+        "create": "SLA tanımı oluşturulamadı"
+      },
+      "form": {
+        "cancel": "İptal",
+        "excludeMaintenance": "Bakım penceresindeki cihazları hariç tut",
+        "excludeWeekends": "Hafta sonlarını hariç tut",
+        "measurementWindow": "Ölçüm aralığı",
+        "name": "Ad",
+        "organization": "Kuruluş",
+        "scopeNote": "Kuruluştaki tüm cihazları ölçer.",
+        "selectOrganization": "Bir kuruluş seçin",
+        "submit": "Oluştur",
+        "uptimeTarget": "Çalışma süresi hedefi (%)",
+        "uptimeTargetInvalid": "0 ile 100 arasında bir değer girin.",
+        "windows": {
+          "daily": "Günlük",
+          "monthly": "Aylık",
+          "weekly": "Haftalık"
+        }
+      },
+      "noPermission": "Bir SLA tanımı oluşturması için kuruluş yönetimi erişimi olan bir yöneticiye başvurun.",
+      "title": "Henüz SLA tanımı yok"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtre",

@@ -199,5 +199,22 @@ export function admissionFenced(state: AiOperatorTaskState | string): boolean {
   return state === 'paused' || state === 'stopping' || isTerminalTaskState(String(state));
 }
 
+/**
+ * The task states a lease-holder's write may land on, given the state its
+ * snapshot holds (#9979). Part of every lease CAS (`writeLeased` in
+ * taskCoordinator.ts and its mirror `leasedWrite` in identityAdvancers.ts):
+ * the `stopping` writers (org-merge fence, device delete / move / reinstall)
+ * do not bump `lease_epoch`, so without this a coordinator that leased the
+ * task before a stop landed could write it straight back to `waiting` and
+ * undo the fence. A live snapshot may only write over a live state; a
+ * `stopping` snapshot (the settle) only over `stopping`; a fenced snapshot
+ * (paused / terminal) over nothing.
+ */
+export function leasedWriteTargetStates(observedState: string): readonly AiOperatorTaskState[] {
+  if (observedState === 'stopping') return ['stopping'];
+  if (admissionFenced(observedState)) return [];
+  return ['queued', 'running', 'waiting'];
+}
+
 /** Exhaustiveness helper for the contract test — every declared state has a row. */
 export const ALL_TASK_STATES = AI_OPERATOR_TASK_STATES;

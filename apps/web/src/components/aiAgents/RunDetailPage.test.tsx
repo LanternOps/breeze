@@ -2307,7 +2307,7 @@ describe('RunDetailPage — patch plan', () => {
   });
 
   it.each([
-    ['rejected', 'Rejected'],
+    ['rejected', 'Denied'],
     ['approved', 'Approved'],
     ['expired', 'Expired'],
     ['failed', 'Failed'],

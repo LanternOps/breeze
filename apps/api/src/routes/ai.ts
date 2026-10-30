@@ -27,6 +27,7 @@ import {
   getSessionMessages,
   handleApproval,
   isIntentBackedExecution,
+  getDecidedExecutionOutcome,
   searchSessions,
   listM365Connections,
   sanitizeErrorForClient,
@@ -804,10 +805,10 @@ aiRoutes.post(
     // between them with no connection checked out.
     const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
 
-    // Pre-flight checks (rate limits, budget, session status, input sanitization)
-    const preflight = await inRequestDb(() =>
-      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model),
-    );
+    // Pre-flight checks (rate limits, budget, session status, input sanitization).
+    // #10415: not wrapped in inRequestDb — the pre-flight opens its own DB
+    // phases with it and runs the Redis rate limit between them.
+    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model, inRequestDb);
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
@@ -1267,6 +1268,17 @@ aiRoutes.post(
           via: 'intent',
           message: 'This action needs approval in the Approvals area or the Breeze mobile app.',
         });
+      }
+      // #9431: a stale card (decided in another window, in Approvals, on
+      // mobile, or timed out). handleApproval's CAS already refused a second
+      // decision; say so, with the outcome, so the card can show it.
+      const decided = await getDecidedExecutionOutcome(executionId, sessionId);
+      if (decided) {
+        return c.json({
+          error: 'This request was already decided.',
+          code: 'approval_already_decided',
+          outcome: decided,
+        }, 409);
       }
       return c.json({ error: 'Execution not found or already processed' }, 404);
     }

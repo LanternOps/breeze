@@ -91,15 +91,23 @@ export function RejectionDenialLog({
     refused: "bg-slate-500/15 text-slate-700 border-slate-500/30",
     denied: "bg-red-500/15 text-red-700 border-red-500/30",
   };
+  // #10198: `rejected` is a person's Deny on an AI action (label "Denied");
+  // `denied` is a guardrail or permission stop (label "Blocked").
+  const statusLabel: Record<LogEntry["status"], string> = {
+    failed: t("aiRiskRejectionDenialLog.failed"),
+    rejected: t("aiRiskRejectionDenialLog.rejected"),
+    refused: t("aiRiskRejectionDenialLog.refused"),
+    denied: t("aiRiskRejectionDenialLog.denied"),
+  };
   const filters: {
     label: string;
     value: StatusFilter;
   }[] = [
     { label: t("aiRiskRejectionDenialLog.all2"), value: "all" },
-    { label: t("aiRiskRejectionDenialLog.failed"), value: "failed" },
-    { label: t("aiRiskRejectionDenialLog.rejected"), value: "rejected" },
-    { label: t("aiRiskRejectionDenialLog.refused"), value: "refused" },
-    { label: t("aiRiskRejectionDenialLog.denied"), value: "denied" },
+    { label: statusLabel.failed, value: "failed" },
+    { label: statusLabel.rejected, value: "rejected" },
+    { label: statusLabel.refused, value: "refused" },
+    { label: statusLabel.denied, value: "denied" },
   ];
   return (
     <div>
@@ -192,7 +200,7 @@ export function RejectionDenialLog({
                       ) : (
                         <AlertTriangle className="h-3 w-3" />
                       )}
-                      {entry.status}
+                      {statusLabel[entry.status]}
                     </span>
                   </td>
                   <td className="max-w-xs truncate px-4 py-2.5 text-xs text-muted-foreground">

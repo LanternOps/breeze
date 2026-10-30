@@ -841,9 +841,19 @@ const SUBMIT_PATCH_PLAN_SHAPE = {
   })).max(PATCH_PLAN_MAX_ITEMS).describe('The plan items, most important first. An empty array is valid.'),
 };
 
+/** Wisp assessment — the run's own org, the only id an `org` concern subject may name (#10387). */
+export interface AssessmentToolRefs {
+  orgId: string;
+}
+
 export function buildOutcomeSdkTools(
   names: readonly OutcomeToolName[],
-  refs?: { design?: FleetDesignOutcomeRefs; patch?: PatchPlanToolRefs; research?: ResearchToolRefs },
+  refs?: {
+    design?: FleetDesignOutcomeRefs;
+    patch?: PatchPlanToolRefs;
+    research?: ResearchToolRefs;
+    assessment?: AssessmentToolRefs;
+  },
 ): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -975,16 +985,32 @@ export function buildOutcomeSdkTools(
       // `update_concern` resolved-needs-outcome refinement a raw shape cannot
       // express). Validate-only, static ack, no DB — `finalizeAssessment`
       // applies the captured calls after the run.
-      case 'record_concern':
+      case 'record_concern': {
+        // #10387: an `org` subject can only be the run's org; `finalizeAssessment`
+        // drops any other (`raise_subject_not_in_org`). Refuse it HERE as an
+        // error result naming the right id, so the model can correct the call
+        // instead of being told `recorded` for a concern that will never exist.
+        // The run loop's post hook never captures an error result, and the
+        // finalizer's check stays the authority. Same wiring-time refusal as
+        // submit_fleet_design: no run org, no tool.
+        const assessment = refs?.assessment;
+        if (!assessment) throw new Error("[buildOutcomeSdkTools] record_concern requires the run's org id");
         return tool(
           'record_concern',
-          'Record something Wisp should keep tracking for this org. One subject per call.',
+          'Record something Wisp should keep tracking for this org. One subject per call. A concern about the '
+          + 'organization as a whole uses subject kind "org" with the organization id from the task.',
           raiseConcernSchema.shape,
           async (input) => {
-            validateOutcomeToolInput('record_concern', input); // throws → model retries
+            const raise = validateOutcomeToolInput('record_concern', input); // throws → model retries
+            if (raise.subject.kind === 'org' && raise.subject.id !== assessment.orgId) {
+              const error = `Not recorded: an org subject must be this assessment's organization id ${assessment.orgId}. `
+                + `Call record_concern again with subject { kind: 'org', id: '${assessment.orgId}' }.`;
+              return { content: [{ type: 'text', text: JSON.stringify({ error }) }], isError: true };
+            }
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;
+      }
       case 'update_concern':
         return tool(
           'update_concern',
