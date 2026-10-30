@@ -46,7 +46,7 @@ vi.mock('../db', () => {
   };
 });
 
-import { claimDeliveryForExecution, releaseDeliveryClaim, recordDeliveryOutcome, recordWebhookDelivery } from './webhookDeliveryRecord';
+import { claimDeliveryForExecution, countFailedDelivery, releaseDeliveryClaim, recordDeliveryOutcome, recordWebhookDelivery } from './webhookDeliveryRecord';
 
 const RESULT = {
   deliveryId: 'delivery-1',
@@ -158,6 +158,17 @@ describe('recordDeliveryOutcome', () => {
     const aggregateWrites = [state.updateCalls[1]!, state.updateCalls[3]!];
     expect(aggregateWrites.filter((call) => 'failureCount' in call.set)).toHaveLength(0);
     expect(aggregateWrites.filter((call) => 'successCount' in call.set)).toHaveLength(1);
+  });
+
+  it('countFailedDelivery moves failure_count by one and leaves the attempt timestamps alone', async () => {
+    // Used by the recovery sweep's terminal writes: no attempt was made there,
+    // so "Last Triggered" must not move.
+    await countFailedDelivery('webhook-1');
+    expect(state.updateCalls).toHaveLength(1);
+    expect(Object.keys(state.updateCalls[0]!.set)).toEqual(['failureCount']);
+    const compiled = new PgDialect().sqlToQuery(state.updateCalls[0]!.set.failureCount as SQL);
+    expect(compiled.sql).toBe('"webhooks"."failure_count" + 1');
+    expect(new PgDialect().sqlToQuery(state.updateCalls[0]!.where as SQL).params).toEqual(['webhook-1']);
   });
 
   it.each([0, 3])('releases only the matching claim for attempt %i', async attemptsMade => {

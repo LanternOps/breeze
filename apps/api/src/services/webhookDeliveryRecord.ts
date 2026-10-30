@@ -215,6 +215,22 @@ export async function claimDeliveryForExecution(
 }
 
 /**
+ * Count one failed delivery on its webhook (#9946).
+ *
+ * For terminal writes that move a delivery to `failed` WITHOUT an attempt
+ * outcome: the recovery sweep's abandon paths. Call it only after that write's
+ * CAS returned the row, in the same system-scope transaction, so a lost race
+ * never counts and each delivery is counted exactly once. `last_delivery_at` is
+ * left alone, because no attempt was made.
+ */
+export async function countFailedDelivery(webhookId: string): Promise<void> {
+  await db
+    .update(webhooksTable)
+    .set({ failureCount: sql`${webhooksTable.failureCount} + 1` })
+    .where(eq(webhooksTable.id, webhookId));
+}
+
+/**
  * Persist the outcome of one delivery attempt and move the webhook aggregates.
  * The attempt/status CAS above also protects against recovery racing a slow response.
  */
