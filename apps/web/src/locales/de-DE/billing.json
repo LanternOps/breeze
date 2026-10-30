@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
+        "quantityInvalid": "Geben Sie eine Menge ein (bis zu 2 Dezimalstellen).",
+        "quantityTooLarge": "Die Menge ist zu groß (höchstens 10 Stellen vor dem Dezimalkomma).",
         "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
         "allSites": "Alle Seiten",
         "linkCatalogItemOptional": "Katalogelement verlinken (optional)",
@@ -1294,6 +1296,7 @@
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoValueBlank": "Leer",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
         "manualVariablesTitle": "Für dieses Angebot ausfüllen",
         "labelFieldLabel": "Abschnittsbezeichnung",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
       "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
     "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
     "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
     "retry": "Erneut versuchen",
-    "loading": "Zahlungseinstellungen werden geladen…",
-    "templates": {
-      "paymentReminder": "Zahlungserinnerung",
-      "paymentOverdue": "Erinnerung an überfällige Zahlung"
-    }
+    "loading": "Zahlungseinstellungen werden geladen…"
   }
 }

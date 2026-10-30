@@ -2980,8 +2980,10 @@
     "title": "Verknüpfungen filtern"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Wählen Sie einen Wert, um passende Geräte zu sehen",
     "counting": "…zählen",
-    "matches": "~{{count}} Geräte stimmen überein",
+    "matches_one": "~{{count}} Gerät stimmt überein",
+    "matches_other": "~{{count}} Geräte stimmen überein",
     "unavailable": "Vorschau nicht verfügbar"
   },
   "filterSentenceBuilder": {

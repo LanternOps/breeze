@@ -2042,14 +2042,12 @@
       "statusFilterLabel": "État"
     },
     "status": {
-      "pendingApproval": "En attente d’approbation",
       "pending_approval": "En attente d’approbation",
-      "queued": "en file d’attente",
-      "inProgress": "En cours",
+      "queued": "En file d’attente",
       "in_progress": "En cours",
-      "completed": "Achevé",
+      "completed": "Terminé",
       "failed": "Échec",
-      "cancelled": "annulé"
+      "cancelled": "Annulé"
     },
     "approval": {
       "pending": "En attente",
@@ -2422,7 +2420,18 @@
     "sweepNowUnpublished": "Publiez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "sweepNowDisabled": "Activez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "progress": {
-      "label": "{{done}} appareils sur {{total}} terminés"
+      "finished_one": "{{finished}} sur {{count}} appareil terminé",
+      "finished_other": "{{finished}} sur {{count}} appareils terminés",
+      "completed_one": "{{count}} réussi",
+      "completed_other": "{{count}} réussis",
+      "timedOut_one": "{{count}} hors délai",
+      "timedOut_other": "{{count}} hors délai",
+      "failed_one": "{{count}} en échec",
+      "failed_other": "{{count}} en échec",
+      "cancelled_one": "{{count}} annulé",
+      "cancelled_other": "{{count}} annulés",
+      "expired_one": "{{count}} expiré",
+      "expired_other": "{{count}} expirés"
     },
     "errors": {
       "orgOutOfScope": "Une ou plusieurs organisations sont en dehors de votre accès.",
@@ -2454,7 +2463,7 @@
     "dialog": {
       "title": "Balayer les appareils à la recherche de correspondances IOC",
       "ruleSets": "Ensembles de règles : {{names}}",
-      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles et le type d'analyse sont conservés.",
+      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles, le type d'analyse et les chemins personnalisés sont conservés.",
       "back": "Retour",
       "next": "Suivant",
       "previewAction": "Aperçu",
@@ -2525,6 +2534,7 @@
       "resweep": "Balayer à nouveau avec les règles actuelles",
       "rulesChanged": "Règles modifiées depuis le début de ce balayage",
       "queued": "En file d'attente : {{queued}}",
+      "running": "En cours : {{running}}",
       "columns": {
         "ruleSets": "Ensembles de règles",
         "origin": "Lancé depuis",
@@ -2581,6 +2591,7 @@
       "builtin": "Intégré",
       "allOrgs": "Toutes les organisations",
       "errors": "Contient des erreurs",
+      "checkerUnavailable": "Compilateur indisponible",
       "unpublished": "Non publié",
       "disabled": "Désactivé"
     },
@@ -2637,7 +2648,7 @@
       "autoQuarantineOnly": "La quarantaine automatique est désormais désactivée sur les appareils. Vos autres modifications ne sont pas encore actives.",
       "published": "Enregistré et publié en version {{version}}",
       "savedDisabled": "Enregistré. L’ensemble est désactivé, les appareils ne l’utilisent donc pas.",
-      "checkerUnavailable": "Enregistré, non publié : le vérificateur de règles est indisponible. {{devices}}",
+      "checkerUnavailable": "Enregistré, non publié : le compilateur YARA est indisponible sur ce serveur, les règles n’ont donc pas pu être vérifiées. {{devices}}",
       "compileErrors_one": "Enregistré, non publié : {{count}} règle contient des erreurs. {{devices}}",
       "compileErrors_other": "Enregistré, non publié : {{count}} règles contiennent des erreurs. {{devices}}",
       "setErrors": "Enregistré, non publié : {{message}}. {{devices}}",
@@ -2646,7 +2657,8 @@
       "devicesKeep": "Les appareils conservent la version {{version}}.",
       "neverPublished": "Cet ensemble n’a pas encore été publié, les appareils ne l’utilisent donc pas.",
       "setDisabled": "L’ensemble est désactivé, les appareils ne l’utilisent donc pas.",
-      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}"
+      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}",
+      "staleCheckerUnavailable": "Non publié : le compilateur YARA est indisponible sur ce serveur, les modifications de règles ne peuvent donc être ni vérifiées ni publiées. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2741,5 +2753,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Vous n'avez pas accès à cette organisation"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critique",
+      "high": "Élevé",
+      "medium": "Moyen",
+      "low": "Faible"
+    },
+    "findingStatus": {
+      "open": "Ouvert",
+      "remediated": "Corrigé",
+      "accepted": "Accepté",
+      "falsePositive": "Faux positif"
+    },
+    "scanStatus": {
+      "queued": "En file d’attente",
+      "running": "En cours",
+      "completed": "Terminé",
+      "failed": "Échec",
+      "cancelled": "Annulé"
+    },
+    "dataType": {
+      "credential": "Identifiants",
+      "financial": "Financier"
+    },
+    "a11y": {
+      "editPolicy": "Modifier la stratégie {{name}}",
+      "deletePolicy": "Supprimer la stratégie {{name}}",
+      "togglePolicyActive": "Active : {{name}}"
+    }
   }
 }

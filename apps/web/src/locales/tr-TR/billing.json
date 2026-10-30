@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
+        "quantityInvalid": "Bir miktar girin (en fazla 2 ondalık basamak).",
+        "quantityTooLarge": "Miktar çok büyük (ondalık ayırıcıdan önce en fazla 10 basamak).",
         "siteOptional": "Site (isteğe bağlı — cihaz sayısını kapsar)",
         "allSites": "Tüm siteler",
         "linkCatalogItemOptional": "Katalog öğesine bağlantı (isteğe bağlı)",
@@ -1302,6 +1304,7 @@
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoValueBlank": "Boş",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
         "manualVariablesTitle": "Bu teklifi doldurun",
         "labelFieldLabel": "Bölüm etiketi",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Bildirim iletilemedi",
       "consent_required": "Ödeme yetkilendirmesi eksik. Güncel bir yetkilendirme isteyin."
     },
-    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
     "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Hatırlatma ayarları kaydedilemedi",
     "loadFailed": "Hatırlatma ayarları yüklenemedi",
     "retry": "Yeniden dene",
-    "loading": "Ödeme ayarları yükleniyor…",
-    "templates": {
-      "paymentReminder": "Ödeme hatırlatması",
-      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
-    }
+    "loading": "Ödeme ayarları yükleniyor…"
   }
 }

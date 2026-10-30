@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",
+        "quantityInvalid": "Enter a quantity (up to 2 decimals).",
+        "quantityTooLarge": "Quantity is too large (at most 10 digits before the decimal point).",
         "siteOptional": "Site (optional — scopes the device count)",
         "allSites": "All sites",
         "linkCatalogItemOptional": "Link catalog item (optional)",
@@ -1294,6 +1296,7 @@
         "noPublishedVersion": "This template has no published version yet. Publish it before adding it to a quote.",
         "pinnedVersion": "Pinned to v{{version}}",
         "autoVariablesTitle": "Filled automatically from the quote",
+        "autoValueBlank": "Blank",
         "autoHint": "These values resolve from the quote when the proposal is sent.",
         "manualVariablesTitle": "Fill in for this proposal",
         "labelFieldLabel": "Section label",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Notice delivery failed",
       "consent_required": "Payment authorization is missing. Request updated authorization."
     },
-    "noticeTemplate": "Invoice with automatic payment notice",
     "chargeFailed": "Could not start payment. Please try again.",
     "chargeResultUnknown": "We could not confirm what happened to this payment. Refreshing the invoice to show its current status.",
     "chargeStarted": "Payment attempt started",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Could not save reminder settings",
     "loadFailed": "Could not load reminder settings",
     "retry": "Retry",
-    "loading": "Loading payment settings…",
-    "templates": {
-      "paymentReminder": "Payment reminder",
-      "paymentOverdue": "Overdue payment reminder"
-    }
+    "loading": "Loading payment settings…"
   }
 }

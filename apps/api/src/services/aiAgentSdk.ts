@@ -22,7 +22,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
 import {
@@ -110,7 +110,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
-import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
+import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 
@@ -198,6 +198,35 @@ function beginApprovalWait(session: ActiveSession): {
       session.pendingApprovalWaits = Math.max(0, (session.pendingApprovalWaits ?? 1) - 1);
     },
   };
+}
+
+/**
+ * #9431: a legacy `waitForApproval` result as a card outcome. `false` means
+ * denied or timed out — unless the wait was settled (new message, interrupt,
+ * teardown), in which case nothing was decided.
+ */
+function approvalWaitOutcome(approved: boolean, signal: AbortSignal): AiApprovalOutcome {
+  if (approved) return 'approved';
+  return signal.aborted ? 'ended' : 'not_approved';
+}
+
+/** #9431: an intent status read by `waitForIntentDecision` as a card outcome. */
+function intentDecisionOutcome(status: Awaited<ReturnType<typeof waitForIntentDecision>>): AiApprovalOutcome {
+  switch (status) {
+    case 'approved':
+    case 'executing':
+    case 'completed':
+    case 'failed':
+      return 'approved';
+    case 'rejected':
+    case 'expired':
+    case 'cancelled':
+      return 'not_approved';
+    default:
+      // pending_approval: the chat stopped waiting, but the intent can still
+      // be decided in Approvals.
+      return 'ended';
+  }
 }
 
 /**
@@ -1503,6 +1532,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         });
 
         let approved: boolean;
+        // #9431: how the card's wait ended, for every other listener.
+        let helperOutcome: AiApprovalOutcome = 'ended';
         try {
           const decision = await decideHelperToolAction({
             orgId: session.orgId,
@@ -1515,6 +1546,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           });
 
           if (decision === 'denied') {
+            helperOutcome = 'not_approved';
             return { allowed: false, error: 'This action was denied by organization policy' };
           }
 
@@ -1530,11 +1562,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               helperApprovalWait.timeoutMs,
               helperApprovalWait.signal,
             );
+            helperOutcome = approvalWaitOutcome(approved, helperApprovalWait.signal);
           } finally {
             helperApprovalWait.end();
           }
         } finally {
-          resolvePendingCard(session, helperCardKey);
+          resolveApprovalCard(session, helperExec.id, helperOutcome);
         }
         if (!approved) {
           // Mirrors the tier-2/tier-3 close-out below: on an early settle
@@ -2226,6 +2259,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
+          // #9431: how the card's wait ended, for every other listener.
+          let intentOutcome: AiApprovalOutcome = 'ended';
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2234,12 +2269,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.timeoutMs,
                 approvalWait.signal,
               );
+              intentOutcome = intentDecisionOutcome(decisionStatus);
             } finally {
               approvalWait.end();
             }
           } finally {
             // A no-op for the unattended-release branch, which recorded no card.
-            resolvePendingCard(session, approvalCardKey(approvalExec.id));
+            resolveApprovalCard(session, approvalExec.id, intentOutcome);
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -2882,14 +2918,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // Block until user clicks Approve/Reject, the cycle's shared approval
           // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
+          // #9431: how the card's wait ended, for every other listener.
+          let cardOutcome: AiApprovalOutcome = 'ended';
           try {
             approved = await waitForApproval(
               approvalExec.id,
               approvalWait.timeoutMs,
               approvalWait.signal,
             );
+            cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
           } finally {
-            resolvePendingCard(session, cardKey);
+            resolveApprovalCard(session, approvalExec.id, cardOutcome);
           }
         } finally {
           approvalWait.end();

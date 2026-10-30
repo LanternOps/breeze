@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
+        "quantityInvalid": "Inserisci una quantità (fino a 2 decimali).",
+        "quantityTooLarge": "La quantità è troppo grande (al massimo 10 cifre prima del separatore decimale).",
         "siteOptional": "Sito (facoltativo: limita il conteggio dei dispositivi)",
         "allSites": "Tutti i siti",
         "linkCatalogItemOptional": "Collega elemento di catalogo (facoltativo)",
@@ -1257,6 +1259,7 @@
         "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",
+        "autoValueBlank": "Vuoto",
         "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
         "manualVariablesTitle": "Compila per questa proposta",
         "labelFieldLabel": "Etichetta sezione",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Invio dell’avviso non riuscito",
       "consent_required": "L’autorizzazione al pagamento è mancante. Richiedi una nuova autorizzazione."
     },
-    "noticeTemplate": "Fattura con avviso di pagamento automatico",
     "chargeFailed": "Impossibile avviare il pagamento. Riprova.",
     "chargeResultUnknown": "Non è stato possibile confermare l’esito di questo pagamento. Aggiornamento della fattura per mostrarne lo stato attuale.",
     "chargeStarted": "Tentativo di pagamento avviato",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Impossibile salvare le impostazioni dei promemoria",
     "loadFailed": "Impossibile caricare le impostazioni dei promemoria",
     "retry": "Riprova",
-    "loading": "Caricamento delle impostazioni di pagamento…",
-    "templates": {
-      "paymentReminder": "Promemoria di pagamento",
-      "paymentOverdue": "Promemoria di pagamento scaduto"
-    }
+    "loading": "Caricamento delle impostazioni di pagamento…"
   }
 }

@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
+        "quantityInvalid": "Informe uma quantidade (até 2 casas decimais).",
+        "quantityTooLarge": "A quantidade é grande demais (no máximo 10 dígitos antes da vírgula decimal).",
         "siteOptional": "Site (opcional — limita a contagem de dispositivos)",
         "allSites": "Todos os sites",
         "linkCatalogItemOptional": "Vincular item do catálogo (opcional)",
@@ -1294,6 +1296,7 @@
         "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
+        "autoValueBlank": "Em branco",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
         "manualVariablesTitle": "Preencha para esta proposta",
         "labelFieldLabel": "Rótulo da seção",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Falha na entrega do aviso",
       "consent_required": "A autorização de pagamento está ausente. Solicite uma nova autorização."
     },
-    "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
     "chargeResultUnknown": "Não foi possível confirmar o que aconteceu com este pagamento. Atualizando a fatura para mostrar o status atual.",
     "chargeStarted": "Tentativa de pagamento iniciada",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Não foi possível salvar as configurações de lembretes",
     "loadFailed": "Não foi possível carregar as configurações de lembretes",
     "retry": "Tentar novamente",
-    "loading": "Carregando configurações de pagamento…",
-    "templates": {
-      "paymentReminder": "Lembrete de pagamento",
-      "paymentOverdue": "Lembrete de pagamento em atraso"
-    }
+    "loading": "Carregando configurações de pagamento…"
   }
 }

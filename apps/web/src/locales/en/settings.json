@@ -1615,7 +1615,18 @@
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
       "ticket_approval_decided": "Work approval decision",
-      "ticket_merged": "Ticket merged"
+      "ticket_merged": "Ticket merged",
+      "ticket_comment_notification": "Public reply notice",
+      "ticket_autoresponse": "Ticket received acknowledgement",
+      "ticket_resolved": "Ticket resolved",
+      "quote_send": "Quote / proposal",
+      "agreement_request_send": "Agreement request",
+      "invoice_send": "Invoice",
+      "portal_invite": "Portal invite",
+      "staff_invite": "Staff invite",
+      "invoice_autopay": "Invoice with automatic payment notice",
+      "payment_reminder": "Payment reminder",
+      "payment_overdue": "Overdue payment reminder"
     }
   },
   "inboundEmail": {
@@ -1891,6 +1902,12 @@
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
     "managedByPartner": "Managed by partner",
+    "inheritance": {
+      "inherited": "Inherited default",
+      "overridden": "Set for this organization",
+      "reset": "Reset to default",
+      "resetLabel": "Reset {{setting}} to default"
+    },
     "policies": {
       "title": "Default policies",
       "fields": {
@@ -2078,6 +2095,49 @@
         "backups_no_data": "Backups is on, but there is no backup data to show yet.",
         "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
         "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      },
+      "tiles": {
+        "awaitingYou": "Awaiting your customer",
+        "devicesProtected": "Endpoint protection",
+        "securityScore": "Security score",
+        "actionItems": "Action items",
+        "patchesApplied": "Patches applied this month",
+        "backup": "Last backup verified",
+        "service": "Service delivered (90 days)",
+        "support": "Support"
+      },
+      "tileStatus": {
+        "noData": "Not yet available",
+        "notConfigured": "Not set up",
+        "stale": "May be out of date"
+      },
+      "bands": {
+        "strong": "Strong",
+        "good": "Good",
+        "fair": "Fair",
+        "at_risk": "At risk"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} of {{total}} protected",
+        "awaitingCounts": "Proposals: {{proposals}} · Invoices: {{invoices}}",
+        "serviceCounts": "On time: {{onTime}} · Late: {{late}} · Missed: {{missed}}",
+        "nextDue": "Next due: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} open request",
+        "openRequests_other": "{{count}} open requests",
+        "threatCounts": "Detected: {{detected}} · Resolved: {{resolved}}",
+        "unknownAll": "Not yet known for all {{total}} devices",
+        "unknownSome_one": "{{count}} not yet known",
+        "unknownSome_other": "{{count}} not yet known"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Open vulnerabilities",
+        "knownExploited": "Known exploited (KEV)",
+        "threatEvents": "Endpoint threat events"
+      },
+      "backupRows": {
+        "devices": "Devices backed up",
+        "breaches": "Open RPO / RTO breaches",
+        "providers": "Third-party backup"
       }
     },
     "loading": "Loading portal settings…",
@@ -4275,7 +4335,9 @@
     "active": "Active",
     "revoked": "Revoked",
     "expired": "Expired",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "expires": "Expires",
+    "neverExpires": "Never"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4316,7 +4378,8 @@
     "rotating": "Rotating...",
     "rotateKey": "Rotate Key",
     "revoking": "Revoking...",
-    "revokeKey": "Revoke Key"
+    "revokeKey": "Revoke Key",
+    "revokedToast": "API key \"{{name}}\" revoked"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "This device can now approve requests",
@@ -4970,6 +5033,11 @@
     "eGOktaProduction": "e.g., Okta Production",
     "providerPreset": "Provider preset",
     "selectAPresetToAutoFillRecommendedSettings": "Select a preset to auto-fill recommended settings",
+    "replacePresetFields": {
+      "title": "Replace with the {{preset}} defaults?",
+      "message": "Applying the {{preset}} preset replaces the current scopes and attribute mapping, including your changes, and clears any claim the preset does not set, such as the groups attribute. Nothing is saved until you save the provider.",
+      "confirm": "Replace"
+    },
     "connectionSettings": "Connection Settings",
     "issuerURL": "Issuer URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6234,6 +6302,11 @@
       "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
       "empty": "No sites yet. Add a site to an organization to get started.",
       "viewDevicesAt": "view devices at {{name}}"
+    },
+    "toasts": {
+      "created": "Site {{name}} created",
+      "saved": "Site {{name}} saved",
+      "deleted": "Site {{name}} deleted"
     }
   },
   "siteList": {
@@ -6409,7 +6482,11 @@
       "label": "Label",
       "notes": "Notes"
     },
-    "empty": "No known guests yet."
+    "empty": "No known guests yet.",
+    "removeConfirm": {
+      "title": "Remove known guest?",
+      "message": "Remove {{label}} ({{mac}})? Devices with this MAC address will no longer be approved automatically across your managed organizations."
+    }
   },
   "userInviteForm": {
     "title": "Invite user",
@@ -6531,7 +6608,8 @@
       "copyLink": "Copy link",
       "mfaReset": "MFA reset for {{email}}",
       "roleUpdated": "Role updated",
-      "orgAccessUpdated": "Organization access updated"
+      "orgAccessUpdated": "Organization access updated",
+      "userRemoved": "{{name}} removed"
     },
     "resetMfa": {
       "title": "Reset MFA?",

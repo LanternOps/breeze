@@ -40,6 +40,8 @@ import { useToastRailOffset } from '../../shared/toastRailOffset';
 import RichTextEditor from '../../common/RichTextEditor';
 import PolishButton from '../../catalog/PolishButton';
 import { BlockCard, QuoteImagePreview } from './QuoteBlockCard';
+import { blockContentLabel, nearestHeadingAbove } from './quoteOutlineLabels';
+import { ContractAutoVariableList } from './QuoteContractBlockEditor';
 import {
   TableBlockFields,
   CalloutBlockFields,
@@ -1048,34 +1050,45 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // A quiet block-level nav for long quotes: each entry jumps to (and focuses)
   // its block. Labels mirror what the canvas shows — the author's own text
   // where one exists (table label, heading text, contract label), else the
-  // block-type default the add menu uses. Only rendered with 2+ blocks: a
+  // block's own text, else the block-type name (see outlineLabels below).
+  // Only rendered with 2+ blocks: a
   // one-block quote has nothing to navigate.
   const blockContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const setBlockContainerRef = useCallback((blockId: string, el: HTMLDivElement | null) => {
     if (el) blockContainerRefs.current.set(blockId, el);
     else blockContainerRefs.current.delete(blockId);
   }, []);
-  const outlineLabel = useCallback((b: QuoteBlock): string => {
-    if (b.blockType === 'line_items') return pricingBlockLabel(b);
-    if (b.blockType === 'heading') {
-      const text = ((b.content?.text as string | undefined) ?? '').trim();
-      return text || t('quotes.editor.blockTypes.heading');
-    }
-    if (b.blockType === 'contract') {
-      const label = ((b.content?.label as string | undefined) ?? '').trim();
-      return label || t('quotes.editor.blockTypes.contract');
-    }
-    if (b.blockType === 'image') return t('quotes.editor.blockTypes.image');
-    if (b.blockType === 'table') {
-      const caption = ((b.content?.caption as string | undefined) ?? '').trim();
-      return caption || t('quotes.editor.blockTypes.table');
-    }
-    if (b.blockType === 'callout') {
-      const title = ((b.content?.title as string | undefined) ?? '').trim();
-      return title || t('quotes.editor.blockTypes.callout');
-    }
-    return t('quotes.editor.blockTypes.richText');
-  }, [pricingBlockLabel, t]);
+  // Unnamed rich text / image / table / callout blocks read from their own
+  // words, else "<type> · <nearest heading above>" (#9867) — a long proposal
+  // otherwise lists "Rich text" and "Image" several times each.
+  const outlineLabels = useMemo(() => {
+    const typeName: Partial<Record<QuoteBlock['blockType'], string>> = {
+      rich_text: t('quotes.editor.blockTypes.richText'),
+      image: t('quotes.editor.blockTypes.image'),
+      table: t('quotes.editor.blockTypes.table'),
+      callout: t('quotes.editor.blockTypes.callout'),
+    };
+    const labels = new Map<string, string>();
+    sortedBlocks.forEach((b, i) => {
+      if (b.blockType === 'line_items') { labels.set(b.id, pricingBlockLabel(b)); return; }
+      if (b.blockType === 'heading') {
+        const text = ((b.content?.text as string | undefined) ?? '').trim();
+        labels.set(b.id, text || t('quotes.editor.blockTypes.heading'));
+        return;
+      }
+      if (b.blockType === 'contract') {
+        const label = ((b.content?.label as string | undefined) ?? '').trim();
+        labels.set(b.id, label || t('quotes.editor.blockTypes.contract'));
+        return;
+      }
+      const own = blockContentLabel(b);
+      if (own) { labels.set(b.id, own); return; }
+      const type = typeName[b.blockType] ?? t('quotes.editor.blockTypes.richText');
+      const heading = nearestHeadingAbove(sortedBlocks, i);
+      labels.set(b.id, heading ? `${type} · ${heading}` : type);
+    });
+    return labels;
+  }, [sortedBlocks, pricingBlockLabel, t]);
   // Scroll-position highlight: the outline marks the topmost block currently in
   // the viewport. IntersectionObserver is feature-detected — in jsdom (and any
   // environment without it) the outline simply renders with no active entry.
@@ -2454,18 +2467,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                     {contractVersion.declaredVariables.some((v) => v.kind === 'auto') && (
                       <div>
                         <p className="mb-1 text-xs font-medium text-muted-foreground">{t('quotes.editor.contract.autoVariablesTitle')}</p>
-                        <ul className="space-y-1">
-                          {contractVersion.declaredVariables.filter((v) => v.kind === 'auto').map((v) => (
-                            <li
-                              key={v.name}
-                              data-testid={`quote-block-contract-auto-${v.name}`}
-                              className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1 text-xs"
-                            >
-                              <span className="font-medium">{v.label ?? v.name}</span>
-                              <span className="font-mono text-muted-foreground">{`{{${v.name}}}`}</span>
-                            </li>
-                          ))}
-                        </ul>
+                        <ContractAutoVariableList
+                          variables={contractVersion.declaredVariables.filter((v) => v.kind === 'auto')}
+                          values={detail.contractAutoValues}
+                          testIdPrefix="quote-block-contract-auto-"
+                        />
                         <p className="mt-1 text-xs text-muted-foreground">{t('quotes.editor.contract.autoHint')}</p>
                       </div>
                     )}
@@ -2889,6 +2895,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 onAddManual={addManual}
                 onEditLine={editLine}
                 onEditBlock={editBlock}
+                contractAutoValues={detail.contractAutoValues}
                 onMoveLine={(line, dir) => moveLine(block.id, line, dir)}
                 onMoveLineToBlock={moveLineTo}
                 moveTargets={
@@ -3150,7 +3157,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                       }`}
                     >
-                      {outlineLabel(b)}
+                      {outlineLabels.get(b.id) ?? ''}
                     </button>
                   </li>
                 ))}

@@ -2980,8 +2980,10 @@
     "title": "Filtre kısayolları"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Eşleşen cihazları görmek için bir değer seçin",
     "counting": "…sayılıyor",
-    "matches": "~{{count}} cihazlar eşleşiyor",
+    "matches_one": "~{{count}} cihaz eşleşiyor",
+    "matches_other": "~{{count}} cihaz eşleşiyor",
     "unavailable": "önizleme kullanılamıyor"
   },
   "filterSentenceBuilder": {

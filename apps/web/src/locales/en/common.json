@@ -1296,7 +1296,7 @@
           "waiting": "Waiting"
         },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "Synced Tickets",
+        "title": "PSA Tickets",
         "unlinked": "Unlinked"
       }
     },
@@ -1556,7 +1556,8 @@
           "enabled": "Webhook enabled",
           "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
-          "updated": "Webhook updated"
+          "updated": "Webhook updated",
+          "deleted": "Webhook \"{{name}}\" deleted"
         },
         "title": "Webhooks"
       }

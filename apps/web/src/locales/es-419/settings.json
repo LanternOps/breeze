@@ -1615,7 +1615,18 @@
       "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
       "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
       "ticket_approval_decided": "Decisión sobre la aprobación de trabajo",
-      "ticket_merged": "Ticket combinado"
+      "ticket_merged": "Ticket combinado",
+      "ticket_comment_notification": "Aviso de respuesta pública",
+      "ticket_autoresponse": "Acuse de recibo del ticket",
+      "ticket_resolved": "Ticket resuelto",
+      "quote_send": "Cotización / propuesta",
+      "agreement_request_send": "Solicitud de acuerdo",
+      "invoice_send": "Factura",
+      "portal_invite": "Invitación al portal",
+      "staff_invite": "Invitación de personal",
+      "invoice_autopay": "Factura con aviso de pago automático",
+      "payment_reminder": "Recordatorio de pago",
+      "payment_overdue": "Recordatorio de pago vencido"
     }
   },
   "inboundEmail": {
@@ -1891,6 +1902,12 @@
     "description": "Ajuste las políticas predeterminadas y el comportamiento de inscripción para {{organization}}.",
     "save": "Guardar valores predeterminados",
     "managedByPartner": "Gestionado por socio",
+    "inheritance": {
+      "inherited": "Valor predeterminado heredado",
+      "overridden": "Definido para esta organización",
+      "reset": "Restablecer al valor predeterminado",
+      "resetLabel": "Restablecer {{setting}} al valor predeterminado"
+    },
     "policies": {
       "title": "Políticas predeterminadas",
       "fields": {
@@ -2078,6 +2095,49 @@
         "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
         "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
         "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Pendiente de su cliente",
+        "devicesProtected": "Protección de endpoints",
+        "securityScore": "Puntuación de seguridad",
+        "actionItems": "Acciones pendientes",
+        "patchesApplied": "Parches aplicados este mes",
+        "backup": "Último respaldo verificado",
+        "service": "Servicio entregado (90 días)",
+        "support": "Soporte"
+      },
+      "tileStatus": {
+        "noData": "Aún no disponible",
+        "notConfigured": "Sin configurar",
+        "stale": "Puede estar desactualizado"
+      },
+      "bands": {
+        "strong": "Sólida",
+        "good": "Buena",
+        "fair": "Regular",
+        "at_risk": "En riesgo"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propuestas: {{proposals}} · Facturas: {{invoices}}",
+        "serviceCounts": "A tiempo: {{onTime}} · Con retraso: {{late}} · Omitidos: {{missed}}",
+        "nextDue": "Próximo vencimiento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitud abierta",
+        "openRequests_other": "{{count}} solicitudes abiertas",
+        "threatCounts": "Detectados: {{detected}} · Resueltos: {{resolved}}",
+        "unknownAll": "Aún desconocido para los {{total}} dispositivos",
+        "unknownSome_one": "{{count}} aún desconocido",
+        "unknownSome_other": "{{count}} aún desconocidos"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abiertas",
+        "knownExploited": "Explotadas conocidas (KEV)",
+        "threatEvents": "Eventos de amenazas en endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos respaldados",
+        "breaches": "Incumplimientos de RPO / RTO abiertos",
+        "providers": "Respaldo de terceros"
       }
     },
     "loading": "Cargando configuración del portal...",
@@ -4275,7 +4335,9 @@
     "active": "Activo",
     "revoked": "Revocado",
     "expired": "Vencido",
-    "statusFilterLabel": "Estado de la clave"
+    "statusFilterLabel": "Estado de la clave",
+    "expires": "Vence",
+    "neverExpires": "Nunca"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Cargando claves API...",
@@ -4316,7 +4378,8 @@
     "rotating": "Rotando...",
     "rotateKey": "Rotar clave",
     "revoking": "Revocando...",
-    "revokeKey": "Revocar clave"
+    "revokeKey": "Revocar clave",
+    "revokedToast": "Se revocó la clave API \"{{name}}\""
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Este dispositivo ahora puede aprobar solicitudes",
@@ -4970,6 +5033,11 @@
     "eGOktaProduction": "por ejemplo, Okta Production",
     "providerPreset": "Preestablecido de proveedor",
     "selectAPresetToAutoFillRecommendedSettings": "Seleccione un ajuste preestablecido para completar automáticamente la configuración recomendada",
+    "replacePresetFields": {
+      "title": "¿Reemplazar con los valores predeterminados de {{preset}}?",
+      "message": "Al aplicar el preestablecido {{preset}} se reemplazan los alcances y el mapeo de atributos actuales, incluidos sus cambios, y se borra cualquier reclamo que el preestablecido no defina, como el atributo de grupos. No se guarda nada hasta que guarde el proveedor.",
+      "confirm": "Reemplazar"
+    },
     "connectionSettings": "Configuración de conexión",
     "issuerURL": "Emisor URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6186,6 +6254,11 @@
       "fleetAddDescription": "Agregue un nuevo sitio y elija la organización a la que pertenece.",
       "empty": "Aún no hay sitios. Agregue un sitio a una organización para comenzar.",
       "viewDevicesAt": "ver dispositivos en {{name}}"
+    },
+    "toasts": {
+      "created": "Sitio {{name}} creado",
+      "saved": "Sitio {{name}} guardado",
+      "deleted": "Sitio {{name}} eliminado"
     }
   },
   "siteList": {
@@ -6361,7 +6434,11 @@
       "label": "Etiqueta",
       "notes": "Notas"
     },
-    "empty": "Aún no hay invitados conocidos."
+    "empty": "Aún no hay invitados conocidos.",
+    "removeConfirm": {
+      "title": "¿Eliminar invitado conocido?",
+      "message": "¿Eliminar {{label}} ({{mac}})? Los dispositivos con esta dirección MAC ya no se aprobarán automáticamente en sus organizaciones administradas."
+    }
   },
   "userInviteForm": {
     "title": "Invitar usuario",
@@ -6483,7 +6560,8 @@
       "copyLink": "Copiar enlace",
       "mfaReset": "MFA restablecido para {{email}}",
       "roleUpdated": "Rol actualizado",
-      "orgAccessUpdated": "Acceso a organizaciones actualizado"
+      "orgAccessUpdated": "Acceso a organizaciones actualizado",
+      "userRemoved": "Se eliminó a {{name}}"
     },
     "resetMfa": {
       "title": "¿Restablecer MFA?",

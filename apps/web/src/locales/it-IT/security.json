@@ -2042,19 +2042,17 @@
       "statusFilterLabel": "Stato"
     },
     "status": {
-      "pendingApproval": "Approvazione in sospeso",
-      "pending_approval": "approvazione in sospeso",
-      "queued": "in coda",
-      "inProgress": "In corso",
-      "in_progress": "in corso",
-      "completed": "completata",
-      "failed": "fallita",
-      "cancelled": "annullata"
+      "pending_approval": "Approvazione in sospeso",
+      "queued": "In coda",
+      "in_progress": "In corso",
+      "completed": "Completata",
+      "failed": "Non riuscita",
+      "cancelled": "Annullata"
     },
     "approval": {
-      "pending": "in sospeso",
-      "approved": "approvata",
-      "rejected": "rifiutata"
+      "pending": "In sospeso",
+      "approved": "Approvata",
+      "rejected": "Rifiutata"
     },
     "actions": {
       "apply": "applica",
@@ -2422,7 +2420,18 @@
     "sweepNowUnpublished": "Pubblica questo set di regole prima di usarlo in una scansione di massa.",
     "sweepNowDisabled": "Abilita questo set di regole prima di usarlo in una scansione di massa.",
     "progress": {
-      "label": "{{done}} dispositivi su {{total}} completati"
+      "finished_one": "{{finished}} di {{count}} dispositivo terminato",
+      "finished_other": "{{finished}} di {{count}} dispositivi terminati",
+      "completed_one": "{{count}} completato",
+      "completed_other": "{{count}} completati",
+      "timedOut_one": "{{count}} in timeout",
+      "timedOut_other": "{{count}} in timeout",
+      "failed_one": "{{count}} non riuscito",
+      "failed_other": "{{count}} non riusciti",
+      "cancelled_one": "{{count}} annullato",
+      "cancelled_other": "{{count}} annullati",
+      "expired_one": "{{count}} scaduto",
+      "expired_other": "{{count}} scaduti"
     },
     "errors": {
       "orgOutOfScope": "Una o più organizzazioni sono fuori dal tuo accesso.",
@@ -2454,7 +2463,7 @@
     "dialog": {
       "title": "Cerca corrispondenze IOC sui dispositivi",
       "ruleSets": "Set di regole: {{names}}",
-      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole e tipo di scansione vengono mantenuti.",
+      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole, tipo di scansione e percorsi personalizzati vengono mantenuti.",
       "back": "Indietro",
       "next": "Avanti",
       "previewAction": "Anteprima",
@@ -2525,6 +2534,7 @@
       "resweep": "Ripeti con le regole attuali",
       "rulesChanged": "Regole modificate dall'avvio di questa scansione",
       "queued": "In coda: {{queued}}",
+      "running": "In esecuzione: {{running}}",
       "columns": {
         "ruleSets": "Set di regole",
         "origin": "Avviata da",
@@ -2581,6 +2591,7 @@
       "builtin": "Integrato",
       "allOrgs": "Tutte le organizzazioni",
       "errors": "Con errori",
+      "checkerUnavailable": "Compilatore non disponibile",
       "unpublished": "Non pubblicato",
       "disabled": "Disattivato"
     },
@@ -2637,7 +2648,7 @@
       "autoQuarantineOnly": "La quarantena automatica ora è disattivata sui dispositivi. Le altre modifiche non sono ancora attive.",
       "published": "Salvato e pubblicato come versione {{version}}",
       "savedDisabled": "Salvato. Il set è disattivato, quindi i dispositivi non lo usano.",
-      "checkerUnavailable": "Salvato, non pubblicato: il controllo delle regole non è disponibile. {{devices}}",
+      "checkerUnavailable": "Salvato, non pubblicato: il compilatore YARA non è disponibile su questo server, quindi non è stato possibile controllare le regole. {{devices}}",
       "compileErrors_one": "Salvato, non pubblicato: {{count}} regola contiene errori. {{devices}}",
       "compileErrors_other": "Salvato, non pubblicato: {{count}} regole contengono errori. {{devices}}",
       "setErrors": "Salvato, non pubblicato: {{message}}. {{devices}}",
@@ -2646,7 +2657,8 @@
       "devicesKeep": "I dispositivi mantengono la versione {{version}}.",
       "neverPublished": "Questo set non è ancora stato pubblicato, quindi i dispositivi non lo usano.",
       "setDisabled": "Il set è disattivato, quindi i dispositivi non lo usano.",
-      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}"
+      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}",
+      "staleCheckerUnavailable": "Non pubblicato: il compilatore YARA non è disponibile su questo server, quindi le modifiche alle regole non possono essere controllate né pubblicate. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2741,5 +2753,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Non hai accesso a questa organizzazione"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critico",
+      "high": "Alto",
+      "medium": "Medio",
+      "low": "Basso"
+    },
+    "findingStatus": {
+      "open": "Aperto",
+      "remediated": "Corretto",
+      "accepted": "Accettato",
+      "falsePositive": "Falso positivo"
+    },
+    "scanStatus": {
+      "queued": "In coda",
+      "running": "In esecuzione",
+      "completed": "Completato",
+      "failed": "Non riuscito",
+      "cancelled": "Annullato"
+    },
+    "dataType": {
+      "credential": "Credenziali",
+      "financial": "Finanziari"
+    },
+    "a11y": {
+      "editPolicy": "Modifica criterio {{name}}",
+      "deletePolicy": "Elimina criterio {{name}}",
+      "togglePolicyActive": "Attivo: {{name}}"
+    }
   }
 }

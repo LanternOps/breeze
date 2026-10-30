@@ -28,6 +28,9 @@
     "deny": "Denegar",
     "verificationFailed": "La verificación falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",
+    "resolvedApproved": "Esta solicitud fue aprobada.",
+    "resolvedNotApproved": "Esta solicitud no fue aprobada, por lo que la acción no se ejecutó.",
+    "resolvedEnded": "Esta solicitud ya no espera una decisión aquí.",
     "contentChanged": "Los detalles de esta solicitud cambiaron después de crearse, por lo que ya no se puede aprobar.",
     "expired": "Esta solicitud expiró antes de poder decidirse.",
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
@@ -145,9 +148,9 @@
     "dashboard": "Panel"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} mensajes",
-    "messageCount_one": "mensaje {{count}}",
-    "messageCount_other": "{{count}} mensajes",
+    "messageCount": "{{count}} mensajes este mes",
+    "messageCount_one": "{{count}} mensaje este mes",
+    "messageCount_other": "{{count}} mensajes este mes",
     "thisMonth": "{{amount}} este mes",
     "credits_one": "{{formatted}} crédito",
     "credits_other": "{{formatted}} créditos"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Todas las organizaciones",
+      "scopeFallback": "esta organización",
       "status": {
         "active": "Activo",
         "paused": "En pausa",

@@ -417,6 +417,7 @@
       "createTitle": "Criar anel de atualização"
     },
     "truncatedNotice": "Exibindo {{shown}} de {{total}} patches. Os filtros aqui apenas restringem o que já foi carregado, então o restante não pode ser alcançado nesta visualização — use a API de patches para percorrer o catálogo completo.",
+    "emptyRingSeverityNotice": "Ainda não há dispositivos neste anel. A severidade informada pelos dispositivos aparece quando dispositivos são atribuídos, então até lá a maioria dos patches fica como Sem classificação.",
     "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
     "ringDelete": {
       "title": "Excluir {{name}}?",

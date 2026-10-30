@@ -1615,7 +1615,18 @@
       "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
       "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
       "ticket_approval_decided": "İş onayı kararı",
-      "ticket_merged": "Bilet birleştirildi"
+      "ticket_merged": "Bilet birleştirildi",
+      "ticket_comment_notification": "Herkese açık yanıt bildirimi",
+      "ticket_autoresponse": "Bilet alındı onayı",
+      "ticket_resolved": "Bilet çözüldü",
+      "quote_send": "Teklif",
+      "agreement_request_send": "Anlaşma talebi",
+      "invoice_send": "Fatura",
+      "portal_invite": "Portal daveti",
+      "staff_invite": "Personel daveti",
+      "invoice_autopay": "Otomatik ödeme bildirimi içeren fatura",
+      "payment_reminder": "Ödeme hatırlatması",
+      "payment_overdue": "Gecikmiş ödeme hatırlatması"
     }
   },
   "inboundEmail": {
@@ -1891,6 +1902,12 @@
     "description": "{{organization}} için varsayılan politikaları ve kayıt davranışını ayarlayın.",
     "save": "Varsayılanları kaydet",
     "managedByPartner": "İş ortağı tarafından yönetiliyor",
+    "inheritance": {
+      "inherited": "Devralınan varsayılan",
+      "overridden": "Bu kuruluş için ayarlandı",
+      "reset": "Varsayılana sıfırla",
+      "resetLabel": "{{setting}} ayarını varsayılana sıfırla"
+    },
     "policies": {
       "title": "Varsayılan politikalar",
       "fields": {
@@ -2078,6 +2095,49 @@
         "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
         "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
         "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      },
+      "tiles": {
+        "awaitingYou": "Müşterinizi bekleyenler",
+        "devicesProtected": "Uç nokta koruması",
+        "securityScore": "Güvenlik puanı",
+        "actionItems": "Yapılacak işlemler",
+        "patchesApplied": "Bu ay uygulanan yamalar",
+        "backup": "Son doğrulanan yedek",
+        "service": "Sunulan hizmet (90 gün)",
+        "support": "Destek"
+      },
+      "tileStatus": {
+        "noData": "Henüz mevcut değil",
+        "notConfigured": "Ayarlanmadı",
+        "stale": "Güncel olmayabilir"
+      },
+      "bands": {
+        "strong": "Güçlü",
+        "good": "İyi",
+        "fair": "Orta",
+        "at_risk": "Risk altında"
+      },
+      "values": {
+        "protectedOfTotal": "{{total}} cihazdan {{protected}} korumalı",
+        "awaitingCounts": "Teklifler: {{proposals}} · Faturalar: {{invoices}}",
+        "serviceCounts": "Zamanında: {{onTime}} · Geç: {{late}} · Kaçırılan: {{missed}}",
+        "nextDue": "Sonraki son tarih: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} açık talep",
+        "openRequests_other": "{{count}} açık talep",
+        "threatCounts": "Algılanan: {{detected}} · Çözülen: {{resolved}}",
+        "unknownAll": "{{total}} cihazın tümü için henüz bilinmiyor",
+        "unknownSome_one": "{{count}} cihaz henüz bilinmiyor",
+        "unknownSome_other": "{{count}} cihaz henüz bilinmiyor"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Açık güvenlik açıkları",
+        "knownExploited": "Bilinen istismar edilenler (KEV)",
+        "threatEvents": "Uç nokta tehdit olayları"
+      },
+      "backupRows": {
+        "devices": "Yedeklenen cihazlar",
+        "breaches": "Açık RPO / RTO ihlalleri",
+        "providers": "Üçüncü taraf yedekleme"
       }
     },
     "loading": "Portal ayarları yükleniyor…",
@@ -4275,7 +4335,9 @@
     "active": "Aktif",
     "revoked": "İptal edildi",
     "expired": "Süresi dolmuş",
-    "statusFilterLabel": "Anahtar durumu"
+    "statusFilterLabel": "Anahtar durumu",
+    "expires": "Son geçerlilik",
+    "neverExpires": "Hiçbir zaman"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API anahtarlar yükleniyor...",
@@ -4316,7 +4378,8 @@
     "rotating": "Dönüyor...",
     "rotateKey": "Döndürme Tuşu",
     "revoking": "İptal ediliyor...",
-    "revokeKey": "Anahtarı İptal Et"
+    "revokeKey": "Anahtarı İptal Et",
+    "revokedToast": "\"{{name}}\" API anahtarı iptal edildi"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Bu cihaz artık istekleri onaylayabilir",
@@ -4970,6 +5033,11 @@
     "eGOktaProduction": "örneğin Okta Üretimi",
     "providerPreset": "Sağlayıcı ön ayarı",
     "selectAPresetToAutoFillRecommendedSettings": "Önerilen ayarları otomatik olarak doldurmak için bir ön ayar seçin",
+    "replacePresetFields": {
+      "title": "{{preset}} varsayılanlarıyla değiştirilsin mi?",
+      "message": "{{preset}} ön ayarını uygulamak, değişiklikleriniz dahil mevcut kapsamları ve özellik eşlemesini değiştirir ve ön ayarın belirlemediği her talebi (ör. gruplar özelliği) temizler. Sağlayıcıyı kaydedene kadar hiçbir şey kaydedilmez.",
+      "confirm": "Değiştir"
+    },
     "connectionSettings": "Bağlantı Ayarları",
     "issuerURL": "Veren URL'si",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6239,6 +6307,11 @@
       "fleetAddDescription": "Yeni bir site ekleyin ve ait olduğu kuruluşu seçin.",
       "empty": "Henüz site yok. Başlamak için bir kuruluşa site ekleyin.",
       "viewDevicesAt": "{{name}} konumundaki cihazları görüntüle"
+    },
+    "toasts": {
+      "created": "{{name}} sitesi oluşturuldu",
+      "saved": "{{name}} sitesi kaydedildi",
+      "deleted": "{{name}} sitesi silindi"
     }
   },
   "siteList": {
@@ -6414,7 +6487,11 @@
       "label": "Etiket",
       "notes": "Notlar"
     },
-    "empty": "Henüz bilinen misafir yok."
+    "empty": "Henüz bilinen misafir yok.",
+    "removeConfirm": {
+      "title": "Bilinen misafir kaldırılsın mı?",
+      "message": "{{label}} ({{mac}}) kaldırılsın mı? Bu MAC adresine sahip cihazlar yönetilen kuruluşlarınızda artık otomatik olarak onaylanmayacak."
+    }
   },
   "userInviteForm": {
     "title": "Kullanıcıyı davet et",
@@ -6536,7 +6613,8 @@
       "copyLink": "Bağlantıyı kopyala",
       "mfaReset": "{{email}} için MFA sıfırlandı",
       "roleUpdated": "Rol güncellendi",
-      "orgAccessUpdated": "Kuruluş erişimi güncellendi"
+      "orgAccessUpdated": "Kuruluş erişimi güncellendi",
+      "userRemoved": "{{name}} kaldırıldı"
     },
     "resetMfa": {
       "title": "MFA sıfırlansın mı?",

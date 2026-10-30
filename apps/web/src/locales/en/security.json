@@ -2042,19 +2042,17 @@
       "statusFilterLabel": "Status"
     },
     "status": {
-      "pendingApproval": "Pending Approval",
-      "pending_approval": "pending approval",
-      "queued": "queued",
-      "inProgress": "In Progress",
-      "in_progress": "in progress",
-      "completed": "completed",
-      "failed": "failed",
-      "cancelled": "cancelled"
+      "pending_approval": "Pending approval",
+      "queued": "Queued",
+      "in_progress": "In progress",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
     },
     "approval": {
-      "pending": "pending",
-      "approved": "approved",
-      "rejected": "rejected"
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected"
     },
     "actions": {
       "apply": "apply",
@@ -2422,7 +2420,18 @@
     "sweepNowUnpublished": "Publish this rule set before sweeping with it.",
     "sweepNowDisabled": "Enable this rule set before sweeping with it.",
     "progress": {
-      "label": "{{done}} of {{total}} devices done"
+      "finished_one": "{{finished}} of {{count}} device finished",
+      "finished_other": "{{finished}} of {{count}} devices finished",
+      "completed_one": "{{count}} completed",
+      "completed_other": "{{count}} completed",
+      "timedOut_one": "{{count}} timed out",
+      "timedOut_other": "{{count}} timed out",
+      "failed_one": "{{count}} failed",
+      "failed_other": "{{count}} failed",
+      "cancelled_one": "{{count}} cancelled",
+      "cancelled_other": "{{count}} cancelled",
+      "expired_one": "{{count}} expired",
+      "expired_other": "{{count}} expired"
     },
     "errors": {
       "orgOutOfScope": "One or more organizations are outside your access.",
@@ -2454,7 +2463,7 @@
     "dialog": {
       "title": "Sweep devices for IOC matches",
       "ruleSets": "Rule sets: {{names}}",
-      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets and scan type are kept.",
+      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets, scan type and any custom paths are kept.",
       "back": "Back",
       "next": "Next",
       "previewAction": "Preview",
@@ -2525,6 +2534,7 @@
       "resweep": "Sweep again with the current rules",
       "rulesChanged": "Rules changed since this sweep started",
       "queued": "Queued: {{queued}}",
+      "running": "Running: {{running}}",
       "columns": {
         "ruleSets": "Rule sets",
         "origin": "Started from",
@@ -2581,6 +2591,7 @@
       "builtin": "Built-in",
       "allOrgs": "All orgs",
       "errors": "Has errors",
+      "checkerUnavailable": "Compiler unavailable",
       "unpublished": "Not published",
       "disabled": "Disabled"
     },
@@ -2637,7 +2648,7 @@
       "autoQuarantineOnly": "Auto-quarantine is off on devices now. Your other changes are not live yet.",
       "published": "Saved and published as version {{version}}",
       "savedDisabled": "Saved. The set is disabled, so devices do not use it.",
-      "checkerUnavailable": "Saved, not published: the rule checker is unavailable. {{devices}}",
+      "checkerUnavailable": "Saved, not published: the YARA compiler is unavailable on this server, so the rules could not be checked. {{devices}}",
       "compileErrors_one": "Saved, not published: {{count}} rule has errors. {{devices}}",
       "compileErrors_other": "Saved, not published: {{count}} rules have errors. {{devices}}",
       "setErrors": "Saved, not published: {{message}}. {{devices}}",
@@ -2646,7 +2657,8 @@
       "devicesKeep": "Devices keep version {{version}}.",
       "neverPublished": "This set has not been published yet, so devices do not use it.",
       "setDisabled": "The set is disabled, so devices do not use it.",
-      "staleBanner": "Not published: fix the errors below. {{devices}}"
+      "staleBanner": "Not published: fix the errors below. {{devices}}",
+      "staleCheckerUnavailable": "Not published: the YARA compiler is unavailable on this server, so rule changes cannot be checked or published. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2741,5 +2753,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "You don't have access to this organization"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "findingStatus": {
+      "open": "Open",
+      "remediated": "Remediated",
+      "accepted": "Accepted",
+      "falsePositive": "False Positive"
+    },
+    "scanStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "dataType": {
+      "credential": "Credentials",
+      "financial": "Financial"
+    },
+    "a11y": {
+      "editPolicy": "Edit policy {{name}}",
+      "deletePolicy": "Delete policy {{name}}",
+      "togglePolicyActive": "Active: {{name}}"
+    }
   }
 }

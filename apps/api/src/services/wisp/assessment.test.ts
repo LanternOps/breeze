@@ -382,7 +382,10 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(arg).toMatchObject({
       partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
     });
-    expect(arg.summary).toMatch(/no AI agent is configured/);
+    // #10292: assessments run as the TRIAGE agent, so the copy names that kind —
+    // an enabled agent of another kind (e.g. Patching) does not satisfy it.
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(arg.summary).not.toMatch(/no AI agent is configured/);
     expect(arg.summary).toMatch(/Settings → AI Agents/);
     expect(arg.evidence).toEqual({ href: '/settings/ai-agents', reason: 'no_effective_agent' });
     expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
@@ -416,9 +419,23 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(h.captureException).toHaveBeenCalled();
   });
 
+  // #10292: readiness means "an ENABLED Triage agent resolves" — the same
+  // partner-baseline → org-override merge admission uses. A Triage agent that
+  // resolves but is turned off (or set to mode off) cannot check either.
+  it.each(['agent_disabled', 'mode_off'] as const)('raises the same concern when the Triage agent resolves but %s', async (skipped) => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    expect(arg).toMatchObject({ partnerId: PARTNER, orgId: ORG, signature: SIG, raisedByGrantId: GRANT });
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
+  });
+
   it('another admission skip raises nothing and closes a stale "no agent" concern (an agent resolved)', async () => {
     h.results.push([grantRow()], [{ at: null }]);
-    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'agent_disabled' });
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'cooldown' });
     await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
     expect(h.upsertConcern).not.toHaveBeenCalled();
     expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, 'ai_agent_configured');

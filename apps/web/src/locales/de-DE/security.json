@@ -2042,19 +2042,17 @@
       "statusFilterLabel": "Behebungsstatus"
     },
     "status": {
-      "pendingApproval": "Ausstehende Genehmigung",
-      "pending_approval": "bis zur Genehmigung",
-      "queued": "in der Warteschlange",
-      "inProgress": "In Bearbeitung",
-      "in_progress": "in Bearbeitung",
-      "completed": "abgeschlossen",
-      "failed": "gescheitert",
-      "cancelled": "abgesagt"
+      "pending_approval": "Ausstehende Genehmigung",
+      "queued": "In der Warteschlange",
+      "in_progress": "In Bearbeitung",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
     },
     "approval": {
-      "pending": "ausstehend",
-      "approved": "genehmigt",
-      "rejected": "abgelehnt"
+      "pending": "Ausstehend",
+      "approved": "Genehmigt",
+      "rejected": "Abgelehnt"
     },
     "actions": {
       "apply": "anwenden",
@@ -2422,7 +2420,18 @@
     "sweepNowUnpublished": "Veröffentlichen Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "sweepNowDisabled": "Aktivieren Sie diesen Regelsatz, bevor Sie ihn für einen Sweep verwenden.",
     "progress": {
-      "label": "{{done}} von {{total}} Geräten abgeschlossen"
+      "finished_one": "{{finished}} von {{count}} Gerät beendet",
+      "finished_other": "{{finished}} von {{count}} Geräten beendet",
+      "completed_one": "{{count}} abgeschlossen",
+      "completed_other": "{{count}} abgeschlossen",
+      "timedOut_one": "{{count}} mit Zeitüberschreitung",
+      "timedOut_other": "{{count}} mit Zeitüberschreitung",
+      "failed_one": "{{count}} fehlgeschlagen",
+      "failed_other": "{{count}} fehlgeschlagen",
+      "cancelled_one": "{{count}} abgebrochen",
+      "cancelled_other": "{{count}} abgebrochen",
+      "expired_one": "{{count}} abgelaufen",
+      "expired_other": "{{count}} abgelaufen"
     },
     "errors": {
       "orgOutOfScope": "Mindestens eine Organisation liegt außerhalb Ihres Zugriffs.",
@@ -2454,7 +2463,7 @@
     "dialog": {
       "title": "Geräte auf IOC-Treffer prüfen",
       "ruleSets": "Regelsätze: {{names}}",
-      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze und Scan-Typ bleiben erhalten.",
+      "rescopeNote": "Ein Sweep merkt sich seine Geräte nicht. Wählen Sie den Bereich erneut; Regelsätze, Scan-Typ und benutzerdefinierte Pfade bleiben erhalten.",
       "back": "Zurück",
       "next": "Weiter",
       "previewAction": "Vorschau",
@@ -2525,6 +2534,7 @@
       "resweep": "Erneut mit den aktuellen Regeln prüfen",
       "rulesChanged": "Regeln seit dem Start dieses Sweeps geändert",
       "queued": "In der Warteschlange: {{queued}}",
+      "running": "Wird ausgeführt: {{running}}",
       "columns": {
         "ruleSets": "Regelsätze",
         "origin": "Gestartet über",
@@ -2581,6 +2591,7 @@
       "builtin": "Integriert",
       "allOrgs": "Alle Organisationen",
       "errors": "Fehlerhaft",
+      "checkerUnavailable": "Compiler nicht verfügbar",
       "unpublished": "Nicht veröffentlicht",
       "disabled": "Deaktiviert"
     },
@@ -2637,7 +2648,7 @@
       "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
       "published": "Gespeichert und als Version {{version}} veröffentlicht",
       "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher konnten die Regeln nicht geprüft werden. {{devices}}",
       "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
       "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
       "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
@@ -2646,7 +2657,8 @@
       "devicesKeep": "Geräte behalten Version {{version}}.",
       "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
       "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}",
+      "staleCheckerUnavailable": "Nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher können Regeländerungen weder geprüft noch veröffentlicht werden. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2741,5 +2753,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Sie haben keinen Zugriff auf diese Organisation"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig"
+    },
+    "findingStatus": {
+      "open": "Offen",
+      "remediated": "Behoben",
+      "accepted": "Akzeptiert",
+      "falsePositive": "Falsch positiv"
+    },
+    "scanStatus": {
+      "queued": "In Warteschlange",
+      "running": "Läuft",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "cancelled": "Abgebrochen"
+    },
+    "dataType": {
+      "credential": "Anmeldedaten",
+      "financial": "Finanzdaten"
+    },
+    "a11y": {
+      "editPolicy": "Richtlinie {{name}} bearbeiten",
+      "deletePolicy": "Richtlinie {{name}} löschen",
+      "togglePolicyActive": "Aktiv: {{name}}"
+    }
   }
 }

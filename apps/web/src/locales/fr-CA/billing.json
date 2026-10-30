@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex. Gestion des postes de travail",
         "unitPrice": "Prix unitaire",
         "quantity": "Quantité",
+        "quantityInvalid": "Entrez une quantité (jusqu’à 2 décimales).",
+        "quantityTooLarge": "La quantité est trop grande (au plus 10 chiffres avant la virgule).",
         "siteOptional": "Site (facultatif : limite le comptage des appareils)",
         "allSites": "Tous les sites",
         "linkCatalogItemOptional": "Lier un article du catalogue (facultatif)",
@@ -1257,6 +1259,7 @@
         "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",
+        "autoValueBlank": "Vide",
         "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
         "manualVariablesTitle": "À remplir pour cette proposition",
         "labelFieldLabel": "Libellé de la section",
@@ -2824,7 +2827,6 @@
       "delivery_failed": "Échec de l’envoi de l’avis",
       "consent_required": "L’autorisation de paiement est manquante. Demandez une nouvelle autorisation."
     },
-    "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
     "chargeResultUnknown": "Nous n’avons pas pu confirmer ce qu’il est advenu de ce paiement. Actualisation de la facture pour afficher son état actuel.",
     "chargeStarted": "Tentative de paiement lancée",
@@ -2964,10 +2966,6 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de rappel",
     "loadFailed": "Impossible de charger les paramètres de rappel",
     "retry": "Réessayer",
-    "loading": "Chargement des paramètres de paiement…",
-    "templates": {
-      "paymentReminder": "Rappel de paiement",
-      "paymentOverdue": "Rappel de paiement en retard"
-    }
+    "loading": "Chargement des paramètres de paiement…"
   }
 }
