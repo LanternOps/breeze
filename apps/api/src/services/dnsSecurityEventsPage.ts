@@ -19,7 +19,7 @@
  *
  * The blocked-only list is served by the partial index
  * dns_security_events_org_blocked_ts_idx (migration
- * 2027-01-10-120000-dns-security-events-blocked-index.sql). Under forced RLS
+ * 2027-01-17-150000-dns-security-events-blocked-index.sql). Under forced RLS
  * only leakproof clauses become index conditions; org_id = (uuid_eq) and the
  * (timestamp, id) row comparison (timestamp_lt, uuid_lt) are, and the
  * partial-index predicate is proved statically, so the non-leakproof enum
