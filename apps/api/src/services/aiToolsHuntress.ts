@@ -3,7 +3,8 @@
  *
  * Tools for querying Huntress integration health, incidents, and triggering manual syncs.
  * - get_huntress_status (Tier 1): Integration health, agent coverage, incident summary
- * - get_huntress_incidents (Tier 1): Query incidents with filters
+ * - get_huntress_incidents (Tier 1): Query incidents with filters, or read one in full by id
+ * - get_huntress_agents (Tier 1): Huntress agents with their Breeze device mapping
  * - sync_huntress_data (Tier 2): Trigger manual Huntress sync
  */
 
@@ -14,7 +15,7 @@ import {
   huntressAgents,
   huntressIncidents,
 } from '../db/schema';
-import { eq, and, desc, sql, ilike, inArray, SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, ilike, inArray, isNull, isNotNull, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { escapeLike } from '../utils/sql';
 import type { AiTool } from './aiTools';
@@ -27,6 +28,22 @@ import { scheduleHuntressSync } from '../jobs/huntressSync';
 import { offlineStatusSqlList, resolvedStatusSqlList } from './huntressConstants';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+
+/**
+ * List rows carry a short description preview; the full text, the
+ * recommendation and the raw vendor `details` jsonb come back only from a
+ * single-incident read (`incidentId`). Full rows made a 42-incident page too
+ * large for the chat budget, so the whole result was replaced by a row-less
+ * digest (#10393).
+ */
+const INCIDENT_DESCRIPTION_PREVIEW_CHARS = 200;
+
+function previewText(text: string | null): { text: string | null; truncated: boolean } {
+  if (typeof text !== 'string') return { text, truncated: false };
+  const codePoints = Array.from(text);
+  if (codePoints.length <= INCIDENT_DESCRIPTION_PREVIEW_CHARS) return { text, truncated: false };
+  return { text: `${codePoints.slice(0, INCIDENT_DESCRIPTION_PREVIEW_CHARS).join('').trimEnd()}…`, truncated: true };
+}
 
 export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -43,7 +60,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
     searchHint: 'Huntress integration health, agent coverage and incident summary',
     definition: {
       name: 'get_huntress_status',
-      description: 'Get Huntress integration health, agent coverage, and incident summary metrics.',
+      description: 'Get Huntress integration health, agent coverage, and open-incident counts (total and by severity). Use get_huntress_agents to list unmapped or offline agents.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -188,6 +205,8 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           .from(huntressIncidents)
           .where(and(...incidentScopedConditions))
           .groupBy(huntressIncidents.integrationId),
+        // Same population as openIncidents: before #10393 this counted resolved
+        // incidents too, so "13 critical" sat next to "42 open" and read as open.
         db
           .select({
             integrationId: huntressIncidents.integrationId,
@@ -195,8 +214,11 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             count: sql<number>`count(*)::int`,
           })
           .from(huntressIncidents)
-          .where(and(...incidentScopedConditions))
-	          .groupBy(huntressIncidents.integrationId, huntressIncidents.severity),
+          .where(and(
+            ...incidentScopedConditions,
+            sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`,
+          ))
+          .groupBy(huntressIncidents.integrationId, huntressIncidents.severity),
       ]);
 
       const agentCountByIntegration = new Map(agentCounts.map((row) => [row.integrationId, row]));
@@ -230,7 +252,7 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
             unmappedAgents: Math.max(totalAgents - mappedAgents, 0),
             offlineAgents,
             openIncidents,
-            bySeverity: severityByIntegration.get(integration.id) ?? [],
+            openBySeverity: severityByIntegration.get(integration.id) ?? [],
           },
         };
       });
@@ -266,10 +288,11 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'get_huntress_incidents',
-      description: 'Query Huntress incidents with filtering by status, severity, device, or integration.',
+      description: 'Query Huntress incidents with filtering by status, severity, device, or integration. List rows carry a short description preview; pass incidentId to read one incident in full (description, recommendation, vendor details).',
       input_schema: {
         type: 'object' as const,
         properties: {
+          incidentId: { type: 'string', description: 'Optional incident UUID: return this one incident in full instead of a list (other filters are ignored)' },
           orgId: { type: 'string', description: 'Optional organization UUID filter' },
           integrationId: { type: 'string', description: 'Optional Huntress integration UUID filter' },
           status: { type: 'string', description: 'Optional normalized status filter' },
@@ -288,49 +311,44 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Access denied to this organization' });
       }
 
+      const incidentId = typeof input.incidentId === 'string' ? input.incidentId : undefined;
       const includeResolved = input.includeResolved === true;
       const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
       const offset = Math.max(0, Number(input.offset) || 0);
 
-      const conditions: SQL[] = [];
+      // Caller scope — applied to the list AND the single-incident read.
+      const scopeConditions: SQL[] = [];
       const orgCondition = auth.orgCondition(huntressIncidents.orgId);
-      if (orgCondition) conditions.push(orgCondition);
-      if (requestedOrgId) conditions.push(eq(huntressIncidents.orgId, requestedOrgId));
-      if (typeof input.integrationId === 'string') conditions.push(eq(huntressIncidents.integrationId, input.integrationId));
-      if (typeof input.status === 'string') conditions.push(eq(huntressIncidents.status, input.status));
-      if (typeof input.severity === 'string') conditions.push(eq(huntressIncidents.severity, input.severity));
-      if (typeof input.deviceId === 'string') conditions.push(eq(huntressIncidents.deviceId, input.deviceId));
-      if (typeof input.search === 'string' && input.search.trim()) {
-        const searchPattern = '%' + escapeLike(input.search.trim()) + '%';
-        conditions.push(ilike(huntressIncidents.title, searchPattern));
-      }
-      if (!includeResolved) {
-        conditions.push(sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`);
-      }
+      if (orgCondition) scopeConditions.push(orgCondition);
+      if (requestedOrgId) scopeConditions.push(eq(huntressIncidents.orgId, requestedOrgId));
 
       // Site axis (app-layer only; RLS does NOT enforce it). huntressIncidents
       // has no site_id column, so narrow by the in-scope device-id set (this
       // also scopes the deviceHostname join). A restricted caller with zero
       // in-scope devices short-circuits to empty results. Intersects with the
-      // optional deviceId filter above (most-restrictive wins). Incidents not
+      // optional deviceId filter below (most-restrictive wins). Incidents not
       // mapped to a device (deviceId null) are excluded for a restricted
       // caller (fail closed).
       if (auth.allowedSiteIds && auth.canAccessSite) {
         const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
         if (!allowed || allowed.length === 0) {
+          if (incidentId) {
+            return JSON.stringify({ error: 'Huntress incident not found or access denied', scopeNote: SITE_SCOPE_EMPTY_NOTE });
+          }
           return JSON.stringify({ incidents: [], total: 0, limit, offset, includeResolved, scopeNote: SITE_SCOPE_EMPTY_NOTE });
         }
-        conditions.push(inArray(huntressIncidents.deviceId, allowed));
+        scopeConditions.push(inArray(huntressIncidents.deviceId, allowed));
       }
 
       // Exact-device axis, applied independently of the site axis (#6086).
       const incidentDeviceCondition = deviceScopeCondition(auth, huntressIncidents.deviceId);
-      if (incidentDeviceCondition) conditions.push(incidentDeviceCondition);
+      if (incidentDeviceCondition) scopeConditions.push(incidentDeviceCondition);
 
-      const where = conditions.length > 0 ? and(...conditions) : undefined;
-      const [rows, [countRow]] = await Promise.all([
-        db
+      if (incidentId) {
+        // Single-incident read: resolved incidents are readable by id, and the
+        // full vendor text is returned (fenced as raw text by aiToolOutput).
+        const [incident] = await db
           .select({
             id: huntressIncidents.id,
             orgId: huntressIncidents.orgId,
@@ -352,6 +370,45 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           })
           .from(huntressIncidents)
           .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
+          .where(and(...scopeConditions, eq(huntressIncidents.id, incidentId)))
+          .limit(1);
+        if (!incident) {
+          return JSON.stringify({ error: 'Huntress incident not found or access denied' });
+        }
+        return JSON.stringify({ incident });
+      }
+
+      const conditions: SQL[] = [...scopeConditions];
+      if (typeof input.integrationId === 'string') conditions.push(eq(huntressIncidents.integrationId, input.integrationId));
+      if (typeof input.status === 'string') conditions.push(eq(huntressIncidents.status, input.status));
+      if (typeof input.severity === 'string') conditions.push(eq(huntressIncidents.severity, input.severity));
+      if (typeof input.deviceId === 'string') conditions.push(eq(huntressIncidents.deviceId, input.deviceId));
+      if (typeof input.search === 'string' && input.search.trim()) {
+        const searchPattern = '%' + escapeLike(input.search.trim()) + '%';
+        conditions.push(ilike(huntressIncidents.title, searchPattern));
+      }
+      if (!includeResolved) {
+        conditions.push(sql`coalesce(lower(${huntressIncidents.status}), '') not in (${sql.raw(resolvedStatusSqlList())})`);
+      }
+
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const [rows, [countRow]] = await Promise.all([
+        db
+          .select({
+            id: huntressIncidents.id,
+            orgId: huntressIncidents.orgId,
+            deviceId: huntressIncidents.deviceId,
+            deviceHostname: devices.hostname,
+            severity: huntressIncidents.severity,
+            category: huntressIncidents.category,
+            status: huntressIncidents.status,
+            title: huntressIncidents.title,
+            description: huntressIncidents.description,
+            reportedAt: huntressIncidents.reportedAt,
+            resolvedAt: huntressIncidents.resolvedAt,
+          })
+          .from(huntressIncidents)
+          .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
           .where(where)
           .orderBy(desc(huntressIncidents.reportedAt), desc(huntressIncidents.createdAt), desc(huntressIncidents.id))
           .limit(limit)
@@ -362,12 +419,122 @@ export function registerHuntressTools(aiTools: Map<string, AiTool>): void {
           .where(where),
       ]);
 
+      const incidents = rows.map((row) => {
+        const preview = previewText(row.description);
+        return preview.truncated
+          ? { ...row, description: preview.text, descriptionTruncated: true }
+          : row;
+      });
+
       return JSON.stringify({
-        incidents: rows,
+        incidents,
         total: Number(countRow?.count ?? 0),
         limit,
         offset,
         includeResolved,
+      });
+    }
+  });
+
+  // ============================================
+  // get_huntress_agents - Tier 1 (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    domain: 'integrations',
+    searchHint: 'Huntress agents: mapped or unmapped to Breeze devices, status, last seen',
+    deviceArgs: ['deviceId'],
+    definition: {
+      name: 'get_huntress_agents',
+      description: 'List Huntress agents with their Breeze device mapping (mapped/unmapped), agent status and last-seen time.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          orgId: { type: 'string', description: 'Optional organization UUID filter' },
+          integrationId: { type: 'string', description: 'Optional Huntress integration UUID filter' },
+          mapping: { type: 'string', enum: ['mapped', 'unmapped', 'all'], description: 'mapped = linked to a Breeze device, unmapped = not linked (default all)' },
+          offlineOnly: { type: 'boolean', description: 'Only agents whose Huntress status is offline/inactive (default false)' },
+          deviceId: { type: 'string', description: 'Optional Breeze device UUID filter' },
+          search: { type: 'string', description: 'Optional hostname substring filter' },
+          limit: { type: 'number', description: 'Maximum results (default 50, max 200)' },
+          offset: { type: 'number', description: 'Offset for pagination (default 0)' },
+        }
+      }
+    },
+    handler: async (input, auth) => {
+      const requestedOrgId = typeof input.orgId === 'string' ? input.orgId : undefined;
+      if (requestedOrgId && !auth.canAccessOrg(requestedOrgId)) {
+        return JSON.stringify({ error: 'Access denied to this organization' });
+      }
+
+      const mapping = input.mapping === 'mapped' || input.mapping === 'unmapped' ? input.mapping : 'all';
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+      const offset = Math.max(0, Number(input.offset) || 0);
+
+      const conditions: SQL[] = [];
+      const orgCondition = auth.orgCondition(huntressAgents.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      if (requestedOrgId) conditions.push(eq(huntressAgents.orgId, requestedOrgId));
+      if (typeof input.integrationId === 'string') conditions.push(eq(huntressAgents.integrationId, input.integrationId));
+      if (typeof input.deviceId === 'string') conditions.push(eq(huntressAgents.deviceId, input.deviceId));
+      if (mapping === 'mapped') conditions.push(isNotNull(huntressAgents.deviceId));
+      if (mapping === 'unmapped') conditions.push(isNull(huntressAgents.deviceId));
+      if (input.offlineOnly === true) {
+        conditions.push(sql`coalesce(lower(${huntressAgents.status}), '') in (${sql.raw(offlineStatusSqlList())})`);
+      }
+      if (typeof input.search === 'string' && input.search.trim()) {
+        conditions.push(ilike(huntressAgents.hostname, '%' + escapeLike(input.search.trim()) + '%'));
+      }
+
+      // Site axis (app-layer only; RLS does NOT enforce it). huntress_agents
+      // has no site_id, so narrow by the in-scope device-id set, exactly like
+      // get_huntress_incidents. Unmapped agents (device_id NULL) belong to no
+      // site and are excluded for a restricted caller (fail closed).
+      if (auth.allowedSiteIds && auth.canAccessSite) {
+        const queryOrgId = requestedOrgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        const allowed = queryOrgId ? await resolveSiteAllowedDeviceIds(queryOrgId, auth) : [];
+        if (!allowed || allowed.length === 0) {
+          return JSON.stringify({ agents: [], total: 0, limit, offset, mapping, scopeNote: SITE_SCOPE_EMPTY_NOTE });
+        }
+        conditions.push(inArray(huntressAgents.deviceId, allowed));
+      }
+
+      // Exact-device axis, applied independently of the site axis (#6086).
+      const agentDeviceCondition = deviceScopeCondition(auth, huntressAgents.deviceId);
+      if (agentDeviceCondition) conditions.push(agentDeviceCondition);
+
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      const [rows, [countRow]] = await Promise.all([
+        db
+          .select({
+            orgId: huntressAgents.orgId,
+            huntressAgentId: huntressAgents.huntressAgentId,
+            hostname: huntressAgents.hostname,
+            platform: huntressAgents.platform,
+            status: huntressAgents.status,
+            lastSeenAt: huntressAgents.lastSeenAt,
+            deviceId: huntressAgents.deviceId,
+            deviceHostname: devices.hostname,
+          })
+          .from(huntressAgents)
+          .leftJoin(devices, eq(huntressAgents.deviceId, devices.id))
+          .where(where)
+          .orderBy(asc(huntressAgents.hostname), asc(huntressAgents.id))
+          .limit(limit)
+          .offset(offset),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(huntressAgents)
+          .where(where),
+      ]);
+
+      return JSON.stringify({
+        agents: rows.map((row) => ({ ...row, mapped: row.deviceId !== null })),
+        total: Number(countRow?.count ?? 0),
+        limit,
+        offset,
+        mapping,
       });
     }
   });

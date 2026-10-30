@@ -41,6 +41,8 @@ import {
   deviceTargetedTaskFieldsSchema,
   operatorTaskDraftSchema,
   operatorTaskListQuerySchema,
+  selfInheritanceField,
+  SELF_INHERITANCE_MESSAGE,
   type CreateOperatorTaskInput,
   type IdentityOffboardingInput,
   type IdentityOnboardingInput,
@@ -401,6 +403,20 @@ const IDENTITY_TOGGLE_TOOLS: Readonly<Record<keyof IdentityOffboardingInput['eff
 type ContactRow = { id: string; name: string | null; email: string | null };
 
 /**
+ * The person leaving named as their own inheritor, once the person is a
+ * resolved contact (#10076). The input validator catches an inheritor equal to
+ * the named `contactId`; only a resolved row shows a hint that resolves to the
+ * inheritor, or a `forwardTo` that is the person's own address. Same 400 shape
+ * as the validator's, with the reason as the error so the form can show it.
+ */
+function selfInheritanceRefusal(input: IdentityOffboardingInput, person: ContactRow) {
+  const field = selfInheritanceField(input, { contactId: person.id, email: person.email });
+  return field
+    ? { error: SELF_INHERITANCE_MESSAGE, code: 'INVALID_INPUT', issues: [{ path: field, message: SELF_INHERITANCE_MESSAGE }] }
+    : null;
+}
+
+/**
  * Who the caller means, READ-ONLY, in the caller's own (RLS-scoped) db
  * context, org-predicated. A substring name match is fine HERE: it only
  * produces candidates for a human to pick from. Admission itself resolves
@@ -488,6 +504,8 @@ async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperato
       .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, input.contactId))).limit(1);
     // Non-enumerating: the same answer whether it exists elsewhere or nowhere.
     if (!row) return c.json({ error: 'Contact not found' }, 404);
+    const selfInheritance = selfInheritanceRefusal(input, row);
+    if (selfInheritance) return c.json(selfInheritance, 400);
     label = row.name ?? row.email ?? label;
   }
   if (input.deviceIds.length > 0) {
@@ -629,6 +647,8 @@ aiOperatorTasksRoutes.post(
       return c.json({ error: 'Name the person with at least two characters, or choose a contact.', code: 'INVALID_INPUT' }, 400);
     }
     const person = await draftPerson(body.orgId, input);
+    const selfInheritance = person.resolved ? selfInheritanceRefusal(input, person.resolved) : null;
+    if (selfInheritance) return c.json(selfInheritance, 400);
     const degraded = new Set(readiness.degradedEffects);
     const plannedEffectTools = (Object.keys(IDENTITY_TOGGLE_TOOLS) as Array<keyof typeof IDENTITY_TOGGLE_TOOLS>)
       .filter((toggle) => input.effects[toggle])

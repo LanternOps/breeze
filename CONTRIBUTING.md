@@ -41,6 +41,11 @@ cp .env.example .env
 # .env.example ships placeholders for them, so local dev layers the dev override on
 # top. Same invocation as docs/guides/DEVELOPER_GUIDE.md.
 docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d postgres redis
+# These publish on 127.0.0.1 only, so the dev Postgres and Redis are reachable
+# from this machine alone. Set BREEZE_DEV_BIND_ADDR=0.0.0.0 only if another
+# machine must reach the stack -- and first replace the POSTGRES_PASSWORD and
+# REDIS_PASSWORD placeholders .env.example ships, because they are published
+# exactly as they stand.
 
 # Set up the database
 pnpm db:migrate

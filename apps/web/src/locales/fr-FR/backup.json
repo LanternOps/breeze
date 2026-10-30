@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Sélection volumineuse",
     "selectFolder": "Sélectionner le dossier {{name}}",
     "confirmLargeFolderSelection": "Cette sélection couvre environ {{formatted}} fichiers et la restauration peut prendre du temps. Continuer ?",
-    "unknownDevice": "Appareil inconnu",
     "kindVm": "Restaurer en tant que VM",
     "kindInstantBoot": "Démarrage instantané",
     "kindSelective": "Restauration sélective",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "Messagerie Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Messagerie Google Workspace",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Drive partagés Google",
       "other": "Autre"
     },
     "noObservation": "Aucune observation",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Impossible de dissocier l'appareil du fournisseur",
       "error": "Impossible de charger l'état de la sauvegarde externe",
       "alsoCheck": "Vérifiez aussi les connexions de sauvegarde tierces dans Intégrations."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} comptes SaaS",
+    "workloadBackup": "Sauvegarde de {{workload}}",
+    "sourceProvider": "Fournisseurs de sauvegarde"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "L'état du système est appliqué par une reconstruction bare-metal",
@@ -1171,5 +1179,10 @@
     "checking": "Vérification en cours",
     "unverified": "Non vérifiée",
     "failed": "Échec du contrôle d'intégrité"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} point d'analyse ignoré : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
+    "summary_other": "{{count}} points d'analyse ignorés : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
+    "showDetails": "Afficher les chemins ignorés"
   }
 }

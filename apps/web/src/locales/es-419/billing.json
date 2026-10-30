@@ -1124,7 +1124,9 @@
         "uploadImage": "No se pudo cargar la imagen.",
         "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual.",
         "sectionAddedListStale": "Se agregó la sección, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla.",
-        "lineAddedListStale": "Se agregó la línea, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla."
+        "lineAddedListStale": "Se agregó la línea, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla.",
+        "saveExpiry": "No se pudo guardar la fecha de vencimiento.",
+        "saveIntroNotes": "No se pudieron guardar las notas de introducción."
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -1348,6 +1350,14 @@
       },
       "warnings": {
         "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. El texto enriquecido admite títulos, negrita, cursiva, subrayado, listas y enlaces."
+      },
+      "intro": {
+        "expiryLabel": "Válida hasta",
+        "expiryHelper": "Se imprime en la propuesta. El cliente puede aceptarla hasta el final de este día. Déjalo en blanco para que no venza.",
+        "expiryPast": "Esta fecha ya pasó — el cliente no puede aceptar una propuesta vencida.",
+        "notesLabel": "Notas de introducción",
+        "notesHelper": "Se imprimen encima de la primera sección de la propuesta.",
+        "notesPlaceholder": "Una nota breve para el cliente, p. ej., qué cubre esta propuesta."
       }
     },
     "actions": {
@@ -2814,7 +2824,6 @@
       "delivery_failed": "No se pudo entregar el aviso",
       "consent_required": "Falta la autorización de pago. Solicita una nueva autorización."
     },
-    "noticeTemplate": "Factura con aviso de pago automático",
     "chargeFailed": "No se pudo iniciar el pago. Inténtalo de nuevo.",
     "chargeResultUnknown": "No pudimos confirmar qué pasó con este pago. Actualizando la factura para mostrar su estado actual.",
     "chargeStarted": "Intento de pago iniciado",
@@ -2954,10 +2963,6 @@
     "saveFailed": "No se pudo guardar la configuración de recordatorios",
     "loadFailed": "No se pudo cargar la configuración de recordatorios",
     "retry": "Reintentar",
-    "loading": "Cargando configuración de pagos…",
-    "templates": {
-      "paymentReminder": "Recordatorio de pago",
-      "paymentOverdue": "Recordatorio de pago vencido"
-    }
+    "loading": "Cargando configuración de pagos…"
   }
 }

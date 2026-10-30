@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import {
   backupSlaConfigs,
   backupSlaEvents,
@@ -444,6 +445,11 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
       // caller itself, covering the site axis AND the exact-device axis.
       if (!canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
+
+      if (action === 'create' || action === 'update') {
+        const partnerGroupIds = await findPartnerOwnedGroupIds(Array.isArray(input.targetGroups) ? input.targetGroups as string[] : []);
+        if (partnerGroupIds.length > 0) return JSON.stringify(partnerGroupTargetRefusal(partnerGroupIds));
       }
 
       if (action === 'create') {
