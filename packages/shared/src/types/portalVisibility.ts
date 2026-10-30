@@ -226,6 +226,22 @@ export interface BackupOverviewDto {
   /** Distinct third-party backup labels shown for this org (D5-resolved),
    *  sorted. Empty when no third-party backup reports for the org. (#6012) */
   externalProviders: string[];
+  /** Third-party SaaS backup (Microsoft 365 / Google Workspace), one entry per
+   *  workload. Never counted in the device totals above. Absent from producers
+   *  that predate it, so readers treat a missing array as empty. (#10600) */
+  saasWorkloads?: BackupSaasWorkloadDto[];
+}
+
+export interface BackupSaasWorkloadDto {
+  /** D5-resolved: null unless the MSP chose to name the vendor in the portal. */
+  providerLabel: string | null;
+  /** Data-source key, e.g. `m365_mail`, `gws_drive`. */
+  workload: string;
+  accountType: 'm365' | 'gws';
+  health: BackupHealth;
+  status: ExternalBackupStatus;
+  lastSuccessAt: string | null;
+  itemCount: number | null;
 }
 
 export interface BackupDevicesDto {

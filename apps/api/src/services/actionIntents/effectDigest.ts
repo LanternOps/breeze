@@ -485,6 +485,58 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   'manage_contracts:activate': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
   'manage_contracts:cancel': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
 
+  // manage_contracts:generate_invoice (full-control W14 PR B, #6784; four-eyes, quorum QW1/QW9, PR B quorum
+  // QB1-QB3). Pins the WHOLE computed invoice the next billing run would create: the period, the currency, every
+  // line's quantity / unit price / tax flag / total and its overage leg, subtotal / tax / total, auto-issue and the
+  // recipients the auto-issue email goes to (contractInvoicePreview.ts mirrors generateDueInvoice without writing).
+  // A device added, a catalog price or tax rate edited, the billing contact changed, auto-issue switched or the
+  // period billed in the meantime all change it, and the release refuses (content_changed). Mandatory per action
+  // (pinnedEffectPolicy.ts). Loaded on demand: the preview pulls the contract and catalog service graph, which this
+  // module (imported by the release worker) must not load eagerly. The preview reads through the ambient context,
+  // which every call site of this module runs system-scoped (the manage_patches:install caller obligation).
+  'manage_contracts:generate_invoice': async (args) => {
+    const contractId = typeof args.contractId === 'string' ? args.contractId : null;
+    if (!contractId) return MISSING_ARG;
+    if (!UUID_RE.test(contractId)) return TARGET_ABSENT;
+    const { previewDueInvoice, previewDigestMaterial, ContractInvoicePreviewNotFound } = await import('../contractInvoicePreview');
+    try {
+      return material(previewDigestMaterial(await previewDueInvoice(contractId)));
+    } catch (err) {
+      if (err instanceof ContractInvoicePreviewNotFound) return TARGET_ABSENT;
+      throw err;
+    }
+  },
+
+  // manage_accounting_sync push / push_bulk (full-control W14 PR B, #6784; four-eyes, QW1, PR B quorum QB4/QB5):
+  // every input of what lands in the books — the invoice and its lines, the destination connection and payload
+  // settings, the invoice / customer / item mapping rows, and the customer's and items' payload inputs
+  // (accountingPushDigest.ts). push_bulk pins each invoice in sorted id order; an unknown id pins as null. The
+  // handler pushes synchronously at release (never queued), so the pin binds the push that runs. Mandatory.
+  'manage_accounting_sync:push': async (args, database) => {
+    const invoiceId = typeof args.invoiceId === 'string' ? args.invoiceId : null;
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    if (!invoiceId || !provider) return MISSING_ARG;
+    if (!UUID_RE.test(invoiceId)) return TARGET_ABSENT;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pinned = await accountingPushMaterial(database, invoiceId, provider);
+    if (!pinned) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, push: pinned }));
+  },
+  'manage_accounting_sync:push_bulk': async (args, database) => {
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    const ids = Array.isArray(args.invoiceIds)
+      ? [...new Set(args.invoiceIds.filter((id): id is string => typeof id === 'string'))].sort()
+      : [];
+    if (!provider || ids.length === 0) return MISSING_ARG;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pushes: Array<[string, Record<string, unknown> | null]> = [];
+    for (const id of ids) {
+      pushes.push([id, UUID_RE.test(id) ? await accountingPushMaterial(database, id, provider) : null]);
+    }
+    if (pushes.every(([, m]) => m === null)) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, pushes }));
+  },
+
   // manage_ai_agents (P2-5, #4192) — registered under the WHOLE-TOOL key, not
   // `manage_ai_agents:authorize_supervised_key`. The tool is a member of BOTH
   // TIER3_FOUR_EYES_ACTIONS and the whole-tool TIER3_FOUR_EYES_TOOLS fail-safe,

@@ -206,17 +206,28 @@ func (h *Heartbeat) recordPendingPamConsent(requestID, targetWinSession string, 
 // the pre-#8995 behaviour — and is logged with the reason. Unless the prompt
 // is known gone, the record is handed back so a redelivered apply can retry.
 func (h *Heartbeat) dismissApprovedPamConsent(requestID string) {
+	h.dismissRecordedPamConsent(requestID, "approved elevation launched", "-approved-consent")
+}
+
+// dismissRecordedPamConsent closes the request's own recorded UAC prompt
+// with the targeted (#10177) dismissal and reports whether it is proven
+// gone. when names the moment for the logs ("approved elevation launched",
+// or "request sent to IT" when the elevation waiting card replaces it,
+// #10190 W07). It never engages the fail-closed PAM gate. A prompt not
+// proven gone stays recorded, so a later approved launch tries again.
+func (h *Heartbeat) dismissRecordedPamConsent(requestID, when, idSuffix string) (gone bool) {
 	pending, ok := h.pamPendingConsents.take(requestID)
 	if !ok {
-		log.Debug("pam: approved elevation launched; no recorded consent prompt to dismiss",
+		log.Debug("pam: "+when+"; no recorded consent prompt to dismiss",
 			"elevationRequestId", requestID)
-		return
+		return false
 	}
 	promptGone := false
 	defer func() {
 		if !promptGone {
 			h.pamPendingConsents.restore(requestID, pending)
 		}
+		gone = promptGone
 	}()
 
 	find := h.pamFindSession
@@ -228,21 +239,21 @@ func (h *Heartbeat) dismissApprovedPamConsent(requestID string) {
 		dismiss = h.sessionBroker.DismissPamConsentInstance
 	}
 	if find == nil || dismiss == nil {
-		log.Warn("pam: approved elevation launched but no session broker; the user's UAC prompt was left open",
+		log.Warn("pam: "+when+" but no session broker; the user's UAC prompt was left open",
 			"elevationRequestId", requestID)
 		return
 	}
 
 	session := find(ipc.ScopePam, pending.winSession)
 	if session == nil {
-		log.Warn("pam: approved elevation launched but no SYSTEM helper in the requester's session; the user's UAC prompt was left open",
+		log.Warn("pam: "+when+" but no SYSTEM helper in the requester's session; the user's UAC prompt was left open",
 			"elevationRequestId", requestID, "targetWinSession", pending.winSession)
 		return
 	}
 	if session.WinSessionID != pending.winSession {
 		// FindCapableSession never falls back for PAM today; this keeps a
 		// future change from steering a dismissal into another user's session.
-		log.Warn("pam: helper session does not match the prompt's session; the user's UAC prompt was left open",
+		log.Warn("pam: "+when+"; helper session does not match the prompt's session; the user's UAC prompt was left open",
 			"elevationRequestId", requestID, "targetWinSession", pending.winSession, "helperWinSession", session.WinSessionID)
 		return
 	}
@@ -264,7 +275,7 @@ func (h *Heartbeat) dismissApprovedPamConsent(requestID string) {
 			skipped = true
 			return
 		}
-		res, err = dismiss(session, requestID+"-approved-consent", instance, pamDismissTimeout)
+		res, err = dismiss(session, requestID+idSuffix, instance, pamDismissTimeout)
 		var uncertain *sessionbroker.PamDismissUncertainError
 		if errors.As(err, &uncertain) && uncertain.Quiesced != nil {
 			// The helper may still be about to press Escape. Keep the lock —
@@ -281,29 +292,30 @@ func (h *Heartbeat) dismissApprovedPamConsent(requestID string) {
 
 	switch {
 	case skipped:
-		log.Warn("pam: approved elevation launched; UAC prompt left open while the PAM dismissal gate is engaged",
+		log.Warn("pam: "+when+"; UAC prompt left open while the PAM dismissal gate is engaged",
 			"elevationRequestId", requestID)
 	case errors.Is(err, sessionbroker.ErrPamTargetedDismissUnsupported):
-		log.Warn("pam: approved elevation launched; the PAM helper is too old to dismiss one specific UAC prompt, so it was left open",
+		log.Warn("pam: "+when+"; the PAM helper is too old to dismiss one specific UAC prompt, so it was left open",
 			"elevationRequestId", requestID, "helperPid", session.PID)
 	case unquiesced:
-		log.Warn("pam: approved elevation launched; dismissing the user's UAC prompt timed out and the helper never reported back — outcome unknown, prompt may still be open",
+		log.Warn("pam: "+when+"; dismissing the user's UAC prompt timed out and the helper never reported back — outcome unknown, prompt may still be open",
 			"elevationRequestId", requestID, "error", err.Error())
 	case err != nil:
-		log.Warn("pam: approved elevation launched; dismissing the user's UAC prompt failed, it may still be open",
+		log.Warn("pam: "+when+"; dismissing the user's UAC prompt failed, it may still be open",
 			"elevationRequestId", requestID, "error", err.Error())
 	case res.Success:
 		promptGone = true
-		log.Info("pam: approved elevation launched; dismissed the user's UAC prompt",
+		log.Info("pam: "+when+"; dismissed the user's UAC prompt",
 			"elevationRequestId", requestID, "consentPid", pending.instance.PID)
 	case res.Reason == pamactuator.ReasonNoConsentWindow:
 		promptGone = true
-		log.Info("pam: approved elevation launched; the user's UAC prompt had already closed",
+		log.Info("pam: "+when+"; the user's UAC prompt had already closed",
 			"elevationRequestId", requestID)
 	default:
-		log.Warn("pam: approved elevation launched; the user's UAC prompt could not be dismissed and may still be open",
+		log.Warn("pam: "+when+"; the user's UAC prompt could not be dismissed and may still be open",
 			"elevationRequestId", requestID, "dismiss_reason", res.Reason, "dismiss_message", res.DetailMessage)
 	}
+	return promptGone
 }
 
 // awaitApprovedConsentQuiescence waits (bounded) for the late helper response

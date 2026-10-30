@@ -162,6 +162,11 @@ This starts:
 - Redis on port 6379
 - MinIO on port 9000/9001 (optional)
 
+These publish on `127.0.0.1` only, so the dev services are reachable from this
+machine alone. Set `BREEZE_DEV_BIND_ADDR=0.0.0.0` only if another machine must
+reach the stack, and change the passwords first if you do — see
+`CONTRIBUTING.md` for which ones.
+
 **2. Initialize the database:**
 
 ```bash

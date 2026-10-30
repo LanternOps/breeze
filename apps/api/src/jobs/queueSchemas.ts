@@ -303,6 +303,11 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     automationId: z.string().min(1),
     slotKey: z.string().min(1),
     scanAt: z.string().min(1),
+    // #5221 B2 (Decision 6): `false` only when the scan read the row as
+    // SWITCHED. Absent ⇒ true: the scan read it unswitched, or the job predates
+    // the field (no row could be switched before this field existed). Legacy
+    // attempts such a job; the occurrence claim dedupes it against the flow.
+    enqueuedWhileUnswitched: z.boolean().optional(),
   }).strict(),
   z.object({
     type: z.literal('trigger-event'),
@@ -311,6 +316,8 @@ export const automationQueueJobDataSchema = z.discriminatedUnion('type', [
     eventId: z.string().min(1).optional(),
     eventPayload: z.record(z.string(), z.unknown()).optional(),
     eventTimestamp: z.string().min(1),
+    // #5221 B2 — as trigger-schedule's: false only from the switched-row fan-out.
+    enqueuedWhileUnswitched: z.boolean().optional(),
   }).strict(),
   z.object({
     type: z.literal('execute-run'),
@@ -621,3 +628,12 @@ export const flowRunJobDataSchema = z.object({
   runId: z.string().uuid(),
 }).strict();
 export type FlowRunJobData = z.infer<typeof flowRunJobDataSchema>;
+
+// The delivery row owns the payload and retry state; Redis carries references only.
+export const webhookAttemptJobDataSchema = z.object({
+  deliveryId: z.string().uuid(),
+  webhookId: z.string().uuid(),
+  generation: z.number().int().min(0),
+  attemptsMade: z.number().int().min(0),
+}).strict();
+export type WebhookAttemptJobData = z.infer<typeof webhookAttemptJobDataSchema>;

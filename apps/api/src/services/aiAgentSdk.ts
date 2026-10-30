@@ -2355,7 +2355,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // every pinned release would have been content_changed). One
           // predicate, one behavior, in one place.
           // Mandatory pin (M4-D3): same explicit refusal as the durable worker.
-          if (!hasPinnedDigest(intentRow) && requiresPinnedEffectDigest(intentRow.actionName)) {
+          if (!hasPinnedDigest(intentRow) && requiresPinnedEffectDigest(intentRow.actionName, intentRow.arguments as Record<string, unknown> | null)) {
             const requiredCasWon = await transitionIntentAndPublish(
               intent.id,
               'failed',

@@ -166,6 +166,8 @@ function parseHash(fallbackTab: TabId): ParsedHash {
 }
 
 function parseHashValue(hash: string, fallbackTab: TabId): ParsedHash {
+  // The webhook panel owns its filter state inside this tab's hash.
+  if (hash.startsWith("webhooks?")) return { tab: "webhooks" };
   const customerGraphReadPrefix = "m365/customer-graph-read/";
   if (hash.startsWith(customerGraphReadPrefix)) {
     const candidate = hash.slice(customerGraphReadPrefix.length);

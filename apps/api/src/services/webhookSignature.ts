@@ -18,6 +18,20 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export type BreezeHmacFailure = 'missing_signature' | 'missing_timestamp' | 'invalid_timestamp' | 'stale_timestamp' | 'bad_signature';
 
+/**
+ * `X-Breeze-Timestamp` as epoch milliseconds (unix seconds or milliseconds),
+ * or null when it is missing, not a number or not positive. The verifier's
+ * own parse, exported so a caller keying an occurrence by the signed instant
+ * reads it exactly as it was verified.
+ */
+export function breezeHmacTimestampMs(raw: string | null | undefined): number | null {
+  const timestamp = raw?.trim();
+  if (!timestamp) return null;
+  const parsed = Number(timestamp);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed > 1_000_000_000_000 ? parsed : parsed * 1000;
+}
+
 export function verifyBreezeHmacSignature(i: {
   secret: string;
   timestamp: string | null | undefined;
@@ -31,9 +45,8 @@ export function verifyBreezeHmacSignature(i: {
 
   const timestamp = i.timestamp?.trim();
   if (!timestamp) return { ok: false, reason: 'missing_timestamp' };
-  const parsed = Number(timestamp);
-  if (!Number.isFinite(parsed) || parsed <= 0) return { ok: false, reason: 'invalid_timestamp' };
-  const timestampMs = parsed > 1_000_000_000_000 ? parsed : parsed * 1000;
+  const timestampMs = breezeHmacTimestampMs(timestamp);
+  if (timestampMs === null) return { ok: false, reason: 'invalid_timestamp' };
   if (Math.abs(i.now - timestampMs) > i.windowMs) return { ok: false, reason: 'stale_timestamp' };
 
   const expected = `sha256=${createHmac('sha256', i.secret).update(`${timestamp}.${i.payload}`).digest('hex')}`;
