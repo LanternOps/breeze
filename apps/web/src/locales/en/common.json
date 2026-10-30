@@ -569,7 +569,9 @@
       "after": "is after",
       "between": "is between",
       "withinLast": "within last",
-      "notWithinLast": "not within last"
+      "notWithinLast": "not within last",
+      "below": "below",
+      "atLeast": "at least"
     },
     "value": {
       "noValue": "No value needed",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removed"
-      }
+      },
+      "softwareName": "Software name",
+      "softwareVersion": "Software version"
     }
   },
   "account": {
@@ -1297,6 +1301,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Ownership",
+        "allOrganizations": "All organizations",
+        "thisOrganizationOnly": "This organization only",
+        "all": "All",
+        "organization": "Organization",
+        "test": "Test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} delivery attempts",
         "empty": "No delivery attempts yet.",
@@ -1388,6 +1400,14 @@
           "integrationHealthResolved": {
             "description": "Triggered when a connection health incident is resolved.",
             "label": "Connection health incident resolved"
+          },
+          "alertAcknowledged": {
+            "label": "Alert Acknowledged",
+            "description": "Triggered when an alert is acknowledged."
+          },
+          "alertSuppressed": {
+            "label": "Alert Suppressed",
+            "description": "Triggered when Breeze AI suppresses an alert. Suppressing from the dashboard does not send it yet."
           }
         },
         "fields": {
@@ -1439,6 +1459,22 @@
           "secretRequired": "Secret is required for HMAC authentication",
           "tokenRequired": "Token is required for bearer authentication",
           "urlRequired": "URL is required"
+        },
+        "neverDelivered": {
+          "marker": "Never delivered",
+          "explanation": "Breeze never sends this event. It will be removed when you save this webhook.",
+          "banner": "Breeze never sends this event, so this webhook has never delivered. Choose another event before saving."
+        },
+        "payloadVersion": {
+          "title": "Payload version",
+          "v2": {
+            "label": "v2 (recommended)",
+            "description": "Alert events include hostname, site, organization, status, and a link to the alert."
+          },
+          "v1": {
+            "label": "v1 (original)",
+            "description": "The original alert payload, kept for existing integrations."
+          }
         }
       },
       "WebhookList": {

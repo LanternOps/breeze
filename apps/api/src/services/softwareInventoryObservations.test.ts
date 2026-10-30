@@ -6,7 +6,8 @@ import type { LegacySoftwareInventoryReport, SoftwareInventoryObservationV2 } fr
 // touches these — `decideSoftwareInventoryAcceptance` and
 // `replaceSoftwareInventoryProjection` take a `tx` argument directly and never
 // reach the module-level `db` import, so mocking it here doesn't affect them.
-const { transactionMock, tightenLockTimeoutMock, captureMessageMock } = vi.hoisted(() => ({
+const { transactionMock, tightenLockTimeoutMock, captureMessageMock, requestDeviceGroupReevaluationAfterCommitMock } = vi.hoisted(() => ({
+  requestDeviceGroupReevaluationAfterCommitMock: vi.fn(),
   transactionMock: vi.fn(),
   tightenLockTimeoutMock: vi.fn(async () => null),
   captureMessageMock: vi.fn(),
@@ -22,6 +23,12 @@ vi.mock('../db/lockTimeout', () => ({
   tightenLockTimeout: tightenLockTimeoutMock,
 }));
 
+vi.mock('../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestDeviceGroupReevaluationAfterCommitMock,
+}));
+
+beforeEach(() => requestDeviceGroupReevaluationAfterCommitMock.mockReset());
+
 vi.mock('./sentry', () => ({ captureMessage: captureMessageMock }));
 
 import {
@@ -29,8 +36,10 @@ import {
   replaceSoftwareInventoryProjection,
   ingestSoftwareInventoryReport,
   INVENTORY_LOCK_TIMEOUT_MS,
+  SOFTWARE_GROUP_FILTER_FIELDS,
   SoftwareInventoryLockTimeoutError,
 } from './softwareInventoryObservations';
+import { FILTER_FIELDS } from './filterEngine';
 
 const item = { name: 'Google Chrome', version: '127', vendor: 'Google LLC' };
 const receivedAt = new Date('2026-08-24T12:00:00.000Z');
@@ -144,7 +153,7 @@ describe('replaceSoftwareInventoryProjection', () => {
     return {
       tx: {
         select,
-        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn((values: Array<Record<string, unknown>>) => {
             inserted.push(...values);
@@ -179,7 +188,7 @@ describe('replaceSoftwareInventoryProjection', () => {
           where: vi.fn().mockResolvedValue([{ id: 'new-row', name: 'Google Chrome', vendor: ' google llc ' }]),
         }),
       }),
-      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }),
       insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
       update: vi.fn().mockReturnValue({
         set: vi.fn((value) => {
@@ -395,5 +404,167 @@ describe('ingestSoftwareInventoryReport lock-timeout give-up reporting (#5181)',
     expect(thrown).toBe(boom);
     expect(tightenLockTimeoutMock).toHaveBeenCalledTimes(1);
     expect(captureMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+type InventoryRow = { name: string; version: string | null; vendor: string | null };
+
+function inventoryDiffTx(previous: InventoryRow[]) {
+  return {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      }),
+    }),
+    delete: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(previous) }),
+    }),
+    insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+    update: vi.fn(),
+  };
+}
+
+const inventoryDevice = { id: '11111111-1111-4111-8111-111111111112', orgId: '11111111-1111-4111-8111-111111111113', agentVersion: '1.0.0' };
+
+describe('replaceSoftwareInventoryProjection software multiset diff (#10539)', () => {
+  const row = (name: string, version: string | null = '2.0', vendor: string | null = null): InventoryRow => ({ name, version, vendor });
+  const allFields = ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'];
+  const detailFields = ['software.version', 'software.vendor'];
+
+  it.each([
+    ['names change', [row('A'), row('B')], [row('A'), row('C')], allFields],
+    ['only versions change', [row('A', '1')], [row('A', '2')], detailFields],
+    ['only vendors change', [row('A', '2', 'Old')], [row('A', '2', 'New')], detailFields],
+    ['order differs only', [row('A'), row('B'), row('A')], [row('B'), row('A'), row('A')], []],
+    ['duplicate counts differ', [row('A'), row('B'), row('A')], [row('B'), row('A'), row('B')], detailFields],
+    ['case-only rename', [row('chrome')], [row('Chrome')], allFields],
+    ['non-empty becomes empty', [row('A')], [], allFields],
+    ['empty remains empty', [], [], []],
+    ['null version changes', [row('A', null)], [row('A', '2')], detailFields],
+    ['reported version whitespace is normalized', [row('A', '2')], [row('A', ' 2 ')], []],
+  ])('returns affected fields when %s', async (_label, previous, next, changedFields) => {
+    const tx = inventoryDiffTx(previous as InventoryRow[]);
+    const result = await replaceSoftwareInventoryProjection(tx as never, {
+      device: inventoryDevice,
+      items: (next as InventoryRow[]).map(({ name, version, vendor }) => ({ name, version: version ?? undefined, vendor: vendor ?? undefined })),
+      observationId: v2().observationId,
+      receivedAt,
+    });
+    expect(result).toEqual({ changedFields });
+  });
+
+  it.each([
+    ['ignores a stale reported agent version when the inserted version is unchanged', '1.0.0', []],
+    ['detects a live agent upgrade even when the reported version is unchanged', '0.9.0', ['software.version', 'software.vendor']],
+  ])('%s', async (_label, previousVersion, changedFields) => {
+    const tx = inventoryDiffTx([row('Breeze Agent', previousVersion as string)]);
+    const result = await replaceSoftwareInventoryProjection(tx as never, {
+      device: inventoryDevice,
+      items: [{ name: 'Breeze Agent', version: '0.9.0' }],
+      observationId: v2().observationId,
+      receivedAt,
+    });
+    expect(result).toEqual({ changedFields });
+    expect(tx.insert().values).toHaveBeenCalledWith([expect.objectContaining({ version: '1.0.0' })]);
+  });
+});
+
+describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
+  beforeEach(() => {
+    transactionMock.mockReset();
+    tightenLockTimeoutMock.mockReset();
+    tightenLockTimeoutMock.mockResolvedValue(null);
+  });
+
+  function ingestTx(previous: Array<string | InventoryRow>, stateOverrides = {}, legacy = false) {
+    const execute = vi.fn().mockResolvedValueOnce([{ id: inventoryDevice.id, org_id: inventoryDevice.orgId }]);
+    if (!legacy) execute.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const tx = {
+      ...inventoryDiffTx(previous.map((row) => typeof row === 'string' ? { name: row, version: '1', vendor: null } : row)),
+      execute: execute.mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{
+          latest_observation_id: null,
+          latest_received_at: null,
+          has_accepted_v2: false,
+          visible_item_count: previous.length,
+          latest_accepted_expected_sources: null,
+          ...stateOverrides,
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    transactionMock.mockImplementation(async (callback) => callback(tx));
+    return tx;
+  }
+
+  const report = v2({ itemCount: 2, items: [{ name: 'A', version: '2' }, { name: 'C', version: '2' }] });
+  const ingest = (inventory = report) => ingestSoftwareInventoryReport({ device: inventoryDevice, report: inventory, receivedAt });
+
+  it('requests a software re-evaluation when the installed-name set changes', async () => {
+    ingestTx(['A', 'B']);
+    await ingest();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith({
+      deviceId: inventoryDevice.id,
+      orgId: inventoryDevice.orgId,
+      eventType: 'device.updated',
+      changedFields: ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'],
+      reason: 'software_inventory_change',
+    });
+  });
+
+  it('requests version/vendor re-evaluation when only versions change', async () => {
+    const tx = ingestTx(['A', 'C']);
+    await ingest();
+    expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      changedFields: ['software.version', 'software.vendor'],
+    }));
+  });
+
+  it('requests version/vendor re-evaluation for vendor-only changes', async () => {
+    ingestTx([{ name: 'A', version: '2', vendor: 'Old' }, { name: 'C', version: '2', vendor: null }]);
+    await ingest();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      changedFields: ['software.version', 'software.vendor'],
+    }));
+  });
+
+  it('does not request re-evaluation when inventory is unchanged', async () => {
+    ingestTx([{ name: 'C', version: '2', vendor: null }, { name: 'A', version: '2', vendor: null }]);
+    await ingest();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('does not request one for a rejected_out_of_order report', async () => {
+    const tx = ingestTx(['A', 'B'], { latest_received_at: new Date(receivedAt.getTime() + 1000) });
+    expect((await ingest()).reasonCode).toBe('rejected_out_of_order');
+    expect(tx.delete).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
+  });
+
+  it('requests one for an accepted legacy report whose names changed', async () => {
+    ingestTx(['A', 'B'], { has_accepted_v2: false }, true);
+    const result = await ingestSoftwareInventoryReport({
+      device: inventoryDevice,
+      report: { software: [{ name: 'A' }, { name: 'C' }] },
+      receivedAt,
+    });
+    expect(result.reasonCode).toBe('accepted_legacy');
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith({
+      deviceId: inventoryDevice.id,
+      orgId: inventoryDevice.orgId,
+      eventType: 'device.updated',
+      changedFields: ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'],
+      reason: 'software_inventory_change',
+    });
+  });
+
+  it('requests re-evaluation for exactly the software fields the filter catalogue offers', () => {
+    const softwareFields = FILTER_FIELDS.filter((field) => field.category === 'software').map((field) => field.key);
+    expect(softwareFields.sort()).toEqual([...SOFTWARE_GROUP_FILTER_FIELDS].sort());
   });
 });

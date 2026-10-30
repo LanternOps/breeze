@@ -78,6 +78,20 @@ describe('deriveCollection — per-OID state', () => {
     expect(c.oids[0]!.state).toBe('stale');
   });
 
+  it('a slow-cadence value is judged against its own hourly refresh, not the fast poll', () => {
+    // Slow specs ride one dispatch in every SLOW_CADENCE_EVERY (12): at a
+    // 5-minute interval a supply description is refreshed hourly. Judging it
+    // against the fast window flagged every printer's supplies stale for ~50
+    // of every 60 minutes.
+    const slowEntry = { oid: '1.3.6.1.2.1.43.11.1.1.6', name: 'prtMarkerSuppliesDescription', cadence: 'slow' as const };
+    const row = (age: number) => ({
+      oid: '1.3.6.1.2.1.43.11.1.1.6.1.1', baseOid: '1.3.6.1.2.1.43.11.1.1.6', instance: '1.1',
+      name: 'prtMarkerSuppliesDescription', value: 'Black Cartridge', valueType: 'string', error: null, timestamp: ago(age),
+    });
+    expect(deriveCollection(base({ templateOids: [slowEntry], metrics: [row(65 * MIN)] })).oids[0]!.state).toBe('collecting');
+    expect(deriveCollection(base({ templateOids: [slowEntry], metrics: [row(121 * MIN)] })).oids[0]!.state).toBe('stale');
+  });
+
   it('no rows on a never-successful device is never_polled', () => {
     const c = deriveCollection(base({ snmpDevice: device({ lastPolled: null, lastStatus: null }) }));
     expect(c.oids[0]!.state).toBe('never_polled');

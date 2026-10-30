@@ -81,6 +81,15 @@ const and = (...conditions: FilterConditionGroup['conditions']): FilterCondition
 const or = (...conditions: FilterConditionGroup['conditions']): FilterConditionGroup => ({ operator: 'OR', conditions });
 
 describe('evaluateNetworkAssetFilter', () => {
+  it.each([net(), manual()])('treats software version and vendor as agent-only for $deviceClass rows', device => {
+    for (const condition of [
+      { field: 'software.version', operator: 'below' as const, value: { name: 'Chrome', version: '130' } },
+      { field: 'software.vendor', operator: 'equals' as const, value: 'Google' }
+    ]) {
+      expect(evaluateNetworkAssetFilter(and(condition), device)).toEqual({ matches: false, inapplicableFields: [condition.field] });
+    }
+  });
+
   it('matches the Online chip for an online network device and rejects it for Offline', () => {
     expect(evaluateNetworkAssetFilter(and({ field: 'status', operator: 'equals', value: 'online' }), net())).toEqual({ matches: true, inapplicableFields: [] });
     expect(evaluateNetworkAssetFilter(and({ field: 'status', operator: 'equals', value: 'offline' }), net()).matches).toBe(false);

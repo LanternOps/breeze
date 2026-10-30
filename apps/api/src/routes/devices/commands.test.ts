@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { Hono } from 'hono';
 
 vi.mock('../../services/stepUpActorAssurance', () => ({ lockActorAssurance: vi.fn(async () => true) }));
@@ -1174,6 +1175,10 @@ describe('device commands routes', () => {
   function mockMaintenanceTx(row: Record<string, unknown> | null) {
     const calls: string[] = [];
     const captured: Array<Record<string, unknown>> = [];
+    // The predicate handed to the lease UPDATE, kept so a test can COMPILE it.
+    // It is the only place the route's choice of device id is observable here:
+    // the digest folds case internally, and the audit reads the returned row.
+    const updateWheres: unknown[] = [];
     const txSelect = vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
@@ -1185,11 +1190,11 @@ describe('device commands routes', () => {
       set: vi.fn((values: Record<string, unknown>) => {
         captured.push(values);
         calls.push('update');
-        return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...row, ...values }]) })) };
+        return { where: vi.fn((cond: unknown) => { updateWheres.push(cond); return { returning: vi.fn(async () => [{ ...row, ...values }]) }; }) };
       }),
     }));
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect, update: txUpdate }));
-    return { calls, captured, txSelect, txUpdate };
+    return { calls, captured, txSelect, txUpdate, updateWheres };
   }
 
   describe('POST /devices/bulk/maintenance', () => {
@@ -1401,6 +1406,32 @@ describe('device commands routes', () => {
       expect(db.transaction).not.toHaveBeenCalled();
     });
 
+    // ---- #10119: the route dedups through the same helper the digest uses, so
+    // two spellings of one device are one device — one lease, one audit row,
+    // and a digest equal to the single-spelling set.
+    it('#10119 treats two spellings of one device as one device', async () => {
+      const HEX = 'abcdef12-3456-4789-8abc-def012345678';
+      vi.mocked(getDeviceWithOrgCheck).mockImplementation(async (id: string) => row(id) as never);
+      mockBulkTx([row(HEX)]);
+
+      const res = await bulkPost({
+        deviceIds: [HEX, HEX.toUpperCase()],
+        reason: 'scheduled patching', durationHours: 2, stepUpGrant: GRANT,
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.succeeded).toHaveLength(1);
+      expect(body.failed).toEqual([]);
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({
+        resourceDigest: maintenanceResourceDigest({ deviceIds: [HEX], reason: 'scheduled patching', durationHours: 2 }),
+      }));
+      const deviceAudits = vi.mocked(writeRouteAudit).mock.calls
+        .map((call) => call[1] as any)
+        .filter((r) => r.resourceId === HEX);
+      expect(deviceAudits).toHaveLength(1);
+    });
+
     it('is registered BEFORE /:id/maintenance so "bulk" is not read as a device id', async () => {
       stubLookups();
       mockMaintenanceTx(row(ids.ok));
@@ -1507,6 +1538,41 @@ describe('device commands routes', () => {
         action: 'device.maintenance.enable',
         details: expect.objectContaining({ reason: 'scheduled patching', durationHours: 2, stepUp: 'grant' }),
       }));
+    });
+
+    // ---- #10119: an uppercase uuid in the path must bind, lease and audit the
+    // CANONICAL id. Hex LETTERS are required: this file's other ids are
+    // digit-only, and `toUpperCase()` on those is a no-op, so a case test built
+    // on them would pass against unfixed code (*Quality review* rule 7).
+    it('#10119 binds, leases and audits the canonical device id on an uppercase path', async () => {
+      const HEX = 'abcdef12-3456-4789-8abc-def012345678';
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow({ id: HEX }) as never);
+      const { captured, updateWheres } = mockMaintenanceTx(deviceRow({ id: HEX }));
+
+      const res = await app.request(`/devices/${HEX.toUpperCase()}/maintenance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: enterBody(),
+      });
+
+      expect(res.status).toBe(200);
+      // The lookup still receives the RAW spelling — that is what resolves it.
+      expect(getDeviceWithOrgCheck).toHaveBeenCalledWith(HEX.toUpperCase(), expect.anything());
+      // Everything after the lookup uses device.id.
+      const binding = {
+        userId: 'user-123', operation: 'device_maintenance', authEpoch: 1, mfaEpoch: 1, sid: 'sid-1',
+        resourceDigest: maintenanceResourceDigest({ deviceIds: [HEX], reason: 'scheduled patching', durationHours: 2 }),
+      };
+      expect(validateStepUpGrant).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', binding);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', binding);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ resourceId: HEX }));
+      expect(captured[0]).toMatchObject({ status: 'maintenance' });
+      // The discriminating assertion. The digest folds case internally and the
+      // audit reads the id off the returned row, so neither notices which
+      // spelling the route used; the lease predicate does. Compile it.
+      const { params } = new PgDialect().sqlToQuery(updateWheres[0] as never);
+      expect(params).toContain(HEX);
+      expect(params).not.toContain(HEX.toUpperCase());
     });
 
     // ---- T5: extension semantics.

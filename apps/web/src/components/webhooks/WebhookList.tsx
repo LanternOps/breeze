@@ -8,6 +8,8 @@ import { useTranslation } from 'react-i18next';
 // The API's status vocabulary (routes/webhooks.ts). PATCH takes the same
 // values, so the toggle and the edit form's switch write `status`, never an
 // `enabled` flag the API would strip (#6767).
+export type WebhookOwnerFilter = 'all' | 'organization' | 'partner';
+
 export type WebhookStatus = 'active' | 'paused' | 'failed';
 
 type DisplayStatus = 'active' | 'disabled';
@@ -28,9 +30,13 @@ export type WebhookHeader = {
 
 export type Webhook = {
   id: string;
+  orgId?: string | null;
+  partnerId?: string | null;
+  ownerScope?: 'organization' | 'partner';
   name: string;
   url: string;
   events: string[];
+  payloadVersion?: 1 | 2;
   status?: WebhookStatus;
   enabled?: boolean;
   lastDeliveryAt?: string | null;
@@ -55,6 +61,8 @@ type WebhookListProps = {
   timezone?: string;
   /** False when the host already titles the panel (embedded in Integrations). */
   showTitle?: boolean;
+  ownerScope?: WebhookOwnerFilter;
+  onOwnerScopeChange?: (value: WebhookOwnerFilter) => void;
 };
 
 const statusStyles: Record<DisplayStatus, string> = {
@@ -80,10 +88,14 @@ export default function WebhookList({
   onSelect,
   selectedWebhookId,
   timezone,
-  showTitle = true
+  showTitle = true,
+  ownerScope,
+  onOwnerScopeChange
 }: WebhookListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
+  const [localOwnerScope, setLocalOwnerScope] = useState<WebhookOwnerFilter>('all');
+  const ownerFilter = ownerScope ?? localOwnerScope;
   const [statusFilter, setStatusFilter] = useState<DisplayStatus | 'all'>('all');
   const [testingId, setTestingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
@@ -99,9 +111,10 @@ export default function WebhookList({
             webhook.url.toLowerCase().includes(normalizedQuery);
       const matchesStatus = statusFilter === 'all' ? true : getStatus(webhook) === statusFilter;
 
-      return matchesQuery && matchesStatus;
+      const matchesOwner = ownerFilter === 'all' || (ownerFilter === 'partner' ? Boolean(webhook.partnerId) : !webhook.partnerId);
+      return matchesQuery && matchesStatus && matchesOwner;
     });
-  }, [webhooks, query, statusFilter]);
+  }, [webhooks, query, statusFilter, ownerFilter]);
 
   // Write actions render only when their handler is supplied, so a read-only
   // caller gets the list without controls that would be refused.
@@ -140,7 +153,7 @@ export default function WebhookList({
             {t('longTail.webhooks.WebhookList.webhookCount', { filtered: filteredWebhooks.length, total: webhooks.length })}
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <input
             type="search"
             placeholder={t('longTail.webhooks.WebhookList.searchPlaceholder')}
@@ -148,6 +161,20 @@ export default function WebhookList({
             onChange={event => setQuery(event.target.value)}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
           />
+          <FilterSelect
+            label={t('longTail.webhooks.ownership.label')}
+            value={ownerFilter}
+            onChange={event => {
+              const value = event.target.value as WebhookOwnerFilter;
+              setLocalOwnerScope(value);
+              onOwnerScopeChange?.(value);
+            }}
+            className="w-full sm:w-44"
+          >
+            <option value="all">{t('longTail.webhooks.ownership.all')}</option>
+            <option value="organization">{t('longTail.webhooks.ownership.organization')}</option>
+            <option value="partner">{t('longTail.webhooks.ownership.allOrganizations')}</option>
+          </FilterSelect>
           <FilterSelect
             label={t('longTail.webhooks.WebhookList.filters.statusFilterLabel')}
             value={statusFilter}
@@ -198,7 +225,14 @@ export default function WebhookList({
                       selectedWebhookId === webhook.id && 'bg-muted/30'
                     )}
                   >
-                    <td className="px-4 py-3 text-sm font-medium">{webhook.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      {webhook.name}
+                      {webhook.partnerId && (
+                        <span data-testid="webhook-partner-badge" className="mt-1 block w-fit rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                          {t('longTail.webhooks.ownership.allOrganizations')}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">
                       <span className="truncate block max-w-[260px]" title={webhook.url}>
                         {webhook.url}

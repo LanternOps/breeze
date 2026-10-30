@@ -834,7 +834,7 @@ function narrativeContext(
     },
     backupProviders: {
       available: true,
-      devices: 11,
+      devices: 11, saasWorkloads: 2,
       devicesByHealth: { healthy: 8, warning: 1, critical: 2, unknown: 0 },
       criticalDevices: [{ name: 'BACKUP-SVR' }, { name: 'OLD-FILESERVER' }],
       criticalDevicesTruncated: false,
@@ -956,6 +956,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
     const backups = text.slice(text.indexOf('## Backups'), text.indexOf('## Fleet'));
 
     expect(backups).toContain('third-party backup devices: 11');
+    expect(backups).toContain('third-party SaaS backup workloads: 2');
     expect(backups).toContain('third-party backup devices healthy: 8');
     expect(backups).toContain('third-party backup devices critical: 2');
     expect(backups).toContain('BACKUP-SVR');
@@ -968,7 +969,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
   it('says plainly when no third-party backup reports for the org, instead of a column of zeroes', () => {
     const none = narrativeContext();
     none.backupProviders = {
-      available: true, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      available: true, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
     };
     const text = buildNarrativeTaskPrompt(narrativeCtx(none));
@@ -980,7 +981,7 @@ describe('buildNarrativeTaskPrompt (P2-3)', () => {
   it('renders the third-party block as "(not measured)" when its loader failed', () => {
     const failed = narrativeContext();
     failed.backupProviders = {
-      available: false, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      available: false, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
     };
     failed.unavailable = [...failed.unavailable, 'backupProviders'];
