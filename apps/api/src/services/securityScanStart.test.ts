@@ -116,11 +116,11 @@ describe('startDeviceScan', () => {
     expect(insertedRow().autoQuarantineSuppressedReason).toBe('manual_no_mfa');
   });
 
-  it('omits the settings keys entirely when no policy governs the device', async () => {
+  it('omits the policy settings keys but still sends the ceiling deadline when no policy governs the device (#10057)', async () => {
     h.settings.mockResolvedValue(null);
     h.plan.mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: null });
     await startDeviceScan(auth, { deviceId: DEVICE_ID, scanType: 'custom', paths: ['/srv'], mfaSatisfied: true });
-    expect(queued()[2]).toEqual({ scanRecordId: insertedRow().id, scanType: 'custom', paths: ['/srv'], triggerDefender: true });
+    expect(queued()[2]).toEqual({ scanRecordId: insertedRow().id, scanType: 'custom', paths: ['/srv'], triggerDefender: true, timeoutMinutes: 720 });
   });
 
   it('sends the resolved refs and records engine + errors on the scan row', async () => {

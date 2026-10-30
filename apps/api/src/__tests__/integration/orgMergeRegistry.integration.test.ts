@@ -321,6 +321,9 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // #10521 W1 (2027-01-12-200000): RAISEs only on a partner_id change or an
+  // org_id NULL↔NOT NULL flip, so the merge's org_id → org_id repoint passes.
+  'device_groups.device_groups_owner_immutable': 'freezes partner_id and owner kind only; an org-owned group may repoint org_id to another non-null org_id',
   // Tool Catalog W04 (#5219, 2027-01-06-130000-flow-runs.sql): freezes a
   // publication's content (flow_id, publication_seq, definition, pins,
   // bindings, created_at, a non-NULL delegator retarget) but deliberately

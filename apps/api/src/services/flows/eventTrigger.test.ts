@@ -46,7 +46,7 @@ vi.mock('./flowTriggerMetrics', () => ({
 }));
 
 import { flowsEnabled } from '../../config/env';
-import { createFlowRun } from './runService';
+import { createFlowRun, type OccurrenceClaimedResult } from './runService';
 import { buildTriggerScope } from './triggerScope';
 import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { eventMatchesFilter, flowEventTriggerSubscriber } from './eventTrigger';
@@ -120,8 +120,55 @@ describe('flowEventTriggerSubscriber', () => {
       triggerKind: 'event', flowId: FLOW_A, orgId: ORG, dedupeKey: `event:${EVENT_ID}`, chainDepth: 0, causedByRunId: null,
       inputs: { note: null },
       scope: { firedAt: '2026-10-25T10:00:00.000Z', event: { id: EVENT_ID, type: 'alert.triggered' }, payload: event().payload },
+      // #5221 B2: the cross-engine occurrence (consulted only for a converted flow).
+      occurrence: { keys: [`event:${EVENT_ID}`], at: new Date('2026-10-25T10:00:00.000Z') },
     });
     expect(buildTriggerScope).toHaveBeenCalledWith({ kind: 'event', orgId: ORG, event: event() });
+  });
+
+  describe('occurrence claims (#5221 B2)', () => {
+    const LEGACY_RUN = '99999999-9999-4999-8999-999999999999';
+    // vi.mocked types createFlowRun by its LAST overload (no occurrence), which
+    // cannot return `occurrence_claimed`; the event path uses the first one.
+    const CLAIMED_BY_LEGACY = {
+      created: false, reason: 'occurrence_claimed', claimedBy: { engine: 'legacy', legacyRunId: LEGACY_RUN, flowRunId: null },
+    } satisfies OccurrenceClaimedResult as never;
+
+    it('redelivery of a legacy-admitted event is a flow duplicate', async () => {
+      // The legacy engine claimed `event:<id>` when it admitted the event; the
+      // flow's claim inside createFlowRun conflicts and names that run. A
+      // handled outcome: no throw (the queue would retry), no refusal metric.
+      vi.mocked(createFlowRun).mockResolvedValue(CLAIMED_BY_LEGACY);
+      selects.push([candidate()], LIVE);
+      await expect(handle(event())).resolves.toBeUndefined();
+      // The key is the one legacy writes for the same event (`event:${eventId}`).
+      expect(vi.mocked(createFlowRun).mock.calls[0]![0]).toMatchObject({ occurrence: { keys: [`event:${EVENT_ID}`] } });
+      expect(recordFlowEventAdmissionRefused).not.toHaveBeenCalled();
+    });
+
+    it('pre-claim legacy run history is honoured', async () => {
+      // A legacy run admitted before the conversion existed has no claim row,
+      // only automation_runs (automation_id, 'event:<id>'); claimOccurrence
+      // reads it in the run transaction and the result is the same duplicate.
+      vi.mocked(createFlowRun).mockResolvedValue(CLAIMED_BY_LEGACY);
+      selects.push([candidate()], LIVE);
+      await expect(handle(event())).resolves.toBeUndefined();
+      expect(createFlowRun).toHaveBeenCalledTimes(1);
+      // The history lookup needs the exact legacy spelling and the event's instant.
+      expect(vi.mocked(createFlowRun).mock.calls[0]![0]).toMatchObject({
+        occurrence: { keys: [`event:${EVENT_ID}`], at: new Date('2026-10-25T10:00:00.000Z') },
+      });
+      expect(recordFlowEventAdmissionRefused).not.toHaveBeenCalled();
+    });
+
+    it('an event without a usable timestamp carries no instant; one whose id is not a uuid carries no key', async () => {
+      selects.push([candidate()], LIVE);
+      await handle(event({ metadata: { timestamp: 'later' } } as Partial<BreezeEvent>));
+      expect(vi.mocked(createFlowRun).mock.calls[0]![0]).toMatchObject({ occurrence: { keys: [`event:${EVENT_ID}`], at: null } });
+      selects.push([candidate()], LIVE);
+      await handle(event({ id: 'evt-not-a-uuid' }));
+      expect(vi.mocked(createFlowRun).mock.calls[1]![0]).toMatchObject({ occurrence: { keys: [] } });
+    });
   });
 
   it('non-matching filter creates none', async () => {

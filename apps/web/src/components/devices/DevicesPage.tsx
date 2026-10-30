@@ -58,7 +58,7 @@ import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { BULK_SITE_MOVE_CAP, CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, bulkMoveSiteAgents, bulkMoveSiteBlock, isCommandQueueable } from './bulkActionGating';
 import ChangeSiteModal from './ChangeSiteModal';
-import { summarizeBulkSiteMove, type BulkSiteMoveResponse } from './bulkSiteMove';
+import { summarizeBulkSiteMove, type BulkSiteMoveFailureOutcome, type BulkSiteMoveResponse } from './bulkSiteMove';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
 import { FILTER_FIELDS } from '../filters/filterFields';
@@ -159,12 +159,14 @@ function AddAssetMenu({
   onAddManualAsset,
   onAddNetworkAsset,
   variant,
+  menuAlignment,
   testIdPrefix,
 }: {
   onInstallAgent: () => void;
   onAddManualAsset: () => void;
   onAddNetworkAsset: () => void;
   variant: 'primary' | 'secondary';
+  menuAlignment: 'left' | 'right';
   /** Distinguishes the header instance from the empty-state duplicate for testids. */
   testIdPrefix: string;
 }) {
@@ -216,7 +218,7 @@ function AddAssetMenu({
         <div
           role="menu"
           data-testid={testIdPrefix}
-          className="absolute right-0 z-20 mt-1 w-56 rounded-md border bg-card shadow-lg"
+          className={`absolute ${menuAlignment === 'left' ? 'left-0' : 'right-0'} z-50 mt-1 w-56 rounded-md border bg-card shadow-lg`}
         >
           {canInstallAgent && (
             <button
@@ -981,9 +983,9 @@ export default function DevicesPage() {
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
 
-  const handleGroupCreated = useCallback(async (newGroupId: string) => {
+  const handleGroupCreated = useCallback(async (newGroupId: string, ownerScope: 'organization' | 'partner') => {
     setShowCreateGroup(false);
-    setAutoSelectGroupId(newGroupId);
+    if (ownerScope === 'organization') setAutoSelectGroupId(newGroupId);
     await refreshDevices();
   }, [refreshDevices]);
 
@@ -1509,22 +1511,38 @@ export default function DevicesPage() {
    * device even when none moved, so the BODY decides: all at the target →
    * success; some moved → warning "Moved N of M" naming the rest; none moved →
    * error. (Whole-batch 400/403s never get here: runAction toasted them.)
+   *
+   * Each refused device is named with WHY (#10082), grouped by outcome, so the
+   * user can tell a retryable `conflict` (the list is refreshed after every
+   * bulk move) from a `forbidden` a retry will not fix.
    */
   const reportBulkSiteMove = (devices: Device[], result: BulkSiteMoveResponse, site: string) => {
     const summary = summarizeBulkSiteMove(result, devices);
     if (summary.tone === 'success') {
       showToast({ type: 'success', message: t('devicesPage.toasts.bulkMoveSiteSuccess', { count: summary.total, site }) });
-    } else if (summary.tone === 'warning') {
+      return;
+    }
+    const notMoved = (outcome: BulkSiteMoveFailureOutcome, names: string[]): string => {
+      const list = summarizeFailedDevices(names);
+      switch (outcome) {
+        case 'conflict': return t('devicesPage.toasts.bulkMoveSiteNotMovedConflict', { devices: list });
+        case 'forbidden': return t('devicesPage.toasts.bulkMoveSiteNotMovedForbidden', { devices: list });
+        case 'not_found': return t('devicesPage.toasts.bulkMoveSiteNotMovedNotFound', { devices: list });
+        case 'error': return t('devicesPage.toasts.bulkMoveSiteNotMovedError', { devices: list });
+      }
+    };
+    const failedDevices = summary.failed.map((group) => notMoved(group.outcome, group.names)).join('; ');
+    if (summary.tone === 'warning') {
       showToast({
         type: 'warning',
         message: t('devicesPage.toasts.bulkMoveSiteSomeFailed', {
-          moved: summary.moved, total: summary.total, site, devices: summarizeFailedDevices(summary.failedNames),
+          moved: summary.moved, total: summary.total, site, devices: failedDevices,
         }),
       });
     } else {
       showToast({
         type: 'error',
-        message: t('devicesPage.toasts.bulkMoveSiteAllFailed', { site, devices: summarizeFailedDevices(summary.failedNames) }),
+        message: t('devicesPage.toasts.bulkMoveSiteAllFailed', { site, devices: failedDevices }),
       });
     }
   };
@@ -2352,6 +2370,7 @@ export default function DevicesPage() {
           </button>
           <AddAssetMenu
             variant="primary"
+            menuAlignment="right"
             testIdPrefix="devices-page-add-menu"
             onInstallAgent={() => setShowAddDevice(true)}
             onAddManualAsset={() => setShowAddManualAsset(true)}
@@ -2470,6 +2489,7 @@ export default function DevicesPage() {
             <div className="flex gap-3">
               <AddAssetMenu
                 variant="primary"
+                menuAlignment="left"
                 testIdPrefix="devices-page-empty-add-menu"
                 onInstallAgent={() => setShowAddDevice(true)}
                 onAddManualAsset={() => setShowAddManualAsset(true)}

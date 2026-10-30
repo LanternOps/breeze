@@ -519,3 +519,32 @@ describe('getFirstPartyCoverageForDevices', () => {
     expect(map.get(DEVICE_1)).toMatchObject({ covered: true, status: 'completed' });
   });
 });
+
+
+describe('SaaS provider coverage and attention', () => {
+  it.each(['m365', 'gws'])('never credits a legacy linked %s row as device coverage', async (accountType) => {
+    queue([providerRow({ accountType, breezeDeviceId: DEVICE_1 })]);
+    const coverage = await getProviderCoverageForDevices(ORG_A, [DEVICE_1], { now: NOW });
+    expect(coverage.size).toBe(0);
+    const predicate = JSON.stringify(whereArg(0));
+    expect(predicate).toContain('m365');
+    expect(predicate).toContain('gws');
+  });
+  it('does not let a SaaS link suppress an uncovered Breeze device or borrow its site', async () => {
+    queue([], []);
+    await listBackupHealthRows({ orgIds: [ORG_A], siteIds: [SITE_A] }, { page: { limit: 10 }, now: NOW });
+    for (const index of [0, 1]) {
+      const predicate = JSON.stringify(whereArg(index));
+      expect(predicate).toContain('m365');
+      expect(predicate).toContain('gws');
+    }
+    const providerSelection = selectMock.mock.calls[mainCallIndex(1)]![0]!;
+    expect(JSON.stringify(providerSelection.breezeDeviceId)).toContain('case when');
+  });
+  it.each([['m365', 'm365_mail', 'Microsoft 365 mail'], ['gws', 'gws_shared_drive', 'Google shared drives']])('labels %s attention by customer and workload', async (accountType, workload, label) => {
+    queue([providerRow({ accountType, dataSources: [workload], status: 'failed', customerName: 'Acme North' })]);
+    const items = await getProviderAttentionItems(ORG_A, { allowedDeviceIds: null, limit: 20, now: NOW });
+    expect(items[0]?.title).toBe(`Acme North — ${label} backup needs attention`);
+    expect(items[0]?.description).toBe(`Acme North — ${label} backup — failed`);
+  });
+});

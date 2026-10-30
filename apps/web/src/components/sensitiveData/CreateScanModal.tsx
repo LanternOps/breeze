@@ -80,8 +80,10 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
       setSubmitting(true);
       setError(undefined);
       const body: Record<string, unknown> = { deviceIds: ids };
+      // A policy brings its own detection classes; the chips are hidden then,
+      // and posting their state would override the policy's classes (#10380).
       if (policyId) body.policyId = policyId;
-      if (detectionClasses.length > 0) body.detectionClasses = detectionClasses;
+      else if (detectionClasses.length > 0) body.detectionClasses = detectionClasses;
 
       const res = await fetchWithAuth('/sensitive-data/scan', {
         method: 'POST',

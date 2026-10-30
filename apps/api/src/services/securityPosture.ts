@@ -299,7 +299,7 @@ function scoreOpenPorts(input: DeviceInput): FactorResult {
   };
 }
 
-function scorePasswordPolicy(input: DeviceInput): FactorResult {
+export function scorePasswordPolicy(input: DeviceInput): FactorResult {
   const raw = input.security.passwordPolicySummary;
   if (!raw || typeof raw !== 'object') {
     return {
@@ -319,7 +319,8 @@ function scorePasswordPolicy(input: DeviceInput): FactorResult {
   const checks = [
     minLength !== null ? minLength >= 12 : null,
     complexityEnabled !== null ? complexityEnabled : null,
-    maxAgeDays !== null ? maxAgeDays <= 90 : null,
+    // 0 means passwords never expire (the Windows agent reports it that way).
+    maxAgeDays !== null ? maxAgeDays > 0 && maxAgeDays <= 90 : null,
     lockoutThreshold !== null ? lockoutThreshold > 0 && lockoutThreshold <= 5 : null
   ];
   const knownChecks = checks.filter((value): value is boolean => value !== null);

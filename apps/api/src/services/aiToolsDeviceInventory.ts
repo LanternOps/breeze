@@ -43,7 +43,7 @@ import { DeviceFunctionError, clearDeviceFunction, getDeviceFunction, upsertDevi
 import { queryDeviceEventFeed, type DeviceEventFeedFilters, type DeviceEventRow } from './deviceEventFeed';
 import { getManagementPostureSummary, getPostureDevices } from './managementPostureReport';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
-import { isAgentCollectedWarrantyDevice } from './warrantyDataSources';
+import { WARRANTY_REFRESH_REFUSAL_MESSAGES, warrantyRefreshRefusal } from './warrantyDataSources';
 import { queueWarrantySyncForDevice } from './warrantyWorker';
 import { setDeviceFunctionSchema } from '@breeze/shared';
 import {
@@ -494,11 +494,10 @@ export function registerDeviceInventoryTools(aiTools: Map<string, AiTool>): void
           .from(deviceWarranty)
           .where(eq(deviceWarranty.deviceId, device.id))
           .limit(1);
-        if (isAgentCollectedWarrantyDevice({ manufacturer: hw?.manufacturer ?? null, dataSource: existing?.dataSource ?? null })) {
-          return jsonError(
-            "This device's warranty is collected by the Breeze agent, not by a vendor lookup. A server-side refresh cannot produce newer data.",
-            'WARRANTY_REFRESH_NOT_AVAILABLE',
-          );
+        // Same refusal set as the route, #9862's imported-data case included.
+        const refusal = warrantyRefreshRefusal({ manufacturer: hw?.manufacturer ?? null, dataSource: existing?.dataSource ?? null });
+        if (refusal) {
+          return jsonError(WARRANTY_REFRESH_REFUSAL_MESSAGES[refusal], 'WARRANTY_REFRESH_NOT_AVAILABLE');
         }
         await queueWarrantySyncForDevice(device.id, { force: true });
         auditToolWrite(auth, {

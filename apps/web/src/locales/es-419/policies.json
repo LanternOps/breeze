@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Proveedores de aplicaciones (Advertencia e Información)",
+        "applicationProvidersHelp": "Los eventos de aplicación de nivel Error y Crítico se recopilan de todos los proveedores; los de Advertencia e Información, solo de los proveedores integrados ({{providers}}) y los indicados aquí. Use el nombre exacto del proveedor que aparece en la columna «Origen» del Visor de eventos o en Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Solo se aplica la directiva de registros de eventos que prevalece para cada dispositivo. Las listas de proveedores no se combinan entre directivas.",
+        "providerNameLabel": "Nombre del proveedor de eventos de aplicación",
+        "addProvider": "Agregar proveedor",
+        "removeProvider": "Quitar",
+        "removeProviderNamed": "Quitar {{provider}}",
+        "providerNameInvalid": "Use entre 1 y {{max}} caracteres, comenzando con una letra o un dígito. Se permiten letras, dígitos, espacios, puntos, guiones bajos, signos de dólar, paréntesis y guiones.",
+        "providerLimitReached": "Puedes agregar hasta {{max}} proveedores adicionales. Elimina uno para agregar otro.",
+        "providerAlreadyListed": "Este proveedor ya está en la lista.",
+        "providerLimit": "{{total}} de {{max}} proveedores adicionales"
       },
       "featureTabShell": {
         "override": "Anular",
@@ -1197,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Habilitar alertas de vencimiento de garantía",
         "generateAlertsWhenFixedTermDeviceWarranties": "Genere alertas cuando las garantías de dispositivos de plazo fijo se acerquen a su vencimiento.",
         "warningThresholdDays": "Umbral de advertencia (días)",
-        "generateAWarningAlertWhenWarrantyExpires": "Genere una alerta de advertencia cuando la garantía expire dentro de estos días.",
-        "criticalThresholdDays": "Umbral crítico (días)",
-        "generateACriticalAlertWhenWarrantyExpires": "Genere una alerta crítica cuando la garantía expire dentro de estos días.",
+        "warnThresholdHelp": "Genere una alerta de severidad Información cuando la garantía expire dentro de estos días.",
+        "urgentThresholdDays": "Umbral urgente (días)",
+        "urgentThresholdHelp": "Genere una alerta de severidad Bajo cuando la garantía expire dentro de estos días. Una garantía vencida genera una alerta de severidad Medio.",
         "enabled": "activado",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1219,6 +1230,20 @@
         "title": "Los dispositivos de esta política alertarán dos veces",
         "body": "Estas condiciones existen como monitor adjunto y también como regla o vigilancia heredada: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Grupos de dispositivos (todas las org.)",
+      "description": "Selecciona un grupo de dispositivos de todo el socio como destino. Una asignación de grupo se aplica a nivel de grupo de dispositivos, por lo que tiene prioridad sobre las asignaciones de otras políticas a nivel de organización y sitio.",
+      "selectGroup": "Selecciona un grupo de dispositivos",
+      "assign": "Asignar",
+      "remove": "Quitar",
+      "assigned": "Grupo de dispositivos asignado",
+      "removed": "Asignación del grupo de dispositivos eliminada",
+      "failedToLoad": "No se pudieron cargar los grupos de dispositivos",
+      "failedToAssign": "No se pudo asignar el grupo de dispositivos",
+      "failedToRemove": "No se pudo eliminar la asignación del grupo de dispositivos",
+      "empty": "Aún no hay grupos de dispositivos de todo el socio. Crea uno en Grupos de dispositivos → Todas las org.",
+      "loading": "Cargando grupos de dispositivos…"
     }
   },
   "software": {
