@@ -1,4 +1,5 @@
 import common from './catalog/common.json';
+import elevation from './catalog/elevation.json';
 import notice from './catalog/notice.json';
 import remote from './catalog/remote.json';
 import restart from './catalog/restart.json';
@@ -13,6 +14,7 @@ export const PROMPT_CATALOG = {
   notice,
   restart,
   remote,
+  elevation, // W07
 } as const;
 
 export type PromptNamespace = keyof typeof PROMPT_CATALOG;

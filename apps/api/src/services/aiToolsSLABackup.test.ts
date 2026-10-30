@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -208,6 +214,18 @@ describe('aiToolsSLABackup handlers', () => {
     vi.clearAllMocks();
     setDefaultDbMocks();
     toolMap = buildToolMap();
+  });
+
+  it.each(['create', 'update'])('%s refuses partner-group SLA targets without writes and checks the supplied group ids', async (action) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    const result = JSON.parse(await toolMap.get('configure_backup_sla')!.handler({
+      action, configId: CONFIG_ID, name: 'SLA', rpoTargetMinutes: 60, rtoTargetMinutes: 120, targetGroups: [groupId],
+    }, makeAuth()));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it.each([

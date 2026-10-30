@@ -29,12 +29,15 @@ vi.mock('../services/pamActuationLifecycle', () => {
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/sentry', () => ({ captureException: mocks.captureException }));
 vi.mock('../services/eventBus', () => ({ publishEvent: mocks.publishEvent }));
+// #8928: stale-pending expiry tells a waiting end user their request expired.
+const notifyMocks = vi.hoisted(() => ({ enqueuePamRequestNotify: vi.fn() }));
+vi.mock('../services/pamRequestNotify', () => notifyMocks);
 vi.mock('../services/auditEvents', () => ({
   requestLikeFromSnapshot: () => ({}),
   writeAuditEvent: mocks.writeAuditEvent,
 }));
 
-import { enforceElevationExpiry } from './pamJobs';
+import { enforceElevationExpiry, expireStaleRequests } from './pamJobs';
 import { PamActuationNotFoundError } from '../services/pamActuationLifecycle';
 
 const expiredRow = {
@@ -139,5 +142,52 @@ describe('enforceElevationExpiry', () => {
     expect(mocks.requestPamCleanup).not.toHaveBeenCalled();
     expect(mocks.txValues).not.toHaveBeenCalled();
     expect(mocks.publishEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('expireStaleRequests — end-user outcome notice (#8928)', () => {
+  let tx: Record<string, unknown>;
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mocks.txInsert.mockReturnValue({ values: mocks.txValues });
+    notifyMocks.enqueuePamRequestNotify.mockResolvedValue('queued');
+    tx = { execute: mocks.txExecute, insert: mocks.txInsert };
+    tx.transaction = vi.fn(async (fn: (sp: unknown) => Promise<unknown>) => fn(tx));
+    mocks.transaction.mockImplementation(async (fn: (t: unknown) => Promise<unknown>) => fn(tx));
+  });
+
+  const stale = (n: number, flowType: string) => ({
+    id: `40000000-0000-4000-8000-00000000000${n}`,
+    org_id: '40000000-0000-4000-8000-000000000100',
+    device_id: `40000000-0000-4000-8000-00000000020${n}`,
+    flow_type: flowType,
+    prior_status: 'pending',
+  });
+
+  it('queues one expired notice per expired uac_intercept request, on the expiry transaction', async () => {
+    const a = stale(1, 'uac_intercept');
+    const b = stale(2, 'uac_intercept');
+    const jit = stale(3, 'tech_jit_admin');
+    mocks.txExecute.mockResolvedValueOnce({ rows: [a, b, jit] });
+
+    await expect(expireStaleRequests()).resolves.toBe(3);
+
+    expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledTimes(2);
+    expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(tx, { id: a.id, deviceId: a.device_id }, 'expired');
+    expect(notifyMocks.enqueuePamRequestNotify).toHaveBeenCalledWith(tx, { id: b.id, deviceId: b.device_id }, 'expired');
+  });
+
+  it('queues nothing when no request expired', async () => {
+    mocks.txExecute.mockResolvedValueOnce({ rows: [] });
+    await expect(expireStaleRequests()).resolves.toBe(0);
+    expect(notifyMocks.enqueuePamRequestNotify).not.toHaveBeenCalled();
+  });
+
+  it('a notice that cannot be queued does not stop the expiry', async () => {
+    const a = stale(1, 'uac_intercept');
+    mocks.txExecute.mockResolvedValueOnce({ rows: [a] });
+    notifyMocks.enqueuePamRequestNotify.mockResolvedValueOnce('skipped');
+    await expect(expireStaleRequests()).resolves.toBe(1);
+    expect(mocks.txValues).toHaveBeenCalledWith([expect.objectContaining({ elevationRequestId: a.id, eventType: 'expired' })]);
   });
 });
