@@ -229,4 +229,4 @@ Update agents to a release containing this change before relying on the provider
 - **One cooldown fallback.** A rule or template without a cooldown now uses 5 minutes on every create and resolve path (some resolve paths used 15).
 - **Upgrade behaviour:** alerts closed before the upgrade treat events ingested up to their close time as already seen, so the upgrade causes no burst of re-opened alerts. Open alerts start tracking on the next sweep.
 - An `after_delay` re-arm option arrives in the next release for anyone who wants reminders while an old event is still in the window.
-- Migration `2027-01-16-210000-alerts-rule-device-subject-closed-idx.sql` builds one index on `alerts` concurrently (no table lock). No setting or environment variable.
+- Migration `2027-01-17-192000-alerts-rule-device-subject-closed-idx.sql` builds one index on `alerts` concurrently (no table lock). No setting or environment variable.
