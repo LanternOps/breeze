@@ -747,6 +747,29 @@ describe('stampTerminalShell', () => {
     error.mockRestore();
   });
 
+  it('locks partner-group rows inside Phase B before the export advisory locks', async () => {
+    vi.spyOn(orgMergeModule, 'loadAndValidate').mockResolvedValue({ loser, survivor });
+    vi.spyOn(orgMergeModule, 'fenceLoser').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'assertPairStillMergeable').mockResolvedValue(undefined);
+    vi.spyOn(orgMergeModule, 'runPolicy').mockResolvedValue({ moved: 0, dropped: 0, notes: [] });
+    vi.spyOn(orgMergeModule, 'runPostPassFixups').mockResolvedValue({ moved: 0, dropped: 0 });
+    vi.spyOn(orgMergeModule, 'collectDuplicates').mockResolvedValue({ duplicatePortalEmails: [], duplicateExternalLinkSystems: [] });
+    vi.spyOn(orgMergeModule, 'stampTerminalShell').mockResolvedValue(undefined);
+    const groupLocks = vi.spyOn(orgMergeModule, 'lockMergePartnerGroupRows').mockImplementation(async () => {
+      expect(mockState.txDepth).toBe(1);
+    });
+    vi.mocked(mockedDb.execute).mockClear();
+
+    await orgMergeModule.executeOrgMerge(input);
+
+    expect(groupLocks).toHaveBeenCalledExactlyOnceWith(PARTNER);
+    const execute = vi.mocked(mockedDb.execute);
+    const exportLockIndex = execute.mock.calls.findIndex(([query]) =>
+      sqlToText(query).includes('breeze_partner_export_lock_orgs_exclusive'));
+    expect(exportLockIndex).toBeGreaterThanOrEqual(0);
+    expect(groupLocks.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[exportLockIndex]!);
+  });
+
   // The placement assertion. Phase B is stubbed out through the module
   // namespace (the same `self.` surface the engine uses), the stamp is left
   // REAL, and its write is made to fail: `executeOrgMerge` must still resolve

@@ -480,6 +480,8 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'get_contract', routeFile: 'contracts/periods.ts', method: 'get', path: '/:id/periods/:periodId/outcome', parents: ['contracts/index.ts'] },
   { tool: 'list_contracts', routeFile: 'contracts/reports.ts', method: 'get', path: '/currency-mismatches', parents: ['contracts/index.ts'] },
   { tool: 'get_invoice', routeFile: 'invoices/evidence.ts', method: 'get', path: '/:id/lines/:lineId/devices', parents: ['invoices/index.ts'] },
+  // Full-control W14 PR B (#6784).
+  { tool: 'manage_contracts', action: 'generate_invoice', routeFile: 'contracts/generate.ts', method: 'post', path: '/:id/generate', parents: ['contracts/index.ts'], toolOnly: { extra: [], reason: 'Four-eyes with a mandatory pin; refuses a live hour-block contract and any invoice that is not the approved one (PR B quorum QB1-QB3, QB10).' } },
   {
     tool: 'read_artifact', routeFile: 'aiArtifacts.ts', method: 'get', path: '/:id',
     toolOnly: { extra: [], reason: 'Only artifacts anchored to the caller\'s own session or agent run, and only where capture is enabled; the REST download is org-wide.' },
@@ -904,6 +906,15 @@ const BINDINGS: readonly Binding[] = [
  * an entry here is a tool whose route evidence is still only a comment.
  */
 const UNBOUND: ReadonlyArray<{ tool: string; action?: string; reason: string }> = [
+  // Full-control W14 PR B (#6784).
+  {
+    tool: 'manage_contracts', action: 'preview_invoice',
+    reason: 'No REST twin: a write-free mirror of POST /contracts/:id/generate; it requires contracts:read, the grant of GET /contracts/:id.',
+  },
+  {
+    tool: 'manage_accounting_sync',
+    reason: 'routes/accounting/index.ts composes its grants through partnerScopedPermission(requirePermission(...)) and the entity-aware requireMappingWrite, which the binder cannot parse; the tool requires accounting:read on reads, accounting:manage + organizations:write + catalog:write on mapping writes and accounting:manage + invoices:write on pushes (aiGuardrails TOOL_PERMISSIONS / TOOL_ACTION_EXTRA_PERMISSIONS), equal to or stronger than every route.',
+  },
   // Full-control W14 (#6784): GET /billing/reporting-totals is deliberately permission-free at REST (public FX
   // reference facts, routes/invoices/settings.ts), so there is no route grant to bind; the tool floor is invoices:read.
   {

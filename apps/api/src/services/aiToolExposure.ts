@@ -218,5 +218,12 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   ['manage_contract_templates:publish', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
   ['manage_contract_templates:archive', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
   ['manage_contract_documents:link', 'Filing a signed agreement under a contract is an irreversible change to an executed legal record; a person decides it.'],
+  // Full-control W14 PR B (#6784, W14 plan agent exposure): money and data that leave the tenant.
+  ['manage_contracts:generate_invoice', 'Generating a contract invoice bills the customer and may issue and email it; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:push', 'Pushing an invoice writes it into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:push_bulk', 'Pushing invoices writes them into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:link_mapping', 'Linking a mapping overwrites the accounting provider\'s customer or item with Breeze\'s values; a person decides it.'],
+  ['manage_accounting_sync:unlink_mapping', 'Accounting mappings decide which books record each customer and item; a person decides them.'],
+  ['manage_accounting_sync:sync_mapping', 'A sync overwrites the accounting provider\'s customer or item with Breeze\'s values; a person decides it.'],
   ['manage_audit_baselines:request_apply', 'An apply request is the input to a second person\'s approval that pushes audit policy to up to 500 devices; its requester must be a person, who then cannot approve it.'],
 ]);

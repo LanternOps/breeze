@@ -18,6 +18,7 @@ import {
   isValidFlowSlug,
   slugifyFlowName,
   flowUsagePeriodKey,
+  type FlowConvertedFromDto,
   type FlowDetailDto,
   type FlowUsageDto,
   type FlowWebhookInfoDto,
@@ -43,6 +44,7 @@ import { resolveFlowOwnerForCaller } from './owner';
 import { assessPreApprovals } from './preApproval';
 import {
   allowGeneratedScriptPlaceholders,
+  convertedFromForFlow,
   generatedScriptPlaceholderIdsFor,
   hasScriptOwnershipRefusal,
   resetShadowIfChanged,
@@ -129,6 +131,8 @@ export interface FlowDetailExtras {
   preApprovedStepIds: string[];
   /** W05: this month's usage against the effective caps (getFlow computes it). */
   usage?: FlowUsageDto | null;
+  /** W06 C3: the Job this flow was converted from (getFlow reads it). */
+  convertedFrom?: FlowConvertedFromDto | null;
 }
 
 const NO_EXTRAS: FlowDetailExtras = { preApprovalEligibility: {}, preApprovedStepIds: [] };
@@ -170,6 +174,7 @@ export function toDetailDto(row: FlowRow, extras: FlowDetailExtras = NO_EXTRAS):
     // Never the ciphertext: the webhook block carries the fingerprint only (W5 Task A5).
     webhook: webhookInfo(row),
     usage: extras.usage ?? null,
+    convertedFrom: extras.convertedFrom ?? null,
   };
 }
 
@@ -452,6 +457,7 @@ export async function getFlow(
     preApprovalEligibility: await liveEligibility(validated, owner),
     preApprovedStepIds: await livePreApprovedStepIds(row),
     usage: await usageFor(auth, row, owner),
+    convertedFrom: await convertedFromForFlow(row.id),
   };
   return { flow: toDetailDto(row, extras), validation: stripDocument(validated) };
 }
