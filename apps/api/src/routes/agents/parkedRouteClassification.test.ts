@@ -35,6 +35,8 @@ const EXPECTED: Record<string, Classification> = {
   // guards (role checks, body limits) — not endpoints.
   'ALL /:id/*': 'middleware',
   'ALL /*': 'middleware',
+  // #10190 W03: requireAgentRole on the prompt-identity sub-paths.
+  'ALL /:id/prompt-identity/*': 'middleware',
 
   // --- allowed for a parked device ----------------------------------------
   'POST /:id/heartbeat': 'allow',
@@ -53,6 +55,8 @@ const EXPECTED: Record<string, Classification> = {
   'POST /:id/pam/reconciliation-bindings': 'deny',
   // #9517: a parked device runs no PAM flow, so it has nothing to report.
   'POST /:id/pam/elevation-unable': 'deny',
+  // #8971: a parked device runs no PAM flow, so it has nothing to withdraw.
+  'POST /:id/elevation-requests/:requestId/withdraw': 'deny',
   'PUT /:id/security/status': 'deny',
   'PUT /:id/management/posture': 'deny',
   'PUT /:id/security/recovery-keys': 'deny',
@@ -76,6 +80,8 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/workloads': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
+  // #10190 W03: a parked device draws no prompts under an MSP identity.
+  'GET /:id/prompt-identity/logo': 'deny',
   'POST /:id/reliability': 'deny',
   'PUT /:id/changes': 'deny',
   'PUT /:id/peripherals/events': 'deny',

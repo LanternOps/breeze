@@ -1132,7 +1132,9 @@
         "uploadImage": "Resim yüklenemedi.",
         "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
         "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
-        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
+        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
+        "saveExpiry": "Son geçerlilik tarihi kaydedilemedi.",
+        "saveIntroNotes": "Giriş notları kaydedilemedi."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -1300,6 +1302,7 @@
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoValueBlank": "Boş",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
         "manualVariablesTitle": "Bu teklifi doldurun",
         "labelFieldLabel": "Bölüm etiketi",
@@ -1348,6 +1351,14 @@
       },
       "warnings": {
         "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Zengin metin başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
+      },
+      "intro": {
+        "expiryLabel": "Geçerlilik tarihi",
+        "expiryHelper": "Teklifin üzerine basılır. Müşteri bu günün sonuna kadar kabul edebilir. Süresiz için boş bırakın.",
+        "expiryPast": "Bu tarih geçti — müşteri süresi dolmuş bir teklifi kabul edemez.",
+        "notesLabel": "Giriş notları",
+        "notesHelper": "Teklifin ilk bölümünün üstüne basılır.",
+        "notesPlaceholder": "Müşteriye kısa bir not, ör. bu teklifin neleri kapsadığı."
       }
     },
     "actions": {
@@ -2814,7 +2825,6 @@
       "delivery_failed": "Bildirim iletilemedi",
       "consent_required": "Ödeme yetkilendirmesi eksik. Güncel bir yetkilendirme isteyin."
     },
-    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
     "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
@@ -2954,10 +2964,6 @@
     "saveFailed": "Hatırlatma ayarları kaydedilemedi",
     "loadFailed": "Hatırlatma ayarları yüklenemedi",
     "retry": "Yeniden dene",
-    "loading": "Ödeme ayarları yükleniyor…",
-    "templates": {
-      "paymentReminder": "Ödeme hatırlatması",
-      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
-    }
+    "loading": "Ödeme ayarları yükleniyor…"
   }
 }

@@ -82,6 +82,14 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // through tool-action rules, govern the Helper's own approvals (Q4), and their reads are the elevation policy map.
   'manage_access_reviews',
   'manage_pam_rules',
+  // Full-control W12 (#6782): installs a package manager as the console admin with no uninstall path; no autonomous
+  // workflow needs it (W12 plan, agent exposure).
+  'bootstrap_homebrew',
+  // Full-control W12 (#6782, quorum QW6): custom-field values select dynamic-group members (filterEngine custom.<key>),
+  // which feed an agent's run scope through triggers.deviceGroupIds, and are substituted into installer command lines;
+  // definition edits (scriptWrite, deviceTypes, validation) decide which value writes are admitted. The manage_tags
+  // precedent, applied to the whole tool.
+  'manage_custom_fields',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one
@@ -195,5 +203,27 @@ export const AGENT_HUMAN_ONLY_ACTIONS: ReadonlyMap<string, string> = new Map<str
   // Full-control W11 (#6781, W11-D8, quorum QW5/QW9): both write auth.user.id into a users FK, and a user-owned
   // release would run them as the approving human, dropping the requesting run's site ceiling.
   ['manage_audit_baselines:create', 'An active audit baseline replaces the org\'s active one and enrols every device of that OS in the daily audit-policy collection; a user-owned release would run it as the approving human and lose the run\'s site ceiling.'],
+  // Full-control W12 (#6782, W12 plan agent exposure).
+  ['manage_device_software:uninstall', 'Removing an application from a customer machine is irreversible (no undo, no dry run); a person decides it.'],
+  // Full-control W13 (#6783, W13 plan agent exposure; the W02-D2 manage_tags precedent).
+  ['manage_device_function:set', 'A device function is an allowed execution-targeting filter: it selects dynamic-group members, which feed an agent run\'s own scope (triggers.deviceGroupIds), so a run must not set it.'],
+  // Full-control W13 PR B (#6783): an agent that can run scripts must not also edit the values those scripts receive.
+  ['manage_tenant_variables:create', 'Tenant-variable values are substituted into every script dispatched to the org\'s devices; an agent that runs scripts must not also choose their inputs.'],
+  ['manage_tenant_variables:update', 'Tenant-variable values are substituted into every script dispatched to the org\'s devices; an agent that runs scripts must not also choose their inputs.'],
+  ['manage_tenant_variables:delete', 'Deleting a tenant variable changes what every script referencing it receives on the org\'s devices; a person decides it.'],
+  // Full-control W14 (#6784, W14 plan agent exposure): the legal documents customers sign, and their executed records.
+  ['manage_contract_templates:create', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:update', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:create_version', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:publish', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_templates:archive', 'Agreement templates are the legal documents customers sign; a person authors them (the human_only_legal_evidence reasoning).'],
+  ['manage_contract_documents:link', 'Filing a signed agreement under a contract is an irreversible change to an executed legal record; a person decides it.'],
+  // Full-control W14 PR B (#6784, W14 plan agent exposure): money and data that leave the tenant.
+  ['manage_contracts:generate_invoice', 'Generating a contract invoice bills the customer and may issue and email it; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:push', 'Pushing an invoice writes it into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:push_bulk', 'Pushing invoices writes them into the partner\'s accounting books outside Breeze; a person asks for it and two people approve it.'],
+  ['manage_accounting_sync:link_mapping', 'Linking a mapping overwrites the accounting provider\'s customer or item with Breeze\'s values; a person decides it.'],
+  ['manage_accounting_sync:unlink_mapping', 'Accounting mappings decide which books record each customer and item; a person decides them.'],
+  ['manage_accounting_sync:sync_mapping', 'A sync overwrites the accounting provider\'s customer or item with Breeze\'s values; a person decides it.'],
   ['manage_audit_baselines:request_apply', 'An apply request is the input to a second person\'s approval that pushes audit policy to up to 500 devices; its requester must be a person, who then cannot approve it.'],
 ]);

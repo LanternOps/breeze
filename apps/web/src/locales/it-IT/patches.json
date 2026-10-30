@@ -417,6 +417,7 @@
       "createTitle": "Crea anello di aggiornamento"
     },
     "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
+    "emptyRingSeverityNotice": "Nessun dispositivo in questo anello. La gravità segnalata dai dispositivi compare dopo l’assegnazione dei dispositivi, quindi fino ad allora la maggior parte delle patch risulta Non valutata.",
     "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto.",
     "ringDelete": {
       "title": "Eliminare {{name}}?",

@@ -30,5 +30,8 @@
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento",
   "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos.",
   "ACCESS_REVIEW_SELF_DECISION": "Você não pode decidir sobre o seu próprio acesso — outro administrador precisa revisar este item",
-  "NO_UPDATES_PROVIDED": "Nenhuma alteração foi informada"
+  "NO_UPDATES_PROVIDED": "Nenhuma alteração foi informada",
+  "PARTNER_GROUP_TARGET_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro só podem ser alvos de políticas de configuração do parceiro",
+  "PARTNER_GROUP_READ_ONLY": "Este grupo de dispositivos de todo o parceiro não pode ser alterado aqui",
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro não podem ser usados em filtros de grupos, e seus filtros não podem fazer referência a grupos ou organizações"
 }

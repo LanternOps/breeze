@@ -859,6 +859,7 @@
       "session_offer_submitted": "Oferta de sessão enviada",
       "session_consent_granted": "Consentimento da sessão remota concedido",
       "session_consent_denied": "Sessão remota recusada pelo usuário",
+      "remote.session.ended_by_user": "Sessão remota encerrada pelo usuário",
       "session_consent_blocked_unanswered": "Sessão remota bloqueada: solicitação de consentimento sem resposta",
       "session_consent_blocked_unavailable": "Sessão remota bloqueada: solicitação de consentimento indisponível",
       "session_consent_bypassed": "Sessão remota iniciada sem resposta à solicitação de consentimento",
@@ -992,6 +993,7 @@
       "changesSnapshot": "Snapshot de alterações",
       "before": "Antes",
       "after": "Depois",
+      "noFieldChanges": "Nenhuma alteração de campo foi registrada para esta ação.",
       "userInfo": "Informações do usuário",
       "requestMetadata": "Metadados da solicitação",
       "fields": {

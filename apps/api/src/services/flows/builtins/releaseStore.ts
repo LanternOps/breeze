@@ -18,6 +18,8 @@ export interface ReleasedBuiltinStep {
   /** The publication's definition of the parked step. */
   step: FlowDocumentV1['steps'][number];
   stepRowId: string;
+  /** The parked step row's for-each item index (null outside a for-each). */
+  itemIndex: number | null;
 }
 
 /** Null when the run, its publication, the parked step row or its definition is gone or unreadable. */
@@ -32,7 +34,7 @@ export async function loadReleasedBuiltinStep(runId: string, intentId: string): 
       .limit(1);
     if (!version) return null;
     const [row] = await db
-      .select({ id: flowRunSteps.id, stepId: flowRunSteps.stepId })
+      .select({ id: flowRunSteps.id, stepId: flowRunSteps.stepId, itemIndex: flowRunSteps.itemIndex })
       .from(flowRunSteps)
       .where(and(eq(flowRunSteps.runId, runId), eq(flowRunSteps.actionIntentId, intentId)))
       .limit(1);
@@ -40,6 +42,6 @@ export async function loadReleasedBuiltinStep(runId: string, intentId: string): 
     const doc = flowDocumentV1Schema.safeParse(version.definition);
     if (!doc.success) return null;
     const step = doc.data.steps.find((s) => s.id === row.stepId);
-    return step ? { run, version, step, stepRowId: row.id } : null;
+    return step ? { run, version, step, stepRowId: row.id, itemIndex: row.itemIndex } : null;
   }, 'flows.builtins.loadReleasedBuiltinStep'));
 }

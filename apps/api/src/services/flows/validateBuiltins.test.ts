@@ -10,7 +10,7 @@ vi.mock('./ownedReferences', () => ({
 import type { FlowIssue } from '@breeze/shared';
 import type { TenantToolDescriptor } from '../toolSources/resolver';
 import type { FlowCatalog, FlowCatalogEntry } from './catalog';
-import { findOwnedNotificationChannel } from './ownedReferences';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedNotificationChannel, findOwnedScriptIds } from './ownedReferences';
 import { builtinStepTier, validateBuiltinStep, validateNoticesChannel } from './validateBuiltins';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -81,11 +81,89 @@ describe('validateBuiltinStep', () => {
     expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' }, PARTNER_OWNER)).toEqual(['notify_channel_not_owned']);
     expect(vi.mocked(findOwnedNotificationChannel)).toHaveBeenCalledWith(PARTNER_OWNER, CHANNEL);
   });
-  it('a webhook or pagerduty channel is channel_type_not_supported', async () => {
-    for (const type of ['webhook', 'pagerduty']) {
-      vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type, orgId: ORG, partnerId: null, enabled: true });
-      expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' })).toEqual(['channel_type_not_supported']);
-    }
+  // W6 (#5221, Decision 15) narrowly reopens W05 Decision 14.
+  it('notify to a pagerduty channel validates', async () => {
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'pagerduty', orgId: ORG, partnerId: null, enabled: true });
+    expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' })).toEqual([]);
+  });
+  it('notify to a webhook channel validates', async () => {
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'webhook', orgId: ORG, partnerId: null, enabled: true });
+    expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' })).toEqual([]);
+  });
+  it('a channel of an unknown type is channel_type_not_supported', async () => {
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'in_app', orgId: ORG, partnerId: null, enabled: true });
+    expect(await codesFor('notify', { channelId: CHANNEL, title: 'Hi', message: 'There' })).toEqual(['channel_type_not_supported']);
+  });
+
+  // ── W6 fleet built-ins (#5221): explicit owned-reference checks ──
+  describe('fleet built-ins', () => {
+    const SCRIPT = '44444444-4444-4444-8444-444444444444';
+    const GROUP = '55555555-5555-4555-8555-555555555555';
+    const DEVICE = '66666666-6666-4666-8666-666666666666';
+    beforeEach(() => {
+      vi.mocked(findOwnedScriptIds).mockReset().mockResolvedValue(new Set([SCRIPT]));
+      vi.mocked(findOwnedDeviceGroupIds).mockReset().mockResolvedValue(new Set([GROUP]));
+      vi.mocked(findOwnedDeviceIds).mockReset().mockResolvedValue(new Set([DEVICE]));
+    });
+
+    it('owned literal references pass', async () => {
+      expect(await codesFor('resolve_targets', { target: { type: 'groups', groupIds: [GROUP] } })).toEqual([]);
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, target: { type: 'devices', deviceIds: [DEVICE] } })).toEqual([]);
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, conditions: [{ type: 'group', value: GROUP }] })).toEqual([]);
+      expect(await codesFor('create_alert', { deviceId: DEVICE, severity: 'high', message: 'm' })).toEqual([]);
+      // Templates are run-time values: checked against the run org at execution.
+      expect(await codesFor('create_alert', { deviceId: '{{item.id}}', severity: 'high', message: 'm' })).toEqual([]);
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, deviceIds: ['{{trigger.device.id}}'] })).toEqual([]);
+      expect(await codesFor('resolve_targets', { deviceIds: ['{{trigger.device.id}}'] })).toEqual([]);
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] })).toEqual([]);
+    });
+
+    it('resolve_targets naming a literal device the owner does not own is device_not_owned', async () => {
+      vi.mocked(findOwnedDeviceIds).mockResolvedValue(new Set());
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] })).toEqual(['device_not_owned']);
+      expect(await codesFor('resolve_targets', { deviceIds: [DEVICE] }, PARTNER_OWNER)).toEqual(['device_in_partner_flow']);
+    });
+
+    it('resolve_targets or run_script_on_targets naming a group the owner does not own is reference_not_owned', async () => {
+      vi.mocked(findOwnedDeviceGroupIds).mockResolvedValue(new Set());
+      expect(await codesFor('resolve_targets', { target: { type: 'groups', groupIds: [GROUP] } })).toEqual(['reference_not_owned']);
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, target: { type: 'groups', groupIds: [GROUP] } })).toEqual(['reference_not_owned']);
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, conditions: [{ type: 'group', value: GROUP }] })).toEqual(['reference_not_owned']);
+      expect(vi.mocked(findOwnedDeviceGroupIds)).toHaveBeenCalledWith(ORG, [GROUP]);
+    });
+
+    it('a partner-wide flow can never name a literal group or device (each belongs to one org)', async () => {
+      expect(await codesFor('resolve_targets', { target: { type: 'groups', groupIds: [GROUP] } }, PARTNER_OWNER)).toEqual(['group_in_partner_flow']);
+      expect(await codesFor('create_alert', { deviceId: DEVICE, severity: 'low', message: 'm' }, PARTNER_OWNER)).toEqual(['device_in_partner_flow']);
+      expect(vi.mocked(findOwnedDeviceGroupIds)).not.toHaveBeenCalled();
+    });
+
+    it('run_script_on_targets scriptId of another owner is refused', async () => {
+      vi.mocked(findOwnedScriptIds).mockResolvedValue(new Set());
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, conditions: [] })).toEqual(['reference_not_owned']);
+      expect(vi.mocked(findOwnedScriptIds)).toHaveBeenCalledWith(ORG_OWNER, [SCRIPT]);
+    });
+
+    it('a templated scriptId is refused (the script must be chosen in the flow)', async () => {
+      expect(await codesFor('run_script_on_targets', { scriptId: '{{inputs.s}}', conditions: [] })).toEqual(['reference_not_owned']);
+    });
+
+    it('create_alert literal device of another org is refused', async () => {
+      vi.mocked(findOwnedDeviceIds).mockResolvedValue(new Set());
+      expect(await codesFor('create_alert', { deviceId: DEVICE, severity: 'low', message: 'm' })).toEqual(['device_not_owned']);
+    });
+
+    it('run_script_on_targets inside a for-each is refused (its device claims share the item ledger key)', async () => {
+      const s = { ...step('run_script_on_targets', { scriptId: SCRIPT, conditions: [] }), forEach: { items: '{{inputs.xs}}', as: 'item' as const, maxItems: 10, concurrency: 1 } };
+      const codes = (await validateBuiltinStep(s, 0, { owner: ORG_OWNER, catalog: catalog() })).map((i) => i.code);
+      expect(codes).toEqual(['input_invalid']);
+    });
+
+    it('fromStep must name an earlier step of the document', async () => {
+      // The single-step helper has no earlier steps: any fromStep reference is invalid here.
+      expect(await codesFor('run_script_on_targets', { scriptId: SCRIPT, fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }))
+        .toEqual(['input_invalid']);
+    });
   });
 
   // ── http_request ──
@@ -195,6 +273,8 @@ describe('validateNoticesChannel', () => {
     vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'slack', orgId: ORG, partnerId: null, enabled: true });
     expect(await validateNoticesChannel(CHANNEL, ORG_OWNER)).toEqual([]);
     vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'pagerduty', orgId: ORG, partnerId: null, enabled: true });
+    expect(await validateNoticesChannel(CHANNEL, ORG_OWNER)).toEqual([]);
+    vi.mocked(findOwnedNotificationChannel).mockResolvedValue({ id: CHANNEL, type: 'in_app', orgId: ORG, partnerId: null, enabled: true });
     expect((await validateNoticesChannel(CHANNEL, ORG_OWNER)).map((i) => [i.code, i.pointer])).toEqual([['channel_type_not_supported', '/notices/channelId']]);
     vi.mocked(findOwnedNotificationChannel).mockResolvedValue(null);
     expect((await validateNoticesChannel(CHANNEL, ORG_OWNER)).map((i) => i.code)).toEqual(['notify_channel_not_owned']);

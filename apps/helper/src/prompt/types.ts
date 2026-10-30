@@ -8,6 +8,8 @@
  * these mirror the Rust view, not the shared Zod schema.
  */
 
+import type { MessageView } from '../components/MessageCard';
+
 export type PromptState = 'pending' | 'waiting' | 'approved' | 'denied' | 'expired' | 'cancelled' | 'failed';
 export type PromptPresentation = 'modal' | 'card' | 'indicator' | 'list_only';
 export type ActionRole = 'safe' | 'proceed' | 'neutral';
@@ -63,14 +65,30 @@ export interface PromptView {
   lastError: string | null;
   /**
    * Rust's change counter when this view was taken. A window keeps the view
-   * with the highest version, so a fetched snapshot never overwrites a newer
-   * pushed update.
+   * with the highest version, so an earlier pull that lands late never
+   * overwrites a newer one.
    */
   version: number;
 }
 
-/** The notification list, with the same change counter as `PromptView.version`. */
-export interface PromptListView {
+/**
+ * The payload of every prompt event (`prompt-updated`, `prompt-list-updated`,
+ * `prompt-identity-updated`): a change counter and nothing else (Rust
+ * `VersionNotice`). A `listen()` hears these emits in every window, so a
+ * window that hears one pulls what it may see through its label-checked
+ * command (`get_prompt_view`, `get_notification_list`, `get_prompt_identity`).
+ */
+export interface VersionNotice {
   version: number;
-  entries: PromptView[];
+}
+
+/**
+ * The one notification list (#10190 W04; Rust `NotificationListView`):
+ * this session's prompt entries and its endpoint message cards, each newest
+ * first. `version` only grows; the window keeps the highest one it has seen.
+ */
+export interface NotificationListView {
+  version: number;
+  prompts: PromptView[];
+  messages: MessageView[];
 }

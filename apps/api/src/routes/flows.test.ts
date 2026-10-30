@@ -49,6 +49,13 @@ vi.mock('../services/flows/service', () => ({ listFlows: vi.fn(), getFlow: vi.fn
 vi.mock('../services/flows/versions', () => ({ enableFlow: vi.fn(), disableFlow: vi.fn() }));
 vi.mock('../services/flows/webhook/secret', () => ({ createOrRotateWebhookSecret: vi.fn() }));
 vi.mock('../services/flows/webhook/deliveries', () => ({ listWebhookDeliveries: vi.fn() }));
+// The limits routes have their own suite (flowLimits.test.ts); here only the
+// registration order matters, so the stub answers a sentinel status.
+vi.mock('./flowLimits', () => ({
+  registerFlowLimitsRoutes: vi.fn((app: { get: (p: string, h: (c: any) => unknown) => void }) => {
+    app.get('/limits', (c: any) => c.json({ stub: true }, 299));
+  }),
+}));
 vi.mock('../services/flows/runService', () => ({
   startManualRun: vi.fn(),
   cancelFlowRun: vi.fn(),
@@ -63,6 +70,7 @@ import { enableFlow, disableFlow } from '../services/flows/versions';
 import { startManualRun, cancelFlowRun, listFlowRuns, getFlowRun, getFlowRunStep } from '../services/flows/runService';
 import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
+import { registerFlowLimitsRoutes } from './flowLimits';
 import { flowsRoutes } from './flows';
 
 const FLOW_ID = '11111111-1111-4111-8111-111111111111';
@@ -127,6 +135,13 @@ describe('flows routes', () => {
     const res = await flowsRoutes.request(`/${FLOW_ID}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(payload);
+  });
+
+  it('GET /limits reaches the flow limits route, not the /:id uuid param (W05 #5220)', async () => {
+    const res = await flowsRoutes.request('/limits');
+    expect(registerFlowLimitsRoutes).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(299);
+    expect(getFlow).not.toHaveBeenCalled();
   });
 
   it('detail rejects a non-uuid id', async () => {
@@ -218,6 +233,8 @@ describe('flows routes', () => {
       ['flow_not_found', 404], ['version_conflict', 409], ['already_enabled', 409], ['slug_unavailable', 409],
       ['partner_wide_forbidden', 403], ['interactive_session_required', 403], ['delegation_scope_restricted', 403],
       ['event_dispatch_not_durable', 422], ['foreach_concurrency_not_available', 422], ['webhook_secret_missing', 422],
+      // W06 (#5221) B3: a shadow conversion's draft is enabled only by the switch.
+      ['flow_conversion_not_switched', 409],
     ])('enable maps %s to %i', async (error, status) => {
       vi.mocked(enableFlow).mockResolvedValue({ ok: false, error } as never);
       const res = await post(`/${FLOW_ID}/enable`, { expectedVersion: 1 });
@@ -409,7 +426,7 @@ describe('flows routes', () => {
       const res = await list('?limit=20&before=2027-03-01T00:00:00.000Z');
       expect(res.status).toBe(200);
       expect(res.headers.get('X-Test-Permission-Checked')).toBe('automations:read');
-      expect(await res.json()).toEqual({ deliveries: [] });
+      expect(await res.json()).toEqual({ deliveries: [], identifiersHidden: false });
       expect(listWebhookDeliveries).toHaveBeenCalledWith(expect.anything(), FLOW_ID, { limit: 20, before: '2027-03-01T00:00:00.000Z' });
     });
 
@@ -469,7 +486,7 @@ describe('flows routes', () => {
       dbh.results.push([{ id: FLOW_ID }], [ROW]);
       const res = await list();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ deliveries: [FULL] });
+      expect(await res.json()).toEqual({ deliveries: [FULL], identifiersHidden: false });
     });
 
     it('a site-restricted session gets the redacted shape (no delivery id, no resolver value)', async () => {
@@ -478,7 +495,7 @@ describe('flows routes', () => {
       const res = await list();
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(JSON.parse(text)).toEqual({ deliveries: [REDACTED] });
+      expect(JSON.parse(text)).toEqual({ deliveries: [REDACTED], identifiersHidden: true });
       expect(text).not.toContain('evt_secret_42');
       expect(text).not.toContain('acme-tenant-7');
     });
@@ -488,7 +505,7 @@ describe('flows routes', () => {
       dbh.results.push([{ id: FLOW_ID }], [ROW]);
       const res = await list();
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ deliveries: [REDACTED] });
+      expect(await res.json()).toEqual({ deliveries: [REDACTED], identifiersHidden: true });
     });
 
     it('a flow hidden from the caller (an empty visibility read, as RLS gives another org) gets 404 and the delivery log is never read', async () => {

@@ -72,12 +72,30 @@ export function moveDevicesToSite(opts: {
   });
 }
 
+/** The outcomes that leave a device away from the target. */
+export type BulkSiteMoveFailureOutcome = Exclude<BulkSiteMoveOutcome, 'moved' | 'already_there'>;
+
+/**
+ * The order failure groups are reported in (#10082): the one a retry fixes (`conflict`) first,
+ * then the ones it does not.
+ */
+const FAILURE_ORDER: readonly BulkSiteMoveFailureOutcome[] = ['conflict', 'forbidden', 'not_found', 'error'];
+
+export type BulkSiteMoveFailureGroup = {
+  outcome: BulkSiteMoveFailureOutcome;
+  /** Display names of the devices refused for this reason, in request order. */
+  names: string[];
+};
+
 export type BulkSiteMoveSummary = {
   tone: 'success' | 'warning' | 'error';
   moved: number;
   total: number;
-  /** Display names of the devices that did not end up at the target, in request order. */
-  failedNames: string[];
+  /**
+   * The devices that did not end up at the target, grouped by why (#10082), in FAILURE_ORDER.
+   * The caller words each reason itself (localized); the API's `message` is English and is not shown.
+   */
+  failed: BulkSiteMoveFailureGroup[];
 };
 
 /**
@@ -90,13 +108,22 @@ export function summarizeBulkSiteMove(
   devices: readonly MovableDevice[],
 ): BulkSiteMoveSummary {
   const byId = new Map(devices.map((d) => [d.id, d]));
-  const failedNames = response.results
-    .filter((r) => r.outcome !== 'moved' && r.outcome !== 'already_there')
-    .map((r) => {
-      const device = byId.get(r.id);
-      return device ? (device.displayName || device.hostname) : r.id;
-    });
+  const namesByOutcome = new Map<BulkSiteMoveFailureOutcome, string[]>();
+  for (const r of response.results) {
+    if (r.outcome === 'moved' || r.outcome === 'already_there') continue;
+    // An outcome this client does not know (a newer server) is still a device that did not move.
+    const outcome: BulkSiteMoveFailureOutcome = FAILURE_ORDER.includes(r.outcome) ? r.outcome : 'error';
+    const device = byId.get(r.id);
+    const name = device ? (device.displayName || device.hostname) : r.id;
+    const names = namesByOutcome.get(outcome);
+    if (names) names.push(name);
+    else namesByOutcome.set(outcome, [name]);
+  }
+  const failed = FAILURE_ORDER.flatMap((outcome) => {
+    const names = namesByOutcome.get(outcome);
+    return names ? [{ outcome, names }] : [];
+  });
   const { moved, total } = response.summary;
-  const tone = failedNames.length === 0 ? 'success' : moved > 0 ? 'warning' : 'error';
-  return { tone, moved, total, failedNames };
+  const tone = failed.length === 0 ? 'success' : moved > 0 ? 'warning' : 'error';
+  return { tone, moved, total, failed };
 }

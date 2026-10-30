@@ -50,6 +50,7 @@ import {
 import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import { startFrameCounter } from '../lib/frameCounter';
+import { mediaFocusRing, videoHasFrame } from '../lib/mediaFocusRing';
 import { createStatsReporter } from '../lib/statsReporter';
 import { suppressedByViewOnly } from '../lib/viewOnly';
 import {
@@ -331,6 +332,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // Neutral confirmations (screenshot copied/saved); the notices above are errors.
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [inputFocused, setInputFocused] = useState(false);
+  // #10424: the focus ring waits for a frame; an empty media element is a
+  // 300x150 box, so a ring on it is a stray box mid-screen while connecting.
+  const [videoFrameReady, setVideoFrameReady] = useState(false);
+  const [canvasFrameReady, setCanvasFrameReady] = useState(false);
   const [cursorStreamActive, setCursorStreamActive] = useState(false);
   const [monitors, setMonitors] = useState<Array<{ index: number; name: string; width: number; height: number; isPrimary: boolean }>>([]);
   const [activeMonitor, setActiveMonitor] = useState(0);
@@ -1747,6 +1752,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         ctx.drawImage(bitmap, 0, 0);
         bitmap.close();
         frameCountRef.current++;
+        setCanvasFrameReady(true);
       }
     } finally {
       jpegDecodeInFlightRef.current = false;
@@ -2901,8 +2907,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
             autoPlay
             playsInline
             muted
-            className={`${mediaClassName(viewScaling)} outline-hidden ${focusRing} ${transport !== 'webrtc' ? 'hidden' : ''}`}
+            className={`${mediaClassName(viewScaling)} outline-hidden ${mediaFocusRing(focusRing, videoFrameReady)} ${transport !== 'webrtc' ? 'hidden' : ''}`}
             style={{ cursor: cursorStreamActive && showRemoteCursor ? 'none' : 'default' }}
+            onLoadedMetadata={(e) => setVideoFrameReady(videoHasFrame(e.currentTarget))}
+            onResize={(e) => setVideoFrameReady(videoHasFrame(e.currentTarget))}
+            onEmptied={() => setVideoFrameReady(false)}
             {...interactionProps}
           />
 
@@ -2922,7 +2931,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           <canvas
             ref={canvasRef}
             tabIndex={0}
-            className={`${mediaClassName(viewScaling)} outline-hidden cursor-default ${focusRing} ${transport !== 'websocket' ? 'hidden' : ''}`}
+            className={`${mediaClassName(viewScaling)} outline-hidden cursor-default ${mediaFocusRing(focusRing, canvasFrameReady)} ${transport !== 'websocket' ? 'hidden' : ''}`}
             {...interactionProps}
           />
         </div>

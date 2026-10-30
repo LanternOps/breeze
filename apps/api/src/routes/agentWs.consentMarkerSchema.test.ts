@@ -96,3 +96,27 @@ describe('desktopCommandResultSchema accepts version 2 consent markers', () => {
     rejected({ sessionId: SESSION, answer: 'v=0', somethingNobodyDeclared: 1 });
   });
 });
+
+// #10190 W06: which renderer asked (spec §4 "Audit": assist | native |
+// headless), so "the user says they never saw it" is answerable. Accepted now
+// (6A merges first); an agent sends it only in a release after this API is out.
+describe('desktopCommandResultSchema accepts the consent renderer', () => {
+  const SESSION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const parse = (consentRenderer: unknown) => desktopCommandResultSchema.safeParse({
+    type: 'command_result',
+    commandId: `desk-start-${SESSION}`,
+    status: 'completed',
+    result: { sessionId: SESSION, answer: 'v=0', consentReason: 'user', consentOutcome: 'granted', consentProtocol: 2, consentRenderer },
+  }).success;
+  it.each(['assist', 'native', 'headless'])('accepts %s', (renderer) => {
+    expect(parse(renderer)).toBe(true);
+  });
+  it('accepts an unknown but well-formed renderer token instead of dropping the whole result', () => {
+    expect(parse('future_renderer')).toBe(true);
+  });
+  it('rejects a malformed renderer value', () => {
+    expect(parse('Not A Token!')).toBe(false);
+    expect(parse('x'.repeat(33))).toBe(false);
+    expect(parse(1)).toBe(false);
+  });
+});

@@ -38,6 +38,7 @@ import { aiTools, resolveWritableToolOrgId } from '../aiTools';
 import {
   checkAgentGuardrails,
   checkGuardrails,
+  needsRegistryTier3Approval,
   type AgentGuardrailPolicy,
   type GuardrailCheck,
   type GuardrailContext,
@@ -70,6 +71,7 @@ import {
 import { isSoleOperatorSelfApprovalForbidden } from './selfApprovalPolicy';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import { DIAGNOSE_CONNECTIVITY_TOOL_NAME, requiresPinnedEffectDigest } from './pinnedEffectPolicy';
+import { fleetApprovalScope } from '../flows/builtins/fleetApprovalScope';
 import {
   assertArgsMatchScope,
   assertArgsMatchTicketScope,
@@ -353,9 +355,11 @@ export interface CreateActionIntentInput {
    * would answer tier 4 "unknown tool" for a qualified name. The external
    * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
    * auto-execute in-session and never mint an intent; the caller passes
-   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
-   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
-   * calling tenant tools is W5 work (flows-as-tools).
+   * only Tier-3 descriptors). Chat/MCP principals, and a flow principal
+   * parking its own Tier-3 external step (#10288 — the step row must be that
+   * tool, pinned Tier 3); an ai_agent principal is refused
+   * (`external_tool_not_allowed_for_agent`) — agents calling tenant tools is
+   * W5 work (flows-as-tools).
    */
   externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
@@ -410,6 +414,14 @@ export interface CreateActionIntentInput {
    * (W04) consumes — keep the field name.
    */
   guardrailContext?: GuardrailContext;
+  /**
+   * #10027: set only by `createMcpActionIntent` (source `mcp_api`). A call to
+   * a registry-Tier-3 tool whose action is rated below Tier 3 and is NOT
+   * read-only (`needsRegistryTier3Approval`) is then approved at Tier 3,
+   * supervised, instead of being refused as `tool_not_tier3`. It changes
+   * nothing for any other call. TRUSTED, INTERNAL-ONLY.
+   */
+  mcpRegistryTierApproval?: true;
 }
 
 export type ActionIntentSnapshot = {
@@ -1339,8 +1351,10 @@ function triggerPolicyDecisionAttempt(intentId: string): void {
 function builtinGuardrailCheck(toolName: string, input: Record<string, unknown>): GuardrailCheck {
   const tier = flowBuiltinTierFor(toolName as Parameters<typeof flowBuiltinTierFor>[0], input);
   const description = `${toolName} — flow built-in step`;
+  // W6 (#5221): a fleet script step's scope follows the script (core run_script's classification).
+  const approvalScope = toolName === 'run_script_on_targets' ? fleetApprovalScope(input) : 'supervised';
   return tier === 3
-    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description }
+    ? { tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope, description }
     : { tier, allowed: true, requiresApproval: false, readOnly: false, description };
 }
 
@@ -1671,7 +1685,7 @@ export async function createActionIntent(
     };
   }
 
-  const { check: guardrail, context: guardrailContext } = externalTool
+  const { check: classified, context: guardrailContext } = externalTool
     ? {
         check: {
           tier: 3,
@@ -1712,6 +1726,22 @@ export async function createActionIntent(
         input.orgId ?? auth.orgId ?? null,
         input.guardrailContext,
       );
+  // #10027: an MCP filing of a NON-read action that a per-action table rates
+  // below Tier 3 on a registry-Tier-3 tool (edr_endpoint_action scan). The MCP
+  // gate runs only read-only below-Tier-3 actions directly and files every
+  // other one, so this is approved at the tool's registry Tier 3, the tier
+  // release revalidation compares against (`getToolTier > riskTier` fails it
+  // as tier_escalated). One supervised approver, like P2-1's agent Tier-2
+  // lane: the action's own classification is below Tier 3, and four_eyes
+  // would make a scan harder to approve than an isolate. A read-only call, a
+  // registry tier below 3, or any other source keeps the tier gate below.
+  const guardrail: GuardrailCheck = input.mcpRegistryTierApproval === true
+    && input.source === 'mcp_api'
+    && !externalTool && !invokedFlow && !builtinIntent
+    && classified.allowed
+    && needsRegistryTier3Approval(input.toolName, classified)
+    ? { ...classified, tier: 3, requiresApproval: true, readOnly: false, approvalScope: 'supervised' }
+    : classified;
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1764,6 +1794,11 @@ export async function createActionIntent(
       // W05 (#5220): a built-in intent is for exactly this step row's built-in at its pinned tier.
       || (builtinIntent && (
         facts.step.tool !== input.toolName || facts.step.toolSource !== 'builtin' || facts.step.tier !== guardrail.tier
+      ))
+      // #10288: likewise an external intent is for exactly this step row's
+      // tool-source tool, pinned Tier 3 (the binding's fixed verdict).
+      || (externalTool && (
+        facts.step.tool !== input.toolName || facts.step.toolSource !== 'tenant' || facts.step.tier !== 3
       ))
     ) {
       throw new ActionIntentError(
@@ -2557,7 +2592,7 @@ export async function createActionIntent(
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.
-      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName)) {
+      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName, input.input)) {
         throw new EffectDigestUnresolvableError(
           input.toolName,
           effectDigestOutcome.kind === 'unresolved' ? effectDigestOutcome.reason : 'no resolver',

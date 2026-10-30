@@ -42,6 +42,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'POST /:id/rotate-token/confirm': 'protected',
   'POST /:id/uninstall-intent': 'protected',
   'POST /:id/elevation-requests': 'protected',
+  // #8971: the user's decline of a pending elevation. Interactive and
+  // security-relevant (it closes a request a technician could still approve);
+  // the agent retries, but a shed call keeps the request approvable meanwhile.
+  'POST /:id/elevation-requests/:requestId/withdraw': 'protected',
   'PUT /:id/eventlogs': 'protected',
   'GET /:id/winget-bootstrap/manifest': 'protected',
   'GET /:id/winget-bootstrap/file/:name': 'protected',
@@ -65,6 +69,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   // compiled rules); a refused fetch is a per-set error on that scan, never a
   // failed scan, and the next scan retries.
   'GET /:id/yara/rule-sets/:ruleSetId/:version': 'standard',
+  // Prompt logo (#10190 W03): read-only, at most 256 KB, fetched once per
+  // logo sha (the agent caches it); a shed fetch only delays the logo, the
+  // prompt still draws with the MSP name, and the agent retries.
+  'GET /:id/prompt-identity/logo': 'standard',
   'PUT /:id/sessions': 'standard',
   'PUT /:id/changes': 'standard',
   'PUT /:id/patches': 'standard',

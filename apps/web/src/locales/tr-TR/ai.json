@@ -28,6 +28,9 @@
     "deny": "Reddet",
     "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
     "alreadyDecided": "Bu talebe zaten karar verildi.",
+    "resolvedApproved": "Bu istek onaylandı.",
+    "resolvedNotApproved": "Bu istek onaylanmadı, bu nedenle işlem çalıştırılmadı.",
+    "resolvedEnded": "Bu istek artık burada bir karar beklemiyor.",
     "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
@@ -42,7 +45,7 @@
     "deniedToast": "İşlem reddedildi",
     "deniedToast_one": "{{count}} işlem reddedildi",
     "deniedToast_other": "{{count}} işlem reddedildi",
-    "refusedToast": "Onay uygulanmadı. İstek reddedildi.",
+    "refusedToast": "Onayınız engellendi, bu nedenle istek reddedildi.",
     "runContextLabel": "Çalıştırma bağlamı:",
     "runContextChosenByAssistant": "Breeze AI tarafından seçildi",
     "runContextScriptDefault": "komut dosyasının kayıtlı varsayılanı",
@@ -140,6 +143,7 @@
     "newChat": "Yeni sohbet"
   },
   "aiContextBadge": {
+    "record": "Kayıt",
     "context": "Bağlam",
     "dashboard": "Kontrol Paneli"
   },
@@ -527,6 +531,13 @@
     "verified": "Doğrulandı",
     "verificationFailed": "Doğrulama başarısız",
     "verificationUnknown": "Doğrulanamadı",
+    "notRunAwaitingReview": "İnceleme bekleniyor — henüz çalıştırılmadı",
+    "notRunReviewed": "İncelendi — henüz çalıştırılmadı",
+    "notRunApproved": "Onaylandı — henüz çalıştırılmadı",
+    "notRun": "Çalıştırılmadı",
+    "reviewVerdictApprove": "İnceleyen onaylanmasını öneriyor",
+    "reviewVerdictChanges": "İnceleyen değişiklik öneriyor",
+    "reviewVerdictReject": "İnceleyen reddedilmesini öneriyor",
     "promoteDescription": "Açıklama (isteğe bağlı)",
     "ownerScopeOrganization": "Yalnızca bu kuruluş",
     "ownerScopePartner": "Bu iş ortağına bağlı tüm kuruluşlar",
@@ -614,7 +625,12 @@
       "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
       "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
       "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin.",
-      "turningOn": "Wisp açılıyor…"
+      "turningOn": "Wisp açılıyor…",
+      "alreadyOnOrg": "Wisp bu kuruluş için zaten açık.",
+      "alreadyOnPartner": "Wisp tüm kuruluşlar için zaten açık.",
+      "open": "Aç",
+      "opening": "Açılıyor…",
+      "grantEnded": "Wisp bu kapsam için artık açık değil. Yeniden açmak için kimliğinizi doğrulayın."
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
@@ -674,7 +690,7 @@
       "attachFailed": "Eklenemedi",
       "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
       "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
-      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın.",
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için tekrar deneyin.",
       "paused": "Wisp duraklatıldı",
       "resumed": "Wisp devam ettirildi",
       "pauseFailed": "Wisp duraklatılamadı",
@@ -684,13 +700,24 @@
       "meter": "Bugün {{budget}} içinden {{spent}}",
       "resets": "{{hours}} saat içinde sıfırlanır",
       "raise": "Bugünün bütçesini artır",
+      "atCeiling": "Bugünün bütçesi planınızın sınırında.",
+      "seePlans": "Planları gör",
       "label": "Bugünkü Wisp harcaması"
     },
     "pause": "Wisp'i duraklat",
     "resume": "Devam et",
     "paused": {
       "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez.",
-      "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir."
+      "partnerDisabled": "Wisp iş ortağınız için kapalı. Bir yönetici yeniden açabilir.",
+      "system": {
+        "budgetExhausted": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi. Bütçe {{hours}} saat içinde sıfırlanır.",
+        "budgetExhaustedNoTime": "Breeze tarafından duraklatıldı: bugünün bütçesi tükendi.",
+        "grantorAccessLost": "Breeze tarafından duraklatıldı: erişiminiz artık bu yetkiyi kapsamıyor. Erişiminiz geri geldiğinde Wisp kendiliğinden devam eder.",
+        "grantorSuspended": "Breeze tarafından duraklatıldı: hesabınız askıya alındı. Askıya alma kaldırıldığında Wisp kendiliğinden devam eder.",
+        "factorExpired": "Breeze tarafından duraklatıldı: bu yetki için oturum açma doğrulamanızın süresi doldu.",
+        "entitlementLost": "Breeze tarafından duraklatıldı: planınız artık Wisp içermiyor. Planınız yeniden içerdiğinde Wisp kendiliğinden devam eder.",
+        "unknown": "Breeze tarafından duraklatıldı. Buradan devam ettiremezsiniz."
+      }
     },
     "live": {
       "checking": "{{org}} kontrol ediliyor…",
@@ -795,7 +822,7 @@
     },
     "partnerSwitch": {
       "description": "Teknisyenlerin işleri Wisp’e devretmesine izin verin. Kapatmak, çalışan her yetkiyi bir sonraki kontrolde duraklatır ve yenilerini engeller; hiçbir şey silinmez, yeniden açmak duraklatılanları sürdürür.",
-      "label": "Wisp etkin",
+      "label": "Wisp'e izin ver",
       "savedOn": "Wisp açıldı",
       "savedOff": "Wisp kapatıldı",
       "saveFailed": "Wisp ayarı değiştirilemedi.",

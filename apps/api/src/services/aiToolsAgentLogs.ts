@@ -10,7 +10,7 @@
 import { keysetEnvelope, keysetParamSchema, keysetWhereCondition, readKeysetArgs } from './aiToolPagination';
 import { db } from '../db';
 import { agentLogs, devices } from '../db/schema';
-import { and, eq, gte, lte, ilike, inArray, desc, sql, type SQL } from 'drizzle-orm';
+import { and, eq, gte, lte, ilike, notIlike, inArray, desc, sql, type SQL } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -94,6 +94,11 @@ export interface AgentLogQueryFilters {
   startTime?: string;
   endTime?: string;
   message?: string;
+  /**
+   * Full-control W13 (#6783): `watchdog` keeps only the breeze-watchdog's rows (component `watchdog.*`, the filter
+   * GET /devices/:id/watchdog-logs applies); `agent` excludes them. Absent = both, the behaviour before W13.
+   */
+  source?: 'agent' | 'watchdog';
 }
 
 /**
@@ -133,6 +138,8 @@ export async function buildAgentLogConditions(
   if (filters.startTime) conditions.push(gte(agentLogs.timestamp, new Date(filters.startTime)));
   if (filters.endTime) conditions.push(lte(agentLogs.timestamp, new Date(filters.endTime)));
   if (filters.message) conditions.push(ilike(agentLogs.message, `%${escapeLike(filters.message)}%`));
+  if (filters.source === 'watchdog') conditions.push(ilike(agentLogs.component, 'watchdog.%'));
+  if (filters.source === 'agent') conditions.push(notIlike(agentLogs.component, 'watchdog.%'));
 
   return conditions;
 }
@@ -184,6 +191,11 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
             type: 'string',
             description: 'Text search within log messages (case-insensitive partial match)',
           },
+          source: {
+            type: 'string',
+            enum: ['agent', 'watchdog'],
+            description: 'watchdog = only the breeze-watchdog health journal; agent = exclude it (default both)',
+          },
           ...keysetParamSchema(18, 500),
           includeFields: {
             type: 'boolean',
@@ -212,11 +224,12 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           startTime: typeof input.startTime === 'string' ? input.startTime : undefined,
           endTime: typeof input.endTime === 'string' ? input.endTime : undefined,
           message: typeof input.message === 'string' ? input.message : undefined,
+          source: input.source === 'watchdog' || input.source === 'agent' ? input.source : undefined,
         });
         if (conditions === null) {
           return JSON.stringify({
             ...keysetEnvelope<{ createdAtText: string; id: string }>({
-              key: 'logs', items: [], limit, fingerprint,
+              key: 'logs', items: [], limit, fingerprint, after,
               keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
             }),
             count: 0,
@@ -269,7 +282,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         });
 
         const envelope = keysetEnvelope({
-          key: 'logs', items, limit, fingerprint,
+          key: 'logs', items, limit, fingerprint, after,
           keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
         });
         const outLogs = (envelope.logs as Array<Record<string, unknown>>).map(

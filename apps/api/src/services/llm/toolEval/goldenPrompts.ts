@@ -128,4 +128,23 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g97', prompt: 'How has our security score trended over the last 90 days?', expect: [{ tool: 'get_security_compliance' }, { tool: 'get_security_posture' }] },
   { id: 'g98', prompt: 'Dismiss the "enable firewall" security recommendation for Contoso, we use a third-party firewall.', expect: [{ tool: 'manage_security_recommendations', action: 'dismiss' }, { tool: 'manage_security_recommendations', action: 'list' }, { tool: 'list_organizations' }] },
   { id: 'g99', prompt: 'Rotate the BitLocker recovery key on FIN-LAPTOP-07.', expect: [{ tool: 'manage_recovery_keys', action: 'rotate' }, { tool: 'manage_recovery_keys', action: 'list' }, { tool: 'resolve_device_context' }] },
+  // Full-control W12 (#6782): software tools reach chat.
+  { id: 'g100', prompt: 'What software is installed on FIN-LAPTOP-07?', expect: [{ tool: 'get_device_software' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  { id: 'g101', prompt: 'Deploy 7-Zip from our software catalog to the three reception PCs.', expect: [{ tool: 'manage_software_deployments', action: 'create' }, { tool: 'manage_software_catalog', action: 'list' }, { tool: 'query_devices' }] },
+  { id: 'g102', prompt: 'Approve Zoom in the software inventory for Contoso so it stops showing as unreviewed.', expect: [{ tool: 'manage_software_inventory', action: 'approve' }, { tool: 'manage_software_inventory', action: 'list' }, { tool: 'list_organizations' }] },
+  // Full-control W13 (#6783, PR A): device inventory and record tools reach chat.
+  { id: 'g103', prompt: 'What has happened on FIN-LAPTOP-07 in the last day, and is its Breeze agent healthy?', expect: [{ tool: 'get_device_events' }, { tool: 'get_device_health' }, { tool: 'resolve_device_context' }] },
+  { id: 'g104', prompt: 'Which of our devices have warranties expiring in the next 60 days?', expect: [{ tool: 'manage_device_warranty', action: 'expiring' }, { tool: 'query_devices' }] },
+  { id: 'g105', prompt: 'Mark DC-01 as a domain controller.', expect: [{ tool: 'manage_device_function', action: 'set' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W13 (#6783, PR B).
+  { id: 'g106', prompt: 'Look in the Application event log on FIN-LAPTOP-07 for errors from Outlook.', expect: [{ tool: 'browse_device_event_log', action: 'query' }, { tool: 'browse_device_event_log', action: 'list_logs' }, { tool: 'search_logs' }] },
+  { id: 'g107', prompt: 'Which tenant variables do our scripts get for Contoso?', expect: [{ tool: 'manage_tenant_variables', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g108', prompt: 'End the Quick Support session that is still open from this morning.', expect: [{ tool: 'manage_support_sessions', action: 'end' }, { tool: 'manage_support_sessions', action: 'list' }] },
+  // Full-control W14 (#6784, PR A); generate_invoice and the accounting push are PR B's g112-g113 below.
+  { id: 'g109', prompt: 'Which rate card is Contoso billed on, and what do we charge per hour for after-hours work?', expect: [{ tool: 'manage_billing_profiles', action: 'get_org_profile' }, { tool: 'manage_billing_profiles', action: 'list' }, { tool: 'list_organizations' }] },
+  { id: 'g110', prompt: 'Publish the draft version of the Contoso master services agreement template.', expect: [{ tool: 'manage_contract_templates', action: 'publish' }, { tool: 'manage_contract_templates', action: 'list' }, { tool: 'manage_contract_templates', action: 'get' }] },
+  { id: 'g111', prompt: 'Which contracts bill WS-ACCT-02, and is it covered at all?', expect: [{ tool: 'get_device_billing' }, { tool: 'resolve_device_context' }, { tool: 'query_devices' }] },
+  // Full-control W14 PR B (#6784): generate an invoice (preview first, then a four-eyes generate) and a Xero push (four-eyes).
+  { id: 'g112', prompt: "Generate this month's invoice for the Contoso managed services contract.", expect: [{ tool: 'manage_contracts', action: 'preview_invoice' }, { tool: 'manage_contracts', action: 'generate_invoice' }, { tool: 'list_contracts' }] },
+  { id: 'g113', prompt: 'Push invoice INV-1042 to Xero.', expect: [{ tool: 'manage_accounting_sync', action: 'push' }, { tool: 'manage_accounting_sync', action: 'status' }, { tool: 'list_invoices' }] },
 ];

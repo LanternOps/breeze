@@ -1,5 +1,6 @@
 import { CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { z } from 'zod';
+import { applicationProvidersSchema } from './eventLogProviders';
 import {
   ACTOR_TYPES,
   AUDIT_RESULTS,
@@ -927,6 +928,7 @@ export * from './timeSync';
 export * from './workloads';
 
 export const eventLogInlineSettingsSchema = z.object({
+  applicationProviders: applicationProvidersSchema,
   retentionDays: z.number().int().min(7).max(365).default(30),
   maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
   collectCategories: z.array(z.enum(['security', 'hardware', 'application', 'system'])).min(1).default(['security', 'hardware', 'application', 'system']),
@@ -1087,6 +1089,7 @@ export * from './scriptParameterDefinitions';
 // ============================================
 
 export * from './tickets';
+export * from './alertExternalRefs';
 export * from './ticketForms';
 export * from './queryParams';
 export * from './timeEntries';
@@ -1432,3 +1435,4 @@ export * from './wisp';
 export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
+export * from './flowConversions';

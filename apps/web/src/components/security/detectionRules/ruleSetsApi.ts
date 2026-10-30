@@ -39,6 +39,12 @@ export interface YaraRuleSetSummary {
   publishedAt: string | null;
   publishedEngine: string | null;
   stale: boolean;
+  /**
+   * Why a stale set is unpublished (#10306): `checker_unavailable` when the
+   * server cannot run its YARA compiler, `errors` otherwise; null when not
+   * stale. Optional so an older API (no field) reads as before.
+   */
+  staleReason?: 'errors' | 'checker_unavailable' | null;
   ruleCount: number;
   createdAt: string;
   updatedAt: string;

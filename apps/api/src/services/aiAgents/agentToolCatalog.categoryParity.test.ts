@@ -112,6 +112,7 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   // (edr_endpoint_action / sync_edr_data have tierConfig rows since #8167 W03 PR-B.)
   'get_edr_status',
   'list_edr_detections',
+  'get_huntress_agents', // #10393 Tier-1 read, same gap as its Huntress siblings
   'get_huntress_incidents',
   'get_huntress_status',
   'get_invite_funnel',
@@ -145,7 +146,6 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'm365_query_users',
   'manage_backup_configs',
   'manage_browser_policy',
-  'manage_contracts',
   'manage_deliverables',
   'manage_invoices',
   'manage_key_dates',

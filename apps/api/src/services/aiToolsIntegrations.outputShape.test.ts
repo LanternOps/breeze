@@ -17,13 +17,13 @@ const dbMock = vi.hoisted(() => {
   }));
   return { select, setRows: (r: unknown[]) => { rows = r; } };
 });
-vi.mock('../db', () => ({
+vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()),
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: dbMock,
 }));
-vi.mock('../workers/webhookDelivery', () => ({ getWebhookWorker: vi.fn() }));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: vi.fn() }));
 
 import { aiTools } from './aiToolNames';
 import './aiTools';

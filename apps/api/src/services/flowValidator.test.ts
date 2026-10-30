@@ -141,11 +141,17 @@ describe('validateFlowDocument', () => {
     expect(codes(b.issues)).toEqual(['tool_not_found']);
     expect(a.issues[0]!.message.replace('no_such_tool', 'X')).toBe(b.issues[0]!.message.replace('hudu__get_asset', 'X'));
     expect(a.effectiveTier).toBeNull();
+    // #9937: a tool the catalog cannot resolve is reported as unknown, never
+    // guessed into "core" or "tenant" from the shape of its name.
+    expect(a.steps[0]!.source).toBe('unknown');
+    expect(b.steps[0]!.source).toBe('unknown');
   });
 
   it('manage_ai_agents is tool_not_allowed', async () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'manage_ai_agents', input: { action: 'list' } }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['tool_not_allowed']);
+    // A registered core tool that flows refuse is still a core tool (#9937).
+    expect(r.steps[0]!.source).toBe('core');
   });
 
   it('a session-only (M365) tool is tool_not_allowed — flows run without a chat session', async () => {
@@ -154,6 +160,7 @@ describe('validateFlowDocument', () => {
     // M365 tools are not in the core execution registry at all (session-aware).
     expect(codes(r.issues)).toEqual(['tool_not_found']);
     expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
   });
 
   it('a flow-eligible core tool without a Zod schema fails closed (tool_not_allowed)', async () => {
@@ -179,6 +186,7 @@ describe('validateFlowDocument', () => {
     const r = await validateFlowDocument(doc([{ id: 'a', tool: 'flow__nightly_cleanup', input: {} }]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['flow_step_not_supported']);
     expect(r.valid).toBe(false);
+    expect(r.steps[0]!.source).toBe('unknown');
   });
 
   it('http_request POST pins tier 3 and GET tier 2', async () => {
@@ -359,9 +367,19 @@ describe('validateFlowDocument', () => {
   });
 
   it('structure errors skip the catalog checks', async () => {
-    const r = await validateFlowDocument(doc([{ id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } }, { id: 'b', tool: 'wait', input: { minutes: 1 } }]), ORG_OWNER);
+    const r = await validateFlowDocument(doc([
+      { id: 'a', tool: 'no_such_tool', input: { v: '{{steps.b.output}}' } },
+      { id: 'b', tool: 'wait', input: { minutes: 1 } },
+      { id: 'c', tool: 'halo__create_ticket', input: {} },
+      { id: 'd', tool: 'get_device_details', input: {} },
+    ]), ORG_OWNER);
     expect(codes(r.issues)).toEqual(['forward_reference']);
     expect(resolveTenantToolsForOwner).not.toHaveBeenCalled();
+    // Without the catalog, an unregistered name is unknown rather than "core" (#9937);
+    // a slug__name keeps its tenant shape and a registered core name stays core.
+    expect(r.steps.map((s) => [s.id, s.source])).toEqual([
+      ['a', 'unknown'], ['b', 'builtin'], ['c', 'tenant'], ['d', 'core'],
+    ]);
   });
 
   it('a structurally broken document returns schema issues, never throws', async () => {
@@ -534,5 +552,19 @@ describe('revalidateRenderedStep', () => {
     expect(await revalidateRenderedStep(pin, input, ctx)).toMatchObject({ ok: false, code: 'drift' });
     vi.mocked(resolveTenantToolsForOwner).mockResolvedValue([tenantTool('halo__lookup', 1, { type: 'object' })]);
     expect(await revalidateRenderedStep(pin, input, ctx)).toEqual({ ok: true, tier: 1, approvalScope: null });
+  });
+
+  // W6 (#5221): the generic rendered-reference checks cover core tools only, so
+  // each fleet built-in carries its own explicit owned-reference check.
+  it('a rendered fleet built-in reference outside the owner or the run org is reference_not_owned', async () => {
+    const run: FlowStepPin = { stepId: 'a0', tool: 'run_script_on_targets', source: 'builtin', tier: 3, approvalScope: 'supervised' };
+    const alert: FlowStepPin = { stepId: 'a1', tool: 'create_alert', source: 'builtin', tier: 2, approvalScope: null };
+    const resolve: FlowStepPin = { stepId: 't', tool: 'resolve_targets', source: 'builtin', tier: 1, approvalScope: null };
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [DEVICE] }, ctx)).toMatchObject({ ok: true });
+    expect(await revalidateRenderedStep(run, { scriptId: SCRIPT, deviceIds: [OTHER_DEVICE] }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(run, { scriptId: OTHER_DEVICE, target: { type: 'all' } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(alert, { deviceId: OTHER_DEVICE, severity: 'low', message: 'm' }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { target: { type: 'groups', groupIds: [OTHER_DEVICE] } }, ctx)).toMatchObject({ ok: false, code: 'reference_not_owned' });
+    expect(await revalidateRenderedStep(resolve, { conditions: [{ type: 'group', value: GROUP }] }, ctx)).toMatchObject({ ok: true });
   });
 });

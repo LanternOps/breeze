@@ -38,8 +38,8 @@
     "title": "Propositions de scripts",
     "proposalsPerDay": "Propositions par jour",
     "reviewerDisagreements": "Désaccords du réviseur",
-    "humanRejectedAfterApprove": "Rejet humain après approbation de l'IA",
-    "humanApprovedAfterReject": "Approbation humaine après rejet de l'IA",
+    "humanRejectedAfterApprove": "Refus humain, l'IA recommandait d'approuver",
+    "humanApprovedAfterReject": "Approbation humaine, l'IA recommandait de rejeter",
     "unattendedRuns": "Exécutions sans surveillance",
     "laneState": "Voie sans surveillance",
     "laneOpen": "Ouverte (suspendue après des échecs de vérification répétés)",
@@ -54,7 +54,15 @@
     "exec": "Cadre : {{duration}}ms",
     "noTier3ToolExecutionsFound": "Aucune exécution d’outils de niveau 3 trouvée.",
     "pending": "En attente",
-    "rejected": "Rejeté",
+    "rejected": "Refusé",
+    "status": {
+      "pending": "En attente",
+      "approved": "Approuvé",
+      "executing": "En cours d'exécution",
+      "completed": "Terminé",
+      "failed": "Échoué",
+      "rejected": "Refusé"
+    },
     "session": "Session : {{sessionId}}",
     "tempPasswordAlreadyRevealed": "Le mot de passe temporaire a déjà été révélé.",
     "tempPasswordCopied": "Copié",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Tous",
-    "denied": "Refusé",
+    "denied": "Bloqué",
     "error": "Erreur",
     "failed": "Échec",
-    "noRejectionsOrDenialsFound": "Aucun rejet ni refus trouvé.",
-    "rejected": "Rejeté",
-    "rejectionsAndDenials": "Refus et dénégations",
+    "noRejectionsOrDenialsFound": "Aucune action refusée, bloquée ou en échec trouvée.",
+    "rejected": "Refusé",
+    "rejectionsAndDenials": "Refusés et bloqués",
     "search": "Rechercher...",
     "session": "Session",
     "status": "Statut",
@@ -960,6 +968,19 @@
     "statusFilterLabel": "État de la menace",
     "categoryFilterLabel": "Catégorie"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Refusée : l'enregistrement de décision de l'appareil est indisponible",
+    "userDeclined": "Refusée sur l'appareil",
+    "userDecisionPending": "Aucune réponse sur l'appareil"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "L'utilisateur a retiré cette demande sur l'appareil."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Échec de l'invite sur l'appareil",
+    "user_denied": "Refusée par l'utilisateur",
+    "user_timeout": "Aucune réponse sur l'appareil"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Impossible de charger l’historique d’audit (HTTP {{status}})",
@@ -1129,6 +1150,8 @@
       "durationHelp": "1 à 1440 minutes (maximum 24h).",
       "reasonRecommended": "Raison (recommandé)",
       "reasonOptional": "Raison (optionnelle)",
+      "reasonShownToUser": "Raison (affichée à l’utilisateur)",
+      "reasonShownToUserHint": "L’utilisateur final voit ceci dans sa notification (500 premiers caractères).",
       "reasonPlaceholder": "Enregistré dans la trace d’audit"
     },
     "actions": {
@@ -1757,7 +1780,8 @@
       "syncQueued": "Synchronisé pour {{name}}",
       "deleteConfirm": "Supprimer {{name}} ? Ses stratégies, événements et statistiques sont supprimés en arrière-plan.",
       "deleteFailed": "Impossible de supprimer {{name}}",
-      "deleteSuccess": "Suppression de {{name}} en arrière-plan"
+      "deleteSuccess": "Suppression de {{name}} en arrière-plan",
+      "deleteComplete": "Suppression de {{name}} terminée"
     },
     "loading": "Chargement des intégrations...",
     "empty": {
@@ -1773,6 +1797,7 @@
     },
     "lastSyncFailedSuffix": " — échoué",
     "lastSyncPartialSuffix": " — en rattrapage",
+    "lastSyncTruncatedSuffix": " — certains événements non récupérés",
     "never": "Jamais",
     "deletingInBackground": "Suppression en cours…"
   },
@@ -2017,14 +2042,12 @@
       "statusFilterLabel": "État"
     },
     "status": {
-      "pendingApproval": "En attente d’approbation",
       "pending_approval": "En attente d’approbation",
-      "queued": "en file d’attente",
-      "inProgress": "En cours",
+      "queued": "En file d’attente",
       "in_progress": "En cours",
-      "completed": "Achevé",
+      "completed": "Terminé",
       "failed": "Échec",
-      "cancelled": "annulé"
+      "cancelled": "Annulé"
     },
     "approval": {
       "pending": "En attente",
@@ -2397,7 +2420,18 @@
     "sweepNowUnpublished": "Publiez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "sweepNowDisabled": "Activez cet ensemble de règles avant de l'utiliser dans un balayage.",
     "progress": {
-      "label": "{{done}} appareils sur {{total}} terminés"
+      "finished_one": "{{finished}} sur {{count}} appareil terminé",
+      "finished_other": "{{finished}} sur {{count}} appareils terminés",
+      "completed_one": "{{count}} réussi",
+      "completed_other": "{{count}} réussis",
+      "timedOut_one": "{{count}} hors délai",
+      "timedOut_other": "{{count}} hors délai",
+      "failed_one": "{{count}} en échec",
+      "failed_other": "{{count}} en échec",
+      "cancelled_one": "{{count}} annulé",
+      "cancelled_other": "{{count}} annulés",
+      "expired_one": "{{count}} expiré",
+      "expired_other": "{{count}} expirés"
     },
     "errors": {
       "orgOutOfScope": "Une ou plusieurs organisations sont en dehors de votre accès.",
@@ -2414,9 +2448,12 @@
       "rateLimited": "Trop de balayages ont été lancés récemment. Réessayez plus tard."
     },
     "skipReasons": {
-      "agent_too_old": "appareils dont l'agent est trop ancien",
-      "busy_same_sweep": "appareils qui exécutent déjà ce balayage",
-      "rule_set_not_eligible": "appareils auxquels les ensembles de règles ne s'appliquent pas"
+      "agent_too_old_one": "{{count}} appareil dont l'agent est trop ancien",
+      "agent_too_old_other": "{{count}} appareils dont l'agent est trop ancien",
+      "busy_same_sweep_one": "{{count}} appareil qui exécute déjà ce balayage",
+      "busy_same_sweep_other": "{{count}} appareils qui exécutent déjà ce balayage",
+      "rule_set_not_eligible_one": "{{count}} appareil auquel les ensembles de règles ne s'appliquent pas",
+      "rule_set_not_eligible_other": "{{count}} appareils auxquels les ensembles de règles ne s'appliquent pas"
     },
     "skipExplain": {
       "agent_too_old": "L'agent doit être mis à jour avant de pouvoir exécuter des ensembles de règles YARA.",
@@ -2426,13 +2463,21 @@
     "dialog": {
       "title": "Balayer les appareils à la recherche de correspondances IOC",
       "ruleSets": "Ensembles de règles : {{names}}",
-      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles et le type d'analyse sont conservés.",
+      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles, le type d'analyse et les chemins personnalisés sont conservés.",
       "back": "Retour",
       "next": "Suivant",
       "previewAction": "Aperçu",
-      "confirm": "Balayer {{targeted}} appareils",
+      "confirm_one": "Balayer {{count}} appareil",
+      "confirm_other": "Balayer {{count}} appareils",
       "viewRunning": "Voir le balayage en cours",
-      "confirmSummary": "{{targeted}} appareils répartis dans {{orgs}} organisations seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "confirmSummary_one": "{{devices}} dans {{orgs}} sera analysé avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur l'appareil.",
+      "confirmSummary_other": "{{devices}} dans {{orgs}} seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "counts": {
+        "devices_one": "{{count}} appareil",
+        "devices_other": "{{count}} appareils",
+        "orgs_one": "{{count}} organisation",
+        "orgs_other": "{{count}} organisations"
+      },
       "steps": {
         "scope": "Périmètre",
         "type": "Type d'analyse",
@@ -2461,15 +2506,19 @@
         "full": "Complète",
         "custom": "Chemins personnalisés",
         "paths": "Chemins, un par ligne",
-        "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun."
+        "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun.",
+        "pathsCount": "{{paths}} chemins sur {{max}}",
+        "pathsTooMany": "{{paths}} chemins sur {{max}} : retirez-en {{remove}}.",
+        "pathTooLong": "La ligne {{line}} dépasse {{chars}} caractères."
       },
       "duration": {
         "label": "Durée d'exécution (heures)",
-        "help": "Les appareils hors ligne exécutent l'analyse à leur retour dans ce délai. Entre 1 et {{max}} heures."
+        "help": "Les appareils hors ligne exécutent l'analyse à leur retour dans ce délai. Entre 1 et {{max}} heures.",
+        "invalid": "Saisissez un nombre entier d'heures entre 1 et {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} appareils dans {{orgs}} organisations",
-        "org": "{{org}} : {{devices}} appareils",
+        "targeted": "{{devices}} dans {{orgs}}",
+        "org": "{{org}} : {{devices}}",
         "ruleSets": "Ensembles de règles",
         "skipped": "Ignorés",
         "scopeChanged": "Les appareils ou les ensembles de règles ont changé depuis l'aperçu. Vérifiez les nouveaux chiffres, puis confirmez à nouveau."
@@ -2485,6 +2534,7 @@
       "resweep": "Balayer à nouveau avec les règles actuelles",
       "rulesChanged": "Règles modifiées depuis le début de ce balayage",
       "queued": "En file d'attente : {{queued}}",
+      "running": "En cours : {{running}}",
       "columns": {
         "ruleSets": "Ensembles de règles",
         "origin": "Lancé depuis",
@@ -2541,6 +2591,7 @@
       "builtin": "Intégré",
       "allOrgs": "Toutes les organisations",
       "errors": "Contient des erreurs",
+      "checkerUnavailable": "Compilateur indisponible",
       "unpublished": "Non publié",
       "disabled": "Désactivé"
     },
@@ -2597,7 +2648,7 @@
       "autoQuarantineOnly": "La quarantaine automatique est désormais désactivée sur les appareils. Vos autres modifications ne sont pas encore actives.",
       "published": "Enregistré et publié en version {{version}}",
       "savedDisabled": "Enregistré. L’ensemble est désactivé, les appareils ne l’utilisent donc pas.",
-      "checkerUnavailable": "Enregistré, non publié : le vérificateur de règles est indisponible. {{devices}}",
+      "checkerUnavailable": "Enregistré, non publié : le compilateur YARA est indisponible sur ce serveur, les règles n’ont donc pas pu être vérifiées. {{devices}}",
       "compileErrors_one": "Enregistré, non publié : {{count}} règle contient des erreurs. {{devices}}",
       "compileErrors_other": "Enregistré, non publié : {{count}} règles contiennent des erreurs. {{devices}}",
       "setErrors": "Enregistré, non publié : {{message}}. {{devices}}",
@@ -2606,7 +2657,8 @@
       "devicesKeep": "Les appareils conservent la version {{version}}.",
       "neverPublished": "Cet ensemble n’a pas encore été publié, les appareils ne l’utilisent donc pas.",
       "setDisabled": "L’ensemble est désactivé, les appareils ne l’utilisent donc pas.",
-      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}"
+      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}",
+      "staleCheckerUnavailable": "Non publié : le compilateur YARA est indisponible sur ce serveur, les modifications de règles ne peuvent donc être ni vérifiées ni publiées. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2701,5 +2753,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Vous n'avez pas accès à cette organisation"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Critique",
+      "high": "Élevé",
+      "medium": "Moyen",
+      "low": "Faible"
+    },
+    "findingStatus": {
+      "open": "Ouvert",
+      "remediated": "Corrigé",
+      "accepted": "Accepté",
+      "falsePositive": "Faux positif"
+    },
+    "scanStatus": {
+      "queued": "En file d’attente",
+      "running": "En cours",
+      "completed": "Terminé",
+      "failed": "Échec",
+      "cancelled": "Annulé"
+    },
+    "dataType": {
+      "credential": "Identifiants",
+      "financial": "Financier"
+    },
+    "a11y": {
+      "editPolicy": "Modifier la stratégie {{name}}",
+      "deletePolicy": "Supprimer la stratégie {{name}}",
+      "togglePolicyActive": "Active : {{name}}"
+    }
   }
 }

@@ -7,13 +7,18 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
   notificationChannels, ticketForms, ticketResponseTemplates,
   ticketChecklistTemplates, ticketChecklistTemplateItems,
+  softwareCatalog, softwareVersions, softwareInstallMethods,
 } from '../../db/schema';
+import {
+  fingerprintSoftwareInstallMethodDependency, fingerprintSoftwareVersionDependency,
+} from '../softwareDependencyIdentity';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
 import { yaraRuleSets } from '../../db/schema/yara';
 import { canonicalizeArguments } from './canonicalize';
 import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { fleetEffectMaterial } from './fleetEffectDigest';
 import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 import type { VerifiedTopologyDiagnostic } from '../topology/aiDiagnosticEffect';
@@ -243,6 +248,36 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     };
   },
 
+  // run_script_on_targets — Tool Catalog W06 (#5221, plan Decision 5): the
+  // flow fleet built-in, parked for approval with its device list FROZEN in
+  // the intent arguments. Pins the snapshot built for exactly those devices
+  // (the run_script material: content, run context, parameter definitions,
+  // device orgs, variable references) plus the canonical parameters, the
+  // EFFECTIVE run context, the offline policy and the sorted device ids
+  // (fleetEffectDigest.ts). MANDATORY (pinnedEffectPolicy.ts): creation
+  // refuses an unresolved digest and release refuses a missing one. The
+  // snapshot rides along as `verified`, which the release worker hands to the
+  // built-in so dispatch runs from the observation the digest compared.
+  run_script_on_targets: async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds.filter((d): d is string => typeof d === 'string') : [];
+    if (deviceIds.length === 0) return MISSING_ARG;
+    const built = await buildRunScriptSnapshot({ scriptId: args.scriptId, deviceIds }, database);
+    if (built.kind === 'missing_arg') return MISSING_ARG;
+    if (built.kind === 'target_absent') return TARGET_ABSENT;
+    const runAs = typeof args.runAs === 'string' ? args.runAs : built.snapshot.script.runAs;
+    return {
+      kind: 'material',
+      material: fleetEffectMaterial({
+        snapshot: built.snapshot,
+        parameters: args.parameters ?? {},
+        runAs,
+        offlinePolicy: args.whenOffline === 'skip' ? 'skip' : 'queue',
+        deviceIds,
+      }),
+      verified: { snapshot: built.snapshot, scriptRow: built.scriptRow, scope: built.scope },
+    };
+  },
+
   // diagnose_connectivity (Tier 3, SUPERVISED) — topology M4 Task 4 / M4-D3
   // (#6000). Pins the deterministic executable effect of ONE fixed-recipe
   // diagnostic: the materialized proposal (explicit origin/context/family and
@@ -299,6 +334,46 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     } catch {
       return TARGET_ABSENT;
     }
+  },
+
+  // Full-control W12 (#6782, quorum QW3, W12-D12) — a supervised software deployment. The approver signs off on
+  // installing ONE package: a version (its URL / S3 object, checksum, install args, detection, scripts) or a catalog
+  // item's enabled winget / Homebrew methods. Pin the same dependency fingerprint the deployment stores and retry
+  // re-checks, so a version or method edited (or a method added / disabled) between approval and release changes the
+  // digest and the release fails closed instead of installing something the approver never saw.
+  'manage_software_deployments:create': async (args, database) => {
+    const versionId = typeof args.softwareVersionId === 'string' ? args.softwareVersionId : null;
+    const catalogId = typeof args.catalogId === 'string' ? args.catalogId : null;
+    if (versionId && !catalogId) {
+      const [row] = await database
+        .select({ version: softwareVersions, catalog: softwareCatalog })
+        .from(softwareVersions)
+        .innerJoin(softwareCatalog, eq(softwareVersions.catalogId, softwareCatalog.id))
+        .where(and(eq(softwareVersions.id, versionId), isNull(softwareCatalog.deletedAt)))
+        .limit(1);
+      if (!row) return TARGET_ABSENT;
+      return material(JSON.stringify({ kind: 'version', fingerprint: fingerprintSoftwareVersionDependency(row.version, row.catalog) }));
+    }
+    if (catalogId && !versionId) {
+      const [catalog] = await database
+        .select()
+        .from(softwareCatalog)
+        .where(and(eq(softwareCatalog.id, catalogId), isNull(softwareCatalog.deletedAt)))
+        .limit(1);
+      if (!catalog) return TARGET_ABSENT;
+      const methods = await database
+        .select()
+        .from(softwareInstallMethods)
+        .where(and(eq(softwareInstallMethods.catalogId, catalogId), eq(softwareInstallMethods.enabled, true)))
+        .orderBy(asc(softwareInstallMethods.id));
+      return material(JSON.stringify({
+        kind: 'catalog',
+        versionMode: args.versionMode === 'exact' ? 'exact' : 'latest',
+        requestedVersion: typeof args.requestedVersion === 'string' ? args.requestedVersion : null,
+        methods: methods.map((m) => fingerprintSoftwareInstallMethodDependency(m, catalog)),
+      }));
+    }
+    return MISSING_ARG;
   },
 
   // W06 (#6776) hard deletes. The approver signs off on deleting a specific
@@ -409,6 +484,58 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // manage_contracts activate/cancel: pin the contract's revision.
   'manage_contracts:activate': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
   'manage_contracts:cancel': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
+
+  // manage_contracts:generate_invoice (full-control W14 PR B, #6784; four-eyes, quorum QW1/QW9, PR B quorum
+  // QB1-QB3). Pins the WHOLE computed invoice the next billing run would create: the period, the currency, every
+  // line's quantity / unit price / tax flag / total and its overage leg, subtotal / tax / total, auto-issue and the
+  // recipients the auto-issue email goes to (contractInvoicePreview.ts mirrors generateDueInvoice without writing).
+  // A device added, a catalog price or tax rate edited, the billing contact changed, auto-issue switched or the
+  // period billed in the meantime all change it, and the release refuses (content_changed). Mandatory per action
+  // (pinnedEffectPolicy.ts). Loaded on demand: the preview pulls the contract and catalog service graph, which this
+  // module (imported by the release worker) must not load eagerly. The preview reads through the ambient context,
+  // which every call site of this module runs system-scoped (the manage_patches:install caller obligation).
+  'manage_contracts:generate_invoice': async (args) => {
+    const contractId = typeof args.contractId === 'string' ? args.contractId : null;
+    if (!contractId) return MISSING_ARG;
+    if (!UUID_RE.test(contractId)) return TARGET_ABSENT;
+    const { previewDueInvoice, previewDigestMaterial, ContractInvoicePreviewNotFound } = await import('../contractInvoicePreview');
+    try {
+      return material(previewDigestMaterial(await previewDueInvoice(contractId)));
+    } catch (err) {
+      if (err instanceof ContractInvoicePreviewNotFound) return TARGET_ABSENT;
+      throw err;
+    }
+  },
+
+  // manage_accounting_sync push / push_bulk (full-control W14 PR B, #6784; four-eyes, QW1, PR B quorum QB4/QB5):
+  // every input of what lands in the books — the invoice and its lines, the destination connection and payload
+  // settings, the invoice / customer / item mapping rows, and the customer's and items' payload inputs
+  // (accountingPushDigest.ts). push_bulk pins each invoice in sorted id order; an unknown id pins as null. The
+  // handler pushes synchronously at release (never queued), so the pin binds the push that runs. Mandatory.
+  'manage_accounting_sync:push': async (args, database) => {
+    const invoiceId = typeof args.invoiceId === 'string' ? args.invoiceId : null;
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    if (!invoiceId || !provider) return MISSING_ARG;
+    if (!UUID_RE.test(invoiceId)) return TARGET_ABSENT;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pinned = await accountingPushMaterial(database, invoiceId, provider);
+    if (!pinned) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, push: pinned }));
+  },
+  'manage_accounting_sync:push_bulk': async (args, database) => {
+    const provider = typeof args.provider === 'string' ? args.provider : null;
+    const ids = Array.isArray(args.invoiceIds)
+      ? [...new Set(args.invoiceIds.filter((id): id is string => typeof id === 'string'))].sort()
+      : [];
+    if (!provider || ids.length === 0) return MISSING_ARG;
+    const { accountingPushMaterial } = await import('./accountingPushDigest');
+    const pushes: Array<[string, Record<string, unknown> | null]> = [];
+    for (const id of ids) {
+      pushes.push([id, UUID_RE.test(id) ? await accountingPushMaterial(database, id, provider) : null]);
+    }
+    if (pushes.every(([, m]) => m === null)) return TARGET_ABSENT;
+    return material(canonicalJson({ v: 1, provider, pushes }));
+  },
 
   // manage_ai_agents (P2-5, #4192) — registered under the WHOLE-TOOL key, not
   // `manage_ai_agents:authorize_supervised_key`. The tool is a member of BOTH

@@ -5,6 +5,8 @@ import { usePartnerSettingsSave } from './usePartnerSettingsSave';
 import { UNIT_TABS, type SaveOutcome, type SaveUnit, type SaveUnitId } from './saveUnits';
 
 vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+const invalidateInheritance = vi.hoisted(() => vi.fn());
+vi.mock('./useTabInheritance', () => ({ invalidateInheritance }));
 
 type Fake = SaveUnit & { dirty: boolean; calls: number; respond: () => Promise<SaveOutcome> };
 
@@ -104,5 +106,14 @@ describe('usePartnerSettingsSave', () => {
     release();
     await act(async () => { await first; });
     expect(result.current.saving).toBe(false);
+  });
+
+  it('drops the cached inheritance counts of every unit that saved, and only those', async () => {
+    const me = fake('partnersMe');
+    const login = fake('loginBranding', async () => ({ status: 'failed' }));
+    const { result } = renderHook(() => usePartnerSettingsSave([me, login]));
+    await act(async () => { await result.current.save(); });
+    expect(invalidateInheritance).toHaveBeenCalledTimes(1);
+    expect(invalidateInheritance).toHaveBeenCalledWith(UNIT_TABS.partnersMe);
   });
 });

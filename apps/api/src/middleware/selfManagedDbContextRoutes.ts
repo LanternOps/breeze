@@ -124,6 +124,18 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // asserts no DB context is held across that call.
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/autopay-confirmation\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/public\/[^/]+\/autopay-confirmation\/?$/ },
+  // #9585: customer-portal invoice detail and PDF. Branding, online-payment
+  // availability, the autopay offers and an on-demand render's partner row are
+  // partner-axis reads, each in a system context of its own; under the portal
+  // request transaction each took a SECOND pooled connection while the first sat
+  // idle (the #9446/#9454 lock-queue stall). The handlers open their own org
+  // transactions with the middleware's exact scope (portalOrgDbAccessContext) and
+  // run the system reads with none open. HEAD runs the GET handler (Hono), so it
+  // must opt out with it.
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/?$/ },
+  { method: 'HEAD', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pdf\/?$/ },
+  { method: 'HEAD', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pdf\/?$/ },
   // #6175 Network Visibility overview. Portal auth has already resolved the
   // owning partner, so the handler opens one org-scoped context with
   // currentPartnerId populated for SELECT-only partner-wide network_monitors
@@ -614,6 +626,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },
+  // #10190 W04: the helper config names the caller-verify logo by the sha the
+  // heartbeat's promptIdentity block carries, through the heartbeat's own
+  // resolver. On a device-cache miss that resolver opens a short system read
+  // of its own (and may start a background logo load); under the ambient
+  // request transaction that read would hold a second pooled connection
+  // (#1105 / #2417). The handler reads permissions and branding in one short
+  // helper context (helperDbAccessContext) and resolves the logo after it.
+  { method: 'GET', pattern: /^\/api\/v1\/helper\/config\/?$/ },
   // AI model registry W05 (#7603, D12): the continuation route makes a
   // provider call (the summary) and takes/settles a budget reservation in
   // their own system transactions; it must not hold the request's connection

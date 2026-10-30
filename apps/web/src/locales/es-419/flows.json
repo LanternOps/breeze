@@ -39,7 +39,9 @@
     "inputs": "Entradas",
     "steps": "Pasos",
     "version": "Versión {{version}}",
-    "createdInChat": "Creado en Breeze AI"
+    "createdInChat": "Creado en Breeze AI",
+    "movedFromJob": "Movido desde un trabajo",
+    "movedFromJobReverted": "(devuelto)"
   },
   "step": {
     "tool": "Herramienta",
@@ -55,9 +57,52 @@
     "source": {
       "core": "Herramienta base",
       "tenant": "Fuente de herramientas",
-      "builtin": "Integrada"
+      "builtin": "Integrada",
+      "unknown": "Herramienta desconocida"
     },
-    "preApprovedBadge": "Preaprobado"
+    "preApprovedBadge": "Preaprobado",
+    "builtin": {
+      "notify": "Enviar un aviso",
+      "http_request": "Llamar a una API externa",
+      "ai": "Consultar a la IA",
+      "run_script_on_targets": "Ejecutar un script en dispositivos",
+      "resolve_targets": "Buscar dispositivos",
+      "create_alert": "Generar una alerta"
+    },
+    "notify": {
+      "channel": "Canal: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anónimo (sin credenciales)"
+    },
+    "ai": {
+      "tools": "Herramientas: {{tools}}",
+      "noTools": "Sin herramientas",
+      "output": "Campos de resultado: {{fields}}"
+    },
+    "fleet": {
+      "script": "Script n.º {{scriptId}}",
+      "target": {
+        "all": "Todos los dispositivos",
+        "devices": "Dispositivos de la lista",
+        "groups": "Grupos de dispositivos",
+        "filter": "Dispositivos que coinciden con un filtro",
+        "other": "Un destino de dispositivos"
+      },
+      "conditions": "Dispositivos que cumplen las condiciones del trabajo",
+      "triggerDevice": "El dispositivo del evento",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivos",
+      "fromStep": {
+        "succeeded": "Dispositivos con éxito en {{stepId}}",
+        "dispatched": "Dispositivos alcanzados por {{stepId}}",
+        "failed": "Dispositivos con falla en {{stepId}}"
+      },
+      "offlineQueue": "Dispositivos sin conexión: en cola",
+      "offlineSkip": "Dispositivos sin conexión: omitidos",
+      "alert": "Gravedad {{severity}}"
+    }
   },
   "issues": {
     "title": "Validación",
@@ -80,7 +125,8 @@
   },
   "tabs": {
     "overview": "Resumen",
-    "runs": "Ejecuciones"
+    "runs": "Ejecuciones",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Habilitar",
@@ -103,7 +149,11 @@
       "variable_dependent": "Este paso depende de valores que solo se conocen al ejecutar.",
       "script_not_found": "No se encontró el script que usa este paso.",
       "four_eyes": "Esta acción siempre necesita la aprobación de una segunda persona.",
-      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar."
+      "tenant_tool": "Las fuentes de herramientas personalizadas no se pueden preaprobar.",
+      "for_each": "Los pasos que se repiten para cada elemento no se pueden aprobar por adelantado.",
+      "run_as_elevated": "Este script se ejecuta con privilegios elevados, por lo que no se puede aprobar por adelantado.",
+      "selector_not_literal": "Los dispositivos se eligen en tiempo de ejecución, por lo que este paso no se puede aprobar por adelantado.",
+      "max_targets_invalid": "Indica en cuántos dispositivos puede ejecutarse este paso (1–500) para aprobarlo por adelantado."
     },
     "eventScope": "Los flujos por evento reaccionan a los eventos de la plataforma sin importar qué los causó, incluidas acciones de personas, de otros flujos o de automatizaciones. Revise el filtro del disparador antes de habilitar.",
     "missingPermissions": "Le faltan permisos que necesitan los pasos de este flujo:",
@@ -121,7 +171,10 @@
     "partnerWideForbidden": "No tiene permiso para activar flujos para todas las organizaciones.",
     "interactiveRequired": "Los flujos solo se pueden activar desde una sesión de navegador iniciada.",
     "slugUnavailable": "Otro flujo de este ámbito ya usa este identificador.",
-    "generic": "No se pudo activar el flujo."
+    "generic": "No se pudo activar el flujo.",
+    "webhookSecretMissing": "Crea un secreto de webhook antes de activar este flujo.",
+    "aiBudgetUnavailable": "Esta organización no tiene presupuesto de IA, por lo que no se puede activar un flujo con un paso de IA.",
+    "webhookSecretInvalidated": "Al activar esta versión se borró el secreto del webhook, porque se creó para un borrador anterior. Se rechazarán todas las solicitudes hasta que crees un secreto nuevo y se lo entregues al remitente."
   },
   "run": {
     "title": "Ejecutar flujo",
@@ -145,6 +198,7 @@
   },
   "runs": {
     "empty": "Aún no hay ejecuciones.",
+    "emptyFiltered": "Ninguna ejecución coincide con este filtro.",
     "status": {
       "queued": "En cola",
       "running": "En ejecución",
@@ -216,7 +270,11 @@
       "notify_failed": "No se pudo enviar el aviso.",
       "ai_budget_exhausted": "Se agotó el presupuesto de IA de la organización.",
       "ai_output_invalid": "El resultado de la IA no coincide con el formato esperado.",
-      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA."
+      "ai_token_cap_reached": "La ejecución alcanzó su límite de tokens de IA.",
+      "targets_over_cap": "El paso apuntó a más dispositivos de los que un paso de flujo puede usar (500).",
+      "targets_unresolvable": "No se pudo resolver el destino de dispositivos del paso.",
+      "alert_create_failed": "No se pudo crear la alerta.",
+      "script_dispatch_failed": "No se pudo enviar el script a uno o más dispositivos."
     },
     "step": {
       "status": {
@@ -246,7 +304,9 @@
       "loading": "Cargando...",
       "loadFailed": "No se pudieron cargar los detalles del paso.",
       "pruned": "La política de retención eliminó los detalles.",
-      "redacted": "Los detalles del paso no están disponibles con su nivel de acceso."
+      "redacted": "Los detalles del paso no están disponibles con su nivel de acceso.",
+      "aiUsage": "IA: {{input}} de entrada, {{output}} de salida (tokens), {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Ejecución no encontrada.",
     "alreadyTerminal": "Esta ejecución ya terminó.",
@@ -258,7 +318,11 @@
     "queuedNote": "En cola. Esperando un espacio de ejecución libre.",
     "paused": "Actualizaciones en vivo en pausa.",
     "lastUpdated": "Última actualización {{time}}",
-    "timeline": "Pasos"
+    "timeline": "Pasos",
+    "agentRun": "Iniciado por la ejecución de un agente de IA",
+    "openAgentRun": "Abrir ejecución del agente",
+    "aiTokensUsed": "Tokens de IA utilizados: {{count}}",
+    "parallel": "{{count}} elementos se ejecutaron en paralelo"
   },
   "toast": {
     "enabled": "Flujo habilitado",
@@ -269,5 +333,445 @@
   "disable": {
     "title": "Desactivar flujo",
     "message": "Al desactivarlo se detienen las nuevas ejecuciones y se cancelan las que están en curso. Puede volver a activar el flujo más tarde."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "URL del webhook",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyFailed": "No se pudo copiar automáticamente. Selecciona el valor y cópialo manualmente.",
+    "authMode": {
+      "label": "Autenticación",
+      "hmac": "Solicitud firmada (HMAC-SHA256)",
+      "token": "Secreto en un encabezado"
+    },
+    "authHelp": {
+      "hmac": "El remitente firma cada solicitud con el secreto. Breeze rechaza las solicitudes sin firma, con firma incorrecta o de más de cinco minutos, y ejecuta una solicitud repetida una sola vez.",
+      "token": "El remitente coloca el secreto mismo en un encabezado. Es más débil que firmar: cualquiera que vea una solicitud puede enviar más. Úsalo solo con remitentes que no pueden firmar."
+    },
+    "signing": {
+      "title": "Cómo enviar una solicitud",
+      "hmac": "Envía un objeto JSON como cuerpo. Calcula HMAC-SHA256 sobre <timestamp>.<raw body> con el secreto y envía estos encabezados:",
+      "token": "Envía un objeto JSON como cuerpo, con el secreto en este encabezado:",
+      "deliveryId": "Opcional: envía un {{header}} único para que un reintento de la misma entrega se ejecute una sola vez."
+    },
+    "secret": {
+      "label": "Secreto",
+      "create": "Crear secreto",
+      "rotate": "Rotar secreto",
+      "none": "Aún no hay un secreto. Se rechazarán todas las solicitudes hasta que crees uno.",
+      "fingerprint": "Huella digital",
+      "rotatedAt": "Creado",
+      "dialogTitle": "Secreto del webhook",
+      "warning": "Copia este secreto ahora. No se volverá a mostrar.",
+      "done": "Listo",
+      "rotateTitle": "¿Rotar el secreto del webhook?",
+      "rotateMessage": "El secreto actual deja de funcionar de inmediato. El remitente será rechazado hasta que use el secreto nuevo.",
+      "failed": "No se pudo crear el secreto del webhook.",
+      "draftUnresolvable": "Los pasos del borrador ya no se pueden resolver, por lo que no se puede crear un secreto para él. Corrige primero el borrador.",
+      "notWebhook": "Este flujo no se inicia con un webhook."
+    },
+    "lastFailure": {
+      "label": "Última solicitud rechazada",
+      "none": "Ninguna",
+      "missing_signature": "La solicitud no estaba firmada.",
+      "bad_signature": "La firma no coincidía.",
+      "stale_timestamp": "Faltaba la marca de tiempo o difería en más de cinco minutos.",
+      "missing_token": "Faltaba el encabezado del secreto.",
+      "bad_token": "El secreto del encabezado era incorrecto.",
+      "bad_delivery_id": "El ID de entrega no era válido."
+    },
+    "orgResolver": {
+      "label": "Organización",
+      "externalId": "Se asocia por {{path}} con los ID externos de tipo {{system}}",
+      "breezeOrgId": "Se lee de {{path}} como ID de organización de Breeze",
+      "orgFlow": "Se ejecuta en la organización de este flujo"
+    }
+  },
+  "deliveries": {
+    "title": "Entregas recientes",
+    "empty": "Aún no hay entregas.",
+    "loadFailed": "No se pudieron cargar las entregas.",
+    "loadMore": "Cargar más",
+    "hidden": "Los ID de entrega y los valores de organización están ocultos con tu nivel de acceso.",
+    "columns": {
+      "received": "Recibida",
+      "status": "Estado",
+      "org": "Organización",
+      "run": "Ejecución",
+      "attempts": "Intentos",
+      "detail": "Detalle"
+    },
+    "status": {
+      "accepted": "Aceptada",
+      "org_unresolved": "Sin organización coincidente",
+      "refused": "Rechazada",
+      "invalid_body": "Cuerpo no válido"
+    },
+    "resolverValue": "Valor: {{value}}",
+    "deliveryId": "ID de entrega: {{id}}",
+    "openRun": "Abrir ejecución"
+  },
+  "usage": {
+    "title": "Ejecuciones de este mes",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Este flujo",
+    "ownerCap": "Todos los flujos de este propietario",
+    "count": "{{used}} de {{cap}}",
+    "limitsLink": "Límites de flujos",
+    "refused": {
+      "flow_queue_full": "Hay demasiadas ejecuciones en espera.",
+      "flow_monthly_cap_reached": "Este flujo alcanzó su límite mensual de ejecuciones.",
+      "owner_monthly_cap_reached": "El propietario alcanzó su límite mensual de ejecuciones para todos los flujos."
+    },
+    "refusedBanner": "Se están rechazando ejecuciones. {{reason}} Último rechazo: {{time}}. El flujo sigue activado y se ejecutará de nuevo cuando se reinicie el mes o se aumente el límite.",
+    "refusedBadge": "Ejecuciones rechazadas"
+  },
+  "limits": {
+    "title": "Límites de flujos",
+    "subtitle": "Límites mensuales de ejecuciones y límite de tokens de IA para cada ejecución. Define un valor predeterminado para tu partner y redúcelo para una organización cuando sea necesario.",
+    "level": {
+      "label": "Nivel",
+      "partner": "Predeterminado del partner",
+      "org": "Organización"
+    },
+    "selectOrg": "Selecciona una organización",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Ejecuciones por mes, todos los flujos",
+        "help": "El máximo de ejecuciones que pueden iniciar todos los flujos de un propietario en un mes calendario (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Ejecuciones por mes, por flujo",
+        "help": "El máximo de ejecuciones que puede iniciar un flujo en un mes calendario (UTC). Un flujo puede definir su propio límite más bajo."
+      },
+      "aiTokensPerRun": {
+        "label": "Tokens de IA por ejecución",
+        "help": "El máximo de tokens de IA que pueden usar los pasos de IA de una ejecución."
+      }
+    },
+    "inherited": "Heredado: {{value}} ({{source}})",
+    "source": {
+      "default": "predeterminado de la plataforma",
+      "partner": "predeterminado del partner",
+      "org": "esta organización"
+    },
+    "ceilingNote": "Las organizaciones solo pueden reducirlo. El valor del partner es {{value}}.",
+    "aboveCeiling": "El valor almacenado {{value}} supera el valor del partner, por lo que no se aplica.",
+    "aboveCeilingError": "Debe ser {{value}} o menos (el valor del partner).",
+    "range": "Ingresa un número entero de 1 a {{max}}.",
+    "placeholder": "Heredar",
+    "save": "Guardar",
+    "saving": "Guardando...",
+    "saved": "Límites de flujos guardados",
+    "saveFailed": "No se pudieron guardar los límites de flujos.",
+    "loadFailed": "No se pudieron cargar los límites de flujos.",
+    "orgNotFound": "No se encontró esta organización o ya no tienes acceso a ella.",
+    "readOnly": "Puedes ver estos límites, pero no cambiarlos.",
+    "partnerWideForbidden": "Cambiar el valor predeterminado del partner requiere acceso a todas las organizaciones.",
+    "orgScopeReadOnly": "Los límites de la organización los define tu proveedor de servicios."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Exacto",
+      "needs_review": "Requiere revisión",
+      "unconvertible": "Aún no se puede mover"
+    },
+    "fidelityBlocked": "Aún no se puede mover: {{blocker}}",
+    "severity": {
+      "blocker": "Bloqueo",
+      "review": "Revisar",
+      "info": "Nota"
+    },
+    "state": {
+      "shadow": "En sombra",
+      "switched": "Movido a Flujos",
+      "reverted": "Devuelto"
+    },
+    "actionNumber": "Acción {{n}}",
+    "noFindings": "Nada que revisar: este trabajo se mueve de forma exacta.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Los flujos están desactivados aquí",
+        "line": "Esta instalación se ejecuta con FLOWS_ENABLED=false, así que los trabajos se quedan como están."
+      },
+      "managed_row": {
+        "title": "Administrado por Breeze",
+        "line": "Un agente de IA o un monitor es dueño de este trabajo; se mueve con su dueño, no por separado."
+      },
+      "policy_workflow": {
+        "title": "Parte de un flujo de trabajo de políticas",
+        "line": "Las políticas de configuración ejecutan este trabajo; se mueve cuando se muevan los flujos de trabajo de políticas."
+      },
+      "already_retired": {
+        "title": "Ya está desactivado",
+        "line": "Este trabajo se retiró y ya no se ejecuta."
+      },
+      "compliance_remediation_target": {
+        "title": "Se usa para remediación de cumplimiento",
+        "line": "Una política de cumplimiento ejecuta este trabajo para corregir dispositivos; por ahora sigue siendo un trabajo."
+      },
+      "event_dispatch_not_durable": {
+        "title": "La entrega de eventos no es duradera aquí",
+        "line": "Los trabajos de eventos solo se mueven con EVENT_DISPATCH_MODE=enforce y flow-event-trigger suscrito."
+      },
+      "event_filter_not_strict": {
+        "title": "El filtro de eventos no se puede copiar exactamente",
+        "line": "El filtro usa listas, objetos, demasiadas claves o una clave que los flujos no pueden comparar."
+      },
+      "event_filter_null": {
+        "title": "El filtro de eventos busca valores vacíos",
+        "line": "Los trabajos distinguen un valor vacío de uno ausente; los flujos no."
+      },
+      "cron_semantics_differ": {
+        "title": "El horario se activaría en momentos distintos",
+        "line": "Esta expresión cron no coincide con el programador de flujos en los cambios de horario de verano."
+      },
+      "condition_unknown_type": {
+        "title": "Condición de destino desconocida",
+        "line": "Un tipo de condición que el ejecutor de trabajos ignora; un flujo no puede copiarla de forma segura."
+      },
+      "targets_over_cap": {
+        "title": "Demasiados dispositivos",
+        "line": "Este trabajo apunta a más de 400 dispositivos; un paso de flujo ejecuta como máximo 500."
+      },
+      "partner_wide_group_target": {
+        "title": "El trabajo de todas las organizaciones apunta a grupos",
+        "line": "Los grupos de dispositivos pertenecen a una organización, así que un trabajo de todas las organizaciones no puede usarlos como destino."
+      },
+      "run_as_elevated": {
+        "title": "Se ejecuta con privilegios elevados",
+        "line": "Un script movido nunca se ejecuta con privilegios elevados sin que alguien lo supervise."
+      },
+      "restart_service_monitor_only": {
+        "title": "Reinicia un servicio",
+        "line": "Los reinicios de servicio solo se ejecutan desde monitores."
+      },
+      "command_mixed_os": {
+        "title": "Comando sin shell en dispositivos mixtos",
+        "line": "Elige un shell o limita los destinos a un solo sistema operativo."
+      },
+      "notify_per_run_cap": {
+        "title": "Demasiadas notificaciones por ejecución",
+        "line": "Los flujos envían como máximo 20 notificaciones por ejecución."
+      },
+      "channel_type_not_supported": {
+        "title": "Canal de notificación no compatible",
+        "line": "Un flujo aún no puede enviar a este tipo de canal."
+      },
+      "deploy_software_unmapped": {
+        "title": "Implementa software",
+        "line": "La implementación de software aún no se mueve a Flujos."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Se ejecuta más veces que el límite mensual",
+        "line": "Las ejecuciones mensuales estimadas superan el límite de flujos de este dueño."
+      },
+      "reference_not_owned": {
+        "title": "Usa algo que este dueño no posee",
+        "line": "Un script, canal o grupo pertenece a otro dueño."
+      },
+      "partner_wide_webhook": {
+        "title": "Trabajo con webhook de todas las organizaciones",
+        "line": "El webhook de un flujo necesita una organización en la cual ejecutarse."
+      },
+      "text_template_unsupported": {
+        "title": "El texto contiene llaves de plantilla",
+        "line": "Un flujo leería las llaves dobles del texto como una plantilla."
+      },
+      "event_filter_string_coercion": {
+        "title": "Valor de filtro de texto",
+        "line": "Los trabajos comparan como texto y los flujos de forma exacta; confirma que el campo siempre sea texto."
+      },
+      "approval_each_run": {
+        "title": "Aprobación en cada ejecución por webhook",
+        "line": "La preaprobación nunca se aplica a ejecuciones por webhook, así que cada ejecución espera a una persona."
+      },
+      "command_becomes_script": {
+        "title": "El comando se convierte en script",
+        "line": "El comando se guarda como un script de la biblioteca que revisas antes de cambiar."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Se ejecuta una vez por organización",
+        "line": "Un flujo omite las organizaciones suspendidas y se ejecuta en un máximo de 500."
+      },
+      "failure_notice_cap": {
+        "title": "Los avisos de falla pueden estar limitados",
+        "line": "No se envían más de 20 avisos de falla en una ejecución."
+      },
+      "owner_cap_pressure": {
+        "title": "Cerca del límite mensual",
+        "line": "Este flujo usaría más del 80 % de las ejecuciones mensuales del dueño."
+      },
+      "site_ceiling_removed": {
+        "title": "Alcance de dispositivos más amplio",
+        "line": "El trabajo estaba limitado a los sitios de su creador; el flujo no."
+      },
+      "webhook_body_shape": {
+        "title": "El cuerpo del webhook debe ser un objeto JSON",
+        "line": "El flujo ignora las entregas que no son objetos JSON."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Encabezado de secreto simple",
+        "line": "Los remitentes que envían el secreto simple deben cambiar a X-Breeze-Webhook-Token."
+      },
+      "name_truncated": {
+        "title": "Nombre acortado",
+        "line": "Los nombres de flujo tienen un máximo de 120 caracteres."
+      },
+      "duration_minutes_ignored": {
+        "title": "Duración ignorada",
+        "line": "El ajuste de duración del evento nunca tuvo efecto y se descarta."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Se pone al día tras una interrupción",
+        "line": "Tras una interrupción, el flujo ejecuta una vez la última hora perdida; el trabajo no ejecutaba ninguna."
+      },
+      "queued_is_success": {
+        "title": "En cola cuenta como hecho",
+        "line": "Como antes, un script en cola para un dispositivo sin conexión cuenta como enviado."
+      },
+      "severity_mapped": {
+        "title": "Gravedad asignada",
+        "line": "Alta y media pasan a advertencia; baja e información pasan a información."
+      },
+      "notification_emails_unused": {
+        "title": "Lista de correos descartada",
+        "line": "La lista de correos del trabajo nunca se usó y se descarta."
+      },
+      "webhook_url_changes": {
+        "title": "Dirección del webhook",
+        "line": "Los remitentes conservan la dirección anterior; esta reenvía al flujo."
+      },
+      "delegator_pause": {
+        "title": "Se pausa si pierdes el acceso",
+        "line": "El flujo se ejecuta como tú y se pausa si tu cuenta se desactiva o se restringe."
+      }
+    },
+    "column": {
+      "heading": "Mover a Flujos",
+      "move": "Mover a Flujos",
+      "view": "Ver"
+    },
+    "panel": {
+      "title": "Mover \"{{name}}\" a Flujos",
+      "subtitle": "Revisa qué se conserva, observa al flujo en sombra junto al trabajo y luego cambia.",
+      "close": "Cerrar",
+      "loading": "Revisando este trabajo…",
+      "openFlow": "Abrir el flujo",
+      "findingsHeading": "Qué se conserva",
+      "stepsHeading": "Pasos del flujo",
+      "startShadow": "Iniciar sombra",
+      "switch": "Cambiar…",
+      "switchedNote": "El flujo ejecuta este trabajo ahora. El trabajo es de solo lectura hasta que lo devuelvas.",
+      "flowUnavailable": "No se pudo cargar el flujo. Aún puedes devolver el trabajo."
+    },
+    "shadow": {
+      "heading": "Sombra",
+      "explain": "El flujo revisa cada ejecución del trabajo sin ejecutar nada.",
+      "runs": "Ejecuciones revisadas",
+      "divergences": "Diferencias",
+      "startedAt": "Inicio",
+      "divergence": {
+        "trigger_mismatch": "Última diferencia: el flujo y el trabajo no coincidieron en si debía ejecutarse.",
+        "target_set_mismatch": "Última diferencia: el flujo habría elegido otros dispositivos.",
+        "would_park": "Última diferencia: un paso habría esperado aprobación.",
+        "over_cap": "Última diferencia: la ejecución habría alcanzado un límite del flujo."
+      }
+    },
+    "switch": {
+      "title": "Cambiar \"{{name}}\" a su flujo",
+      "body": "Un minuto después de cambiar, el flujo ejecuta cada ocurrencia y el trabajo se detiene. Nada se ejecuta dos veces.",
+      "blocked": {
+        "shadow_too_new": "El cambio se habilita cuando la sombra tenga 10 minutos.",
+        "shadow_too_short": "La sombra revisó menos de 3 ejecuciones o tiene menos de 7 días.",
+        "shadow_divergent": "La sombra vio diferencias entre el flujo y el trabajo.",
+        "source_changed": "El trabajo cambió desde que se convirtió. Inicia una sombra nueva.",
+        "unconvertible": "Este trabajo aún no se puede mover."
+      },
+      "acknowledge": "Cambiar de todos modos; acepto la evidencia mostrada.",
+      "preApprovalsHeading": "Ejecutar sin esperar aprobación",
+      "preApprovalsHelp": "Desactivado por defecto. Sin esto, cada ejecución de un paso de script espera a que una persona la apruebe.",
+      "noPreApprovals": "Ningún paso de script puede ejecutarse sin aprobación.",
+      "preApprove": "Preaprobar paso de script",
+      "currentTargets_one": "Apunta a {{count}} dispositivo hoy.",
+      "currentTargets_other": "Apunta a {{count}} dispositivos hoy.",
+      "maxTargets": "Máximo de dispositivos por ejecución (1–{{max}})",
+      "maxTargetsInvalid": "Ingresa un número entero de 1 a {{max}}.",
+      "liveMembership": "Los dispositivos se calculan de nuevo en cada ejecución. Quien pueda cambiar los miembros de un grupo puede cambiar dónde se ejecuta esto; una ejecución por encima del límite pausa el flujo.",
+      "frozenDevices": "Si una ejecución espera aprobación, quien aprueba ve los dispositivos exactos y solo esos se ejecutan.",
+      "perOrgMultiplies": "Este es un flujo de todas las organizaciones: el límite se aplica en cada organización, así que el total puede ser varias veces ese número según la cantidad de organizaciones.",
+      "webhookApprovalEachRun": "Las ejecuciones por webhook siempre esperan aprobación, incluso con preaprobación.",
+      "generatedScriptsHeading": "Scripts creados al cambiar",
+      "generatedScriptsHelp": "Cada comando se convierte en un script de la biblioteca con el mismo dueño que el trabajo.",
+      "acceptScripts": "Revisé estos scripts.",
+      "acceptScopeWidening": "Acepto que el flujo no está limitado a los sitios del creador del trabajo.",
+      "webhookChange": "Los remitentes conservan la dirección anterior del webhook; esta reenvía al flujo. El flujo solo acepta objetos JSON, y los remitentes del secreto simple deben usar X-Breeze-Webhook-Token.",
+      "acceptDelegatorLifecycle": "El flujo se ejecuta como yo. Si mi cuenta se desactiva o pierde acceso, el flujo se pausa (el trabajo no).",
+      "confirm": "Cambiar",
+      "switching": "Cambiando…"
+    },
+    "revert": {
+      "action": "Devolver al trabajo…",
+      "title": "¿Devolver \"{{name}}\" al trabajo?",
+      "body": "El trabajo se activa de nuevo y el flujo no inicia nada nuevo. Las ejecuciones ya iniciadas en el flujo terminan.",
+      "confirm": "Devolver"
+    },
+    "toast": {
+      "created": "Sombra iniciada.",
+      "bulkCreated_one": "Se inició una sombra para {{count}} trabajo.",
+      "bulkCreated_other": "Se inició una sombra para {{count}} trabajos.",
+      "switched": "Cambiado. El flujo ejecuta este trabajo desde ahora.",
+      "reverted": "Devuelto. El trabajo se ejecuta de nuevo."
+    },
+    "errors": {
+      "loadFailed": "No se pudo cargar el movimiento de este trabajo.",
+      "createFailed": "No se pudo iniciar la sombra.",
+      "bulkFailed": "No se pudieron iniciar las sombras.",
+      "switchFailed": "No se pudo cambiar.",
+      "revertFailed": "No se pudo devolver.",
+      "automation_not_found": "Este trabajo ya no existe.",
+      "conversion_not_found": "Este movimiento ya no existe.",
+      "conversion_exists": "Este trabajo ya se está moviendo.",
+      "source_changed": "El trabajo cambió desde que lo abriste. Recarga e inténtalo de nuevo.",
+      "unconvertible": "Este trabajo aún no se puede mover.",
+      "draft_rejected": "No se aceptó el borrador del flujo.",
+      "partner_wide_forbidden": "Mover trabajos de todas las organizaciones requiere acceso completo de socio.",
+      "owner_forbidden": "Selecciona primero una organización.",
+      "interactive_session_required": "Inicia sesión como persona para hacer esto.",
+      "delegation_scope_restricted": "Tu acceso está limitado a algunos sitios, así que no puedes cambiar ni devolver.",
+      "not_shadow": "Solo un trabajo en sombra puede cambiarse.",
+      "not_switched": "Solo un trabajo cambiado puede devolverse.",
+      "version_conflict": "El flujo cambió. Recarga e inténtalo de nuevo.",
+      "already_enabled": "El flujo ya está activado.",
+      "slug_unavailable": "Otro flujo ya usa este nombre.",
+      "shadow_too_new": "El cambio se habilita cuando la sombra tenga 10 minutos.",
+      "shadow_too_short": "Aún no hay suficiente evidencia de la sombra. Reconócelo para cambiar de todos modos.",
+      "shadow_divergent": "La sombra vio diferencias. Reconócelas para cambiar de todos modos.",
+      "scope_widening_not_accepted": "Acepta el alcance de dispositivos más amplio para cambiar.",
+      "automation_disabled": "Activa el trabajo antes de cambiarlo.",
+      "automation_converted": "Este trabajo se movió a Flujos. Cámbialo allí.",
+      "automations_moved_to_flows": "Los trabajos nuevos se crean en Flujos.",
+      "flow_not_found": "El flujo de este trabajo ya no existe.",
+      "revert_closed": "Devolver está cerrado en esta instalación.",
+      "generated_script_rejected": "No se pudo crear un script para este trabajo.",
+      "permission_missing": "No tienes todos los permisos que necesita el flujo.",
+      "pre_approval_not_eligible": "Un paso no se puede preaprobar.",
+      "invalid": "El flujo no es válido.",
+      "event_dispatch_not_durable": "La entrega de eventos aquí no es duradera.",
+      "webhook_secret_missing": "Falta el secreto del webhook."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Los trabajos se están moviendo a Flujos.",
+        "r1Body": "Los trabajos nuevos se crean en Flujos. Mueve cada trabajo cuando su sombra coincida; puedes devolverlo."
+      },
+      "convertAll": "Iniciar sombra para todos los convertibles",
+      "converting": "Iniciando…",
+      "bulkSummary": "Iniciados {{created}}, omitidos {{skipped}}.",
+      "newJobOpensFlows": "Flujo nuevo"
+    }
   }
 }

@@ -43,6 +43,7 @@ import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type Devi
 import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES, HOUR_BLOCK_TYPE } from './lineTypes';
 import DeviceCoverageNotice from './DeviceCoverageNotice';
 import RelatedContractsNotice, { ActivateOverlapConfirm, overlappingSiblings } from './RelatedContractsNotice';
+import ContractDeliverablesSection from './ContractDeliverablesSection';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { EntityLink } from '@/components/shared/EntityLink';
@@ -642,6 +643,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   }, [lineType, lineQty, effectiveLinePrice]);
 
   const refresh = useCallback(() => { onChanged?.(); void loadEstimate(); }, [onChanged, loadEstimate]);
+  // #9346 adopt re-files the sibling draft's deliverables onto this contract;
+  // remount the deliverables section so its table re-reads them (#9958).
+  const [adoptedTick, setAdoptedTick] = useState(0);
+  const onAdopted = useCallback(() => { setAdoptedTick((n) => n + 1); refresh(); }, [refresh]);
 
   // ---- create flow ---------------------------------------------------------
   const saveCreate = useCallback(async () => {
@@ -935,7 +940,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           <RelatedContractsNotice
             related={detail?.relatedContracts}
             adopt={contract && canWrite && (contract.status === 'draft' || contract.status === 'active')
-              ? { contractId: contract.id, onAdopted: refresh }
+              ? { contractId: contract.id, onAdopted }
               : undefined}
           />
           <div className="space-y-6 rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
@@ -1960,6 +1965,20 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                 </div>
               </div>
             </div>
+          )}
+
+          {/* #9958: a writer sees a draft here, never in ContractDetail, so the
+              deliverables owed under it (and the #9309 "Paused until the
+              contract is activated" note) must render in the editor too. The
+              create form has no contract id to attach deliverables to yet. */}
+          {contract && (
+            <ContractDeliverablesSection
+              key={adoptedTick}
+              contractId={contract.id}
+              orgId={contract.orgId}
+              contractStartDate={contract.startDate}
+              contractIsDraft={contract.status === 'draft'}
+            />
           )}
         </div>
 

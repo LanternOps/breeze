@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -224,19 +226,36 @@ func envelopeFor(t *testing.T, typ string, payload any) *ipc.Envelope {
 	return &ipc.Envelope{ID: "e-1", Type: typ, Payload: raw}
 }
 
-func TestNativeRendererAdvertisesNothingInW02(t *testing.T) {
-	if got := advertisedNativePromptKinds(ipc.HelperRoleUser); len(got) != 0 {
-		t.Fatalf("W02 native helper advertises %v; it must advertise zero kinds", got)
+// The native user-helper advertises the kinds whose wave has shipped (plan
+// P2): W04 notice.info@1, W05 restart.prompt@1 and restart.final@1 on every
+// OS, then W06's remote kinds where this machine can draw them
+// (TestNativeAdvertisesTheRemoteKinds pins the per-OS rule). The SYSTEM
+// helper still advertises nothing.
+func TestNativeRendererAdvertisesTheShippedKinds(t *testing.T) {
+	got := advertisedNativePromptKinds(ipc.HelperRoleUser)
+	if want := nativePromptKindsFor(ipc.HelperRoleUser, runtime.GOOS, consentUISupported()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("native helper advertises %v; want %v", got, want)
 	}
-	if nativePromptProtocolFor(ipc.HelperRoleUser) != ipc.PromptProtocolVersion {
+	// W04 notice.info, W05 restart.prompt + restart.final lead (append-only).
+	head := []string{"notice.info@1", "restart.prompt@1", "restart.final@1"}
+	if len(got) < len(head) || strings.Join(got[:len(head)], ",") != strings.Join(head, ",") {
+		t.Fatalf("native helper advertises %v; want it to start with %v", got, head)
+	}
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
+		if got := advertisedNativePromptKinds(role); len(got) != 0 {
+			t.Fatalf("role %s advertises %v; only the user and SYSTEM helpers render natively", role, got)
+		}
+	}
+	if nativePromptProtocolFor(ipc.HelperRoleUser, "linux") != ipc.PromptProtocolVersion {
 		t.Fatal("the user helper speaks the prompt protocol")
 	}
-	if nativePromptProtocolFor(ipc.HelperRoleSystem) != 0 {
-		t.Fatal("the SYSTEM helper renderer ships in W07 (P14)")
+	if nativePromptProtocolFor(ipc.HelperRoleSystem, "linux") != 0 {
+		t.Fatal("the SYSTEM helper renders prompts on Windows only (W07, P14)")
 	}
 	sink := &promptSink{}
 	r := newNativePromptRenderer(advertisedNativePromptKinds(ipc.HelperRoleUser), (&fakeNativeShow{}).show, sink.send, func() time.Time { return nativeNow })
-	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.notice.json")))
+	// elevation.request is not advertised before W07.
+	r.handle(envelopeFor(t, ipc.TypePromptShow, nativeFixture(t, "show.elevation.waiting.json")))
 	closed := sink.waitFor(t, ipc.TypePromptClosed).(ipc.PromptClosed)
 	if closed.Reason != ipc.PromptClosedRenderFailed || closed.Detail != "unadvertised_kind" {
 		t.Fatalf("closed = %+v; an unadvertised prompt_show is answered render_failed (rule 4)", closed)

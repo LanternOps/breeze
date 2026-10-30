@@ -21,7 +21,7 @@ vi.mock('./auth', async (importOriginal) => {
   };
 });
 
-import { useAiModelPickerStore } from './aiModelPickerStore';
+import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 
 const queryOf = (url: string) => Object.fromEntries(new URL(url, 'http://x').searchParams);
 
@@ -37,6 +37,16 @@ describe('picker choices request under an ambient org', () => {
   it('a no-session request names the org explicitly and passes the validator', async () => {
     await useAiModelPickerStore.getState().load({ orgId: AMBIENT_ORG });
     expect(queryOf(urls[0]!)).toEqual({ orgId: AMBIENT_ORG });
+    expect(chatModelChoicesQuerySchema.safeParse(queryOf(urls[0]!)).success).toBe(true);
+  });
+
+  it('a record page loads its own org choices instead of the header org', async () => {
+    const recordOrg = '33333333-3333-4333-8333-333333333333';
+    const orgId = noSessionOrgId({ type: 'record', kind: 'ticket', id: SESSION, orgId: recordOrg }, AMBIENT_ORG);
+
+    await useAiModelPickerStore.getState().load({ orgId });
+
+    expect(queryOf(urls[0]!)).toEqual({ orgId: recordOrg });
     expect(chatModelChoicesQuerySchema.safeParse(queryOf(urls[0]!)).success).toBe(true);
   });
 });

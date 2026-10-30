@@ -69,7 +69,7 @@
           "executing": "Executing",
           "completed": "Completed",
           "failed": "Failed",
-          "rejected": "Rejected"
+          "rejected": "Denied"
         }
       },
       "intents": {
@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
       "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
       "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "alerts_write": "Acknowledge and resolve alerts in every org the principal can reach. Does not grant reading alert details (alerts:read), suppress, dismiss or delete.",
       "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
       "ai_write": "MCP tools that change data.",
       "ai_execute": "MCP tools that run actions on devices.",
@@ -278,8 +279,7 @@
       "actionPlan": "Action Plan",
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
-    },
-    "overridesOrgTab": "Fields you set here override and lock the same field on every organization's AI tab."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
@@ -761,9 +761,9 @@
     "enrollment": {
       "title": "Device enrollment",
       "ttl": "Default link expiry",
-      "ttlHint": "Pre-selects how long new enrollment links and installers stay valid. Organizations can pick a different default for themselves.",
+      "ttlHint": "Pre-selects how long new enrollment links and installers stay valid.",
       "deviceCount": "Default devices per link",
-      "deviceCountHint": "How many machines one enrollment link may enroll by default. Organizations can pick a different default for themselves.",
+      "deviceCountHint": "How many machines one enrollment link may enroll by default.",
       "maxTtl": "Maximum link lifetime",
       "maxTtlHint": "A ceiling on key lifetime, not just on what an admin may request: nothing minted under this partner stays usable for longer — enrollment links, MCP deployment invites, and the child credentials issued when an installer is redeemed.",
       "maxTtlWarning": "Organizations cannot raise this. A short cap also shortens the time a machine has to finish enrolling after redeeming a link, not just the time to download it."
@@ -789,7 +789,6 @@
   "agentVersionPins": {
     "title": "Update version targets",
     "description": "Pin the agent and watchdog to a specific registered version, or leave on <strong>Latest promoted</strong> to track the globally promoted release. Agent and watchdog are independent.",
-    "partnerDescription": " A pin here is the default for all your organizations; an organization can override it.",
     "organizationDescription": " An organization pin overrides the partner default.",
     "components": {
       "agent": "Agent target",
@@ -907,12 +906,12 @@
     "logoPreview": "Logo preview",
     "noLogo": "No logo",
     "uploadImage": "Upload image",
-    "imageHelp": "PNG, JPEG, or WebP · max 400 KB after encoding · resized to fit 256×256",
+    "imageHelp": "PNG, JPEG, or WebP, up to 400 KB after encoding; large images are scaled down to 800 px.",
     "invalidSavedLogo": "Saved logo data is invalid. Remove it or upload a new one.",
     "pasteUrl": "Or paste an image URL",
     "customCss": "Custom CSS",
     "customCssPlaceholder": "/* Custom CSS applied to all child organizations */",
-    "customCssHelp": "CSS overrides applied to the portal for all child organizations."
+    "customCssHelp": "Added to every client's portal, before that organization's own Custom CSS, which can override it. @import and non-HTTPS url() are not allowed."
   },
   "partnerSecurity": {
     "notSet": "Not set — orgs configure individually",
@@ -997,7 +996,7 @@
     "networkProxy": {
       "title": "Network Proxy",
       "label": "Serve Network Proxy from a dedicated origin",
-      "help": "Applies to all organizations; organizations cannot override it. Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
+      "help": "Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1124,6 @@
     "description": "Configure defaults for {{name}}.",
     "yourMsp": "your MSP",
     "saveSettings": "Save Settings",
-    "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
     "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
     "modules": {
       "title": "Modules",
@@ -1173,6 +1171,106 @@
     "knownGuests": {
       "added": "Known guest added",
       "removed": "Known guest removed"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Locks orgs",
+        "locksConditional": "Locks orgs when enabled",
+        "overridable": "Org can override",
+        "overridableCap": "Org can override, up to {{limit}}",
+        "partnerOnly": "Partner-wide"
+      },
+      "badgeHelp": {
+        "locks": "While this is set, every organization uses your value. An organization's own value is ignored.",
+        "locksConditional": "While enabled, every organization uses your value instead of its own. While disabled, organizations use their own.",
+        "overridable": "Your value is the default. An organization that sets its own value uses that instead.",
+        "overridableCap": "Your value is the default. An organization can set its own value, up to {{limit}}.",
+        "partnerOnly": "Organizations have no setting of their own. Your value applies to all of them."
+      },
+      "badgeHelpLabel": "About “{{badge}}” ({{field}})",
+      "legend": {
+        "title": "How settings apply:",
+        "locks": "every organization uses your value",
+        "overridable": "your value is the default; an organization can set its own",
+        "partnerOnly": "applies to all organizations; there is no organization setting"
+      },
+      "value": {
+        "on": "On",
+        "off": "Off",
+        "minutes_one": "{{count}} min",
+        "minutes_other": "{{count}} min",
+        "hours_one": "{{count}} hour",
+        "hours_other": "{{count}} hours",
+        "days_one": "{{count}} day",
+        "days_other": "{{count}} days"
+      },
+      "line": {
+        "appliesToAll_one": "Applies to {{count}} org",
+        "appliesToAll_other": "Applies to all {{count}} orgs",
+        "hadOwnValue_one": "{{count}} had its own value",
+        "hadOwnValue_other": "{{count}} had their own value",
+        "notSet": "Not set.",
+        "someSetOwn_one": "{{count}} of {{total}} orgs sets its own",
+        "someSetOwn_other": "{{count}} of {{total}} orgs set their own",
+        "restUsePlatformDefault": "the rest use the platform default ({{value}})",
+        "orgsUsePlatformDefault": "Orgs use the platform default ({{value}})",
+        "noneSetOwn": "No org has its own value",
+        "defaultFor_one": "Default for {{count}} org",
+        "defaultFor_other": "Default for {{count}} orgs",
+        "override_one": "{{count}} org overrides",
+        "override_other": "{{count}} override",
+        "setOwn_one": "{{count}} sets its own",
+        "setOwn_other": "{{count}} set their own",
+        "clamped_one": "{{count}} is clamped to your ceiling",
+        "clamped_other": "{{count}} are clamped to your ceiling",
+        "notInForce": "Not in force (destination disabled).",
+        "orgsUseOwnDestination": "Orgs use their own destination",
+        "haveOne_one": "{{count}} has one",
+        "haveOne_other": "{{count}} have one",
+        "partnerOnlyDefault": "Platform default ({{value}}) applies to all orgs",
+        "partnerOnlyBlank": "Not set. The platform default applies to all orgs",
+        "consumerAll": "{{consumer}}: applies to all orgs",
+        "consumerOwn_one": "{{consumer}}: {{count}} org uses its own value",
+        "consumerOwn_other": "{{consumer}}: {{count}} orgs use their own value",
+        "noOrgs": "No organizations yet",
+        "savedValue": "Saved value:",
+        "restricted": "Org breakdown requires full partner access"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Orgs with their own value",
+          "overrides": "Orgs that override your default",
+          "shadowed": "Orgs whose own value is not in effect",
+          "clamped": "Orgs clamped to your ceiling"
+        },
+        "loading": "Loading organizations…",
+        "error": "Couldn't load the organizations.",
+        "empty": "No organizations in this list.",
+        "loadMore": "Load more",
+        "set": "Set",
+        "notSet": "Not set",
+        "inEffect": "In effect",
+        "notInEffect": "Not in effect",
+        "ownValue": "Own value:",
+        "channels": "Channels",
+        "readOnly": "Read-only. Change an organization's value from its own settings."
+      },
+      "summary": {
+        "title": "Across your organizations",
+        "locks_one": "{{count}} setting locks orgs",
+        "locks_other": "{{count}} settings lock orgs",
+        "overridable_one": "{{count}} can be overridden",
+        "overridable_other": "{{count}} can be overridden",
+        "differ_one": "{{count}} has orgs that differ from your defaults",
+        "differ_other": "{{count}} have orgs that differ from your defaults",
+        "noneDiffer": "Every organization uses your values on this tab.",
+        "hint": "Select a setting, or a count under a field, to list its organizations.",
+        "unavailable": "The org breakdown is unavailable right now.",
+        "back": "Back to summary"
+      },
+      "fields": {
+        "defaultProvider": "Default remote-tool provider"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1517,7 +1615,18 @@
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
       "ticket_approval_decided": "Work approval decision",
-      "ticket_merged": "Ticket merged"
+      "ticket_merged": "Ticket merged",
+      "ticket_comment_notification": "Public reply notice",
+      "ticket_autoresponse": "Ticket received acknowledgement",
+      "ticket_resolved": "Ticket resolved",
+      "quote_send": "Quote / proposal",
+      "agreement_request_send": "Agreement request",
+      "invoice_send": "Invoice",
+      "portal_invite": "Portal invite",
+      "staff_invite": "Staff invite",
+      "invoice_autopay": "Invoice with automatic payment notice",
+      "payment_reminder": "Payment reminder",
+      "payment_overdue": "Overdue payment reminder"
     }
   },
   "inboundEmail": {
@@ -1746,7 +1855,11 @@
     },
     "colors": {
       "primary": "Primary color",
-      "secondary": "Secondary color"
+      "secondary": "Secondary color",
+      "primaryInheritedSource": "Partner brand color",
+      "primaryHelp": "Accent color on this organization's quotes, invoices and other customer documents. Leave blank to use the partner's brand color.",
+      "primaryInvalid": "Enter a hex color such as #2563eb.",
+      "primaryLoadError": "Could not load the saved primary color. Editing is disabled until this loads."
     },
     "theme": {
       "title": "Theme",
@@ -1789,6 +1902,12 @@
     "description": "Tune the default policies and enrollment behavior for {{organization}}.",
     "save": "Save defaults",
     "managedByPartner": "Managed by partner",
+    "inheritance": {
+      "inherited": "Inherited default",
+      "overridden": "Set for this organization",
+      "reset": "Reset to default",
+      "resetLabel": "Reset {{setting}} to default"
+    },
     "policies": {
       "title": "Default policies",
       "fields": {
@@ -1976,6 +2095,49 @@
         "backups_no_data": "Backups is on, but there is no backup data to show yet.",
         "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
         "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      },
+      "tiles": {
+        "awaitingYou": "Awaiting your customer",
+        "devicesProtected": "Endpoint protection",
+        "securityScore": "Security score",
+        "actionItems": "Action items",
+        "patchesApplied": "Patches applied this month",
+        "backup": "Last backup verified",
+        "service": "Service delivered (90 days)",
+        "support": "Support"
+      },
+      "tileStatus": {
+        "noData": "Not yet available",
+        "notConfigured": "Not set up",
+        "stale": "May be out of date"
+      },
+      "bands": {
+        "strong": "Strong",
+        "good": "Good",
+        "fair": "Fair",
+        "at_risk": "At risk"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} of {{total}} protected",
+        "awaitingCounts": "Proposals: {{proposals}} · Invoices: {{invoices}}",
+        "serviceCounts": "On time: {{onTime}} · Late: {{late}} · Missed: {{missed}}",
+        "nextDue": "Next due: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} open request",
+        "openRequests_other": "{{count}} open requests",
+        "threatCounts": "Detected: {{detected}} · Resolved: {{resolved}}",
+        "unknownAll": "Not yet known for all {{total}} devices",
+        "unknownSome_one": "{{count}} not yet known",
+        "unknownSome_other": "{{count}} not yet known"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Open vulnerabilities",
+        "knownExploited": "Known exploited (KEV)",
+        "threatEvents": "Endpoint threat events"
+      },
+      "backupRows": {
+        "devices": "Devices backed up",
+        "breaches": "Open RPO / RTO breaches",
+        "providers": "Third-party backup"
       }
     },
     "loading": "Loading portal settings…",
@@ -2120,6 +2282,7 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
+      "welcomeMessageHelp": "Shown at the top of the customer's home page in the portal, and on the portal sign-in page when the organization uses a verified custom domain. Plain text; line breaks are kept.",
       "footerText": "Footer text",
       "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
       "footerTextInheritedSource": "Partner document footer"
@@ -2450,7 +2613,7 @@
     "failedToLoadData": "Failed to load data",
     "failedToSaveBudget": "Failed to save budget",
     "failedToSave": "Failed to save",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or rejects.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Each tool requiring approval blocks until the user approves or denies it.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
@@ -2992,6 +3155,7 @@
           "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
+          "unsupported_user_scope": "Per-user install Breeze cannot apply yet",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {
@@ -4171,7 +4335,9 @@
     "active": "Active",
     "revoked": "Revoked",
     "expired": "Expired",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "expires": "Expires",
+    "neverExpires": "Never"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Loading API keys...",
@@ -4212,7 +4378,8 @@
     "rotating": "Rotating...",
     "rotateKey": "Rotate Key",
     "revoking": "Revoking...",
-    "revokeKey": "Revoke Key"
+    "revokeKey": "Revoke Key",
+    "revokedToast": "API key \"{{name}}\" revoked"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "This device can now approve requests",
@@ -4866,6 +5033,11 @@
     "eGOktaProduction": "e.g., Okta Production",
     "providerPreset": "Provider preset",
     "selectAPresetToAutoFillRecommendedSettings": "Select a preset to auto-fill recommended settings",
+    "replacePresetFields": {
+      "title": "Replace with the {{preset}} defaults?",
+      "message": "Applying the {{preset}} preset replaces the current scopes and attribute mapping, including your changes, and clears any claim the preset does not set, such as the groups attribute. Nothing is saved until you save the provider.",
+      "confirm": "Replace"
+    },
     "connectionSettings": "Connection Settings",
     "issuerURL": "Issuer URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6305,7 +6477,11 @@
       "label": "Label",
       "notes": "Notes"
     },
-    "empty": "No known guests yet."
+    "empty": "No known guests yet.",
+    "removeConfirm": {
+      "title": "Remove known guest?",
+      "message": "Remove {{label}} ({{mac}})? Devices with this MAC address will no longer be approved automatically across your managed organizations."
+    }
   },
   "userInviteForm": {
     "title": "Invite user",
@@ -6326,7 +6502,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Choose a role"
     },
     "orgAccess": {
       "title": "Organization access",
@@ -6426,7 +6603,8 @@
       "copyLink": "Copy link",
       "mfaReset": "MFA reset for {{email}}",
       "roleUpdated": "Role updated",
-      "orgAccessUpdated": "Organization access updated"
+      "orgAccessUpdated": "Organization access updated",
+      "userRemoved": "{{name}} removed"
     },
     "resetMfa": {
       "title": "Reset MFA?",
@@ -6905,7 +7083,6 @@
     "productDefault": "Product default ({{minutes}} minutes)",
     "range": "Choose {{min}}-{{max}} minutes.",
     "description": "How long a live Breeze AI turn waits for someone to approve a gated (Tier 2/3) action before giving up on it.",
-    "orgOverrideNote": "Organizations can override this value from their own AI settings; the org value wins when set.",
     "notForUnattendedNote": "This is not for overnight or unattended work — long-running work goes through the Approvals queue, which has its own expiry."
   },
   "orgAiApprovalTimeout": {

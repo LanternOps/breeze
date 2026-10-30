@@ -1124,7 +1124,9 @@
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
         "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
-        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it.",
+        "saveExpiry": "Could not save the expiry date.",
+        "saveIntroNotes": "Could not save the intro notes."
       },
       "image": {
         "alt": "Quote image",
@@ -1292,6 +1294,7 @@
         "noPublishedVersion": "This template has no published version yet. Publish it before adding it to a quote.",
         "pinnedVersion": "Pinned to v{{version}}",
         "autoVariablesTitle": "Filled automatically from the quote",
+        "autoValueBlank": "Blank",
         "autoHint": "These values resolve from the quote when the proposal is sent.",
         "manualVariablesTitle": "Fill in for this proposal",
         "labelFieldLabel": "Section label",
@@ -1348,6 +1351,14 @@
       },
       "warnings": {
         "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Rich text supports headings, bold, italic, underline, lists and links."
+      },
+      "intro": {
+        "expiryLabel": "Valid until",
+        "expiryHelper": "Printed on the proposal. The customer can accept through the end of this day. Leave blank for no expiry.",
+        "expiryPast": "This date has passed — the customer cannot accept an expired proposal.",
+        "notesLabel": "Intro notes",
+        "notesHelper": "Printed above the first section of the proposal.",
+        "notesPlaceholder": "A short note to the customer, e.g. what this proposal covers."
       }
     },
     "actions": {
@@ -2814,7 +2825,6 @@
       "delivery_failed": "Notice delivery failed",
       "consent_required": "Payment authorization is missing. Request updated authorization."
     },
-    "noticeTemplate": "Invoice with automatic payment notice",
     "chargeFailed": "Could not start payment. Please try again.",
     "chargeResultUnknown": "We could not confirm what happened to this payment. Refreshing the invoice to show its current status.",
     "chargeStarted": "Payment attempt started",
@@ -2954,10 +2964,6 @@
     "saveFailed": "Could not save reminder settings",
     "loadFailed": "Could not load reminder settings",
     "retry": "Retry",
-    "loading": "Loading payment settings…",
-    "templates": {
-      "paymentReminder": "Payment reminder",
-      "paymentOverdue": "Overdue payment reminder"
-    }
+    "loading": "Loading payment settings…"
   }
 }

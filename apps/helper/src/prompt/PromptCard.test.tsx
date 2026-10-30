@@ -151,10 +151,37 @@ describe('PromptCard', () => {
     at(DEADLINE - 60_500); // 61 s, rounded up: not yet
     expect(live).toBeEmptyDOMElement();
     at(DEADLINE - 60_000);
-    expect(live).toHaveTextContent('1:00 remaining');
+    expect(live).toHaveTextContent('60 seconds remaining');
     at(DEADLINE - 45_000);
-    expect(live).toHaveTextContent('1:00 remaining');
+    expect(live).toHaveTextContent('60 seconds remaining');
     at(DEADLINE - 29_500);
-    expect(live).toHaveTextContent('0:30 remaining');
+    expect(live).toHaveTextContent('30 seconds remaining');
+  });
+
+  it("chrome strings render in the prompt's locale", () => {
+    const { rerender, onAction, onHide } = renderCard({ ...decision, locale: 'de-DE', pendingActionId: 'postpone' }, DEADLINE - 60_000);
+    expect(screen.getByText('Wird bearbeitet…')).toBeInTheDocument();
+    // No synced identity: the localized generic name.
+    expect(screen.getByTestId('prompt-identity')).toHaveTextContent('Ihr IT-Support-Team');
+    rerender(
+      <PromptCard view={{ ...decision, locale: 'de-DE' }} nowMs={DEADLINE - 30_000} onAction={onAction} onHide={onHide} />,
+    );
+    expect(screen.getByTestId('prompt-announce')).toHaveTextContent('Noch 30 Sekunden');
+  });
+
+  it('shows the synced MSP identity in its header', () => {
+    render(
+      <PromptCard
+        view={decision}
+        nowMs={NOW}
+        onAction={vi.fn()}
+        onHide={vi.fn()}
+        identity={{ partnerName: 'Example IT Services', primaryColor: '#1F5FAD', logo: null }}
+        logoUrl="blob:assist/1"
+      />,
+    );
+    const header = screen.getByTestId('prompt-identity');
+    expect(header).toHaveTextContent('Example IT Services');
+    expect(header.querySelector('img')).toHaveAttribute('src', 'blob:assist/1');
   });
 });

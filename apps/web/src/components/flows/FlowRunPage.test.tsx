@@ -81,6 +81,22 @@ describe('FlowRunPage', () => {
     expect(group.querySelectorAll('[data-testid^="flow-run-item-"]').length).toBe(3);
   });
 
+  it('shows the agent run link and AI tokens used', async () => {
+    api.getFlowRun.mockResolvedValue(runDetail({ parentAgentRunId: 'ar-9', aiTokensUsed: 1234, triggerKind: 'tool', triggeredVia: 'ai_agent' }));
+    render(<FlowRunPage runId="run-1" />);
+    const link = await screen.findByTestId('flow-run-agent-run-link');
+    expect(link.getAttribute('href')).toBe('/ai-agents/runs/ar-9');
+    expect(screen.getByTestId('flow-run-agent-run').textContent).toContain('Started by an AI agent run');
+    expect(screen.getByTestId('flow-run-ai-tokens').textContent).toContain('1234');
+  });
+
+  it('hides agent run and tokens when absent', async () => {
+    render(<FlowRunPage runId="run-1" />);
+    await screen.findByTestId('flow-run-page');
+    expect(screen.queryByTestId('flow-run-agent-run')).toBeNull();
+    expect(screen.queryByTestId('flow-run-ai-tokens')).toBeNull();
+  });
+
   it('awaiting-approval banner links to /approvals', async () => {
     api.getFlowRun.mockResolvedValue(runDetail({ status: 'awaiting_approval' }));
     render(<FlowRunPage runId="run-1" />);

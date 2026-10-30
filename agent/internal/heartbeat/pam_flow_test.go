@@ -54,6 +54,15 @@ func TestRunPamFlow(t *testing.T) {
 		dismissResult *ipc.PamDismissConsentResult
 		// dismissErr simulates an IPC round-trip error from DismissPamConsent.
 		dismissErr error
+		// wantTracked asserts the request was recorded as handed to IT
+		// (#8928): only a `pending` request the user approved is tracked.
+		wantTracked bool
+		// selectedWinSession is the Windows session of the helper that the
+		// flow selected (and so showed the dialog in).
+		selectedWinSession string
+		// wantTrackedSession is the session the outcome notices will target;
+		// empty means wantTargetWinSession.
+		wantTrackedSession string
 	}{
 		{
 			name:                 "policy hard-deny targets requester session and dismisses without dialog",
@@ -115,6 +124,48 @@ func TestRunPamFlow(t *testing.T) {
 			wantTriggered:        false,
 			wantDismissed:        false,
 			wantActuated:         false,
+			wantTracked:          true,
+		},
+		{
+			// Unresolved requester session: the dialog was shown by the
+			// console-fallback helper, so the notices must go to THAT helper's
+			// session, never to a machine-global "preferred" helper that could
+			// belong to another user on a multi-session host.
+			name:               "pending + Approve on the console fallback is tracked in the dialog helper's session",
+			status:             "pending",
+			dialog:             approved,
+			selectedWinSession: "1",
+			wantFind:           true,
+			wantDialog:         true,
+			wantTriggered:      false,
+			wantDismissed:      false,
+			wantActuated:       false,
+			wantTracked:        true,
+			wantTrackedSession: "1",
+		},
+		{
+			name:          "pending + Approve with no resolvable session anywhere is not tracked",
+			status:        "pending",
+			dialog:        approved,
+			wantFind:      true,
+			wantDialog:    true,
+			wantTriggered: false,
+			wantDismissed: false,
+			wantActuated:  false,
+			wantTracked:   false,
+		},
+		{
+			name:                 "pending + Deny is not tracked",
+			status:               "pending",
+			subjectSessionID:     42,
+			wantTargetWinSession: "42",
+			dialog:               ipc.PamDialogResult{Approved: false},
+			wantFind:             true,
+			wantDialog:           true,
+			wantTriggered:        false,
+			wantDismissed:        true,
+			wantActuated:         false,
+			wantTracked:          false,
 		},
 		{
 			name:          "pending + user-dismissed denies",
@@ -289,7 +340,7 @@ func TestRunPamFlow(t *testing.T) {
 			var gotDialogSession, gotDismissSession *sessionbroker.Session
 			var gotDismissID string
 			var gotDismissTimeout time.Duration
-			selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper"}
+			selectedSession := &sessionbroker.Session{SessionID: "selected-pam-helper", WinSessionID: tc.selectedWinSession}
 			// noBroker reproduces production wiring: all swappable seams nil
 			// AND a nil sessionBroker. The defensive guard in RunPamFlow must
 			// keep this from dereferencing the nil broker.
@@ -335,9 +386,32 @@ func TestRunPamFlow(t *testing.T) {
 				TargetExecutableSigner: "signer-Acme Corp",
 				CommandLine:            `target.exe --do-thing`,
 			}
-			outcome := etwlua.ElevationOutcome{RequestID: "req-1", Status: tc.status}
+			outcome := etwlua.ElevationOutcome{RequestID: "req-1", Status: tc.status, SupportName: "Contoso IT"}
+			notices := recordPamNotices(h)
 
 			h.RunPamFlow(context.Background(), ev, outcome)
+
+			// #8928 PR 1: Approve on a `pending` request tracks it for the
+			// outcome notices; nothing else does, and no flow shows a notice
+			// itself (the waiting toast is PR 2).
+			entry, tracked := h.pamTracker().Get(outcome.RequestID)
+			if tracked != tc.wantTracked {
+				t.Errorf("tracked = %v, want %v", tracked, tc.wantTracked)
+			}
+			if tracked {
+				wantSession := tc.wantTrackedSession
+				if wantSession == "" {
+					wantSession = tc.wantTargetWinSession
+				}
+				want := pamTrackedRequest{WinSession: wantSession, Program: "target.exe", SupportName: "Contoso IT"}
+				if entry.WinSession != want.WinSession || entry.Program != want.Program ||
+					entry.SupportName != want.SupportName || entry.Notified {
+					t.Errorf("tracked entry = %+v, want %+v", entry, want)
+				}
+			}
+			if calls := notices.Calls(); len(calls) != 0 {
+				t.Errorf("RunPamFlow showed notices in PR 1: %+v", calls)
+			}
 
 			if triggered != tc.wantTriggered {
 				t.Errorf("triggered = %v, want %v", triggered, tc.wantTriggered)

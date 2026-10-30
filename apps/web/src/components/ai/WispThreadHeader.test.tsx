@@ -283,6 +283,21 @@ describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, l
     expect(screen.getByTestId('wisp-grant-status').textContent).toBe('Active');
   });
 
+  it('budget pause at the plan ceiling: names the pause and offers no raise (#10106)', () => {
+    const budgetResetsAt = new Date(Date.now() + 20 * 3600_000 - 60_000).toISOString();
+    render(
+      <WispThreadHeader
+        wisp={wisp({ status: 'paused', pausedReason: 'budget_exhausted', budgetCentsPerDay: 1000, spentTodayCents: 1000, budgetResetsAt })}
+        orgName={null}
+        wideningAvailable={false}
+      />,
+    );
+    expect(screen.getByTestId('wisp-paused-system')).toHaveTextContent('20 h');
+    expect((screen.getByTestId('wisp-resume') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId('wisp-spend-raise')).toBeNull();
+    expect(screen.getByTestId('wisp-spend-at-ceiling')).toBeTruthy();
+  });
+
   it('partner-disabled: no Resume and no "Raise today\'s budget", even when over budget (#10145)', () => {
     render(
       <WispThreadHeader

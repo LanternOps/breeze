@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Application providers (Warning and Information)",
+        "applicationProvidersHelp": "Error and Critical Application events are collected from every provider; Warning and Information events only from the built-in providers ({{providers}}) and the providers listed here. Use the exact provider name shown in Event Viewer’s \"Source\" column or Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Only the single winning Event Logs policy for a device applies. Provider lists are not combined across policies.",
+        "providerNameLabel": "Application event provider name",
+        "addProvider": "Add provider",
+        "removeProvider": "Remove",
+        "removeProviderNamed": "Remove {{provider}}",
+        "providerNameInvalid": "Use 1–{{max}} characters, starting with a letter or digit. Allowed: letters, digits, spaces, periods, underscores, dollar signs, parentheses and hyphens.",
+        "providerLimitReached": "You can list up to {{max}} additional providers. Remove one to add another.",
+        "providerAlreadyListed": "This provider is already listed.",
+        "providerLimit": "{{total}} of {{max}} additional providers"
       },
       "featureTabShell": {
         "override": "Override",
@@ -899,7 +910,17 @@
         "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
         "ringDetailsNoHold": "Rollout order {{order}} · no hold before approval",
         "ringDetailsWithHold_one": "Rollout order {{order}} · {{count}}-day hold before approval",
-        "ringDetailsWithHold_other": "Rollout order {{order}} · {{count}}-day hold before approval"
+        "ringDetailsWithHold_other": "Rollout order {{order}} · {{count}}-day hold before approval",
+        "rebootPreviewHeading": "Preview",
+        "rebootPreviewDescription": "What the person at the computer sees if a restart is scheduled now. The times are examples.",
+        "rebootPreviewDefaultMarker": "Default",
+        "rebootPreviewDefaultTitle": "Restart to finish installing updates",
+        "rebootPreviewDefaultBody": "Your IT support team needs to restart this computer to finish installing updates.",
+        "rebootPreviewConsequence": "If you do nothing, this computer restarts at {{time}}. Save your work before then.",
+        "rebootPreviewRestartNow": "Restart now",
+        "rebootPreviewPostponeUntil": "Postpone until {{time}}",
+        "rebootPreviewDeadline": "Postponing never moves the restart later than {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",
@@ -986,6 +1007,9 @@
         "showIndicatorHelp": "Show the on-screen banner while a technician is connected.",
         "notifyOnEnd": "Session-ended notice",
         "notifyOnEndHelp": "Notify the end user when the session ends.",
+        "allowUserEnd": "Let the user end the session",
+        "allowUserEndHelp": "The person at the device can end the session from the on-screen indicator, after a confirmation. The technician sees “Ended by the user”.",
+        "allowUserEndNeedsIndicator": "Turn on the active-session indicator to let users end a session.",
         "identityLevel": "Technician identity",
         "identityLevelHelp": "How much of the technician's identity the end user sees. The MSP name is always shown.",
         "identityNameEmail": "Name and email",
@@ -1184,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Enable warranty expiry alerts",
         "generateAlertsWhenFixedTermDeviceWarranties": "Generate alerts when fixed-term device warranties are approaching expiry.",
         "warningThresholdDays": "Warning threshold (days)",
-        "generateAWarningAlertWhenWarrantyExpires": "Generate a warning alert when warranty expires within this many days.",
-        "criticalThresholdDays": "Critical threshold (days)",
-        "generateACriticalAlertWhenWarrantyExpires": "Generate a critical alert when warranty expires within this many days.",
+        "warnThresholdHelp": "Alert at info severity when warranty expires within this many days.",
+        "urgentThresholdDays": "Urgent threshold (days)",
+        "urgentThresholdHelp": "Alert at low severity when warranty expires within this many days. An expired warranty alerts at medium.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1206,6 +1230,20 @@
         "title": "Devices in this policy will alert twice",
         "body": "These conditions exist both as an attached monitor and as a legacy rule or watch: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Device groups (all orgs)",
+      "description": "Target a partner-wide device group. A group assignment applies at device-group level, so it takes precedence over organization- and site-level assignments of other policies.",
+      "selectGroup": "Select a device group",
+      "assign": "Assign",
+      "remove": "Remove",
+      "assigned": "Device group assigned",
+      "removed": "Device group assignment removed",
+      "failedToLoad": "Failed to load device groups",
+      "failedToAssign": "Failed to assign device group",
+      "failedToRemove": "Failed to remove device group assignment",
+      "empty": "No partner-wide device groups yet. Create one under Device Groups → All orgs.",
+      "loading": "Loading device groups…"
     }
   },
   "software": {
@@ -1513,7 +1551,8 @@
       "devicesFinished": "{{finished}} of {{total}} devices finished",
       "setupNeeded": "Setup needed",
       "managerUnavailableSummary_one": "{{count}} device is missing its package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) there; until then every package-manager deployment to it will fail.",
-      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail."
+      "managerUnavailableSummary_other": "{{count}} devices are missing their package manager. This is a one-time device setup task — install winget (Windows) or Homebrew (macOS) on them; until then every package-manager deployment to them will fail.",
+      "deviceOutputTail": "Device output (last lines)"
     },
     "deploymentWizard": {
       "selectSoftware": "Select Software",

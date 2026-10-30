@@ -28,6 +28,9 @@
     "deny": "Denegar",
     "verificationFailed": "La verificación falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",
+    "resolvedApproved": "Esta solicitud fue aprobada.",
+    "resolvedNotApproved": "Esta solicitud no fue aprobada, por lo que la acción no se ejecutó.",
+    "resolvedEnded": "Esta solicitud ya no espera una decisión aquí.",
     "contentChanged": "Los detalles de esta solicitud cambiaron después de crearse, por lo que ya no se puede aprobar.",
     "expired": "Esta solicitud expiró antes de poder decidirse.",
     "notSoleApprover": "Ahora se requiere otro aprobador: ya no puedes aprobar tu propia solicitud.",
@@ -42,7 +45,7 @@
     "deniedToast": "Acción denegada",
     "deniedToast_one": "{{count}} acción denegada",
     "deniedToast_other": "{{count}} acciones denegadas",
-    "refusedToast": "Aprobación rechazada. La solicitud fue denegada.",
+    "refusedToast": "Tu aprobación fue bloqueada, así que la solicitud fue denegada.",
     "runContextLabel": "Contexto de ejecución:",
     "runContextChosenByAssistant": "elegido por Breeze AI",
     "runContextScriptDefault": "el valor predeterminado guardado del script",
@@ -140,6 +143,7 @@
     "newChat": "Nuevo chat"
   },
   "aiContextBadge": {
+    "record": "Registro",
     "context": "Contexto",
     "dashboard": "Panel"
   },
@@ -345,7 +349,7 @@
     "toolStatus": {
       "pending": "pendiente",
       "approved": "aprobado",
-      "rejected": "rechazado",
+      "rejected": "denegado",
       "completed": "terminado",
       "failed": "fallido"
     },
@@ -387,7 +391,7 @@
     "tokenCounts": "{{input}} entrada / {{output}} salida",
     "requestedAt": "solicitado {{time}}",
     "approvedAt": "aprobado {{time}}",
-    "rejectedAt": "rechazado {{time}}",
+    "rejectedAt": "denegado {{time}}",
     "appliedAt": "aplicado {{time}}",
     "flagDialog": {
       "title": "Marcar sesión",
@@ -527,6 +531,13 @@
     "verified": "Verificado",
     "verificationFailed": "Verificación fallida",
     "verificationUnknown": "No se pudo verificar",
+    "notRunAwaitingReview": "En espera de revisión — aún no se ejecutó",
+    "notRunReviewed": "Revisado — aún no se ejecutó",
+    "notRunApproved": "Aprobado — aún no se ejecutó",
+    "notRun": "No se ejecutó",
+    "reviewVerdictApprove": "El revisor recomienda aprobar",
+    "reviewVerdictChanges": "El revisor recomienda cambios",
+    "reviewVerdictReject": "El revisor recomienda rechazar",
     "promoteDescription": "Descripción (opcional)",
     "ownerScopeOrganization": "Solo esta organización",
     "ownerScopePartner": "Todas las organizaciones de este partner",
@@ -614,7 +625,12 @@
       "stepUpUnavailable": "No se pudo verificar tu factor. Inténtalo de nuevo.",
       "reverify": "Tu acceso cambió mientras confirmabas. Ingresa un código nuevo para continuar.",
       "invalidCode": "No se aceptó ese código. Inténtalo de nuevo.",
-      "turningOn": "Activando Wisp…"
+      "turningOn": "Activando Wisp…",
+      "alreadyOnOrg": "Wisp ya está activado para esta organización.",
+      "alreadyOnPartner": "Wisp ya está activado para todas las organizaciones.",
+      "open": "Abrir",
+      "opening": "Abriendo…",
+      "grantEnded": "Wisp ya no está activado para este alcance. Confirma que eres tú para volver a activarlo."
     },
     "header": {
       "scopeAll": "Todas las organizaciones",
@@ -674,7 +690,7 @@
       "attachFailed": "No se pudo adjuntar",
       "attachTooLarge": "Ese archivo supera los 5 MB",
       "attachUnsupported": "Solo se pueden adjuntar archivos de texto",
-      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo.",
+      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a intentarlo para abrirlo de nuevo.",
       "paused": "Wisp en pausa",
       "resumed": "Wisp reanudado",
       "pauseFailed": "No se pudo pausar Wisp",
@@ -684,13 +700,24 @@
       "meter": "{{spent}} de {{budget}} hoy",
       "resets": "se restablece en {{hours}} h",
       "raise": "Aumentar el presupuesto de hoy",
+      "atCeiling": "El presupuesto de hoy está en el límite de su plan.",
+      "seePlans": "Ver planes",
       "label": "Gasto de Wisp hoy"
     },
     "pause": "Pausar Wisp",
     "resume": "Reanudar",
     "paused": {
       "byYou": "Pausaste Wisp. No hará revisiones ni te enviará avisos hasta que lo reanudes.",
-      "partnerDisabled": "Wisp está desactivado para su partner. Un administrador puede volver a activarlo."
+      "partnerDisabled": "Wisp está desactivado para su partner. Un administrador puede volver a activarlo.",
+      "system": {
+        "budgetExhausted": "Pausado por Breeze: se agotó el presupuesto de hoy. El presupuesto se restablece en {{hours}} h.",
+        "budgetExhaustedNoTime": "Pausado por Breeze: se agotó el presupuesto de hoy.",
+        "grantorAccessLost": "Pausado por Breeze: su acceso ya no cubre este permiso. Wisp se reanuda solo cuando recupere el acceso.",
+        "grantorSuspended": "Pausado por Breeze: su cuenta está suspendida. Wisp se reanuda solo cuando se levante la suspensión.",
+        "factorExpired": "Pausado por Breeze: venció su verificación de inicio de sesión para este permiso.",
+        "entitlementLost": "Pausado por Breeze: su plan ya no incluye Wisp. Wisp se reanuda solo cuando su plan vuelva a incluirlo.",
+        "unknown": "Pausado por Breeze. No puede reanudarlo desde aquí."
+      }
     },
     "live": {
       "checking": "Revisando {{org}}…",
@@ -795,7 +822,7 @@
     },
     "partnerSwitch": {
       "description": "Permite que los técnicos deleguen trabajo a Wisp. Al desactivarlo, cada permiso en curso se pone en pausa en su próxima revisión y se bloquean los nuevos; no se elimina nada, y al reactivarlo se reanuda lo que se pausó.",
-      "label": "Wisp activado",
+      "label": "Permitir Wisp",
       "savedOn": "Wisp activado",
       "savedOff": "Wisp desactivado",
       "saveFailed": "No se pudo cambiar la configuración de Wisp.",

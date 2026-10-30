@@ -445,6 +445,8 @@ partnerProvisioningRoutes.post(
       name: organization.name,
       slug: organization.slug,
       type: organization.type,
+      // Same record shape as the org export; a just-created org has no links.
+      externalLinks: [],
     });
     return c.json(organizationCreateResponseSchema.parse({
       schemaVersion: '1' as const,

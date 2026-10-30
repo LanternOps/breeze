@@ -3,6 +3,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 /**
  * Svix webhook signature verification (spec §9.3: "signature-verified (svix
  * scheme)"). Resend delivers through Svix and uses the scheme unmodified.
+ * Huntress delivers through Svix too; its receiver reuses this verifier with
+ * its own options (services/huntressWebhookSignature.ts, #10335).
  *
  * Implemented by hand on purpose: `svix` is not a dependency of this repo, and
  * `resend@6.18.0`'s client exposes webhook CRUD only — there is no
@@ -49,6 +51,20 @@ export interface SvixHeaders {
  */
 export const SVIX_TIMESTAMP_TOLERANCE_SECONDS = 300;
 
+/**
+ * Per-caller knobs. The defaults are the Resend receiver's behaviour and must
+ * not change; the Huntress receiver (#10335) passes its own.
+ *  - `toleranceSeconds`: the symmetric replay window.
+ *  - `unprefixedSecret`: how to read a secret that lacks the `whsec_` label.
+ *    `'base64'` (default) treats it as the label-less base64 key; `'raw'`
+ *    uses its literal UTF-8 bytes, the Standard Webhooks "raw secret" form.
+ *    A `whsec_` secret is base64-decoded either way.
+ */
+export interface SvixVerifyOptions {
+  toleranceSeconds?: number;
+  unprefixedSecret?: 'base64' | 'raw';
+}
+
 function constantTimeEquals(a: string, b: string): boolean {
   const left = Buffer.from(a, 'utf8');
   const right = Buffer.from(b, 'utf8');
@@ -63,7 +79,9 @@ export function verifySvixSignature(
   rawBody: string,
   secret: string,
   now: Date = new Date(),
+  options: SvixVerifyOptions = {},
 ): WebhookVerifyResult {
+  const toleranceSeconds = options.toleranceSeconds ?? SVIX_TIMESTAMP_TOLERANCE_SECONDS;
   const id = headers.id?.trim() ?? '';
   const timestamp = headers.timestamp?.trim() ?? '';
   const signatureHeader = headers.signature?.trim() ?? '';
@@ -78,16 +96,22 @@ export function verifySvixSignature(
   const nowSeconds = Math.floor(now.getTime() / 1000);
   // Symmetric: a timestamp far in the future is as suspicious as a stale one
   // and is what a replay with a doctored clock looks like.
-  if (Math.abs(nowSeconds - sentAt) > SVIX_TIMESTAMP_TOLERANCE_SECONDS) {
+  if (Math.abs(nowSeconds - sentAt) > toleranceSeconds) {
     return { ok: false, reason: 'stale_timestamp' };
   }
 
   const trimmedSecret = secret.trim();
   if (trimmedSecret.length === 0) return { ok: false, reason: 'bad_secret' };
-  // The `whsec_` prefix is a label, not part of the key. Tolerate a secret
-  // pasted without it: that is the single most likely operator mistake, and
-  // silently failing every delivery over a missing prefix is a bad trade.
-  const key = Buffer.from(trimmedSecret.replace(/^whsec_/, ''), 'base64');
+  // The `whsec_` prefix is a label, not part of the key. By default, tolerate
+  // a secret pasted without it: that is the single most likely operator
+  // mistake, and silently failing every delivery over a missing prefix is a
+  // bad trade. A caller that opts into `unprefixedSecret: 'raw'` gets the
+  // literal bytes of an unlabelled secret instead.
+  const key = trimmedSecret.startsWith('whsec_')
+    ? Buffer.from(trimmedSecret.slice('whsec_'.length), 'base64')
+    : options.unprefixedSecret === 'raw'
+      ? Buffer.from(trimmedSecret, 'utf8')
+      : Buffer.from(trimmedSecret, 'base64');
   if (key.length === 0) return { ok: false, reason: 'bad_secret' };
 
   let expected: string;

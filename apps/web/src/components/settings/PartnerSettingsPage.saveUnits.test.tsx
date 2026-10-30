@@ -133,7 +133,7 @@ describe('PartnerSettingsPage header status and validity (W2 Task 18)', () => {
 
   it('invalid maintenance window blocks Save', async () => {
     const user = await renderPage('#defaults');
-    const mw = screen.getByLabelText(/maintenance window/i) as HTMLInputElement;
+    const mw = screen.getByLabelText(/maintenance window/i, { selector: 'input' }) as HTMLInputElement;
     await user.clear(mw);
     await user.type(mw, 'whenever');
     expect(saveButton().disabled).toBe(true);

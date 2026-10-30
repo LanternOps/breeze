@@ -119,6 +119,46 @@ describe('backup status report PDF', () => {
     expect(text).toContain('BACKUP STATUS');
   });
 
+  it.each([['m365', 'm365_mail', 'Microsoft 365 mail'], ['gws', 'gws_shared_drive', 'Google shared drives']] as const)('labels %s workloads in the Type column', (accountType, workload, label) => {
+    const text = pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows: [row({ key: 'saas', name: 'Customer backup', accountType, osType: 'unknown', dataSources: [workload] })] } }));
+    // jsPDF may wrap the narrow Type cell onto several PDF text operations.
+    for (const word of label.split(' ')) expect(text).toContain(word);
+    expect(text).not.toContain('(Unknown)');
+  });
+
+  it('counts endpoint devices separately from SaaS workloads, deduplicating devices across sources', () => {
+    const rows = [
+      row({ key: 'breeze:d1', name: 'Laptop', deviceId: 'd1' }),
+      row({ key: 'provider:p1', name: 'Laptop copy', deviceId: 'd1', source: 'provider' }),
+      row({ key: 'provider:p2', name: 'Vendor server', deviceId: null, source: 'provider' }),
+      row({ key: 'provider:mail', name: 'Mail backup', accountType: 'm365', dataSources: ['m365_mail'], deviceId: null }),
+      row({ key: 'provider:drive', name: 'Drive backup', accountType: 'gws', dataSources: ['gws_drive'], deviceId: null }),
+    ];
+    const text = pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows, truncated: true } }));
+    expect(text).toContain('2 devices and 2 SaaS workloads');
+    expect(text).toContain('Devices and SaaS workloads');
+    expect(text).toContain('(Resource)');
+    expect(text).not.toContain('(Device)');
+    expect(text).toContain('backup list is cut short');
+    expect(text).not.toContain('5 devices');
+  });
+
+  it('reports zero devices for a SaaS-only snapshot', () => {
+    const rows = [row({ key: 'provider:mail', name: 'Mail backup', accountType: 'm365', dataSources: ['m365_mail'], deviceId: null })];
+    const text = pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows } }));
+    expect(text).toContain('0 devices and 1 SaaS workload');
+    expect(text).toContain('(SaaS workloads)');
+    expect(text).not.toContain('(Devices)');
+  });
+
+  it('counts a device backed up by both sources once in an endpoint-only snapshot', () => {
+    const rows = [row({ key: 'breeze:d1', name: 'Laptop' }), row({ key: 'provider:p1', name: 'Laptop copy', source: 'provider' })];
+    const text = pdfText(buildReportPdf([], { ...opts, summary: { ...data, rows } }));
+    expect(text).toContain('1 device across both sources');
+    expect(text).toContain('(Devices)');
+    expect(text).toContain('(Device)');
+  });
+
   it("formats the 'Figures as of' footer note in the viewer time zone, not raw ISO", () => {
     const text = pdfText(buildReportPdf([], { ...opts, timezone: 'Pacific/Auckland', summary: data }));
     expect(text).not.toContain('2026-09-15T12:00:00.000Z');

@@ -1124,7 +1124,9 @@
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
         "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
         "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen."
+        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen.",
+        "saveExpiry": "Das Ablaufdatum konnte nicht gespeichert werden.",
+        "saveIntroNotes": "Die Einleitung konnte nicht gespeichert werden."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -1292,6 +1294,7 @@
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoValueBlank": "Leer",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
         "manualVariablesTitle": "Für dieses Angebot ausfüllen",
         "labelFieldLabel": "Abschnittsbezeichnung",
@@ -1348,6 +1351,14 @@
       },
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Rich-Text unterstützt Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      },
+      "intro": {
+        "expiryLabel": "Gültig bis",
+        "expiryHelper": "Wird auf das Angebot gedruckt. Der Kunde kann bis zum Ende dieses Tages annehmen. Leer lassen für kein Ablaufdatum.",
+        "expiryPast": "Dieses Datum liegt in der Vergangenheit — ein abgelaufenes Angebot kann der Kunde nicht annehmen.",
+        "notesLabel": "Einleitung",
+        "notesHelper": "Wird über dem ersten Abschnitt des Angebots gedruckt.",
+        "notesPlaceholder": "Eine kurze Nachricht an den Kunden, z. B. worum es in diesem Angebot geht."
       }
     },
     "actions": {
@@ -2814,7 +2825,6 @@
       "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
       "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
     "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
@@ -2954,10 +2964,6 @@
     "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
     "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
     "retry": "Erneut versuchen",
-    "loading": "Zahlungseinstellungen werden geladen…",
-    "templates": {
-      "paymentReminder": "Zahlungserinnerung",
-      "paymentOverdue": "Erinnerung an überfällige Zahlung"
-    }
+    "loading": "Zahlungseinstellungen werden geladen…"
   }
 }

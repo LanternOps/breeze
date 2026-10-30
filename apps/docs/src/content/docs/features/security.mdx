@@ -54,7 +54,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
     - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
     - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
-    - **Password policy**: `Win32_AccountPolicy` CIM class reads min length, max age, lockout threshold, and history count
+    - **Password policy**: `secedit /export /areas SECURITYPOLICY` reads min length, complexity, max and min age, lockout threshold, and history count from the local security policy. If the export fails, `NetUserModalsGet` (what `net accounts` uses) supplies everything except complexity, which then shows as Unknown. A max age of 0 means passwords never expire, which fails the 90-day check
   </TabItem>
   <TabItem label="macOS">
     - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on
@@ -122,6 +122,46 @@ Quarantine, Remove and Restore send a command to the device; they do not change 
 IOC auto-quarantine (set on the **Security** feature of a configuration policy) moves files on every device the policy reaches with no one reviewing each scan, so it is treated as a device-execution grant. Saving Security settings with auto-quarantine on needs the `devices:execute` permission and MFA; with auto-quarantine off, `devices:write` is enough, and turning it off is never restricted. Because auto-quarantine is on by default, a technician with only `devices:write` must turn it off before the Security settings will save.
 
 Scheduled scans quarantine only while the user who approved auto-quarantine is active and still holds `devices:execute`. Policies that had auto-quarantine on before v0.122.1 keep running under the user who created them on the same terms. Otherwise the policy shows *Auto-quarantine is paused* and its scans run detect-only until a user with `devices:execute` and MFA saves the Security settings again. A scan you start by hand runs under your own permissions; without a completed MFA check in your session it runs detect-only.
+
+## Detection rules
+
+**Security → Detection Rules** (`/security/detection-rules`, v0.125.0+) is where you manage the YARA rule sets that IOC scans and sweeps use. Every change is checked on the server, with the same compiler devices use, before any device receives it. Scanning with rule sets needs agent 0.124.0 or later; older agents fall back to the built-in legacy signatures.
+
+The list shows each set's owner (**Breeze (built-in)**, **All organizations** or **Organization**), how many rules it has and its published version, with badges such as **Has errors**, **Not published** and **Disabled**.
+
+### Rule sets
+
+1. Click **New rule set** and give it a name, an optional description and an owner: **One organization**, or **All organizations (partner-wide)** if you work at partner level.
+2. On the **Rules** tab, add a rule: a name (letters, digits and underscores), a severity (Low, Medium, High or Critical), optional tags, and the YARA source.
+3. Save. Breeze checks the rule and, if every rule in the set compiles, publishes the set as a new numbered version ("Saved and published as version N").
+
+There is no separate **Publish** button: adding, editing or deleting a rule republishes the set, and so does turning **Enabled** or **Auto-quarantine** on or off once the set has been published. If a rule does not compile, its row shows the error with the line number, a "Not published: fix the errors below" banner stays up, and devices keep the last good version.
+
+The built-in **Breeze** set is read-only and updates with Breeze releases. A set holds up to 500 rules, each up to 64 KB of source.
+
+### Import IOCs
+
+The **Import IOCs** tab turns a list of indicators into rules. Paste one indicator per line (`#` starts a comment) or a JSON array. Breeze recognises MD5, SHA-1 and SHA-256 hashes, file names, file paths, domains, IP addresses and text strings; prefix a line (for example `sha256:`) to set the type yourself. Defanged values such as `example[.]com` are refanged, and duplicates are flagged.
+
+Give the batch a label and a severity (High by default), review the preview, then click **Import N IOCs**. Each indicator type becomes one exact-match rule (split if it would grow too large), and the set is republished. Keep in mind:
+
+- Domains and IP addresses match text **inside scanned files**, not network traffic.
+- Hash indicators make full scans slower.
+- One import takes up to 1,000 indicators and 256 KB of text. Importing the exact same batch again is refused.
+
+### Test a file
+
+The **Test a file** tab scans a file you upload (up to 10 MB) against the set's current rules, including changes that are not published yet, and lists the rules that matched. You can give the path the file would have on a device, since some rules match on it. The test runs in a sandbox on the Breeze server, not on a device. The file is not kept; the audit log records only its SHA-256, size and match count. Each user can run 10 tests every 10 minutes. If the server cannot isolate the scan, the tab says file tests are not available; editing, importing and device scans keep working.
+
+### Using rule sets in a policy
+
+Choose which sets devices scan with on a configuration policy's **Security** tab, under **Detection rule sets** (up to 20 per policy). Both scheduled policy scans and manual scans send the selected sets to the device. A device can use only sets owned by its own organization, its partner's all-organizations sets, and the built-in set. A new Security policy starts with the built-in set selected; with no set selected, scans use the built-in legacy signatures only. A set that was deleted or is out of reach shows as **Unavailable rule set** and must be removed before the policy can be saved.
+
+To run sets across many devices right now, use **Sweep now** in the rule-set editor; see [IOC sweeps](#ioc-sweeps).
+
+### Permissions
+
+Viewing rule sets needs `devices:read`. Creating, editing, deleting, importing and testing need `devices:write`, and turning on a set's **Auto-quarantine** also needs `devices:execute`. Site-restricted users cannot edit rule sets, and only partner-level users can edit all-organizations sets. The AI assistant can import indicators only with approval, and never into a set that has auto-quarantine on.
 
 ## IOC sweeps
 
@@ -192,7 +232,7 @@ Each device runs one scan at a time. The server hands scans to devices in small 
 
 ### Running it again
 
-Sweeping again with the same rule sets, scope and scan type while one is active is refused with a link to the running sweep. Once it has finished, a new sweep starts fresh against the current published versions. A sweep does not remember its devices, so choosing **Sweep again with the current rules** reopens the dialog with the rule sets and scan type filled in and asks for the scope again.
+Sweeping again with the same rule sets, scope and scan type while one is active is refused with a link to the running sweep. Once it has finished, a new sweep starts fresh against the current published versions. A sweep does not remember its devices, so choosing **Sweep again with the current rules** reopens the dialog with the rule sets, scan type and any custom paths filled in and asks for the scope again.
 
 ### Degraded coverage
 
@@ -477,9 +517,9 @@ GET /security/dashboard?orgId={orgId}
 | Field | Description |
 |-------|-------------|
 | `totalDevices` | Total number of devices with posture data |
-| `protectedDevices` | Devices with low risk and online status |
-| `atRiskDevices` | Devices with medium or high risk |
-| `unprotectedDevices` | Devices with critical risk level |
+| `protectedDevices` | Devices at posture risk level `low` that are online (posture score 85 or higher) |
+| `atRiskDevices` | Devices at posture risk level `medium` or `high` |
+| `unprotectedDevices` | Devices at posture risk level `critical` |
 | `offlineDevices` | Devices not currently reporting |
 | `totalThreatsDetected` | Total threat count across all devices |
 | `activeThreats` | Threats in `active` status |
@@ -495,6 +535,8 @@ GET /security/dashboard?orgId={orgId}
 | `adminAudit` | Summary of default/weak/stale admin account issues with top affected devices |
 | `recommendations` | Top security recommendations with priority and category |
 | `trend` | 30-day score trend as timestamp/score data points |
+
+`protectedDevices`, `atRiskDevices` and `unprotectedDevices` measure overall posture risk (falling back to per-device status when no posture snapshot exists), not antivirus coverage: a device with real-time protection on still counts as at risk when its posture score is below 85. For antivirus coverage, read the `antivirus` block. The **Antivirus** page tiles and the **Security** overview card both use it: the total is `protected + unprotected + unknown`, and coverage is `protected` divided by that total.
 
 ### Score Breakdown
 

@@ -487,11 +487,111 @@ describe('createActionIntent — built-in flow steps (#5220)', () => {
       .rejects.toMatchObject({ code: 'tool_not_tier3' });
   });
 
+  // W6 (#5221, Decision 5): the fleet built-in's approval scope is derived
+  // from the script (core run_script's classification), never hard-coded;
+  // its digest is mandatory.
+  describe('run_script_on_targets', () => {
+    const FLEET_INPUT = { scriptId: SCRIPT_ID, whenOffline: 'queue', deviceIds: [DEVICE_ID] };
+    const fleetRun = () => serverRun({
+      step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script_on_targets', toolSource: 'builtin', tier: 3 },
+    });
+    const fleetInput = () => builtinInput({ toolName: 'run_script_on_targets', input: FLEET_INPUT });
+
+    it('approval scope follows the script', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'pinned', digest: 'a'.repeat(64) } as never);
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'four_eyes', description: 'x' } as never);
+      dbState.insertActionIntentsResults.push(echoInsertedIntent());
+      dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+      await createActionIntent(flowAuth(), fleetInput());
+      expect(guardrailState.checkGuardrails).toHaveBeenCalledWith('run_script', { scriptId: SCRIPT_ID, deviceIds: [DEVICE_ID] });
+      expect(dbState.insertedActionIntentValues[0]).toMatchObject({ actionName: 'run_script_on_targets', approvalScope: 'four_eyes', riskTier: 3 });
+    });
+
+    it('missing digest refuses intent creation', async () => {
+      flowState.loadFlowIntentRun.mockResolvedValue(fleetRun());
+      guardrailState.checkGuardrails.mockReturnValue({ tier: 3, allowed: true, requiresApproval: true, readOnly: false, approvalScope: 'supervised', description: 'x' } as never);
+      effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'unresolved', reason: 'target_absent' } as never);
+      await expect(createActionIntent(flowAuth(), fleetInput())).rejects.toThrow();
+      expect(dbState.insertedActionIntentValues).toHaveLength(0);
+    });
+  });
+
   it('the server step row must be this built-in, pinned Tier 3', async () => {
     flowState.loadFlowIntentRun.mockResolvedValue(builtinRun({ step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'run_script', toolSource: 'core', tier: 3 } }));
     await expect(createActionIntent(flowAuth(), builtinInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
     flowState.loadFlowIntentRun.mockResolvedValue(builtinRun({ step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'http_request', toolSource: 'builtin', tier: 2 } }));
     await expect(createActionIntent(flowAuth(), builtinInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+});
+
+// #10288: a Tier-3 EXTERNAL (tool-source) flow step parks on a `source: 'flow'`
+// intent bound to the step's pinned `tool_source_tools` row + revision. The
+// binding replaces the core classifier (which would answer tier 4 "unknown
+// tool" for a qualified `<slug>__<name>` and refuse it `tool_blocked`), and the
+// server step row must be exactly that external tool, pinned Tier 3.
+describe('createActionIntent — external (tool-source) flow steps (#10288)', () => {
+  const TOOL_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const EXT_INPUT = { ticketId: 42, note: 'resolved' };
+  const externalRun = (step: Record<string, unknown> = {}) => serverRun({
+    step: { id: STEP_ROW_ID, stepId: 'cleanup', status: 'running', tool: 'halo__close_ticket', toolSource: 'tenant', tier: 3, ...step },
+  });
+  const externalInput = (over: Partial<CreateActionIntentInput> = {}) => flowInput({
+    toolName: 'halo__close_ticket',
+    input: EXT_INPUT,
+    externalTool: { toolSourceToolId: TOOL_ID, revision: 'rev-1', sourceName: 'Halo' },
+    ...over,
+  });
+
+  beforeEach(() => {
+    flowState.loadFlowIntentRun.mockResolvedValue(externalRun());
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+  });
+
+  it('mints a bound, supervised Tier-3 intent without consulting the core classifier', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    dbState.insertApprovalRequestsResults.push([{ id: 'ar-1' }]);
+
+    const snapshot = await createActionIntent(flowAuth(), externalInput());
+
+    expect(snapshot.status).toBe('pending_approval');
+    expect(guardrailState.checkGuardrails).not.toHaveBeenCalled();
+    const row = dbState.insertedActionIntentValues[0]!;
+    expect(row).toMatchObject({
+      actionName: 'halo__close_ticket',
+      source: 'flow',
+      requestingFlowRunId: RUN_ID,
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-1',
+      riskTier: 3,
+      approvalScope: 'supervised',
+      policyDecisionState: 'human_required',
+    });
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+    // Approvers: the external-tool grant over an org-wide target (flowIntentApproverRule).
+    expect(intentApproversState.resolveIntentTargetScope).not.toHaveBeenCalled();
+    expect(intentApproversState.resolveAgentIntentApprovers).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'halo__close_ticket', targetScope: { kind: 'indirect' }, requiredOverride: [{ resource: 'external_tools', action: 'write' }],
+    }));
+  });
+
+  it.each([
+    ['a different tool', { tool: 'halo__delete_ticket' }],
+    ['a core step', { toolSource: 'core' }],
+    ['a built-in step', { toolSource: 'builtin' }],
+    ['a step pinned below Tier 3', { tier: 2 }],
+  ])('refuses a server step row that is %s with flow_run_invalid', async (_label, step) => {
+    flowState.loadFlowIntentRun.mockResolvedValue(externalRun(step));
+    await expect(createActionIntent(flowAuth(), externalInput())).rejects.toMatchObject({ code: 'flow_run_invalid' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('an external binding still needs a qualified tool name and a canonical tool id', async () => {
+    await expect(createActionIntent(flowAuth(), externalInput({ toolName: 'run_script' })))
+      .rejects.toMatchObject({ code: 'invalid_external_tool' });
+    await expect(createActionIntent(flowAuth(), externalInput({ externalTool: { toolSourceToolId: 'tool-1', revision: 'rev-1', sourceName: 'Halo' } })))
+      .rejects.toMatchObject({ code: 'invalid_external_tool' });
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 });

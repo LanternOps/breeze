@@ -1104,7 +1104,9 @@
         "uploadImage": "Impossible de téléverser l'image.",
         "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un au catalogue ou saisissez une ligne manuelle.",
         "sectionAddedListStale": "Section ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir.",
-        "lineAddedListStale": "Ligne ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir."
+        "lineAddedListStale": "Ligne ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir.",
+        "saveExpiry": "Impossible d'enregistrer la date d'expiration.",
+        "saveIntroNotes": "Impossible d'enregistrer les notes d'introduction."
       },
       "image": {
         "alt": "Image du devis",
@@ -1255,6 +1257,7 @@
         "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",
+        "autoValueBlank": "Vide",
         "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
         "manualVariablesTitle": "À remplir pour cette proposition",
         "labelFieldLabel": "Libellé de la section",
@@ -1348,6 +1351,14 @@
       },
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le texte enrichi prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+      },
+      "intro": {
+        "expiryLabel": "Valide jusqu'au",
+        "expiryHelper": "Imprimée sur la proposition. Le client peut l'accepter jusqu'à la fin de cette journée. Laissez vide pour aucune expiration.",
+        "expiryPast": "Cette date est passée — le client ne peut pas accepter une proposition expirée.",
+        "notesLabel": "Notes d'introduction",
+        "notesHelper": "Imprimées au-dessus de la première section de la proposition.",
+        "notesPlaceholder": "Un court mot au client, p. ex. ce que couvre cette proposition."
       }
     },
     "actions": {
@@ -2814,7 +2825,6 @@
       "delivery_failed": "Échec de l’envoi de l’avis",
       "consent_required": "L’autorisation de paiement est manquante. Demandez une nouvelle autorisation."
     },
-    "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
     "chargeResultUnknown": "Nous n’avons pas pu confirmer ce qu’il est advenu de ce paiement. Actualisation de la facture pour afficher son état actuel.",
     "chargeStarted": "Tentative de paiement lancée",
@@ -2954,10 +2964,6 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de rappel",
     "loadFailed": "Impossible de charger les paramètres de rappel",
     "retry": "Réessayer",
-    "loading": "Chargement des paramètres de paiement…",
-    "templates": {
-      "paymentReminder": "Rappel de paiement",
-      "paymentOverdue": "Rappel de paiement en retard"
-    }
+    "loading": "Chargement des paramètres de paiement…"
   }
 }
