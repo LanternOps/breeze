@@ -1,6 +1,6 @@
 /**
  * Live-Postgres proof for
- * 2027-01-12-210000-network-checks-strip-legacy-monitor-prefix.sql (#7358):
+ * 2027-01-17-111500-network-checks-strip-legacy-monitor-prefix.sql (#7358):
  * managed network checks compiled before #7359 lose their "[monitor] "
  * prefix, unless the plain name would collide with another check visible in
  * the same list, and nothing else is touched.
@@ -19,7 +19,7 @@ import { replayMigration } from './replayMigration';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION = '2027-01-12-210000-network-checks-strip-legacy-monitor-prefix.sql';
+const MIGRATION = '2027-01-17-111500-network-checks-strip-legacy-monitor-prefix.sql';
 
 type Owner = { orgId: string; partnerId: null } | { orgId: null; partnerId: string };
 
