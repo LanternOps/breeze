@@ -26,6 +26,7 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { buildActionLabel } from '../services/actionIntents/actionLabel';
 import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
+import { stripPageResumeJson } from '../services/aiToolPageResume';
 import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
 import {
   beginOperatorReleaseLedger,
@@ -1406,7 +1407,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // A tool whose pin is MANDATORY (topology diagnose_connectivity, M4-D3) never
   // inherits the NULL-means-nothing-to-check fallback below: no pinned digest
   // is an explicit refusal, before anything executes.
-  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName)) {
+  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName, intent.arguments as Record<string, unknown> | null)) {
     await failIntent(intent, 'digest_required', { details: { actionName: intent.actionName } });
     return;
   }
@@ -1762,7 +1763,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   } else if (carrier) {
     storedResult = sealToolSecrets(carrier).sealedResult;
   } else {
-    storedResult = normalizeToolResult(rawResult);
+    // #10385: a paged tool's page-resume descriptor is chat-compaction input,
+    // not part of the result — keep it out of the stored record.
+    storedResult = normalizeToolResult(stripPageResumeJson(rawResult));
   }
 
   // A tool that returned an error body (not a throw) is a FAILED release, not a

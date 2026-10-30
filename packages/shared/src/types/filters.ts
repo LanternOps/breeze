@@ -13,6 +13,9 @@ export type FilterOperator =
   | 'greaterThanOrEquals'
   | 'lessThan'
   | 'lessThanOrEquals'
+  // Software-version operators
+  | 'below'
+  | 'atLeast'
   // String operators
   | 'contains'
   | 'notContains'
@@ -97,7 +100,8 @@ export type FilterValue =
   | number[]
   | { from: Date; to: Date } // for 'between' operator on a date/datetime field
   | { from: number; to: number } // for 'between' operator on a number field
-  | { amount: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' }; // for 'withinLast'
+  | { amount: number; unit: 'minutes' | 'hours' | 'days' | 'weeks' | 'months' } // for 'withinLast'
+  | { name: string; version: string }; // for 'software.version'
 
 /**
  * Group of conditions with AND/OR logic
@@ -207,7 +211,8 @@ export type CustomFieldValues = Record<string, unknown>;
  */
 export interface DeviceGroupWithFilter {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   siteId: string | null;
   name: string;
   type: 'static' | 'dynamic';

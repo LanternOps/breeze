@@ -53,8 +53,8 @@ const (
 // for a detected UAC prompt, it shows the user-desktop PAM dialog (when the
 // status warrants it), composes the decision, and either actuates locally
 // (end-user-allowed) or dismisses consent.exe (deny). The require-approval
-// path resolves remotely: the server issues an actuate_elevation command once
-// a technician approves.
+// path resolves remotely: the server issues a pam_apply_v2 command once a
+// technician approves.
 func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etwlua.ElevationOutcome) {
 	// RunPamFlow runs on the etwlua loop goroutine and reaches raw SendInput
 	// syscalls via the actuator — unlike the remote actuate path, there is no
@@ -154,15 +154,39 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		return
 	}
 
-	ask := h.pamRequestDialog
-	if ask == nil {
-		ask = h.sessionBroker.RequestPamApproval
+	// #10190 W07: a pending request asks its first question through the
+	// prompt host when the requester's session can draw elevation.request
+	// (pam_prompt.go); otherwise exactly today's dialog.
+	var (
+		dialog        ipc.PamDialogResult
+		dialogErr     error
+		declineReason pamdecline.Reason
+	)
+	promptWinSession := targetWinSession
+	if promptWinSession == "" {
+		promptWinSession = session.WinSessionID
 	}
-	dialog, dialogErr := ask(session, outcome.RequestID, buildPamRequestDialog(ev), pamDialogTimeout)
-	if dialogErr != nil {
-		log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
-		// Keep dialogErr: pamWithdrawReason tells a timeout from a failure.
-		dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
+	answer, flow, prompted := h.askElevationPrompt(ctx, promptWinSession, outcome, ev)
+	// Runs before the recover above (LIFO): a flow that never reached its
+	// waiting card is withdrawn.
+	defer h.finishElevationFlow(flow)
+	if prompted {
+		dialog, dialogErr, declineReason = answer.dialog, answer.err, answer.decline
+		if dialogErr != nil {
+			log.Warn("pam: elevation prompt ended without an answer; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
+			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "prompt_error"}
+		}
+	} else {
+		ask := h.pamRequestDialog
+		if ask == nil {
+			ask = h.sessionBroker.RequestPamApproval
+		}
+		dialog, dialogErr = ask(session, outcome.RequestID, buildPamRequestDialog(ev), pamDialogTimeout)
+		if dialogErr != nil {
+			log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
+			// Keep dialogErr: pamWithdrawReason tells a timeout from a failure.
+			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
+		}
 	}
 
 	var verdict string
@@ -206,7 +230,11 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	case sessionbroker.PamActionDeny:
 		// Record first: the dismissal can take pamDismissTimeout, and an
 		// approval landing meanwhile must already be refused (#8971).
-		decision.decline(pamWithdrawReason(dialog, dialogErr))
+		reason := pamWithdrawReason(dialog, dialogErr)
+		if declineReason != "" {
+			reason = declineReason
+		}
+		decision.decline(reason)
 		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
 		h.kickPamWithdrawDrain()
 	case sessionbroker.PamActionAwaitRemote:
@@ -215,7 +243,31 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// Remember this request's own consent.exe so the approved launch can
 		// close it afterwards (#8995); the launch itself never goes through it.
 		h.recordPendingPamConsent(outcome.RequestID, targetWinSession, ev.Consent)
-		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
+		// Track the hand-off so the outcome notices (#8928) can tell this user
+		// what IT decided. PR 1 shows nothing here: the consent dismiss and the
+		// "Request sent" notice come with PR 2.
+		//
+		// The notices go to the session the user answered the dialog in: the
+		// requester's own session when ETW resolved it, else the session of
+		// the console-fallback helper that showed the dialog. Never the
+		// machine-global "preferred" notify helper, which on a multi-session
+		// host can belong to another user (the deny reason is in the notice).
+		noticeWinSession := targetWinSession
+		if noticeWinSession == "" && session != nil {
+			noticeWinSession = session.WinSessionID
+		}
+		if noticeWinSession != "" {
+			h.pamTracker().MarkAwaiting(outcome.RequestID, noticeWinSession,
+				pamProgramName(ev.TargetExecutablePath), outcome.SupportName)
+		} else {
+			log.Info("pam: requester session unresolved; outcome notices disabled for this request",
+				"elevationRequestId", outcome.RequestID)
+		}
+		log.Info("pam: awaiting remote technician approval; server will issue pam_apply_v2", "elevationRequestId", outcome.RequestID)
+		if flow != nil {
+			// The UAC prompt is dismissed and the waiting card replaces it.
+			h.elevationSendRequested(flow)
+		}
 	}
 }
 

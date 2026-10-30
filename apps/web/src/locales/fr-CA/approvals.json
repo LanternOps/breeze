@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Pourquoi refusez-vous cette demande? La raison est facultative.",
   "denyReasonPlaceholder": "Facultatif — transmis au demandeur",
+  "denyReasonShownToUserHint": "L’utilisateur final voit ceci dans sa notification (500 premiers caractères).",
   "confirmDeny": "Confirmer le refus",
   "cancel": "Annuler",
   "deny": "Refuser",

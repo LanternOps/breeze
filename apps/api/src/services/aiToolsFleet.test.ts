@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { inArray, sql } from 'drizzle-orm';
 
 const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock, mockListPolicyMaintenanceWindows } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
@@ -19,6 +26,10 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   isNotNullMock.mockImplementation(actual.isNotNull);
   return { ...actual, isNotNull: isNotNullMock };
 });
+
+// Tool Catalog W06 (#5221) B1: list/get/history carry each automation's conversion.
+const { conversionSummariesForMock } = vi.hoisted(() => ({ conversionSummariesForMock: vi.fn(async () => new Map()) }));
+vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: conversionSummariesForMock }));
 
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
@@ -54,6 +65,7 @@ vi.mock('./siteScope', async (importOriginal) => {
 
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' })),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -163,9 +175,9 @@ vi.mock('../db/schema/devices', async (importOriginal) => {
   const actual = await importOriginal() as Record<string, unknown>;
   return {
     ...actual,
-    deviceGroups: { orgId: 'orgId', id: 'id' },
-    deviceGroupMemberships: { groupId: 'groupId' },
-    groupMembershipLog: { groupId: 'groupId' },
+    deviceGroups: { orgId: 'orgId', partnerId: 'partnerId', id: 'id' },
+    deviceGroupMemberships: { groupId: 'groupId', orgId: 'orgId' },
+    groupMembershipLog: { groupId: 'groupId', orgId: 'orgId' },
   };
 });
 
@@ -364,6 +376,20 @@ describe('manage_groups peripheral reconciliation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each(['update', 'delete', 'add_devices', 'remove_devices'])('manage_groups %s refuses partner groups before persisting', async (action) => {
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue([{ id: 'group-1', orgId: null, partnerId: 'partner-1', siteId: null }]),
+    }) }) } as any);
+    const result = JSON.parse(await tool.handler({ action, groupId: 'group-1', deviceIds: ['device-1'], name: 'Changed' }, { ...auth, scope: 'partner', partnerId: 'partner-1', partnerOrgAccess: 'all' }));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_READ_ONLY' });
+    expect(result.error).toContain('read-only for the AI assistant');
+    expect(result.error).toContain('Device Groups → All orgs');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(mockDeleteDeviceGroup).not.toHaveBeenCalled();
   });
 
   it('schedules exactly the memberships inserted by the direct AI path', async () => {
@@ -581,6 +607,65 @@ describe('manage_automations managed-row protection', () => {
   });
 });
 
+describe('manage_automations conversion summary (#5221 W06 B1)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const job = {
+    id: 'automation-1', name: 'Nightly', orgId: 'org-1', partnerId: null,
+    trigger: { type: 'manual' }, conditions: null, managedByAgentId: null, managedByMonitorId: null,
+  };
+  const conversion = { id: 'conv-1', state: 'shadow', flowId: 'flow-1' };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    conversionSummariesForMock.mockResolvedValue(new Map([['automation-1', conversion]]));
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([job]),
+          orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([job]) }),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+  });
+
+  it('manage_automations get reports the conversion', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'get', automationId: job.id }, auth));
+    expect(result.automation).toMatchObject({ id: job.id, conversion });
+    expect(conversionSummariesForMock).toHaveBeenCalledWith([job.id]);
+  });
+
+  it('get of an unconverted automation reports conversion null', async () => {
+    conversionSummariesForMock.mockResolvedValue(new Map());
+    const result = JSON.parse(await tool.handler({ action: 'get', automationId: job.id }, auth));
+    expect(result.automation).toHaveProperty('conversion', null);
+  });
+
+  it('list and history carry the conversion too', async () => {
+    const list = JSON.parse(await tool.handler({ action: 'list' }, auth));
+    expect(list.automations[0]).toMatchObject({ id: job.id, conversion });
+    const history = JSON.parse(await tool.handler({ action: 'history', automationId: job.id }, auth));
+    expect(history).toMatchObject({ automationId: job.id, conversion });
+  });
+});
+
 // #5289 — a row compiled from a monitor definition (managed_by_monitor_id
 // set) must refuse enable/disable/run the same way an agent-managed row does.
 // create/update/delete are unreachable here (early-returned above), so only
@@ -666,10 +751,84 @@ describe('manage_automations managed-by-monitor guard (#5289)', () => {
   });
 });
 
+describe('manage_automations on a switched (converted) row (#5221 W06 B7)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const FLOW_ID = '33333333-3333-4333-8333-333333333333';
+  const switched = {
+    id: 'automation-1',
+    name: 'Converted job',
+    orgId: 'org-1',
+    partnerId: null,
+    enabled: false,
+    trigger: { type: 'manual' },
+    conditions: null,
+    managedByAgentId: null,
+    managedByMonitorId: null,
+    retiredReason: 'converted_to_flow',
+    convertedToFlowId: FLOW_ID,
+  };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([switched]),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+  });
+
+  it('manage_automations run on a switched row is automation_converted', async () => {
+    const result = JSON.parse(await tool.handler({ action: 'run', automationId: switched.id }, auth));
+    expect(result).toEqual({ error: 'automation_converted', flowId: FLOW_ID });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it.each(['enable', 'disable'])('manage_automations %s on a switched row is automation_converted', async (action) => {
+    const result = JSON.parse(await tool.handler({ action, automationId: switched.id }, auth));
+    expect(result).toEqual({ error: 'automation_converted', flowId: FLOW_ID });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+});
+
 describe('manage_maintenance_windows handler', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
   const tool = toolMap.get('manage_maintenance_windows')!;
+
+  it.each(['create', 'update'])('%s refuses partner-group targets without writes and checks the supplied group ids', async (action) => {
+    vi.clearAllMocks();
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    const auth = {
+      user: { id: 'u1' }, orgId: 'org-1', scope: 'organization', partnerId: null,
+      accessibleOrgIds: ['org-1'], canAccessOrg: () => true, orgCondition: () => undefined,
+    } as any;
+    const result = JSON.parse(await tool.handler({ action, windowId: 'window-1', groupIds: [groupId] }, auth));
+    expect(result).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+  });
 
   // Regression guard for the #2131 scripted-edit self-recursion bug:
   // maintenanceWindowWhere once called ITSELF instead of orgWhere, so every
@@ -2009,5 +2168,80 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
       expect(result.success).toBe(true);
       expect(insertValuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-2' }));
     });
+  });
+});
+
+
+describe('manage_groups partner ownership W3', () => {
+  const tools = new Map<string, AiTool>();
+  registerFleetTools(tools);
+  const tool = tools.get('manage_groups');
+  if (!tool) throw new Error('manage_groups missing');
+  const dialect = new PgDialect();
+  const group = { id: 'group-partner', orgId: null, partnerId: 'partner-1', name: 'Fleet', siteId: null,
+    filterConditions: { operator: 'AND', conditions: [{ field: 'hostname', operator: 'equals', value: 'secret' }] } };
+  const partnerAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' }, orgId: null, partnerId: 'partner-1',
+    scope: 'partner', partnerOrgAccess: 'selected', accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => inArray(sql.raw('org_id'), ['org-1']),
+  } as any;
+  beforeEach(() => { vi.clearAllMocks(); vi.mocked(findPartnerOwnedGroupIds).mockResolvedValue([]); });
+
+  function selectRows(rows: unknown[]) {
+    const chain: any = { limit: vi.fn().mockResolvedValue(rows), orderBy: vi.fn(() => chain),
+      where: vi.fn(() => chain), leftJoin: vi.fn(() => chain), from: vi.fn(() => chain) };
+    vi.mocked(db.select).mockReturnValueOnce(chain);
+    return chain;
+  }
+
+  it.each(['list', 'get', 'membership_log'])('%s includes own partner groups in its query', async (action) => {
+    const lookup = selectRows([group]);
+    if (action !== 'list') selectRows([]);
+    const response = JSON.parse(await tool.handler({ action, groupId: group.id }, partnerAuth));
+    expect(response.error).toBeUndefined();
+    const query = dialect.sqlToQuery(lookup.where.mock.calls[0][0]);
+    expect(query.params).toContain('partner-1');
+    expect(query.sql).toContain('is null');
+  });
+
+  it.each(['get', 'membership_log'])('%s clamps partner members/log to accessible orgs', async (action) => {
+    selectRows([group]);
+    const members = selectRows([]);
+    await tool.handler({ action, groupId: group.id }, partnerAuth);
+    const query = dialect.sqlToQuery(members.where.mock.calls[0][0]);
+    expect(query.params).toContain('org-1');
+    expect(query.sql).toContain(' in ');
+  });
+
+  it.each(['organization', 'none'])('list has no partner branch for %s scope/access', async (kind) => {
+    const lookup = selectRows([]);
+    const auth = kind === 'organization'
+      ? { ...partnerAuth, scope: 'organization', orgId: 'org-1' }
+      : { ...partnerAuth, partnerOrgAccess: 'none', accessibleOrgIds: [] };
+    await tool.handler({ action: 'list' }, auth);
+    expect(dialect.sqlToQuery(lookup.where.mock.calls[0][0]).params).not.toContain('partner-1');
+  });
+
+  it.each(['organization', 'none', 'other'])('get denies partner rows to %s callers even if selected by RLS', async (kind) => {
+    selectRows([group]);
+    const auth = kind === 'organization' ? { ...partnerAuth, scope: 'organization', orgId: 'org-1' }
+      : kind === 'none' ? { ...partnerAuth, partnerOrgAccess: 'none' }
+      : { ...partnerAuth, partnerId: 'partner-2' };
+    expect(JSON.parse(await tool.handler({ action: 'get', groupId: group.id }, auth)))
+      .toEqual({ error: 'Group not found or access denied' });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['create', 'update'])('%s refuses org filters referencing a partner group', async (action) => {
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValue([group.id]);
+    if (action === 'create') vi.mocked(db.insert).mockReturnValueOnce({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-group' }]) }) } as never);
+    if (action === 'update') selectRows([{ ...group, orgId: 'org-1', partnerId: null }]);
+    const response = JSON.parse(await tool.handler({ action, orgId: 'org-1', groupId: 'org-group', name: 'Org',
+      filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'equals', value: group.id }] },
+    }, partnerAuth));
+    expect(response.code).toBe('PARTNER_GROUP_FILTER_UNSUPPORTED');
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
   });
 });

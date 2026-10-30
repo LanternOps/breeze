@@ -1751,6 +1751,38 @@ describe('releaseApprovedIntent', () => {
       );
     });
 
+    it.each([
+      ['push', { action: 'push', provider: 'xero', invoiceId: '00000000-0000-4000-8000-0000000000a1' }],
+      ['push_bulk', { action: 'push_bulk', provider: 'xero', invoiceIds: ['00000000-0000-4000-8000-0000000000a1'] }],
+    ])('digest_required: manage_accounting_sync %s with no pinned digest fails before any recompute or execution', async (_n, args) => {
+      const intent = baseIntent({ actionName: 'manage_accounting_sync', arguments: args, argumentDigest: computeArgumentDigest(canonicalizeArguments(args)), effectDigest: null });
+      primeThroughRevalidation(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigestForRelease).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'digest_required' }),
+      );
+    });
+
+    const STATUS_ARGS = { action: 'status', provider: 'xero' };
+    it('control: manage_accounting_sync status with a null digest does not fail on digest_required', async () => {
+      const intent = baseIntent({ actionName: 'manage_accounting_sync', arguments: STATUS_ARGS, argumentDigest: computeArgumentDigest(canonicalizeArguments(STATUS_ARGS)), effectDigest: null });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+      for (const call of intentServiceMock.transitionIntent.mock.calls) {
+        expect(call[3]).not.toEqual(expect.objectContaining({ errorCode: 'digest_required' }));
+      }
+    });
+
     it('releases diagnose_connectivity with its topology AI preconditions resolved BEFORE the release context opens (review R1)', async () => {
       const digest = 'd'.repeat(64);
       const intent = baseIntent({ actionName: 'diagnose_connectivity', effectDigest: digest });

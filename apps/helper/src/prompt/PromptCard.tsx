@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 import { shouldAnnounce } from './a11y';
 import { Card } from './Card';
@@ -7,7 +7,7 @@ import { chromeString } from './chrome';
 import { IdentityHeader } from './IdentityHeader';
 import type { PromptIdentity } from './identity';
 import { applyPlaceholders } from './placeholders';
-import type { ActionOutcome, ActionRole, ActionVia, PromptActionSpec, PromptView } from './types';
+import type { ActionOutcome, ActionRole, ActionVia, PromptActionSpec, PromptFact, PromptView } from './types';
 import './prompt.css';
 
 /*
@@ -68,6 +68,12 @@ export interface PromptCardProps {
    * ignore it.
    */
   onExpandedChange?: (expanded: boolean) => Promise<void> | void;
+  /**
+   * Draws the facts list in place of the default `dl` (kinds/elevation.tsx,
+   * W07: long values are cut with Show more). Values stay plain text and are
+   * never placeholder targets.
+   */
+  renderFacts?: (facts: PromptFact[], locale: string) => ReactNode;
 }
 
 export function PromptCard({
@@ -79,6 +85,7 @@ export function PromptCard({
   identity = null,
   logoUrl = null,
   activation = 'focus',
+  renderFacts,
 }: PromptCardProps) {
   const deadline = view.countdownDeadlineUnixMs;
   const fill = (text: string) => applyPlaceholders(text, nowMs, view.locale, deadline);
@@ -153,7 +160,8 @@ export function PromptCard({
             {view.copy.operatorNote}
           </p>
         )}
-        {view.facts.length > 0 && (
+        {view.facts.length > 0 && renderFacts && renderFacts(view.facts, view.locale)}
+        {view.facts.length > 0 && !renderFacts && (
           <dl className="prompt-facts">
             {view.facts.map((f, i) => (
               <div key={i} className="prompt-fact">

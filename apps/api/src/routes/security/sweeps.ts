@@ -50,6 +50,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   RULE_SET_NOT_FOUND: 'Rule set not found',
   RULE_SET_NOT_PUBLISHED: 'Rule set is disabled or not published',
   SWEEP_TOO_LARGE: 'Too many devices for one sweep',
+  PARTNER_GROUP_TARGET_UNSUPPORTED: 'Partner-wide device groups can only be targeted by partner configuration policies',
   NO_ELIGIBLE_DEVICES: 'No eligible devices in scope',
   SWEEP_SCOPE_CHANGED: 'The devices or rule sets changed since the preview; review the new preview',
   SWEEP_ALREADY_RUNNING: 'The same sweep is already running on these devices',

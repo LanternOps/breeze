@@ -4,7 +4,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { state, rowsMock, whereMock, orderByMock, limitMock, distinctMock, distinctWhereMock } = vi.hoisted(() => ({
-  state: { scope: 'partner' as string, permissions: [] as Array<{ resource: string; action: string }> },
+  state: { scope: 'partner' as string, partnerOrgAccess: 'selected' as 'all' | 'selected' | undefined, permissions: [] as Array<{ resource: string; action: string }> },
   rowsMock: vi.fn(),
   whereMock: vi.fn(),
   orderByMock: vi.fn(),
@@ -31,7 +31,7 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   hasSatisfiedMfa: vi.fn(() => true),
   authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', { user: { id: 'user-1' }, scope: state.scope, partnerId: 'p-1', orgId: null });
+    c.set('auth', { user: { id: 'user-1' }, scope: state.scope, partnerOrgAccess: state.partnerOrgAccess, partnerId: 'p-1', orgId: null });
     return next();
   }),
   requireScope: vi.fn((...scopes: string[]) => async (c: any, next: any) =>
@@ -76,6 +76,7 @@ describe('GET /connection-health/incidents', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.scope = 'partner';
+    state.partnerOrgAccess = 'selected';
     state.permissions = [ORGS_READ, { resource: 'connected_apps', action: 'read' }];
     rowsMock.mockResolvedValue([]);
     distinctMock.mockReturnValue([{ viewPermission: 'connected_apps:read' }, { viewPermission: 'backup:read' }]);
@@ -89,6 +90,49 @@ describe('GET /connection-health/incidents', () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect((await res.json()).data.map((d: { id: string }) => d.id)).toEqual(['a']);
+  });
+
+  it.each(['open', 'recent'])('hides partner webhook incidents from restricted partner users in the %s view', async (status) => {
+    state.permissions = [ORGS_READ, { resource: 'webhooks', action: 'read' }];
+    distinctMock.mockReturnValue([{ viewPermission: 'webhooks:read' }]);
+    rowsMock.mockResolvedValue([
+      row({ id: 'partner-hook', sourceKind: 'webhook', orgId: null, viewPermission: 'webhooks:read' }),
+      row({ id: 'org-hook', sourceKind: 'webhook', orgId: 'o-1', viewPermission: 'webhooks:read' }),
+    ]);
+    const response = await get(`/connection-health/incidents?status=${status}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.map((item: { id: string }) => item.id)).toEqual(['org-hook']);
+    for (const query of [distinctWhereMock.mock.calls.at(-1)![0], whereMock.mock.calls.at(-1)![0]]) {
+      const compiled = new PgDialect().sqlToQuery(query);
+      expect(compiled.sql).toMatch(/\("connection_health_incidents"\."source_kind" <> \$\d+ or "connection_health_incidents"\."org_id" is not null\)/);
+      expect(compiled.params).toContain('webhook');
+    }
+  });
+
+  it.each(['open', 'recent'])('allows full partner admins to see partner and org webhook incidents in the %s view', async (status) => {
+    state.partnerOrgAccess = 'all';
+    state.permissions = [ORGS_READ, { resource: 'webhooks', action: 'read' }];
+    distinctMock.mockReturnValue([{ viewPermission: 'webhooks:read' }]);
+    rowsMock.mockResolvedValue([
+      row({ id: 'partner-hook', sourceKind: 'webhook', orgId: null, viewPermission: 'webhooks:read' }),
+      row({ id: 'org-hook', sourceKind: 'webhook', orgId: 'o-1', viewPermission: 'webhooks:read' }),
+    ]);
+    const response = await get(`/connection-health/incidents?status=${status}`);
+    expect((await response.json()).data.map((item: { id: string }) => item.id)).toEqual(['partner-hook', 'org-hook']);
+    expect(lastWhereSql()).not.toContain('source_kind');
+  });
+
+  it('does not expose hidden partner webhook rows through the truncation flag or page limit', async () => {
+    state.permissions = [ORGS_READ, { resource: 'webhooks', action: 'read' }];
+    distinctMock.mockReturnValue([{ viewPermission: 'webhooks:read' }]);
+    rowsMock.mockResolvedValue([
+      ...Array.from({ length: 501 }, (_, i) => row({ id: `hidden-${i}`, sourceKind: 'webhook', orgId: null, viewPermission: 'webhooks:read' })),
+      row({ id: 'org-hook', sourceKind: 'webhook', orgId: 'o-1', viewPermission: 'webhooks:read' }),
+    ]);
+    const response = await get();
+    const body = await response.json();
+    expect(body.truncated).toBe(false);
+    expect(body.data.map((item: { id: string }) => item.id)).toEqual(['org-hook']);
   });
 
   it('a partner caller without the view permission does not see the row', async () => {
