@@ -26,8 +26,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
-vi.mock('../../workers/webhookDelivery', () => ({
-  getWebhookWorker: () => ({ queueDelivery: mocks.queueDelivery }),
+vi.mock('../../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: mocks.queueDelivery,
 }));
 vi.mock('../../services/notificationSenders/webhookSender', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/notificationSenders/webhookSender')>()),

@@ -53,3 +53,22 @@ describe('pageContextWriteDefaultOrgId (#6675)', () => {
     expect(pageContextWriteDefaultOrgId({ orgId: ORG })).toBeUndefined();
   });
 });
+
+const recordPage = { type: 'record' as const, kind: 'ticket' as const, id: DEVICE, orgId: DEVICE, label: 'Client badge' };
+
+describe('record page org anchor', () => {
+  it('preserves the record snapshot and sets only the server anchor', () => {
+    expect(buildSessionContextSnapshot(recordPage, true)).toEqual({ ...recordPage, orgAnchor: PAGE_CONTEXT_ORG_ANCHOR });
+    expect(buildSessionContextSnapshot({ ...recordPage, orgAnchor: PAGE_CONTEXT_ORG_ANCHOR } as never, false)).toEqual(recordPage);
+  });
+
+  it("write default org is the record's resolved session org, never the snapshot hint", () => {
+    expect(pageContextWriteDefaultOrgId({ orgId: ORG, contextSnapshot: buildSessionContextSnapshot(recordPage, true) })).toBe(ORG);
+  });
+
+  it('requires the server anchor and excludes device-bound sessions', () => {
+    expect(pageContextWriteDefaultOrgId({ orgId: ORG, contextSnapshot: recordPage })).toBeUndefined();
+    expect(pageContextWriteDefaultOrgId({ orgId: ORG, contextSnapshot: { ...recordPage, orgAnchor: 'client' } })).toBeUndefined();
+    expect(pageContextWriteDefaultOrgId({ orgId: ORG, deviceId: DEVICE, contextSnapshot: buildSessionContextSnapshot(recordPage, true) })).toBeUndefined();
+  });
+});

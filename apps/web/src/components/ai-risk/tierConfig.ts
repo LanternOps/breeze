@@ -288,6 +288,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_contract_templates (list/get/get_version/usage)', description: 'Agreement templates customers sign, their versions, and where each is used', category: 'Billing' },
       { name: 'manage_contract_documents (list)', description: 'Signed agreements and whether each is filed under a contract (no signer email)', category: 'Billing' },
       { name: 'get_device_billing', description: 'Which contract lines bill a device, or why it is not billable', category: 'Billing' },
+      // Full-control W14 PR B (#6784): accounting reads (partner-scoped; a search term is filtered in Breeze, never sent).
+      { name: 'manage_accounting_sync (status/owed_operations/customers/mappings/income_accounts/remote_candidates)', description: 'QuickBooks or Xero connection status, payment sync backlog, customers, customer and item mappings, and income accounts', category: 'Billing' },
       // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
       { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Wisp concerns (W05a #9911): offered only when Wisp is on, and only under a delegation grant.
@@ -427,6 +429,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_billing_catalog (create_item)', description: 'Add a billing catalog item (inert until a quote, invoice, or contract uses it)', category: 'Billing' },
       // Full-control W14 (#6784): an organization-owned agreement template (a partner-wide one needs approval every time).
       { name: 'manage_contract_templates (create/update)', description: 'Create or rename an organization\'s agreement template (nothing is sent or signable until a version is published)', category: 'Billing' },
+      // Full-control W14 PR B (#6784): a read that runs without a prompt.
+      { name: 'manage_contracts (preview_invoice)', description: 'What the next billing run of a contract would invoice: lines, totals, auto-issue and recipients (nothing is created)', category: 'Billing' },
       // Wisp memory (W03 #9909): remember writes an unconfirmed block.
       { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
       // Wisp concerns and watches (W05a #9911): grant-bound, inside the delegation ceiling.
@@ -544,6 +548,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_billing_settings (update_partner/update_org)', description: 'Change invoice defaults, customer-facing invoice text, or an organization\'s tax, terms and billing contact', category: 'Billing' },
       { name: 'manage_contract_templates (create_version/publish/archive)', description: 'Add a draft version, publish it for signature, or archive an organization\'s agreement template (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_contract_documents (link)', description: 'File a signed agreement under its contract; cannot be undone (not offered to AI agents)', category: 'Billing' },
+      // Full-control W14 PR B (#6784): generate and push need a second approver; mapping changes overwrite the provider's record.
+      { name: 'manage_contracts (generate_invoice)', description: 'Generate a contract\'s due invoice and, when the contract auto-issues, issue and email it; two people approve, and a changed total refuses (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_accounting_sync (link_mapping/unlink_mapping/sync_mapping)', description: 'Link, unlink or re-sync a customer or item with QuickBooks or Xero; linking and syncing overwrite the provider\'s record (not offered to AI agents)', category: 'Billing' },
+      { name: 'manage_accounting_sync (push/push_bulk)', description: 'Push invoices (up to 10) into QuickBooks or Xero; two people approve, and they stay in the books (not offered to AI agents)', category: 'Billing' },
       { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Full-control W06 (#6776): PSA configuration. Partner-wide configuration, customer-visible forms,
       // terminal inbox actions and the permanent attachment delete need approval; the four hard deletes
@@ -834,6 +842,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'manage_billing_settings', tier: 1, permission: 'organizations.read / invoices.read / invoices.write', category: 'Billing' },
   { toolName: 'manage_contract_templates', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
   { toolName: 'manage_contract_documents', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
+  { toolName: 'manage_contracts', tier: 2, permission: 'contracts.read / contracts.write / contracts.manage', category: 'Billing' },
+  { toolName: 'manage_accounting_sync', tier: 1, permission: 'accounting.read / accounting.manage (+ organizations.write + catalog.write, or invoices.write)', category: 'Billing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────
@@ -969,6 +979,14 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   },
   manage_contract_documents: { list: 'agreements.read', link: 'agreements.write' },
   get_device_billing: 'devices.read + contracts.read',
+  manage_accounting_sync: {
+    status: 'accounting.read', owed_operations: 'accounting.read', customers: 'accounting.read', mappings: 'accounting.read',
+    income_accounts: 'accounting.read', remote_candidates: 'accounting.read',
+    link_mapping: 'accounting.manage + organizations.write + catalog.write',
+    unlink_mapping: 'accounting.manage + organizations.write + catalog.write',
+    sync_mapping: 'accounting.manage + organizations.write + catalog.write',
+    push: 'accounting.manage + invoices.write', push_bulk: 'accounting.manage + invoices.write',
+  },
   analyze_fleet_metrics: 'devices.read',
   // Stored data needs read; the live-read input flag needs execute.
   analyze_boot_performance: { stored: 'devices.read', triggerCollection: 'devices.execute' },

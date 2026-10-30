@@ -10,6 +10,33 @@ describe('ApiKeyList status filter select accessible name (#7156)', () => {
   });
 });
 
+// #9950: expiry used to show only in the View modal.
+describe('ApiKeyList expiry column', () => {
+  const base = {
+    keyPrefix: 'brz_abc',
+    scopes: ['devices:read'],
+    createdAt: '2026-09-01T00:00:00.000Z',
+    lastUsedAt: null,
+    status: 'active' as const,
+    rateLimit: null,
+  };
+
+  it('shows the expiry date, or Never for a key without one', () => {
+    const expiresAt = '2027-01-15T12:00:00.000Z';
+    render(
+      <ApiKeyList
+        apiKeys={[
+          { ...base, id: 'k-dated', name: 'Dated', expiresAt },
+          { ...base, id: 'k-open', name: 'Open', expiresAt: null },
+        ]}
+      />,
+    );
+    expect(screen.getByRole('columnheader', { name: 'Expires' })).toBeInTheDocument();
+    expect(screen.getByTestId('api-key-expires-k-dated').textContent).toBe(new Date(expiresAt).toLocaleDateString());
+    expect(screen.getByTestId('api-key-expires-k-open').textContent).toBe('Never');
+  });
+});
+
 describe('ApiKeyList MCP domains badge (#6156)', () => {
   const base = {
     keyPrefix: 'brz_abc',

@@ -301,6 +301,143 @@ describe('dnsSyncJob — per-slice persistence and checkpointing (#7207)', () =>
     });
   });
 
+  describe('a slice the provider could only partly fetch (#10047)', () => {
+    const BURST_FROM = new Date('2026-08-01T03:00:00.000Z');
+    const BURST_TO = new Date('2026-08-01T03:00:01.000Z');
+
+    function truncatedWrites() {
+      return updatePayloads.filter((u) => u.payload.lastSyncStatus === 'truncated');
+    }
+
+    function lastStatusWrite() {
+      const statusWrites = updatePayloads.filter((u) => 'lastSyncStatus' in u.payload);
+      return statusWrites[statusWrites.length - 1]!;
+    }
+
+    it('records truncated, naming the window that lost records, after the slices checkpoint', async () => {
+      selectResults = [[integrationRow()], [], []];
+      async function* syncEventSlices() {
+        yield {
+          events: [event('burst.example', BURST_FROM)],
+          until: BURST_TO,
+          truncated: { from: BURST_FROM, to: BURST_TO, reachableRecords: 11_000 },
+        };
+        yield { events: [], until: SLICE_2_END };
+        // No walk-end value: truncation must not depend on one.
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      // Both slices still checkpoint — what was fetched is kept, the walk moves on.
+      expect(successWrites().map((u) => (u.payload.lastSync as Date).getTime()))
+        .toEqual([BURST_TO.getTime(), SLICE_2_END.getTime()]);
+      // ...and the run then ends as truncated, not as a clean success.
+      expect(truncatedWrites()).toHaveLength(1);
+      const write = truncatedWrites()[0]!;
+      expect(write.depth).toBeGreaterThan(0);
+      expect(write.payload).not.toHaveProperty('lastSync');
+      expect(write.payload.lastSyncError).toBe(
+        '1 window held more records than the provider lets a sync page through; records past that ' +
+        `limit were not fetched and will not be retried: ${BURST_FROM.toISOString()}..${BURST_TO.toISOString()} ` +
+        '(11000 fetched)'
+      );
+      expect(lastStatusWrite().payload.lastSyncStatus).toBe('truncated');
+    });
+
+    it('keeps the truncation visible when the same run also stops short at the request budget', async () => {
+      selectResults = [[integrationRow()], []];
+      let requestedUntil: Date | undefined;
+      async function* syncEventSlices(_since: Date, until: Date) {
+        requestedUntil = until;
+        yield {
+          events: [],
+          until: BURST_TO,
+          truncated: { from: BURST_FROM, to: BURST_TO, reachableRecords: 10_400 },
+        };
+        return { stoppedShort: { from: BURST_TO, to: until } };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      // Data loss outranks "catching up": the row says truncated, and the
+      // message carries both facts.
+      expect(updatePayloads.filter((u) => u.payload.lastSyncStatus === 'partial')).toEqual([]);
+      expect(truncatedWrites()).toHaveLength(1);
+      const message = String(truncatedWrites()[0]!.payload.lastSyncError);
+      expect(message).toContain(`${BURST_FROM.toISOString()}..${BURST_TO.toISOString()} (10400 fetched)`);
+      expect(message).toContain(
+        `Reached the per-run request budget; ${BURST_TO.toISOString()}..${requestedUntil!.toISOString()} ` +
+        'not yet fetched, resumes next run'
+      );
+      expect(lastStatusWrite().payload.lastSyncStatus).toBe('truncated');
+    });
+
+    it('counts every truncated window but lists only the first few', async () => {
+      selectResults = [[integrationRow()]];
+      const windows = Array.from({ length: 5 }, (_, i) => {
+        const from = new Date(BURST_FROM.getTime() + i * 60_000);
+        return { from, to: new Date(from.getTime() + 1000), reachableRecords: 10_001 + i };
+      });
+      async function* syncEventSlices() {
+        for (const w of windows) yield { events: [], until: w.to, truncated: w };
+        return {};
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      const message = String(truncatedWrites()[0]!.payload.lastSyncError);
+      expect(message).toMatch(/^5 windows held more records/);
+      for (const w of windows.slice(0, 3)) expect(message).toContain(`${w.from.toISOString()}..`);
+      expect(message).not.toContain(`${windows[3]!.from.toISOString()}..`);
+      expect(message).toMatch(/, and 2 more$/);
+    });
+
+    it('names the truncation in the recorded error when a later slice fails the run', async () => {
+      selectResults = [[integrationRow()], []];
+      async function* syncEventSlices() {
+        yield {
+          events: [],
+          until: BURST_TO,
+          truncated: { from: BURST_FROM, to: BURST_TO, reachableRecords: 11_000 },
+        };
+        throw new Error('HTTP 503 Service Unavailable');
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await expect(
+        processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' }),
+      ).rejects.toThrow('HTTP 503');
+
+      // The truncated slice was checkpointed, so the next run starts past it:
+      // the error this run records is the only place the loss can be named.
+      expect(truncatedWrites()).toEqual([]);
+      const errorWrite = lastStatusWrite();
+      expect(errorWrite.payload.lastSyncStatus).toBe('error');
+      expect(errorWrite.payload.lastSyncError).toBe(
+        'HTTP 503 Service Unavailable. Earlier in this run: 1 window held more records than the provider ' +
+        'lets a sync page through; records past that limit were not fetched and will not be retried: ' +
+        `${BURST_FROM.toISOString()}..${BURST_TO.toISOString()} (11000 fetched)`
+      );
+    });
+
+    it('leaves a run with no truncated slice as a plain success', async () => {
+      selectResults = [[integrationRow()], []];
+      async function* syncEventSlices() {
+        yield { events: [], until: SLICE_1_END };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(truncatedWrites()).toEqual([]);
+      expect(updatePayloads).toHaveLength(1);
+      expect(updatePayloads[0]!.payload.lastSyncStatus).toBe('success');
+    });
+  });
+
   it('releases the provider session even when a slice fails', async () => {
     selectResults = [[integrationRow()], []];
     const dispose = vi.fn(async () => {});

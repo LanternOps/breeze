@@ -168,6 +168,35 @@ describe('agent-owned warranty rows survive a server sync (#5511 W01, defect 2)'
     expect(after).toHaveLength(1);
     expect(after[0]!.data_source).toBe('provider');
   });
+
+  runDb('an imported row survives a sync with no provider for its manufacturer (#9862)', async () => {
+    const { org, site } = await seedTenant();
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const deviceId = await seedDevice(org.id, site.id, `imported-${suffix}`);
+    await seedHardware(deviceId, org.id, 'Acme Whitebox', `SN-IMPORT-${suffix}`);
+
+    // The row the custom-field importer writes (`warrantyTarget.ts`): dates,
+    // a computed status, data_source 'import', and no sync bookkeeping.
+    await getTestDb().execute(sql`
+      INSERT INTO device_warranty (device_id, org_id, manufacturer, serial_number, status,
+                                   warranty_start_date, warranty_end_date, data_source)
+      VALUES (${deviceId}, ${org.id}, 'acmewhitebox', ${'SN-IMPORT-' + suffix}, 'active',
+              '2024-05-01', '2099-05-01', 'import')
+    `);
+    const before = await readWarranty(deviceId);
+    expect(before).toHaveLength(1);
+    expect(before[0]!.data_source).toBe('import');
+
+    await withSystemDbAccessContext(() => syncWarrantyForDevice(deviceId, { force: true }));
+
+    const after = await readWarranty(deviceId);
+    expect(after).toHaveLength(1);
+    expect(after[0]!.data_source, 'a sync with no provider must not take ownership of imported data').toBe('import');
+    expect(after[0]!.start_date).toBe('2024-05-01');
+    expect(after[0]!.end_date, 'the imported end date must survive').toBe('2099-05-01');
+    expect(after[0]!.last_sync_at, 'nothing was fetched').toBeNull();
+    expect(after[0]!.next_sync_at, 'the sweep must not re-pick it every cycle').not.toBeNull();
+  });
 });
 describe('the fleet sweep excludes agent-owned rows (#5511 W01, D9)', () => {
   runDb('selects a device a vendor can answer for, skips one an agent owns', async () => {

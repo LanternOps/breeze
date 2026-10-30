@@ -42,8 +42,9 @@ export const REMEDIATION_SUGGESTION_ORIGINS = ['catalog_match', 'memory', 'ai_re
 export type RemediationSuggestionOrigin = (typeof REMEDIATION_SUGGESTION_ORIGINS)[number];
 
 /**
- * Why an alert resolved. Only `condition_cleared` with `resolved_by IS NULL` is
- * objective recovery for the outcome watcher; NULL (unspecified) fails closed.
+ * Why an alert resolved. Only `condition_cleared` without a user or principal
+ * resolver is objective recovery for the outcome watcher; NULL (unspecified)
+ * fails closed.
  */
 export const ALERT_RESOLUTION_REASONS = ['condition_cleared', 'source_retired', 'expired', 'manual'] as const;
 export type AlertResolutionReason = (typeof ALERT_RESOLUTION_REASONS)[number];
