@@ -77,6 +77,7 @@ export default defineConfig({
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
       'src/jobs/discoveryWorker.bmc.integration.test.ts',
       'src/jobs/discoveryWorker.dispatchAfterCommit.integration.test.ts',
+      'src/jobs/discoveryWorker.autoLinkMac.integration.test.ts',
       'src/services/topology/bmc.integration.test.ts',
       // Suppression-expiry reaper real-DB test: imports `__tests__/integration/setup`
       // (real postgres pool + autoMigrate in its beforeAll), so the unit runner's

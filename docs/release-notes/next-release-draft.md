@@ -18,6 +18,7 @@ Last release: **v0.125.0** (2026-10-27).
 
 - **On-device notices are opt-in (#10190 W04).** `PROMPT_HOST_ENABLED_KINDS` is optional. Unset (or `default`) means the code default, which enables nothing in this release. Set it to `notice.info` on the `api` service to opt in. Enable it only after this release's Breeze Assist build is published. No migration.
 - **Restart prompts are opt-in too (#10190 W05).** Add `restart.prompt,restart.final` to `PROMPT_HOST_ENABLED_KINDS` (for example `notice.info,restart.prompt,restart.final`) only after the W05 Breeze Assist build is published. Unset still enables nothing. No migration.
+- **Discovery auto-link is MAC-only.** A scan links a discovered asset to an enrolled device only when its MAC matches one of the device's NICs; IP-only matches no longer link, and a MAC reported by two devices links nothing. Existing automatic links whose MAC is not on the linked device are dropped on the asset's next scan (the asset reappears in the Devices → Network list), and a device role that link stamped on is reset so the agent's heartbeat restores it. A real server mislabelled this way stays `unknown` until an admin sets it — the heartbeat never auto-promotes to a privileged role. Manual and pre-provenance links are untouched.
 
 ## Features / API
 
