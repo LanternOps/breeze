@@ -910,7 +910,8 @@
       "quote": "Angebot",
       "invoice": "Rechnung",
       "contract": "Vertrag",
-      "site": "Standort"
+      "site": "Standort",
+      "readiness": "Bereitschaft"
     },
     "reviewApproval": "Genehmigung prüfen",
     "openLink": "Öffnen",

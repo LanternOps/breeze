@@ -10,6 +10,10 @@ import type { SQL } from 'drizzle-orm';
  * is recorded so the org pin on each digest read can be compiled and asserted.
  */
 const h = vi.hoisted(() => {
+  class ConcernSubjectHeldError extends Error {
+    readonly code = 'concern_subject_held' as const;
+    constructor(public readonly signature: string, public readonly heldByConcernId: string) { super('held'); }
+  }
   const results: unknown[][] = [];
   const queries: { table: unknown; where: unknown[] }[] = [];
   const chain = (): Record<string, unknown> => {
@@ -29,6 +33,7 @@ const h = vi.hoisted(() => {
   }
   const ctx = { current: undefined as unknown };
   return {
+    ConcernSubjectHeldError,
     results,
     queries,
     ctx,
@@ -92,6 +97,7 @@ vi.mock('./budget', async () => ({
   utcDayWindow: (now: Date) => ({ key: now.toISOString().slice(0, 10) }),
 }));
 vi.mock('./concerns', () => ({
+  ConcernSubjectHeldError: h.ConcernSubjectHeldError,
   upsertConcern: h.upsertConcern,
   listConcernsForCeiling: h.listConcernsForCeiling,
   resolveConcernBySignature: h.resolveConcernBySignature,
@@ -373,14 +379,14 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
   });
 
-  it('raises ONE info org concern keyed by signature, with an /settings/ai-agents href, when admission skips for no_effective_agent', async () => {
+  it('raises ONE info readiness concern (#10386: not the org slot) keyed by signature, with an /settings/ai-agents href, when admission skips for no_effective_agent', async () => {
     h.results.push([grantRow()], [{ at: null }]);
     h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
     await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
     expect(h.upsertConcern).toHaveBeenCalledTimes(1);
     const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
     expect(arg).toMatchObject({
-      partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
+      partnerId: PARTNER, orgId: ORG, subject: { kind: 'readiness', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
     });
     // #10292: assessments run as the TRIAGE agent, so the copy names that kind —
     // an enabled agent of another kind (e.g. Patching) does not satisfy it.
@@ -409,6 +415,31 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     await enqueueAssessment({ grantId: GRANT, orgId: OTHER_ORG, reason: { kind: 'tick' } });
     expect((h.upsertConcern.mock.calls[0]![0] as { signature: string }).signature)
       .toBe(`wisp-readiness:no-effective-agent:${OTHER_ORG}`);
+  });
+
+  // #10386: only the onboarding readiness note can hold the readiness slot;
+  // with no agent it is moot, so it yields to the no-agent note.
+  it('an onboarding readiness note holding the slot is resolved, then the no-agent note is raised', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern
+      .mockRejectedValueOnce(new h.ConcernSubjectHeldError(SIG, 'onboarding-note'))
+      .mockResolvedValueOnce({ id: 'c-2', created: true });
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: true });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, `readiness:${ORG}`, 'superseded_no_effective_agent');
+    expect(h.upsertConcern).toHaveBeenCalledTimes(2);
+    expect(h.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a held slot that is not the onboarding note is reported once, with no retry', async () => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    h.upsertConcern.mockRejectedValue(new h.ConcernSubjectHeldError(SIG, 'someone-else'));
+    h.resolveConcernBySignature.mockResolvedValue({ resolved: false });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped: 'no_effective_agent' });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('a failing raise never changes the skip result (reported, not thrown)', async () => {

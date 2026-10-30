@@ -17,6 +17,7 @@ import {
   updateConcernSchema,
   validateRequestSpecialist,
 } from './wispConcerns';
+import { CONCERN_SUBJECT_KINDS } from '../types/wispConcerns';
 import { WISP_SPECIALIST_KINDS } from './wispSpecialists';
 
 const id = '6f1c2b1e-4a7d-4c55-9a35-2d8f5f0e1a01';
@@ -28,6 +29,11 @@ describe('raiseConcernSchema (record_concern)', () => {
     for (const kind of ['ticket', 'device', 'alert', 'org', 'integration', 'run', 'task', 'incident', 'quote', 'invoice', 'contract', 'site']) {
       expect(raiseConcernSchema.safeParse({ subject: { kind, id }, summary: 's', severity: 'low' }).success, kind).toBe(true);
     }
+  });
+  // #10386: readiness notes are system-written; a run may not mint one.
+  it('rejects the system-only readiness subject kind', () => {
+    expect(CONCERN_SUBJECT_KINDS).toContain('readiness');
+    expect(raiseConcernSchema.safeParse({ subject: { kind: 'readiness', id }, summary: 's', severity: 'info' }).success).toBe(false);
   });
   it('rejects a 2001-char summary, an unknown kind and > 20 evidence keys', () => {
     expect(raiseConcernSchema.safeParse({ subject: { kind: 'ticket', id }, summary: 'x'.repeat(2001), severity: 'low' }).success).toBe(false);
