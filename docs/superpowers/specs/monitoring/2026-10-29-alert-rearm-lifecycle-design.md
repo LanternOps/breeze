@@ -1,6 +1,6 @@
 ---
 title: Alert re-arm lifecycle — anchored episodes + partner/org lifecycle defaults
-status: draft (Gate A, awaiting owner approval)
+status: approved (owner, 2026-10-29; Gate A); plan docs/superpowers/plans/monitoring/2026-10-29-alert-rearm-lifecycle.md
 date: 2026-10-29
 origin: "#10538 (an MSP migrating from ConnectWise Automate: UPS 'On Battery' event_log alert must clear on 'Power Restored' and close the PSA ticket); owner direction 2026-10-29"
 related: "#10499 (alert → PSA ticket, close-on-resolve), 2026-09-19-alerting-consolidation-design.md, 2026-09-21-metric-anomaly-episodes-design.md"
@@ -234,8 +234,8 @@ Recovery requires affirmative evidence; an `unknown` data state never resolves.
 State conditions are not anchored. They already need a fresh breach: after an inverse
 auto-resolve the condition is false until the state breaches again. A **manual** resolve while
 the state still breaches re-opens after the cooldown, as today (C16): the operator resolved
-something that is still true, and acknowledge or suppress is the tool for "I know". OD4 asks
-whether to make state conditions edge-triggered; recommendation is to keep today's behaviour.
+something that is still true, and acknowledge or suppress is the tool for "I know". OD4
+(decided) keeps today's level-triggered behaviour rather than edge-triggering state conditions.
 
 Mixed trees (`and`/`or` of evidence and state leaves): each evidence leaf carries its own clause
 and contributes its own watermark; the episode's cursor is per evidence leaf, keyed by the
@@ -247,8 +247,8 @@ leaf's cursor to "none" (fires as today once, then anchors).
 
 - `alerts.context.lifecycle = { cursor: { <leafPath>: {ts, createdAt, id, logName?, recordId?} },
   rearm, cooldownMinutes, autoResolve, sources, monitorCompiledHash }`. `alerts.context` is
-  already `excludedOpen` in the export policy (no classification change). OD12 asks whether the
-  cursor deserves a dedicated column instead of jsonb.
+  already `excludedOpen` in the export policy (no classification change). OD12 (decided) keeps it
+  in jsonb rather than a dedicated column.
 - Close lookup index (W1, built `CONCURRENTLY` with the migration runner's supported directive):
   `alerts_rule_device_subject_closed_idx ON alerts (rule_id, device_id, COALESCE(subject_key,''), COALESCE(resolved_at, dismissed_at) DESC) WHERE rule_id IS NOT NULL AND status IN ('resolved','dismissed')`.
 - `device_event_logs` has only `(device_id)`, `(org_id, timestamp)` and `(category, level)`
@@ -266,7 +266,7 @@ leaf's cursor to "none" (fires as today once, then anchors).
 | Dedupe (C9) | Unchanged; still the first gate while an episode is open. The cursor only matters after close. |
 | Cooldown (C7, C16) | Unchanged meaning: minimum quiet time after an alert opens or closes, including the adaptive multiplier. The 15-vs-5 fallback split is removed — every read goes through the lifecycle resolver (§6.3). A genuinely new event inside the cooldown is delayed until it lapses, not lost — unless `windowMinutes` is shorter than the (multiplied) cooldown, in which case it ages out first. OD5. |
 | Flapping (C8) | Unchanged. Loops caused by stale evidence disappear, so flap suppression only sees real flaps. A flap-suppressed evaluation consumes nothing (§5.3). |
-| Acknowledge | Open; dedupe holds. Auto-resolves on recovery (OD3, recommended yes). |
+| Acknowledge | Open; dedupe holds. Auto-resolves on recovery (OD3, decided). |
 | Suppress / suppression expiry (C22) | Open; dedupe holds. Auto-resolves on recovery (OD3), matching what subject alerts already do (`alertSubjects.ts:70-80` resolves any `RESOLVABLE_ALERT_STATUSES` alert). Expiry still returns an unrecovered alert to `active`. |
 | `requiresHuman` recurrence alerts | Never auto-resolved (unchanged, `alertService.ts:536`, `:1470`). |
 | Monitor breach episodes / recurrence (C19) | The sweep's breach/ok observation comes from the anchored trigger, and a recovery close records `ok` in the same step (§5.5). The breach episode ends with the alert instead of at window age-out, so recurrence counts real outages. Behaviour change for event-based monitors with `recurrenceThreshold` — §8. |
@@ -274,7 +274,7 @@ leaf's cursor to "none" (fires as today once, then anchors).
 | Subject (hardware) alerts | Own path (`evaluateSubjectAlerts`); `checkAutoResolve` skips them (`:530`). No evidence handler is a subject handler today; the index and cursor key include `subject_key` so one can be added later. |
 | #10499 PSA close-on-resolve | One `alert.resolved` per real recovery. A PSA- or Partner-API-originated close is a `manual` resolve; the frozen cursor stops the same outage from re-opening a ticket, and a trigger the sweep never observed still re-opens it. |
 | Partner-wide monitors | One compiled template serves every org; lifecycle values are resolved per alert against the **device's** org and its partner at evaluation time, never at compile time (§6.3). |
-| Monitor edited mid-incident | The open alert keeps its snapshotted lifecycle values (§6.4); the recovery condition is evaluated as currently defined, so an operator fixing a wrong recovery pattern fixes the open alert too. `monitorCompiledHash` in the snapshot records which definition opened it. OD11 records the stricter alternative (snapshot predicates too). |
+| Monitor edited mid-incident | The open alert keeps its snapshotted lifecycle values (§6.4); the recovery condition is evaluated as currently defined, so an operator fixing a wrong recovery pattern fixes the open alert too. `monitorCompiledHash` in the snapshot records which definition opened it. OD11 (decided) records the rejected stricter alternative (snapshot predicates too). |
 
 ### 5.9 Worked example (UPS)
 
@@ -324,7 +324,7 @@ which the settings rules already model with columns. Tenancy obligations that do
 `organizations` is in `CORE_TENANT_EXPORT_POLICY` (`tenantExportPolicyRegistry.ts:1152`), so the
 four new org columns are classified `included` (scalars, no secrets); `monitor_definitions`
 new columns likewise (`:684`). `partners` is not in the export registry. No cascade/merge
-change: org merge keeps the surviving org's columns (OD7 asks whether merge should copy).
+change: org merge keeps the surviving org's columns (OD7, decided).
 
 **Why not a configuration-policy feature** (the `configuration-policy` skill's "don't skip the
 config policy system" guidance argues the other way — recorded as OD2): config policies
@@ -375,7 +375,7 @@ default)" from the snapshot.
   `/alerts/monitors` (Alerts domain, rule 2). At partner scope it edits the partner default;
   with an org selected it edits that org's override, each field showing the inherited value and
   its source, blank = inherit (rule 4). Form card, page Save (rule 7). No new URL, so no new nav
-  entry; the card is anchored as `#lifecycle` (OD6 offers a dedicated `/alerts/lifecycle` tab).
+  entry; the card is anchored as `#lifecycle` (OD6, decided).
 - **Monitor override**: the monitor editor's existing noise section becomes "Alert lifecycle":
   auto-resolve (Inherit / On / Off), Clears when (§7), Re-arm (Inherit / New evidence / After N
   minutes), Cooldown (blank = inherit, placeholder shows the inherited value).
@@ -406,7 +406,7 @@ routes all reads through the one resolver, so retiring them later removes storag
 Inheritance applies to monitor-managed rules (`alert_rules.managed_by_monitor_id IS NOT NULL`).
 Legacy rules keep their explicit template/rule values for cooldown and auto-resolve and get
 `new_evidence` re-arm from the engine (their template has no re-arm field; the built-in default
-applies). OD8 asks whether legacy rules should inherit the partner/org default instead.
+applies). OD8 (decided): they do not inherit the partner/org default.
 
 ## 7. "Clears when" for event_log (W3, folds in #10538)
 
@@ -440,7 +440,7 @@ applies). OD8 asks whether legacy rules should inherit the partner/org default i
   claimed "nothing legitimate is delayed"; that was false for its count-filtering form and is
   why D8 exists. **Recommendation:** ship as the default for everyone with a release note
   (self-hoster section); W2's `after_delay` restores the old behaviour per partner/org/monitor.
-  OD1 records the quorum's alternative (no blanket conversion of existing monitors).
+  OD1 (decided) records the quorum's dissent.
 - **W1 has no setting**, so between W1 and W2 the only behaviour is `new_evidence`. Acceptable:
   no customer can be depending on the loop.
 - **W2 migration** (named after the newest committed migration at write time; idempotent;
@@ -452,7 +452,7 @@ applies). OD8 asks whether legacy rules should inherit the partner/org default i
   unchanged at migration time because the partner defaults equal the old defaults; it changes
   only when a partner or org sets a default — which is the point of the feature. A monitor
   whose author deliberately chose 5/false is indistinguishable and will follow the partner
-  default (OD9; alternative: keep every existing value explicit).
+  default (OD9, decided; Codex dissent recorded in §13).
 - Alert templates, rules and config-policy rules: no data change.
 - Existing open alerts: no cursor in their context; the first sweep after deploy sets it from the
   trigger evaluation (the newest matching event), so recovery must be newer than that.
@@ -559,22 +559,24 @@ filtering, blanket rollout, columns as the settings home).
 | Q4 Existing monitors | **Disagree** with nulling stored 5/false (cannot tell defaults from choices) and with blanket conversion to `new_evidence`; default new monitors to inherit and offer bulk adoption. | **Partly adopted**: D8 removes the count-semantics objection to the engine default. Still disagree on both remaining points after weighing — see OD1 and OD9. |
 | Q5 Missing pieces | Terminal writes bypass `resolveAlert`; recovery must be compiled through the kind spec; composite-condition evidence; legacy rows without snapshots; subject in keys; event-log index benchmark; concurrent index; blocked admissions must not consume evidence; snapshot predicates. | **Adopted** except predicate snapshots (OD11): the cursor is sweep-maintained so terminal writers need no change (§5.3); per-leaf cursors (§5.6); legacy fallback (§8); subject in index (§5.7); benchmark (§5.7, §10); blocked admission rule (§5.3); kind compile (§7, D7). |
 
-## 13. Open decisions
+## 13. Decisions (approved 2026-10-29)
 
-| OD | Question | Options | Recommendation |
-|---|---|---|---|
-| OD1 | Does `new_evidence` apply to existing monitors on deploy? | (a) Yes, for every evidence alert, release note, `after_delay` available in W2. (b) Codex: no blanket conversion — existing monitors keep the old behaviour until adopted. | **(a).** With D8 the only alerts that stop are re-opens built entirely from evidence an earlier episode observed; (b) leaves the bug live for every existing customer, including the one who reported it. |
-| OD2 | Settings storage. | (a) Dedicated partner/org columns + nullable monitor overrides. (b) A configuration-policy feature (the `configuration-policy` skill's "don't skip the config policy system"). (c) New `partner_id XOR org_id` table. | **(a)**, quorum agrees. (b) resolves per device and adds a fourth level; (c) is machinery for four scalars per owner. |
-| OD3 | Do acknowledged and suppressed alerts auto-resolve on recovery? | Yes / ack only / no (today). | **Yes, both** (quorum agrees; matches subject alerts). |
-| OD4 | Edge-triggered re-arm for state conditions (manual resolve while breaching stays closed until the state clears once)? | Keep today / edge-trigger. | **Keep today**; resolve-while-breaching re-opening is honest, ack/suppress covers "I know". |
-| OD5 | Window shorter than the (adaptive) cooldown can let a new event age out before it fires. | Editor warning / validation error / ignore. | **Editor warning** in W2. |
-| OD6 | Partner/org UI home. | Card on `/alerts/monitors#lifecycle` / new `/alerts/lifecycle` tab. | **Card**; no new URL, sits with the objects it defaults. |
-| OD7 | Org merge: copy the absorbed org's lifecycle overrides? | Survivor keeps its own / copy if survivor blank. | **Survivor keeps its own** (same as other org settings columns). |
-| OD8 | Do legacy (non-monitor) rules inherit partner/org lifecycle defaults? | No / yes. | **No**; they keep explicit values and are being retired. |
-| OD9 | Backfill of existing monitors' `cooldown_minutes = 5` / `auto_resolve = false`. | (a) Null to inherit (behaviour identical at migration). (b) Codex: keep explicit, new monitors inherit, offer a bulk "use defaults" action. | **(a)**: otherwise partner defaults do nothing for existing fleets; a deliberately chosen 5/false following a later partner change is low harm and visible as "partner default" in the editor. Owner call. |
-| OD10 | Device clock jump backwards (non-Windows or cross-log). | Log and count only / fall back to ingest order when skew detected. | **Log and count** in W1; revisit with data. |
-| OD11 | Recovery predicate for an open alert after a monitor edit. | Evaluate as currently defined (record `monitorCompiledHash`) / snapshot predicate + version (Codex). | **Current definition**: fixing a wrong recovery pattern should fix open alerts. |
-| OD12 | Cursor storage. | `alerts.context.lifecycle` jsonb / dedicated column. | **jsonb** (already export-classified, per-leaf map); revisit if the guarded update shows up in profiles. |
+The owner approved every recommended default at Gate A. Codex's dissent is kept as rationale where it differed.
+
+| ID | Decision | Rationale / dissent |
+|---|---|---|
+| OD1 | `new_evidence` applies to **every** existing evidence alert on deploy, with a release note (self-hoster section); `after_delay` (W2) restores the old behaviour per partner/org/monitor. | Codex dissent: no blanket conversion; existing monitors should keep the old behaviour until adopted. Overruled: with D8 the only alerts that stop are re-opens built entirely from evidence an earlier episode observed, and opting in would leave the bug live for every existing customer, including the one who reported it. |
+| OD2 | Dedicated `partners`/`organizations` columns + nullable monitor overrides. | Codex agreed. A config-policy feature resolves per device and adds a fourth level; a new XOR table is machinery for four scalars per owner. |
+| OD3 | Acknowledged **and** suppressed alerts auto-resolve on recovery; `requiresHuman` never does. | Codex agreed; matches subject alerts. |
+| OD4 | State conditions keep today's level-triggered re-arm (re-open after cooldown if still breaching after a manual resolve). | Ack/suppress covers "I know". |
+| OD5 | The W2 editor warns (no error) when `windowMinutes` < the effective cooldown. | |
+| OD6 | Partner/org home is a "Lifecycle defaults" card on `/alerts/monitors#lifecycle`, no new URL. | |
+| OD7 | Org merge: the surviving org keeps its own lifecycle overrides. | |
+| OD8 | Legacy (non-monitor) rules do not inherit partner/org defaults. | |
+| OD9 | Backfill nulls existing monitors' `cooldown_minutes = 5` and `auto_resolve = false` to inherit. | Codex dissent: stored 5/false cannot be told apart from deliberate choices; keep them explicit and offer a bulk "use defaults" action. Overruled: behaviour is identical at migration, and keeping them explicit would make partner defaults do nothing for existing fleets. The editor shows "partner default" as the source, so a later change is visible. |
+| OD10 | Device clock jumps backwards: log and count only in W1. | Revisit with data. |
+| OD11 | An open alert's recovery is evaluated against the **current** monitor definition; `monitorCompiledHash` is recorded in the snapshot. | Codex dissent: snapshot the predicate and its version so edits cannot change semantics mid-incident. Overruled: fixing a wrong recovery pattern should fix the open alert too. |
+| OD12 | Cursor lives in `alerts.context.lifecycle` (jsonb). | Already export-classified; a per-leaf map. Revisit if the guarded update shows up in profiles. |
 
 ## 14. Follow-ups (not in this spec)
 
