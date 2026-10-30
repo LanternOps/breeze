@@ -2591,6 +2591,7 @@
       "builtin": "Integriert",
       "allOrgs": "Alle Organisationen",
       "errors": "Fehlerhaft",
+      "checkerUnavailable": "Compiler nicht verfügbar",
       "unpublished": "Nicht veröffentlicht",
       "disabled": "Deaktiviert"
     },
@@ -2647,7 +2648,7 @@
       "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
       "published": "Gespeichert und als Version {{version}} veröffentlicht",
       "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher konnten die Regeln nicht geprüft werden. {{devices}}",
       "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
       "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
       "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
@@ -2656,7 +2657,8 @@
       "devicesKeep": "Geräte behalten Version {{version}}.",
       "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
       "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
-      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}",
+      "staleCheckerUnavailable": "Nicht veröffentlicht: Der YARA-Compiler ist auf diesem Server nicht verfügbar, daher können Regeländerungen weder geprüft noch veröffentlicht werden. {{devices}}"
     },
     "editor": {
       "tabs": {

@@ -306,8 +306,55 @@ export async function yaracVersion(): Promise<YaracVersion | null> {
   return versionMemo;
 }
 
+// ---- availability ----------------------------------------------------------
+
+/** How long a failed availability probe is trusted before probing again. */
+export const YARAC_UNAVAILABLE_RECHECK_MS = 60_000;
+/** `version` answers at once; a read path must not wait out the 30 s validate timeout. */
+export const YARAC_PROBE_TIMEOUT_MS = 5_000;
+let availableMemo = false;
+let unavailableUntil = 0;
+let probing: Promise<boolean> | null = null;
+
+/**
+ * Can this server run the pre-check at all (#10306)? Read paths use it to
+ * tell a set that is unpublished because the compiler is missing apart from
+ * one whose rules have errors.
+ *
+ * Runs on GET handlers inside the request transaction, so the probe takes NO
+ * concurrency slot (it must not queue behind in-flight validates), has a short
+ * timeout, and is single-flight. A success is memoized; a failure is cached
+ * for YARAC_UNAVAILABLE_RECHECK_MS so a list of stale sets does not spawn a
+ * child per request, yet an installed binary is noticed.
+ */
+export function yaracAvailable(): Promise<boolean> {
+  if (availableMemo || versionMemo) return Promise.resolve(true);
+  if (Date.now() < unavailableUntil) return Promise.resolve(false);
+  probing ??= probeAvailability().finally(() => {
+    probing = null;
+  });
+  return probing;
+}
+
+async function probeAvailability(): Promise<boolean> {
+  const run = await runYarac(['version'], null, { timeoutMs: YARAC_PROBE_TIMEOUT_MS });
+  if (run.kind === 'exit' && run.code === 0) {
+    availableMemo = true;
+    return true;
+  }
+  unavailableUntil = Date.now() + YARAC_UNAVAILABLE_RECHECK_MS;
+  console.warn('[yara] breeze-yarac is not runnable on this server; rule sets cannot be published', {
+    path: yaracPath(),
+    reason: run.kind === 'unavailable' ? run.reason : `exit_${run.code ?? 'signal'}`,
+  });
+  return false;
+}
+
 export function __resetYaracForTests(): void {
   versionMemo = null;
+  availableMemo = false;
+  unavailableUntil = 0;
+  probing = null;
   active = 0;
   waiters.length = 0;
 }

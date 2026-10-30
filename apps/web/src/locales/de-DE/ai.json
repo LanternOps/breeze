@@ -28,6 +28,9 @@
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "resolvedApproved": "Diese Anfrage wurde genehmigt.",
+    "resolvedNotApproved": "Diese Anfrage wurde nicht genehmigt, daher wurde die Aktion nicht ausgeführt.",
+    "resolvedEnded": "Diese Anfrage wartet hier nicht mehr auf eine Entscheidung.",
     "contentChanged": "Die Details dieser Anfrage haben sich nach ihrer Erstellung geändert, daher kann sie nicht mehr genehmigt werden.",
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
@@ -145,9 +148,9 @@
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} Nachrichten",
-    "messageCount_one": "{{count}} Nachricht",
-    "messageCount_other": "{{count}} Nachrichten",
+    "messageCount": "{{count}} Nachrichten diesen Monat",
+    "messageCount_one": "{{count}} Nachricht diesen Monat",
+    "messageCount_other": "{{count}} Nachrichten diesen Monat",
     "thisMonth": "{{amount}} diesen Monat",
     "credits_one": "{{formatted}} Credit",
     "credits_other": "{{formatted}} Credits"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Alle Organisationen",
+      "scopeFallback": "dieser Organisation",
       "status": {
         "active": "Aktiv",
         "paused": "Pausiert",

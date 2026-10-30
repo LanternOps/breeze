@@ -274,6 +274,11 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
           // runAction does not expose when building the fallback — this is the
           // existing status-free sibling, present in all 8 locales.
           errorFallback: t('settings:siteDetailPage.errors.saveSite'),
+          // #10084: confirm the write — the modal closing alone read as nothing happening.
+          successMessage:
+            method === 'POST'
+              ? t('settings:sites.toasts.created', { name: values.name })
+              : t('settings:sites.toasts.saved', { name: values.name }),
           onUnauthorized,
         });
 
@@ -300,6 +305,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
       await runAction({
         request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE', orgIdOverride: targetOrgId }),
         errorFallback: t('settings:organizationsPage.errors.deleteSite'),
+        successMessage: t('settings:sites.toasts.deleted', { name: selectedSite.name }),
         onUnauthorized,
       });
 

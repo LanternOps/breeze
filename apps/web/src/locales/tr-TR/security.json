@@ -2591,6 +2591,7 @@
       "builtin": "Yerleşik",
       "allOrgs": "Tüm kuruluşlar",
       "errors": "Hatalı",
+      "checkerUnavailable": "Derleyici kullanılamıyor",
       "unpublished": "Yayımlanmadı",
       "disabled": "Devre dışı"
     },
@@ -2647,7 +2648,7 @@
       "autoQuarantineOnly": "Otomatik karantina artık cihazlarda kapalı. Diğer değişiklikleriniz henüz etkin değil.",
       "published": "Kaydedildi ve {{version}} sürümü olarak yayımlandı",
       "savedDisabled": "Kaydedildi. Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "checkerUnavailable": "Kaydedildi, yayımlanmadı: kural denetleyicisi kullanılamıyor. {{devices}}",
+      "checkerUnavailable": "Kaydedildi, yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kurallar denetlenemedi. {{devices}}",
       "compileErrors_one": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "compileErrors_other": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "setErrors": "Kaydedildi, yayımlanmadı: {{message}}. {{devices}}",
@@ -2656,7 +2657,8 @@
       "devicesKeep": "Cihazlar {{version}} sürümünü kullanmaya devam ediyor.",
       "neverPublished": "Bu küme henüz yayımlanmadı, bu nedenle cihazlar onu kullanmıyor.",
       "setDisabled": "Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}"
+      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}",
+      "staleCheckerUnavailable": "Yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kural değişiklikleri denetlenemez veya yayımlanamaz. {{devices}}"
     },
     "editor": {
       "tabs": {

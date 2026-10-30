@@ -280,6 +280,9 @@ describe('WispHomeContent', () => {
     expect(await screen.findByTestId('wisp-home-forbidden')).toHaveTextContent("You don't have access to Wisp");
     expect(screen.queryByTestId('wisp-home-retry')).toBeNull();
     expect(screen.queryByTestId('wisp-home-load-error')).toBeNull();
+    // #10200: no links into surfaces the viewer cannot use either (chats, Wisp memory).
+    expect(screen.queryByTestId('wisp-home-chats')).toBeNull();
+    expect(screen.queryByTestId('wisp-home-memory')).toBeNull();
   });
 
   it('a broken read is an error with retry, never a guessed state', async () => {

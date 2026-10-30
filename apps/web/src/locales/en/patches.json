@@ -417,6 +417,7 @@
       "createTitle": "Create update ring"
     },
     "truncatedNotice": "Showing {{shown}} of {{total}} patches. The filters here only narrow what's already loaded, so the rest can't be reached from this view — use the patches API to work through the full catalog.",
+    "emptyRingSeverityNotice": "No devices in this ring yet. Device-reported severity appears once devices are assigned, so most patches read Unrated until then.",
     "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
     "ringDelete": {
       "title": "Delete {{name}}?",

@@ -11,7 +11,7 @@ import { captureException } from './sentry';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import type { OfferingOptions } from '@breeze/shared';
 import { buildSessionContextSnapshot } from './aiSessionOrgAnchor';
 import { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
@@ -817,6 +817,46 @@ export async function isIntentBackedExecution(executionId: string): Promise<bool
     .limit(1);
 
   return !!execution?.intentId;
+}
+
+/**
+ * #9431: after a refused `handleApproval`, whether the refusal is because this
+ * session's execution was ALREADY decided (in another window, in Approvals, on
+ * mobile, or by a timeout) — so the approve route can answer a stale card
+ * with "already decided" instead of the generic 404. The CAS in
+ * handleApproval is what refuses the second decision; this only explains it.
+ *
+ * Null for anything the route must keep answering generically: a missing row,
+ * another session's row (no cross-session disclosure — the route has already
+ * owner-bound `sessionId`), an intent-backed row (decided in Approvals), and a
+ * row that is still pending.
+ */
+export async function getDecidedExecutionOutcome(
+  executionId: string,
+  sessionId: string,
+): Promise<AiApprovalOutcome | null> {
+  const [execution] = await db
+    .select({
+      status: aiToolExecutions.status,
+      sessionId: aiToolExecutions.sessionId,
+      intentId: aiToolExecutions.intentId,
+    })
+    .from(aiToolExecutions)
+    .where(eq(aiToolExecutions.id, executionId))
+    .limit(1);
+
+  if (!execution || execution.sessionId !== sessionId || execution.intentId) return null;
+  switch (execution.status) {
+    case 'approved':
+    case 'executing':
+    case 'completed':
+    case 'failed':
+      return 'approved';
+    case 'rejected':
+      return 'not_approved';
+    default:
+      return null;
+  }
 }
 
 // ============================================

@@ -28,6 +28,9 @@
     "deny": "Refuser",
     "verificationFailed": "Échec de la vérification. Veuillez réessayer.",
     "alreadyDecided": "Cette demande a déjà été traitée.",
+    "resolvedApproved": "Cette demande a été approuvée.",
+    "resolvedNotApproved": "Cette demande n'a pas été approuvée, l'action n'a donc pas été exécutée.",
+    "resolvedEnded": "Cette demande n'attend plus de décision ici.",
     "contentChanged": "Les détails de cette demande ont changé après sa création ; elle ne peut donc plus être approuvée.",
     "expired": "Cette demande a expiré avant de pouvoir être traitée.",
     "notSoleApprover": "Un autre approbateur est désormais requis – vous ne pouvez plus approuver votre propre demande.",
@@ -145,9 +148,9 @@
     "dashboard": "Tableau de bord"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} MSGS",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} MSGS",
+    "messageCount": "{{count}} messages ce mois-ci",
+    "messageCount_one": "{{count}} message ce mois-ci",
+    "messageCount_other": "{{count}} messages ce mois-ci",
     "thisMonth": "{{amount}} ce mois-ci",
     "credits_one": "{{formatted}} crédit",
     "credits_other": "{{formatted}} crédits"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Toutes les organisations",
+      "scopeFallback": "cette organisation",
       "status": {
         "active": "Actif",
         "paused": "En pause",

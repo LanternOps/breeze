@@ -2591,6 +2591,7 @@
       "builtin": "Integrado",
       "allOrgs": "Todas las organizaciones",
       "errors": "Con errores",
+      "checkerUnavailable": "Compilador no disponible",
       "unpublished": "Sin publicar",
       "disabled": "Deshabilitado"
     },
@@ -2647,7 +2648,7 @@
       "autoQuarantineOnly": "La cuarentena automática ya está desactivada en los dispositivos. Sus otros cambios todavía no están activos.",
       "published": "Guardado y publicado como versión {{version}}",
       "savedDisabled": "Guardado. El conjunto está deshabilitado, así que los dispositivos no lo usan.",
-      "checkerUnavailable": "Guardado, sin publicar: el verificador de reglas no está disponible. {{devices}}",
+      "checkerUnavailable": "Guardado, sin publicar: el compilador YARA no está disponible en este servidor, así que no se pudieron verificar las reglas. {{devices}}",
       "compileErrors_one": "Guardado, sin publicar: {{count}} regla tiene errores. {{devices}}",
       "compileErrors_other": "Guardado, sin publicar: {{count}} reglas tienen errores. {{devices}}",
       "setErrors": "Guardado, sin publicar: {{message}}. {{devices}}",
@@ -2656,7 +2657,8 @@
       "devicesKeep": "Los dispositivos conservan la versión {{version}}.",
       "neverPublished": "Este conjunto aún no se ha publicado, así que los dispositivos no lo usan.",
       "setDisabled": "El conjunto está deshabilitado, así que los dispositivos no lo usan.",
-      "staleBanner": "Sin publicar: corrija los errores de abajo. {{devices}}"
+      "staleBanner": "Sin publicar: corrija los errores de abajo. {{devices}}",
+      "staleCheckerUnavailable": "Sin publicar: el compilador YARA no está disponible en este servidor, así que los cambios en las reglas no se pueden verificar ni publicar. {{devices}}"
     },
     "editor": {
       "tabs": {

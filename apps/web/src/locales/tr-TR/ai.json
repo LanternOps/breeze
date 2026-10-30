@@ -28,6 +28,9 @@
     "deny": "Reddet",
     "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
     "alreadyDecided": "Bu talebe zaten karar verildi.",
+    "resolvedApproved": "Bu istek onaylandı.",
+    "resolvedNotApproved": "Bu istek onaylanmadı, bu nedenle işlem çalıştırılmadı.",
+    "resolvedEnded": "Bu istek artık burada bir karar beklemiyor.",
     "contentChanged": "Bu isteğin ayrıntıları oluşturulduktan sonra değiştiği için artık onaylanamaz.",
     "expired": "Bu isteğin süresi, karar verilmeden doldu.",
     "notSoleApprover": "Artık başka bir onaylayan gerekiyor; artık kendi isteğinizi onaylayamazsınız.",
@@ -145,9 +148,9 @@
     "dashboard": "Kontrol Paneli"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msjlar",
-    "messageCount_one": "{{count}} msj",
-    "messageCount_other": "{{count}} msjlar",
+    "messageCount": "Bu ay {{count}} mesaj",
+    "messageCount_one": "Bu ay {{count}} mesaj",
+    "messageCount_other": "Bu ay {{count}} mesaj",
     "thisMonth": "Bu ay {{amount}}",
     "credits_one": "{{formatted}} kredi",
     "credits_other": "{{formatted}} kredi"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
+      "scopeFallback": "bu kuruluş",
       "status": {
         "active": "Etkin",
         "paused": "Duraklatıldı",

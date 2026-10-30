@@ -6261,6 +6261,11 @@
       "fleetAddDescription": "Fügen Sie einen neuen Standort hinzu und wählen Sie die Organisation, zu der er gehört.",
       "empty": "Noch keine Standorte. Fügen Sie einer Organisation einen Standort hinzu, um loszulegen.",
       "viewDevicesAt": "Geräte an {{name}} anzeigen"
+    },
+    "toasts": {
+      "created": "Standort {{name}} erstellt",
+      "saved": "Standort {{name}} gespeichert",
+      "deleted": "Standort {{name}} gelöscht"
     }
   },
   "siteList": {

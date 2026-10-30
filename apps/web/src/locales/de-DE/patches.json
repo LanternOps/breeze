@@ -417,6 +417,7 @@
       "createTitle": "Updatering erstellen"
     },
     "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
+    "emptyRingSeverityNotice": "Diesem Ring sind noch keine Geräte zugewiesen. Von Geräten gemeldete Schweregrade erscheinen erst nach der Zuweisung von Geräten, daher sind die meisten Patches bis dahin „Unbewertet“.",
     "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen.",
     "ringDelete": {
       "title": "{{name}} löschen?",

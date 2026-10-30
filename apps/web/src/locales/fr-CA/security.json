@@ -2591,6 +2591,7 @@
       "builtin": "Intégré",
       "allOrgs": "Toutes les organisations",
       "errors": "Contient des erreurs",
+      "checkerUnavailable": "Compilateur non disponible",
       "unpublished": "Non publié",
       "disabled": "Désactivé"
     },
@@ -2647,7 +2648,7 @@
       "autoQuarantineOnly": "La quarantaine automatique est maintenant désactivée sur les appareils. Vos autres modifications ne sont pas encore en vigueur.",
       "published": "Enregistré et publié comme version {{version}}",
       "savedDisabled": "Enregistré. L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
-      "checkerUnavailable": "Enregistré, non publié : le vérificateur de règles n’est pas disponible. {{devices}}",
+      "checkerUnavailable": "Enregistré, non publié : le compilateur YARA n’est pas disponible sur ce serveur, donc les règles n’ont pas pu être vérifiées. {{devices}}",
       "compileErrors_one": "Enregistré, non publié : {{count}} règle contient des erreurs. {{devices}}",
       "compileErrors_other": "Enregistré, non publié : {{count}} règles contiennent des erreurs. {{devices}}",
       "setErrors": "Enregistré, non publié : {{message}}. {{devices}}",
@@ -2656,7 +2657,8 @@
       "devicesKeep": "Les appareils conservent la version {{version}}.",
       "neverPublished": "Cet ensemble n’a pas encore été publié, donc les appareils ne l’utilisent pas.",
       "setDisabled": "L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
-      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}"
+      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}",
+      "staleCheckerUnavailable": "Non publié : le compilateur YARA n’est pas disponible sur ce serveur, donc les modifications de règles ne peuvent être ni vérifiées ni publiées. {{devices}}"
     },
     "editor": {
       "tabs": {

@@ -417,6 +417,7 @@
       "createTitle": "Crear anillo de actualización"
     },
     "truncatedNotice": "Se muestran {{shown}} de {{total}} parches. Los filtros de aquí solo acotan lo ya cargado, así que el resto no se puede alcanzar desde esta vista: usa la API de parches para recorrer el catálogo completo.",
+    "emptyRingSeverityNotice": "Este anillo aún no tiene dispositivos. La severidad informada por los dispositivos aparece cuando se asignan dispositivos, así que hasta entonces la mayoría de los parches figuran como Sin calificar.",
     "shiftedNotice": "Se muestran {{shown}} de {{total}} parches: el catálogo cambió mientras se cargaba. Vuelve a cargar para ver el resto.",
     "ringDelete": {
       "title": "¿Eliminar {{name}}?",
