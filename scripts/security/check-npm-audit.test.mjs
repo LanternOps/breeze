@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import test, { after } from 'node:test';
@@ -63,7 +63,7 @@ let caseNo = 0;
 
 // Runs a copy of the gate against `osvReport`. `exceptions` is an object
 // (serialised), a raw string (written verbatim), or undefined (no file).
-function runGate({ osvReport, exceptions, scannerExit, scannerStderr, lockfile, threshold }) {
+function runGate({ osvReport, exceptions, scannerExit, scannerStderr, lockfile, threshold, args = [], setup }) {
   const root = join(tmp, `case-${caseNo++}`);
   const sec = join(root, 'scripts', 'security');
   const bin = join(root, 'bin');
@@ -98,10 +98,21 @@ function runGate({ osvReport, exceptions, scannerExit, scannerStderr, lockfile, 
   );
   chmodSync(fake, 0o755);
 
+  // The fake scanner logs the --lockfile it was given, so a case can assert
+  // which lockfile the gate actually scanned.
+  writeFileSync(
+    fake,
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > '${join(root, 'scanner-args.txt')}'\n${readFileSync(fake, 'utf8').replace(/^#!.*\n/, '')}`,
+  );
+  chmodSync(fake, 0o755);
+  setup?.(root);
+
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` };
   delete env.AUDIT_THRESHOLD;
   if (threshold) env.AUDIT_THRESHOLD = threshold;
-  return spawnSync('bash', [join(sec, 'check-npm-audit.sh')], { cwd: root, env, encoding: 'utf8' });
+  const res = spawnSync('bash', [join(sec, 'check-npm-audit.sh'), ...args], { cwd: root, env, encoding: 'utf8' });
+  res.root = root;
+  return res;
 }
 
 const out = (res) => `exit ${res.status}\nstdout:\n${res.stdout}\nstderr:\n${res.stderr}`;
@@ -383,4 +394,112 @@ test('scanner exit 1 with a report that lists no vulnerabilities fails (reshaped
   const res = runGate({ osvReport: report(), exceptions: { exceptions: [] }, scannerExit: 1 });
   assert.equal(res.status, 1, out(res));
   assert.match(res.stderr, /report lists no vulnerabilities/, out(res));
+});
+
+// --- --lockfile / --exceptions / --findings-json (W1, #10744) ----------------
+//
+// CI's security-audit scans the BASE lockfile and exceptions file as well as
+// the head's, and compares the two --findings-json documents
+// (.github/scripts/new-findings.mjs). Without the flags the gate behaves
+// exactly as above.
+
+const lockfileOf = (n) =>
+  `lockfileVersion: '9.0'\n\npackages:\n\n${Array.from({ length: n }, (_, i) => `  alt-${i}@1.0.0:\n    resolution: {integrity: sha512-x}\n`).join('\n')}`;
+
+test('--lockfile and --exceptions override the default paths', () => {
+  // The default exceptions file has no entry, so only the override can
+  // suppress the advisory; the default lockfile lists 3 packages, the
+  // override 2, so the coverage line shows which one was counted.
+  const short = { results: [{ source: { path: 'pnpm-lock.yaml' }, packages: [finding('node-forge', FORGE_ID), clean(0)] }] };
+  const res = runGate({
+    osvReport: short,
+    exceptions: { exceptions: [] },
+    setup: (root) => {
+      mkdirSync(join(root, 'base'));
+      writeFileSync(join(root, 'base', 'pnpm-lock.yaml'), lockfileOf(2));
+      writeFileSync(join(root, 'base', 'exceptions.json'), JSON.stringify({ exceptions: [entry()] }));
+    },
+    args: ['--lockfile', 'base/pnpm-lock.yaml', '--exceptions', 'base/exceptions.json'],
+  });
+  assert.equal(res.status, 0, out(res));
+  assert.match(res.stdout, /scanned 2 package\(s\) from .*base\/pnpm-lock\.yaml \(lockfile lists 2\)/, out(res));
+  assert.match(res.stdout, /node-forge@1\.4\.0 GHSA-86w9-cpqp-85rv \(excepted\)/, out(res));
+  const scannerArgs = readFileSync(join(res.root, 'scanner-args.txt'), 'utf8');
+  assert.match(scannerArgs, /--lockfile=.*base\/pnpm-lock\.yaml/, scannerArgs);
+});
+
+test('--exceptions pointing at a missing file fails closed', () => {
+  const res = runGate({ osvReport: CLEAN, exceptions: { exceptions: [] }, args: ['--exceptions', 'nope.json'] });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /nope\.json not found/, out(res));
+});
+
+test('--findings-json writes every finding with its gate classification; the exit status is unchanged', () => {
+  const res = runGate({
+    osvReport: report(finding('node-forge', FORGE_ID), finding('lodash', 'GHSA-1111-2222-3333', 'CRITICAL'), finding('qs', 'GHSA-4444-5555-6666', 'MODERATE')),
+    exceptions: { exceptions: [entry(), entry({ id: 'GHSA-9999-8888-7777', package: 'old', expires: day(-1) })] },
+    args: ['--findings-json', 'out/findings.json'],
+    setup: (root) => mkdirSync(join(root, 'out')),
+  });
+  assert.equal(res.status, 1, out(res));
+  const doc = JSON.parse(readFileSync(join(res.root, 'out', 'findings.json'), 'utf8'));
+  assert.equal(doc.schema, 1);
+  assert.equal(doc.tool, 'osv-scanner');
+  assert.equal(doc.threshold, 'HIGH');
+  assert.equal(doc.scannedPackages, 3);
+  assert.equal(doc.lockfilePackages, 3);
+  const byPkg = Object.fromEntries(doc.findings.map((x) => [x.package, x]));
+  assert.deepEqual(byPkg['node-forge'], { package: 'node-forge', version: '1.4.0', ecosystem: 'npm', id: FORGE_ID, severity: 'HIGH', excepted: true, blocking: false });
+  assert.equal(byPkg.lodash.blocking, true);
+  assert.equal(byPkg.qs.blocking, false);
+  assert.deepEqual(doc.exceptionProblems, [{ id: 'GHSA-9999-8888-7777', package: 'old', expires: day(-1), status: 'EXPIRED' }]);
+});
+
+test('--findings-json is not written when scan integrity fails, and a stale one is removed', () => {
+  const cases = [
+    { osvReport: report(), scannerExit: 2 },
+    { osvReport: { results: [{ source: { path: 'pnpm-lock.yaml' }, packages: [clean(0)] }] } },
+    { osvReport: report(), scannerExit: 1 },
+    { osvReport: report(finding('a', 'GHSA-1')), exceptions: '{ "exceptions": [' },
+  ];
+  for (const c of cases) {
+    const res = runGate({
+      exceptions: { exceptions: [] },
+      ...c,
+      args: ['--findings-json', 'findings.json'],
+      setup: (root) => writeFileSync(join(root, 'findings.json'), '{"stale": true}'),
+    });
+    assert.equal(res.status, 1, out(res));
+    assert.equal(existsSync(join(res.root, 'findings.json')), false, `findings.json must not exist after a failed scan\n${out(res)}`);
+  }
+});
+
+test('an unknown flag or a flag without a value fails', () => {
+  for (const args of [['--bogus'], ['--lockfile'], ['--findings-json', '']]) {
+    const res = runGate({ osvReport: CLEAN, exceptions: { exceptions: [] }, args });
+    assert.equal(res.status, 1, `${args.join(' ')}\n${out(res)}`);
+    assert.match(res.stderr, /usage|requires a value|unknown option/i, out(res));
+  }
+});
+
+test('--findings-json fully explains the exit status: 1 iff a blocking finding or an exception problem', () => {
+  // ci.yml's security-audit relies on this: once the document exists, the
+  // head run's failure is entirely described by it, so comparing documents
+  // can never wave through a failure the document does not show.
+  const cases = [
+    { osvReport: CLEAN, exceptions: { exceptions: [] } },
+    { osvReport: report(finding('qs', 'GHSA-4444-5555-6666', 'MODERATE')), exceptions: { exceptions: [] } },
+    { osvReport: report(finding('node-forge', FORGE_ID)), exceptions: { exceptions: [entry()] } },
+    { osvReport: report(finding('node-forge', FORGE_ID)), exceptions: { exceptions: [] } },
+    { osvReport: CLEAN, exceptions: { exceptions: [entry({ expires: day(-1) })] } },
+    { osvReport: CLEAN, exceptions: { exceptions: [entry({ expires: day(31) })] } },
+    { osvReport: report(noSeverity('left-pad', 'GHSA-aaaa-bbbb-cccc')), exceptions: { exceptions: [] }, threshold: 'CRITICAL' },
+    { osvReport: report(finding('evil', 'MAL-2026-0001', 'LOW')), exceptions: { exceptions: [] }, threshold: 'CRITICAL' },
+  ];
+  for (const c of cases) {
+    const res = runGate({ ...c, args: ['--findings-json', 'f.json'] });
+    const doc = JSON.parse(readFileSync(join(res.root, 'f.json'), 'utf8'));
+    const explains = doc.findings.some((x) => x.blocking) || doc.exceptionProblems.length > 0;
+    assert.equal(res.status, explains ? 1 : 0, `${JSON.stringify(doc)}\n${out(res)}`);
+  }
 });
