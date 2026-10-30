@@ -52,6 +52,8 @@ import type { ToolOwnerRef } from '../toolSources/resolver';
 import { aiStepPermanentBudgetDenial } from './builtins/aiBudget';
 import { builtinPermissionMisses, corePermissionMisses } from './builtins/permissions';
 import { sendFlowNotice } from './notices';
+import { conversionForFlow } from './conversion/claims';
+import type { ScriptReadExecutor } from './ownedReferences';
 import { assessPreApprovals, type FlowPreApprovalBinding } from './preApproval';
 import { ownerForFlowRow } from './repository';
 import { assertFlowSlugAvailable, lockFlowSlugsForPartner, toDetailDto } from './service';
@@ -66,8 +68,37 @@ export type EnableFlowResult =
       ok: false;
       error: 'flow_not_found' | 'version_conflict' | 'already_enabled' | 'event_dispatch_not_durable' | 'foreach_concurrency_not_available'
         | 'webhook_secret_missing'
-        | 'slug_unavailable' | 'interactive_session_required' | 'delegation_scope_restricted' | 'partner_wide_forbidden';
+        | 'slug_unavailable' | 'interactive_session_required' | 'delegation_scope_restricted' | 'partner_wide_forbidden'
+        // W06 (#5221) B3: a shadow conversion's draft goes live only through the switch.
+        | 'flow_conversion_not_switched';
     };
+
+/** What `onPublished` sees: the publication just inserted and the flipped flows row. */
+export interface EnablePublication {
+  publication: { id: string; publicationSeq: number; definitionVersion: number };
+  flow: FlowRow;
+}
+
+/**
+ * W06 (#5221) Task B3 — options only the conversion switch passes. Every other
+ * caller passes none, and enable behaves exactly as before.
+ */
+export interface EnableFlowOptions {
+  /**
+   * Runs inside enable's transaction (the caller's), after the publication
+   * insert and before enable returns. A throw propagates, so the caller's
+   * transaction rolls back with the publication.
+   */
+  onPublished?(tx: typeof db, pub: EnablePublication): Promise<void>;
+  /**
+   * The switch's own transaction, for the script-ownership and script-snapshot
+   * reads of validation and the pre-approval assessment only: the scripts the
+   * switch generated exist only there. Owner predicates are unchanged.
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
+  /** The shadow conversion this enable switches; any other enable of a shadow conversion's draft is refused. */
+  switchingConversionId?: string;
+}
 
 export type DisableFlowResult =
   | { ok: true; cancelledRuns: number }
@@ -227,7 +258,12 @@ export function webhookSecretSurvivesEnable(i: {
  * for each requested step; slug re-check under the partner lock; publication
  * insert and status flip. Every refusal returns before the first write.
  */
-export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEnableRequest): Promise<EnableFlowResult> {
+export async function enableFlow(
+  auth: AuthContext,
+  flowId: string,
+  req: FlowEnableRequest,
+  opts: EnableFlowOptions = {},
+): Promise<EnableFlowResult> {
   if (!isInteractiveUserSession(auth)) return { ok: false, error: 'interactive_session_required' };
 
   // FOR UPDATE: serializes concurrent enables of one flow (publication_seq is
@@ -240,6 +276,16 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   if (row.status === 'enabled') return { ok: false, error: 'already_enabled' };
   if (!ENABLEABLE_STATUSES.includes(row.status)) return { ok: false, error: 'version_conflict' };
   if (reach === 'forbidden') return { ok: false, error: 'partner_wide_forbidden' };
+
+  // W06 (#5221) B3: a converted Job's draft goes live only through its switch
+  // (shadow gate, generated scripts, the Job retired in the same transaction).
+  // Read in the caller's transaction: whoever can lock this flow can read its
+  // conversion (same owner, flow_automation_conversions owner guard). A
+  // switched generation's flow re-enables like any flow; a reverted one is B4's.
+  const conversion = await conversionForFlow(db, flowId);
+  if (conversion?.state === 'shadow' && opts.switchingConversionId !== conversion.id) {
+    return { ok: false, error: 'flow_conversion_not_switched' };
+  }
 
   const owner = await ownerForFlowRow(row);
   if (!owner) return { ok: false, error: 'flow_not_found' };
@@ -256,7 +302,10 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
     return { ok: false, error: 'delegation_scope_restricted' };
   }
 
-  const validated = await validateFlowDocument(row.definition, { owner });
+  const validated = await validateFlowDocument(
+    row.definition,
+    opts.scriptReadExecutor ? { owner, scriptReadExecutor: opts.scriptReadExecutor } : { owner },
+  );
   const { document, ...validation } = validated;
   if (!validation.valid || !document) return { ok: false, error: 'invalid', validation };
 
@@ -322,6 +371,7 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
   const assessment = await assessPreApprovals(document, pins, owner, requested, {
     publicationId,
     fleetMaxTargets: req.fleetMaxTargets ?? {},
+    ...(opts.scriptReadExecutor ? { scriptReadExecutor: opts.scriptReadExecutor } : {}),
   });
   const bindings: FlowPreApprovalBinding[] = [];
   for (const stepId of requested) {
@@ -404,6 +454,8 @@ export async function enableFlow(auth: AuthContext, flowId: string, req: FlowEna
     })
     .returning({ id: flowVersions.id, publicationSeq: flowVersions.publicationSeq, definitionVersion: flowVersions.definitionVersion });
   if (!publication) throw new Error('Failed to publish flow');
+
+  if (opts.onPublished) await opts.onPublished(db, { publication, flow: updated });
 
   audit('flow.enable', updated, auth.user, {
     publicationSeq, definitionVersion: row.definitionVersion, preApprovedStepIds: requested, effectiveTier,

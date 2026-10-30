@@ -5,8 +5,8 @@ vi.mock('../services/unassignedPool/protectedOrg', () => ({ isHoldingOrg: vi.fn(
 import { writeRouteAudit } from '../services/auditEvents';
 import { Hono } from 'hono';
 
-const { queueDeliveryMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => ({
-  queueDeliveryMock: vi.fn(),
+const { enqueueWebhookAttemptMock, validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => ({
+  enqueueWebhookAttemptMock: vi.fn(),
   validateWebhookUrlSafetyWithDnsMock: vi.fn()
 }));
 
@@ -17,11 +17,7 @@ const { permissionGate, mfaGate } = vi.hoisted(() => ({
   mfaGate: { deny: false }
 }));
 
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: vi.fn(() => ({
-    queueDelivery: queueDeliveryMock
-  }))
-}));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: enqueueWebhookAttemptMock }));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
@@ -46,6 +42,7 @@ vi.mock('../services/notificationSenders/webhookSender', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label, work) => work()),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -108,7 +105,7 @@ vi.mock('../middleware/auth', () => ({
   })
 }));
 
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { webhookRoutes } from './webhooks';
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
@@ -167,6 +164,7 @@ describe('webhook routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    enqueueWebhookAttemptMock.mockResolvedValue(DELIVERY_ID_1);
     permissionGate.deny = false;
     permissionGate.denied.clear();
     permissionGate.granted = null;
@@ -278,23 +276,35 @@ describe('webhook routes', () => {
       const res = await request({ payload }, 'POST', `/webhooks/${WEBHOOK_ID_1}/test`);
       expect(res.status).toBe(202);
       const recorded = values.mock.calls[0]![0];
-      expect(recorded).toMatchObject({ payloadVersion: version, eventTimestamp: expect.any(Date), payload });
-      expect(queueDeliveryMock).toHaveBeenCalledWith(WEBHOOK_ID_1, 1,
-        expect.objectContaining({ payload, metadata: expect.objectContaining({ timestamp: (recorded.eventTimestamp as Date).toISOString() }) }),
-        WEBHOOK_ID_1, { payloadVersion: version });
+      expect(recorded).toMatchObject({ payloadVersion: version, webhookGeneration: 1, eventTimestamp: expect.any(Date), payload });
+      expect(enqueueWebhookAttemptMock).toHaveBeenCalledWith({ deliveryId: WEBHOOK_ID_1, webhookId: WEBHOOK_ID_1, generation: 1, attemptsMade: 0 }, expect.any(Date));
+      expect(runAfterDbContextCommit).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
     });
-    it.each([undefined, 3])('coerces unexpected persisted version %s at the test and retry queue boundaries', async (version) => {
-      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row({ payloadVersion: version })]) as any);
-      insert();
-      expect((await request({ payload: { sample: true } }, 'POST', `/webhooks/${WEBHOOK_ID_1}/test`)).status).toBe(202);
-      expect(queueDeliveryMock.mock.calls[0]![4]).toEqual({ payloadVersion: 1 });
-
+    it.each(['test', 'retry'])('keeps the %s delivery pending when post-commit enqueue fails', async (kind) => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any);
+      if (kind === 'retry') vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([{
+        id: DELIVERY_ID_1, webhookId: WEBHOOK_ID_1, status: 'failed', eventType: 'alert.triggered', eventId: 'source', payloadVersion: 1, payload: {},
+      }]) as any);
+      const values = insert();
+      enqueueWebhookAttemptMock.mockRejectedValueOnce(new Error('Redis down'));
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await request({}, 'POST', `/webhooks/${WEBHOOK_ID_1}/${kind === 'test' ? 'test' : `retry/${DELIVERY_ID_1}`}`);
+      expect(res.status).toBe(202);
+      expect(values.mock.calls[0]![0]).toMatchObject({ status: 'pending', attempts: 0 });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_ENQUEUE_FAILED'));
+      log.mockRestore();
+    });
+    it('includes scheduled deliveries in stats and accepts the scheduled history filter', async () => {
       vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any)
-        .mockReturnValueOnce(mockSelectLimit([{ id: DELIVERY_ID_1, webhookId: WEBHOOK_ID_1,
-          status: 'failed', payloadVersion: version, eventType: 'alert.triggered', eventId: 'event-root', payload: {} }]) as any);
-      insert();
-      expect((await request({}, 'POST', `/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`)).status).toBe(202);
-      expect(queueDeliveryMock.mock.calls[1]![4]).toEqual({ payloadVersion: 1, replayOf: 'event-root' });
+        .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ groupBy: vi.fn(async () => [{ status: 'scheduled', count: 2 }]) })) })) } as any)
+        .mockReturnValueOnce(mockSelectOrderLimit([]) as any);
+      const detail = await app.request(`/webhooks/${WEBHOOK_ID_1}`);
+      expect(await detail.json()).toHaveProperty('deliveryStats.scheduled', 2);
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([row()]) as any)
+        .mockReturnValueOnce(mockSelectWhere([{ count: 0 }]) as any)
+        .mockReturnValueOnce(mockSelectList([]) as any);
+      expect((await app.request(`/webhooks/${WEBHOOK_ID_1}/deliveries?status=scheduled`)).status).toBe(200);
     });
     it.each([
       { root: null, version: 1 }, { root: 'original-root-event', version: 1 },
@@ -308,13 +318,10 @@ describe('webhook routes', () => {
       const res = await request({}, 'POST', `/webhooks/${WEBHOOK_ID_1}/retry/${DELIVERY_ID_1}`);
       expect(res.status).toBe(202);
       const recorded = values.mock.calls[0]![0];
-      expect(recorded).toMatchObject({ payloadVersion: version, payload: source.payload,
+      expect(recorded).toMatchObject({ payloadVersion: version, webhookGeneration: 1, payload: source.payload,
         replayRootEventId: root ?? source.eventId, eventTimestamp: expect.any(Date) });
       expect(recorded.eventId).not.toBe(source.eventId);
-      expect(queueDeliveryMock).toHaveBeenCalledWith(WEBHOOK_ID_1, 1,
-        expect.objectContaining({ id: recorded.eventId, payload: source.payload,
-          metadata: expect.objectContaining({ timestamp: (recorded.eventTimestamp as Date).toISOString() }) }),
-        WEBHOOK_ID_1, { payloadVersion: version, replayOf: root ?? source.eventId });
+      expect(enqueueWebhookAttemptMock).toHaveBeenCalledWith({ deliveryId: WEBHOOK_ID_1, webhookId: WEBHOOK_ID_1, generation: 1, attemptsMade: 0 }, expect.any(Date));
     });
   });
 
@@ -508,7 +515,7 @@ describe('webhook routes', () => {
       }))
     } as any);
 
-    queueDeliveryMock.mockResolvedValueOnce(DELIVERY_ID_1);
+    enqueueWebhookAttemptMock.mockResolvedValueOnce(DELIVERY_ID_1);
 
     const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/test`, {
       method: 'POST',
@@ -520,9 +527,9 @@ describe('webhook routes', () => {
     // The decrypted url/secret never leave this route on the enqueue path —
     // only the webhook's identity and generation snapshot. The worker
     // reloads and decrypts the row itself, at send time.
-    const call = (queueDeliveryMock.mock.calls as any[])[0];
-    expect(call[0]).toBe(WEBHOOK_ID_1);
-    expect(call[1]).toBe(1);
+    const call = (enqueueWebhookAttemptMock.mock.calls as any[])[0];
+    expect(call[0]).toEqual({ deliveryId: DELIVERY_ID_1, webhookId: WEBHOOK_ID_1, generation: 1, attemptsMade: 0 });
+    expect(call[1]).toBeInstanceOf(Date);
     expect(JSON.stringify(call)).not.toContain('user:pass');
   });
 
@@ -783,7 +790,7 @@ describe('webhook routes', () => {
       }))
     } as any);
 
-    queueDeliveryMock.mockResolvedValueOnce(DELIVERY_ID_1);
+    enqueueWebhookAttemptMock.mockResolvedValueOnce(DELIVERY_ID_1);
 
     const res = await app.request(`/webhooks/${WEBHOOK_ID_1}/test`, {
       method: 'POST',
@@ -795,7 +802,7 @@ describe('webhook routes', () => {
     const body = await res.json();
     expect(body.message).toBe('Test delivery queued');
     expect(body.delivery.status).toBe('pending');
-    expect(queueDeliveryMock).toHaveBeenCalledTimes(1);
+    expect(enqueueWebhookAttemptMock).toHaveBeenCalledTimes(1);
   });
 
   // Site-ceiling gate contract §3/finding 6: a paused webhook's test job
@@ -828,7 +835,7 @@ describe('webhook routes', () => {
     });
 
     expect(res.status).toBe(409);
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
   });
 
   it('rejects retry when delivery is not failed', async () => {
@@ -902,7 +909,7 @@ describe('webhook routes', () => {
     });
 
     expect(res.status).toBe(409);
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
   });
 
   it('rejects webhook mutations when permission check fails', async () => {
@@ -1116,7 +1123,7 @@ describe('webhook routes', () => {
 
     expect(res.status).toBe(409);
     expect(writeRouteAudit).not.toHaveBeenCalled();
-    expect(queueDeliveryMock).not.toHaveBeenCalled();
+    expect(enqueueWebhookAttemptMock).not.toHaveBeenCalled();
   });
 
 

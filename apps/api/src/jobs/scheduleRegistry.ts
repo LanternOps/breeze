@@ -297,6 +297,11 @@ export const JOB_SCHEDULES = {
   // job's due-set SQL, so the tick only bounds how late a due reminder can go
   // out (<= 1 h). :44 is free in every hour and outside the ≡0 (mod 5) ticks.
   'agreement-request-auto-reminder': '44 * * * *',
+  // #10521 W2b — 6-hourly safety sweep for partner-owned device groups (and
+  // org groups keyed on software.*). A retry cadence, not a freshness SLA;
+  // each enqueued group head adds up to 15 min of its own jitter. :24 on
+  // hours 5,11,17,23 is unused in this lane and outside the ≡0 (mod 5) ticks.
+  'partner-group-evaluation-sweep': '24 5,11,17,23 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

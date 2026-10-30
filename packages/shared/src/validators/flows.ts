@@ -213,4 +213,17 @@ export interface FlowDetailDto extends FlowSummaryDto {
   webhook: FlowWebhookInfoDto | null;
   /** W5: this month's run counts against the effective caps; null when not computed. */
   usage: FlowUsageDto | null;
+  /**
+   * W6 (#5221) C3: the legacy Job this flow was converted from, or null. One
+   * conversion generation owns exactly one flow (`flow_automation_conversions_flow_uq`).
+   */
+  convertedFrom: FlowConvertedFromDto | null;
+}
+
+/** W6 (#5221): "Moved from Job <name>" on the flow detail. `state` is the generation's state. */
+export interface FlowConvertedFromDto {
+  automationId: string;
+  name: string;
+  conversionId: string;
+  state: 'shadow' | 'switched' | 'reverted';
 }

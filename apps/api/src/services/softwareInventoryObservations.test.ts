@@ -407,7 +407,9 @@ describe('ingestSoftwareInventoryReport lock-timeout give-up reporting (#5181)',
   });
 });
 
-function nameDiffTx(previous: string[]) {
+type InventoryRow = { name: string; version: string | null; vendor: string | null };
+
+function inventoryDiffTx(previous: InventoryRow[]) {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -419,7 +421,7 @@ function nameDiffTx(previous: string[]) {
       }),
     }),
     delete: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(previous.map((name) => ({ name }))) }),
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(previous) }),
     }),
     insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
     update: vi.fn(),
@@ -428,23 +430,46 @@ function nameDiffTx(previous: string[]) {
 
 const inventoryDevice = { id: '11111111-1111-4111-8111-111111111112', orgId: '11111111-1111-4111-8111-111111111113', agentVersion: '1.0.0' };
 
-describe('replaceSoftwareInventoryProjection installed-name diff (#10497)', () => {
+describe('replaceSoftwareInventoryProjection software multiset diff (#10539)', () => {
+  const row = (name: string, version: string | null = '2.0', vendor: string | null = null): InventoryRow => ({ name, version, vendor });
+  const allFields = ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'];
+  const detailFields = ['software.version', 'software.vendor'];
+
   it.each([
-    ['names change', ['A', 'B'], ['A', 'C'], true],
-    ['only versions change', ['A', 'B'], ['A', 'B'], false],
-    ['order and duplicates differ only', ['A', 'B', 'A'], ['B', 'A', 'B'], false],
-    ['case-only rename', ['chrome'], ['Chrome'], true],
-    ['non-empty becomes empty', ['A'], [], true],
-    ['empty remains empty', [], [], false],
-  ] as const)('returns the name-set difference when %s', async (_label, previous, next, changed) => {
-    const tx = nameDiffTx([...previous]);
+    ['names change', [row('A'), row('B')], [row('A'), row('C')], allFields],
+    ['only versions change', [row('A', '1')], [row('A', '2')], detailFields],
+    ['only vendors change', [row('A', '2', 'Old')], [row('A', '2', 'New')], detailFields],
+    ['order differs only', [row('A'), row('B'), row('A')], [row('B'), row('A'), row('A')], []],
+    ['duplicate counts differ', [row('A'), row('B'), row('A')], [row('B'), row('A'), row('B')], detailFields],
+    ['case-only rename', [row('chrome')], [row('Chrome')], allFields],
+    ['non-empty becomes empty', [row('A')], [], allFields],
+    ['empty remains empty', [], [], []],
+    ['null version changes', [row('A', null)], [row('A', '2')], detailFields],
+    ['reported version whitespace is normalized', [row('A', '2')], [row('A', ' 2 ')], []],
+  ])('returns affected fields when %s', async (_label, previous, next, changedFields) => {
+    const tx = inventoryDiffTx(previous as InventoryRow[]);
     const result = await replaceSoftwareInventoryProjection(tx as never, {
       device: inventoryDevice,
-      items: next.map((name) => ({ name, version: '2.0' })),
+      items: (next as InventoryRow[]).map(({ name, version, vendor }) => ({ name, version: version ?? undefined, vendor: vendor ?? undefined })),
       observationId: v2().observationId,
       receivedAt,
     });
-    expect(result).toEqual({ installedNamesChanged: changed });
+    expect(result).toEqual({ changedFields });
+  });
+
+  it.each([
+    ['ignores a stale reported agent version when the inserted version is unchanged', '1.0.0', []],
+    ['detects a live agent upgrade even when the reported version is unchanged', '0.9.0', ['software.version', 'software.vendor']],
+  ])('%s', async (_label, previousVersion, changedFields) => {
+    const tx = inventoryDiffTx([row('Breeze Agent', previousVersion as string)]);
+    const result = await replaceSoftwareInventoryProjection(tx as never, {
+      device: inventoryDevice,
+      items: [{ name: 'Breeze Agent', version: '0.9.0' }],
+      observationId: v2().observationId,
+      receivedAt,
+    });
+    expect(result).toEqual({ changedFields });
+    expect(tx.insert().values).toHaveBeenCalledWith([expect.objectContaining({ version: '1.0.0' })]);
   });
 });
 
@@ -455,11 +480,11 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
     tightenLockTimeoutMock.mockResolvedValue(null);
   });
 
-  function ingestTx(previous: string[], stateOverrides = {}, legacy = false) {
+  function ingestTx(previous: Array<string | InventoryRow>, stateOverrides = {}, legacy = false) {
     const execute = vi.fn().mockResolvedValueOnce([{ id: inventoryDevice.id, org_id: inventoryDevice.orgId }]);
     if (!legacy) execute.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
     const tx = {
-      ...nameDiffTx(previous),
+      ...inventoryDiffTx(previous.map((row) => typeof row === 'string' ? { name: row, version: '1', vendor: null } : row)),
       execute: execute.mockResolvedValueOnce([])
         .mockResolvedValueOnce([{
           latest_observation_id: null,
@@ -486,15 +511,31 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
       deviceId: inventoryDevice.id,
       orgId: inventoryDevice.orgId,
       eventType: 'device.updated',
-      changedFields: ['software.installed', 'software.notInstalled'],
+      changedFields: ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'],
       reason: 'software_inventory_change',
     });
   });
 
-  it('does not request one when only versions change', async () => {
+  it('requests version/vendor re-evaluation when only versions change', async () => {
     const tx = ingestTx(['A', 'C']);
     await ingest();
     expect(tx.delete).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      changedFields: ['software.version', 'software.vendor'],
+    }));
+  });
+
+  it('requests version/vendor re-evaluation for vendor-only changes', async () => {
+    ingestTx([{ name: 'A', version: '2', vendor: 'Old' }, { name: 'C', version: '2', vendor: null }]);
+    await ingest();
+    expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      changedFields: ['software.version', 'software.vendor'],
+    }));
+  });
+
+  it('does not request re-evaluation when inventory is unchanged', async () => {
+    ingestTx([{ name: 'C', version: '2', vendor: null }, { name: 'A', version: '2', vendor: null }]);
+    await ingest();
     expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
   });
 
@@ -517,7 +558,7 @@ describe('ingestSoftwareInventoryReport group re-evaluation (#10497)', () => {
       deviceId: inventoryDevice.id,
       orgId: inventoryDevice.orgId,
       eventType: 'device.updated',
-      changedFields: ['software.installed', 'software.notInstalled'],
+      changedFields: ['software.installed', 'software.notInstalled', 'software.version', 'software.vendor'],
       reason: 'software_inventory_change',
     });
   });

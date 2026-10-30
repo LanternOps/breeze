@@ -1,0 +1,1 @@
+Synthetic fixtures modeled on live Dropsuite API response shapes observed 2026-10-27 (key sets, value types, status strings, both pagination shapes). No real customer data. Token values are fake UUIDs; tests must assert they never reach persisted output.

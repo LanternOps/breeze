@@ -9,7 +9,8 @@ import type { WebhookConfig } from '../workers/webhookDelivery';
  */
 export interface WebhookConfigRow {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId?: string | null;
   name: string;
   url: string;
   secret: string | null;
@@ -74,6 +75,7 @@ export function toWebhookConfig(row: WebhookConfigRow): WebhookConfig {
   return {
     id: row.id,
     orgId: row.orgId,
+    partnerId: row.partnerId ?? null,
     name: row.name,
     url: decryptForColumn('webhooks', 'url', row.url) ?? row.url,
     secret: row.secret

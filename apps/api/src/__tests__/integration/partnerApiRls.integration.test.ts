@@ -1283,7 +1283,9 @@ async function seedPartnerOrg(seed: SeededPartner, label: 'A' | 'B', index: numb
   seed.sites.push(site);
   seed.devices.push(device);
   seed.fieldDefinitions.push({ id: fieldDefinition.id, orgId: org.id, fieldKey, value: fieldValue });
-  seed.groups.push(group);
+  expect(group.orgId).not.toBeNull();
+  if (group.orgId === null) throw new Error('expected an org-owned fixture group');
+  seed.groups.push({ ...group, orgId: group.orgId });
   seed.policies.push(policy);
   seed.assignments.push(assignment);
   seed.featureLinks.push(featureLink);

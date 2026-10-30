@@ -8,6 +8,8 @@ export type WebhookDeliveryStatus = 'success' | 'failed' | 'pending';
 
 export type WebhookDelivery = {
   id: string;
+  orgId?: string | null;
+  orgName?: string | null;
   timestamp: string;
   event: string;
   status: WebhookDeliveryStatus;
@@ -32,6 +34,8 @@ export function normalizeDelivery(raw: Record<string, unknown>): WebhookDelivery
   const responseCode = raw.responseCode ?? raw.responseStatus;
   return {
     id: String(raw.id),
+    orgId: typeof raw.orgId === 'string' ? raw.orgId : null,
+    orgName: typeof raw.orgName === 'string' ? raw.orgName : null,
     timestamp: String(raw.timestamp ?? raw.createdAt ?? ''),
     event: String(raw.event ?? raw.eventType ?? ''),
     status: mapped,
@@ -44,6 +48,7 @@ type WebhookDeliveryHistoryProps = {
   deliveries: WebhookDelivery[];
   onRetry?: (delivery: WebhookDelivery) => void | Promise<void>;
   timezone?: string;
+  showOrganization?: boolean;
 };
 
 const statusStyles: Record<WebhookDeliveryStatus, string> = {
@@ -67,7 +72,8 @@ function formatTimestamp(value: string, timezone?: string) {
 export default function WebhookDeliveryHistory({
   deliveries,
   onRetry,
-  timezone
+  timezone,
+  showOrganization = false
 }: WebhookDeliveryHistoryProps) {
   const { t } = useTranslation('common');
   const [retryingId, setRetryingId] = useState<string | null>(null);
@@ -97,6 +103,7 @@ export default function WebhookDeliveryHistory({
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.timestamp')}</th>
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.event')}</th>
+              {showOrganization && <th className="px-4 py-3">{t('longTail.webhooks.ownership.organization')}</th>}
               <th className="px-4 py-3">{t('common:labels.status')}</th>
               <th className="px-4 py-3">{t('longTail.webhooks.WebhookDeliveryHistory.headers.response')}</th>
               {onRetry && <th className="px-4 py-3 text-right">{t('longTail.webhooks.WebhookDeliveryHistory.headers.action')}</th>}
@@ -105,7 +112,7 @@ export default function WebhookDeliveryHistory({
           <tbody className="divide-y">
             {deliveries.length === 0 ? (
               <tr>
-                <td colSpan={onRetry ? 5 : 4} className="px-4 py-12 text-center">
+                <td colSpan={4 + Number(Boolean(onRetry)) + Number(showOrganization)} className="px-4 py-12 text-center">
                   <p className="text-sm text-muted-foreground">{t('longTail.webhooks.WebhookDeliveryHistory.empty')}</p>
                 </td>
               </tr>
@@ -120,6 +127,11 @@ export default function WebhookDeliveryHistory({
                       {formatTimestamp(delivery.timestamp, timezone)}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium">{delivery.event}</td>
+                    {showOrganization && (
+                      <td className="px-4 py-3 text-sm text-muted-foreground">
+                        {delivery.orgId ? delivery.orgName ?? delivery.orgId : t('longTail.webhooks.ownership.test')}
+                      </td>
+                    )}
                     <td className="px-4 py-3 text-sm">
                       <span
                         className={cn(

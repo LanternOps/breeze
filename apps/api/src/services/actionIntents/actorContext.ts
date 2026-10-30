@@ -508,6 +508,13 @@ async function buildUserOwnedAuthContext(
       canAccessOrg,
       allowedSiteIds,
       canAccessSite: siteAccessCheck(allowedSiteIds),
+      // Full-control W14 PR B (#6784, PR B quorum QB6): the partner-wide authority gate
+      // (canManagePartnerWidePolicies) reads this, and a released partner-axis action used to arrive without it, so
+      // every partner-wide write failed closed at a durable release even for a full-partner administrator. It comes
+      // from the CURRENT partner membership resolved above (perms is the partner axis whenever scope is 'partner':
+      // partnerAxis / carriedPartnerAxis both require it), never from the one-org accessibleOrgIds list, and an
+      // org-axis release carries none.
+      partnerOrgAccess: scope === 'partner' && perms.scope === 'partner' ? perms.orgAccess ?? null : null,
     };
   });
 }
