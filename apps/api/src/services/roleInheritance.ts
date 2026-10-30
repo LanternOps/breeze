@@ -33,7 +33,7 @@ import { permissions, rolePermissions, roles } from '../db/schema';
  * time (routes/roles.ts refuses a parent that would exceed it) and at read
  * time (the walk stops here). Keep in step with the descendant bound in the
  * permissions-epoch triggers (migration
- * 2027-01-17-130000-role-inheritance-permissions-epoch.sql).
+ * 2027-01-17-182000-role-inheritance-permissions-epoch.sql).
  */
 export const MAX_ROLE_INHERITANCE_DEPTH = 8;
 
