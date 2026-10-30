@@ -2042,19 +2042,17 @@
       "statusFilterLabel": "Durum"
     },
     "status": {
-      "pendingApproval": "Onay Bekleniyor",
-      "pending_approval": "onay bekleniyor",
-      "queued": "sıraya alındı",
-      "inProgress": "Devam Ediyor",
-      "in_progress": "devam ediyor",
-      "completed": "tamamlandı",
-      "failed": "başarısız oldu",
-      "cancelled": "iptal edildi"
+      "pending_approval": "Onay bekleniyor",
+      "queued": "Sırada",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
     },
     "approval": {
-      "pending": "beklemede",
-      "approved": "onaylandı",
-      "rejected": "reddedildi"
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi"
     },
     "actions": {
       "apply": "başvur",
@@ -2422,7 +2420,18 @@
     "sweepNowUnpublished": "Bu kural kümesini toplu taramada kullanmadan önce yayımlayın.",
     "sweepNowDisabled": "Bu kural kümesini toplu taramada kullanmadan önce etkinleştirin.",
     "progress": {
-      "label": "{{total}} cihazdan {{done}} tanesi tamamlandı"
+      "finished_one": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "finished_other": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "completed_one": "{{count}} tamamlandı",
+      "completed_other": "{{count}} tamamlandı",
+      "timedOut_one": "{{count}} zaman aşımına uğradı",
+      "timedOut_other": "{{count}} zaman aşımına uğradı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "cancelled_one": "{{count}} iptal edildi",
+      "cancelled_other": "{{count}} iptal edildi",
+      "expired_one": "{{count}} süresi doldu",
+      "expired_other": "{{count}} süresi doldu"
     },
     "errors": {
       "orgOutOfScope": "Bir veya daha fazla kuruluş erişiminizin dışında.",
@@ -2454,7 +2463,7 @@
     "dialog": {
       "title": "Cihazlarda IOC eşleşmesi tara",
       "ruleSets": "Kural kümeleri: {{names}}",
-      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri ve tarama türü korunur.",
+      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri, tarama türü ve özel yollar korunur.",
       "back": "Geri",
       "next": "İleri",
       "previewAction": "Önizle",
@@ -2525,6 +2534,7 @@
       "resweep": "Güncel kurallarla yeniden tara",
       "rulesChanged": "Bu toplu tarama başladığından beri kurallar değişti",
       "queued": "Sırada: {{queued}}",
+      "running": "Çalışıyor: {{running}}",
       "columns": {
         "ruleSets": "Kural kümeleri",
         "origin": "Başlatıldığı yer",
@@ -2741,5 +2751,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Bu kuruluşa erişiminiz yok"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük"
+    },
+    "findingStatus": {
+      "open": "Açık",
+      "remediated": "Giderildi",
+      "accepted": "Kabul edildi",
+      "falsePositive": "Yanlış pozitif"
+    },
+    "scanStatus": {
+      "queued": "Kuyrukta",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
+    },
+    "dataType": {
+      "credential": "Kimlik bilgileri",
+      "financial": "Finansal"
+    },
+    "a11y": {
+      "editPolicy": "{{name}} ilkesini düzenle",
+      "deletePolicy": "{{name}} ilkesini sil",
+      "togglePolicyActive": "Etkin: {{name}}"
+    }
   }
 }

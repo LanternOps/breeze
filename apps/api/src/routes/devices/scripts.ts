@@ -32,6 +32,13 @@ scriptsRoutes.get(
         id: scriptExecutions.id,
         scriptId: scriptExecutions.scriptId,
         scriptName: scripts.name,
+        // #9935 — the script's ownership, so the device Scripts tab can tell a
+        // catalog (system) script from its imported org/partner copy, which
+        // shares its name. Same row the caller already reads via GET /scripts.
+        // NULL for all three when the script has since been deleted.
+        scriptIsSystem: scripts.isSystem,
+        scriptOrgId: scripts.orgId,
+        scriptPartnerId: scripts.partnerId,
         status: scriptExecutions.status,
         exitCode: scriptExecutions.exitCode,
         stdout: scriptExecutions.stdout,
