@@ -138,12 +138,14 @@ export function buildPortalApiUrl(path: string): string {
 export function buildServerForwardHeaders(request: Request): Headers {
   const headers = new Headers();
   const cookie = request.headers.get('cookie');
-  const host = request.headers.get('host');
   const forwardedHost = request.headers.get('x-forwarded-host');
   const forwardedProto = request.headers.get('x-forwarded-proto');
 
   if (cookie) headers.set('cookie', cookie);
-  if (host) headers.set('host', host);
+  // No Host (#9700): undici drops a caller-set Host, so the API always sees the
+  // INTERNAL_API_URL host, which its FORCE_HTTPS internal-service exemption
+  // keys on. The forwarded headers below are ignored by the API unless the
+  // caller is a trusted proxy (it is not).
   if (forwardedHost) headers.set('x-forwarded-host', forwardedHost);
   if (forwardedProto) headers.set('x-forwarded-proto', forwardedProto);
 
