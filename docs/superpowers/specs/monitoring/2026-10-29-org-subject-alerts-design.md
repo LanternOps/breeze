@@ -1,6 +1,6 @@
 # Alerts that are not about a device (org-subject alerts): design
 
-**Status:** DRAFT, awaiting approval
+**Status:** APPROVED 2026-10-29 (open decisions resolved as recommended)
 **Date:** 2026-10-29
 **Motivation:**
 - SaaS backup workloads (Dropsuite/Cove M365, feature #10598) can fail with no device to attach an alert to.
@@ -116,8 +116,8 @@ W1 must merge before any producer ships. W2 and W4 can run in parallel after W1.
   - Org cascade, merge and export suites pass with the new columns.
 - **E2E (W2):** the alert list and detail pages render a device-less alert with no `/devices/null` link.
 
-## Open decisions
+## Decisions (approved 2026-10-29)
 
-1. **Visibility for site-restricted users.** Should site-restricted technicians see org-level alerts at all? The recommendation is **no** (fail closed, G5). A later setting could grant it.
-2. **Org-level alerts and alert rules.** Should device-less alerts count toward rule-based alert policies, such as maintenance windows? The recommendation is no in v1: maintenance windows are device- or site-scoped. Org-level alerts ignore them, and this is documented.
-3. **Raising alerts for existing Cove M365 rows in W3.** The recommendation is yes. They follow the same rule, and the release notes say so.
+1. **Visibility for site-restricted users: fail closed.** Site-restricted technicians do not see org-level (`backup_workload`) alerts. A later setting may grant it.
+2. **Alert rules and maintenance windows: not in v1.** Org-level alerts are sourced only and ignore maintenance windows; the docs say so.
+3. **Existing Cove M365 rows raise alerts in W3.** Same rule as Dropsuite rows; the release notes say so.
