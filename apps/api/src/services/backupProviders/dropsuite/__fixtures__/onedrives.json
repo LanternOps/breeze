@@ -1,0 +1,50 @@
+[
+  {
+    "id": 11,
+    "email": "a@contoso.example",
+    "file_count": 10,
+    "last_backup": "2026-10-27T05:00:00.000Z",
+    "storage": 2048,
+    "errors": "",
+    "deactivated_since": null,
+    "last_activity": "2026-10-20",
+    "current_backup_status": "Completed",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  },
+  {
+    "id": 12,
+    "email": "b@contoso.example",
+    "file_count": 10,
+    "last_backup": "2026-10-20T05:00:00.000Z",
+    "storage": 2048,
+    "errors": "",
+    "deactivated_since": null,
+    "last_activity": "2026-10-20",
+    "current_backup_status": "Authentication Error",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  },
+  {
+    "id": 13,
+    "email": "gone@contoso.example",
+    "file_count": 10,
+    "last_backup": "2026-03-01T00:00:00.000Z",
+    "storage": 2048,
+    "errors": "",
+    "deactivated_since": "2026-03-02T00:00:00.000Z",
+    "last_activity": "2026-10-20",
+    "current_backup_status": "Unknown",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  },
+  {
+    "id": 14,
+    "email": "old@contoso.example",
+    "file_count": 10,
+    "last_backup": "2026-02-01T00:00:00.000Z",
+    "storage": 2048,
+    "errors": "",
+    "deactivated_since": "2026-02-02T00:00:00.000Z",
+    "last_activity": "2026-10-20",
+    "current_backup_status": "System Error",
+    "added_on": "2025-01-02T03:04:05.000Z"
+  }
+]

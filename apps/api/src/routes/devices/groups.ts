@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { PARTNER_GROUP_READ_ONLY_BODY } from '../../services/deviceGroupOwnership';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
@@ -205,6 +206,7 @@ groupsRoutes.patch(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, perms)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -263,6 +265,7 @@ groupsRoutes.patch(
 
     const siteChanged = data.siteId !== undefined && data.siteId !== group.siteId;
 
+    const groupOrgId = group.orgId;
     let prunedDeviceIds: string[] = [];
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
@@ -275,7 +278,7 @@ groupsRoutes.patch(
         const pruned = await pruneGroupMembershipsOutsideSite(
           groupId,
           row.siteId,
-          group.orgId,
+          groupOrgId,
           tx,
           { deferPeripheralReconciliation: true },
         );
@@ -319,6 +322,7 @@ groupsRoutes.delete(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -331,7 +335,7 @@ groupsRoutes.delete(
 
     let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
     try {
-      result = await deleteDeviceGroup(groupId, group.orgId);
+      result = await deleteDeviceGroup(groupId, { orgId: group.orgId });
     } catch (err) {
       if (err instanceof DeviceGroupDeleteError) {
         if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);
@@ -391,6 +395,7 @@ groupsRoutes.post(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);
@@ -426,6 +431,7 @@ groupsRoutes.post(
     if (siteDenied) return c.json({ error: 'Access to these device sites denied' }, 403);
     const validDeviceIds = validDevices.map(d => d.id);
 
+    const orgId = group.orgId;
     // Insert memberships (ignore duplicates)
     const insertedMemberships = await db
       .insert(deviceGroupMemberships)
@@ -433,7 +439,7 @@ groupsRoutes.post(
         validDeviceIds.map(deviceId => ({
           deviceId,
           groupId,
-          orgId: group.orgId,
+          orgId,
           addedBy: 'manual' as const
         }))
       )
@@ -485,6 +491,7 @@ groupsRoutes.delete(
     if (!group) {
       return c.json({ error: 'Group not found' }, 404);
     }
+    if (group.orgId === null) return c.json(PARTNER_GROUP_READ_ONLY_BODY, 400);
 
     if (!groupSiteAllowed(group, c.get('permissions') as UserPermissions | undefined)) {
       return c.json({ error: 'Access to this site denied' }, 403);

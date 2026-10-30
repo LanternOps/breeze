@@ -13,7 +13,9 @@
  *                          live concerns with this grant's recipient state, a
  *                          five-table digest since the watermark (each read
  *                          pinned to the run's org, gated on the grantor's
- *                          permission for it, ≤ 25 rows, sanitised), the
+ *                          permission for it, ≤ 25 rows, sanitised; on a
+ *                          first look the alerts are the org's open ones,
+ *                          #10389), the
  *                          reason's watch, the org's readiness inventory, and
  *                          the grantor's nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
@@ -28,7 +30,7 @@
  * seam as metricAnomalySubscriber.ts).
  */
 import { createHash } from 'node:crypto';
-import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -228,7 +230,12 @@ export async function enqueueAssessment(
   const triggerRef: WispAssessmentTriggerRef = {
     grantId,
     grantRevisionId: ceiling.revisionId,
-    reason,
+    // #10389: a floor tick for an org this grant has never assessed (orgs past
+    // onboarding's first 10 reach Wisp this way) is that org's first look, so
+    // it runs as onboarding: first-look framing and the readiness note. Event
+    // and watch reasons keep their reason; loadAssessmentContext still gives
+    // them the first-look digest.
+    reason: watermark === null && reason.kind === 'tick' ? { kind: 'onboarding' } : reason,
     watermark: watermark?.toISOString() ?? null,
   };
   // #1105: admission opens its own context and enqueues after commit, so it
@@ -461,13 +468,20 @@ function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string)
  * Five bounded reads, each pinned to `orgId` (the ceiling admitted the org;
  * the pin is the second lock) and each gated on the grantor's permission for
  * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
- * empty and issues no query.
+ * empty and issues no query. On a first look the alerts section is the org's
+ * open alerts (loadOpenAlertRows); the other four keep the `since` window.
  */
-async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: string, since: Date): Promise<AssessmentDigest> {
+async function loadDigest(
+  ceiling: GrantCeiling,
+  orgId: string,
+  currentRunId: string,
+  since: Date,
+  firstLook: boolean,
+): Promise<AssessmentDigest> {
   const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
     ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   return sys(async () => {
-    const alertRows = !may('alerts') ? [] : await db
+    const alertRows = !may('alerts') ? [] : firstLook ? await loadOpenAlertRows(orgId) : await db
       .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
       .from(alerts)
       .where(and(eq(alerts.orgId, orgId), gte(alerts.triggeredAt, since)))
@@ -527,6 +541,27 @@ async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: st
       })),
     };
   }, 'wisp.assessment.digest');
+}
+
+/** Alert statuses that are still open: what a first look reports as the org's current state. */
+const OPEN_ALERT_STATUSES = ['active', 'acknowledged'] as const;
+
+/**
+ * #10389: a first look's alerts — the org's open alerts whenever they fired
+ * (a 24 h window on triggered_at hid a high alert open for three weeks),
+ * worst severity first (the enum is declared critical → info), newest first
+ * within a severity, ≤ 25. The (org_id, status, triggered_at) index
+ * (alerts_org_status_triggered_at_idx) finds the org's open rows; the
+ * severity order is a top-N sort over all of them — one sort per (grant, org)
+ * first look. Runs inside loadDigest's system context.
+ */
+function loadOpenAlertRows(orgId: string) {
+  return db
+    .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
+    .from(alerts)
+    .where(and(eq(alerts.orgId, orgId), inArray(alerts.status, [...OPEN_ALERT_STATUSES])))
+    .orderBy(asc(alerts.severity), desc(alerts.triggeredAt))
+    .limit(DIGEST_ROW_LIMIT);
 }
 
 /**
@@ -631,7 +666,10 @@ export async function loadAssessmentContext(run: {
   const openConcerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'], orgId: run.orgId });
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
-  const digest = await loadDigest(ceiling, run.orgId, run.id, since);
+  // #10389: nothing earlier to diff against, so the alerts are the org's
+  // current open ones rather than the 24 h fallback window.
+  const firstLook = ref.watermark === null || ref.reason.kind === 'onboarding';
+  const digest = await loadDigest(ceiling, run.orgId, run.id, since, firstLook);
 
   const reason = ref.reason;
   const watchId = reason.kind === 'watch' ? reason.watchId : null;
@@ -649,6 +687,7 @@ export async function loadAssessmentContext(run: {
     threadSummary,
     openConcerns,
     changedSince: since.toISOString(),
+    firstLook,
     digest,
     watch,
     reason,

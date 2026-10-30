@@ -569,7 +569,9 @@
       "after": "liegt nach",
       "between": "liegt zwischen",
       "withinLast": "innerhalb der letzten",
-      "notWithinLast": "nicht innerhalb der letzten"
+      "notWithinLast": "nicht innerhalb der letzten",
+      "below": "niedriger als",
+      "atLeast": "mindestens"
     },
     "value": {
       "noValue": "Kein Wert erforderlich",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Entfernt"
-      }
+      },
+      "softwareName": "Softwarename",
+      "softwareVersion": "Softwareversion"
     }
   },
   "account": {
@@ -1292,11 +1296,19 @@
           "waiting": "Wartend"
         },
         "ticketCount": "{{filtered}} von {{total}} Tickets",
-        "title": "Synchronisierte Tickets",
+        "title": "PSA-Tickets",
         "unlinked": "Nicht verknüpft"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Zuständigkeit",
+        "allOrganizations": "Alle Organisationen",
+        "thisOrganizationOnly": "Nur diese Organisation",
+        "all": "Alle",
+        "organization": "Organisation",
+        "test": "Testzustellung"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} Zustellversuche",
         "empty": "Noch keine Zustellversuche.",
@@ -1388,6 +1400,14 @@
           "integrationHealthResolved": {
             "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
             "label": "Integritätsvorfall bei Verbindung behoben"
+          },
+          "alertAcknowledged": {
+            "label": "Alarm bestätigt",
+            "description": "Wird ausgelöst, wenn ein Alarm bestätigt wird."
+          },
+          "alertSuppressed": {
+            "label": "Alarm unterdrückt",
+            "description": "Wird ausgelöst, wenn Breeze AI einen Alarm unterdrückt. Das Unterdrücken im Dashboard sendet dieses Ereignis noch nicht."
           }
         },
         "fields": {
@@ -1439,6 +1459,22 @@
           "secretRequired": "Für die HMAC-Authentifizierung ist ein Geheimnis erforderlich",
           "tokenRequired": "Für die Bearer-Authentifizierung ist ein Token erforderlich",
           "urlRequired": "Die URL ist erforderlich"
+        },
+        "neverDelivered": {
+          "marker": "Nie zugestellt",
+          "explanation": "Breeze sendet dieses Ereignis nie. Es wird beim Speichern dieses Webhooks entfernt.",
+          "banner": "Breeze sendet dieses Ereignis nie. Dieser Webhook hat daher noch nie etwas zugestellt. Wählen Sie vor dem Speichern ein anderes Ereignis."
+        },
+        "payloadVersion": {
+          "title": "Version der Nutzdaten",
+          "v2": {
+            "label": "v2 (empfohlen)",
+            "description": "Alarmereignisse enthalten Hostname, Standort, Organisation, Status und einen Link zum Alarm."
+          },
+          "v1": {
+            "label": "v1 (Original)",
+            "description": "Die ursprünglichen Alarmdaten für bestehende Integrationen."
+          }
         }
       },
       "WebhookList": {
@@ -1520,7 +1556,8 @@
           "enabled": "Webhook aktiviert",
           "retryQueued": "Erneute Zustellung in die Warteschlange gestellt",
           "testQueued": "Testzustellung in die Warteschlange gestellt",
-          "updated": "Webhook aktualisiert"
+          "updated": "Webhook aktualisiert",
+          "deleted": "Webhook \"{{name}}\" gelöscht"
         },
         "title": "Webhooks"
       }

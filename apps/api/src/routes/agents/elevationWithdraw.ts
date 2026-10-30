@@ -3,7 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 
 import { runAfterDbContextCommit, runAfterDbContextExit } from '../../db';
-import { PAM_WITHDRAW_REASONS } from '../../db/schema/elevations';
+import { PAM_PROMPT_RENDERERS, PAM_WITHDRAW_REASONS } from '../../db/schema/elevations';
 import { zValidator } from '../../lib/validation';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
@@ -37,6 +37,9 @@ const withdrawParamSchema = z.object({
 export const elevationWithdrawBodySchema = z.object({
   reason: z.enum(PAM_WITHDRAW_REASONS),
   declinedAt: z.string().datetime({ offset: true }).optional(),
+  // #10190 W07: the renderer that carried the decline (audit only). An
+  // unknown value is dropped, never a 400, for the same reason as above.
+  renderer: z.enum(PAM_PROMPT_RENDERERS).optional().catch(undefined),
 });
 
 export const elevationWithdrawRoutes = new Hono();
@@ -75,6 +78,7 @@ elevationWithdrawRoutes.post(
       requestId,
       reason: body.reason,
       agentDeclinedAt,
+      renderer: body.renderer ?? null,
     });
 
     if (result.kind === 'not_found') {
@@ -115,6 +119,7 @@ elevationWithdrawRoutes.post(
         details: {
           reason: body.reason,
           agent_declined_at: agentDeclinedAt ? agentDeclinedAt.toISOString() : null,
+          renderer: body.renderer ?? null,
         },
       });
 

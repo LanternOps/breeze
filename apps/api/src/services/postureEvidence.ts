@@ -13,6 +13,7 @@ import { db } from '../db';
 import { isEnforcing, loadPartnerPolicy } from './authenticatorPolicy';
 import {
   backupConfigs,
+  backupProviderDevices,
   c2cConnections,
   devicePatches,
   devices,
@@ -42,12 +43,14 @@ import {
 } from './securityComplianceReportProducts';
 import { loadOpenVulnerabilityCounts } from './securityComplianceReportVulnerabilities';
 import { loadBackupsVerifiedEvidence, loadM365MfaEvidence } from './postureEvidenceNetNew';
+import { isConnectionStale, providerLabelFor } from './backupHealthRows';
+import { loadBackupConnectionFreshness } from './backupConnectionFreshness';
 import { loadBackupProviderEvidence } from './securityComplianceReportBackupProviders';
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import {
-  CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck,
+  CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck, deriveBackupHealth, saasWorkloadLabel,
   type BenchmarkOs, type ControlEvidence, type PostureControlEvidence, type SafeguardEvidence,
 } from '@breeze/shared';
 import { trustCisFrameworkViewEnabled } from '../config/env';
@@ -140,6 +143,7 @@ export interface OrgWideEvidence {
   dns: { isActive: boolean; provider: string; lastSyncStatus: string | null } | undefined;
   backup: { isActive: boolean; provider: string; encryption: unknown } | undefined;
   c2c: { status: string; provider: string } | undefined;
+  providerSaasBackups?: SecurityProductEvidence[];
   m365: { status: string } | undefined;
   google: { status: string } | undefined;
   pamCfg: { uacInterceptionEnabled: boolean | null } | undefined;
@@ -439,6 +443,10 @@ export async function loadPostureEvidence(
     if (orgWide) applyOrgWide(out.controls, orgWide);
     // maxSecurityStatusAgeDays IS the evidence-age window (spec §5.4); windowDays is the elevation-activity window.
     if (includeOrgWide) out.controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
+    if (orgWide) {
+      orgWide.providerSaasBackups = await loadProviderSaasEvidence(orgId, asOf);
+      out.report.productEvidence = assembleProductEvidence({ orgWide, backupEvidence: [] });
+    }
     return out;
   }
 
@@ -755,6 +763,7 @@ export async function loadPostureEvidence(
       deviceIds: [row.deviceId]
     });
   }
+  if (orgWide) orgWide.providerSaasBackups = await loadProviderSaasEvidence(orgId, asOf);
   const productEvidence = [
     ...deviceProductEvidence,
     ...assembleProductEvidence({ orgWide, backupEvidence: backupProviders.evidence }),
@@ -801,7 +810,7 @@ function assembleProductEvidence(input: {
   if (w?.dns) out.push({ product: prettyDnsProvider(w.dns.provider), category: 'dns_filtering', active: dnsActive, lastSyncStatus: dnsSyncStatus });
   if (w?.backup) out.push({ product: `Backup (${w.backup.provider})`, category: 'backup', active: true, lastSyncStatus: null });
   if (w?.c2c) out.push({ product: `SaaS backup (${w.c2c.provider})`, category: 'backup', active: true, lastSyncStatus: null });
-  out.push(...input.backupEvidence);
+  out.push(...(w?.providerSaasBackups ?? []), ...input.backupEvidence);
   if (w?.m365) out.push({ product: 'Microsoft 365', category: 'identity', active: true, lastSyncStatus: null });
   if (w?.google) out.push({ product: 'Google Workspace', category: 'identity', active: true, lastSyncStatus: null });
   return out;
@@ -812,4 +821,46 @@ function applyOrgWide(controls: PostureControlEvidence, w: OrgWideEvidence): voi
   const dnsSync = w.dns?.lastSyncStatus ?? null;
   orgFact(controls.dns_filtering, true, Boolean(w.dns) && dnsSync !== 'error');
   orgFact(controls.privileged_access, true, w.pamRuleRows.length > 0 || w.mfaStepUpEnforced);
+}
+
+/** Org-scoped SaaS evidence has workloads, never a device-coverage denominator. */
+async function loadProviderSaasEvidence(orgId: string, asOf: Date): Promise<SecurityProductEvidence[]> {
+  const rows = await db.select({
+    orgId: backupProviderDevices.orgId,
+    provider: backupProviderDevices.provider,
+    portalShowProviderName: backupProviderDevices.portalShowProviderName,
+    connectionId: backupProviderDevices.connectionId,
+    accountType: backupProviderDevices.accountType,
+    dataSources: backupProviderDevices.dataSources,
+    status: backupProviderDevices.status,
+    lastSuccessAt: backupProviderDevices.lastSuccessAt,
+    errorsCount: backupProviderDevices.errorsCount,
+  }).from(backupProviderDevices).where(and(
+    eq(backupProviderDevices.orgId, orgId),
+    inArray(backupProviderDevices.accountType, ['m365', 'gws']),
+  ));
+  const scopedRows = rows.filter((row) => row.orgId === orgId && (row.accountType === 'm365' || row.accountType === 'gws'));
+  // One hidden connection hides the provider name for the entire provider group,
+  // including when that connection currently contributes no healthy evidence.
+  const hiddenProviders = new Set(scopedRows.filter((row) => !row.portalShowProviderName).map((row) => row.provider));
+  const freshness = await loadBackupConnectionFreshness(scopedRows.map((row) => row.connectionId));
+  const byProvider = new Map<string, Set<string>>();
+  for (const row of scopedRows) {
+    const connection = freshness.get(row.connectionId);
+    if (!connection || isConnectionStale(connection, asOf)) continue;
+    const health = deriveBackupHealth({ ...row, now: asOf }).health;
+    if (health !== 'healthy' && health !== 'warning') continue;
+    const label = providerLabelFor(row.provider, {
+      labels: 'portal', portalShowProviderName: row.portalShowProviderName && !hiddenProviders.has(row.provider),
+    });
+    if (!label) continue;
+    const workloads = byProvider.get(label) ?? new Set<string>();
+    for (const source of row.dataSources) workloads.add(saasWorkloadLabel(source));
+    if (workloads.size === 0) workloads.add('SaaS');
+    byProvider.set(label, workloads);
+  }
+  return [...byProvider.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, workloads]) => ({
+    product: `${label} — ${[...workloads].sort().join(', ')}`,
+    category: 'backup', active: true, lastSyncStatus: null,
+  }));
 }

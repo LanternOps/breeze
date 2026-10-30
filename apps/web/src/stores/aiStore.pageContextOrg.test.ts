@@ -77,6 +77,26 @@ describe('ai store page-context org rebinding (#5684)', () => {
     expect(state.pageContext).toEqual(deviceBContext);
   });
 
+  it('a ticket page in another org rebinds the session', () => {
+    seedOrgASession();
+    const context = { type: 'record' as const, kind: 'ticket' as const, id: DEVICE_B, orgId: ORG_B, label: 'T-1' };
+    useAiStore.getState().setPageContext(context);
+    expect(useAiStore.getState()).toMatchObject({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null, isFlagged: false, pageContext: context });
+  });
+
+  it('a record with no orgId does not rebind', () => {
+    seedOrgASession();
+    useAiStore.getState().setPageContext({ type: 'record', kind: 'ticket', id: DEVICE_B });
+    expect(useAiStore.getState().sessionId).toBe('session-org-a');
+  });
+
+  it('a record does not rebind until the session org is known', () => {
+    seedOrgASession();
+    useAiStore.setState({ sessionOrgId: null });
+    useAiStore.getState().setPageContext({ type: 'record', kind: 'ticket', id: DEVICE_B, orgId: ORG_B });
+    expect(useAiStore.getState().sessionId).toBe('session-org-a');
+  });
+
   it('keeps the session when the page-context device is in the same org', () => {
     seedOrgASession();
 

@@ -74,7 +74,32 @@ async function expectConstraint(query: Promise<unknown>, constraint: string): Pr
 
 describe('elevation status withdrawn (#8971)', () => {
   it('the reason list matches the agent constants byte for byte', () => {
-    expect([...PAM_WITHDRAW_REASONS]).toEqual(['user_denied', 'user_timeout', 'dialog_error']);
+    // #10190 W07 appends user_cancelled (the end user's "Cancel request"
+    // on the waiting card); Go pamdecline.ReasonUserCancelled.
+    expect([...PAM_WITHDRAW_REASONS]).toEqual(['user_denied', 'user_timeout', 'dialog_error', 'user_cancelled']);
+  });
+
+  it('the CHECK admits exactly the reason list (#10190 W07)', async () => {
+    const result = await getTestDb().execute<{ def: string }>(sql`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conname = 'elevation_requests_withdrawn_reason_chk'
+    `);
+    const rows = (result as unknown as { rows?: Array<{ def: string }> }).rows ?? (result as unknown as Array<{ def: string }>);
+    expect(rows).toHaveLength(1);
+    const listed = [...rows[0]!.def.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(listed).toEqual([...PAM_WITHDRAW_REASONS]);
+  });
+
+  it('accepts user_cancelled and still rejects an unknown reason (#10190 W07)', async () => {
+    const tdb = getTestDb();
+    await tdb.execute(sql`UPDATE elevation_requests SET status = 'withdrawn', withdrawn_at = now(), withdrawn_reason = 'user_cancelled' WHERE id = ${requestId}`);
+    const [row] = await tdb.select().from(elevationRequests).where(eq(elevationRequests.id, requestId));
+    expect(row?.withdrawnReason).toBe('user_cancelled');
+    await tdb.execute(sql`UPDATE elevation_requests SET status = 'pending', withdrawn_at = NULL, withdrawn_reason = NULL WHERE id = ${requestId}`);
+    await expectConstraint(
+      tdb.execute(sql`UPDATE elevation_requests SET status = 'withdrawn', withdrawn_at = now(), withdrawn_reason = 'user_canceled' WHERE id = ${requestId}`),
+      'elevation_requests_withdrawn_reason_chk',
+    );
   });
 
   it('withdrawn row requires withdrawn_at and a valid reason', async () => {

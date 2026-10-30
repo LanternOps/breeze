@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray } from 'drizzle-orm';
 import { db } from '../db';
 import { backupProviderDevices } from '../db/schema';
 import { getProviderCoverageForDevices } from './backupHealthReadModel';
@@ -35,6 +35,7 @@ export async function loadBackupProviderEvidence(
   const rows = await db
     .select({
       provider: backupProviderDevices.provider,
+      accountType: backupProviderDevices.accountType,
       portalShowProviderName: backupProviderDevices.portalShowProviderName,
       breezeDeviceId: backupProviderDevices.breezeDeviceId,
     })
@@ -42,12 +43,13 @@ export async function loadBackupProviderEvidence(
     .where(and(
       eq(backupProviderDevices.orgId, orgId),
       inArray(backupProviderDevices.breezeDeviceId, deviceIds),
+      notInArray(backupProviderDevices.accountType, ['m365', 'gws']),
     ));
 
   const inScope = new Set(deviceIds);
   const linked = rows.filter(
     (row): row is typeof row & { breezeDeviceId: string } =>
-      row.breezeDeviceId !== null && inScope.has(row.breezeDeviceId),
+      row.accountType !== 'm365' && row.accountType !== 'gws' && row.breezeDeviceId !== null && inScope.has(row.breezeDeviceId),
   );
   if (linked.length === 0) return { evidence: [], coveredDeviceCount: 0 };
 
