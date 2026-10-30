@@ -23,7 +23,7 @@
  * route's own `authorizeCatalogItemWrite` narrowing. Every write's REST twin
  * carries `requireMfa()` (W12-D5).
  */
-import { and, asc, desc, eq, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { softwareCatalog, softwareInstallMethods, softwareVersions } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
@@ -33,7 +33,7 @@ import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { escapeLikePattern } from './packageSearch';
 import {
   activeCatalog, authorizeCatalogItemWrite, createCatalogSchema, createVersionSchema, deleteCatalogAndUploadedObjects,
-  importCatalogPackage, prepareSoftwareVersionCreate, prepareSoftwareVersionUpdate, updateCatalogSchema, updateVersionSchema,
+  importCatalogPackage, nullOrgCatalogBranches, prepareSoftwareVersionCreate, prepareSoftwareVersionUpdate, updateCatalogSchema, updateVersionSchema,
 } from './softwareCatalogOps';
 import { importPackageSchema, installMethodBodySchema, installMethodPatchSchema, validatePackageIdForKind } from './softwareInstallMethodSchemas';
 import {
@@ -205,14 +205,10 @@ export function registerSoftwareCatalogTools(aiTools: Map<string, AiTool>): void
           if (requestedOrgId) {
             const org = resolveScopedOrgId(auth, requestedOrgId);
             if ('error' in org) return notFound('Organization');
-            conditions.push(or(eq(softwareCatalog.orgId, org.orgId), isNotNull(softwareCatalog.integrationProvider),
-              ...(auth.scope === 'partner' && auth.partnerId ? [and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!] : []))!);
+            conditions.push(or(eq(softwareCatalog.orgId, org.orgId), ...nullOrgCatalogBranches(auth))!);
           } else {
             const orgCond = auth.orgCondition(softwareCatalog.orgId);
-            if (orgCond) {
-              conditions.push(or(orgCond, isNotNull(softwareCatalog.integrationProvider),
-                ...(auth.scope === 'partner' && auth.partnerId ? [and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, auth.partnerId))!] : []))!);
-            }
+            if (orgCond) conditions.push(or(orgCond, ...nullOrgCatalogBranches(auth))!);
           }
           const search = str(input.search);
           if (search) {
