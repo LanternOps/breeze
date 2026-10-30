@@ -18,6 +18,8 @@ func TestRunHeartbeatUpgrade_DeterministicFailureBacksOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Close before TempDir cleanup: Windows cannot delete an open journal file.
+	t.Cleanup(func() { _ = journal.Close() })
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	// Jitter pinned to the top of its range: waits of ~15 m, then ~45 m.
 	b := &updater.TargetBackoff{
@@ -58,6 +60,8 @@ func TestRunHeartbeatUpgrade_TransientFailureRetriesNextPoll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Close before TempDir cleanup: Windows cannot delete an open journal file.
+	t.Cleanup(func() { _ = journal.Close() })
 	b := &updater.TargetBackoff{}
 	calls := 0
 	transient := func() error {
