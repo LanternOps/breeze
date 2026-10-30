@@ -12,6 +12,8 @@
     "test": "turbo run test",
     "test:load-static": "pnpm --dir load-tests test:static",
     "test:community-readme": "node --test .github/scripts/update-community-readme.test.mjs",
+    "agents-md": "node scripts/agents/build-agents-md.mjs",
+    "test:agents-md": "node --test scripts/agents/build-agents-md.test.mjs",
     "test:docs-automation": "node --test .github/scripts/docs-automation-retirement.test.mjs",
     "test:workflow-security": "node --test .github/scripts/check-workflow-security.test.mjs scripts/security/pin-github-actions.test.mjs scripts/release/attest-macos-pkg.test.mjs && node .github/scripts/check-workflow-security.mjs",
     "pin:github-actions": "node scripts/security/pin-github-actions.mjs",
