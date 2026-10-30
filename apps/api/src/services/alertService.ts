@@ -526,7 +526,7 @@ async function anchoredTriggerOpts(ruleId: string, deviceId: string, triggerCond
   const opts: EvaluateOptions = {
     side: 'trigger',
     cursors: entry?.cursors ?? undefined,
-    legacyIngestedBefore: entry?.legacy ? entry.closedAt : undefined,
+    legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
   };
   return { paths, opts };
 }
@@ -1334,7 +1334,7 @@ async function evaluateDeviceAlertsInMode(deviceId: string, mode: DeviceEvaluati
         ? await evaluateConditions(effectiveConditions, deviceId, {
           side: 'trigger',
           cursors: entry?.cursors ?? undefined,
-          legacyIngestedBefore: entry?.legacy ? entry.closedAt : undefined,
+          legacyIngestedBefore: entry?.closedAt, // per-leaf fallback when the closed cursor lacks that leaf
         })
         : await evaluateConditions(effectiveConditions, deviceId);
 

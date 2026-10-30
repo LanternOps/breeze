@@ -47,7 +47,7 @@ function evaluate(events: EvidenceCursor[], opts?: EvaluateOptions) {
   const watermark = events.reduce<EvidenceCursor | undefined>((a, b) => maxEvidence(a, b), undefined);
   return {
     passed: events.some(row => isAfterCursor(row, opts?.cursors?.root, opts?.side ?? 'trigger')
-      && (!opts?.legacyIngestedBefore || Date.parse(row.createdAt) > opts.legacyIngestedBefore.getTime())),
+      && (opts?.cursors?.root !== undefined || !opts?.legacyIngestedBefore || Date.parse(row.createdAt) > opts.legacyIngestedBefore.getTime())),
     evidenceWatermarks: watermark ? { root: watermark } : {}, dataState: 'ok',
   };
 }

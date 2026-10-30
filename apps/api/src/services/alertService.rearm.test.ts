@@ -184,7 +184,7 @@ beforeEach(() => {
     const watermark = matching.map(cursor).reduce<EvidenceCursor | undefined>((newest, row) => maxEvidence(newest, row), undefined);
     const triggered = condition.type !== 'event_log' || matching.some(row =>
       isAfterCursor(cursor(row), opts?.cursors?.root, opts?.side ?? 'trigger')
-      && (!opts?.legacyIngestedBefore || Date.parse(row.createdAt) > opts.legacyIngestedBefore.getTime()));
+      && (opts?.cursors?.root !== undefined || !opts?.legacyIngestedBefore || Date.parse(row.createdAt) > opts.legacyIngestedBefore.getTime()));
     return { triggered, dataState: 'ok', conditionsMet: [], conditionsNotMet: [], context: { deviceId },
       evidenceWatermarks: condition.type === 'event_log' && watermark ? { root: watermark } : {} };
   });
@@ -269,6 +269,18 @@ describe('alert evidence re-arm sweep', () => {
     await evaluateDeviceAlerts(DEVICE_ID);
     expect(evaluateConditionsMock).toHaveBeenCalledWith(EVENT_CONDITION, DEVICE_ID, {
       side: 'trigger', cursors: undefined, legacyIngestedBefore: closedAt,
+    });
+    expect(insertedAlerts).toHaveLength(0);
+  });
+
+  it('a closed alert whose stored cursor lacks a leaf falls back to the close time for that leaf', async () => {
+    // e.g. `{}` written by a recovery close that observed no evidence, or a leaf path shifted by a rule edit.
+    readClosedCursorsMock.mockResolvedValue(new Map([
+      ['rule-1', { cursors: {}, closedAt, legacy: false }],
+    ]));
+    await evaluateDeviceAlerts(DEVICE_ID);
+    expect(evaluateConditionsMock).toHaveBeenCalledWith(EVENT_CONDITION, DEVICE_ID, {
+      side: 'trigger', cursors: {}, legacyIngestedBefore: closedAt,
     });
     expect(insertedAlerts).toHaveLength(0);
   });
