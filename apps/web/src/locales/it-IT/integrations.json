@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Provider di backup",
-    "subtitle": "Porta in Breeze lo stato dei backup di terze parti. Oggi è supportato Cove Data Protection.",
+    "subtitle": "Visualizza in Breeze lo stato dei backup di Cove Data Protection e NinjaOne SaaS Backup (Dropsuite).",
     "partnerOnly": "Le connessioni ai provider di backup sono disponibili solo per gli account partner.",
     "addConnection": "Aggiungi connessione",
     "providerLabel": "Provider",
@@ -648,7 +648,19 @@
     "errorTest": "Impossibile provare la connessione di backup",
     "errorSync": "Impossibile avviare la sincronizzazione",
     "errorDelete": "Impossibile eliminare la connessione di backup",
-    "errorMap": "Impossibile aggiornare l'associazione"
+    "errorMap": "Impossibile aggiornare l'associazione",
+    "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "resellerTokenLabel": "Token del rivenditore",
+    "authTokenLabel": "Token di autenticazione",
+    "baseUrlLabel": "URL dell’API",
+    "baseUrlHelp": "Indicato come URL dell’API nel portale partner NinjaOne SaaS Backup, in Impostazioni → Impostazioni API",
+    "dropsuiteCredentialsHelp": "È sufficiente un accesso rivenditore in sola lettura. I token vengono archiviati in forma crittografata.",
+    "dropsuiteReentryHelp": "Lascia vuoti entrambi i campi dei token per mantenere le credenziali memorizzate, oppure inserisci entrambi i token per sostituirle.",
+    "workloads": "Carichi di lavoro",
+    "unmappedWorkloads": "Carichi di lavoro non associati",
+    "unmappedWorkloadsSummary": "{{customers}} clienti non associati, {{devices}} carichi di lavoro",
+    "workloadMappingHelp": "Associa ogni cliente del fornitore a un’organizzazione Breeze. I carichi di lavoro dei clienti non associati vengono conteggiati, ma mai archiviati.",
+    "deleteWorkloadsConfirm": "Eliminare \"{{name}}\"? I carichi di lavoro sincronizzati e la cronologia verranno rimossi da Breeze. Il prodotto di backup rimane invariato."
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Impossibile caricare i contratti per questa organizzazione. Chiudi e riprova.",

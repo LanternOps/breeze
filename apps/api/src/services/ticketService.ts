@@ -58,7 +58,7 @@ export const TICKET_STATUS_TRANSITIONS: Record<TicketStatus, readonly TicketStat
   closed: ['open']
 };
 
-export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 500;
+export type TicketServiceErrorStatus = 400 | 403 | 404 | 409 | 422 | 500;
 
 /**
  * Machine-readable error codes for callers that aggregate outcomes (e.g. the
@@ -102,7 +102,10 @@ export type TicketServiceErrorCode =
   | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED'
   // #8313 W1: an imported file claimed with a stored type outside the
   // allowlist and application/octet-stream (spec 2026-10-19 §4.4).
-  | 'IMPORT_ATTACHMENT_TYPE_INVALID';
+  | 'IMPORT_ATTACHMENT_TYPE_INVALID'
+  // Partner API alert-origin create errors, thrown inside the create transaction.
+  | 'partner_alert_not_found'
+  | 'partner_ticket_alert_org_mismatch';
 
 export class TicketServiceError extends Error {
   constructor(

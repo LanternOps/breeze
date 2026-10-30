@@ -37,6 +37,8 @@ vi.mock('../db', async (importOriginal) => {
   const db: Record<string, unknown> = {
     select,
     selectDistinct: select,
+    // The W06 conversion summary on manage_automations reads (#5221).
+    selectDistinctOn: (_on: unknown, fields?: Record<string, unknown>) => select(fields),
     insert: () => chain(null),
     update: () => chain(null),
     delete: () => chain(null),
@@ -54,8 +56,8 @@ vi.mock('../db', async (importOriginal) => {
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => 'event-1') }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitAlertStateFeedback: vi.fn(async () => undefined) }));
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: () => ({ queueDelivery: vi.fn(async () => undefined) }),
+vi.mock('../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: vi.fn(async () => undefined),
 }));
 vi.mock('./mlFeatureFlags', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./mlFeatureFlags')>()),

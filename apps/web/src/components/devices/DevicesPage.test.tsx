@@ -174,9 +174,12 @@ vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
-vi.mock('./CreateGroupModal', () => ({ default: () => null }));
+vi.mock('./CreateGroupModal', () => ({
+  default: ({ isOpen, onCreated }: { isOpen: boolean; onCreated: (id: string, ownerScope: 'organization' | 'partner') => void }) =>
+    isOpen ? <button data-testid="create-partner-group" onClick={() => onCreated('partner-group-1', 'partner')}>Create partner group</button> : null,
+}));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => <div data-testid="device-filter-toolbar-stub" /> }));
+vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: ({ onCreateGroup }: { onCreateGroup: () => void }) => <div data-testid="device-filter-toolbar-stub"><button data-testid="open-create-group" onClick={onCreateGroup}>New group</button></div> }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
@@ -405,6 +408,15 @@ beforeEach(() => {
     }
     return jsonResponse({ data: [] }); // /orgs, /orgs/sites, /device-groups
   });
+});
+
+it('closes the create modal and refreshes devices after creating a partner group', async () => {
+  render(<DevicesPage />);
+  fireEvent.click(await screen.findByTestId('open-create-group'));
+  const initialFetches = vi.mocked(fetchAllDevices).mock.calls.length;
+  fireEvent.click(screen.getByTestId('create-partner-group'));
+  await waitFor(() => expect(fetchAllDevices).toHaveBeenCalledTimes(initialFetches + 1));
+  expect(screen.queryByTestId('create-partner-group')).not.toBeInTheDocument();
 });
 
 describe('DevicesPage — advanced filter applies to BOTH views', () => {

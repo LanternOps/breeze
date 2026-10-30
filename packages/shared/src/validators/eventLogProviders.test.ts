@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   APPLICATION_INFO_EVENT_PROVIDERS,
+  applicationProvidersSchema,
+  eventLogCollectionGap,
   eventLogCollectionWarning,
   monitorEventLogCollectionWarnings,
 } from './eventLogProviders';
+import { eventLogInlineSettingsSchema } from './index';
 import { monitorConditionSchemas } from './monitors';
 import { alertRuleConditionSchema } from './alertRuleConditions';
 
@@ -106,5 +109,41 @@ describe('event_log level accepts info (#8174)', () => {
         sourcePattern: 'MsiInstaller',
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('policy Application providers (#10493)', () => {
+  it('defaults to empty and threads the inline settings schema', () => {
+    expect(applicationProvidersSchema.parse(undefined)).toEqual([]);
+    expect(eventLogInlineSettingsSchema.parse({}).applicationProviders).toEqual([]);
+    expect(eventLogInlineSettingsSchema.parse({ applicationProviders: [' Dell UPS Local Node Manager '] }).applicationProviders)
+      .toEqual(['Dell UPS Local Node Manager']);
+  });
+  it('trims and deduplicates case-insensitively preserving order and spelling', () => {
+    expect(applicationProvidersSchema.parse([' APCPBEAgent ', 'apcpbeagent', 'MSSQL$SQLEXPRESS', 'Dell UPS Local Node Manager']))
+      .toEqual(['APCPBEAgent', 'MSSQL$SQLEXPRESS', 'Dell UPS Local Node Manager']);
+  });
+  it('applies the 20-provider limit after deduplication', () => {
+    const names = Array.from({ length: 20 }, (_, i) => `Provider${i}`);
+    expect(applicationProvidersSchema.parse([...names, ...names.map(n => n.toUpperCase())])).toEqual(names);
+    expect(applicationProvidersSchema.safeParse([...names, 'Distinct21']).success).toBe(false);
+  });
+  it.each(['', ' ', 'A'.repeat(257), "Foo' or '1'='1", 'Foo"]', 'A[B]', 'x<y', 'a&b', 'a`b', 'a;b', 'a/b', 'a\\b', '.NET Runtime'])(
+    'rejects unsafe or unsupported name %s', name => {
+      expect(applicationProvidersSchema.safeParse([name]).success).toBe(false);
+    },
+  );
+  it('accepts the exact length boundary and allowed punctuation', () => {
+    expect(applicationProvidersSchema.safeParse(['A'.repeat(256), 'Microsoft-Windows-Foo', 'Provider.Name (x)_$-']).success).toBe(true);
+  });
+  it('uses scoped policy providers for substring matching and warning copy', () => {
+    const condition = { category: 'application', level: 'warning', sourcePattern: 'dell UPS' };
+    expect(eventLogCollectionGap(condition)).not.toBeNull();
+    expect(eventLogCollectionGap(condition, ['Dell UPS Local Node Manager'])).toBeNull();
+    expect(eventLogCollectionWarning(condition, ['Dell UPS Local Node Manager'])).toBeNull();
+    const warning = eventLogCollectionWarning({ ...condition, sourcePattern: 'Other' }, ['Dell UPS Local Node Manager']);
+    expect(warning).toContain('plus providers listed in Event Logs configuration policies: Dell UPS Local Node Manager');
+    expect(warning).toContain('Configuration policy → Event Logs → Application providers');
+    expect(monitorEventLogCollectionWarnings('composite', { children: [{ kind: 'event_log', condition }] }, ['Dell UPS Local Node Manager'])).toEqual([]);
   });
 });

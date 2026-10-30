@@ -46,6 +46,9 @@ vi.mock('../db', () => ({
 }));
 const resolverMock = vi.hoisted(() => vi.fn());
 vi.mock('./monitors/monitorResolver', () => ({ resolveMonitorsForDevice: resolverMock }));
+// Tool Catalog W06 (#5221): list/get/history carry each automation's conversion summary;
+// covered in aiToolsFleet.test.ts. No conversions here.
+vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: vi.fn(async () => new Map()) }));
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
 }));

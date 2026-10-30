@@ -215,8 +215,15 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     }
   });
 
-  it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
-    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
+  // W06 R1 (#5221): Flows default ON, so the flag-off case is stated explicitly.
+  it('with FLOWS_ENABLED=false the index never mentions the flow tools', () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
+    try {
+      const flagOff = renderToolIndexByDomain(listChatSurfaceToolNames());
+      expect(flagOff).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

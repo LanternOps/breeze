@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Provedores de backup",
-    "subtitle": "Traga o status dos backups de terceiros para o Breeze. Hoje há suporte ao Cove Data Protection.",
+    "subtitle": "Consulte no Breeze o status dos backups do Cove Data Protection e do NinjaOne SaaS Backup (Dropsuite).",
     "partnerOnly": "As conexões com provedores de backup estão disponíveis apenas para contas de parceiro.",
     "addConnection": "Adicionar conexão",
     "providerLabel": "Provedor",
@@ -648,7 +648,19 @@
     "errorTest": "Não foi possível testar a conexão de backup",
     "errorSync": "Não foi possível iniciar a sincronização",
     "errorDelete": "Não foi possível excluir a conexão de backup",
-    "errorMap": "Não foi possível atualizar o mapeamento"
+    "errorMap": "Não foi possível atualizar o mapeamento",
+    "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "resellerTokenLabel": "Token do revendedor",
+    "authTokenLabel": "Token de autenticação",
+    "baseUrlLabel": "URL da API",
+    "baseUrlHelp": "Exibida como URL da API no portal de parceiros NinjaOne SaaS Backup, em Configurações → Configurações da API",
+    "dropsuiteCredentialsHelp": "O acesso de revendedor somente para leitura é suficiente. Os tokens são armazenados de forma criptografada.",
+    "dropsuiteReentryHelp": "Deixe os dois tokens em branco para manter as credenciais armazenadas ou preencha ambos para substituí-las.",
+    "workloads": "Cargas de trabalho",
+    "unmappedWorkloads": "Cargas de trabalho não mapeadas",
+    "unmappedWorkloadsSummary": "{{customers}} clientes não mapeados, {{devices}} cargas de trabalho",
+    "workloadMappingHelp": "Mapeie cada cliente do provedor para uma organização do Breeze. As cargas de trabalho dos clientes não mapeados são contadas, mas nunca armazenadas.",
+    "deleteWorkloadsConfirm": "Excluir \"{{name}}\"? As cargas de trabalho sincronizadas e o histórico serão removidos do Breeze. O produto de backup permanece inalterado."
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Não foi possível carregar contratos para esta organização. Feche e tente novamente.",

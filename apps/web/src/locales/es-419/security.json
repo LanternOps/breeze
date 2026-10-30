@@ -960,6 +960,19 @@
     "statusFilterLabel": "Estado de la amenaza",
     "categoryFilterLabel": "Categoría"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Rechazada: el registro de decisión del dispositivo no está disponible",
+    "userDeclined": "Rechazada en el dispositivo",
+    "userDecisionPending": "Sin respuesta en el dispositivo"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "El usuario retiró esta solicitud en el dispositivo."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Falló el aviso en el dispositivo",
+    "user_denied": "Rechazada por el usuario",
+    "user_timeout": "Sin respuesta en el dispositivo"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "No se pudo cargar el historial de auditoría (HTTP {{status}})",

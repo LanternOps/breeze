@@ -268,6 +268,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   manage_billing_settings: { limit: 20, windowSeconds: 300 },
   manage_contract_templates: { limit: 20, windowSeconds: 300 },
   manage_contract_documents: { limit: 20, windowSeconds: 300 },
+  // W14 PR B (#6784): tight limits on the tools that bill (generate_invoice) and push to the books.
+  manage_contracts: { limit: 30, windowSeconds: 300 },
+  manage_accounting_sync: { limit: 10, windowSeconds: 300 },
 };
 
 /**
