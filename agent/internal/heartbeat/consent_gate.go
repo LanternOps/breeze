@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -685,7 +686,9 @@ func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string
 		return errNoticeNoNotifyHelper
 	}
 	req := sessionNoticeRequest(title, body)
-	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
+	// SendNotification, not SendNotify: the helper answers every notify, and
+	// the answer must have a waiter or it is dropped at WARN (#10224).
+	if err := session.SendNotification("session-notify-"+randomNotifyID(), req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
 		return fmt.Errorf("send session notify: %w", err)
 	}
@@ -862,11 +865,17 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// randomNotifyID returns a short unique-ish ID for fire-and-forget notify
-// envelopes. The notify path doesn't await a response, so the ID only needs to
-// avoid colliding with a pending command on the same session within a tick.
+// notifyIDSeq makes randomNotifyID unique within the process.
+var notifyIDSeq atomic.Uint64
+
+// randomNotifyID returns a short unique ID for notice envelopes. The notice
+// senders register a waiter for the helper's reply (Session.SendNotification,
+// #10224) and a duplicate in-flight id is refused outright, so a time-of-day
+// string alone is not enough: two notices raised inside one clock tick would
+// collide and the second would never be shown. The time part only keeps the
+// id readable in logs; the counter makes it unique.
 func randomNotifyID() string {
-	return time.Now().Format("150405.000000000")
+	return fmt.Sprintf("%s-%d", time.Now().Format("150405.000000000"), notifyIDSeq.Add(1))
 }
 
 // sessionNoticeTarget picks the helper that draws the remote-session start/end

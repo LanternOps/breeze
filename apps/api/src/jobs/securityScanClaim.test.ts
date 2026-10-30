@@ -330,12 +330,12 @@ describe('claimAndDispatchScan — W01–W03 behaviour kept (ported from securit
     expect(h.plan).toHaveBeenCalledWith(expect.objectContaining({ agentVersion: null }));
   });
 
-  it('a device with no governing policy plans with no rule sets and sends no settings keys', async () => {
+  it('a device with no governing policy plans with no rule sets and sends only the ceiling deadline (#10057)', async () => {
     h.policy.mockResolvedValue(null);
     h.plan.mockResolvedValue({ ruleSets: [], engine: 'legacy', ruleSetErrors: null });
     await claimAndDispatchScan(manual);
     expect(h.plan).toHaveBeenCalledWith(expect.objectContaining({ ruleSetIds: [] }));
-    expect(h.dispatch.mock.calls[0]![0].payload).toEqual({ scanRecordId: SCAN, scanType: 'quick', triggerDefender: true });
+    expect(h.dispatch.mock.calls[0]![0].payload).toEqual({ scanRecordId: SCAN, scanType: 'quick', triggerDefender: true, timeoutMinutes: 720 });
   });
 
   it('keeps auto-quarantine when the stored authority resolves', async () => {
@@ -395,7 +395,7 @@ describe('claimAndDispatchScan — sweep branch', () => {
     h.world.scan = [scanRow({ sweepId: SWEEP, scanType: 'custom' })];
     await claimAndDispatchScan(fromSweep);
     expect(h.dispatch.mock.calls[0]![0].payload).toEqual({
-      scanRecordId: SCAN, scanType: 'custom', paths: ['/srv'], triggerDefender: false, autoQuarantine: false, ruleSets: [REF],
+      scanRecordId: SCAN, scanType: 'custom', paths: ['/srv'], triggerDefender: false, timeoutMinutes: 720, autoQuarantine: false, ruleSets: [REF],
     });
   });
 

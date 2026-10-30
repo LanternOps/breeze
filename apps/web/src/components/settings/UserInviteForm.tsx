@@ -77,7 +77,10 @@ export default function UserInviteForm({
     defaultValues: {
       email: '',
       name: '',
-      roleId: roles[0]?.id ?? '',
+      // No preselection: the role list arrives in server (alphabetical) order,
+      // so roles[0] was often a billing role. Choosing a role must be a
+      // deliberate step; the schema's roleRequired message blocks submit (#10074).
+      roleId: '',
       orgAccess: 'all',
       orgIds: ''
     }
@@ -156,9 +159,13 @@ export default function UserInviteForm({
             </label>
             <select
               id="invite-role"
+              data-testid="invite-role-select"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
               {...register('roleId')}
             >
+              <option value="" disabled>
+                {t('userInviteForm.placeholders.role')}
+              </option>
               {roles.map(role => (
                 <option key={role.id} value={role.id}>
                   {role.name}

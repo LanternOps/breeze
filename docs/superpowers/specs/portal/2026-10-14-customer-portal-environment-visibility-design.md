@@ -107,6 +107,8 @@ The existing Portal visibility controls use three gate patterns, as shown by `ap
 
 Each family must state which pattern it follows. **Decision:** W1 (`enablePhysicalPlacement`) follows the `not_enabled` contract, the same as `enableNetworkVisibility`, so the network surface keeps a single shared contract. W5 and W6 also follow `not_enabled`, as a suggestion of this specification. W4 must choose its pattern when its flag is defined.
 
+**Amendment (W1, PR #10176):** W1 ships placement as a block embedded in Network Visibility asset rows, so it follows conditional field omission (§7.6): `not_enabled` stays governed by `enableNetworkVisibility` alone, and with `enablePhysicalPlacement` off or absent the `physicalPlacement` block is omitted. A standalone placement endpoint, if one is ever added, uses `not_enabled`.
+
 ### 5.2 Family and flag matrix
 
 | Family | Waves | Flag | Decision status | "Enable all" |

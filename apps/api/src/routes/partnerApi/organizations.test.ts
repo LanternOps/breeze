@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -144,6 +145,20 @@ describe('partner organization and site exports', () => {
     expect(await response.json()).toMatchObject({ code: 'invalid_partner_export_pagination' });
     expect(mocks.execute).toHaveBeenCalledOnce();
     expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it('exports page external links in one additional partner-scoped select', async () => {
+    results.push([org()], [{ orgId: ORG_ID, system: 'connectwise', externalId: 'f14ab81d-7c26-4fa5-938b-83cd352dda1f', label: 'Acme PSA' }]);
+    const res = await request('/partner-api/organizations', 'organizations:read');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].externalLinks).toEqual([{ system: 'connectwise', externalId: 'f14ab81d-7c26-4fa5-938b-83cd352dda1f', label: 'Acme PSA' }]);
+    expect(mocks.select).toHaveBeenCalledTimes(2);
+    const linkQuery = mocks.select.mock.results[1]!.value;
+    const predicate = new PgDialect().sqlToQuery(linkQuery.where.mock.calls[0][0]);
+    expect(predicate.sql).toContain('"organization_external_links"."org_id" in');
+    expect(predicate.sql).toContain('"organization_external_links"."partner_id" =');
+    expect(predicate.params).toEqual([ORG_ID, PARTNER_ID]);
   });
 
   it('exports only narrow organization mapping fields', async () => {

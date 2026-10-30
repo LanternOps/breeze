@@ -103,3 +103,22 @@ CVE-2026-93687
 # Remove when @expo/cli depends on zod >= 4.6.6 (re-check after expo-sdk bumps).
 CVE-2023-54404
 GHSA-mrhx-c7xc-m3w5
+
+# zip 4.6.1 (Rust) — CVE-2026-115905 / GHSA-m665-v7pm-7grj, "Zip Cloaking":
+# ZipStreamReader extracts by Local File Header name while ZipArchive trusts
+# the Central Directory, so a crafted archive can write a different path.
+# Reaches apps/viewer/src-tauri/Cargo.lock only through tauri-plugin-updater
+# 2.14.0, which requires zip ^4 (every 4.x is yanked; fix is 9.0.5), so it
+# cannot be bumped — same upstream block as #8910 / the Cargo Audit exception
+# in apps/viewer/src-tauri/.cargo/audit.toml.
+# Not reachable as described: the updater only uses zip::ZipArchive (never
+# ZipStreamReader), in extract_zip on Windows, and only on bytes that already
+# passed verify_signature against the viewer's pinned updater pubkey
+# (Update::install verifies first; download_and_install uses download's
+# verified bytes). The viewer's own code does not call zip.
+# Remove together with the #8910 audit.toml exception once a stable
+# tauri-plugin-updater depends on zip >= 9.0.5.
+#
+# Added 2026-10-29 (Trivy DB refresh).
+CVE-2026-115905
+GHSA-m665-v7pm-7grj

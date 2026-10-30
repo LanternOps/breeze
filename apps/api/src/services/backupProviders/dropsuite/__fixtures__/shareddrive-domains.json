@@ -1,0 +1,13 @@
+[
+  {
+    "id": 51,
+    "sd_domain": "fabrikam.example",
+    "file_count": 10,
+    "storage": 500,
+    "last_backup": "2026-10-27T05:00:00.000Z",
+    "errors": "",
+    "deactivated_since": null,
+    "added_on": "2025-01-02T03:04:05.000Z",
+    "last_sd_domain_backup_id": null
+  }
+]

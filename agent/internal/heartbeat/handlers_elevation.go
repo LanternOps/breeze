@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/etwlua"
@@ -27,6 +28,9 @@ import (
 // satisfy the full interface so etwlua doesn't need to import the heartbeat
 // package.
 func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutcome, error) {
+	if req.FirstQuestionRenderer == "" && req.SubjectSessionID != 0 && req.SubjectSessionID != 0xFFFFFFFF {
+		req.FirstQuestionRenderer = h.firstQuestionRendererFor(strconv.FormatUint(uint64(req.SubjectSessionID), 10))
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return etwlua.ElevationOutcome{}, fmt.Errorf("marshal elevation request: %w", err)
@@ -63,6 +67,9 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 		// SupportName (#8928) is optional and decoded separately: a malformed
 		// value must never cost the ingest decision that starts the PAM flow.
 		SupportName json.RawMessage `json:"supportName"`
+		// PendingExpiresAt (#10190 W07) is optional and decoded separately,
+		// like SupportName.
+		PendingExpiresAt json.RawMessage `json:"pendingExpiresAt"`
 	}
 	if uerr := json.Unmarshal(respBody, &decoded); uerr != nil && len(bytes.TrimSpace(respBody)) > 0 {
 		// The request was accepted (2xx) but the ingest-decision body did not
@@ -83,6 +90,14 @@ func (h *Heartbeat) SendElevationRequest(req etwlua.Event) (etwlua.ElevationOutc
 	}
 	if outcome.SupportName != "" {
 		h.rememberSupportName(outcome.SupportName)
+	}
+	if len(decoded.PendingExpiresAt) > 0 && string(decoded.PendingExpiresAt) != "null" {
+		var at time.Time
+		if terr := json.Unmarshal(decoded.PendingExpiresAt, &at); terr != nil {
+			log.Warn("elevation-requests: ignoring malformed pendingExpiresAt", "error", terr.Error())
+		} else {
+			outcome.PendingExpiresAt = at
+		}
 	}
 	return outcome, nil
 }

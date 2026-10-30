@@ -569,7 +569,9 @@
       "after": "est après",
       "between": "est entre",
       "withinLast": "dans la fin",
-      "notWithinLast": "Pas dans la dernière"
+      "notWithinLast": "Pas dans la dernière",
+      "below": "inférieure à",
+      "atLeast": "au moins"
     },
     "value": {
       "noValue": "Aucune valeur nécessaire",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Retiré"
-      }
+      },
+      "softwareName": "Nom du logiciel",
+      "softwareVersion": "Version du logiciel"
     }
   },
   "account": {
@@ -1292,11 +1296,19 @@
           "waiting": "En attente"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets synchronisés",
+        "title": "Tickets PSA",
         "unlinked": "Non lié"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propriété",
+        "allOrganizations": "Toutes les organisations",
+        "thisOrganizationOnly": "Cette organisation seulement",
+        "all": "Toutes",
+        "organization": "Organisation",
+        "test": "Envoi de test"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentatives de livraison",
         "empty": "Aucune tentative de livraison pour l’instant.",
@@ -1388,6 +1400,14 @@
           "integrationHealthResolved": {
             "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
             "label": "Incident d'état de connexion résolu"
+          },
+          "alertAcknowledged": {
+            "label": "Alerte prise en compte",
+            "description": "Déclenché quand une alerte est prise en compte."
+          },
+          "alertSuppressed": {
+            "label": "Alerte mise en sourdine",
+            "description": "Déclenché quand Breeze AI met une alerte en sourdine. La mise en sourdine depuis le tableau de bord n’envoie pas encore cet événement."
           }
         },
         "fields": {
@@ -1439,6 +1459,22 @@
           "secretRequired": "Secret est nécessaire pour l’authentification HMAC",
           "tokenRequired": "Le jeton est requis pour l’authentification du porteur",
           "urlRequired": "URL est requis"
+        },
+        "neverDelivered": {
+          "marker": "Jamais livré",
+          "explanation": "Breeze n’envoie jamais cet événement. Il sera retiré à l’enregistrement de ce webhook.",
+          "banner": "Breeze n’envoie jamais cet événement. Ce webhook n’a donc jamais effectué de livraison. Choisissez un autre événement avant d’enregistrer."
+        },
+        "payloadVersion": {
+          "title": "Version des données",
+          "v2": {
+            "label": "v2 (recommandée)",
+            "description": "Les événements d’alerte comprennent le nom d’hôte, le site, l’organisation, l’état et un lien vers l’alerte."
+          },
+          "v1": {
+            "label": "v1 (originale)",
+            "description": "Les données d’alerte d’origine, conservées pour les intégrations existantes."
+          }
         }
       },
       "WebhookList": {
@@ -1520,7 +1556,8 @@
           "enabled": "Webhook activé",
           "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
-          "updated": "Webhook mis à jour"
+          "updated": "Webhook mis à jour",
+          "deleted": "Webhook \"{{name}}\" supprimé"
         },
         "title": "Webhooks"
       }

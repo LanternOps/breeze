@@ -12,6 +12,9 @@ export const filterOperatorSchema = z.enum([
   'greaterThanOrEquals',
   'lessThan',
   'lessThanOrEquals',
+  // Software-version operators
+  'below',
+  'atLeast',
   // String operators
   'contains',
   'notContains',
@@ -63,6 +66,11 @@ const relativeTimeValueSchema = z.object({
   unit: z.enum(['minutes', 'hours', 'days', 'weeks', 'months'])
 });
 
+export const softwareVersionValueSchema = z.object({
+  name: z.string().trim().min(1).max(500),
+  version: z.string().trim().min(1).max(100)
+});
+
 // Union order is significant throughout: Zod returns the FIRST branch that
 // parses, so a broader branch placed earlier shadows a narrower one. `z.string()`
 // leading means an ISO date string stays a string (harmless — Postgres coerces
@@ -83,7 +91,10 @@ export const filterValueSchema = z.union([
   z.coerce.date(),
   numberRangeValueSchema,
   dateRangeValueSchema,
-  relativeTimeValueSchema
+  relativeTimeValueSchema,
+  // Required name/version keys cannot match the existing range/time branches.
+  // Keep this after those branches so their existing precedence is preserved.
+  softwareVersionValueSchema
 ]);
 
 // ============================================

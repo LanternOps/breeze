@@ -104,6 +104,9 @@ export default function BackupHealthOverview({ orgId }: { orgId: string | null }
     void load(null, false);
   }, [load]);
 
+  const providerLabels = [...new Set(rows.flatMap((row) => row.providerKey ? [row.providerKey] : []))]
+    .map((provider) => t(/* i18n-dynamic */ `integrations:backupProviders.${provider}`, { defaultValue: provider }));
+
   const patchFilters = (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch }));
 
   return (
@@ -142,7 +145,10 @@ export default function BackupHealthOverview({ orgId }: { orgId: string | null }
               {t('backupHealth.providerOnly', { value: summary.providerOnly })}
             </span>
             <span data-testid="backup-health-m365">
-              {t('backupHealth.m365Accounts', { value: summary.m365Accounts })}
+              {t('backupHealth.saasAccounts', { value: summary.m365Accounts })}
+              <span data-testid="backup-health-saas-subtitle" className="block text-xs">
+                {t('backupHealth.saasAccountsSubtitle')}
+              </span>
             </span>
           </div>
           <p data-testid="backup-health-definition" className="text-xs text-muted-foreground">
@@ -188,7 +194,7 @@ export default function BackupHealthOverview({ orgId }: { orgId: string | null }
         >
           <option value="all">{t('backupHealth.sourceAll')}</option>
           <option value="breeze">{t('backupHealth.sourceBreeze')}</option>
-          <option value="provider">{t('integrations:backupProviders.cove')}</option>
+          <option value="provider">{providerLabels.join(', ') || t('backupHealth.sourceProvider')}</option>
         </select>
         <input
           data-testid="backup-health-filter-search"

@@ -33,6 +33,10 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
   // human owner is credited — see 2026-12-04-101100-ticket-comments-
   // service-principal-origin.sql); it is not site-restricted.
   'tickets:write',
+  // Opt-in; acknowledge + resolve only (no suppress, dismiss, delete, bulk,
+  // rules). The principal acts as itself. Does NOT imply alerts:read;
+  // never part of the Weavestream default or any preset.
+  'alerts:write',
 ] as const);
 
 // Opt-in read scopes: grantable, but deliberately NOT in any default scope set.

@@ -188,7 +188,7 @@ export interface NarrativeContext {
     available: boolean;
     created: number;
     resolved: number;
-    /** Resolved with no `resolved_by` — nobody clicked, the condition cleared. */
+    /** Resolved with neither user nor principal attribution (system resolve). */
     autoResolved: number;
     critical: number;
     /** CURRENT state, not a window count — see `STRUCTURALLY_UNAVAILABLE`. */
@@ -256,8 +256,9 @@ export interface NarrativeContext {
    */
   backupProviders: {
     available: boolean;
-    /** Third-party rows for this org (devices and mailbox accounts). 0 = none. */
+    /** Third-party endpoint rows for this org. 0 = none. */
     devices: number;
+    saasWorkloads: number;
     devicesByHealth: Record<BackupHealth, number>;
     /** Up to `NARRATIVE_TOP_N`, by name. */
     criticalDevices: Array<{ name: string }>;
@@ -361,6 +362,7 @@ export interface RawBackupInputs {
 
 export interface RawBackupProviderInputs {
   devices: number;
+  saasWorkloads: number;
   devicesByHealth: Record<BackupHealth, number>;
   /** Up to `NARRATIVE_TOP_N + 1`, by name. */
   criticalDevices: Array<{ name: string }>;
@@ -587,6 +589,7 @@ export function assembleNarrativeContext(
   const backupProviders: NarrativeContext['backupProviders'] = {
     available: raw.backupProviders !== null,
     devices: raw.backupProviders?.devices ?? 0,
+    saasWorkloads: raw.backupProviders?.saasWorkloads ?? 0,
     devicesByHealth: raw.backupProviders?.devicesByHealth ?? { healthy: 0, warning: 0, critical: 0, unknown: 0 },
     criticalDevices: criticalDevicesAll.slice(0, NARRATIVE_TOP_N),
     criticalDevicesTruncated: criticalDevicesAll.length > NARRATIVE_TOP_N,
@@ -771,9 +774,9 @@ async function loadHeader(orgId: string): Promise<RawOrgHeader & { partnerId: st
  * Alerts: four statements, all pinned on `alerts.org_id` (`alerts` carries a
  * direct `org_id`, tenancy shape 1).
  *
- * `resolved_by IS NULL` on a resolved alert is what "auto-resolved" means in
- * this schema — nobody clicked, the condition cleared and the reaper closed
- * it. `currently_suppressed` is a CURRENT-state count because there is no
+ * A resolved alert with neither user nor principal attribution counts as
+ * auto-resolved. A Partner API principal resolve is human-equivalent.
+ * `currently_suppressed` is a CURRENT-state count because there is no
  * `suppressed_at` to window on (see `STRUCTURALLY_UNAVAILABLE`).
  */
 async function loadAlerts(scope: Scope, window: Window): Promise<RawAlertInputs> {
@@ -787,7 +790,7 @@ async function loadAlerts(scope: Scope, window: Window): Promise<RawAlertInputs>
     SELECT
       COUNT(*) FILTER (WHERE a.created_at >= ${start} AND a.created_at < ${end})::int AS created,
       COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end})::int AS resolved,
-      COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end} AND a.resolved_by IS NULL)::int AS auto_resolved,
+      COUNT(*) FILTER (WHERE a.resolved_at >= ${start} AND a.resolved_at < ${end} AND a.resolved_by IS NULL AND a.resolved_by_principal_id IS NULL)::int AS auto_resolved,
       COUNT(*) FILTER (WHERE a.created_at >= ${start} AND a.created_at < ${end} AND a.severity = 'critical')::int AS critical,
       COUNT(*) FILTER (WHERE a.status = 'suppressed')::int AS currently_suppressed
     FROM alerts a
@@ -1195,6 +1198,7 @@ async function loadBackupProviders(orgId: string): Promise<RawBackupProviderInpu
   const devicesByHealth: Record<BackupHealth, number> = { healthy: 0, warning: 0, critical: 0, unknown: 0 };
   const criticalDevices: Array<{ name: string }> = [];
   let unlinkedDevices = 0;
+  let saasWorkloads = 0;
   let oldestSyncMs: number | null = null;
   for (const row of rows) {
     const stale = isConnectionStale(
@@ -1215,17 +1219,20 @@ async function loadBackupProviders(orgId: string): Promise<RawBackupProviderInpu
         errorsCount: count(row.errors_count),
         now,
       }).health;
-    devicesByHealth[health] += 1;
-    if (health === 'critical' && criticalDevices.length < TOP_N_FETCH_LIMIT) {
+    const isSaas = row.account_type === 'm365' || row.account_type === 'gws';
+    if (isSaas) saasWorkloads += 1;
+    else devicesByHealth[health] += 1;
+    if (!isSaas && health === 'critical' && criticalDevices.length < TOP_N_FETCH_LIMIT) {
       criticalDevices.push({ name: row.name ?? '' });
     }
-    if (!row.breeze_device_id && row.account_type !== 'm365') unlinkedDevices += 1;
+    if (!row.breeze_device_id && !isSaas) unlinkedDevices += 1;
     const synced = row.connection_last_sync_at == null ? NaN : new Date(row.connection_last_sync_at).getTime();
     if (Number.isFinite(synced)) oldestSyncMs = oldestSyncMs === null ? synced : Math.min(oldestSyncMs, synced);
   }
 
   return {
-    devices: rows.length,
+    devices: rows.length - saasWorkloads,
+    saasWorkloads,
     devicesByHealth,
     criticalDevices,
     unlinkedDevices,

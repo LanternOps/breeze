@@ -12,7 +12,7 @@
  * write and its placement reconciliation commit or roll back together.
  */
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, runAfterDbContextCommit } from '../db';
 import { assetPhysicalPlacements, devices, discoveredAssets } from '../db/schema';
@@ -113,13 +113,48 @@ function subjectColumn(kind: PlacementSubjectKind) {
   return kind === 'device' ? assetPhysicalPlacements.deviceId : assetPhysicalPlacements.discoveredAssetId;
 }
 
-export async function readPlacement(kind: PlacementSubjectKind, id: string): Promise<PlacementFields | null> {
+/** Org-scoped in SQL; RLS is defense in depth, not the only fence. */
+export async function readPlacement(
+  kind: PlacementSubjectKind,
+  id: string,
+  orgId: string,
+): Promise<PlacementFields | null> {
   const [row] = await db
     .select()
     .from(assetPhysicalPlacements)
-    .where(eq(subjectColumn(kind), id))
+    .where(and(eq(subjectColumn(kind), id), eq(assetPhysicalPlacements.orgId, orgId)))
     .limit(1);
   return row ? toFields(row) : null;
+}
+
+/** Map key for the batch helpers: one entry per (kind, id) pair. */
+export function placementKey(kind: PlacementSubjectKind, id: string): string {
+  return `${kind}:${id}`;
+}
+
+/** Batch {@link readPlacement}, org-scoped in SQL: absent subjects have no entry. */
+export async function readPlacements(
+  refs: ReadonlyArray<Pick<PlacementSubject, 'kind' | 'id'>>,
+  orgId: string,
+): Promise<Map<string, PlacementFields>> {
+  const result = new Map<string, PlacementFields>();
+  const deviceIds = [...new Set(refs.filter((r) => r.kind === 'device').map((r) => r.id))];
+  const discoveredIds = [...new Set(refs.filter((r) => r.kind === 'discovered').map((r) => r.id))];
+  const filters = [
+    deviceIds.length > 0 ? inArray(assetPhysicalPlacements.deviceId, deviceIds) : undefined,
+    discoveredIds.length > 0 ? inArray(assetPhysicalPlacements.discoveredAssetId, discoveredIds) : undefined,
+  ].filter((f) => f !== undefined);
+  if (filters.length === 0) return result;
+
+  const rows = await db
+    .select()
+    .from(assetPhysicalPlacements)
+    .where(and(eq(assetPhysicalPlacements.orgId, orgId), or(...filters)));
+  for (const row of rows) {
+    if (row.deviceId) result.set(placementKey('device', row.deviceId), toFields(row));
+    else if (row.discoveredAssetId) result.set(placementKey('discovered', row.discoveredAssetId), toFields(row));
+  }
+  return result;
 }
 
 export async function deletePlacement(subject: Pick<PlacementSubject, 'kind' | 'id'>): Promise<boolean> {
@@ -179,26 +214,55 @@ export async function savePlacement(
 export async function resolvePlacementAuthority(
   subject: PlacementSubject,
 ): Promise<{ authority: PlacementSubject; linked: boolean }> {
-  if (subject.kind === 'device') return { authority: subject, linked: false };
+  const resolved = await resolvePlacementAuthorities([subject]);
+  return resolved.get(placementKey(subject.kind, subject.id)) ?? { authority: subject, linked: false };
+}
 
-  const [row] = await db
+/**
+ * Batch {@link resolvePlacementAuthority}: the single implementation of the
+ * authority rule. Every input subject has an entry, keyed by
+ * {@link placementKey}.
+ */
+export async function resolvePlacementAuthorities(
+  subjects: readonly PlacementSubject[],
+): Promise<Map<string, { authority: PlacementSubject; linked: boolean }>> {
+  const result = new Map<string, { authority: PlacementSubject; linked: boolean }>();
+  const discovered: PlacementSubject[] = [];
+  for (const subject of subjects) {
+    if (subject.kind === 'device') result.set(placementKey('device', subject.id), { authority: subject, linked: false });
+    else discovered.push(subject);
+  }
+  if (discovered.length === 0) return result;
+
+  const rows = await db
     .select({
+      id: discoveredAssets.id,
+      orgId: discoveredAssets.orgId,
       linkedDeviceId: discoveredAssets.linkedDeviceId,
       deviceOrgId: devices.orgId,
       deviceSiteId: devices.siteId,
     })
     .from(discoveredAssets)
     .leftJoin(devices, eq(devices.id, discoveredAssets.linkedDeviceId))
-    .where(and(eq(discoveredAssets.id, subject.id), eq(discoveredAssets.orgId, subject.orgId)))
-    .limit(1);
+    .where(and(
+      inArray(discoveredAssets.id, [...new Set(discovered.map((s) => s.id))]),
+      inArray(discoveredAssets.orgId, [...new Set(discovered.map((s) => s.orgId))]),
+    ));
+  const rowById = new Map(rows.map((r) => [r.id, r]));
 
-  if (!row?.linkedDeviceId || row.deviceOrgId !== subject.orgId || !row.deviceSiteId) {
-    return { authority: subject, linked: false };
+  for (const subject of discovered) {
+    const row = rowById.get(subject.id);
+    const key = placementKey('discovered', subject.id);
+    if (!row || row.orgId !== subject.orgId || !row.linkedDeviceId || row.deviceOrgId !== subject.orgId || !row.deviceSiteId) {
+      result.set(key, { authority: subject, linked: false });
+    } else {
+      result.set(key, {
+        authority: { kind: 'device', id: row.linkedDeviceId, orgId: row.deviceOrgId, siteId: row.deviceSiteId },
+        linked: true,
+      });
+    }
   }
-  return {
-    authority: { kind: 'device', id: row.linkedDeviceId, orgId: row.deviceOrgId, siteId: row.deviceSiteId },
-    linked: true,
-  };
+  return result;
 }
 
 export type LinkMode = 'manual' | 'automatic';

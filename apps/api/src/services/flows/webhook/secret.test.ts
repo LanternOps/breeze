@@ -51,7 +51,14 @@ import { canManagePartnerWidePolicies } from '../../partnerWideAccess';
 import { getUserPermissions, type UserPermissions } from '../../permissions';
 import { ownerForFlowRow } from '../repository';
 import { FlowStepPinError, stepPinsFor } from '../../flowValidator';
-import { createOrRotateWebhookSecret, decryptFlowWebhookSecret, encryptFlowWebhookSecret } from './secret';
+import { db } from '../../../db';
+import { hmacFingerprint } from '../../secretCrypto';
+import {
+  createOrRotateWebhookSecret,
+  decryptFlowWebhookSecret,
+  encryptFlowWebhookSecret,
+  setFlowWebhookSecretFromLegacy,
+} from './secret';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -269,5 +276,32 @@ describe('createOrRotateWebhookSecret', () => {
     const serialized = JSON.stringify(vi.mocked(writeAuditEvent).mock.calls);
     expect(serialized).not.toContain(r.secret);
     expect(serialized).not.toContain('enc:v3:');
+  });
+});
+
+// W06 (#5221) Task B3 — the switch carries a legacy Job's webhook secret onto its flow.
+describe('setFlowWebhookSecretFromLegacy', () => {
+  it('stores the legacy plaintext row-bound, stamps rotated_at = updated_at, and returns no plaintext', async () => {
+    updates.push([{ id: FLOW_A }]);
+    const r = await setFlowWebhookSecretFromLegacy(db as never, FLOW_A, 'legacy-sender-secret');
+    const set = setOf(calls.find((c) => c.kind === 'update')!);
+    expect(decryptFlowWebhookSecret({ id: FLOW_A, webhookSecretEncrypted: set.webhookSecretEncrypted as string })).toBe('legacy-sender-secret');
+    expect(set.webhookSecretFingerprint).toBe(hmacFingerprint('legacy-sender-secret'));
+    expect(set.webhookSecretRotatedAt).toBeInstanceOf(Date);
+    // webhookSecretSurvivesEnable: "nothing written since the mint" is updated_at === rotated_at.
+    expect((set.updatedAt as Date).getTime()).toBe((set.webhookSecretRotatedAt as Date).getTime());
+    expect(r).toEqual({ ok: true, fingerprint: hmacFingerprint('legacy-sender-secret') });
+    expect(JSON.stringify(r)).not.toContain('legacy-sender-secret');
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('an empty secret writes nothing', async () => {
+    expect(await setFlowWebhookSecretFromLegacy(db as never, FLOW_A, '')).toEqual({ ok: false });
+    expect(calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+  });
+
+  it('a flow the transaction cannot write is { ok: false }', async () => {
+    updates.push([]);
+    expect(await setFlowWebhookSecretFromLegacy(db as never, FLOW_A, 'legacy-sender-secret')).toEqual({ ok: false });
   });
 });
