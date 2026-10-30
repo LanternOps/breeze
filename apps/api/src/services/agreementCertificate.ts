@@ -41,12 +41,15 @@ import { organizations, partners } from '../db/schema/orgs';
 import { computeAgreementSha256 } from './agreementContentHash';
 import { registerThemeFonts, resolvePageSize, type DocumentPageSize } from './documentThemes';
 import { MAX_MERGED_PAGES, PdfMergeError, mergeUploadedContractPdfs } from './pdfMerge';
+import { certificateVersionFromColumn, type CertificateVersion } from './agreementCertificateVersion';
 
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
 
-export type CertificateCustomerChannel = 'emailed_link' | 'portal' | 'unknown';
+/** `signing_link` = the public token link, however it reached the client
+ *  (emailed by Breeze, or copied and shared by the technician — #10513). */
+export type CertificateCustomerChannel = 'signing_link' | 'portal' | 'unknown';
 
 /** How the acceptance happened — classified from stored columns by the loader. */
 export type CertificateHow =
@@ -82,6 +85,8 @@ export interface CertifiedAgreementInput {
   how: CertificateHow;
   /** Page size for an image original (a PDF original keeps its own page size). */
   pageSize: DocumentPageSize;
+  /** The wording version stamped at signing (agreementCertificateVersion.ts). */
+  certificateVersion: CertificateVersion;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,10 +162,22 @@ function longDateTime(at: Date, locale: string): string {
   return `${plain(new Intl.DateTimeFormat(locale, { dateStyle: 'long', timeStyle: 'short', timeZone: 'UTC' }).format(at))} UTC`;
 }
 
-function howLines(how: Exclude<CertificateHow, { kind: 'unavailable' }>, createdAt: Date, locale: string): string[] {
+/** The token-link wording, frozen per certificate version (#10513). v1 MUST
+ *  keep printing "emailed link": it is what every pre-v2 certificate says. */
+const SIGNING_LINK_VIA: Record<CertificateVersion, string> = {
+  1: 'Electronically accepted via emailed link',
+  2: 'Electronically accepted via signing link',
+};
+
+function howLines(
+  how: Exclude<CertificateHow, { kind: 'unavailable' }>,
+  createdAt: Date,
+  locale: string,
+  version: CertificateVersion,
+): string[] {
   switch (how.kind) {
     case 'customer': {
-      const via = how.channel === 'emailed_link' ? 'Electronically accepted via emailed link'
+      const via = how.channel === 'signing_link' ? SIGNING_LINK_VIA[version]
         : how.channel === 'portal' ? 'Electronically accepted via portal'
           : 'Electronically accepted online';
       // Only the built-in typed-signature provider is a typed name + checkbox;
@@ -258,7 +275,7 @@ export function buildCertificateContent(input: CertifiedAgreementInput): Certifi
     });
     sections.push({
       heading: 'How',
-      rows: howLines(how, doc.createdAt, locale).map((value, i) => ({ label: i === 0 ? 'How' : '', value })),
+      rows: howLines(how, doc.createdAt, locale, input.certificateVersion).map((value, i) => ({ label: i === 0 ? 'How' : '', value })),
     });
   }
 
@@ -488,6 +505,7 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
         acceptanceOrigin: contractDocuments.acceptanceOrigin,
         acceptanceMethod: contractDocuments.acceptanceMethod,
         acceptanceReference: contractDocuments.acceptanceReference,
+        certificateVersion: contractDocuments.certificateVersion,
         contentSha256: contractDocuments.contentSha256,
         contentHashVersion: contractDocuments.contentHashVersion,
         acceptanceRenderLocale: contractDocuments.acceptanceRenderLocale,
@@ -532,10 +550,11 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
   } else {
     // A public-link accept consumes the link's jti; a logged-in portal accept
     // has none. A quote acceptance deleted before the back-fill leaves no way
-    // to tell, so the certificate says "online".
+    // to tell, so the certificate says "online". The jti says the token link
+    // was used, not how it was delivered (emailed or copied, #10513).
     const channel: CertificateCustomerChannel = isRequest
-      ? (row.requestPublicResponseJti ? 'emailed_link' : 'portal')
-      : (row.quoteAcceptanceExists ? (row.quoteAcceptanceTokenJti ? 'emailed_link' : 'portal') : 'unknown');
+      ? (row.requestPublicResponseJti ? 'signing_link' : 'portal')
+      : (row.quoteAcceptanceExists ? (row.quoteAcceptanceTokenJti ? 'signing_link' : 'portal') : 'unknown');
     how = { kind: 'customer', channel, method: row.acceptanceMethod };
   }
 
@@ -566,6 +585,7 @@ export async function loadCertifiedAgreementInput(documentId: string): Promise<C
     source: isRequest ? { kind: 'request', requestId: row.agreementRequestId } : { kind: 'quote', quoteNumber: row.quoteNumber ?? null },
     how,
     pageSize: resolvePageSize(row.partnerPageSize),
+    certificateVersion: certificateVersionFromColumn(row.certificateVersion),
   };
 }
 
