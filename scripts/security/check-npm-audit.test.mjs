@@ -515,3 +515,32 @@ test('a usage error after --findings-json still removes a stale findings file', 
   assert.match(res.stderr, /unknown option/, out(res));
   assert.equal(existsSync(join(res.root, 'findings.json')), false, out(res));
 });
+
+test('--findings-json creates a missing parent directory, on a pass and on a blocking failure', () => {
+  // security.yml passes "${RUNNER_TEMP}/npm-audit/npm-audit.json" before
+  // anything creates that directory; the gate must not depend on it existing.
+  const pass = runGate({ osvReport: CLEAN, exceptions: { exceptions: [] }, args: ['--findings-json', 'not/yet/there/f.json'] });
+  assert.equal(pass.status, 0, out(pass));
+  assert.equal(JSON.parse(readFileSync(join(pass.root, 'not/yet/there/f.json'), 'utf8')).schema, 1, out(pass));
+
+  const blocked = runGate({
+    osvReport: report(finding('node-forge', FORGE_ID)),
+    exceptions: { exceptions: [] },
+    args: ['--findings-json', join(tmp, `abs-missing-${caseNo}`, 'deeper', 'f.json')],
+  });
+  assert.equal(blocked.status, 1, out(blocked));
+  assert.match(blocked.stderr, /found 1 advisory/, out(blocked));
+  const doc = JSON.parse(readFileSync(join(tmp, `abs-missing-${caseNo - 1}`, 'deeper', 'f.json'), 'utf8'));
+  assert.equal(doc.findings.filter((x) => x.blocking).length, 1, out(blocked));
+});
+
+test('--findings-json under a path that cannot be a directory fails the run', () => {
+  const res = runGate({
+    osvReport: CLEAN,
+    exceptions: { exceptions: [] },
+    args: ['--findings-json', 'afile/f.json'],
+    setup: (root) => writeFileSync(join(root, 'afile'), 'not a directory'),
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /afile/, out(res));
+});

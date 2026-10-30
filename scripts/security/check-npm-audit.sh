@@ -70,6 +70,11 @@ set -euo pipefail
 #                  blocking }],          # blocking = would fail this run
 #     exceptionProblems: [{ id, package, expires, status }] }  # EXPIRED|TOO_FAR
 
+fail() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
 usage() {
   echo "ERROR: $*" >&2
   echo "usage: check-npm-audit.sh [--lockfile <path>] [--exceptions <path>] [--findings-json <path>]" >&2
@@ -96,9 +101,12 @@ while [ "$#" -gt 0 ]; do
         # Removed as soon as it is named, before any later usage error can
         # exit: a findings file from an earlier run must never be mistaken
         # for this run's.
+        # Its directory is created here too: callers (security.yml) name a
+        # path under a directory nothing has made yet.
         --findings-json)
           FINDINGS_JSON="$(abs_path "$2")"
           rm -f "$FINDINGS_JSON"
+          mkdir -p "$(dirname "$FINDINGS_JSON")" || fail "cannot create the directory for --findings-json $FINDINGS_JSON"
           ;;
       esac
       shift 2
@@ -113,10 +121,6 @@ cd "$ROOT_DIR"
 THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
 MAX_EXCEPTION_DAYS=30
 
-fail() {
-  echo "ERROR: $*" >&2
-  exit 1
-}
 
 command -v osv-scanner >/dev/null 2>&1 || fail "osv-scanner not found on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq not found on PATH"

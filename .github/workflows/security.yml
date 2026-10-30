@@ -107,8 +107,10 @@ jobs:
           sparse-checkout: .github/scripts/new-findings.mjs
           sparse-checkout-cone-mode: false
 
-      # Only a red audit needs the table.
+      # Only a red audit needs the table. A failed download must not stop the
+      # issue from being opened, so the next step runs regardless and says so.
       - name: Download findings document
+        id: download
         if: needs.npm-audit.outputs.outcome == 'failure'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -116,9 +118,11 @@ jobs:
           path: ${{ runner.temp }}/npm-audit
 
       - name: Open, update, or close the dependency audit issue
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           OUTCOME: ${{ needs.npm-audit.outputs.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
           TITLE: Dependency audit red on main
@@ -172,7 +176,10 @@ jobs:
               ;;
             failure)
               findings="${RUNNER_TEMP}/npm-audit/npm-audit.json"
-              if [ -s "$findings" ] && table=$(node .github/scripts/new-findings.mjs --table "$findings"); then
+              if [ "$DOWNLOAD_OUTCOME" != success ]; then
+                echo "::warning title=Findings artifact missing::Could not download npm-audit-findings (download step: '${DOWNLOAD_OUTCOME}'); the issue is updated without the finding table — see the NPM Audit job log."
+                table="The findings artifact could not be downloaded — see the NPM Audit job log for the advisories."
+              elif [ -s "$findings" ] && table=$(node .github/scripts/new-findings.mjs --table "$findings"); then
                 :
               else
                 table="The audit failed before producing findings (scan integrity or tooling failure) — see the run log."
