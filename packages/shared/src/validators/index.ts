@@ -37,6 +37,7 @@ export * from './securityAgents';
 export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';
+export * from './mfaRecoveryCode';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
