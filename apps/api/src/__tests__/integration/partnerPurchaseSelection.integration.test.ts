@@ -43,7 +43,7 @@ describe('partners.purchase_selection database boundary', () => {
   it.each([
     { intent: 'hosting' }, { intent: 'cloud', offer: 'Founding' }, { intent: 'cloud', offer: 7 },
     { intent: 'cloud', offer: null }, { intent: 'cloud', capacity: 250 }, { intent: null }, { offer: 'founding' },
-    { intent: 'cloud', offer: '' }, { intent: 'cloud', offer: 'a'.repeat(33) },
+    { intent: 'cloud', offer: '' }, { intent: 'cloud', offer: 'a'.repeat(33) }, { intent: 'cloud', offer: 'founding\n' },
   ])('rejects a malformed intent shape: %j', async (value) => {
     await expect(insertSelection(value)).rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'partners_purchase_selection_valid' } });
   });
@@ -67,6 +67,9 @@ describe('partners.purchase_selection database boundary', () => {
     expect(launch?.selection).toEqual(selected);
     await replayMigration('2027-01-17-100000-partner-purchase-selection-intent.sql');
     await replayMigration('2027-01-17-100000-partner-purchase-selection-intent.sql');
+    // The intent row is the real proof here: if the legacy file re-added its narrower
+    // CHECK, that ADD would fail to validate this row. replayMigration re-applies later
+    // files afterwards, so the rejects below pass either way.
     await replayMigration('2026-12-18-110000-partner-purchase-selection.sql');
     const rows = await getTestDb().transaction(async (tx) => {
       await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);

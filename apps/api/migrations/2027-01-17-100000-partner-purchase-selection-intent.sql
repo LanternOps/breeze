@@ -3,6 +3,8 @@
 -- tuple stays valid, so no row is rewritten. NULL remains the legacy default.
 -- DROP + ADD is idempotent; replaying the older 2026-12-18-110000 migration
 -- afterwards is a no-op because it only adds the constraint when absent.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE partners DROP CONSTRAINT IF EXISTS partners_purchase_selection_valid;
 
 ALTER TABLE partners ADD CONSTRAINT partners_purchase_selection_valid CHECK (
