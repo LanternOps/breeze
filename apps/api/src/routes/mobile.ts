@@ -386,8 +386,8 @@ async function getOrgIdsForAuth(
 //  - org axis (RLS-backed) via ensureOrgAccess.
 //  - site axis (app-layer ONLY — RLS does NOT enforce it): a site-restricted
 //    org user (`perms.allowedSiteIds` set) must not read/act on an alert whose
-//    device lives in a site outside their allowlist. Deviceless (org-wide)
-//    alerts stay visible; out-of-site alerts return null so the handler surfaces
+//    device lives in a site outside their allowlist. Org-level and out-of-site
+//    alerts return null so the handler surfaces
 //    a 404 (no oracle distinguishing "absent" from "forbidden"). Unrestricted
 //    callers (partner/system scope, or org users with no site restriction —
 //    `allowedSiteIds` undefined) are unaffected.
@@ -417,8 +417,8 @@ async function getAlertWithOrgCheck(
   if (perms?.allowedSiteIds && alert.topologySiteId) {
     return canAccessSite(perms, alert.topologySiteId) ? alert : null;
   }
-  // Deviceless alerts are org-wide and not site-bound, so they pass.
-  if (perms?.allowedSiteIds && alert.deviceId) {
+  if (perms?.allowedSiteIds !== undefined) {
+    if (!alert.deviceId) return null;
     const [device] = await db
       .select({ siteId: devices.siteId })
       .from(devices)

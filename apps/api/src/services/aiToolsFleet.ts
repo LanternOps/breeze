@@ -611,7 +611,7 @@ function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
 // Canonical alert site-scope condition (mirrors routes/alerts/alerts.ts:188-210).
 // Returns null for unrestricted callers (no narrowing / no device leftJoin
 // needed). For a restricted caller the query MUST leftJoin devices on
-// alerts.deviceId; zero-site callers then see only device-less (org-wide) alerts.
+// alerts.deviceId; zero-site callers see no alerts.
 function alertSiteCondition(auth: AuthContext): SQL | null {
   const parts: SQL[] = [];
   // Site axis on the alert's OWNING site: a topology policy alert follows its
@@ -619,8 +619,7 @@ function alertSiteCondition(auth: AuthContext): SQL | null {
   const siteScope = alertSiteScopeCondition(auth.allowedSiteIds);
   if (siteScope) parts.push(siteScope);
   // Exact-device axis (#6096) — ANDed on top, and independent of the site axis
-  // (a device-LESS analysis run carries only this one). It also overrides the
-  // `isNull(deviceId)` escape hatch above: a device-less org-wide alert is not
+  // (a device-LESS analysis run carries only this one). An org-level alert is not
   // attributable to the run's device, and `deviceId IN (…)` is false for NULL,
   // so those alerts drop out for a device-bound caller by construction.
   const deviceScope = deviceScopeCondition(auth, alerts.deviceId);
@@ -2824,7 +2823,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (oc) conditions.push(oc);
         if (typeof input.severity === 'string') conditions.push(eq(alerts.severity, input.severity as any));
         // Site axis: narrow the summary to alerts on in-scope devices (canonical
-        // predicate — device leftJoin + isNull escape hatch for org-wide alerts).
+        // predicate — device leftJoin, topology ownership, and no org-level escape).
         const summarySite = alertSiteCondition(auth);
         if (summarySite) conditions.push(summarySite);
 

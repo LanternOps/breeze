@@ -3,10 +3,10 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { closeDb, db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { devices } from '../../db/schema';
+import { alerts, devices } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -26,6 +26,9 @@ vi.mock('../../services/sentry', async (importOriginal) => ({
   captureException: captureExceptionMock,
 }));
 import { createSourcedAlert } from '../../services/alertService';
+
+import { alertSiteScopeCondition, alertSiteScopeByDeviceIds, getAlertWithOrgCheck } from '../../routes/alerts/helpers';
+import { alertInSiteScope, filterAlertsBySiteScope } from '../../routes/tickets/siteScope';
 
 const migrationFile = join(__dirname, '../../../migrations/2027-01-17-120000-alerts-owner-kind.sql');
 afterAll(() => closeDb());
@@ -162,5 +165,53 @@ describe('sourced workload alert concurrency', () => {
     }), 'backup-provider-test', { siteId: null });
     expect(correlationMock).not.toHaveBeenCalled();
     expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('alert owner site scope', () => {
+  async function siteFixture() {
+    const f = await fixture();
+    const otherSite = await createSite({ orgId: f.orgAId });
+    const rows = await getTestDb().insert(alerts).values([
+      { orgId: f.orgAId, deviceId: f.deviceId, ownerKind: 'device', severity: 'high', title: 'Device' },
+      { orgId: f.orgAId, deviceId: null, ownerKind: 'topology_site', topologySiteId: f.siteId,
+        topologySourceKey: 'topology:' + 'a'.repeat(64), severity: 'high', title: 'Topology' },
+      { orgId: f.orgAId, deviceId: null, ownerKind: 'backup_workload', ownerRef: 'scope-workload', severity: 'high', title: 'Workload' },
+      // The origin is in S1 but its owning site is elsewhere: never use provenance as access.
+      { orgId: f.orgAId, deviceId: f.deviceId, ownerKind: 'topology_site', topologySiteId: otherSite.id,
+        topologySourceKey: 'topology:' + 'b'.repeat(64), severity: 'high', title: 'Other topology' },
+    ]).returning();
+    return { ...f, rows };
+  }
+
+  it.each([
+    ['allowlist sees device and topology but no workload', 'site', ['Device', 'Topology']],
+    ['empty allowlist sees no org-level alerts', 'empty', []],
+    ['unrestricted sees every owner', 'unrestricted', ['Device', 'Other topology', 'Topology', 'Workload']],
+  ] as const)('%s', async (_name, scope, expected) => {
+    const f = await siteFixture();
+    const allowedSiteIds = scope === 'unrestricted' ? undefined : scope === 'empty' ? [] : [f.siteId];
+    const auth = { orgId: f.orgAId, allowedSiteIds, canAccessOrg: (orgId: string) => orgId === f.orgAId };
+    await withDbAccessContext(orgContext(f.orgAId), async () => {
+      const listed = await db.select({ title: alerts.title }).from(alerts)
+        .leftJoin(devices, eq(devices.id, alerts.deviceId))
+        .where(and(eq(alerts.orgId, f.orgAId), alertSiteScopeCondition(allowedSiteIds)));
+      expect(listed.map((row) => row.title).sort()).toEqual(expected);
+      const filtered = await filterAlertsBySiteScope(auth, f.rows);
+      expect(filtered.map((row) => row.title).sort()).toEqual(expected);
+      for (const row of f.rows) {
+        expect(await alertInSiteScope(auth, row), row.title).toBe((expected as readonly string[]).includes(row.title));
+        expect(Boolean(await getAlertWithOrgCheck(row.id, auth)), row.title).toBe((expected as readonly string[]).includes(row.title));
+      }
+    });
+  });
+
+  it.each(['site', 'empty'] as const)('join-free gate fails closed without resolved device IDs (%s)', async (scope) => {
+    const f = await siteFixture();
+    const allowedSiteIds = scope === 'site' ? [f.siteId] : [];
+    const rows = await withDbAccessContext(orgContext(f.orgAId), () => db.select({ title: alerts.title }).from(alerts)
+      .where(and(eq(alerts.orgId, f.orgAId), alertSiteScopeByDeviceIds({ allowedSiteIds, allowedDeviceIds: null }))));
+    expect(rows.map((row) => row.title).sort()).toEqual(scope === 'site' ? ['Device', 'Topology'] : []);
   });
 });

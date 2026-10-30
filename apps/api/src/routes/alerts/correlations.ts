@@ -156,7 +156,7 @@ export async function getAccessibleAlert(alertId: string, auth: AuthContext): Pr
   // Site axis: a site-restricted caller must not see/act on an alert outside
   // their allowed sites. Out-of-site → not found (no oracle), matching the
   // alerts.ts by-id paths. A site-owned topology alert follows its topology
-  // site (M3-D6); deviceless alerts stay visible.
+  // site (M3-D6); org-level alerts require unrestricted access.
   if (!(await alertInSiteScope(auth, alert))) {
     return null;
   }

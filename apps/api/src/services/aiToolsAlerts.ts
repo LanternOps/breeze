@@ -114,6 +114,7 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
     const allowedSites = siteAllowlistOf(auth);
     return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId) ? null : alert;
   }
+  if (!alert.deviceId && siteAllowlistOf(auth) !== undefined) return null;
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
