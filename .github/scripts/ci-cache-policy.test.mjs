@@ -170,3 +170,52 @@ test('seed workflow triggers, concurrency and pins', () => {
     assert.match(s, /^\s+cache:\s*false\s*$/m);
   }
 });
+
+// Every OS that restores a cache in ci.yml must have a seed job on that OS,
+// otherwise that OS's entries are never saved and its jobs always cold-start.
+function jobBlocks(text) {
+  const out = [];
+  let cur = null;
+  for (const line of text.slice(text.search(/^jobs:\s*$/m)).split('\n')) {
+    if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(line)) { cur = { name: line.trim().slice(0, -1), lines: [] }; out.push(cur); }
+    else if (/^\S/.test(line)) cur = null;
+    else if (cur) cur.lines.push(line);
+  }
+  return out.map((j) => ({ name: j.name, text: j.lines.join('\n') }));
+}
+const osFamily = (v) => (/windows/.test(v) ? 'windows' : /macos/.test(v) ? 'macos' : /ubuntu/.test(v) ? 'ubuntu' : null);
+function jobOses(job) {
+  const m = job.text.match(/^ {4}runs-on:\s*(.+)$/m);
+  assert.ok(m, `job ${job.name} has no runs-on`);
+  const v = m[1].trim();
+  const mx = v.match(/matrix\.(\w+)/);
+  if (!mx) return [osFamily(v)];
+  // Matrix values: `key: value` lines (include entries) or an inline `key: [a, b]` list.
+  return [...job.text.matchAll(new RegExp(`^\\s+(?:- )?${mx[1]}:\\s*(.+?)\\s*$`, 'gm'))]
+    .flatMap((x) => x[1].replace(/^\[|\]$/g, '').split(',').map((v) => osFamily(v.trim())));
+}
+
+test('seed runner OS set covers every OS that restores each cache in ci.yml', () => {
+  const seedJobs = jobBlocks(seedText());
+  const needs = { go: new Set(), pnpm: new Set(), 'golangci-lint': new Set(), tauri: new Set() };
+  for (const job of jobBlocks(ci)) {
+    const oses = jobOses(job).filter(Boolean);
+    if (/restore-go-cache/.test(job.text)) oses.forEach((o) => needs.go.add(o));
+    if (/restore-pnpm-cache/.test(job.text)) oses.forEach((o) => needs.pnpm.add(o));
+    if (/golangci-lint-v/.test(job.text)) oses.forEach((o) => needs['golangci-lint'].add(o));
+    if (/tauri-apt-cache/.test(job.text)) oses.forEach((o) => needs.tauri.add(o));
+  }
+  const seedOses = (re) => new Set(seedJobs.filter((j) => re.test(j.text)).flatMap(jobOses).filter(Boolean));
+  const have = {
+    go: seedOses(/cache\/save[\s\S]*key: go-/),
+    pnpm: seedOses(/cache\/save[\s\S]*key: pnpm-/),
+    'golangci-lint': seedOses(/cache\/save[\s\S]*key: golangci-lint-/),
+    tauri: seedOses(/cache\/save[\s\S]*key: tauri-apt-/),
+  };
+  for (const [cache, oses] of Object.entries(needs)) {
+    assert.ok(oses.size > 0, `found no ci.yml jobs restoring ${cache}`);
+    for (const o of oses) {
+      assert.ok(have[cache].has(o), `seed has no ${cache} job on ${o}, but ci.yml restores ${cache} there`);
+    }
+  }
+});
