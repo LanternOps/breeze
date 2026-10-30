@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
 import { removeUnreferencedScreenshotFiles } from '../services/screenshotStorage';
 import { ensureDefaultProfile } from '../services/billingProfileService';
@@ -213,6 +214,16 @@ const paginationSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional()
 });
+
+/** UUID enrollment defaults name groups; legacy sentinels remain valid. */
+async function partnerEnrollmentGroupIds(settings: unknown): Promise<string[]> {
+  if (!settings || typeof settings !== 'object') return [];
+  const defaults = (settings as Record<string, unknown>).defaults;
+  if (!defaults || typeof defaults !== 'object') return [];
+  const groupId = (defaults as Record<string, unknown>).deviceGroup;
+  if (typeof groupId !== 'string' || !z.string().guid().safeParse(groupId).success) return [];
+  return findPartnerOwnedGroupIds([groupId]);
+}
 
 /**
  * Save-time validation for agent/watchdog version pins on a `settings.defaults`
@@ -659,6 +670,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   if (createAssigneeError) {
     return c.json({ error: createAssigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
   }
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
@@ -1146,6 +1160,9 @@ orgRoutes.patch(
   const auth = c.get('auth');
   const body = c.req.valid('json');
 
+  const partnerGroupIds = await partnerEnrollmentGroupIds(body.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   // Agent/watchdog version pins (issue #2124) — reject unknown versions at save
   // time so a partner-locked pin can't silently freeze every child org's fleet.
   // Mirrors the org PATCH path; the zod schema already checked the shape.
@@ -1484,6 +1501,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   const id = c.req.param('id')!;
 
   const data = c.req.valid('json');
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
@@ -2106,6 +2126,9 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const data = c.req.valid('json');
   // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
@@ -2578,6 +2601,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
+
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
   // #2879 — suspended orgs are outside canAccessOrg/accessibleOrgIds, so a
   // partner-scope status-only lifecycle transition (suspended→offboarding /
