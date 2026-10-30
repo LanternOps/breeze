@@ -569,7 +569,7 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     expect(await res.json()).toEqual({
       verified: false,
       status: 'sign_in',
-      purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' },
+      signupIntent: { intent: 'cloud' },
     });
 
     // No DUPLICATE tenant: the pending company was never created, and the address

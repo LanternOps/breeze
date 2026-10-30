@@ -180,31 +180,57 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
     );
   });
 
-  it('parks an approved selection server-side without changing the generic response or looking up accounts', async () => {
-    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' };
-    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+  it('parks the signup intent server-side without a purchaseSelection key', async () => {
+    const res = await postRegisterPartner({ ...VALID_BODY, signupIntent: { intent: 'wisp', offer: 'founding' } });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ success: true, message: 'If registration can proceed, you will receive next steps shortly.' });
-    expect(createPendingRegistration).toHaveBeenCalledWith(expect.objectContaining({ purchaseSelection }));
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'wisp', offer: 'founding' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' },
-    { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_client' },
-    { catalogVersion: 'old', capacity: 250, billingPeriod: 'monthly' },
-    {}, null,
-  ])('rejects an invalid supplied purchase selection before parking it: %j', async (purchaseSelection) => {
+  it('defaults to the cloud intent when the client sends no intent fields', async () => {
+    await postRegisterPartner(VALID_BODY);
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
+  });
+
+  it('maps a legacy launch purchaseSelection to the cloud intent', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
     const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(200);
+    const arg = vi.mocked(createPendingRegistration).mock.calls[0]![0];
+    expect(arg.signupIntent).toEqual({ intent: 'cloud' });
+    expect(Object.hasOwn(arg, 'purchaseSelection')).toBe(false);
+  });
+
+  it('prefers signupIntent when both signupIntent and a legacy purchaseSelection are sent', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    await postRegisterPartner({ ...VALID_BODY, purchaseSelection, signupIntent: { intent: 'wisp', offer: 'founding' } });
+    expect(vi.mocked(createPendingRegistration).mock.calls[0]![0].signupIntent).toEqual({ intent: 'wisp', offer: 'founding' });
+  });
+
+  it.each([
+    { intent: 'hosting' },
+    { intent: 'cloud', offer: 'Bad Offer' },
+    { intent: 'cloud', price: 1 },
+    {}, null,
+  ])('rejects an invalid signupIntent before parking it: %j', async (signupIntent) => {
+    const res = await postRegisterPartner({ ...VALID_BODY, signupIntent });
     expect(res.status).toBe(400);
     expect(createPendingRegistration).not.toHaveBeenCalled();
   });
 
-  it('durably selects the approved launch default for clients that omit purchase intent', async () => {
-    await postRegisterPartner(VALID_BODY);
-    expect(vi.mocked(createPendingRegistration).mock.calls[0]![0]).toHaveProperty('purchaseSelection', {
-      catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly',
-    });
+  it.each([
+    { catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' },
+    { catalogVersion: 'old', capacity: 250, billingPeriod: 'monthly' },
+    {}, null,
+  ])('rejects an invalid legacy purchaseSelection before parking it: %j', async (purchaseSelection) => {
+    const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });
+    expect(res.status).toBe(400);
+    expect(createPendingRegistration).not.toHaveBeenCalled();
   });
 
   it('enqueues the verification job with the token HASH, never the raw token', async () => {
