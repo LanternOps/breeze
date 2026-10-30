@@ -2,7 +2,7 @@ import { db } from '../../../db';
 import { deviceEventLogs } from '../../../db/schema';
 import { eq, and, gte, ilike, sql } from 'drizzle-orm';
 import type { ConditionHandler } from '../registry';
-import type { EventLogCondition, ConditionResult } from '../types';
+import type { EventLogCondition, ConditionResult, ConditionEvalContext } from '../types';
 
 function escapeLikePattern(pattern: string): string {
   return pattern.replace(/[%_\\]/g, '\\$&');
@@ -10,8 +10,9 @@ function escapeLikePattern(pattern: string): string {
 
 export const eventLogHandler: ConditionHandler = {
   type: 'event_log',
+  evidence: true,
 
-  async evaluate(condition: unknown, deviceId: string): Promise<ConditionResult> {
+  async evaluate(condition: unknown, deviceId: string, _ctx?: ConditionEvalContext): Promise<ConditionResult> {
     const cond = condition as EventLogCondition;
     const windowStart = new Date(Date.now() - cond.windowMinutes * 60 * 1000);
 

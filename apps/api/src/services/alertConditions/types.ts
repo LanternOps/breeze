@@ -4,6 +4,16 @@
  * All interfaces for condition evaluation, shared across handlers.
  */
 
+import type { EvidenceCursor } from '@breeze/shared';
+
+export interface ConditionEvalContext {
+  /** Evidence handlers additionally require >= 1 matching row ordered after this cursor. */
+  evidenceAfter?: EvidenceCursor;
+  side?: 'trigger' | 'resolve';
+  /** Legacy closed alert: rows ingested at or before this instant are consumed. */
+  legacyIngestedBefore?: Date;
+}
+
 // Supported comparison operators
 export type ComparisonOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
 
@@ -230,6 +240,7 @@ export type RootCondition = AlertCondition | ConditionGroup;
 
 // Evaluation result with context
 export interface EvaluationResult {
+  evidenceWatermarks: Record<string, EvidenceCursor>;
   triggered: boolean;
   conditionsMet: string[];
   conditionsNotMet: string[];
@@ -254,6 +265,7 @@ export interface EvaluationResult {
 
 // Result from a single condition handler
 export interface ConditionResult {
+  evidenceWatermark?: EvidenceCursor;
   passed: boolean;
   description: string;
   actualValue?: number;
