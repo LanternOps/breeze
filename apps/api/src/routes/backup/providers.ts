@@ -4,7 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db, runOutsideDbContext } from '../../db';
-import { backupProviderConnections, backupProviderDevices } from '../../db/schema';
+import { backupProviderConnections, backupProviderCustomers, backupProviderDevices } from '../../db/schema';
 import {
   requireMfa,
   requirePermission,
@@ -88,8 +88,8 @@ type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0
  * instead. A connection with no stored root yet may adopt its first one.
  * Same rule as EDR connections (#8352).
  */
-function vendorRootMismatch(stored: string | null, resolved: string) {
-  if (!stored || stored === resolved) return null;
+function vendorRootMismatch(stored: string | null, resolved: string, missingCustomerOverlap = false) {
+  if (!missingCustomerOverlap && (!stored || stored === resolved)) return null;
   return {
     error: 'These credentials belong to a different vendor account than this connection. '
       + 'Create a new connection instead of changing the account on an existing one.',
@@ -97,6 +97,24 @@ function vendorRootMismatch(stored: string | null, resolved: string) {
     storedVendorRootId: stored,
     newVendorRootId: resolved,
   } as const;
+}
+
+/** Stored customers are scoped to both the connection and its owning partner. */
+async function customerOverlapMismatch(
+  executor: DbExecutor,
+  id: string,
+  partnerId: string,
+  stored: string | null,
+  resolved: string,
+  customerIds: ReadonlySet<string>,
+) {
+  const customers = await executor
+    .select({ vendorCustomerId: backupProviderCustomers.vendorCustomerId })
+    .from(backupProviderCustomers)
+    .where(and(eq(backupProviderCustomers.connectionId, id), eq(backupProviderCustomers.partnerId, partnerId)));
+  return customers.length && !customers.some(customer => customerIds.has(customer.vendorCustomerId))
+    ? vendorRootMismatch(stored, resolved, true)
+    : null;
 }
 
 /**
@@ -112,6 +130,7 @@ async function lockedVendorRootMismatch(
   id: string,
   partnerId: string,
   resolved: string,
+  customerIds?: ReadonlySet<string>,
 ) {
   const [row] = await executor
     .select({ vendorRootId: backupProviderConnections.vendorRootId })
@@ -119,7 +138,10 @@ async function lockedVendorRootMismatch(
     .where(and(eq(backupProviderConnections.id, id), eq(backupProviderConnections.partnerId, partnerId)))
     .limit(1)
     .for('update');
-  return row ? vendorRootMismatch(row.vendorRootId, resolved) : null;
+  if (!row) return null;
+  return customerIds
+    ? customerOverlapMismatch(executor, id, partnerId, row.vendorRootId, resolved, customerIds)
+    : vendorRootMismatch(row.vendorRootId, resolved);
 }
 
 /** The audit row for a refused root change; ids only, never the credential. */
@@ -197,8 +219,9 @@ connectionRoutes.post(
       return c.json({ error: `Invalid ${adapter.label} credentials` }, 400);
     }
 
-    const baseUrl = body.baseUrl ?? 'https://api.backup.management/jsonapi';
-    const urlError = assertHttpsBaseUrl(baseUrl);
+    const baseUrl = body.baseUrl ?? adapter.defaultBaseUrl;
+    if (!baseUrl) return c.json({ error: `Base URL is required for ${adapter.label}` }, 400);
+    const urlError = assertHttpsBaseUrl(baseUrl) ?? adapter.validateBaseUrl?.(baseUrl);
     if (urlError) return c.json({ error: urlError }, 400);
 
     // The row id is generated HERE, not defaulted by the database: the
@@ -230,7 +253,7 @@ connectionRoutes.post(
             vendorRootName: test.rootName,
             isActive: true,
             status: 'connected',
-            syncIntervalMinutes: body.syncIntervalMinutes ?? 30,
+            syncIntervalMinutes: body.syncIntervalMinutes ?? adapter.defaultSyncIntervalMinutes ?? 30,
             showProviderNameInPortal: body.showProviderNameInPortal ?? false,
             createdBy: auth.user?.id ?? null,
           })
@@ -311,6 +334,7 @@ connectionRoutes.patch(
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     /** Set only when the credential changes: the root it resolved to. */
     let resolvedRootId: string | null = null;
+    let resolvedCustomerIds: Set<string> | undefined;
     if (body.name !== undefined) updates.name = body.name;
     if (body.isActive !== undefined) updates.isActive = body.isActive;
     if (body.syncIntervalMinutes !== undefined) updates.syncIntervalMinutes = body.syncIntervalMinutes;
@@ -336,7 +360,15 @@ connectionRoutes.patch(
       }
       // Cheap pre-check before sealing anything; re-checked under the row
       // lock inside the write transaction below.
-      const mismatch = vendorRootMismatch(existing.vendorRootId, test.rootId);
+      if (adapter.rootContinuity === 'customer_overlap') {
+        const customers = await adapter.listCustomers(creds.data, existing.baseUrl, test.rootId);
+        resolvedCustomerIds = new Set(customers.map(customer => customer.vendorCustomerId));
+      }
+      const mismatch = resolvedCustomerIds
+        ? await withAuthDbAccessContext(auth, () => customerOverlapMismatch(
+          db, id, gate.partnerId, existing.vendorRootId, test.rootId, resolvedCustomerIds!,
+        ))
+        : vendorRootMismatch(existing.vendorRootId, test.rootId);
       if (mismatch) {
         writeRouteAudit(c, vendorRootMismatchAudit(
           'backup_provider.connection.update.rejected', id, gate.partnerId, mismatch,
@@ -364,7 +396,7 @@ connectionRoutes.patch(
       // actually reaches the client instead of poisoning the whole request.
       updated = await withAuthDbAccessContext(auth, () => db.transaction(async (tx) => {
         if (resolvedRootId !== null) {
-          const mismatch = await lockedVendorRootMismatch(tx, id, gate.partnerId, resolvedRootId);
+          const mismatch = await lockedVendorRootMismatch(tx, id, gate.partnerId, resolvedRootId, resolvedCustomerIds);
           if (mismatch) return { kind: 'mismatch' as const, mismatch };
         }
         const [row] = await tx
@@ -514,8 +546,17 @@ connectionRoutes.post(
 
     const result = await adapter.testConnection(creds, existing.baseUrl);
 
+    let resolvedCustomerIds: Set<string> | undefined;
     if (result.ok) {
-      const mismatch = vendorRootMismatch(existing.vendorRootId, result.rootId);
+      if (adapter.rootContinuity === 'customer_overlap') {
+        const customers = await adapter.listCustomers(creds, existing.baseUrl, result.rootId);
+        resolvedCustomerIds = new Set(customers.map(customer => customer.vendorCustomerId));
+      }
+      const mismatch = resolvedCustomerIds
+        ? await withAuthDbAccessContext(auth, () => customerOverlapMismatch(
+          db, id, gate.partnerId, existing.vendorRootId, result.rootId, resolvedCustomerIds!,
+        ))
+        : vendorRootMismatch(existing.vendorRootId, result.rootId);
       if (mismatch) {
         writeRouteAudit(c, vendorRootMismatchAudit(
           'backup_provider.connection.test.rejected', id, gate.partnerId, mismatch,
@@ -536,7 +577,7 @@ connectionRoutes.post(
         if (result.ok) {
           // A concurrent credential PATCH may have committed a different root
           // during the vendor call; re-read it under the row lock.
-          const mismatch = await lockedVendorRootMismatch(db, id, gate.partnerId, result.rootId);
+          const mismatch = await lockedVendorRootMismatch(db, id, gate.partnerId, result.rootId, resolvedCustomerIds);
           if (mismatch) return mismatch;
         }
         await db

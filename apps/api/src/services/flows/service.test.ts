@@ -56,6 +56,7 @@ vi.mock('./conversion/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./conversion/ledger')>()),
   resetShadowIfChanged: vi.fn(async () => false),
   shadowPlaceholderAllowance: vi.fn(async () => new Set<string>()),
+  convertedFromForFlow: vi.fn(async () => null),
 }));
 vi.mock('./flowLimits', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./flowLimits')>()),
@@ -72,7 +73,7 @@ import { assertFlowSlugAvailable, getFlow, listFlows, saveDraftFlow } from './se
 import { readFlowUsage } from './budgets';
 import { computeFlowLimits, resolveFlowLimits } from './flowLimits';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
-import { resetShadowIfChanged, shadowPlaceholderAllowance } from './conversion/ledger';
+import { convertedFromForFlow, resetShadowIfChanged, shadowPlaceholderAllowance } from './conversion/ledger';
 import { generatedScriptPlaceholderId } from './conversion/convertAutomation';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -406,6 +407,21 @@ describe('getFlow — W5 webhook block and usage (#5220 A5)', () => {
       secretRotatedAt: '2027-03-01T10:00:00.000Z', lastAuthFailureAt: '2027-03-02T10:00:00.000Z', lastAuthFailureReason: 'bad_signature',
     });
     expect(JSON.stringify(r)).not.toContain('SECRETCIPHER');
+  });
+
+  it('detail shows moved-from: a converted flow carries its source Job (#5221 C3)', async () => {
+    const from = { automationId: '55555555-5555-4555-8555-555555555555', name: 'Nightly cleanup', conversionId: '66666666-6666-4666-8666-666666666666', state: 'switched' as const };
+    vi.mocked(convertedFromForFlow).mockResolvedValueOnce(from);
+    queues.select.push([row()]);
+    const r = await getFlow(auth(), FLOW_ID);
+    expect(r?.flow.convertedFrom).toEqual(from);
+    expect(convertedFromForFlow).toHaveBeenCalledWith(FLOW_ID);
+  });
+
+  it('a flow that was never converted has convertedFrom null', async () => {
+    vi.mocked(convertedFromForFlow).mockResolvedValueOnce(null);
+    queues.select.push([row()]);
+    expect((await getFlow(auth(), FLOW_ID))?.flow.convertedFrom).toBeNull();
   });
 
   it('a non-webhook flow has no webhook block', async () => {

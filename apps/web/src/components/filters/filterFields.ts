@@ -91,6 +91,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'software.installed', label: 'Has Software Installed', category: 'software', type: 'string', operators: ['contains', 'notContains', 'equals', 'in', 'hasAny', 'hasAll'] },
   { key: 'software.notInstalled', label: 'Missing Software', category: 'software', type: 'string', operators: ['contains', 'equals', 'in', 'hasAny'] },
 
+  { key: 'software.version', label: 'Software Version', category: 'software', type: 'string', operators: ['below', 'atLeast', 'equals'] },
+  { key: 'software.vendor', label: 'Software Vendor', category: 'software', type: 'string', operators: ['contains', 'equals'] },
+
   // Hierarchy
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
   { key: 'siteId', label: 'Site', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },

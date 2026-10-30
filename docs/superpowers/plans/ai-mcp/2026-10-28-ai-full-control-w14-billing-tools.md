@@ -150,3 +150,35 @@ The billing block is not page-expanded (device / alert pages expand devices, scr
 ## Tasks
 
 T1 (this doc + quorum) → T2 guardrail classes → T3 route bindings + permission parity → T4 schemas + handlers (pre-exposure: projections, scope refusals) → T5 wiring + index measure → T6 agent catalog → T7 contract rows → T8 web `tierConfig.ts` → T9 docs → T10 prompt-size gate → T11 golden prompts → T12 integration suite → T13 merge main, gates, PR.
+
+## PR B as built (branch `feature/6754-ai-full-control/wave-6784-b`, 2026-10-29)
+
+Cut from `origin/main` `8bc9270868` (PR A #10373 merged). `Closes #6784`.
+
+| Tool / action | **Class** | Floor | Notes |
+|---|---|---|---|
+| `manage_contracts:preview_invoice` | **t2-ro** (`TIER2_READONLY_ACTIONS`; the tool is base tier 2, so not `TIER1_READ_ACTIONS`) | contracts:read | `contractInvoicePreview.ts`: the generator's due check, period, quantities, catalog prices (snapshot on a gap), overage legs, tax and totals, auto-issue and recipients, with no write. Returns `generateWith`. |
+| `manage_contracts:generate_invoice` | **four-eyes** (QW1, Todd) | contracts:manage | Asserts `periodStart`, `expectedTotal`, `autoIssue`, `expectedRecipients`. Mandatory per-action pin over the whole preview. Agent-human-only. `selfManagedDbContext: ['generate_invoice']`. |
+| `manage_accounting_sync` reads (status, owed_operations, customers, mappings, income_accounts, remote_candidates) | **t1** | accounting:read | `status` is an explicit column projection (no token column, no `getConnection`). `remote_candidates` lists without a term and filters in Breeze (QW8). |
+| `…:link_mapping` / `unlink_mapping` / `sync_mapping` | **supervised** | accounting:manage + organizations:write + catalog:write, MFA | Link enqueues the sync as PUT /mappings does. `sync_mapping` refuses a mapping that would CREATE the remote record. The card says the provider's record is overwritten (QB9). |
+| `…:push` / `push_bulk` | **four-eyes** (QW1, Todd) | accounting:manage + invoices:write, MFA | Mandatory per-action pins (`accountingPushDigest.ts`). `push_bulk` ≤ 10, pushed synchronously at release (never queued). Agent-human-only. |
+| `create_new` mapping, customer import, reconcile, connect / callback / disconnect / settings / refresh / tenant selection | **not built** | — | `create_new`: the job and the 15-minute stale-row sweep reload live rows long after any approval, so nothing could bind the record it creates (QB5). Import creates organizations (`create_org` four-eyes precedent). The rest is vendor console. |
+
+Every accounting action, and `generate_invoice`, refuses device-bound / site-ceiling sessions (`canMutateOrgWideGovernance`). Rate limits: `manage_contracts` 30 / 300 s (new for the whole tool), `manage_accounting_sync` 10 / 300 s.
+
+### PR B quorum (codex exec, read-only, xhigh): AGREE WITH CHANGES
+
+- **QB1 (blocking) validate before commit.** ACCEPTED. One system transaction locks the contract row, recomputes the preview under that lock and refuses unless it equals every assertion; only then does `generateDueInvoice` run (it takes the same lock first). A refusal writes nothing. A rollback AFTER generate was rejected: `emitContractEvent` enqueues to BullMQ inside the transaction, so a rolled-back invoice would still emit `contract.invoiced`. The remaining window (a device added between the locked preview and the generator's own device read, in the same transaction) is bounded post-commit: the draft is left editable, never issued.
+- **QB2 (blocking) totals with tax.** ACCEPTED. The preview computes tax exactly as the draft recompute does (`resolveOrgTaxRateOn` + `computeInvoiceTotals`), pins each line's effective `taxable` flag and subtotal / tax / total. The assertion is the total with tax. Auto-issue happens only when the draft's total is the approved one; the email goes out only when the issued total still is.
+- **QB3 (blocking) recipients reach delivery.** ACCEPTED. The send passes the approved recipients as `to`, so the live billing-contact fallback never applies. An approved empty list sends nothing (the invoice is issued, `emailWithheld: no_approved_recipients`). Residual, recorded: an invoice under autopay is notified by the autopay notice (to its payer), exactly as the route and the scheduled worker do.
+- **QB4 (blocking) accounting pins cover every input.** ACCEPTED. The push pin covers the invoice and its lines, the destination connection identity and payload settings (no token column), the invoice / org / item mapping rows, the org's billing payload and the items' catalog rows and price rows in the invoice currency.
+- **QB5 (blocking) approval through queues.** ACCEPTED by construction: `push_bulk` pushes synchronously at release; `create_new` is not built (the sweep would create it later from live rows regardless of enqueue).
+- **QB6 (blocking) durable releases lose partner authority.** ACCEPTED. `actorContext.buildUserOwnedAuthContext` now sets `partnerOrgAccess` from the CURRENT partner membership on a partner-axis release (null otherwise). This is an auth-surface change: every partner-wide gate on a durable release now behaves as it does live. Sign-off box in the PR.
+- **QB7 (blocking) mandatory pins.** ACCEPTED. `pinnedEffectPolicy.requiresPinnedEffectDigest(tool, args)` gains per-action entries; the three call sites pass the intent arguments.
+- **QB8 (blocking) provider gate.** ACCEPTED. The handler re-makes `providerGateResponse` (registered, capability, configured) per action.
+- **QB9 / QB10 (non-blocking).** ACCEPTED: link / sync cards name the overwrite; the hour-block refusal is re-made under the lock.
+- **Dissents for Todd:** none.
+
+### W19 (PR B branch)
+
+Always-on 2,494 B (unchanged); billing block 524 → 561 B; largest block devices 1,713 B; worst page turn alert 5,257 B. Registry 343 → 344 tools (`MCP_TOOL_COUNT_APPROX` 340 is within tolerance). Golden prompts g112 (generate an invoice) and g113 (push to Xero); count 111 → 113.
