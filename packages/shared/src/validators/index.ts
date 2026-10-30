@@ -1428,6 +1428,7 @@ export * from './trustCenterContent';
 export * from './trustCenterTemplate';
 export * from './trustCenterEmbed';
 export * from './launchPurchaseSelection';
+export * from './signupIntent';
 export * from './wispConcerns';
 export * from './wispNudgePreferences';
 export * from './wispSpecialists';

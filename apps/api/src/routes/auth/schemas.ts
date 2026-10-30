@@ -1,6 +1,6 @@
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
+import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, launchPurchaseSelectionSchema, signupIntentSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -39,7 +39,10 @@ export const registerSchema = z.object({
 
 export const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
-  purchaseSelection: newPartnerPurchaseSelectionSchema,
+  // What the signup is for. `purchaseSelection` is the legacy launch tuple, accepted
+  // only so an old cached client does not break; it normalizes to the default intent.
+  signupIntent: signupIntentSchema.optional(),
+  purchaseSelection: launchPurchaseSelectionSchema.optional(),
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(255),
