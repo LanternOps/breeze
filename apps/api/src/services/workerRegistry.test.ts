@@ -89,6 +89,7 @@ const EXPECTED_WORKER_NAMES = [
   'securityScanWorker',
   'peripheralJobs',
   'deviceGroupJobs',
+  'partnerGroupEvaluationJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',

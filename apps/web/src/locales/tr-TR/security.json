@@ -960,6 +960,19 @@
     "statusFilterLabel": "Tehdit durumu",
     "categoryFilterLabel": "Kategori"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Reddedildi: cihazın karar kaydı kullanılamıyor",
+    "userDeclined": "Cihazda reddedildi",
+    "userDecisionPending": "Cihazda yanıt verilmedi"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "Kullanıcı bu isteği cihazda geri çekti."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Cihazdaki istem başarısız oldu",
+    "user_denied": "Kullanıcı tarafından reddedildi",
+    "user_timeout": "Cihazda yanıt verilmedi"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Denetim geçmişi yüklenemedi (HTTP {{status}})",
@@ -1129,6 +1142,8 @@
       "durationHelp": "1 - 1440 dakika (maks. 24 saat).",
       "reasonRecommended": "Sebep (önerilir)",
       "reasonOptional": "Sebep (isteğe bağlı)",
+      "reasonShownToUser": "Gerekçe (kullanıcıya gösterilir)",
+      "reasonShownToUserHint": "Son kullanıcı bunu bildiriminde görür (ilk 500 karakter).",
       "reasonPlaceholder": "Denetim takibine kaydedildi"
     },
     "actions": {

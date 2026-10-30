@@ -1,3 +1,8 @@
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({
@@ -25,10 +30,19 @@ function queueSelect(rows: unknown[]) {
 }
 
 beforeEach(() => {
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
   vi.mocked(db.select).mockReset();
 });
 
 describe('validateAutomationTargetConditions', () => {
+  it.each([orgOwner, partnerOwner])('refuses partner-group targets before owner checks: %j', async (owner) => {
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([G1]);
+    await expect(validateAutomationTargetConditions({ owner, conditions: { type: 'groups', groupIds: [G1] } }))
+      .resolves.toMatchObject({ ok: false, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(db.select).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([G1]);
+  });
+
   it.each([
     ['undefined', undefined],
     ['null', null],
