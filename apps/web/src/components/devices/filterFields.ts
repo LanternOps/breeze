@@ -77,6 +77,8 @@ export function getFieldDef(key: string): FilterFieldDefinition | undefined {
 
 const OPERATOR_LABEL: Record<FilterOperator, string> = {
   equals: 'is',
+  below: 'below',
+  atLeast: 'at least',
   notEquals: 'is not',
   contains: 'contains',
   notContains: 'does not contain',

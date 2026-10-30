@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Geräte-Registrierungsschlüssel erstellen. Erfordert ein Ablaufdatum und mindestens eine Quell-IP oder einen CIDR-Bereich.",
       "contracts_write": "Verträge und Vertragspositionen lesen, erstellen und bearbeiten sowie Positionen entfernen. Aktivieren, Pausieren oder Kündigen nicht möglich.",
       "tickets_write": "Tickets erstellen, aktualisieren, zuweisen, deren Status ändern und kommentieren. Löschen oder Verschieben von Tickets nicht möglich.",
+      "alerts_write": "Alarme in jeder Organisation bestätigen und lösen, auf die der Principal zugreifen kann. Gewährt keinen Zugriff auf Alarmdetails (alerts:read) und erlaubt weder Unterdrücken noch Verwerfen oder Löschen.",
       "ai_read": "Verbindung zum MCP-Endpunkt herstellen und schreibgeschützte Tools verwenden. Für jeden anderen ai:*-Bereich erforderlich.",
       "ai_write": "MCP-Tools, die Daten ändern.",
       "ai_execute": "MCP-Tools, die Aktionen auf Geräten ausführen.",

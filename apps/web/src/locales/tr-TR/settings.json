@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Cihaz kayıt anahtarları oluşturma. Son kullanma tarihi ve en az bir kaynak IP veya CIDR gerekir.",
       "contracts_write": "Sözleşme ve sözleşme satırlarını okuma, oluşturma ve düzenleme; satırları kaldırma. Etkinleştirme, duraklatma veya iptal yapılamaz.",
       "tickets_write": "Destek taleplerini oluşturma, güncelleme, atama, durumunu değiştirme ve yorum ekleme. Talepler silinemez veya taşınamaz.",
+      "alerts_write": "Hizmet sorumlusunun erişebildiği tüm kuruluşlardaki uyarıları onaylama ve çözümleme. Uyarı ayrıntılarını okuma (alerts:read), bastırma, kapatma veya silme izni vermez.",
       "ai_read": "MCP uç noktasına bağlanma ve salt okunur araçları kullanma. Diğer tüm ai:* kapsamları için gereklidir.",
       "ai_write": "Verileri değiştiren MCP araçları.",
       "ai_execute": "Cihazlarda eylem çalıştıran MCP araçları.",

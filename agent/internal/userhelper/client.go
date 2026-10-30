@@ -126,7 +126,11 @@ func NewWithOptions(socketPath string, role ipc.HelperRole, binaryKind, context 
 		executor:   executor.New(nil),
 		pending:    make(map[string]chan *ipc.Envelope),
 	}
-	c.prompts = newNativePromptRenderer(advertisedNativePromptKinds(role), showNativePromptOS, c.sendPromptMessage, time.Now)
+	show := showNativePromptOS
+	if role == ipc.HelperRoleSystem {
+		show = showSystemPromptOS // W07: the elevation first question (P14)
+	}
+	c.prompts = newNativePromptRenderer(advertisedNativePromptKinds(role), show, c.sendPromptMessage, time.Now)
 	return c
 }
 

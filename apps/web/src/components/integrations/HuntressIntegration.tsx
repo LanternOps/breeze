@@ -21,7 +21,7 @@ import { fetchWithAuth, resolveApiOrigin } from "../../stores/auth";
 import { fetchAllOrganizationsFrom } from "../../lib/fetchAllOrganizations";
 import { type Organization, useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
@@ -958,24 +958,24 @@ export default function HuntressIntegration() {
 
           <div className="mt-4 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
             <p className="font-medium text-foreground">
-              {t("huntressIntegration.signingSchemeToConfigureOnHuntress")}
+              {t("huntressIntegration.webhookVerificationHeading")}
             </p>
             <ul className="mt-1 list-disc space-y-1 pl-4">
               <li>
-                {t("huntressIntegration.header")}
-                <code className="font-mono">x-huntress-signature</code>:{" "}
-                <code className="font-mono">
-                  sha256=HMAC-SHA256(&#123;timestamp&#125;.&#123;rawBody&#125;,
-                  secret)
-                </code>
+                <Trans
+                  i18nKey="huntressIntegration.webhookVerificationSecret"
+                  t={t}
+                  components={{ code: <code className="font-mono" /> }}
+                />
               </li>
               <li>
-                {t("huntressIntegration.header")}
-                <code className="font-mono">x-huntress-timestamp</code>
-                {t(
-                  "huntressIntegration.unixSecondsSignedAlongsideTheBodyRequestsOlder",
-                )}
+                <Trans
+                  i18nKey="huntressIntegration.webhookVerificationHeaders"
+                  t={t}
+                  components={{ code: <code className="font-mono" /> }}
+                />
               </li>
+              <li>{t("huntressIntegration.webhookVerificationSendTest")}</li>
               <li>
                 {t("common:labels.optional")}
                 <code className="font-mono">x-huntress-account-id</code> /{" "}

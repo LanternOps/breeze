@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Générer des clés d'inscription d'appareils. Exige une date d'expiration et au moins une adresse IP source ou un CIDR.",
       "contracts_write": "Lire, créer et modifier des contrats et des lignes de contrat, et supprimer des lignes. Activation, mise en pause et annulation impossibles.",
       "tickets_write": "Créer, mettre à jour, assigner, changer le statut et commenter des tickets. Suppression et déplacement de tickets impossibles.",
+      "alerts_write": "Accuser réception et résoudre les alertes dans toutes les organisations accessibles au principal de service. Ne permet pas de lire les détails des alertes (alerts:read), de les suspendre, de les ignorer ni de les supprimer.",
       "ai_read": "Se connecter au point de terminaison MCP et utiliser les outils en lecture seule. Requis par toutes les autres portées ai:*.",
       "ai_write": "Outils MCP qui modifient des données.",
       "ai_execute": "Outils MCP qui exécutent des actions sur les appareils.",

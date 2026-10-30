@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 const execMock = vi.fn();
 const cascadeDeleteOrgMock = vi.fn();
@@ -20,13 +20,17 @@ vi.mock('../db', () => ({
 vi.mock('./auditService', () => ({ createAuditLog: vi.fn() }));
 
 describe('cascadeDeletePartner', () => {
+  let mod: typeof import('./tenantCascade');
+  beforeAll(async () => {
+    mod = await import('./tenantCascade');
+  }, 60_000);
+
   beforeEach(() => {
     execMock.mockReset();
     cascadeDeleteOrgMock.mockReset();
   });
 
   it('cascades each child org, sweeps partner-axis tables, then deletes the partner row', async () => {
-    const mod = await import('./tenantCascade');
     // cascadeDeletePartner now reads `.totalRowsDeleted` off each org's stats.
     cascadeDeleteOrgMock.mockResolvedValue({ totalRowsDeleted: 0 });
     vi.spyOn(mod, 'cascadeDeleteOrg').mockImplementation(cascadeDeleteOrgMock);
@@ -49,6 +53,10 @@ describe('cascadeDeletePartner', () => {
       // software_deployments. Object/version/catalog deletion is deferred to
       // the software_catalog sweep transaction so its parent lock is not
       // released between inventory and deletion.
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      // #10521 W1: partner-group assignment, log and membership pre-clears.
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ table_name: 'scripts' }, { table_name: 'users' }])
@@ -116,5 +124,31 @@ describe('cascadeDeletePartner', () => {
         details: expect.objectContaining({ orgsDeleted: 1 }),
       }),
     );
+  });
+
+  it("pre-clears assignments, memberships and logs of the partner's groups", async () => {
+    vi.spyOn(mod, 'topologicalCascadeOrder').mockResolvedValue(['device_groups']);
+    execMock.mockImplementation(async (statement) => {
+      const rendered = JSON.stringify(statement);
+      return rendered.includes('information_schema.columns')
+        ? [{ table_name: 'device_groups' }]
+        : [];
+    });
+    await mod.cascadeDeletePartner('partner-1', 'synthetic-test-cleanup');
+    const calls = execMock.mock.calls.map((call) => JSON.stringify(call[0]));
+    const assignments = calls.findIndex((call) => call.includes('DELETE FROM config_policy_assignments'));
+    const logs = calls.findIndex((call) => call.includes('DELETE FROM group_membership_log'));
+    const memberships = calls.findIndex((call) => call.includes('DELETE FROM device_group_memberships'));
+    const sweep = calls.findIndex((call) => call.includes('information_schema.columns'));
+    expect(assignments).toBeGreaterThan(-1);
+    expect(logs).toBeGreaterThan(assignments);
+    expect(memberships).toBeGreaterThan(logs);
+    expect(sweep).toBeGreaterThan(memberships);
+    expect(calls[assignments]).toContain("level = 'device_group'");
+    expect(calls[assignments]).toContain('target_id IN (SELECT id FROM device_groups WHERE partner_id = ');
+    for (const index of [logs, memberships]) {
+      expect(calls[index]).toContain('group_id IN (SELECT id FROM device_groups WHERE partner_id = ');
+    }
+    for (const index of [assignments, logs, memberships]) expect(calls[index]).toContain('partner-1');
   });
 });
