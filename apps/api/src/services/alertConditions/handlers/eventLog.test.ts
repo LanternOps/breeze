@@ -58,7 +58,7 @@ describe('eventLogHandler.evaluate', () => {
 
   it('with a cursor, requires one matching row ordered after it', async () => {
     for (const candidates of [[], [row()], [row({ timestamp: new Date('2026-10-30T11:29:59Z') })]]) {
-      queueReads([{ count: 5 }], [row()], candidates);
+      queueReads([{ count: 5 }], candidates);
       const result = await eventLogHandler.evaluate(condition, 'device-1', { evidenceAfter: cursor });
       expect(result.passed).toBe(false);
       expect(result.description).toContain(' (no new evidence since last episode)');
@@ -68,7 +68,7 @@ describe('eventLogHandler.evaluate', () => {
 
   it('with a cursor, still counts old rows toward countThreshold', async () => {
     const newer = row({ timestamp: new Date('2026-10-30T11:32:00Z') });
-    queueReads([{ count: 6 }], [newer], [newer]);
+    queueReads([{ count: 6 }], [newer]);
     const result = await eventLogHandler.evaluate(condition, 'device-1', { evidenceAfter: cursor });
     expect(result.passed).toBe(true);
     expect(result.actualValue).toBe(6);
@@ -77,28 +77,30 @@ describe('eventLogHandler.evaluate', () => {
   it('orders same-log Windows events by recordId when timestamps tie', async () => {
     for (const recordId of [101, 99]) {
       const candidate = row({ id: 'event-1', logName: 'Application', recordId: String(recordId) });
-      queueReads([{ count: 5 }], [row({ logName: 'Application', recordId: '100' })], [candidate]);
+      vi.mocked(db.select).mockClear();
+      queueReads([{ count: 5 }], [candidate]);
       const result = await eventLogHandler.evaluate(condition, 'device-1', {
         evidenceAfter: { ...cursor, logName: 'Application', recordId: 100 }, side: 'trigger',
       });
       expect(result.passed).toBe(recordId > 100);
-      expect(result.evidenceWatermark?.recordId).toBe(Math.max(recordId, 100));
+      expect(result.evidenceWatermark?.recordId).toBe(recordId);
+      expect(db.select).toHaveBeenCalledTimes(2); // candidates double as the newest row
     }
   });
 
   it('window still applies under a cursor', async () => {
-    const queries = queueReads([{ count: 5 }], [row()], []);
+    const queries = queueReads([{ count: 5 }], []);
     await eventLogHandler.evaluate({ ...condition, sourcePattern: 'app_%', messagePattern: 'disk_%' }, 'device-1', { evidenceAfter: cursor });
     const count = compiled(queries[0]!);
-    const candidates = compiled(queries[2]!);
+    const candidates = compiled(queries[1]!);
     expect(candidates.params).toEqual([...count.params, '2026-10-30T11:29:59.000Z']);
     expect(candidates.params).toContain('2026-10-30T11:00:00.000Z');
     expect(candidates.params).toContain('device-1');
     expect(candidates.params).toContain('%app\\_\\%%');
     expect(candidates.params).toContain('%disk\\_\\%%');
     expect(candidates.sql).toContain('"timestamp" >=');
-    expect(queries[2]!.limit).toHaveBeenCalledWith(50);
-    expect(queries[2]!.orderBy.mock.calls[0]!.map((s: SQL) => dialect.sqlToQuery(s).sql))
+    expect(queries[1]!.limit).toHaveBeenCalledWith(50);
+    expect(queries[1]!.orderBy.mock.calls[0]!.map((s: SQL) => dialect.sqlToQuery(s).sql))
       .toEqual(['"device_event_logs"."timestamp" desc', '"device_event_logs"."created_at" desc', '"device_event_logs"."id" desc']);
   });
 
@@ -124,24 +126,25 @@ describe('eventLogHandler.evaluate', () => {
 
   it('legacy closed alert without cursor treats events ingested at or before the close as consumed', async () => {
     for (const probe of [[], [{ exists: 1 }]]) {
-      const queries = queueReads([{ count: 5 }], [row()], probe);
+      const queries = queueReads([{ count: 5 }], probe, ...(probe.length ? [[row()]] : []));
       const result = await eventLogHandler.evaluate(condition, 'device-1', { legacyIngestedBefore: now });
       expect(result.passed).toBe(probe.length > 0);
-      const query = compiled(queries[2]!);
+      const query = compiled(queries[1]!);
       expect(query.sql).toContain('"created_at" >');
       expect(query.params).toEqual([...compiled(queries[0]!).params, now.toISOString()]);
-      expect(queries[2]!.limit).toHaveBeenCalledWith(1);
+      expect(queries[1]!.limit).toHaveBeenCalledWith(1);
+      expect(result.evidenceWatermark).toEqual(probe.length ? cursor : undefined);
     }
   });
 
-  it('skips evidence probes below threshold but still returns a nonempty watermark', async () => {
+  it('skips evidence probes and the watermark read below threshold', async () => {
     for (const count of [0, 4]) {
       vi.mocked(db.select).mockReset();
       queueReads([{ count }], ...(count ? [[row()]] : []));
       const result = await eventLogHandler.evaluate(condition, 'device-1', { evidenceAfter: cursor, legacyIngestedBefore: now });
       expect(result.passed).toBe(false);
-      expect(result.evidenceWatermark).toEqual(count ? cursor : undefined);
-      expect(db.select).toHaveBeenCalledTimes(count ? 2 : 1);
+      expect(result).not.toHaveProperty('evidenceWatermark');
+      expect(db.select).toHaveBeenCalledTimes(1);
       expect(result.description).not.toContain('no new evidence');
     }
   });
@@ -154,10 +157,10 @@ describe('eventLogHandler.evaluate', () => {
   });
 
   it('honors resolve-side ties and prefers a cursor over the legacy flag', async () => {
-    queueReads([{ count: 5 }], [row()], [row()]);
+    queueReads([{ count: 5 }], [row()]);
     expect((await eventLogHandler.evaluate(condition, 'device-1', {
       evidenceAfter: cursor, side: 'resolve', legacyIngestedBefore: now,
     })).passed).toBe(true);
-    expect(db.select).toHaveBeenCalledTimes(3);
+    expect(db.select).toHaveBeenCalledTimes(2);
   });
 });

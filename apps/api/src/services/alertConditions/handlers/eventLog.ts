@@ -83,14 +83,17 @@ export const eventLogHandler: ConditionHandler = {
     };
     const newestFirst = [desc(deviceEventLogs.timestamp), desc(deviceEventLogs.createdAt), desc(deviceEventLogs.id)];
 
-    if (matchCount > 0) {
+    // The watermark is only consumed when the leaf passes (cursor advance or
+    // freeze), so it is read only then: with a cursor the candidate rows
+    // already hold the newest row; otherwise one extra newest-row read.
+    const readNewest = async () => {
       const [newest] = await db.select(evidenceColumns)
         .from(deviceEventLogs)
         .where(and(...conditions))
         .orderBy(...newestFirst)
         .limit(1);
       if (newest) evidenceWatermark = toCursor(newest);
-    }
+    };
 
     if (thresholdMet && ctx?.evidenceAfter) {
       const candidates = await db.select(evidenceColumns)
@@ -107,6 +110,9 @@ export const eventLogHandler: ConditionHandler = {
         .where(and(...conditions, gt(deviceEventLogs.createdAt, ctx.legacyIngestedBefore)))
         .limit(1);
       someRowAfter = rows.length > 0;
+      if (someRowAfter) await readNewest();
+    } else if (thresholdMet) {
+      await readNewest();
     }
     const passed = thresholdMet && someRowAfter;
 
