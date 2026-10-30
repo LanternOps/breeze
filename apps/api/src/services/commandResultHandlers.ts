@@ -583,9 +583,12 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
       //     process reached a real outcome, so keep it (OD9-C) and record the
       //     losing cancel request in `cancel_state` alone. `status` is never
       //     `cancelled` here: we cannot prove the stop.
-      const cancelledMarker = (result as Record<string, unknown> | null)?.cancelled === true;
-      const rawMarkerCommandId = (result as Record<string, unknown> | null)?.cancelledByCommandId;
-      const markerCommandId = typeof rawMarkerCommandId === 'string' ? rawMarkerCommandId : null;
+      //
+      // Both fields are declared on `commandResultSchema` (#10377). Until they
+      // were, the transport parse stripped them and the PROVEN write below was
+      // unreachable from a real agent.
+      const cancelledMarker = result.cancelled === true;
+      const markerCommandId = result.cancelledByCommandId ?? null;
 
       phase = 'cancel-confirm-cas';
       let cancelClosed: TerminalExecution[] = [];

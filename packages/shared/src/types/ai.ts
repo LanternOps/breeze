@@ -122,6 +122,20 @@ export type AiContentBlock =
 // Page Context (injected from frontend)
 // ============================================
 
+export const AI_RECORD_KINDS = ['ticket', 'quote', 'invoice', 'contract', 'organization', 'site'] as const;
+export type AiRecordKind = (typeof AI_RECORD_KINDS)[number];
+
+/** IDs only. The server reads everything else. */
+export interface AiRecordPageContext {
+  type: 'record';
+  kind: AiRecordKind;
+  id: string;
+  /** Client hint only; never authorization authority. */
+  orgId?: string;
+  /** Display label for the web badge only. */
+  label?: string;
+}
+
 export type AiPageContext =
   // `orgId` is the org the device belongs to, supplied so the web client can
   // tell that an open chat session belongs to a different tenant than the page
@@ -133,7 +147,8 @@ export type AiPageContext =
   | { type: 'custom'; label: string; data: Record<string, unknown> }
   // Topology M4 (#6000): IDs only. The server pins the session to `siteId`
   // after authorizing it; the client value is never authority afterwards.
-  | AiTopologyPageContext;
+  | AiTopologyPageContext
+  | AiRecordPageContext;
 
 export interface AiTopologyPageContext {
   type: 'topology';

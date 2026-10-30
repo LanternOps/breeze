@@ -57,7 +57,8 @@
     "source": {
       "core": "Kernwerkzeug",
       "tenant": "Werkzeugquelle",
-      "builtin": "Integriert"
+      "builtin": "Integriert",
+      "unknown": "Unbekanntes Werkzeug"
     },
     "preApprovedBadge": "Vorab genehmigt",
     "builtin": {

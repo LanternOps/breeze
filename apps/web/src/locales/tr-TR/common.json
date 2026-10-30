@@ -1296,7 +1296,7 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "PSA Biletleri",
         "unlinked": "Bağlantı kaldırıldı"
       }
     },
@@ -1556,7 +1556,8 @@
           "enabled": "Web kancası etkinleştirildi",
           "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
-          "updated": "Web kancası güncellendi"
+          "updated": "Web kancası güncellendi",
+          "deleted": "\"{{name}}\" web kancası silindi"
         },
         "title": "Web kancaları"
       }

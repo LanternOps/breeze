@@ -2076,11 +2076,14 @@
     "loading": "Cargando estado del parche...",
     "notDownloadedTitle": "Aún no descargado: la instalación tardará más",
     "notices": {
+      "installCommandEnded": "El comando de instalación terminó ({{status}}) antes de que el dispositivo informara un resultado. Consulte el historial de comandos del dispositivo para ver los detalles.",
+      "installFinishedWithIssues": "Instalación finalizada: {{installed}} instalados, {{failed}} con error, {{awaitingRestart}} en espera de reinicio, {{unresolved}} aún sin confirmar. Consulte las filas de parches para ver los detalles.",
       "installLongerThanExpected": "La instalación está tardando más de lo esperado. Las actualizaciones de macOS pueden tardar más de 30 minutos. Actualice la página más tarde para comprobar el estado.",
       "installPatchFailed": "No se pudo instalar {{name}}",
       "installPatchQueued": "Instalación en cola para \"{{name}}\"",
       "installPatchQueuedDetail": "Instalación en cola para \"{{name}}\"{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} en cola para parches {{count}}{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "No se pudo comprobar el estado de la instalación: la lista de parches no se cargó. Actualice la página para ver el estado más reciente.",
       "installedSuccessfully": "Los parches {{installed}} se aplicaron correctamente. {{pending}} aún pendiente.",
       "installingPolling": "Instalando parches... Sondeo de actualizaciones.",
       "noPendingForLabel": "No hay parches pendientes disponibles para {{label}}.",
@@ -2126,6 +2129,7 @@
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
       "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
+      "excludedUserScopeTitle": "No instalable: es una instalación por usuario que Breeze aún no puede aplicar, por lo que ninguna ejecución de parches la instalará.",
       "excludedFeatureUpdateTitle": "El anillo de actualización {{ring}} bloquea esta versión de funciones de Windows (o fija los dispositivos a otra), por lo que las ejecuciones de parches programadas la omiten.",
       "excludedDeclinedTitle": "Rechazado: este parche fue rechazado explícitamente, por lo que la aprobación automática del anillo no lo instalará. Apruébelo de nuevo para permitirlo.",
       "pending": "Aprobación pendiente",
@@ -2617,9 +2621,18 @@
       "refreshFailed": "Error en la actualización de la garantía: {{error}}",
       "refreshing": "Garantía actualizada...",
       "stillInProgress": "La actualización de la garantía aún está en curso; la tarjeta se actualizará cuando se complete.",
-      "updated": "Información de garantía actualizada."
+      "updated": "Información de garantía actualizada.",
+      "agentCollected": "El agente de Breeze recopila la garantía de este dispositivo, por lo que una consulta al fabricante no puede aportar datos más recientes.",
+      "noVendorLookupKept": "No hay consulta de garantía disponible para este fabricante. Se conservaron los datos de garantía existentes."
     },
-    "lookUp": "Consultar"
+    "lookUp": "Consultar",
+    "sources": {
+      "agentCmsl": "Agente (HP CMSL)",
+      "agentPlist": "Agente (plist de macOS)",
+      "import": "Importado",
+      "importVendorEarlier": "Importado (el fabricante informa una fecha de fin anterior)",
+      "provider": "API del fabricante"
+    }
   },
   "devicesPage": {
     "accessDenied": "No tiene permiso para ver dispositivos.",
@@ -2753,6 +2766,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} dispositivos ahora están en {{site}}",
       "bulkMoveSiteSomeFailed": "Se movieron {{moved}} de {{total}} dispositivos a {{site}}. No se movieron: {{devices}}",
       "bulkMoveSiteAllFailed": "No se movió ningún dispositivo a {{site}}. No se movieron: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (su sitio cambió después de cargar la lista; la lista se actualizó, así que vuelve a intentarlo)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (no tienes acceso a su sitio ni al sitio de destino)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (ya no se encuentra; es posible que se haya eliminado)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (se produjo un error inesperado; vuelve a intentarlo)",
       "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio"
     },
     "tryAgain": "Intentar otra vez",

@@ -100,3 +100,35 @@ describe('ApprovalHistoryFeed temp-password reveal', () => {
     expect(screen.queryByRole('button', { name: /reveal/i })).toBeNull();
   });
 });
+
+// #10198: AI approval decisions read Approve / Deny everywhere (#10157). The
+// filter chip and the row badge used to say "Rejected" / raw "rejected".
+describe('ApprovalHistoryFeed decision vocabulary (#10198)', () => {
+  it('labels a rejected execution "Denied" in the filter chip and the row badge', () => {
+    render(
+      <ApprovalHistoryFeed
+        executions={[
+          resetExecution({ id: 'exec-denied', toolName: 'run_script', status: 'rejected', tempPasswordState: null }),
+          resetExecution({ id: 'exec-done', toolName: 'execute_command', status: 'completed', tempPasswordState: null }),
+        ]}
+        loading={false}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Denied' })).toBeTruthy();
+    expect(screen.queryByText(/reject/i)).toBeNull();
+    // Row badges are labels, not raw enum values.
+    expect(screen.getAllByText('Denied')).toHaveLength(2);
+    expect(screen.getByText('Completed')).toBeTruthy();
+    expect(screen.queryByText('completed')).toBeNull();
+  });
+
+  it('falls back to the raw status for a value it has no label for', () => {
+    render(
+      <ApprovalHistoryFeed
+        executions={[resetExecution({ toolName: 'run_script', status: 'mystery', tempPasswordState: null })]}
+        loading={false}
+      />,
+    );
+    expect(screen.getByText('mystery')).toBeTruthy();
+  });
+});

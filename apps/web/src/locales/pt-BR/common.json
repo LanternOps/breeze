@@ -1296,7 +1296,7 @@
           "waiting": "Aguardando"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets sincronizados",
+        "title": "Tickets do PSA",
         "unlinked": "Não vinculado"
       }
     },
@@ -1556,7 +1556,8 @@
           "enabled": "Webhook ativado",
           "retryQueued": "Nova tentativa de entrega enfileirada",
           "testQueued": "Entrega de teste enfileirada",
-          "updated": "Webhook atualizado"
+          "updated": "Webhook atualizado",
+          "deleted": "Webhook \"{{name}}\" excluído"
         },
         "title": "Webhooks"
       }

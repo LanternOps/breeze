@@ -21,6 +21,8 @@ import { formatNumber } from '@/lib/i18n/format';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { asList } from '@/lib/asList';
+import ReparseSkipNotice from './ReparseSkipNotice';
+import { splitReparseSkipNotice } from '@breeze/shared';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -204,7 +206,11 @@ function formatTime(iso?: string | null): string {
 }
 
 function mapJob(raw: BackupJobRaw): BackupJob {
-  const cleanedErrorLog = raw.errorLog ? stripInternalTagPrefix(raw.errorLog) : null;
+  // #9543: skipped reparse points are informational, not errors — keep them
+  // out of the Errors column so the real failure text is what shows there.
+  const cleanedErrorLog = splitReparseSkipNotice(
+    raw.errorLog ? stripInternalTagPrefix(raw.errorLog) : null
+  ).diagnostic;
   return {
     id: raw.id,
     deviceName: raw.deviceName ?? raw.deviceId?.slice(0, 8) ?? '--',
@@ -581,6 +587,9 @@ export default function BackupJobList() {
                 const isStalled = isRunning && !!livenessAt && stalledMs > STALL_MS;
                 const stalledMinutes = Math.max(1, Math.floor(stalledMs / 60000));
                 const details = jobDetails[job.id];
+                const detailNotes = splitReparseSkipNotice(
+                  details?.errorLog ? stripInternalTagPrefix(details.errorLog) : null
+                );
                 const isExpanded = expandedJobId === job.id;
                 const isLoadingDetails = loadingDetailsId === job.id;
                 return (
@@ -753,8 +762,11 @@ export default function BackupJobList() {
                               })}
                             </p>
                           )}
+                          {detailNotes.reparseSkipped && (
+                            <ReparseSkipNotice summary={detailNotes.reparseSkipped} className="mt-4" />
+                          )}
                           {(job.status === 'partial' || job.status === 'completed_with_errors') &&
-                          (job.errorCount > 0 || details.errorLog) ? (
+                          (job.errorCount > 0 || detailNotes.diagnostic) ? (
                             // #5396: the failed-file information used to be
                             // indistinguishable from a generic "Error Log" label,
                             // which buried the one piece of data that actually
@@ -768,14 +780,14 @@ export default function BackupJobList() {
                                 {t('backupJobList.filesNotBackedUp', { count: job.errorCount })}
                               </p>
                               <pre className="mt-2 whitespace-pre-wrap text-xs text-foreground">
-                                {details.errorLog ? stripInternalTagPrefix(details.errorLog) : 'No error log recorded.'}
+                                {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>
                             </div>
                           ) : (
                             <div className="mt-4">
                               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('backupJobList.errorLog')}</p>
                               <pre className="mt-1 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-xs text-foreground">
-                                {details.errorLog ? stripInternalTagPrefix(details.errorLog) : 'No error log recorded.'}
+                                {detailNotes.diagnostic ?? 'No error log recorded.'}
                               </pre>
                             </div>
                           )}

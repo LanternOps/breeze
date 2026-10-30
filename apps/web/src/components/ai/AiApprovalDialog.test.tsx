@@ -332,7 +332,7 @@ describe('intent-backed self-approve (sole operator)', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
-    expect(screen.getByRole('alert')).toHaveTextContent(/approval refused/i);
+    expect(screen.getByRole('alert')).toHaveTextContent(/your approval was blocked/i);
     // The decided-approve state renders "Action approved"; a refusal never does.
     expect(screen.queryByText(/action approved/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
