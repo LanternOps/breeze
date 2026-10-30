@@ -437,7 +437,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
-    timeout-minutes: 30
+    # Room for a whole-shard retry (W1, #10744): the "Run API tests" step
+    # measured 10.5 min median / 11.7 max, setup + post steps ≤ 2.5 min
+    # (shard 1), across six CI runs 2026-10-29..30. 2 × 11.7 + 5 ≈ 28.
+    # retry-shard's --budget-minutes is this minus a 5-min setup allowance.
+    timeout-minutes: 40
     # The flaky ledger is read from the BASE commit, never the PR head
     # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
     # nothing quarantined.
@@ -511,7 +515,7 @@ jobs:
         # everything — see integration-test's identical --shard usage).
         # retry-shard re-runs the whole shard once when it failed with visible
         # test failures, and writes flake-report-<label>.json (W1, #10744).
-        run: node .github/scripts/retry-shard.mjs --runner vitest --label api-${{ matrix.shard }} -- pnpm --filter=@breeze/api test:run --shard=${{ matrix.shard }}/8
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label api-${{ matrix.shard }} --budget-minutes 35 -- pnpm --filter=@breeze/api test:run --shard=${{ matrix.shard }}/8
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
@@ -522,6 +526,8 @@ jobs:
           path: flake-report-*.json
           if-no-files-found: ignore
           retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       # Timezone-correctness regression gate (#4046): GitHub-hosted runners
       # default to UTC, and nothing else in this job or in vitest.config.ts
@@ -865,6 +871,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # Room for a whole-shard retry (W1, #10744): "Run Web tests" measured
+    # 10.7 min median / 11.9 max, setup ≤ 1 min, across six CI runs
+    # 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this minus a
+    # 5-min setup allowance) has a real ceiling to fit a retry inside.
+    timeout-minutes: 40
     # The flaky ledger is read from the BASE commit, never the PR head
     # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
     # nothing quarantined.
@@ -914,7 +925,7 @@ jobs:
         # Source aliases in vitest.config.ts avoid a production Astro build.
         # build-web still runs prebuild (checksums/Monaco assets) and Astro.
         # Whole-shard retry once on visible test failures (W1, #10744).
-        run: node .github/scripts/retry-shard.mjs --runner vitest --label web-${{ matrix.shard }} -- pnpm --filter=@breeze/web test --run --shard=${{ matrix.shard }}/4
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label web-${{ matrix.shard }} --budget-minutes 35 -- pnpm --filter=@breeze/web test --run --shard=${{ matrix.shard }}/4
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
@@ -925,6 +936,8 @@ jobs:
           path: flake-report-*.json
           if-no-files-found: ignore
           retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
   # REQUIRED check: asserted in ci-success (see #3941, and #3139 for the
   # original gap).
@@ -1957,8 +1970,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -2070,8 +2081,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Assert Windows manifests
         working-directory: agent
@@ -2108,6 +2117,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    # Room for a package retry (W1, #10744): "Run Go tests" measured 5.8 min
+    # median / 5.9 max, setup + loopback/edition steps ≤ 1.5 min, across six
+    # CI runs 2026-10-29..30. Explicit so retry-shard's --budget-minutes (this
+    # minus a 5-min setup allowance) has a real ceiling.
+    timeout-minutes: 30
     # The flaky ledger is read from the BASE commit, never the PR head
     # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
     # nothing quarantined.
@@ -2145,8 +2159,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -2156,7 +2168,7 @@ jobs:
       # the failed packages once, and merges their coverage back into
       # coverage.out (W1, #10744).
       - name: Run Go tests
-        run: CGO_ENABLED=0 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent -- go test -v -coverprofile=coverage.out ./...
+        run: CGO_ENABLED=0 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent --budget-minutes 25 -- go test -v -coverprofile=coverage.out ./...
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
@@ -2167,6 +2179,8 @@ jobs:
           path: flake-report-*.json
           if-no-files-found: ignore
           retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       - name: Rebuild engine loopback test (root)
         if: runner.os == 'Linux'
@@ -2223,8 +2237,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3024,8 +3036,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Toolchain
         run: |
@@ -3139,8 +3149,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: go vet
         working-directory: agent
@@ -3221,7 +3229,11 @@ jobs:
     runs-on: macos-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
-    timeout-minutes: 35
+    # Room for a package retry (W1, #10744): "go test -race" measured 16.5 min
+    # median / 19.2 max, setup ≤ 2.1 min, across six CI runs 2026-10-29..30
+    # (macOS runners vary ~2×). 2 × 19.2 + 5 ≈ 43. retry-shard's
+    # --budget-minutes is this minus a 5-min setup allowance.
+    timeout-minutes: 50
     # The flaky ledger is read from the BASE commit, never the PR head
     # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
     # nothing quarantined.
@@ -3259,8 +3271,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3270,7 +3280,7 @@ jobs:
       - name: go test -race ./...
         env:
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-        run: CGO_ENABLED=1 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent-race -- go test -race -count=1 -timeout 20m ./...
+        run: CGO_ENABLED=1 node .github/scripts/retry-shard.mjs --runner go --go-dir agent --label agent-race --budget-minutes 45 -- go test -race -count=1 -timeout 20m ./...
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
@@ -3281,6 +3291,8 @@ jobs:
           path: flake-report-*.json
           if-no-files-found: ignore
           retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
@@ -3325,8 +3337,6 @@ jobs:
 
       - name: Restore Go cache
         uses: ./.github/actions/restore-go-cache
-        with:
-          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3587,6 +3597,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # Restore only: PR/queue refs cannot share caches and would evict
+          # main's (W1, #10744).
+          save-if: false
           workspaces: |
             apps/helper/src-tauri -> target
             apps/viewer/src-tauri -> target
@@ -3656,6 +3669,9 @@ jobs:
         if: steps.changes.outputs.cargo == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # Restore only: PR/queue refs cannot share caches and would evict
+          # main's (W1, #10744).
+          save-if: false
           workspaces: |
             apps/helper/src-tauri -> target
             apps/viewer/src-tauri -> target
@@ -3712,18 +3728,18 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    # ~1/16 of the suite + env/container setup + one autoMigrate pass. Raised
-    # 25→40 on 2026-09-14 (back when this was 4-way): shard 3 hit exactly
-    # 25:00 on three consecutive merge-group runs (shards 1 and 4 at 23-24)
-    # after the day's integration suites landed, and a job timeout reports as
-    # `cancelled`, so every queue entry was silently dequeued with
-    # `failed_checks`. Before sharding this ceiling had been raised twice
-    # (30→40→55) as the sequential runtime grew; going 4→8→16 shards roughly
-    # halves each shard's share of the suite again (measured ~13.7 min/shard
-    # of tests at 8-way → ~7 min/shard at 16-way), so the 40-minute ceiling is
-    # kept as-is for now — when a shard passes ~32 min again, add more shards
-    # instead of raising it.
-    timeout-minutes: 40
+    # ~1/16 of the suite + env/container setup + one autoMigrate pass. A job
+    # timeout reports as `cancelled`, so every queue entry is silently
+    # dequeued with `failed_checks` (25→40 on 2026-09-14 after shard 3 hit
+    # exactly 25:00 three times running). Raised 40→55 for the whole-shard
+    # retry (W1, #10744): the "Run integration tests" step measured 17.6 min
+    # median / 24.3 max (whole job ≤ 26.7, setup + post steps ≤ 2.4) across
+    # six CI runs 2026-10-29..30 — the suite has grown well past the ~7
+    # min/shard measured when it went 16-way — so two attempts plus setup need
+    # ~54 min. retry-shard's --budget-minutes is this minus a 5-min setup
+    # allowance; a retry that would not fit is skipped, not started. When the
+    # slowest shard's step passes ~25 min, add shards rather than raise this.
+    timeout-minutes: 55
 
     # The flaky ledger is read from the BASE commit, never the PR head
     # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
@@ -3823,7 +3839,7 @@ jobs:
         # Whole-shard retry once on visible test failures (W1, #10744). A re-run
         # starts from the same DB state: globalSetup runs once per `vitest run`
         # and setup.ts TRUNCATEs around every test.
-        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-${{ matrix.shard }} -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
+        run: node .github/scripts/retry-shard.mjs --runner vitest --label integration-${{ matrix.shard }} --budget-minutes 50 -- pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/16
 
       # Retry wrapper report (W1, #10744): written only when attempt 1 failed.
       - name: Upload flake report
@@ -3834,6 +3850,8 @@ jobs:
           path: flake-report-*.json
           if-no-files-found: ignore
           retention-days: 14
+          # A "re-run failed jobs" attempt uploads under the same name.
+          overwrite: true
 
       # ee/workspace's integration suite expects its own tables
       # (workspace_sources, workspace_file_index, ...) to already exist on

@@ -72,6 +72,15 @@ test('caches are restore-only in ci.yml and its composites', () => {
   assert.ok(seen >= 3, `expected the golangci-lint, tauri and composite restores, saw ${seen}`);
 });
 
+// Swatinem/rust-cache saves in its post step unless told not to.
+test('Swatinem/rust-cache is restore-only in ci.yml (save-if: false)', () => {
+  const rust = ciSteps.filter((s) => usesOf(s).startsWith('Swatinem/rust-cache@'));
+  assert.ok(rust.length >= 2, `expected the rust-check and rust-check-windows caches, saw ${rust.length}`);
+  for (const s of rust) {
+    assert.match(s, /^\s+save-if:\s*false\s*$/m, `rust-cache without save-if: false:\n${s}`);
+  }
+});
+
 test('buildkit never exports to gha from ci.yml', () => {
   for (const s of ciSteps) {
     const m = s.match(/^\s+cache-to:.*$/m);
@@ -97,7 +106,7 @@ const seedText = () => {
   assert.ok(existsSync(seedUrl), 'ci-cache-seed.yml is missing');
   return read(seedUrl);
 };
-const norm = (s) => s.replace(/inputs\.go-sum-path/g, "'agent/go.sum'").replace(/\s+/g, ' ').trim();
+const norm = (s) => s.replace(/\s+/g, ' ').trim();
 
 // A step's `with:` value: single-line (`key: v`) or block scalar (`path: |`).
 function withValue(step, field) {
@@ -136,6 +145,51 @@ test('seed workflow saves every key ci.yml and the composites restore', () => {
       `no actions/cache/save in the seed with key ${w.key} and path ${w.path}`,
     );
   }
+});
+
+// The Go build cache is only valid for one toolchain, and go.mod carries the
+// toolchain pin (`go 1.x.y`), so the key hashes go.mod as well as go.sum —
+// identically in the composite restore, the seed's restore and its save.
+const GO_KEY = "go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}";
+
+test('Go cache key hashes go.sum and go.mod, identically everywhere it is restored or saved', () => {
+  const goKeys = [
+    ...compositeSteps.filter((c) => c.name === 'restore-go-cache').map((c) => ({ where: 'restore-go-cache', step: c.step })),
+    ...steps(seedText(), 6).map((step) => ({ where: 'ci-cache-seed.yml', step })),
+  ]
+    .filter(({ step }) => /^actions\/cache\/(?:restore|save)@/.test(usesOf(step)))
+    .map(({ where, step }) => ({ where, key: withValue(step, 'key') }))
+    .filter(({ key }) => key?.startsWith('go-'));
+  assert.equal(goKeys.length, 3, `expected composite restore + seed restore + seed save, saw ${JSON.stringify(goKeys)}`);
+  for (const { where, key } of goKeys) assert.equal(key, GO_KEY, where);
+});
+
+// The seed's Go warm compiles what CI compiles to fill GOCACHE; a compile
+// failure there (Windows `go vet` has known unsafeptr findings) must not stop
+// the save, or that OS never gets a cache. `go mod download` stays fatal: a
+// transient fetch failure should leave the key unsaved for the next run to
+// retry rather than save a partial module cache that is then never re-warmed.
+const seedStep = (name) => {
+  const s = steps(seedText(), 6).find((x) => new RegExp(`^ {6}- name: ${name}$`, 'm').test(x));
+  assert.ok(s, `seed has no step ${name}`);
+  return s;
+};
+
+test('seed warm steps never run go vet', () => {
+  for (const s of steps(seedText(), 6)) {
+    const code = s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    assert.doesNotMatch(code, /\bgo vet\b/, s);
+  }
+});
+
+test('seed Go warm: every compile command is non-fatal; the save still runs only on a miss', () => {
+  const warm = seedStep('Warm Go caches');
+  const compiles = warm.split('\n').filter((l) => /^\s*(?:CGO_ENABLED=\d+ )?go (?:build|test)\b/.test(l));
+  assert.ok(compiles.length >= 5, `expected the build + test-compile commands, saw ${compiles.length}`);
+  for (const l of compiles) assert.match(l, /\|\| echo "::warning::/, `fatal under bash -e: ${l.trim()}`);
+  assert.match(warm, /^\s+if: steps\.cache\.outputs\.cache-hit != 'true'$/m);
+  const save = seedStep('Save Go cache');
+  assert.match(save, /^\s+if: steps\.cache\.outputs\.cache-hit != 'true'$/m, 'save only on a cache miss');
 });
 
 test('seed workflow exports every buildkit cache scope ci.yml reads', () => {

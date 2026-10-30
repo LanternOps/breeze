@@ -18,6 +18,7 @@ on:
     paths:
       - pnpm-lock.yaml
       - agent/go.sum
+      - agent/go.mod
       - .github/tauri-apt-packages.txt
       - docker/**
       - .github/actions/**
@@ -132,7 +133,7 @@ jobs:
           path: |
             ${{ steps.go.outputs.gomodcache }}
             ${{ steps.go.outputs.gocache }}
-          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum') }}
+          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
           restore-keys: |
             go-${{ runner.os }}-
 
@@ -156,17 +157,21 @@ jobs:
           # Mirror what CI compiles so the build cache is warm for its jobs:
           # test-agent-race (CGO_ENABLED=1 go test -race), test-agent and the
           # Windows jobs (CGO_ENABLED=0). `-run '^$'` compiles test binaries
-          # without running them.
+          # without running them. Compiling is what fills GOCACHE, so no
+          # `go vet` (Windows vet has baselined unsafeptr findings — see
+          # scripts/check-windows-vet.sh — so it would fail every Windows run).
+          # Each compile is non-fatal: a partial warm still saves, and a
+          # package that fails here fails the same way in CI. `go mod
+          # download` above stays fatal so a transient fetch error leaves the
+          # key unsaved for the next run instead of saving a hollow cache.
           if [ "${RUNNER_OS}" = "Windows" ]; then
             export CGO_ENABLED=0
-            go build ./...
-            go vet ./...
-            go test -count=1 -run '^$' ./...
+            go build ./... || echo "::warning::go build ./... failed; saving a partial Go cache"
+            go test -count=1 -run '^$' ./... || echo "::warning::go test compile failed; saving a partial Go cache"
           else
-            go build ./...
-            go vet ./...
-            CGO_ENABLED=1 go test -race -count=1 -run '^$' ./...
-            CGO_ENABLED=0 go test -count=1 -run '^$' ./...
+            go build ./... || echo "::warning::go build ./... failed; saving a partial Go cache"
+            CGO_ENABLED=1 go test -race -count=1 -run '^$' ./... || echo "::warning::go test -race compile failed; saving a partial Go cache"
+            CGO_ENABLED=0 go test -count=1 -run '^$' ./... || echo "::warning::go test (CGO_ENABLED=0) compile failed; saving a partial Go cache"
           fi
 
       - name: Save Go cache
@@ -176,7 +181,7 @@ jobs:
           path: |
             ${{ steps.go.outputs.gomodcache }}
             ${{ steps.go.outputs.gocache }}
-          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum') }}
+          key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
 
   seed-golangci-lint:
     name: Seed golangci-lint binary cache

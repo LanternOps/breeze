@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures } from './retry-shard.mjs';
+import { budgetSkipReason, decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -67,7 +67,7 @@ test('vitest: an Unhandled Errors section → unattributed (failures alone do no
 
 test('vitest: no summary section → no failures (setup/infra failure)', () => {
   const r = parseFailures('vitest', 'ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\n FAIL  this is console noise\n');
-  assert.deepEqual(r, { failures: [], buildFailed: false, raceDetected: false, unattributed: false });
+  assert.deepEqual(r, { failures: [], buildFailed: false, raceDetected: false, timedOut: false, unattributed: false });
 });
 
 // ── parseFailures: go ────────────────────────────────────────────────────
@@ -147,6 +147,25 @@ test('go: -timeout hit → unattributed (a test ran and never finished)', () => 
   assert.equal(r.unattributed, true);
 });
 
+// A package that hit `go test -timeout` used the whole timeout; a second
+// attempt of it cannot fit in the job, so it is never retried (like a race).
+test('go: `panic: test timed out` → timedOut; plain failures and vitest never are', () => {
+  const r = parseFailures('go', fixture('go-quarantine-timeout.jsonl'));
+  assert.equal(r.timedOut, true);
+  assert.equal(r.failures.length > 0, true, 'the timed-out package is still a failure');
+  assert.equal(parseFailures('go', fixture('go-quarantine-clean.jsonl')).timedOut, false);
+  assert.equal(parseFailures('go', fixture('go-test-failures.jsonl')).timedOut, false);
+  assert.equal(parseFailures('go', fixture('go-quarantine-panic.jsonl')).timedOut, false, 'an ordinary panic is not a timeout');
+  // t.Log output is indented, so a test that merely logs the phrase is not a timeout.
+  const logged = [
+    { Action: 'output', Package: 'p/a', Test: 'TestA', Output: '    a_test.go:9: panic: test timed out after 1s\n' },
+    { Action: 'fail', Package: 'p/a', Test: 'TestA' },
+    { Action: 'fail', Package: 'p/a' },
+  ].map((o) => JSON.stringify(o)).join('\n');
+  assert.equal(parseFailures('go', logged).timedOut, false);
+  assert.equal(parseFailures('vitest', ' FAIL  x\n⎯ Failed Tests 1 ⎯\n FAIL  src/a.test.ts > panic: test timed out after 1s\n').timedOut, false);
+});
+
 test('go: a plain test failure in an otherwise clean package → not unattributed', () => {
   const r = parseFailures('go', fixture('go-quarantine-clean.jsonl'));
   assert.deepEqual(ids(r), [`${QPKG('clean')}.TestFlaky`]);
@@ -212,6 +231,15 @@ test('decide: signal-killed first attempt → exit 1, no retry', () => {
 
 test('decide: data race on attempt 1 → exit first code, never retried', () => {
   assert.deepEqual(run({ code: 1, failures: F, raceDetected: true }), {
+    exitCode: 1,
+    retry: false,
+    flaky: [],
+    quarantined: [],
+  });
+});
+
+test('decide: a go -timeout on attempt 1 → exit first code, never retried', () => {
+  assert.deepEqual(run({ code: 1, failures: F, timedOut: true }), {
     exitCode: 1,
     retry: false,
     flaky: [],
@@ -292,7 +320,7 @@ test('decide: quarantine never applies without a real failing second attempt', (
 });
 
 test('decide: quarantine never stops a no-retry first attempt from failing', () => {
-  for (const first of [{ buildFailed: true }, { raceDetected: true }, { code: null }]) {
+  for (const first of [{ buildFailed: true }, { raceDetected: true }, { timedOut: true }, { code: null }]) {
     const d = decide({
       first: { code: 1, failures: [QF], buildFailed: false, raceDetected: false, ...first },
       second: null,
@@ -368,6 +396,35 @@ test('decide: a quarantined verdict keeps first-attempt flaky ids (failed once, 
     paths: API_PATHS,
   });
   assert.deepEqual(d, { exitCode: 0, retry: true, flaky: [OTHER.id], quarantined: [QF.id] });
+});
+
+// ── Retry budget ─────────────────────────────────────────────────────────
+// `--budget-minutes N` = the job's timeout minus its setup allowance. A retry
+// is skipped when a second attempt as long as the first would not fit in what
+// is left of N; a job timeout reports `cancelled` and hides the real failure.
+
+const MIN = 60_000;
+
+test('budgetSkipReason: no budget → never skips', () => {
+  assert.equal(budgetSkipReason({ budgetMinutes: null, elapsedMs: 500 * MIN, attemptMs: 400 * MIN }), null);
+});
+
+test('budgetSkipReason: a second attempt that fits → null', () => {
+  // 50-min budget, attempt 1 took 20 min, 21 min elapsed → 29 left ≥ 20.
+  assert.equal(budgetSkipReason({ budgetMinutes: 50, elapsedMs: 21 * MIN, attemptMs: 20 * MIN }), null);
+  // Exactly fits.
+  assert.equal(budgetSkipReason({ budgetMinutes: 50, elapsedMs: 25 * MIN, attemptMs: 25 * MIN }), null);
+});
+
+test('budgetSkipReason: a second attempt that would overrun → reason naming the numbers', () => {
+  // 35-min budget, attempt 1 took 18 min, 18.5 elapsed → 16.5 left < 18.
+  const why = budgetSkipReason({ budgetMinutes: 35, elapsedMs: 18.5 * MIN, attemptMs: 18 * MIN });
+  assert.equal(typeof why, 'string');
+  assert.match(why, /18\.0 min/);
+  assert.match(why, /16\.5 min/);
+  assert.match(why, /35-min/);
+  // Elapsed past the budget already.
+  assert.notEqual(budgetSkipReason({ budgetMinutes: 10, elapsedMs: 12 * MIN, attemptMs: 1 * MIN }), null);
 });
 
 // ── Go retry command + coverage merge ────────────────────────────────────
@@ -579,6 +636,55 @@ test('CLI: rejects a missing --label or a non-`go test` command for the go runne
   assert.equal(cli(['--runner', 'go', '--label', 'x', '--', 'gofmt', '-l', '.'], { cwd }).status, 2);
 });
 
+test('CLI: rejects a --budget-minutes that is not a positive number', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  for (const v of ['0', '-5', 'abc', '']) {
+    assert.equal(cli(['--runner', 'vitest', '--label', 'x', '--budget-minutes', v, '--', 'true'], { cwd }).status, 2, v);
+  }
+});
+
+test('CLI go: a package that hit -timeout fails on attempt 1 with an ::error annotation, no retry', () => {
+  const root = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const bin = mkdtempSync(join(tmpdir(), 'retry-shard-bin-'));
+  writeFileSync(
+    join(bin, 'go'),
+    `#!/usr/bin/env node\nrequire('fs').appendFileSync('go-calls', 'x');\nprocess.stdout.write(${JSON.stringify(fixture('go-quarantine-timeout.jsonl'))});\nprocess.exit(1);\n`,
+  );
+  chmodSync(join(bin, 'go'), 0o755);
+  const r = cli(['--runner', 'go', '--label', 'agent-race', '--', 'go', 'test', '-race', '-timeout', '20m', './...'], {
+    cwd: root,
+    env: { PATH: `${bin}:${process.env.PATH}` },
+  });
+  assert.equal(r.status, 1);
+  assert.equal(readFileSync(join(root, 'go-calls'), 'utf8'), 'x', 'must not retry');
+  assert.match(r.stdout, /^::error title=Test timeout::agent-race: /m);
+  assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
+  const report = JSON.parse(readFileSync(join(root, 'flake-report-agent-race.json'), 'utf8'));
+  assert.deepEqual(report, { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
+});
+
+// The clock is real here but needs no sleep: a node child takes far longer
+// than 0.0001 min (6 ms) to start, so attempt 1 alone overruns that budget,
+// while 600 min always leaves room.
+test('CLI vitest: a retry that would overrun --budget-minutes is skipped (::error, attempt 1 stands)', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const r = cli(['--runner', 'vitest', '--label', 'api-4', '--budget-minutes', '0.0001', '--', process.execPath, '-e', FLAKY_VITEST], { cwd });
+  assert.equal(r.status, 1);
+  assert.equal(readFileSync(join(cwd, 'count'), 'utf8'), '1', 'must not retry');
+  assert.match(r.stdout, /^::error title=Retry skipped::api-4: /m);
+  assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
+  const report = JSON.parse(readFileSync(join(cwd, 'flake-report-api-4.json'), 'utf8'));
+  assert.deepEqual(report, { label: 'api-4', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
+});
+
+test('CLI vitest: a retry that fits --budget-minutes runs as usual', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const r = cli(['--runner', 'vitest', '--label', 'api-4', '--budget-minutes', '600', '--', process.execPath, '-e', FLAKY_VITEST], { cwd });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(cwd, 'count'), 'utf8'), '2');
+  assert.doesNotMatch(r.stdout, /Retry skipped/);
+});
+
 // ── CLI: flaky ledger (Task 3) ───────────────────────────────────────────
 
 test('ledgerRunner: --runner + --label prefix → ledger runner; anything else → null (no quarantine)', () => {
@@ -707,4 +813,57 @@ test('CLI go: a quarantined test failing twice in an untouched package → exit 
   git(root, 'add', '-A');
   git(root, 'commit', '-q', '-m', 'touch the package');
   assert.equal(cli(args, { cwd: root, env }).status, 1);
+});
+
+// ── ci.yml wiring ────────────────────────────────────────────────────────
+// Every wrapped job states its timeout, passes `--budget-minutes` = timeout −
+// SETUP_ALLOWANCE, and has room for two attempts at the slowest measured step.
+// SETUP_ALLOWANCE covers the steps before and after the wrapped one: measured
+// at most 1.3 min before and 1.4 min after (test-api / integration shard 1,
+// six CI runs 2026-10-29..30); 5 leaves room for a cold pnpm/Go cache.
+// MAX_STEP_MIN is the slowest successful wrapped step in those runs.
+
+const SETUP_ALLOWANCE = 5;
+const MAX_STEP_MIN = {
+  'test-api': 11.7,
+  'test-web': 11.9,
+  'test-agent': 5.9,
+  'test-agent-race': 19.2,
+  'integration-test': 24.3,
+};
+const ciYml = readFileSync(new URL('../workflows/ci.yml', import.meta.url), 'utf8');
+function ciJobs() {
+  const out = new Map();
+  let cur = null;
+  for (const line of ciYml.slice(ciYml.search(/^jobs:\s*$/m)).split('\n')) {
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (m) out.set((cur = m[1]), []);
+    else if (/^\S/.test(line)) cur = null;
+    else if (cur) out.get(cur).push(line);
+  }
+  return new Map([...out].map(([k, v]) => [k, v.join('\n')]));
+}
+
+test('ci.yml: every retry-shard job has a timeout and passes --budget-minutes = timeout − allowance', () => {
+  const wrapped = [...ciJobs()].filter(([, body]) => /^\s+run: .*retry-shard\.mjs /m.test(body));
+  assert.deepEqual(wrapped.map(([name]) => name).sort(), Object.keys(MAX_STEP_MIN).sort());
+  for (const [name, body] of wrapped) {
+    const t = /^ {4}timeout-minutes: (\d+)$/m.exec(body);
+    assert.ok(t, `${name} has no job-level timeout-minutes`);
+    const timeout = Number(t[1]);
+    const runs = [...body.matchAll(/^\s+run: .*retry-shard\.mjs (.*)$/gm)];
+    assert.equal(runs.length, 1, name);
+    assert.match(runs[0][1], new RegExp(`--budget-minutes ${timeout - SETUP_ALLOWANCE} `), `${name}: budget must be ${timeout} − ${SETUP_ALLOWANCE}`);
+    const need = 2 * MAX_STEP_MIN[name] + SETUP_ALLOWANCE;
+    assert.ok(timeout >= need, `${name}: timeout ${timeout} < 2 × ${MAX_STEP_MIN[name]} + ${SETUP_ALLOWANCE} — a retry cannot fit`);
+  }
+});
+
+test('ci.yml: every flake-report upload overwrites (a "re-run failed jobs" attempt reuses the name)', () => {
+  const uploads = ciYml.split(/\n(?= {6}- )/).filter((s) => /^\s+name: flake-report-/m.test(s));
+  assert.equal(uploads.length, 5);
+  for (const s of uploads) {
+    assert.match(s, /uses: actions\/upload-artifact@/);
+    assert.match(s, /^\s+overwrite: true$/m, s);
+  }
 });

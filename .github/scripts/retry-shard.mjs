@@ -10,10 +10,16 @@
 //   - go: the same `go test` flags restricted to the failed packages.
 // It never retries what it cannot see (no parsed failures: install error, DB
 // not ready, a crash before the summary), a build failure, a Go data race,
-// or a signal-killed run. A test that fails on both attempts fails the job.
+// a Go package that hit `go test -timeout`, or a signal-killed run. A test
+// that fails on both attempts fails the job.
+//
+// `--budget-minutes N` (the job's timeout-minutes less its setup allowance)
+// skips the retry when a second attempt as long as the first would not fit in
+// what is left of N: a job that hits its timeout reports `cancelled` and hides
+// the real failure. A skipped retry leaves attempt 1's failure standing.
 //
 //   node .github/scripts/retry-shard.mjs --runner vitest|go --label <name> \
-//     [--go-dir <dir>] -- <command...>
+//     [--go-dir <dir>] [--budget-minutes N] -- <command...>
 //
 // A test that fails both attempts may still pass the job when it is in the
 // flaky ledger (.github/flaky-tests.json) AT THE BASE COMMIT ($CI_BASE_SHA)
@@ -73,7 +79,7 @@ function parseVitest(output) {
     const head = m[1].split(' > ')[0];
     failures.push({ id: m[1], file: head.replace(/\s+\[.*\]$/, '').trim(), pkg: null });
   }
-  return { failures, buildFailed: false, raceDetected: false, unattributed };
+  return { failures, buildFailed: false, raceDetected: false, timedOut: false, unattributed };
 }
 
 // `go test -json` events. A failing subtest also fails its parent; the parent
@@ -82,9 +88,13 @@ function parseVitest(output) {
 // reported only when no test in that package failed (TestMain, a panic, a
 // timeout). Build/setup failures are never retried, and neither is a data
 // race: the race detector reports an interleaving that happened, so a clean
-// second attempt would only hide a real (intermittent) bug.
+// second attempt would only hide a real (intermittent) bug. Nor is a package
+// that hit `go test -timeout` (`panic: test timed out after …`, column 0 —
+// t.Log output is indented): it already used the whole timeout, so a second
+// run of it cannot fit in the job.
 const GO_BUILD_FAILED = /^FAIL\t\S+ \[(?:build|setup) failed\]/;
 const GO_DATA_RACE = 'WARNING: DATA RACE';
+const GO_TIMED_OUT = /^panic: test timed out after /m;
 
 // The package-level fail is deduped out of `failures` when a test in that
 // package failed (it would only widen the retry). That must not let a failing
@@ -125,6 +135,7 @@ function parseGo(output) {
   const fails = [];
   let buildFailed = false;
   let raceDetected = false;
+  let timedOut = false;
   const pkgLines = new Map(); // package-level (no Test) output lines
   const markers = new Set(); // packages with a panic/timeout/setup-failed line
   const failedPkgs = new Set();
@@ -147,6 +158,7 @@ function parseGo(output) {
     if (ev.Action === 'output' && typeof ev.Output === 'string' && GO_BUILD_FAILED.test(ev.Output)) buildFailed = true;
     if (ev.Package && ev.Action === 'output' && typeof ev.Output === 'string') {
       if (GO_PKG_MARKER.test(ev.Output)) markers.add(ev.Package);
+      if (GO_TIMED_OUT.test(ev.Output)) timedOut = true;
       if (!ev.Test) {
         if (!pkgLines.has(ev.Package)) pkgLines.set(ev.Package, []);
         pkgLines.get(ev.Package).push(...ev.Output.replace(/\r/g, '').split('\n').filter((l) => l !== ''));
@@ -180,7 +192,7 @@ function parseGo(output) {
     failures.push({ id, file: null, pkg: f.pkg });
   }
   const unattributed = goUnattributed(pkgLines, markers, failedPkgs, started, finished);
-  return { failures, buildFailed, raceDetected, unattributed };
+  return { failures, buildFailed, raceDetected, timedOut, unattributed };
 }
 
 export function parseFailures(runner, output) {
@@ -205,7 +217,7 @@ export function parseFailures(runner, output) {
 export function decide({ first, second, quarantine = new Set(), changedFiles = null, paths = {} }) {
   const none = { flaky: [], quarantined: [] };
   if (first.code === 0) return { exitCode: 0, retry: false, ...none };
-  if (first.code === null || first.buildFailed || first.raceDetected || first.failures.length === 0) {
+  if (first.code === null || first.buildFailed || first.raceDetected || first.timedOut || first.failures.length === 0) {
     return { exitCode: first.code ?? 1, retry: false, ...none };
   }
   if (!second) return { exitCode: first.code, retry: true, ...none };
@@ -224,6 +236,17 @@ export function decide({ first, second, quarantine = new Set(), changedFiles = n
     flaky: [...new Set(first.failures.map((f) => f.id))].filter((id) => !secondIds.has(id)),
     quarantined: [...secondIds],
   };
+}
+
+// Pure: null when a second attempt as long as the first fits in what is left
+// of the budget, else why not. `elapsedMs` is the wrapper's time so far
+// (attempt 1 included); `budgetMinutes` null → no budget.
+export function budgetSkipReason({ budgetMinutes, elapsedMs, attemptMs }) {
+  if (budgetMinutes === null || budgetMinutes === undefined) return null;
+  const remainingMs = budgetMinutes * 60_000 - elapsedMs;
+  if (attemptMs <= remainingMs) return null;
+  const min = (ms) => `${(Math.max(ms, 0) / 60_000).toFixed(1)} min`;
+  return `attempt 1 took ${min(attemptMs)} but only ${min(remainingMs)} of the ${budgetMinutes}-min retry budget is left, so a second attempt would hit the job timeout; attempt 1's failure stands`;
 }
 
 // ── Ledger context ───────────────────────────────────────────────────────
@@ -360,15 +383,19 @@ class UsageError extends Error {}
 function parseCli(argv) {
   const sep = argv.indexOf('--');
   if (sep === -1) throw new UsageError('missing `--` before the command');
-  const opts = { runner: null, label: null, goDir: '.' };
+  const opts = { runner: null, label: null, goDir: '.', budgetMinutes: null };
   const flags = argv.slice(0, sep);
   for (let i = 0; i < flags.length; i++) {
     const [k, v] = [flags[i], flags[i + 1]];
     if (k === '--runner') opts.runner = v;
     else if (k === '--label') opts.label = v;
     else if (k === '--go-dir') opts.goDir = v;
+    else if (k === '--budget-minutes') opts.budgetMinutes = v === undefined ? null : Number(v);
     else throw new UsageError(`unknown option ${k}`);
     if (v === undefined) throw new UsageError(`${k} needs a value`);
+    if (k === '--budget-minutes' && (v.trim() === '' || !Number.isFinite(opts.budgetMinutes) || opts.budgetMinutes <= 0)) {
+      throw new UsageError('--budget-minutes must be a positive number');
+    }
     i++;
   }
   const command = argv.slice(sep + 1);
@@ -497,13 +524,16 @@ function writeReport({ label, attempts, verdict, firstFailures }) {
   appendFileSync(summary, `${lines.join('\n')}\n`);
 }
 
+// performance.now() counts from process start, so elapsed includes startup.
+const now = () => performance.now();
+
 async function main(argv) {
   let opts;
   try {
     opts = parseCli(argv);
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
-    process.stderr.write(`retry-shard: ${e.message}\nusage: retry-shard.mjs --runner vitest|go --label <name> [--go-dir <dir>] -- <command...>\n`);
+    process.stderr.write(`retry-shard: ${e.message}\nusage: retry-shard.mjs --runner vitest|go --label <name> [--go-dir <dir>] [--budget-minutes N] -- <command...>\n`);
     return 2;
   }
   const { runner, label } = opts;
@@ -511,7 +541,9 @@ async function main(argv) {
   const cwd = runner === 'go' ? resolve(opts.goDir) : process.cwd();
   if (runner === 'go' && !command.includes('-json')) command = [command[0], 'test', '-json', ...command.slice(2)];
 
+  const firstStart = now();
   const first = await runAttempt(command, { cwd, runner });
+  const firstMs = now() - firstStart;
   const p1 = parseFailures(runner, first.output);
   const firstResult = { code: first.code, ...p1 };
   if (p1.raceDetected && first.code !== 0) {
@@ -519,8 +551,20 @@ async function main(argv) {
       `::error title=Data race::${escapeData(`${label}: the race detector reported a data race; not retrying (a clean re-run would hide it)`)}\n`,
     );
   }
+  if (p1.timedOut && first.code !== 0) {
+    process.stdout.write(
+      `::error title=Test timeout::${escapeData(`${label}: a package hit the go test -timeout; not retrying (a second run of it cannot fit in the job)`)}\n`,
+    );
+  }
   let verdict = decide({ first: firstResult, second: null });
   let attempts = 1;
+  if (verdict.retry) {
+    const why = budgetSkipReason({ budgetMinutes: opts.budgetMinutes, elapsedMs: now(), attemptMs: firstMs });
+    if (why) {
+      process.stdout.write(`::error title=Retry skipped::${escapeData(`${label}: ${why}`)}\n`);
+      verdict = { ...verdict, retry: false };
+    }
+  }
 
   if (verdict.retry) {
     let retryCommand = command;

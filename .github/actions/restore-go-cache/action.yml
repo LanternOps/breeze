@@ -4,10 +4,8 @@ description: >
   cannot share caches with each other and would only evict main's, so only the
   seed workflow on main saves them (ci-cache-seed.yml, which must save exactly
   the key and paths below). Run AFTER actions/setup-go. See #10744.
-inputs:
-  go-sum-path:
-    description: go.sum file whose hash keys the cache
-    default: agent/go.sum
+  The key hashes agent/go.mod as well as agent/go.sum: go.mod carries the Go
+  toolchain pin, and a build cache from another toolchain is dead weight.
 runs:
   using: composite
   steps:
@@ -24,6 +22,6 @@ runs:
         path: |
           ${{ steps.go.outputs.gomodcache }}
           ${{ steps.go.outputs.gocache }}
-        key: go-${{ runner.os }}-${{ hashFiles(inputs.go-sum-path) }}
+        key: go-${{ runner.os }}-${{ hashFiles('agent/go.sum', 'agent/go.mod') }}
         restore-keys: |
           go-${{ runner.os }}-
