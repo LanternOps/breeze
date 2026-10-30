@@ -293,6 +293,11 @@ jobs:
       - name: Test community README automation
         run: pnpm test:community-readme
 
+      # AGENTS.md (Codex and other agents) is generated from CLAUDE.md so the two
+      # cannot drift; this fails when a CLAUDE.md edit was not regenerated.
+      - name: AGENTS.md matches CLAUDE.md
+        run: pnpm test:agents-md
+
       # The Tauri CLI refuses to build when the `tauri` / `tauri-plugin-*`
       # crates and their `@tauri-apps/*` npm packages differ in major.minor.
       # Dependabot bumps cargo and npm in separate PRs, so a crate-only bump
