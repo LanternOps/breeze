@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./deviceGroupOwnership', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./deviceGroupOwnership')>(),
+  findPartnerOwnedGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock('../db', () => ({
   db: { select: vi.fn() },
 }));
@@ -13,6 +18,7 @@ vi.mock('./executionTargetGating', () => ({
 }));
 
 import { db } from '../db';
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { resolveDeploymentTargetsWithWarnings } from './deploymentTargetResolver';
 import { resolveExecutionSafeGroupIds } from './executionTargetGating';
 import { MAX_SCRIPT_RUN_TARGETS, resolveScriptRunTargets } from './scriptRunTargets';
@@ -64,6 +70,8 @@ const memberships = (groupId: string, deviceIds: string[]) => deviceIds.map((dev
 const target = (...groupIds: string[]) => ({ type: 'groups' as const, groupIds });
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(findPartnerOwnedGroupIds).mockReset().mockResolvedValue([]);
   vi.mocked(db.select).mockReset();
   vi.mocked(resolveDeploymentTargetsWithWarnings).mockReset();
   vi.mocked(resolveExecutionSafeGroupIds).mockReset();
@@ -71,6 +79,28 @@ beforeEach(() => {
 });
 
 describe('resolveScriptRunTargets', () => {
+  it('refuses partner groups invisible to an org session before its RLS lookup', async () => {
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([G1]);
+    const canAccessOrg = vi.fn(() => false);
+    const result = await resolveScriptRunTargets({ auth: { canAccessOrg }, permissions: undefined, target: target(G1) });
+    expect(result).toMatchObject({ ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([G1]);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(canAccessOrg).not.toHaveBeenCalled();
+    expect(resolveDeploymentTargetsWithWarnings).not.toHaveBeenCalled();
+    expect(resolveExecutionSafeGroupIds).not.toHaveBeenCalled();
+  });
+
+  it('refuses partner groups with 400 PARTNER_GROUP_TARGET_UNSUPPORTED before access checks or dispatch', async () => {
+    queueSelects([{ id: G1, orgId: null, siteId: null }]);
+    const canAccessOrg = vi.fn(() => false);
+    const result = await resolveScriptRunTargets({ auth: { canAccessOrg }, permissions: undefined, target: target(G1) });
+    expect(result).toMatchObject({ ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [G1] });
+    expect(canAccessOrg).not.toHaveBeenCalled();
+    expect(resolveDeploymentTargetsWithWarnings).not.toHaveBeenCalled();
+    expect(resolveExecutionSafeGroupIds).not.toHaveBeenCalled();
+  });
+
   it('resolves a group to its members and reports per-group counts', async () => {
     queueSelects([{ id: G1, orgId: O1, siteId: null }] satisfies GroupRow[], memberships(G1, [id(1), id(2)]));
     mockResolvePerOrg({ [O1]: { deviceIds: [id(1), id(2)] } });

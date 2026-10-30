@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono } from 'hono';
 import { ERROR_CODES, SUPPORTED_LOCALES, resolveTicketPushPrefs, updateTicketPushPreferencesSchema } from '@breeze/shared';
 import type { SupportedLocale } from '@breeze/shared';
@@ -1571,7 +1572,8 @@ userRoutes.post(
     const auth = c.get('auth');
     const scopeContext = getScopeContext(auth);
     const data = c.req.valid('json');
-
+    const partnerGroupIds = await findPartnerOwnedGroupIds(data.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
     const partnerOrgAccess = scopeContext.scope === 'partner'
       ? normalizePartnerOrgAccess(data.orgAccess ?? 'none', data.orgIds)
       : null;

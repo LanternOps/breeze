@@ -42,6 +42,7 @@
   },
   "denyPrompt": "Pourquoi refusez-vous cette demande ? Le motif est facultatif.",
   "denyReasonPlaceholder": "Facultatif — communiqué au demandeur",
+  "denyReasonShownToUserHint": "L’utilisateur final voit ceci dans sa notification (500 premiers caractères).",
   "confirmDeny": "Confirmer le refus",
   "cancel": "Annuler",
   "deny": "Refuser",
@@ -107,7 +108,7 @@
       "cancelled": "Annulée",
       "completed": "Terminée",
       "denied": "Refusée",
-      "refused": "Approbation refusée",
+      "refused": "Approuvée, puis bloquée",
       "approved": "Approuvée",
       "reported": "Signalée",
       "unknown": "Inconnu"

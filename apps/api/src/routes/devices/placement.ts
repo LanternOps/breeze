@@ -49,7 +49,7 @@ placementRoutes.get(
     return c.json({
       subject: { kind: subject.kind, id: subject.id, orgId: subject.orgId, siteId: subject.siteId },
       authority: { kind: 'device', id: device.id, linked: false },
-      placement: await readPlacement('device', device.id),
+      placement: await readPlacement('device', device.id, device.orgId),
     });
   },
 );
@@ -67,7 +67,7 @@ placementRoutes.put(
     if (!device) return c.json({ error: 'Device not found' }, 404);
 
     const subject = subjectOf(device);
-    const before = await readPlacement('device', device.id);
+    const before = await readPlacement('device', device.id, device.orgId);
     let placement;
     try {
       placement = await savePlacement(subject, c.req.valid('json'));
@@ -109,7 +109,7 @@ placementRoutes.delete(
     if (device === SITE_ACCESS_DENIED) return c.json({ error: 'Access to this site denied' }, 403);
     if (!device) return c.json({ error: 'Device not found' }, 404);
 
-    const before = await readPlacement('device', device.id);
+    const before = await readPlacement('device', device.id, device.orgId);
     await deletePlacement({ kind: 'device', id: device.id });
 
     writeRouteAudit(c, {

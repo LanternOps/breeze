@@ -44,7 +44,7 @@ import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds, type ScriptReadExecutor } from './flows/ownedReferences';
 import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
@@ -66,6 +66,13 @@ export { containsTemplate };
 export interface FlowValidationContext {
   /** Only ever produced by resolveFlowOwnerForCaller or read from a stored flows row. */
   owner: ToolOwnerRef;
+  /**
+   * W06 (#5221) B3, the conversion switch only: read script OWNERSHIP through
+   * this executor (the switch's own transaction, which holds the scripts it
+   * generated) instead of a fresh system context. Every other read keeps its
+   * context; absent, validation is exactly as before.
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 export type FlowDocumentValidation = FlowValidationResult & { document?: FlowDocumentV1 };
@@ -150,9 +157,17 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+/**
+ * A step's source before the catalog lookup (and the whole answer when a
+ * structure error skips it). A bare name is `core` only when the core registry
+ * has it; anything else is `unknown`, never a guessed "Core tool" (#9937). A
+ * `slug__name` stays `tenant` here: without the catalog that is only its shape.
+ */
 function inferredSource(tool: string): FlowStepSummary['source'] {
   if (isFlowBuiltin(tool)) return 'builtin';
-  return tool.includes('__') ? 'tenant' : 'core';
+  if (isFlowToolName(tool)) return 'unknown';
+  if (tool.includes('__')) return 'tenant';
+  return isRegisteredCoreTool(tool) ? 'core' : 'unknown';
 }
 
 function result(issues: FlowIssue[], steps: FlowStepSummary[], document?: FlowDocumentV1): FlowDocumentValidation {
@@ -272,10 +287,15 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       } else {
         // Same text for "not enabled", "another tenant's" and "nonexistent".
         issues.push(issue('tool_not_found', TOOL_NOT_FOUND_MESSAGE(step.tool), { stepId: step.id, pointer: `/steps/${i}/tool` }));
+        // The catalog has no such tool for this owner: no source to name (#9937).
+        source = 'unknown';
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';
-      issues.push(...await validateBuiltinStep(step, i, { owner, catalog, earlierSteps: document.steps.slice(0, i) }));
+      issues.push(...await validateBuiltinStep(step, i, {
+        owner, catalog, earlierSteps: document.steps.slice(0, i),
+        ...(ctx.scriptReadExecutor ? { scriptReadExecutor: ctx.scriptReadExecutor } : {}),
+      }));
       tier = builtinStepTier(step, catalog);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
@@ -327,7 +347,10 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   // 8. Rule 6 — ownership, independent of approval mode. One message for
   // foreign and nonexistent alike.
   if (scriptRefs.length > 0) {
-    const ok = await findOwnedScriptIds(owner, scriptRefs.map((r) => r.id));
+    const ids = scriptRefs.map((r) => r.id);
+    const ok = ctx.scriptReadExecutor
+      ? await findOwnedScriptIds(owner, ids, { executor: ctx.scriptReadExecutor })
+      : await findOwnedScriptIds(owner, ids);
     for (const r of scriptRefs) {
       if (!ok.has(r.id)) issues.push(issue('reference_not_owned', 'This script is not available to the flow\'s owner.', { stepId: r.stepId, pointer: r.pointer }));
     }

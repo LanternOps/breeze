@@ -156,7 +156,7 @@ async function readCoverage(orgs: readonly OrgRef[], now: Date): Promise<Record<
         (${a.level} = 'partner' AND ${a.targetId} = ${organizations.partnerId})
         OR (${a.level} = 'organization' AND ${a.targetId} = ${organizations.id})
         OR (${a.level} = 'site' AND ${a.targetId} IN (SELECT ${sites.id} FROM ${sites} WHERE ${sites.orgId} = ${organizations.id}))
-        OR (${a.level} = 'device_group' AND ${a.targetId} IN (SELECT ${deviceGroups.id} FROM ${deviceGroups} WHERE ${deviceGroups.orgId} = ${organizations.id}))
+        OR (${a.level} = 'device_group' AND ${a.targetId} IN (SELECT ${deviceGroups.id} FROM ${deviceGroups} WHERE ${deviceGroups.orgId} = ${organizations.id} OR (${deviceGroups.orgId} IS NULL AND ${deviceGroups.partnerId} = ${organizations.partnerId})))
         OR (${a.level} = 'device' AND ${a.targetId} IN (SELECT ${devices.id} FROM ${devices} WHERE ${devices.orgId} = ${organizations.id}))
       )`,
     )

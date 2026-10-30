@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -657,18 +659,40 @@ func (h *Heartbeat) afterDesktopStart(sessionID string, prompt *ipc.DesktopPromp
 // targetWinSession keeps the legacy machine-global selection; a non-empty one
 // routes strictly to that Windows session (see sessionNoticeTarget).
 func (h *Heartbeat) sendSessionNotify(body, targetWinSession string) {
-	if h.sessionBroker == nil || body == "" {
-		return
+	_ = h.sendSessionNotifyTitled("Breeze Agent", body, targetWinSession)
+}
+
+// Why sendSessionNotifyTitled did not hand a notice to a helper.
+var (
+	errNoticeNoSessionBroker = errors.New("no session broker")
+	errNoticeEmptyBody       = errors.New("notice body is empty")
+	errNoticeNoNotifyHelper  = errors.New("no notify-capable helper in the target session")
+)
+
+// sendSessionNotifyTitled is sendSessionNotify with a caller-chosen title. The
+// PAM outcome notices (#8928) use it so the toast headline is the outcome
+// ("Request approved") rather than the product name. It returns nil only when
+// the notice was handed to a helper; the PAM callers report that as "shown".
+func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string) error {
+	if h.sessionBroker == nil {
+		return errNoticeNoSessionBroker
+	}
+	if body == "" {
+		return errNoticeEmptyBody
 	}
 	session := h.sessionNoticeTarget(targetWinSession)
 	if session == nil {
-		log.Warn("no notify-capable helper for session notice")
-		return
+		log.Warn("no notify-capable helper for session notice", "title", title, "targetWinSession", targetWinSession)
+		return errNoticeNoNotifyHelper
 	}
-	req := sessionNoticeRequest(body)
-	if err := session.SendNotify("session-notify-"+randomNotifyID(), ipc.TypeNotify, req); err != nil {
+	req := sessionNoticeRequest(title, body)
+	// SendNotification, not SendNotify: the helper answers every notify, and
+	// the answer must have a waiter or it is dropped at WARN (#10224).
+	if err := session.SendNotification("session-notify-"+randomNotifyID(), req); err != nil {
 		log.Warn("failed to send session notify", "error", err.Error())
+		return fmt.Errorf("send session notify: %w", err)
 	}
+	return nil
 }
 
 // sendBannerShow tells the consent-UI helper (assist app, or the native
@@ -841,11 +865,17 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// randomNotifyID returns a short unique-ish ID for fire-and-forget notify
-// envelopes. The notify path doesn't await a response, so the ID only needs to
-// avoid colliding with a pending command on the same session within a tick.
+// notifyIDSeq makes randomNotifyID unique within the process.
+var notifyIDSeq atomic.Uint64
+
+// randomNotifyID returns a short unique ID for notice envelopes. The notice
+// senders register a waiter for the helper's reply (Session.SendNotification,
+// #10224) and a duplicate in-flight id is refused outright, so a time-of-day
+// string alone is not enough: two notices raised inside one clock tick would
+// collide and the second would never be shown. The time part only keeps the
+// id readable in logs; the counter makes it unique.
 func randomNotifyID() string {
-	return time.Now().Format("150405.000000000")
+	return fmt.Sprintf("%s-%d", time.Now().Format("150405.000000000"), notifyIDSeq.Add(1))
 }
 
 // sessionNoticeTarget picks the helper that draws the remote-session start/end
@@ -868,9 +898,9 @@ func (h *Heartbeat) sessionNoticeTarget(targetWinSession string) *sessionbroker.
 // cannot be shown (toasts can be disabled, suppressed by Focus Assist, or
 // unavailable to the process). It carries no Actions: it is an announcement,
 // not a prompt.
-func sessionNoticeRequest(body string) ipc.NotifyRequest {
+func sessionNoticeRequest(title, body string) ipc.NotifyRequest {
 	return ipc.NotifyRequest{
-		Title:          "Breeze Agent",
+		Title:          title,
 		Body:           body,
 		Urgency:        "normal",
 		FallbackDialog: true,

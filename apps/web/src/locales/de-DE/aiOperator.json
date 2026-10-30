@@ -239,6 +239,8 @@
       "hintPlaceholder": "z. B. Dana Schmidt oder dana@example.com",
       "contactChosen": "Kontakt: {{name}}",
       "useHint": "Stattdessen einen Namen oder eine E-Mail-Adresse verwenden",
+      "requesterSuggestion": "Anfragende Person des Tickets: {{name}}. Oft ist das eine Führungskraft, die das Ausscheiden einer anderen Person meldet.",
+      "useRequester": "Als ausscheidende Person verwenden",
       "readOnly": "Von diesem Kontakt aus gestartet."
     },
     "inheritor": {
@@ -249,7 +251,8 @@
       "pickContact": "Kontakt auswählen",
       "addressPlaceholder": "vorname.nachname@example.com",
       "contactsFailed": "Kontakte konnten nicht geladen werden.",
-      "loadMore": "Weitere Kontakte laden"
+      "loadMore": "Weitere Kontakte laden",
+      "self": "Die ausscheidende Person kann ihre eigenen E-Mails nicht übernehmen. Wählen Sie eine andere Person oder niemanden."
     },
     "autoReply": {
       "label": "Text der automatischen Antwort",

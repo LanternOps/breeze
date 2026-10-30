@@ -700,8 +700,10 @@ export function parsePasswordPolicySummary(raw: unknown): ParsedPasswordPolicy {
     {
       rule: 'Maximum age (90 days)',
       key: 'max_age',
-      pass: maxAgeDays !== null ? maxAgeDays <= 90 : false,
-      current: maxAgeDays !== null ? `${Math.round(maxAgeDays)} days` : 'Unknown',
+      // 0 means passwords never expire (the Windows agent reports it that way).
+      pass: maxAgeDays !== null ? maxAgeDays > 0 && maxAgeDays <= 90 : false,
+      current:
+        maxAgeDays === null ? 'Unknown' : maxAgeDays <= 0 ? 'Never expires' : `${Math.round(maxAgeDays)} days`,
       required: '90 days'
     },
     {

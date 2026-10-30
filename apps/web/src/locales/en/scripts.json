@@ -823,7 +823,7 @@
     "approval": {
       "title": "Approval Required",
       "approve": "Approve",
-      "reject": "Reject"
+      "reject": "Deny"
     },
     "empty": {
       "title": "Breeze AI",

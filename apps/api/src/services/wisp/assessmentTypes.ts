@@ -37,7 +37,9 @@ export type WispAssessmentTriggerRef = {
 
 /**
  * What changed in the run's org since the watermark. Each list holds at most
- * 25 rows, newest first; every free-text field has been through
+ * 25 rows, newest first — except on a first look, where `alerts` holds the
+ * org's open (active / acknowledged) alerts, worst severity first, whenever
+ * they fired (#10389). Every free-text field has been through
  * `sanitizeSweepText`. ISO strings for every timestamp.
  */
 export type AssessmentDigest = {
@@ -70,6 +72,13 @@ export interface AssessmentRunContext {
   openConcerns: Concern[];
   /** ISO lower bound of the digest window (watermark, or now − 24 h). */
   changedSince: string | null;
+  /**
+   * #10389: no earlier assessment for (grant, org) — no watermark, or an
+   * onboarding reason. The digest's alerts are then the org's OPEN alerts
+   * (no time bound) instead of those triggered since `changedSince`, and the
+   * prompt frames the run as a look at the current state.
+   */
+  firstLook: boolean;
   digest: AssessmentDigest;
   /** Set when the run was requested by a watch (`reason.kind === 'watch'`) and the watch still exists. */
   watch: Watch | null;

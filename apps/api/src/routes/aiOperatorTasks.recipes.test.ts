@@ -269,6 +269,47 @@ describe('POST /task-drafts', () => {
   });
 });
 
+describe('POST /task-drafts — the person leaving is never their own inheritor (#10076)', () => {
+  const OTHER = '88888888-8888-4888-8888-888888888888';
+  const dana = { id: CONTACT, name: 'Dana Ruiz', email: 'dana@customer.example' };
+  const draft = (inputs: Record<string, unknown>) =>
+    post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs });
+  const issuesOf = async (res: Response) => ((await res.json()) as { code: string; issues: Array<{ path: string; message: string }> });
+
+  it('a chosen contact named as its own inheritor is a 400 on inheritorContactId, before any read', async () => {
+    const res = await draft({ contactId: CONTACT, inheritorContactId: CONTACT });
+    expect(res.status).toBe(400);
+    const json = await issuesOf(res);
+    expect(json.code).toBe('INVALID_INPUT');
+    expect(json.issues.map((i) => i.path)).toEqual(['inheritorContactId']);
+    expect(h.wheres).toHaveLength(0);
+  });
+
+  it('a hint that RESOLVES to the inheritor contact is a 400 on inheritorContactId', async () => {
+    h.selectQueue = [[dana]];
+    const res = await draft({ personHint: 'Dana Ruiz', inheritorContactId: CONTACT });
+    expect(res.status).toBe(400);
+    const json = await issuesOf(res);
+    expect(json.code).toBe('INVALID_INPUT');
+    expect(json.issues).toEqual([{ path: 'inheritorContactId', message: expect.stringContaining('cannot inherit their own mail') }]);
+    expect(h.inserts).toBe(0);
+  });
+
+  it("a forward address equal to the resolved contact's own address is a 400 on forwardTo", async () => {
+    h.selectQueue = [[dana]];
+    const res = await draft({ contactId: CONTACT, forwardTo: 'Dana@Customer.example' });
+    expect(res.status).toBe(400);
+    expect((await issuesOf(res)).issues.map((i) => i.path)).toEqual(['forwardTo']);
+  });
+
+  it('someone else as inheritor still drafts', async () => {
+    h.selectQueue = [[dana]];
+    expect((await draft({ personHint: 'Dana Ruiz', inheritorContactId: OTHER })).status).toBe(200);
+    h.selectQueue = [[dana]];
+    expect((await draft({ contactId: CONTACT, forwardTo: 'sam@customer.example' })).status).toBe(200);
+  });
+});
+
 describe('POST /tasks — identity_offboarding', () => {
   it('6. a device-less identity body admits through admitTask with the helpdesk agent', async () => {
     h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: 'dana@customer.example' }]];
@@ -282,6 +323,24 @@ describe('POST /tasks — identity_offboarding', () => {
       recipeInput: expect.objectContaining({ contactId: CONTACT }),
     }));
     expect(h.admitServiceRecoveryTask).not.toHaveBeenCalled();
+  });
+
+  it("#10076: a forward address equal to the contact's own address is a 400, and nothing is admitted", async () => {
+    h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: 'dana@customer.example' }]];
+    const res = await post('/tasks', body({ inputs: { contactId: CONTACT, forwardTo: 'dana@customer.example' } }));
+    expect(res.status).toBe(400);
+    const json = await res.json() as { code: string; issues: Array<{ path: string }> };
+    expect(json.code).toBe('INVALID_INPUT');
+    expect(json.issues.map((i) => i.path)).toEqual(['forwardTo']);
+    expect(h.admitTask).not.toHaveBeenCalled();
+    expect(h.resolveEffectiveAgent).not.toHaveBeenCalled();
+  });
+
+  it('#10076: the contact named as its own inheritor is a 400 before the contact is read', async () => {
+    const res = await post('/tasks', body({ inputs: { contactId: CONTACT, inheritorContactId: CONTACT } }));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { issues: Array<{ path: string }> }).issues.map((i) => i.path)).toEqual(['inheritorContactId']);
+    expect(h.admitTask).not.toHaveBeenCalled();
   });
 
   it('8. duplicate_live_task → 409 with the existing task id', async () => {

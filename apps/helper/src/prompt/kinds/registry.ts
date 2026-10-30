@@ -5,6 +5,7 @@ import { NoticeCard } from './notice';
 import { ConsentCard } from './consent';
 import { RestartFinalCard, RestartPromptCard } from './restart';
 import { SessionCard } from './session';
+import { ElevationCard } from './elevation';
 
 /*
  * The card component for each prompt kind (#10190). Each wave adds its kind
@@ -17,6 +18,7 @@ const CARDS: Record<string, ComponentType<PromptCardProps>> = {
   'restart.final': RestartFinalCard,
   'remote.consent': ConsentCard,
   'remote.session': SessionCard,
+  'elevation.request': ElevationCard,
 };
 
 export function cardForKind(kind: string): ComponentType<PromptCardProps> {

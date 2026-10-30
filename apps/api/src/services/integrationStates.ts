@@ -141,10 +141,12 @@ export interface DnsRow {
 }
 
 /**
- * dnsSyncJob writes 'success' / 'error', or 'partial' when a run stopped at the
- * provider's request budget with the rest left for the next run (#10018) — that
- * run reached the vendor, so it is linked like 'success'. NULL means the
- * integration never ran.
+ * dnsSyncJob writes 'success' / 'error', 'partial' when a run stopped at the
+ * provider's request budget with the rest left for the next run (#10018), or
+ * 'truncated' when some records lay past the provider's paging limit and were
+ * not fetched (#10047). Both of those runs reached the vendor, so they are
+ * linked like 'success'; the loss is shown on the integration itself. NULL
+ * means the integration never ran.
  */
 export function dnsState(row: DnsRow): MappingState {
   if (row.lastSyncStatus === null) return { state: 'pending', reason: 'never_synced' };

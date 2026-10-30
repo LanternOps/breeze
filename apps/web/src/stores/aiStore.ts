@@ -4,6 +4,7 @@ import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTop
 import { fetchWithAuth } from './auth';
 import { registerLogoutHook } from './logoutHooks';
 import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { pageContextAnchorsOrg } from './aiPageContext';
 import { classifySendRefusal } from './aiSendRefusal';
 import { isChatSessionType } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
@@ -208,10 +209,10 @@ interface AiState {
 }
 
 /**
- * True when an open session belongs to a different org than the device page the
+ * True when an open session belongs to a different org than the record or device page the
  * chat is now sitting on (#5684).
  *
- * Both sides must be known: a device page context with no `orgId` (an older
+ * Both sides must be known: a page context with no `orgId` (an older
  * caller) and a session with no recorded org both mean "cannot tell", and the
  * session is left alone rather than dropped on a guess.
  */
@@ -220,7 +221,7 @@ function pageContextOrgMismatch(
   sessionOrgId: string | null,
 ): boolean {
   return (
-    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+    !!ctx && 'orgId' in ctx && typeof ctx.orgId === 'string' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
   );
 }
 
@@ -779,13 +780,13 @@ export const useAiStore = create<AiState>()(
     try {
       const orgId = opts?.orgId
         ?? wispOrgId
-        ?? (pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId());
+        ?? (pageContextAnchorsOrg(pageContext) || opts?.deviceId ? null : await readSelectedOrgId());
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
-          // #9529: with no device on the page, the session belongs to the org
-          // selected in the header. A device page / device task lets the
-          // server anchor to the device's org instead (#5593), and no
+          // #9529: without a page org anchor, the session belongs to the org
+          // selected in the header. A device/record page or device task lets
+          // the server resolve and anchor to the entity's org instead, and no
           // selection (All organizations) sends nothing.
           orgId: orgId ?? undefined,
           ...(wispGrantId ? { wispGrantId } : {}),
