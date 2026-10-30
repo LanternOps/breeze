@@ -146,6 +146,9 @@ describe('quote lifecycle', () => {
       .rejects.toMatchObject({ status: 422, code: 'QUOTE_EMPTY' });
     const [row] = await withSystemDbAccessContext(() => db.select().from(quotes).where(eq(quotes.id, created.id)));
     expect(row!.status).toBe('draft');
-    expect(row!.quoteNumber).toBeNull();
+    // A draft is numbered at creation (createQuote), so "left a draft" means
+    // the refused sends changed nothing: same number, never stamped sent.
+    expect(row!.quoteNumber).toBe(created.quoteNumber);
+    expect(row!.sentAt).toBeNull();
   });
 });

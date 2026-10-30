@@ -151,7 +151,7 @@ describe('acceptQuote deposit snapshot', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', expiryDate: null }]);
     queueResult([]); // blocks
     queueResult([{
-      id: 'line-1', contractLineType: 'per_device_group',
+      id: 'line-1', contractLineType: 'per_device_group', customerVisible: true,
       deviceGroupId: '11111111-1111-4111-8111-111111111111', deviceGroupName: 'Foreign group',
       siteId: null, siteName: null,
     }]);
