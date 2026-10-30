@@ -9,8 +9,8 @@
 //     subset of a shard — a subset would change test ordering/isolation);
 //   - go: the same `go test` flags restricted to the failed packages.
 // It never retries what it cannot see (no parsed failures: install error, DB
-// not ready, a crash before the summary), a build failure, or a signal-killed
-// run. A test that fails on both attempts fails the job.
+// not ready, a crash before the summary), a build failure, a Go data race,
+// or a signal-killed run. A test that fails on both attempts fails the job.
 //
 //   node .github/scripts/retry-shard.mjs --runner vitest|go --label <name> \
 //     [--go-dir <dir>] -- <command...>
@@ -57,27 +57,36 @@ function parseVitest(output) {
     const head = m[1].split(' > ')[0];
     failures.push({ id: m[1], file: head.replace(/\s+\[.*\]$/, '').trim(), pkg: null });
   }
-  return { failures, buildFailed: false };
+  return { failures, buildFailed: false, raceDetected: false };
 }
 
 // `go test -json` events. A failing subtest also fails its parent; the parent
 // is dropped when a descendant failed (it adds nothing and would stop a
 // subtest from ever being matched on its own), and a package-level fail is
 // reported only when no test in that package failed (TestMain, a panic, a
-// timeout). Build/setup failures are never retried.
+// timeout). Build/setup failures are never retried, and neither is a data
+// race: the race detector reports an interleaving that happened, so a clean
+// second attempt would only hide a real (intermittent) bug.
 const GO_BUILD_FAILED = /^FAIL\t\S+ \[(?:build|setup) failed\]/;
+const GO_DATA_RACE = 'WARNING: DATA RACE';
 
 function parseGo(output) {
   const fails = [];
   let buildFailed = false;
+  let raceDetected = false;
   for (const line of output.split('\n')) {
-    if (!line.startsWith('{')) continue;
+    if (!line.startsWith('{')) {
+      if (line.includes(GO_DATA_RACE)) raceDetected = true;
+      continue;
+    }
     let ev;
     try {
       ev = JSON.parse(line);
     } catch {
+      if (line.includes(GO_DATA_RACE)) raceDetected = true;
       continue;
     }
+    if (typeof ev.Output === 'string' && ev.Output.includes(GO_DATA_RACE)) raceDetected = true;
     if (ev.Action === 'build-fail') buildFailed = true;
     if (ev.Action === 'output' && typeof ev.Output === 'string' && GO_BUILD_FAILED.test(ev.Output)) buildFailed = true;
     if (ev.Action !== 'fail' || !ev.Package) continue;
@@ -101,7 +110,7 @@ function parseGo(output) {
     seen.add(id);
     failures.push({ id, file: null, pkg: f.pkg });
   }
-  return { failures, buildFailed };
+  return { failures, buildFailed, raceDetected };
 }
 
 export function parseFailures(runner, output) {
@@ -119,7 +128,7 @@ export function parseFailures(runner, output) {
 export function decide({ first, second, quarantine, changedFiles }) {
   const none = { flaky: [], quarantined: [] };
   if (first.code === 0) return { exitCode: 0, retry: false, ...none };
-  if (first.code === null || first.buildFailed || first.failures.length === 0) {
+  if (first.code === null || first.buildFailed || first.raceDetected || first.failures.length === 0) {
     return { exitCode: first.code ?? 1, retry: false, ...none };
   }
   if (!second) return { exitCode: first.code, retry: true, ...none };
@@ -365,7 +374,12 @@ async function main(argv) {
 
   const first = await runAttempt(command, { cwd, runner });
   const p1 = parseFailures(runner, first.output);
-  const firstResult = { code: first.code, failures: p1.failures, buildFailed: p1.buildFailed };
+  const firstResult = { code: first.code, failures: p1.failures, buildFailed: p1.buildFailed, raceDetected: p1.raceDetected };
+  if (p1.raceDetected && first.code !== 0) {
+    process.stdout.write(
+      `::error title=Data race::${escapeData(`${label}: the race detector reported a data race; not retrying (a clean re-run would hide it)`)}\n`,
+    );
+  }
   const ctx = { quarantine: new Set(), changedFiles: null };
   let verdict = decide({ first: firstResult, second: null, ...ctx });
   let attempts = 1;

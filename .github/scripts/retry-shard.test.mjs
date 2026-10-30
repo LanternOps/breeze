@@ -61,7 +61,7 @@ test('vitest: splits file on the first " > " only, dedupes, and reads failed sui
 
 test('vitest: no summary section → no failures (setup/infra failure)', () => {
   const r = parseFailures('vitest', 'ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\n FAIL  this is console noise\n');
-  assert.deepEqual(r, { failures: [], buildFailed: false });
+  assert.deepEqual(r, { failures: [], buildFailed: false, raceDetected: false });
 });
 
 // ── parseFailures: go ────────────────────────────────────────────────────
@@ -104,6 +104,18 @@ test('go: [setup failed] package → buildFailed', () => {
   assert.equal(parseFailures('go', fixture('go-setup-fail.jsonl')).buildFailed, true);
 });
 
+test('go: a real -race report → raceDetected (and the racy test is still a failure)', () => {
+  const r = parseFailures('go', fixture('go-race.jsonl'));
+  assert.equal(r.raceDetected, true);
+  assert.equal(r.buildFailed, false);
+  assert.deepEqual(ids(r), [`${AGENT}/racy.TestCounterRace`]);
+});
+
+test('raceDetected is false for plain go failures and always false for vitest', () => {
+  assert.equal(parseFailures('go', fixture('go-test-failures.jsonl')).raceDetected, false);
+  assert.equal(parseFailures('vitest', ' FAIL  noise\n⎯ Failed Tests 1 ⎯\n FAIL  src/a.test.ts > WARNING: DATA RACE\n').raceDetected, false);
+});
+
 // ── decide ───────────────────────────────────────────────────────────────
 
 const F = [{ id: 'src/a.test.ts > t', file: 'src/a.test.ts', pkg: null }];
@@ -143,6 +155,15 @@ test('decide: exit 2 with no parsed failures → exit 2, no retry (Review Focus 
 
 test('decide: signal-killed first attempt → exit 1, no retry', () => {
   assert.deepEqual(run({ code: null, failures: F }), { exitCode: 1, retry: false, flaky: [], quarantined: [] });
+});
+
+test('decide: data race on attempt 1 → exit first code, never retried', () => {
+  assert.deepEqual(run({ code: 1, failures: F, raceDetected: true }), {
+    exitCode: 1,
+    retry: false,
+    flaky: [],
+    quarantined: [],
+  });
 });
 
 test('decide: build failure → first code, no retry', () => {
@@ -314,6 +335,26 @@ test('CLI go: adds -json, re-prints Output, retries only failed packages, merges
   assert.match(r.stdout, /^::warning title=Flaky test::p\/b\.TestB$/m);
   const report = JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8'));
   assert.deepEqual(report, { label: 'agent', attempts: 2, flaky: ['p/b.TestB'], quarantined: [], exitCode: 0 });
+});
+
+test('CLI go: a data race fails the job on attempt 1 with an ::error annotation, no retry', () => {
+  const root = mkdtempSync(join(tmpdir(), 'retry-shard-'));
+  const bin = mkdtempSync(join(tmpdir(), 'retry-shard-bin-'));
+  writeFileSync(
+    join(bin, 'go'),
+    `#!/usr/bin/env node\nrequire('fs').appendFileSync('go-calls', 'x');\nprocess.stdout.write(${JSON.stringify(fixture('go-race.jsonl'))});\nprocess.exit(1);\n`,
+  );
+  chmodSync(join(bin, 'go'), 0o755);
+  const r = cli(['--runner', 'go', '--label', 'agent-race', '--', 'go', 'test', '-race', './...'], {
+    cwd: root,
+    env: { PATH: `${bin}:${process.env.PATH}` },
+  });
+  assert.equal(r.status, 1);
+  assert.equal(readFileSync(join(root, 'go-calls'), 'utf8'), 'x', 'must not retry');
+  assert.match(r.stdout, /^::error title=Data race::/m);
+  assert.doesNotMatch(r.stdout, /Flaky test|Retrying test shard/);
+  const report = JSON.parse(readFileSync(join(root, 'flake-report-agent-race.json'), 'utf8'));
+  assert.deepEqual(report, { label: 'agent-race', attempts: 1, flaky: [], quarantined: [], exitCode: 1 });
 });
 
 test('CLI go: interleaved -json events print as one block per package, like plain go test', () => {
