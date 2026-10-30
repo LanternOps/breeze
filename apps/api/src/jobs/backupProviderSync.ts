@@ -297,6 +297,7 @@ export async function syncConnectionById(
           id: current.id,
           partnerId: current.partnerId,
           provider: current.provider,
+          inventoryKind: adapter.inventoryKind,
           showProviderNameInPortal: current.showProviderNameInPortal,
         },
         { customers, ...vendorDevices },

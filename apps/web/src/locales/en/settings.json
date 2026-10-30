@@ -2218,6 +2218,7 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
+      "welcomeMessageHelp": "Shown at the top of the customer's home page in the portal, and on the portal sign-in page when the organization uses a verified custom domain. Plain text; line breaks are kept.",
       "footerText": "Footer text",
       "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
       "footerTextInheritedSource": "Partner document footer"

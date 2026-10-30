@@ -56,61 +56,68 @@ export default function BackupHealthDeviceTable({ rows }: { rows: BackupHealthRo
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.key} data-testid={`backup-health-row-${row.key}`} className="border-b last:border-0">
-              <td className="py-2 pr-3">
-                <div className="flex items-center gap-2">
+          {rows.map((row) => {
+            const isSaas = row.accountType === 'm365' || row.accountType === 'gws';
+            const dataSources = row.dataSources
+              .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
+              .join(', ');
+            const name = isSaas
+              ? t('backupHealth.workloadBackup', { workload: dataSources || row.name })
+              : row.name;
+            return (
+              <tr key={row.key} data-testid={`backup-health-row-${row.key}`} className="border-b last:border-0">
+                <td className="py-2 pr-3">
+                  <div className="flex items-center gap-2">
+                    <span
+                      data-testid={`backup-health-dot-${row.key}`}
+                      title={t(/* i18n-dynamic */ `backupHealth.health.${row.health}`)}
+                      className={cn('h-2.5 w-2.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[row.health])}
+                    />
+                    {!isSaas && row.deviceId ? (
+                      <a data-testid={`backup-health-device-link-${row.key}`} href={`/devices/${row.deviceId}`} className="font-medium text-primary hover:underline">
+                        {name}
+                      </a>
+                    ) : (
+                      <span data-testid={`backup-health-name-${row.key}`} className="font-medium text-foreground">{name}</span>
+                    )}
+                  </div>
+                  <div className="pl-[18px] text-xs text-muted-foreground">
+                    {formatDateTime(row.lastSuccessAt, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </td>
+                <td className="py-2 pr-3 text-muted-foreground">{row.computerName ?? '--'}</td>
+                <td className="py-2 pr-3 text-muted-foreground">{row.orgName}</td>
+                <td className="py-2 pr-3">
                   <span
-                    data-testid={`backup-health-dot-${row.key}`}
-                    title={t(/* i18n-dynamic */ `backupHealth.health.${row.health}`)}
-                    className={cn('h-2.5 w-2.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[row.health])}
-                  />
-                  {row.deviceId ? (
-                    <a href={`/devices/${row.deviceId}`} className="font-medium text-primary hover:underline">
-                      {row.name}
-                    </a>
-                  ) : (
-                    <span className="font-medium text-foreground">{row.name}</span>
-                  )}
-                </div>
-                <div className="pl-[18px] text-xs text-muted-foreground">
-                  {formatDateTime(row.lastSuccessAt, { fallback: '--', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                </div>
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.computerName ?? '--'}</td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.orgName}</td>
-              <td className="py-2 pr-3">
-                <span
-                  data-testid={`backup-health-source-${row.key}`}
-                  className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground"
-                >
-                  {row.source === 'breeze' ? t('backupHealth.sourceBreeze') : (row.providerLabel ?? row.providerKey)}
-                </span>
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">
-                {t(/* i18n-dynamic */ `backupHealth.osType.${row.osType}`, { defaultValue: row.osType })}
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">
-                {row.dataSources
-                  .map((source) => t(/* i18n-dynamic */ `backupHealth.dataSource.${source}`, { defaultValue: source }))
-                  .join(', ') || '--'}
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.selectedBytes == null ? '--' : formatBytes(row.selectedBytes)}</td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.usedBytes == null ? '--' : formatBytes(row.usedBytes)}</td>
-              <td className="py-2 pr-3"><HistoryBar row={row} /></td>
-              <td className="py-2 pr-3 text-muted-foreground">
-                {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
-              </td>
-              <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
-              <td className="py-2 text-muted-foreground">
-                {row.agentOnline == null
-                  ? '--'
-                  : row.agentOnline
-                    ? t('common:states.online')
-                    : t('common:states.offline')}
-              </td>
-            </tr>
-          ))}
+                    data-testid={`backup-health-source-${row.key}`}
+                    className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground"
+                  >
+                    {row.source === 'breeze' ? t('backupHealth.sourceBreeze') : (row.providerLabel ?? row.providerKey)}
+                  </span>
+                </td>
+                <td data-testid={`backup-health-type-${row.key}`} className="py-2 pr-3 text-muted-foreground">
+                  {isSaas ? t('backupHealth.saas') : t(/* i18n-dynamic */ `backupHealth.osType.${row.osType}`, { defaultValue: row.osType })}
+                </td>
+                <td data-testid={`backup-health-data-sources-${row.key}`} className="py-2 pr-3 text-muted-foreground">
+                  {dataSources || '--'}
+                </td>
+                <td className="py-2 pr-3 text-muted-foreground">{row.selectedBytes == null ? '--' : formatBytes(row.selectedBytes)}</td>
+                <td className="py-2 pr-3 text-muted-foreground">{row.usedBytes == null ? '--' : formatBytes(row.usedBytes)}</td>
+                <td className="py-2 pr-3"><HistoryBar row={row} /></td>
+                <td className="py-2 pr-3 text-muted-foreground">
+                  {t(/* i18n-dynamic */ `backupHealth.status.${row.status}`, { defaultValue: row.status })}
+                </td>
+                <td className="py-2 pr-3 text-muted-foreground">{row.errorsCount}</td>
+                <td className="py-2 text-muted-foreground">
+                  {row.agentOnline == null
+                    ? '--'
+                    : row.agentOnline
+                      ? t('common:states.online')
+                      : t('common:states.offline')}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

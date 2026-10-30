@@ -2218,6 +2218,7 @@
       "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
+      "welcomeMessageHelp": "Affiché en haut de la page d'accueil du client dans le portail, et sur la page de connexion du portail lorsque l'organisation utilise un domaine personnalisé vérifié. Texte brut; les sauts de ligne sont conservés.",
       "footerText": "Texte du bas de page",
       "footerTextHelp": "Affiché au bas du portail client et imprimé sur les devis et factures de cette organisation, à la place du pied de page des documents du partenaire. Laissez vide pour imprimer le pied de page du partenaire.",
       "footerTextInheritedSource": "Pied de page des documents du partenaire"
