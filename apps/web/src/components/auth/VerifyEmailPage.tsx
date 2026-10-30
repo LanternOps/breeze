@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { launchPurchaseHandoffQuery } from '@breeze/shared';
+import { DEFAULT_SIGNUP_INTENT, signupIntentHandoffQuery } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import StatusIcon from './StatusIcon';
 import { apiVerifyEmail, useAuthStore } from '../../stores/auth';
@@ -82,9 +82,7 @@ export default function VerifyEmailPage() {
       // SR2-21: the address already had an account by step 2. Nothing was
       // created; point the holder at sign-in rather than an error.
       if (result.status === 'sign_in') {
-        setState({ phase: 'sign_in', loginUrl: result.purchaseSelection
-          ? `/login?next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(result.purchaseSelection)}`)}`
-          : '/login' });
+        setState({ phase: 'sign_in', loginUrl: `/login?next=${encodeURIComponent(`/billing/plans?${signupIntentHandoffQuery(result.signupIntent ?? DEFAULT_SIGNUP_INTENT)}`)}` });
         return;
       }
       // Network is the only failure the client can distinguish; it warrants a

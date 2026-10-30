@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { DEFAULT_LAUNCH_PURCHASE_SELECTION, parseLaunchPurchaseHandoff, launchPurchaseHandoffQuery, type LaunchPurchaseHandoff } from '@breeze/shared';
+import { parseSignupIntentParams, signupIntentHandoffQuery, type SignupIntent } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import PartnerRegisterForm from './PartnerRegisterForm';
 import StatusIcon from './StatusIcon';
 import { apiRegisterPartner, restoreAccessTokenFromCookieDetailed, useAuthStore } from '../../stores/auth';
 import { useRegistrationGate } from '../../stores/featuresStore';
 import { navigateTo } from '../../lib/navigation';
+import { fetchSignupOffer, type SignupOffer } from '../../lib/signupOffer';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -24,13 +25,24 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [errorAction, setErrorAction] = useState<{ url: string; label: string }>();
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [handoff, setHandoff] = useState<LaunchPurchaseHandoff | null>(null);
-  const purchaseSelection = handoff?.kind === 'selected'
-    ? handoff.selection
-    : DEFAULT_LAUNCH_PURCHASE_SELECTION;
+  // What this signup is for. Unknown or malformed values fall back to the
+  // cloud intent; there is no error state for a bad link.
+  const [handoff, setHandoff] = useState<{ intent: SignupIntent; explicit: boolean } | null>(null);
+  const [offer, setOffer] = useState<SignupOffer | null>(null);
+  const signupIntent = handoff?.intent ?? { intent: 'cloud' as const };
+  const billingPlansUrl = `/billing/plans?${signupIntentHandoffQuery(signupIntent)}`;
 
   useEffect(() => {
-    setHandoff(parseLaunchPurchaseHandoff(new URLSearchParams(window.location.search)));
+    const params = new URLSearchParams(window.location.search);
+    setHandoff({ intent: parseSignupIntentParams(params), explicit: params.has('intent') || params.has('offer') });
+  }, []);
+
+  // The quote comes from billing only. A failed lookup shows no price and
+  // never blocks registration.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSignupOffer().then((quote) => { if (!cancelled) setOffer(quote); });
+    return () => { cancelled = true; };
   }, []);
 
   // Sweep paper cut #1: this is a bare Astro page reached by a full-page
@@ -51,16 +63,13 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   const [alreadySignedIn, setAlreadySignedIn] = useState(false);
 
   useEffect(() => {
-    if (!isAuthenticated || !handoff || handoff.kind === 'invalid') return;
+    if (!isAuthenticated || !handoff) return;
     let cancelled = false;
     void restoreAccessTokenFromCookieDetailed().then((outcome) => {
       if (cancelled) return;
       if (outcome === 'restored') {
         setAlreadySignedIn(true);
-        const destination = handoff.kind === 'selected'
-          ? `/billing/plans?${launchPurchaseHandoffQuery(handoff.selection)}`
-          : '/dashboard';
-        void navigateTo(destination, { replace: true });
+        void navigateTo(handoff.explicit ? billingPlansUrl : '/dashboard', { replace: true });
         return;
       }
       // Only a definitive refusal clears the persisted flag. 'throttled'
@@ -75,7 +84,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
     });
     return () => { cancelled = true; };
     // Resolve only after the handoff is parsed; a stale-auth eviction must not
-    // re-arm this check. Selection is a preference passed to normal billing auth.
+    // re-arm this check. The intent is a hint passed to normal billing auth.
   }, [handoff]);
 
   // Runtime registration gate (#1308). The server enforces ENABLE_REGISTRATION
@@ -86,11 +95,10 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   // already-signed-in check above has resolved.
   const { enabled: registrationEnabled, loaded: gateLoaded } = useRegistrationGate(sessionChecked);
   useEffect(() => {
-    if (handoff && handoff.kind !== 'invalid' && sessionChecked && gateLoaded && !registrationEnabled) {
-      const next = handoff.kind === 'selected' ? `&next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(handoff.selection)}`)}` : '';
-      void navigateTo(`/login?reason=registration-disabled${next}`);
+    if (handoff && sessionChecked && gateLoaded && !registrationEnabled) {
+      void navigateTo(`/login?reason=registration-disabled&next=${encodeURIComponent(billingPlansUrl)}`);
     }
-  }, [handoff, sessionChecked, gateLoaded, registrationEnabled]);
+  }, [handoff, billingPlansUrl, sessionChecked, gateLoaded, registrationEnabled]);
 
   const handleRegister = async (values: {
     companyName: string;
@@ -108,7 +116,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       values.email,
       values.password,
       values.name,
-      purchaseSelection
+      signupIntent
     );
 
     if (!result.success) {
@@ -128,17 +136,6 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
   };
 
   if (!handoff) return null;
-  if (handoff.kind === 'invalid') {
-    return (
-      <div data-testid="register-purchase-error" role="alert" className="space-y-4 rounded-lg border bg-card p-6 shadow-xs">
-        <h2 className="text-lg font-semibold">{t('partnerRegister.purchase.invalidTitle', { defaultValue: 'Review your plan selection' })}</h2>
-        <p className="text-sm text-muted-foreground">{t('partnerRegister.purchase.invalidDescription', { defaultValue: 'This signup link has an incomplete or unavailable plan selection. Return to pricing to choose a plan, or continue with the default plan.' })}</p>
-        <a href="https://breezermm.com/pricing" className="block text-sm font-medium text-primary hover:underline">{t('partnerRegister.purchase.pricing', { defaultValue: 'Choose a plan from pricing' })}</a>
-        <a href="/register-partner" className="inline-flex text-sm font-medium text-primary hover:underline">{t('partnerRegister.purchase.clear', { defaultValue: 'Continue with the default plan' })}</a>
-      </div>
-    );
-  }
-
   // Until the already-signed-in check resolves, or once it finds a real
   // session (the effect above is redirecting to the dashboard), render
   // nothing rather than flashing the registration form.
@@ -168,7 +165,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
           </p>
         </div>
         <a
-          href={`/login?next=${encodeURIComponent(`/billing/plans?${launchPurchaseHandoffQuery(purchaseSelection)}`)}`}
+          href={`/login?next=${encodeURIComponent(billingPlansUrl)}`}
           className="flex h-11 w-full items-center justify-center rounded-md border text-sm font-medium transition hover:bg-muted"
         >
           {t('common.backToSignIn', { defaultValue: 'Back to sign in' })}
@@ -183,7 +180,8 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
       errorMessage={error}
       errorAction={errorAction}
       loading={loading}
-      purchaseSelection={purchaseSelection}
+      signupIntent={signupIntent}
+      offer={offer}
     />
   );
 }

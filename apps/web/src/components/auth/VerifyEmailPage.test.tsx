@@ -63,12 +63,12 @@ describe('VerifyEmailPage (#6539 — confirm-step gate)', () => {
     });
   });
 
-  it('restores the server-held purchase choice in sign-in recovery on a clean device', async () => {
+  it('restores the server-held signup intent in sign-in recovery on a clean device', async () => {
     localStorage.clear();
-    authMocks.apiVerifyEmail.mockResolvedValue({ success: false, status: 'sign_in', purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' } });
+    authMocks.apiVerifyEmail.mockResolvedValue({ success: false, status: 'sign_in', signupIntent: { intent: 'wisp' } });
     render(<VerifyEmailPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm my email' }));
-    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login?next=%2Fbilling%2Fplans%3Fcatalog%3Dlaunch-2026-10%26capacity%3D250%26billing%3Dannual');
+    expect(await screen.findByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login?next=' + encodeURIComponent('/billing/plans?intent=wisp'));
     expect(authMocks.login).not.toHaveBeenCalled();
   });
 
