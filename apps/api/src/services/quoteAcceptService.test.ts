@@ -147,6 +147,20 @@ describe('acceptQuote deposit snapshot', () => {
     stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
   });
 
+  it('characterization: a quote group outside the quote org yields 409 before acceptance or contract writes', async () => {
+    queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', expiryDate: null }]);
+    queueResult([]); // blocks
+    queueResult([{
+      id: 'line-1', contractLineType: 'per_device_group',
+      deviceGroupId: '11111111-1111-4111-8111-111111111111', deviceGroupName: 'Foreign group',
+      siteId: null, siteName: null,
+    }]);
+    queueResult([]); // org-scoped group lookup excludes partner/foreign groups
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({ status: 409, code: 'QUOTE_LINE_REFERENCE_DELETED' });
+    expect((db as unknown as Chain).insert).not.toHaveBeenCalled();
+    expect(createContractMock).not.toHaveBeenCalled();
+  });
+
   it('snapshots quote.depositAmount onto the issued invoice as depositDue when a deposit is configured', async () => {
     queueAcceptHappyPath({ depositType: 'percent', depositPercent: '30.00', depositAmount: '300.00' });
 

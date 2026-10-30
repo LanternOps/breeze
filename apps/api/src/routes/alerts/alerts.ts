@@ -27,12 +27,12 @@ import {
   ALERT_DISMISS_CAS_LOST_MESSAGE,
   ALERT_SUPPRESS_CAS_LOST_MESSAGE,
   ALERT_UNSUPPRESS_CAS_LOST_MESSAGE,
-  buildAcknowledgeAlertCas,
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
   buildUnsuppressAlertCas,
 } from '../../services/alertService';
+import { acknowledgeAlert } from '../../services/alertActions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
@@ -946,57 +946,12 @@ alertsRoutes.post(
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
-    const acknowledgedAt = new Date();
-    // Winner-takes-all (#4101). Updating by id alone let a stale client acknowledge
-    // an alert another tech had just resolved — stamping `status='acknowledged'`
-    // over the resolution, leaving `resolvedAt`/`resolvedBy` populated on a
-    // "reopened" alert whose escalation was already cancelled — and still publish
-    // `alert.acknowledged` for a transition that never legitimately happened.
-    const [updated] = await db
-      .update(alerts)
-      .set({
-        status: 'acknowledged',
-        acknowledgedAt,
-        acknowledgedBy: auth.user.id
-      })
-      .where(buildAcknowledgeAlertCas(alertId))
-      .returning();
-    if (!updated) {
-      // The CAS matched nothing between the read above and this write: the alert
-      // left `active` first. Everything below (event, ML feedback, audit) belongs
-      // to whoever performed that transition, not to this caller.
+    const result = await acknowledgeAlert(alertId, { kind: 'user', userId: auth.user.id });
+    if (!result.changed) {
+      // Another transition won the CAS; it owns the event, feedback and audit.
       return c.json({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE }, 409);
     }
-
-    try {
-      await publishEvent(
-        'alert.acknowledged',
-        alert.orgId,
-        {
-          alertId: updated.id,
-          ruleId: alert.ruleId,
-          deviceId: alert.deviceId,
-          acknowledgedBy: auth.user.id
-        },
-        'alerts-route',
-        { userId: auth.user.id }
-      );
-    } catch (error) {
-      console.error('[AlertsRoute] Failed to publish alert.acknowledged event:', error);
-    }
-
-    await emitAlertStateFeedback({
-      orgId: alert.orgId,
-      alertId: updated.id,
-      eventType: 'alert.acknowledged',
-      outcome: 'acknowledged',
-      actorUserId: auth.user.id,
-      occurredAt: acknowledgedAt,
-      metadata: {
-        source: 'alerts.route',
-        previousStatus: alert.status,
-      },
-    });
+    const updated = result.alert;
 
     writeRouteAudit(c, {
       orgId: alert.orgId,

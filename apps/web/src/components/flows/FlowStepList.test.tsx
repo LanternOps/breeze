@@ -69,4 +69,41 @@ describe('FlowStepList built-in steps', () => {
     render(<FlowStepList steps={[step('ask', 'ai', { prompt: 'p', tools: [] })]} summaries={[summary('ask', 'ai', 1)]} />);
     expect(screen.getByTestId('flow-step-builtin-ask').textContent).toContain('No tools');
   });
+
+  it('run_script_on_targets shows the script, the device set and the offline policy (#5221)', () => {
+    render(
+      <FlowStepList
+        steps={[
+          step('a0_run_script', 'run_script_on_targets', { scriptId: 's-1', target: { type: 'groups', groupIds: ['g'] }, whenOffline: 'queue' }),
+          step('a1_run_script', 'run_script_on_targets', { scriptId: 's-2', fromStep: { stepId: 'a0_run_script', set: 'succeeded' }, whenOffline: 'skip' }),
+        ]}
+        summaries={[summary('a0_run_script', 'run_script_on_targets', 3), summary('a1_run_script', 'run_script_on_targets', 3)]}
+        compact
+      />,
+    );
+    const first = screen.getByTestId('flow-step-builtin-a0_run_script').textContent;
+    expect(first).toContain('Run a script on devices');
+    expect(first).toContain('Script s-1');
+    expect(first).toContain('Device groups');
+    expect(first).toContain('Offline devices: queued');
+    const second = screen.getByTestId('flow-step-builtin-a1_run_script').textContent;
+    expect(second).toContain('Devices that succeeded in a0_run_script');
+    expect(second).toContain('Offline devices: skipped');
+  });
+
+  it('resolve_targets names the triggering device; create_alert its severity (#5221)', () => {
+    render(
+      <FlowStepList
+        steps={[
+          step('targets', 'resolve_targets', { deviceIds: ['{{trigger.device.id}}'] }),
+          step('a0_alert', 'create_alert', { deviceId: '{{item.id}}', severity: 'high', message: 'm' }),
+        ]}
+        summaries={[summary('targets', 'resolve_targets', 1), summary('a0_alert', 'create_alert', 2)]}
+        compact
+      />,
+    );
+    expect(screen.getByTestId('flow-step-builtin-targets').textContent).toContain('The device from the event');
+    expect(screen.getByTestId('flow-step-builtin-a0_alert').textContent).toContain('Raise an alert');
+    expect(screen.getByTestId('flow-step-builtin-a0_alert').textContent).toContain('Severity high');
+  });
 });

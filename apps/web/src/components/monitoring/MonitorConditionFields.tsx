@@ -84,6 +84,7 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
   // #8174 — Information/Warning Application events reach the server only from
   // the agent's provider allowlist; flag a rule that targets anything else
   // before it is saved (the API returns the same check as `warnings`).
+  // The editor knows built-ins only; the save response also checks providers in scoped policies.
   const collectionGap = kind === 'event_log' ? eventLogCollectionGap(conditionValues) : null;
   const isVisible = (field: KindField): boolean =>
     !field.showWhen || String(conditionValues[field.showWhen.key] ?? '') === field.showWhen.equals;

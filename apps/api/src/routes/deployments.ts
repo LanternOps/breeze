@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -349,6 +350,8 @@ deploymentRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetConfig?.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
     let orgId = payload.orgId;
     if (auth.scope === 'organization') {
@@ -466,6 +469,8 @@ deploymentRoutes.put(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
     const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetConfig?.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
     const deployment = await getDeploymentWithAccess(id, auth);
     if (!deployment) {

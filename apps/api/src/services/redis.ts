@@ -259,7 +259,7 @@ const blockingConnections: Redis[] = [];
  * latency to every other command on that connection, including every BullMQ
  * `Queue` write issued from an HTTP request path. That is not theoretical:
  * `POST /fleet/findings/:id/remediate` measured 8-27s end-to-end (a bare
- * `PING` on the shared connection took 4.6-5.2s) purely because the webhook
+ * `PING` on the shared connection took 4.6-5.2s) purely because the retired Redis-list webhook
  * delivery worker's 5-second `BRPOP` owned the socket, while Redis's own
  * SLOWLOG stayed empty and event-loop lag stayed under 50ms.
  *

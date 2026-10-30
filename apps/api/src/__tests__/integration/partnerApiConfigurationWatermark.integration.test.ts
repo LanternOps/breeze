@@ -25,6 +25,7 @@ import {
 import { partnerConfigurationRoutes } from '../../routes/partnerApi/configuration';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 vi.mock('../../config/env', async (importOriginal) => {
@@ -34,10 +35,10 @@ vi.mock('../../config/env', async (importOriginal) => {
     PARTNER_API_CURSOR_SIGNING_KEY: Buffer.from('0123456789abcdef0123456789abcdef', 'utf8'),
   };
 });
-const MIGRATION_FILE = join(
-  __dirname,
-  '../../../migrations/2026-07-24-partner-export-configuration-material-state.sql',
-);
+// Replayed through replayMigration: 2027-01-12-200200 redefines
+// breeze_partner_export_assignment_orgs, which this file also defines, so a bare
+// sql.raw replay would revert it to the 07-24 body for the rest of the shard.
+const MIGRATION_FILE = '2026-07-24-partner-export-configuration-material-state.sql';
 const TENANT_INTEGRITY_MIGRATION_FILE = join(
   __dirname,
   '../../../migrations/2026-07-26-a-normalized-policy-tenant-integrity.sql',
@@ -101,10 +102,9 @@ async function restoreConfigPolicyReferenceSerialization(): Promise<void> {
 
 describe('partner desired-configuration material watermarks', () => {
   runDb('migration is idempotent and creates forced org-axis RLS', async () => {
-    const migration = readFileSync(MIGRATION_FILE, 'utf8');
     const db = getTestDb();
-    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
-    await expect(db.execute(sql.raw(migration))).resolves.toBeDefined();
+    await expect(replayMigration(MIGRATION_FILE)).resolves.toBeUndefined();
+    await expect(replayMigration(MIGRATION_FILE)).resolves.toBeUndefined();
     const [state] = await db.execute<{ enabled: boolean; forced: boolean }>(sql`
       SELECT relrowsecurity AS enabled, relforcerowsecurity AS forced
       FROM pg_catalog.pg_class
@@ -539,6 +539,20 @@ describe('partner desired-configuration material watermarks', () => {
       retentionDays: 30, maxEventsPerCycle: 100,
       collectCategories: ['security', 'hardware', 'application', 'system'],
       minimumLevel: 'info', collectionIntervalMinutes: 15, rateLimitPerHour: 12000,
+      applicationProviders: [],
+    });
+    await db.execute(sql`UPDATE public.config_policy_event_log_settings
+      SET application_providers = ARRAY['UPS', 'MSSQL$SQLEXPRESS']
+      WHERE feature_link_id = ${linkId('event_log')}::uuid`);
+    const providersResponse = await configurationExportApp(partner.id, org.id).request('/configuration-policies');
+    expect(providersResponse.status, await providersResponse.clone().text()).toBe(200);
+    const providersBody = await providersResponse.json() as {
+      data: Array<{ features: Array<{ type: string; settings: unknown }> }>;
+    };
+    expect(providersBody.data, JSON.stringify(providersBody)).toHaveLength(1);
+    expect(providersBody.data[0]!.features.find((feature) => feature.type === 'event_log')?.settings).toEqual({
+      ...settings.event_log as Record<string, unknown>,
+      applicationProviders: ['UPS', 'MSSQL$SQLEXPRESS'],
     });
     expect(settings.sensitive_data).toEqual({
       detectionClasses: ['credential'], includePaths: [], excludePaths: [], fileTypes: [],

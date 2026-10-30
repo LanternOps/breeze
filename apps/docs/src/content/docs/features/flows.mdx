@@ -8,7 +8,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 A flow is a saved, multi-step workflow. Each step runs one Breeze tool (for example, running a script on a device), and steps can wait, set values, or repeat over a list of items. A flow runs under its own automation identity rather than a person's login, so enabling a flow is a delegation decision.
 
 <Aside type="note">
-Flows are off by default. An administrator of your Breeze deployment turns them on with `FLOWS_ENABLED=true`. Everything on this page, including webhook triggers, built-in steps, flow tools and monthly limits, is behind that one setting.
+Flows are on by default. An administrator of your Breeze deployment can turn them off with `FLOWS_ENABLED=false`. Everything on this page, including webhook triggers, built-in steps, flow tools and monthly limits, is behind that one setting. Existing Jobs move to Flows one at a time: see [Moving Jobs to Flows](/features/automations/#moving-jobs-to-flows).
 </Aside>
 
 ## Enabling a flow and what it delegates
@@ -155,7 +155,7 @@ Non-accepted deliveries are deleted after `FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS`
 
 ## Built-in steps
 
-Besides running a Breeze tool, a step can be one of three built-in kinds.
+Besides running a Breeze tool, a step can be one of these built-in kinds. The last three are what a Job becomes when it moves to Flows.
 
 ### `http_request`
 
@@ -177,7 +177,7 @@ Calls a URL without credentials. Authenticated calls to a vendor go through Tool
 Sends a message to a notification channel: `{ channelId, title, message, severity? }`.
 
 - Tier 2. Needs `alerts.write`.
-- Supported channel types: email, Slack, Teams, SMS and Pushover. Webhook and PagerDuty channels are refused. Use `http_request` for those.
+- Supported channel types: email, Slack, Teams, SMS, Pushover, webhook and PagerDuty. A PagerDuty notice uses the dedup key `flow:<runId>:<stepId>:<item>`; the channel holds the credentials, never the flow.
 - Up to 20 per run.
 - The channel must be visible to the flow's owner. A partner-wide flow can use only partner-wide channels.
 
@@ -192,6 +192,32 @@ Asks Breeze AI a question and gets structured data back: `{ prompt, tools?, outp
 - Failures are `ai_budget_exhausted`, `ai_output_invalid` and `ai_token_cap_reached`.
 - An organization flow with an `ai` step cannot be enabled when the organization has no AI budget to spend.
 - Calls to a partner's own catalog endpoint are recorded in the LLM egress audit.
+
+### `resolve_targets`
+
+Finds devices in the run's organization: `{ target | conditions | deviceIds | fromStep }` (exactly one).
+
+- Tier 1. Needs `devices.read`.
+- `target` is a device target (all, listed devices, groups or a filter); `conditions` is a Job's condition list; `deviceIds` is a list such as `['{{trigger.device.id}}']`; `fromStep` is the `succeeded`, `dispatched` or `failed` device set of an earlier step.
+- Resolves once per run. More than 500 devices fails the step with `targets_over_cap`; it never truncates.
+
+### `create_alert`
+
+Raises an alert on one device of the run's organization: `{ deviceId, severity, title?, message }`.
+
+- Tier 2. Needs `alerts.write`. Uses the same alert writer Jobs use. Failure: `alert_create_failed`.
+
+### `run_script_on_targets`
+
+Runs one library script on a device set: `{ scriptId, parameters?, runAs?, whenOffline, target | conditions | deviceIds | fromStep }`.
+
+- Tier 3, so each run waits for approval unless the step is pre-approved (below). Needs the `run_script` permission.
+- `whenOffline: queue` (default) queues the script for an offline device; a queued dispatch counts as success, as it did for Jobs. `skip` leaves offline devices out.
+- The output carries `dispatchedDeviceIds`, `succeededDeviceIds` and `failedDeviceIds`, so a later step can act only on the devices that succeeded.
+- `runAs: elevated` is refused, and so is a script that runs elevated by default.
+- More than 500 devices fails with `targets_over_cap`. Other failures: `targets_unresolvable`, `script_dispatch_failed`.
+- **Pre-approval with a device cap.** When you enable the flow you can pre-approve this step with a cap of 1 to 500 devices. Schedule, event and UI runs then dispatch without waiting; webhook and tool runs always wait. The approval is bound to the script content, parameters, run context, offline policy and target definition. Any change, or more devices than the cap, pauses the flow with `binding_drift` before anything runs. The cap applies per run in each organization, so for an all-orgs flow the total can be the cap times the number of organizations. A step under a for-each can't be pre-approved.
+- When a run waits for approval, the approval names the exact devices, and only those run when it is approved.
 
 ## For-each concurrency
 
@@ -275,7 +301,7 @@ A session can use at most 20 flow tools. A flow is never a step of another flow.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `FLOWS_ENABLED` | off | Turns the Flows feature on. |
+| `FLOWS_ENABLED` | on | Turns the Flows feature on (default). `false` turns it off: flow routes answer 404 and Jobs stay fully writable. |
 | `FLOW_APPROVAL_TTL_HOURS` | 24 | How long a parked step waits for approval. |
 | `FLOW_MAX_RUNNING_PER_OWNER` | 20 | Concurrent running runs per owner. |
 | `FLOW_RUN_RETENTION_DAYS` | 90 | Age at which run bodies are cleared. |
