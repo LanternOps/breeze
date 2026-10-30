@@ -62,6 +62,7 @@ import { aiReadToolSchemas } from './aiToolSchemasAiReads';
 import { securityPolicyToolSchemas } from './aiToolSchemasSecurityPolicy';
 import { softwareToolSchemas } from './aiToolSchemasSoftware';
 import { deviceOpsToolSchemas } from './aiToolSchemasDeviceOps';
+import { billingToolSchemas } from './aiToolSchemasBilling';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -566,7 +567,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_elevation_history: z.object({
     deviceId: uuid.optional(),
-    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating']).optional(),
+    status: z.enum(['pending', 'approved', 'auto_approved', 'denied', 'expired', 'revoked', 'actuating', 'withdrawn']).optional(),
     flowType: z.enum(['uac_intercept', 'tech_jit_admin', 'ai_tool_action']).optional(),
     limit: z.number().int().min(1).optional(),
   }),
@@ -602,6 +603,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   ...softwareToolSchemas,
   // Full-control W13 (#6783): device inventory and ops tools (PR A).
   ...deviceOpsToolSchemas,
+  // Full-control W14 (#6784): billing lifecycle tools (PR A).
+  ...billingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -789,6 +792,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
 
   get_invoice: z.object({
     invoiceId: uuid,
+    // Full-control W14 (#6784): the devices one line billed (GET /invoices/:id/lines/:lineId/devices).
+    lineId: uuid.optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    cursor: z.string().max(512).optional(),
   }),
 
   manage_invoices: z.object({
@@ -1046,10 +1053,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     orgId: uuid.optional(),
     status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    // Full-control W14 (#6784): GET /contracts/currency-mismatches.
+    view: z.enum(['contracts', 'currency_mismatches']).optional(),
+    cursor: uuid.optional(),
   }),
 
   get_contract: z.object({
     contractId: uuid,
+    // Full-control W14 (#6784): GET /contracts/:id/periods/:periodId/outcome.
+    periodId: uuid.optional(),
   }),
 
   manage_contracts: z.object({
@@ -1064,12 +1076,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'pause',
       'resume',
       'cancel',
+      // Full-control W14 PR B (#6784).
+      'preview_invoice',
+      'generate_invoice',
     ]),
     contractId: uuid.optional(),
     lineId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
+    // generate_invoice assertions, copied from preview_invoice's generateWith (W14 PR B).
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+    autoIssue: z.boolean().optional(),
+    expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
   }),
 
   // Service deliverables W02 (#5573 spec §10). Payload objects stay open

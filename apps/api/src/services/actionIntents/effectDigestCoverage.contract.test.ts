@@ -87,6 +87,11 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   'manage_policy_feature_link:add':
     'NEW-OBJECT: inserts a `config_policy_feature_links` row (RMM-QA-176 D9). `configPolicyId` addresses the PARENT policy, which is not the thing being created — there is no pre-existing link row whose content the approver signed off on. The sibling `update`, which DOES address an existing link, is pinned by an EFFECT_DIGEST_RESOLVERS entry rather than exempted here.',
 
+  // Full-control W14 (#6784, W14-D5).
+  'manage_contract_templates:create':
+    'NEW-OBJECT, SUPERVISED-ONLY input-aware arm (full-control W14, #6784, W14-D5): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. It inserts a new partner-wide `contract_templates` row with no versions; there is no pre-existing row to pin, and the name, description and ownership travel in the intent input the approver reviews.',
+  'manage_contract_templates:update':
+    'SUPERVISED-ONLY input-aware arm (full-control W14, #6784, W14-D5): only `ownerScope: \'partner\'` escalates, to tier 3 SUPERVISED, never four_eyes — listed because this enumeration folds every TIER3_INPUT_AWARE_ACTIONS pair in. The only effect is the template\'s name / description, both carried in the intent input; the result and audit row return the previous values. The template carries no published content of its own (versions are separate, immutable rows), and the handler refuses an owner assertion that does not match the row.',
   'manage_ticket_checklist_templates:create':
     'NEW-OBJECT, input-aware four_eyes arm (full-control W06, #6776): inserts a new `ticket_checklist_templates` row (and its items). `orgId` addresses the OWNER, not the thing being created, so there is no pre-existing row whose content the approver signed off on; the name, scope and full item list travel in the intent input the approver reviews.',
   ...sharedReason(

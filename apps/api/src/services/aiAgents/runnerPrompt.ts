@@ -1117,7 +1117,8 @@ export function buildNarrativeTaskPrompt(ctx: AgentRunPromptContext): string {
   // lines above so a "critical" device is not read as a "failed" job.
   const providers = c?.backupProviders;
   const providersMeasured = Boolean(providers?.available);
-  lines.push('third-party backup (current device health, not job counts):');
+  lines.push('third-party backup (current device health and SaaS workloads, not job counts):');
+  lines.push(narrativeLine('third-party SaaS backup workloads', providers?.saasWorkloads ?? null, providersMeasured));
   if (providersMeasured && providers!.devices === 0) {
     lines.push('third-party backup devices: 0 (none reporting for this organization)');
   } else {

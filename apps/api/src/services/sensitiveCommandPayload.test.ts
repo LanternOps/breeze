@@ -147,6 +147,18 @@ describe('type-scoped terminal payload erasure (#8741 notify_user)', () => {
   });
 });
 
+describe('type-scoped terminal payload erasure (#8928 pam_request_notify)', () => {
+  it('erases the technician deny reason at terminal state, for pam_request_notify rows only', () => {
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.pam_request_notify).toEqual(['reason']);
+    // `reason` is an ordinary field on other types: never global, never encrypted.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('reason');
+    expect(hasSensitivePayload('pam_request_notify')).toBe(false);
+    const query = new PgDialect().sqlToQuery(terminalPayloadErasureSet().payload);
+    expect(query.params).toContain('pam_request_notify');
+    expect(query.params).toContain('reason');
+  });
+});
+
 describe('type-scoped terminal payload erasure (#8743 endpoint chat)', () => {
   it('strips the chat message object (body + sender) from chat_open/chat_message rows only', () => {
     expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_open).toEqual(['message']);

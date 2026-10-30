@@ -739,6 +739,38 @@ The ticket, quote, billing-catalog, and PSA admin write tools are tiered per act
 | `manage_notification_channels (create/update/delete)` | 3 | Create, repoint, or delete a channel; the approver sees the destination host. Delete is four-eyes |
 | `test_webhook` | 3 | Send a real test delivery to a webhook |
 
+### Billing lifecycle tools
+
+These tools read and change how your organizations are billed: rate cards and work types, invoice defaults and each organization's tax, terms and billing contact, the agreement templates customers sign, signed agreements, and which contract lines bill a device. They are available in AI chat and over MCP. Rate-card, settings and device-billing tools need a partner-scoped session, as the matching pages do. Template text, rate-card names and notes, invoice footers and signer names are shown to the model as untrusted data, never as instructions.
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
+| `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
+| `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |
+| `manage_billing_settings` (get_partner/get_org/currency_impact/reporting_totals) | 1 | Invoice defaults, one organization's tax, terms, billing contact and address, a preview of what an organization currency change would leave behind, and approximate totals across currencies |
+| `manage_billing_settings` (update_partner) | 3 | Change invoice defaults for every organization: currency, tax, invoice prefix and terms, footer, terms and conditions, automatic emails and the seller contact. Needs full partner access. Agreement reminder defaults are set on Billing → Agreements |
+| `manage_billing_settings` (update_org) | 3 | Change one organization's tax, payment terms, billing contact (who receives its quotes and invoices) or billing address. A currency change and the rate-card assignment are made elsewhere |
+| `manage_contract_templates` (list/get/get_version/usage) | 1 | Agreement templates, their versions and where each is used. Version bodies are read one at a time with `get_version` |
+| `manage_contract_templates` (create/update) | 2 | Create or rename an organization's agreement template. For a partner-wide template, pass `ownerScope: partner`; the change is then approved and needs full partner access |
+| `manage_contract_templates` (create_version/publish/archive) | 3 | Add a draft version, publish it so quotes and signature requests can use it, or archive the template. None of these can be undone. Partner-wide templates are versioned, published and archived in the web app |
+| `manage_contract_documents` (list) | 1 | Signed agreements and whether each is filed under a contract. Signer email addresses are not returned |
+| `manage_contract_documents` (link) | 3 | File a signed agreement under a contract of the same organization. It cannot be undone |
+| `get_device_billing` | 1 | Which active contract lines bill a device, or why it is not billable |
+| `manage_contracts` (preview_invoice) | 2 | What a contract's next billing run would invoice: the period, each line's quantity and price, subtotal, tax and total, whether it is issued and emailed automatically, and to whom. Nothing is created |
+| `manage_contracts` (generate_invoice) | 3 | Generate the contract's due invoice. It needs a second approver (four-eyes). The call repeats the preview's period, total, auto-issue setting and recipients, and the approval card shows them. If anything changed before release (a device added, a price, tax rate or billing contact edited, the period already billed) the release is refused and nothing is generated. When the contract issues automatically, the invoice is issued and emailed only if its total is still the approved one, and only to the approved recipients. Contracts with a block-of-hours line are generated in the web app |
+| `manage_accounting_sync` (status/owed_operations/customers/mappings/income_accounts/remote_candidates) | 1 | QuickBooks or Xero: connection status, payments waiting to sync, customers, customer and item mappings, income accounts, and records to link to. A `remote_candidates` search term is applied in Breeze and never sent to the provider |
+| `manage_accounting_sync` (link_mapping/unlink_mapping/sync_mapping) | 3 | Link a Breeze organization or catalog item to a QuickBooks or Xero record, unlink it, or re-send a linked one. Linking and syncing overwrite the provider's record with Breeze's details. Creating a new record in the provider is done in the web app |
+| `manage_accounting_sync` (push/push_bulk) | 3 | Push one invoice, or up to 10, into QuickBooks or Xero. It needs a second approver (four-eyes); the push also syncs the invoice's customer and items if they are not synced yet. If the invoice, its customer or items, or the connection change before release, the release is refused |
+
+The existing contract and invoice reads gained one view each: `get_contract` with `periodId` returns that billing period's outcome (devices billed, uncovered and flagged, overages), `list_contracts` with `view: currency_mismatches` lists contracts whose currency differs from their organization's, and `get_invoice` with `lineId` pages the devices one invoice line billed.
+
+Rate-card, work-type and settings writes need a session that has completed MFA. A session limited to some sites or devices cannot change an organization's rate card, billing settings or agreement templates, or file a signed agreement.
+
+AI agents can read these tools. Rate-card and settings writes become proposals that a person approves. Agents are never offered template writes or `manage_contract_documents` (link): agreement templates and signed agreements are the legal documents customers sign. Agents are never offered `generate_invoice` or any accounting write.
+
+The accounting tool needs a partner-scoped session with access to every organization, as the Integrations page does, and every write needs a session that has completed MFA. Connecting, disconnecting and configuring the accounting connection, importing customers as organizations and starting a payment reconcile stay in the web app.
+
 #### PSA configuration and ticket operations
 
 These tools configure the ticketing side of the platform. They are available in AI chat, and AI agents get the read actions. Partner-wide configuration is changed for every organization at once, so every write needs approval; deleting configuration needs a second approver (four-eyes).

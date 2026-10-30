@@ -1,4 +1,4 @@
-import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
+import { GATEWAY_IDLE_TIMEOUT_MS, GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
 import { scrubSecrets } from '../scrub';
 import { encodeSse, parseSse } from './sse';
 import { describeRefusedToolCalls, mapFinish, resolveUsage, UNSAFE_TOOL_CALL_NOTE, validateToolCalls } from './translateResponse';
@@ -17,7 +17,23 @@ export interface TranslateStreamContext {
   connectionId?: string;
   /** Secrets scrubbed from any logged text (the connection credential). */
   secrets?: ReadonlyArray<string | null>;
+  /**
+   * Least time between keepalive `ping` events sent while the upstream is
+   * active but produces nothing to forward (reasoning deltas, role-only
+   * chunks). Defaults to a quarter of the gateway idle timeout.
+   */
+  keepaliveMs?: number;
+  /**
+   * Called once with the client-safe text of any error event this stream ends
+   * with, so the chat turn can name the reason (gateway failure note).
+   */
+  onFailure?: (message: string) => void;
 }
+
+/** Default keepalive spacing: well inside the server's idle window. */
+export const STREAM_KEEPALIVE_MS = Math.floor(GATEWAY_IDLE_TIMEOUT_MS / 4);
+
+const PING = encodeSse('ping', { type: 'ping' });
 
 /**
  * Finish reasons that mark a complete answer. Anything else (an unknown value)
@@ -103,11 +119,22 @@ export async function* translateChatStream(
   let argChars = 0;
   let usage: OaiUsage | null = null;
   const assembler = new ToolCallAssembler();
+  const keepaliveMs = ctx.keepaliveMs ?? STREAM_KEEPALIVE_MS;
+  let lastYieldAt = Date.now();
 
   const warn = (what: string, detail?: string): void => {
     const ids = `grant ${ctx.grantId ?? 'unknown'}, connection ${ctx.connectionId ?? 'unknown'}`;
     const suffix = detail ? `: ${scrubSecrets(detail, ctx.secrets ?? [], LOG_TEXT_MAX)}` : '';
     console.warn(`[modelGateway] ${what} (${ids})${suffix}`);
+  };
+
+  // Every event this function yields goes through here, so the keepalive clock
+  // always measures time since the caller last saw a byte.
+  const emit = (bytes: Uint8Array): Uint8Array => { lastYieldAt = Date.now(); return bytes; };
+  /** The terminal error event, reported to the turn first. */
+  const fail = (message: string): Uint8Array => {
+    try { ctx.onFailure?.(message); } catch { /* reporting must not change the stream */ }
+    return errorEvent(message);
   };
 
   yield encodeSse('message_start', {
@@ -122,20 +149,39 @@ export async function* translateChatStream(
       let chunk: OaiChatResponse;
       try { chunk = JSON.parse(data) as OaiChatResponse; } catch (error) {
         warn('malformed upstream stream event', error instanceof Error ? error.message : String(error));
-        yield errorEvent('The endpoint sent a malformed stream event.');
+        yield fail('The endpoint sent a malformed stream event.');
+        return;
+      }
+      const inBand = (chunk as { error?: unknown }).error;
+      if (inBand !== undefined && inBand !== null) {
+        // Some OpenAI-compatible servers (vLLM, llama.cpp, LiteLLM) report a
+        // failure mid-stream as a data event with `error` and no choices; read
+        // as an empty chunk it ended as a clean, empty turn (#10591).
+        const raw = typeof inBand === 'object' && typeof (inBand as { message?: unknown }).message === 'string'
+          ? (inBand as { message: string }).message
+          : JSON.stringify(inBand);
+        const detail = scrubSecrets(raw, ctx.secrets ?? [], LOG_TEXT_MAX);
+        warn('upstream stream error', detail);
+        yield fail(`The endpoint reported an error: ${detail}`);
         return;
       }
       if (chunk.usage) usage = chunk.usage;
       const choice = chunk.choices?.[0];
-      if (!choice) continue;
-      const delta = choice.delta ?? {};
+      const delta = choice?.delta ?? {};
+      if (!choice || !(typeof delta.content === 'string' && delta.content.length > 0)) {
+        // The upstream is alive but sent nothing to forward (a reasoning delta,
+        // a role-only or usage-only chunk). A ping keeps the gateway's idle
+        // timer, and the caller's, from cutting a long reasoning phase (#10591).
+        if (Date.now() - lastYieldAt >= keepaliveMs) yield emit(PING);
+        if (!choice) continue;
+      }
       if (typeof delta.content === 'string' && delta.content.length > 0) {
         if (!textOpen) {
-          yield encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
+          yield emit(encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } }));
           textOpen = true;
         }
         emittedChars += delta.content.length;
-        yield encodeSse('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: delta.content } });
+        yield emit(encodeSse('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: delta.content } }));
       }
       for (const tc of delta.tool_calls ?? []) {
         const cur = assembler.add(tc);
@@ -152,14 +198,14 @@ export async function* translateChatStream(
     }
   } catch (error) {
     warn('upstream stream failed', error instanceof Error ? error.message : String(error));
-    yield errorEvent('The endpoint stream failed.');
+    yield fail('The endpoint stream failed.');
     return;
   }
 
   const terminated = sawDone || TERMINAL_FINISH_REASONS.has(finish);
   if (!overLimit && !terminated) {
     warn('upstream stream ended without [DONE] or a recognised finish reason');
-    yield errorEvent('The endpoint stream ended early.');
+    yield fail('The endpoint stream ended early.');
     return;
   }
   const toolUses = overLimit ? null : validateToolCalls(assembler.calls, ctx.tools);

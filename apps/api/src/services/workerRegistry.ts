@@ -330,15 +330,8 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     name: 'webhookDelivery',
     placement: 'global',
     load: async () => {
-      // Wraps `getWebhookWorker()` + the delivery-claim/outcome callback
-      // wiring that used to be a local `initializeWebhookDeliveryWorker`
-      // function in index.ts (moved to services/webhookDeliveryInit.ts so
-      // the registry can load it standalone — see that module's header
-      // comment for why it isn't just added to workers/webhookDelivery.ts).
-      // `index.ts` ALSO calls `getWebhookWorker().stop()` directly in its
-      // shutdown preamble (must run before the HTTP server stops accepting
-      // requests) — this entry's `shutdown` calling `stop()` again is a
-      // harmless no-op (see the module's own doc comment).
+      // Separate wiring avoids the worker/record-service import cycle; this
+      // registry entry owns both the BullMQ worker and queue shutdown.
       const m = await import('../services/webhookDeliveryInit');
       return { init: m.initializeWebhookDeliveryWorker, shutdown: m.shutdownWebhookDeliveryWorker };
     },
@@ -1283,6 +1276,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/deviceGroupJobs');
       return { init: m.initializeDeviceGroupJobs, shutdown: m.shutdownDeviceGroupJobs };
+    },
+  },
+  {
+    // Socket-owner: groupMembership reaches peripheralJobs and socket-local dispatch.
+    name: 'partnerGroupEvaluationJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/partnerGroupEvaluationJobs');
+      return { init: m.initializePartnerGroupEvaluationJobs, shutdown: m.shutdownPartnerGroupEvaluationJobs };
     },
   },
   {

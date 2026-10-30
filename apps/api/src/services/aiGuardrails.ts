@@ -191,6 +191,12 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // like execute_command event_logs_list) and returns names and sizes only — read-only, see TIER2_READONLY_ACTIONS.
   browse_device_event_log: ['list_logs'],
   manage_manual_assets: ['create', 'update', 'link', 'unlink'],
+  // Full-control W14 PR B (#6784): a pure read, auto-executed (TIER2_READONLY_ACTIONS).
+  manage_contracts: ['preview_invoice'],
+  // Full-control W14 (#6784, W14 plan): an ORG-OWNED agreement template's create / rename is tenant-internal and
+  // reversible (archive hides a new one) and pins nowhere until a version is published. A call that asserts
+  // ownerScope 'partner' escalates to supervised (isInputAwareTier3).
+  manage_contract_templates: ['create', 'update'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -304,6 +310,8 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // prompt.
 export const TIER2_READONLY_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
+  // Full-control W14 PR B (#6784): what the next billing run would bill — no write anywhere.
+  manage_contracts: ['preview_invoice'],
   execute_command: ['event_logs_list', 'file_list', 'list_processes'],
   // Full-control W13 PR B (#6783): channel names and sizes only; query / get_event return event text and are tier 3.
   browse_device_event_log: ['list_logs'],
@@ -444,6 +452,14 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // Full-control W13 PR B (#6783).
   manage_tenant_variables: ['list'],
   manage_support_sessions: ['list', 'get'],
+  // Full-control W14 (#6784).
+  manage_billing_profiles: ['list', 'get', 'list_work_types', 'get_org_profile'],
+  manage_billing_settings: ['get_partner', 'get_org', 'currency_impact', 'reporting_totals'],
+  manage_contract_templates: ['list', 'get', 'get_version', 'usage'],
+  manage_contract_documents: ['list'],
+  // Full-control W14 PR B (#6784): the accounting reads. remote_candidates never sends the model's term to the
+  // provider (filtered in Breeze, quorum QW8).
+  manage_accounting_sync: ['status', 'owed_operations', 'customers', 'mappings', 'income_accounts', 'remote_candidates'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -645,6 +661,16 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   browse_device_event_log: ['query', 'get_event'],
   manage_tenant_variables: ['create', 'update', 'delete'],
   manage_support_sessions: ['end'],
+  // Full-control W14 (#6784): see TIER3_SUPERVISED_ACTIONS.
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
+  // Full-control W14 PR B (#6784): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
+  manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -663,7 +689,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // threshold for drafting was proposed and explicitly deferred (not
   // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
-  manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
+  manage_contracts: ['activate', 'pause', 'resume', 'cancel', 'generate_invoice'],
   // decline (W02, #6756) records the CUSTOMER's decision on their behalf with
   // no reopen (only revise), and its route requires quotes:accept;
   // create_pay_link opens a Stripe Checkout session on the partner's
@@ -744,8 +770,14 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // invoice is the same externally-binding class, so it is classified
   // alongside them (see task report "concerns").
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
-  manage_contracts: ['activate', 'cancel'],
+  // generate_invoice (full-control W14 PR B, #6784, quorum QW1 — Todd sign-off): creates the period's invoice and,
+  // when the contract auto-issues, issues it and emails the customer. Irreversible (void is not undo) and it leaves
+  // the tenant. Mandatory effect digest over the whole computed invoice (pinnedEffectPolicy.ts).
+  manage_contracts: ['activate', 'cancel', 'generate_invoice'],
   manage_quotes: ['send'],
+  // Full-control W14 PR B (#6784, QW1 — Todd sign-off): the invoice is written into the partner's QuickBooks / Xero
+  // books (and a not-yet-synced customer / item with it), which no Breeze action reverses. Mandatory pins.
+  manage_accounting_sync: ['push', 'push_bulk'],
   // update_org is deliberately ABSENT here: its scope is input-aware (a
   // `status` change is four_eyes, a plain rename is supervised) and is
   // resolved by resolveApprovalScope's override hook, not this static table.
@@ -1010,6 +1042,25 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   browse_device_event_log: ['query', 'get_event'],
   manage_tenant_variables: ['create', 'update', 'delete'],
   manage_support_sessions: ['end'],
+  // Full-control W14 (#6784, W14 plan class review + quorum QW2/QW3/QW5). One approver (the requester):
+  // - rate cards and work types are partner-wide by construction and price every org's time entries; an org's
+  //   rate-card assignment picks what that org is billed (the manage_billing_catalog:set_org_price precedent);
+  // - partner billing settings rewrite every org's invoice defaults and customer-facing text; org billing settings
+  //   change one org's tax, terms and the contact its invoices are emailed to;
+  // - an org-owned agreement template's draft versions are append-only, and publish / archive cannot be undone
+  //   (the partner-wide ones are refused in the handler, W14-D5); filing a signed agreement cannot be undone.
+  // Every write's result and audit row carries the previous values (QW3).
+  manage_billing_profiles: [
+    'create', 'update', 'archive', 'set_rows', 'clone', 'create_work_type', 'update_work_type',
+    'set_org_profile', 'clear_org_profile',
+  ],
+  manage_billing_settings: ['update_partner', 'update_org'],
+  manage_contract_templates: ['create_version', 'publish', 'archive'],
+  manage_contract_documents: ['link'],
+  // Full-control W14 PR B (#6784, PR B quorum QB9): linking a mapping (and its enqueued sync) and re-syncing a
+  // linked one OVERWRITE the remote customer / item with Breeze's values; unlink is local. A sync that would
+  // CREATE the remote record is refused in the handler (QB5), so none of these is creation-capable.
+  manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -1148,6 +1199,11 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // 'partner'`) is supervised; an org-owned one stays at the base tier 2.
   'manage_software_catalog:create',
   'manage_custom_fields:create_definition',
+  // Full-control W14 (#6784, W14-D5): an agreement template that is partner-wide (`ownerScope: 'partner'`) is
+  // supervised on create / update; an org-owned one stays at tier 2. Ownership is immutable DB state, so the call
+  // ASSERTS it and the handler refuses a mismatch at call time and again at release.
+  'manage_contract_templates:create',
+  'manage_contract_templates:update',
   // Full-control W11 (#6781, W11-D4): deactivation is irreversible in the product; an org row is supervised, a
   // partner-wide row (every org) four-eyes. Ownership is DB state, so the call ASSERTS it in `ownerScope` and
   // the handler refuses a mismatch; only the literal 'organization' resolves supervised.
@@ -1245,6 +1301,12 @@ export function isInputAwareTier3(
     const create = toolName === 'manage_software_catalog' ? 'create' : 'create_definition';
     return action === create && input.ownerScope === 'partner';
   }
+  if (toolName === 'manage_contract_templates') {
+    // Full-control W14 (#6784, W14-D5): mirrors the handler — only the literal ownerScope 'partner' addresses a
+    // partner-wide template (every org of the partner); absent or 'organization' is an org-owned one at tier 2, and
+    // the handler refuses an assertion that does not match the row.
+    return (action === 'create' || action === 'update') && input.ownerScope === 'partner';
+  }
   if (toolName === 'manage_backup_profiles') {
     // Mirrors the handler (aiToolsPolicyPrereqs.ts create branch): only the
     // literal 'partner' creates a partner-wide row; anything else is an
@@ -1315,6 +1377,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   // isInputAwareTier3: create / create_definition with ownerScope === 'partner' is supervised (W12, #6782).
   manage_software_catalog: ['ownerScope'],
   manage_custom_fields: ['ownerScope'],
+  // isInputAwareTier3: template create / update with ownerScope === 'partner' is supervised (W14, #6784).
+  manage_contract_templates: ['ownerScope'],
   // resolveApprovalScope: deactivate is supervised only for ownerScope === 'organization' (W11, #6781).
   manage_compliance_policies: ['ownerScope'],
   // resolveApprovalScope: create with ownerScope === 'partner' is four-eyes (W11, #6781).
@@ -1706,6 +1770,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },
     cancel: { resource: 'contracts', action: 'manage' },
+    // Full-control W14 PR B (#6784): GET-equivalent preview; POST /contracts/:id/generate is contracts:manage.
+    preview_invoice: { resource: 'contracts', action: 'read' },
+    generate_invoice: { resource: 'contracts', action: 'manage' },
   },
   // Service deliverables W02 (#5573 spec §10). `contracts`, not a new resource:
   // the REST routes for deliverables AND key dates gate on contracts:read /
@@ -2693,6 +2760,65 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete: { resource: 'variables', action: 'manage' },
   },
   manage_support_sessions: { resource: 'remote', action: 'access' },
+  // Full-control W14 (#6784): routes/billingProfiles.ts + orgBillingProfile.ts (billing_profiles:*),
+  // routes/invoices/settings.ts (invoices:write; reporting totals has no grant at REST, the tool requires
+  // invoices:read) and the settings read routes GET /orgs/partners/me, /orgs/organizations/:id (organizations:read,
+  // quorum QW6), routes/contracts/templates.ts + documents.ts (agreements:*), routes/devices/billing.ts
+  // (devices:read + contracts:read, the second in TOOL_EXTRA_PERMISSIONS).
+  manage_billing_profiles: {
+    list: { resource: 'billing_profiles', action: 'read' },
+    get: { resource: 'billing_profiles', action: 'read' },
+    list_work_types: { resource: 'billing_profiles', action: 'read' },
+    get_org_profile: { resource: 'billing_profiles', action: 'read' },
+    create: { resource: 'billing_profiles', action: 'write' },
+    update: { resource: 'billing_profiles', action: 'write' },
+    archive: { resource: 'billing_profiles', action: 'write' },
+    set_rows: { resource: 'billing_profiles', action: 'write' },
+    clone: { resource: 'billing_profiles', action: 'write' },
+    create_work_type: { resource: 'billing_profiles', action: 'write' },
+    update_work_type: { resource: 'billing_profiles', action: 'write' },
+    set_org_profile: { resource: 'billing_profiles', action: 'write' },
+    clear_org_profile: { resource: 'billing_profiles', action: 'write' },
+  },
+  manage_billing_settings: {
+    get_partner: { resource: 'organizations', action: 'read' },
+    get_org: { resource: 'organizations', action: 'read' },
+    currency_impact: { resource: 'invoices', action: 'write' },
+    reporting_totals: { resource: 'invoices', action: 'read' },
+    update_partner: { resource: 'invoices', action: 'write' },
+    update_org: { resource: 'invoices', action: 'write' },
+  },
+  manage_contract_templates: {
+    list: { resource: 'agreements', action: 'read' },
+    get: { resource: 'agreements', action: 'read' },
+    get_version: { resource: 'agreements', action: 'read' },
+    usage: { resource: 'agreements', action: 'read' },
+    create: { resource: 'agreements', action: 'write' },
+    update: { resource: 'agreements', action: 'write' },
+    create_version: { resource: 'agreements', action: 'write' },
+    publish: { resource: 'agreements', action: 'write' },
+    archive: { resource: 'agreements', action: 'write' },
+  },
+  manage_contract_documents: {
+    list: { resource: 'agreements', action: 'read' },
+    link: { resource: 'agreements', action: 'write' },
+  },
+  get_device_billing: { resource: 'devices', action: 'read' },
+  // Full-control W14 PR B (#6784): routes/accounting/index.ts — accounting:read on the reads, accounting:manage on
+  // every write (the rest of each write's floor is in TOOL_ACTION_EXTRA_PERMISSIONS).
+  manage_accounting_sync: {
+    status: { resource: 'accounting', action: 'read' },
+    owed_operations: { resource: 'accounting', action: 'read' },
+    customers: { resource: 'accounting', action: 'read' },
+    mappings: { resource: 'accounting', action: 'read' },
+    income_accounts: { resource: 'accounting', action: 'read' },
+    remote_candidates: { resource: 'accounting', action: 'read' },
+    link_mapping: { resource: 'accounting', action: 'manage' },
+    unlink_mapping: { resource: 'accounting', action: 'manage' },
+    sync_mapping: { resource: 'accounting', action: 'manage' },
+    push: { resource: 'accounting', action: 'manage' },
+    push_bulk: { resource: 'accounting', action: 'manage' },
+  },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -2767,6 +2893,9 @@ const TOOL_EXTRA_PERMISSIONS: Record<string, { resource: string; action: string 
   manage_topology_monitoring: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   manage_topology_templates: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
   apply_topology_template: [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }],
+  // Full-control W14 (#6784): GET /devices/:id/billing requires devices:read AND contracts:read (contract-line
+  // descriptions carry rates).
+  get_device_billing: [{ resource: 'contracts', action: 'read' }],
 };
 
 /**
@@ -2784,6 +2913,16 @@ export const TOOL_ACTION_EXTRA_PERMISSIONS: Record<
   string,
   Record<string, { resource: string; action: string }[]>
 > = {
+  // Full-control W14 PR B (#6784): the REST mapping writes add the entity's grant (organizations:write for a
+  // customer, catalog:write for an item, requireMappingWrite); the tool has no input-aware rows, so it requires BOTH
+  // (a tightening). Both push routes add invoices:write (requireInvoicePush).
+  manage_accounting_sync: {
+    link_mapping: [{ resource: 'organizations', action: 'write' }, { resource: 'catalog', action: 'write' }],
+    unlink_mapping: [{ resource: 'organizations', action: 'write' }, { resource: 'catalog', action: 'write' }],
+    sync_mapping: [{ resource: 'organizations', action: 'write' }, { resource: 'catalog', action: 'write' }],
+    push: [{ resource: 'invoices', action: 'write' }],
+    push_bulk: [{ resource: 'invoices', action: 'write' }],
+  },
   manage_tickets: {
     // routes/tickets/moveOrg.ts:21-23 — TICKETS_WRITE *and* ORGS_WRITE (plus
     // requireMfa(); see the MFA note above). Moving a ticket between orgs
@@ -4724,6 +4863,40 @@ export function buildApprovalDescription(
       parts.push(`${humanizeToolAction(toolName, action)} ${subject}${details.length ? `: ${details.join(', ')}` : ''}`);
       break;
     }
+    // Full-control W14 PR B (#6784): the four-eyes card states every figure the approvers sign (the assertions the
+    // handler and the pinned effect digest both enforce). Ids are truncated; amounts and dates are the model's
+    // assertions, refused at release when they are not the live invoice.
+    case 'manage_contracts': {
+      if (action !== 'generate_invoice' || typeof input.contractId !== 'string') { parts.push(humanizeToolAction(toolName, action)); break; }
+      const total = typeof input.expectedTotal === 'string' ? input.expectedTotal : '?';
+      const period = typeof input.periodStart === 'string' ? input.periodStart : '?';
+      const n = Array.isArray(input.expectedRecipients) ? input.expectedRecipients.length : 0;
+      parts.push(`Generate the invoice for contract ${input.contractId.slice(0, 8)}... for the period starting ${period}, `
+        + `total ${total} in the contract currency, then `
+        + (input.autoIssue === true
+          ? `ISSUE it and email it to ${n} recipient(s) — cannot be undone (void is not undo)`
+          : 'leave it as a draft'));
+      break;
+    }
+
+    case 'manage_accounting_sync': {
+      const provider = input.provider === 'xero' ? 'Xero' : input.provider === 'quickbooks' ? 'QuickBooks' : 'the accounting provider';
+      const entity = input.entityType === 'catalog_item' ? 'item' : 'customer';
+      if (action === 'push' && typeof input.invoiceId === 'string') {
+        parts.push(`Push invoice ${input.invoiceId.slice(0, 8)}... into ${provider} (and its customer / items if not yet synced) — it stays in the books`);
+      } else if (action === 'push_bulk') {
+        const n = Array.isArray(input.invoiceIds) ? input.invoiceIds.length : 0;
+        parts.push(`Push ${n} invoice(s) into ${provider} (and their customers / items if not yet synced) — they stay in the books`);
+      } else if (action === 'link_mapping' || action === 'sync_mapping') {
+        parts.push(`${action === 'link_mapping' ? 'Link' : 'Re-sync'} a Breeze ${entity} to ${provider} — OVERWRITES the ${provider} ${entity}'s details with Breeze's`);
+      } else if (action === 'unlink_mapping') {
+        parts.push(`Unlink a Breeze ${entity} from ${provider} (nothing is changed in ${provider})`);
+      } else {
+        parts.push(humanizeToolAction(toolName, action));
+      }
+      break;
+    }
+
     case 'manage_backup_profiles':
       if (action === 'create' && input.ownerScope === 'partner') {
         parts.push(`Create a PARTNER-WIDE backup profile${input.name ? ` "${w03Cap(String(input.name))}"` : ''} (applies to every organization)`);

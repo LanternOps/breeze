@@ -913,6 +913,93 @@ describe('W13 class rows (#6783)', () => {
   });
 });
 
+// ── W14 class rows (#6784, PR A; W14 plan class review + quorum) ──────────
+const W14_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_billing_profiles: {
+    list: 't1', get: 't1', list_work_types: 't1', get_org_profile: 't1',
+    create: 'supervised', update: 'supervised', archive: 'supervised', set_rows: 'supervised', clone: 'supervised',
+    create_work_type: 'supervised', update_work_type: 'supervised',
+    set_org_profile: 'supervised', clear_org_profile: 'supervised',
+  },
+  manage_billing_settings: {
+    get_partner: 't1', get_org: 't1', currency_impact: 't1', reporting_totals: 't1',
+    update_partner: 'supervised', update_org: 'supervised',
+  },
+  manage_contract_templates: {
+    list: 't1', get: 't1', get_version: 't1', usage: 't1',
+    // Org-owned (no / 'organization' ownerScope); the partner-wide arm is pinned below.
+    create: 't2', update: 't2',
+    create_version: 'supervised', publish: 'supervised', archive: 'supervised',
+  },
+  manage_contract_documents: { list: 't1', link: 'supervised' },
+};
+
+describe('W14 class rows (#6784)', () => {
+  it.each(Object.keys(W14_EXPECTED))('%s: W14_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W14_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W14_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(['create', 'update'])('manage_contract_templates:%s is supervised when it asserts a partner-wide template, t2 for an org one', (action) => {
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'partner' })).toBe('supervised');
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'organization' })).toBe('t2');
+    // A non-literal value cannot address a partner-wide template (the handler compares it to the row).
+    expect(classOf('manage_contract_templates', { action, ownerScope: 'PARTNER' })).toBe('t2');
+  });
+
+  it('get_device_billing (whole tool) is t1 and has no action enum', () => {
+    expect(toolActionEnum('get_device_billing') ?? []).toEqual([]);
+    expect(classOf('get_device_billing', { deviceId: '00000000-0000-4000-8000-000000000001' })).toBe('t1');
+  });
+
+  it('the read selectors leave get_contract / list_contracts / get_invoice wholly read-only tier 2', () => {
+    expect(classOf('get_contract', { contractId: 'c', periodId: 'p' })).toBe('t2');
+    expect(classOf('list_contracts', { view: 'currency_mismatches' })).toBe('t2');
+    expect(classOf('get_invoice', { invoiceId: 'i', lineId: 'l' })).toBe('t2');
+  });
+});
+
+// ── W14 PR B class rows (#6784; W14 plan PR B table + PR B quorum) ─────────
+const W14B_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_contracts: {
+    create_draft: 't2', update: 't2', delete_draft: 't2', add_line: 't2', remove_line: 't2', update_line: 't2',
+    activate: 'four_eyes', pause: 'supervised', resume: 'supervised', cancel: 'four_eyes',
+    // New in PR B: a pure read (tier-2 read-only), and the four-eyes generate (Todd sign-off, quorum QW1).
+    preview_invoice: 't2', generate_invoice: 'four_eyes',
+  },
+  manage_accounting_sync: {
+    status: 't1', owed_operations: 't1', customers: 't1', mappings: 't1', income_accounts: 't1', remote_candidates: 't1',
+    link_mapping: 'supervised', unlink_mapping: 'supervised', sync_mapping: 'supervised',
+    push: 'four_eyes', push_bulk: 'four_eyes',
+  },
+};
+
+describe('W14 PR B class rows (#6784)', () => {
+  it.each(Object.keys(W14B_EXPECTED))('%s: W14B_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W14B_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W14B_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action, provider: 'xero' })).toBe(cls);
+    },
+  );
+
+  it('preview_invoice auto-executes as a read; generate_invoice never does', () => {
+    expect(checkGuardrails('manage_contracts', { action: 'preview_invoice', contractId: 'c' }).readOnly).toBe(true);
+    expect(checkGuardrails('manage_contracts', { action: 'generate_invoice', contractId: 'c' }).readOnly).not.toBe(true);
+  });
+});
+
 // ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
 // Copied from the plan's "Final per-action classes" table, NOT derived from
 // the guardrail tables. Every action-enum member of the seven tools must have

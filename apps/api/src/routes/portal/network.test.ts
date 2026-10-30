@@ -269,7 +269,7 @@ describe('GET /network/assets (#5861, PR 2)', () => {
       status: undefined,
       page: undefined,
       limit: undefined,
-    }, undefined, false);
+    }, undefined, false, false);
   });
 
   it('forwards enrichWithAlerts=true when enableNetworkAlerts is on', async () => {
@@ -284,7 +284,29 @@ describe('GET /network/assets (#5861, PR 2)', () => {
       status: undefined,
       page: undefined,
       limit: undefined,
-    }, undefined, true);
+    }, undefined, true, false);
+  });
+
+  it.each([
+    ['absent', {}, false],
+    ['false', { enablePhysicalPlacement: false }, false],
+    ['true', { enablePhysicalPlacement: true }, true],
+  ])('forwards includePhysicalPlacement for enablePhysicalPlacement %s (CPEV-W1)', async (_label, flag, expected) => {
+    dbState.rows = [{ enableNetworkVisibility: true, ...flag, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets');
+
+    expect(response.status).toBe(200);
+    expect(networkAssetsMock.mock.calls[0]?.[4]).toBe(expected);
+  });
+
+  it('never reads placement when network visibility is off, even with enablePhysicalPlacement on (CPEV-W1)', async () => {
+    dbState.rows = [{ enableNetworkVisibility: false, enablePhysicalPlacement: true, partnerId: PARTNER_ID }];
+
+    const response = await makeApp().request('/network/assets');
+
+    expect((await response.json()).dataStatus).toBe('not_enabled');
+    expect(networkAssetsMock).not.toHaveBeenCalled();
   });
 
   it('forwards siteId, assetType, status, page and limit query params', async () => {
@@ -301,7 +323,7 @@ describe('GET /network/assets (#5861, PR 2)', () => {
       status: 'online',
       page: 2,
       limit: 10,
-    }, undefined, false);
+    }, undefined, false, false);
   });
 
   it('rejects an invalid status value with 400', async () => {

@@ -480,6 +480,65 @@ const W13_TOOLS = [
   'browse_device_event_log', 'manage_tenant_variables', 'manage_support_sessions',
 ] as const;
 
+const W14_TOOLS = [
+  'manage_billing_profiles', 'manage_billing_settings', 'manage_contract_templates', 'manage_contract_documents',
+  'get_device_billing',
+] as const;
+
+describe('W14 billing lifecycle wiring (#6784, PR A)', () => {
+  it.each(W14_TOOLS)('%s: TOOL_TIERS === registry tier 1, declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    expect(getToolTier(name)).toBe(1);
+    expect(aiTools.get(name)!.alwaysLoad ?? false, name).toBe(false);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it.each([
+    ['get_contract', 'periodId'], ['list_contracts', 'view'], ['list_contracts', 'cursor'],
+    ['get_invoice', 'lineId'], ['get_invoice', 'limit'], ['get_invoice', 'cursor'],
+  ])('%s carries the additive %s selector on all three input surfaces', (name, key) => {
+    const props = (aiTools.get(name)!.definition.input_schema as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(props)).toContain(key);
+    expect(Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape)).toContain(key);
+    expect(Object.keys(declaredToolsByName().get(name)!.inputSchema)).toContain(key);
+  });
+});
+
+describe('W14 PR B wiring (#6784)', () => {
+  it.each(['manage_accounting_sync', 'manage_contracts'])('%s: declared, SDK shape keys === Zod keys === registry keys', (name) => {
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    const sdkKeys = Object.keys(decl!.inputSchema).sort();
+    expect(sdkKeys).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+    const registryKeys = Object.keys(
+      (aiTools.get(name)!.definition.input_schema as { properties?: Record<string, unknown> }).properties ?? {},
+    ).sort();
+    expect(sdkKeys).toEqual(registryKeys);
+  });
+
+  it('manage_accounting_sync is tier 1 at the registry and TOOL_TIERS, not alwaysLoad, self-managed', () => {
+    expect(TOOL_TIERS.manage_accounting_sync).toBe(getToolTier('manage_accounting_sync'));
+    expect(getToolTier('manage_accounting_sync')).toBe(1);
+    expect(aiTools.get('manage_accounting_sync')!.alwaysLoad ?? false).toBe(false);
+    expect(aiTools.get('manage_accounting_sync')!.selfManagedDbContext).toBe(true);
+  });
+
+  it('manage_contracts opts only generate_invoice out of the per-call transaction', () => {
+    expect(aiTools.get('manage_contracts')!.selfManagedDbContext).toEqual(['generate_invoice']);
+  });
+});
+
 describe('W13 device inventory and ops wiring (#6783)', () => {
   it.each(W13_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === Zod keys === registry keys', (name) => {
     expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));

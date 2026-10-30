@@ -268,10 +268,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         asset={asset}
         reachability={extras.reachability ?? null}
         collection={collection}
-        timezone={resolveAssetTimezone(extras.siteTimezone)}
-        probeState={probeState}
         onViewPorts={handleViewPorts}
-        onViewMonitoring={handleViewMonitoring}
       />
 
       <OverflowTabs

@@ -42,6 +42,10 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'POST /:id/rotate-token/confirm': 'protected',
   'POST /:id/uninstall-intent': 'protected',
   'POST /:id/elevation-requests': 'protected',
+  // #8971: the user's decline of a pending elevation. Interactive and
+  // security-relevant (it closes a request a technician could still approve);
+  // the agent retries, but a shed call keeps the request approvable meanwhile.
+  'POST /:id/elevation-requests/:requestId/withdraw': 'protected',
   'PUT /:id/eventlogs': 'protected',
   'GET /:id/winget-bootstrap/manifest': 'protected',
   'GET /:id/winget-bootstrap/file/:name': 'protected',

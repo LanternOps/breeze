@@ -63,6 +63,8 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   'routes/agents/elevationRequests.ts': [
     'subject_username', 'target_executable_path', 'software_policy_id', 'default_unmatched_verdict',
     'pam_rule_id', 'pam_rule_name', 'rule_name', 'matched_field',
+    // #10190 W07: assist | native | headless (scalar).
+    'first_question_renderer',
   ],
   'routes/devices/actuateElevation.ts': ['deviceId', 'outcome', 'actualStatus', 'commandId', 'timeoutMs'],
   'routes/pam.ts': ['reason', 'duration_minutes', 'assurance_level', 'factor'],
@@ -85,6 +87,10 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   // #9517: the agent's "cannot act" report. reason is a category code, closed
   // a boolean; the agent's free-text detail stays on the request row only.
   'services/pamDeviceUnable.ts': ['reason', 'prior_status', 'closed', 'cause'],
+  // #8971: the end user's withdraw. cause is the withdraw reason code,
+  // agent_declined_at the agent's ISO timestamp (or null); renderer (#10190
+  // W07) is assist | native | headless or null. All scalar.
+  'services/pamWithdraw.ts': ['cause', 'agent_declined_at', 'renderer'],
 } as const satisfies Record<string, readonly string[]>;
 
 /**
