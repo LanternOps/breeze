@@ -27,6 +27,7 @@ import {
   resolveSoftwarePolicyWinnerForDevice,
   type SoftwarePolicyOverride,
 } from './featureConfigResolver';
+import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 /** Stable error code: the write would go into a policy that governs no device. */
 export const SOFTWARE_POLICY_WOULD_NOT_APPLY = 'SOFTWARE_POLICY_WOULD_NOT_APPLY';
@@ -177,7 +178,7 @@ export async function checkDefaultListPlacement(params: {
   const orgDevices = await db
     .select({ id: devices.id })
     .from(devices)
-    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false)));
+    .where(and(eq(devices.orgId, orgId), eq(devices.isEphemeral, false), notParkedDeviceCondition()));
   // The org-level assignment the write ends up relying on.
   const ours = {
     assignmentLevel: 'organization',
