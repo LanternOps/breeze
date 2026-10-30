@@ -13,6 +13,7 @@ const { dbMocks, contextMocks } = vi.hoisted(() => ({
     selectWheres: [] as unknown[],
     selectLocks: [] as string[],
     innerJoins: [] as Array<{ table: unknown; condition: unknown }>,
+    selectOrders: [] as unknown[][],
     transactionCalls: [] as string[],
     transaction: vi.fn(),
   },
@@ -29,9 +30,15 @@ vi.mock('../../db', () => {
       from: vi.fn(() => {
         const finish = () => dbMocks.selectResults.shift() ?? [];
         const joined = {
-          where: vi.fn(async (condition: unknown) => {
+          where: vi.fn((condition: unknown) => {
             dbMocks.selectWheres.push(condition);
-            return finish();
+            return {
+              orderBy: vi.fn(async (...order: unknown[]) => {
+                dbMocks.selectOrders.push(order);
+                return finish();
+              }),
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(finish()).then(resolve),
+            };
           }),
         };
         return {
@@ -119,6 +126,8 @@ vi.mock('./mailboxToken', () => ({ getMailboxToken: vi.fn(async () => 'tok') }))
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { ticketMailboxConnections, ticketMailboxTenantOwnerships } from '../../db/schema/ticketMailbox';
 import {
   bindVerifiedTenant,
@@ -131,6 +140,7 @@ import {
   listMailboxConnections,
   markPendingConsentFailed,
   probeMailbox,
+  recordPollAttempt,
   recordTransientPollFailure,
   resetDeltaCursor,
   restoreVerifiedConnection,
@@ -180,6 +190,7 @@ describe('ticket mailbox connection service', () => {
     dbMocks.selectWheres.length = 0;
     dbMocks.selectLocks.length = 0;
     dbMocks.innerJoins.length = 0;
+    dbMocks.selectOrders.length = 0;
     dbMocks.transactionCalls.length = 0;
     fetchMock.mockReset();
   });
@@ -357,6 +368,45 @@ describe('ticket mailbox connection service', () => {
       ]),
     }));
     expect(contextMocks.withSystem).toHaveBeenCalled();
+  });
+
+  it('stamps a poll attempt with the database clock, monotonically, under the connected-generation guard (#8308)', async () => {
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }]);
+
+    await expect(recordPollAttempt({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID, consentAttemptId: ATTEMPT_ID,
+    }, 30_000)).resolves.toBe(true);
+
+    const set = dbMocks.updatedValues[0]!;
+    expect(Object.keys(set)).toEqual(['lastPollAttemptAt']);
+    // The database clock at statement time, never moving backward.
+    expect(new PgDialect().sqlToQuery(set.lastPollAttemptAt as SQL)).toEqual({
+      sql: 'GREATEST("ticket_mailbox_connections"."last_poll_attempt_at", clock_timestamp())',
+      params: [],
+    });
+    expect(dbMocks.updateWheres[0]).toEqual(expect.objectContaining({
+      op: 'and',
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+      ]),
+    }));
+    // The claim: only a mailbox not stamped within the window.
+    const claim = (dbMocks.updateWheres[0] as { conditions: unknown[] }).conditions.at(-1) as SQL;
+    expect(new PgDialect().sqlToQuery(claim)).toMatchObject({
+      sql: '("ticket_mailbox_connections"."last_poll_attempt_at" IS NULL OR "ticket_mailbox_connections"."last_poll_attempt_at" <= clock_timestamp() - make_interval(secs => $1))',
+      params: [30],
+    });
+    expect(contextMocks.runOutside).toHaveBeenCalled();
+    expect(contextMocks.withSystem).toHaveBeenCalled();
+  });
+
+  it('reports false when a poll attempt stamps no row', async () => {
+    dbMocks.updateResults.push([]);
+    await expect(recordPollAttempt({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID, consentAttemptId: ATTEMPT_ID,
+    }, 30_000)).resolves.toBe(false);
   });
 
   it('returns null when a transient failure lands on a stale generation', async () => {
@@ -640,6 +690,12 @@ describe('ticket mailbox connection service', () => {
       'id', 'partnerId', 'tenantId', 'mailboxAddress', 'deltaLink',
       'consentAttemptId',
     ]);
+    // #8308: oldest attempt first, never-attempted first of all, id as tie-breaker.
+    expect(dbMocks.selectOrders).toHaveLength(1);
+    const [byAttempt, byId] = dbMocks.selectOrders[0]!;
+    expect(new PgDialect().sqlToQuery(byAttempt as SQL).sql)
+      .toBe('"ticket_mailbox_connections"."last_poll_attempt_at" ASC NULLS FIRST');
+    expect(byId).toBe(ticketMailboxConnections.id);
     expect(contextMocks.runOutside).toHaveBeenCalledOnce();
     expect(contextMocks.withSystem).toHaveBeenCalledOnce();
   });

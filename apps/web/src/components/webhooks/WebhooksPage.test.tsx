@@ -2,7 +2,8 @@ import '@/lib/i18n';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../stores/auth')>()),
   fetchWithAuth: vi.fn((url: string) => {
     if (String(url).startsWith('/webhooks/') && String(url).endsWith('/deliveries')) {
       return Promise.resolve({

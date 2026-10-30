@@ -558,7 +558,6 @@
     "largeFolderSelectionTitle": "Selezione estesa",
     "selectFolder": "Seleziona la cartella {{name}}",
     "confirmLargeFolderSelection": "Questa selezione comprende circa {{formatted}} file e il ripristino potrebbe richiedere tempo. Continuare?",
-    "unknownDevice": "Dispositivo sconosciuto",
     "kindVm": "Ripristina come VM",
     "kindInstantBoot": "Avvio istantaneo",
     "kindSelective": "Ripristino selettivo",
@@ -1111,10 +1110,14 @@
       "hyperv": "Hyper-V",
       "vmware": "VMware",
       "bare_metal": "Bare metal",
+      "m365_mail": "Posta di Microsoft 365",
       "m365_sharepoint": "SharePoint",
       "m365_exchange": "Exchange",
       "m365_onedrive": "OneDrive",
       "m365_teams": "Teams",
+      "gws_mail": "Posta di Google Workspace",
+      "gws_drive": "Google Drive",
+      "gws_shared_drive": "Drive condivisi di Google",
       "other": "Altro"
     },
     "noObservation": "Nessuna osservazione",
@@ -1133,7 +1136,12 @@
       "errorUnlink": "Impossibile scollegare il dispositivo del provider",
       "error": "Impossibile caricare lo stato del backup esterno",
       "alsoCheck": "Controlla anche le connessioni di backup di terze parti in Integrazioni."
-    }
+    },
+    "saasAccountsSubtitle": "Microsoft 365 / Google Workspace",
+    "saas": "SaaS",
+    "saasAccounts": "{{value}} account SaaS",
+    "workloadBackup": "Backup di {{workload}}",
+    "sourceProvider": "Fornitori di backup"
   },
   "restoreResultNotices": {
     "systemStateRequiresRebuildTitle": "Lo stato del sistema viene applicato da una ricostruzione bare-metal",
@@ -1171,5 +1179,10 @@
     "checking": "Verifica in corso",
     "unverified": "Non verificato",
     "failed": "Controllo di integrità non superato"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} reparse point ignorato: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
+    "summary_other": "{{count}} reparse point ignorati: giunzioni e punti di montaggio non vengono seguiti né ripristinati. È previsto, non è un errore.",
+    "showDetails": "Mostra percorsi ignorati"
   }
 }

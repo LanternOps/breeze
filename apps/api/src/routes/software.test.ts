@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import {
@@ -291,6 +296,23 @@ describe('software deployment parent site predicate', () => {
 });
 
 describe('software routes', () => {
+  it.each(['/software/deploy', '/software/deployments'])('refuses partner group software deployment targets without persisting (%s)', async (path) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+
+    const res = await app.request(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(path === '/software/deploy'
+        ? { softwareId: groupId, version: '1.0', targets: { deviceGroupIds: [groupId] } }
+        : { name: 'Deploy', softwareVersionId: groupId, deploymentType: 'install', scheduleType: 'immediate', targetType: 'groups', targetIds: [groupId] }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   let app: Hono;
 
   beforeEach(() => {

@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { and, asc, eq, gt, inArray, lte, or, param, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../../db';
-import { organizations, sites } from '../../db/schema';
+import { organizationExternalLinks, organizations, sites } from '../../db/schema';
 import { requirePartnerApiScope, type PartnerApiPrincipalContext } from '../../middleware/partnerApiAuth';
 import {
   decodePartnerExportCursor,
@@ -279,12 +279,27 @@ partnerOrganizationRoutes.get('/organizations', requirePartnerApiScope('organiza
       ...paginationConditions({ id: organizations.id, orgId: organizations.id, createdAt: organizations.createdAt, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal),
     )).orderBy(...paginationOrder({ id: organizations.id, orgId: organizations.id, updatedAt: organizations.partnerExportUpdatedAt }, parsed.traversal))
       .limit(getPartnerExportFetchLimit(parsed.limit));
+    // One page-wide read under the same export locks/snapshot as the orgs.
+    // Filter the partner explicitly in addition to the org-axis RLS policy.
+    const links = rows.length === 0 ? [] : await db.select({
+      orgId: organizationExternalLinks.orgId, system: organizationExternalLinks.system,
+      externalId: organizationExternalLinks.externalId, label: organizationExternalLinks.label,
+    }).from(organizationExternalLinks).where(and(
+      inArray(organizationExternalLinks.orgId, rows.map((row) => row.id)),
+      eq(organizationExternalLinks.partnerId, principal.partnerId),
+    )).orderBy(asc(organizationExternalLinks.system), asc(organizationExternalLinks.externalId));
+    const linksByOrg = new Map<string, Array<{ system: string; externalId: string; label: string | null }>>();
+    for (const { orgId, ...link } of links) {
+      const current = linksByOrg.get(orgId) ?? [];
+      current.push(link);
+      linksByOrg.set(orgId, current);
+    }
     const normalized = rows.map((row) => normalizeSourceRow({ ...row, siteId: null }));
     const envelope = buildEnvelope({
       resource: 'organizations', partnerId: principal.partnerId, rows: normalized, query: parsed,
       makeRecord: (row) => ({
         id: row.id, orgId: row.orgId, siteId: null, sourceUpdatedAt: row.updatedAt,
-        name: row.name, slug: row.slug, type: row.type,
+        name: row.name, slug: row.slug, type: row.type, externalLinks: linksByOrg.get(row.id) ?? [],
       }),
     });
     return c.json(organizationExportEnvelopeSchema.parse(envelope));

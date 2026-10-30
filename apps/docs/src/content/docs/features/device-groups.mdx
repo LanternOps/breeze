@@ -5,7 +5,7 @@ description: Organize devices into static and dynamic groups for targeted policy
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Device Groups let you organize managed devices into logical collections for targeted policy assignment, bulk operations, and fleet segmentation. Groups are scoped to an organization and optionally to a site, and they support a parent-child hierarchy for nested grouping.
+Device Groups let you organize managed devices into logical collections for targeted policy assignment, bulk operations, and fleet segmentation. Most groups belong to one organization and optionally to a site, and they support a parent-child hierarchy for nested grouping. A partner can also create [partner-wide groups](#partner-wide-groups) that span every organization it manages.
 
 Breeze supports two group types:
 
@@ -28,7 +28,7 @@ Static groups have a fixed membership list. You add or remove devices explicitly
 
 Each organization can name one static group that newly enrolled devices join automatically. Set it under the organization's settings, **Defaults** tab, **Default device group**; the picker lists the organization's static groups, and **None** turns it off. A device is added once, when it enrolls; devices already enrolled are not moved. If the group has been deleted or turned dynamic, enrollment still succeeds and the device is simply not added.
 
-There is no partner-wide default group, because a group belongs to one organization.
+The default group must be one of the organization's own static groups. A partner-wide group cannot be the default, because partner-wide groups are always dynamic.
 
 ### Dynamic groups
 
@@ -44,13 +44,64 @@ Dynamic group membership is also re-evaluated when individual device attributes 
 From v0.123.0 this includes changes to a device's **tags** and **custom field values**, whether they are edited on the device, imported from CSV, written back by a script or changed by the AI assistant. A custom-field write re-evaluates only when the value actually changed. Before v0.123.0 a group that filtered on tags or custom fields stayed stale until someone re-saved it.
 </Aside>
 
+## Partner-wide groups
+
+A partner-wide group belongs to the partner (MSP), not to one organization. One group definition covers every organization the partner manages, so you write a rule once and use it for all of your customers. Quick Support organizations and the holding organization for unassigned devices are not included.
+
+### What partner-wide groups can do
+
+- **Dynamic only.** A partner-wide group is always a dynamic group built from a filter. It cannot be static, and devices cannot be added, removed or pinned by hand.
+- **No site, parent or organization filter.** The group has no site or parent group. Its filter can use any field except **Organization** (`orgId`) and **Device Group** (`groupId`). The **Site** field is allowed.
+- **Policy targets.** A partner-wide group can be targeted by **partner-owned** configuration policies (the policies you create for **All organizations**) and by the **Deploy monitor** dialog of a partner-wide monitor. An organization's own policies cannot target it, and other targets (scripts, automations, maintenance windows, software deployments, alert rules and similar) refuse it with an error instead of silently matching no devices.
+- **Precedence.** An assignment to a partner-wide group is a device-group-level assignment. It takes precedence over organization- and site-level assignments of other policies, and a device-level assignment still overrides it.
+
+### Who can create and change them
+
+Only a partner user with access to **all** organizations can create, edit or delete a partner-wide group. On the **Device Groups** page, select **Create Group** and choose **All organizations** under the owner selector. The selector is offered only when you create a group; an existing group cannot change owner. You can rename a partner-wide group and change its filter later.
+
+Partner users with access to selected organizations can see the group and its filter, but its member counts and member lists include only the organizations they can access, and they cannot change it.
+
+### What organization users see
+
+Users who sign in to one organization see a partner-wide group's name with an **All orgs** badge, and only the devices from their own organization. The filter rules are hidden from them; the card says the group is managed by their service provider. They cannot edit, delete or preview the group.
+
+### Finding and checking partner-wide groups
+
+On the **Device Groups** page, use the **All orgs** filter to show only partner-wide groups. Each partner-wide group shows:
+
+- when its membership was last evaluated;
+- how many organizations failed to evaluate, if any. Breeze retries those organizations automatically, and saving the group's filter starts a new evaluation;
+- a **Show members** list with an **Organization** column.
+
+Membership is updated when devices change and by a periodic background check. Breeze does not promise a fixed update time.
+
+### Example: monitor every device that runs a given application
+
+Say you want a monitor on every customer device that has PowerChute Business Edition installed.
+
+<Steps>
+
+1. On the **Device Groups** page, select **Create Group**, choose **All organizations**, and name the group, for example "PowerChute agents".
+
+2. Add the filter condition **Has Software Installed** `contains` `PowerChute Business Edition`, check the preview, and create the group.
+
+3. Open your partner-wide monitor (one created for **All organizations**) and select **Deploy monitor**.
+
+4. Choose **Create a policy for** → **a device group**, pick "PowerChute agents" under **All orgs (partner-wide)**, and attach.
+
+</Steps>
+
+Breeze creates a partner-owned configuration policy assigned to the group. When a device in any customer organization installs the application, it joins the group and gets the monitor; when the application is removed, the device leaves the group.
+
+To reuse the group for another partner-owned configuration policy, open the policy's **Assignments** tab and pick the group under **Device groups (all orgs)**.
+
 ## Creating a group
 
 <Steps>
 
 1. Choose a **name** (1--255 characters) and a **type** (`static` or `dynamic`).
 
-2. Specify the **organization** the group belongs to. Optionally scope it to a **site**.
+2. Specify the **organization** the group belongs to. Optionally scope it to a **site**. Partner administrators can instead choose **All organizations** to create a [partner-wide group](#partner-wide-groups).
 
 3. For dynamic groups, define **filter conditions** (see [Dynamic group rules](#dynamic-group-rules) below).
 
@@ -169,7 +220,7 @@ Each member record includes:
 - tags and device role;
 - last user;
 - agent version and Helper version;
-- installed software (installed or not installed);
+- installed software (installed or not installed), software version and vendor;
 - any custom field.
 
 Such a group is skipped as a target of scripts, automations, software policies and update rings. It is also skipped by the automation, software, remote-access, PAM, maintenance, OneDrive and Assist policy features. Patch and backup assignments still resolve through it, and so does every non-execution use: listing members, filters, views and reports.
@@ -249,8 +300,10 @@ Fields are organized by category. Each field supports a specific set of operator
 <TabItem label="Software & Computed">
 | Field | Label | Type | Example operators |
 |---|---|---|---|
-| `software.installed` | Has Software Installed | string | `contains`, `notContains` |
-| `software.notInstalled` | Missing Software | string | `contains` |
+| `software.installed` | Has Software Installed | string or string array | `contains`, `notContains`, `equals`, `in`, `hasAny`, `hasAll` |
+| `software.notInstalled` | Missing Software | string or string array | `contains`, `equals`, `in`, `hasAny` |
+| `software.version` | Software Version | object (`name`, `version`) | `below`, `atLeast`, `equals` |
+| `software.vendor` | Software Vendor | string | `contains`, `equals` |
 | `daysSinceLastSeen` | Days Since Last Seen | number | `greaterThan`, `lessThan` |
 | `daysSinceEnrolled` | Days Since Enrolled | number | `greaterThan`, `lessThan` |
 </TabItem>
@@ -277,6 +330,8 @@ The rule builder lists your organization's and partner's custom fields under **C
 | `equals` / `notEquals` | All types | Exact match or negation |
 | `greaterThan` / `greaterThanOrEquals` | number, date | Numeric or date comparison |
 | `lessThan` / `lessThanOrEquals` | number, date | Numeric or date comparison |
+| `below` | software.version | Any install of the named software has a version below the supplied version |
+| `atLeast` | software.version | Any install of the named software has the supplied version or a newer version |
 | `contains` / `notContains` | string, array | Case-insensitive substring match (ILIKE) |
 | `startsWith` / `endsWith` | string | Prefix or suffix match |
 | `matches` | string | PostgreSQL regex match (`~`) |
@@ -287,6 +342,10 @@ The rule builder lists your organization's and partner's custom fields under **C
 | `before` / `after` | date, datetime | Date comparison |
 | `between` | number, date | Range check (value: `{ "from": ..., "to": ... }`) |
 | `withinLast` / `notWithinLast` | date, datetime | Relative time (value: `{ "amount": 7, "unit": "days" }`) |
+
+**Software versions** take a value such as `{ "name": "Example App", "version": "10.0.5" }`. The name matches exactly, ignoring case. Versions compare numeric segments, so `10.0.10` is newer than `10.0.5`, and `1.2` equals `1.2.0`. Surrounding whitespace and an optional leading `v` are removed; suffixes after the leading numeric version are ignored (`1.2.3-beta`, `1.2.3 (x64)` and `1.2.3+meta` all equal `1.2.3`). Missing versions and strings with no numeric prefix never match. Any matching install is enough, even if another install on the same device has a different version; devices missing the software never match `below`. Both `name` and `version` must be non-empty after trimming (maximum 500 and 100 characters respectively).
+
+**Software vendors** match any installed software row. `equals` matches the whole vendor name ignoring case, while `contains` matches a case-insensitive substring, treating `%` and `_` literally. Inventory changes to versions or vendors trigger dynamic membership re-evaluation even when installed software names stay the same.
 
 ### Previewing dynamic membership
 
@@ -459,8 +518,8 @@ All group endpoints require authentication and one of the following scopes: `org
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | List groups. Query params: `siteId`, `type`, `parentId`, `search` |
-| `POST` | `/` | Create a group |
+| `GET` | `/` | List groups. Query params: `ownerScope` (`organization`, `partner`, `all`; default `organization`), `orgId`, `siteId`, `type`, `parentId`, `search` |
+| `POST` | `/` | Create a group. Body: `ownerScope` (`organization` or `partner`; default `organization`) |
 | `GET` | `/:id` | Get a single group |
 | `PATCH` | `/:id` | Update a group |
 | `DELETE` | `/:id` | Delete a group (fails if it has child groups) |
@@ -471,6 +530,38 @@ All group endpoints require authentication and one of the following scopes: `org
 | `POST` | `/:id/devices/:deviceId/pin` | Pin a device in a dynamic group |
 | `DELETE` | `/:id/devices/:deviceId/pin` | Unpin a device from a dynamic group |
 | `GET` | `/:id/membership-log` | Query the membership change audit log |
+
+### Partner ownership and visibility
+
+Partner users with access to all organizations can create, edit, and delete their partner's groups through the primary endpoints. Partner ownership is chosen only on creation; `PATCH` cannot change it. The API derives `partnerId` from the authenticated partner user. System users can edit and delete partner groups, but creating one requires a partner user.
+
+Partner groups must be dynamic and supply `filterConditions`. Creation rejects body `orgId`, `siteId`, `parentId`, `deviceIds`, and legacy `rules`; query `orgId` does not change the owner. Partner groups cannot have a site or parent, use legacy rules, become static, or clear their filter. Filters may use `siteId`, but `orgId` and `groupId` conditions are rejected anywhere in a partner filter. Organization-group filters also cannot reference a partner group.
+
+`GET /?ownerScope=all` combines organization and partner groups. `orgId` narrows the organization groups and partner membership counts. `siteId` or `parentId` excludes partner groups; `type` and `search` apply to both owner kinds. Partner users with selected organization access can read their partner's definitions, but counts, members, logs, and previews include only accessible organizations. Partner users with no organization access see no partner groups.
+
+Organization users can list and get their own partner's groups and list their own organization's members. Their group DTO carries the name and the All orgs badge fields (`ownerScope: "partner"`, `orgId: null`, `partnerId`), with `filterConditions: null`, `rules: null`, `filterFieldsUsed: []`, `evaluation: null`, and no `policy`. Counts are restricted to their own organization. These users cannot preview, edit, delete, or read membership logs for a partner group. Site-restricted organization users see no partner groups in lists; direct group and member reads return 403 because partner groups have no site.
+
+Group DTOs include `orgId`, `partnerId`, `ownerScope`, and `evaluation`. Organization groups have `partnerId: null` and `evaluation: null`. For partner users and system users, a partner group's `evaluation` is:
+
+```json
+{
+  "state": "pending",
+  "evaluatedAt": null,
+  "failedOrgs": 0
+}
+```
+
+`state` is `pending` while the evaluated revision trails the filter revision, `partial` when that revision is evaluated but some organizations failed, and `current` otherwise. `evaluatedAt` is an ISO timestamp or `null`. Create and filter edits enqueue membership evaluation. Partner previews evaluate eligible organizations sequentially within a 5-second budget, exclude Quick Support and holding organizations, and return `partial`, `evaluatedOrgs`, and `totalOrgs` alongside `totalCount`, `devices`, and `evaluatedAt`. Device rows include `orgId`.
+
+Partner-owned configuration policies may target their own partner's groups. These assignments use device-group precedence (priority 4), above organization- and site-level assignments. Organization-owned policies cannot target partner groups.
+
+| Refusal | Response |
+|---|---|
+| Partner-group add/remove devices or pin/unpin | 400 `PARTNER_GROUP_READ_ONLY` |
+| Unsupported filter reference (`orgId`/`groupId` in a partner filter, or a partner-group reference in an organization filter) | 400 `PARTNER_GROUP_FILTER_UNSUPPORTED` |
+| Partner group used on an unsupported target surface | 400 `PARTNER_GROUP_TARGET_UNSUPPORTED` |
+| Readable partner group edited or deleted by a partner user without all-organization access | 403 |
+| Partner group outside the caller's read scope, or an organization session using a closed partner-group endpoint | 404, identical to an unknown group |
 
 ### Device-scoped group endpoints (`/api/v1/devices/groups`)
 
@@ -492,7 +583,8 @@ The feature uses three tables:
 | Column | Type | Description |
 |---|---|---|
 | `id` | uuid (PK) | Auto-generated group ID |
-| `org_id` | uuid (FK) | Organization the group belongs to |
+| `org_id` | uuid (FK, nullable) | Owning organization; null for a partner-owned group |
+| `partner_id` | uuid (FK, nullable) | Owning partner; exactly one of `org_id` and `partner_id` is set |
 | `site_id` | uuid (FK, nullable) | Optional site scope |
 | `name` | varchar(255) | Group name |
 | `type` | enum | `static` or `dynamic` |

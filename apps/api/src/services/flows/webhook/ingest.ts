@@ -32,10 +32,17 @@
  *      its accepted row commit or roll back together. A unique conflict on
  *      the accepted row (a racing replay) ⇒ 200 duplicate. An admission
  *      refusal ⇒ 429 + a refused row (coalesced per key per minute).
+ *      #5221 B6 (Decision 6): the delivery's occurrence (`webhook:sig:` and
+ *      `webhook:dlv:`, keyed exactly as the legacy route keys it) goes with
+ *      it; for a flow converted from a Job, createFlowRun claims both in the
+ *      same transaction, and a delivery either engine already admitted is a
+ *      200 duplicate naming the winning run (`legacyRunId` when legacy won).
+ *      A plain flow ignores it.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
   FLOW_RUN_LIMITS,
+  FLOW_WEBHOOK_HEADERS,
   flowDocumentV1Schema,
   isFlowAdmissionRefusal,
   type FlowAdmissionRefusal,
@@ -67,10 +74,14 @@ import {
 import { resolveWebhookOrg } from './orgResolver';
 import { decryptFlowWebhookSecret } from './secret';
 import { verifyFlowWebhook } from './verify';
+import { webhookOccurrenceInstant, webhookOccurrenceKeys } from '../conversion/webhookOccurrence';
+import type { FlowRunOccurrence } from '../runService';
 
 export type WebhookIngestResult =
   | { http: 202; body: { status: 'accepted'; runId: string; deliveryId: string } }
   | { http: 200; body: { status: 'duplicate'; runId: string } }
+  /** #5221 B6: the legacy engine admitted this delivery (a converted Job's pre-switch delivery). */
+  | { http: 200; body: { status: 'duplicate'; legacyRunId: string } }
   | { http: 401 | 404 | 415; body: { error: string } }
   | { http: 413; body: { error: 'payload_too_large'; deliveryId?: string } }
   | { http: 409; body: { status: 'refused'; code: 'flow_changed' } }
@@ -249,10 +260,19 @@ export async function ingestFlowWebhook(i: {
     return { http: 413, body: { error: 'payload_too_large', deliveryId: id } };
   }
 
+  // #5221 B6: an unkeyable delivery (token mode, no id) carries none, so a
+  // converted flow runs it as any other flow would (no replay key either way).
+  const occurrenceKeys = webhookOccurrenceKeys(facts.signatureDigest, facts.deliveryId);
+  const occurrence: FlowRunOccurrence | null = occurrenceKeys.length === 0 ? null : {
+    keys: occurrenceKeys,
+    // The signed instant (hmac); a token delivery has none signed, so its receipt.
+    at: (authMode === 'hmac' ? webhookOccurrenceInstant(i.headers.get(FLOW_WEBHOOK_HEADERS.timestamp)) : null) ?? i.receivedAt,
+  };
+
   let acceptedId: string | null = null;
   try {
-    const result = await createFlowRun({
-      triggerKind: 'webhook',
+    const input = {
+      triggerKind: 'webhook' as const,
       flowId: flow.id,
       orgId,
       scope,
@@ -264,13 +284,23 @@ export async function ingestFlowWebhook(i: {
         : facts.signatureDigest ? `webhook:sig:${facts.signatureDigest}` : `webhook:nokey:${randomUUID()}`,
       expectedPublicationSeq: flow.enabledPublicationSeq,
       expectedSecretRotatedAt: flow.webhookSecretRotatedAt,
-      onCreated: async (runId) => {
+      onCreated: async (runId: string) => {
         acceptedId = await insertAcceptedDelivery({ ...facts, orgId, runId, resolverValue: resolved.value });
       },
-    });
+    };
+    const result = occurrence ? await createFlowRun({ ...input, occurrence }) : await createFlowRun(input);
     if (result.created) return { http: 202, body: { status: 'accepted', runId: result.runId, deliveryId: acceptedId ?? '' } };
     if (result.reason === 'duplicate') return { http: 200, body: { status: 'duplicate', runId: result.runId } };
-    if (result.reason === 'not_enabled') return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
+    if (result.reason === 'occurrence_claimed') {
+      const { flowRunId, legacyRunId } = result.claimedBy;
+      if (flowRunId) return { http: 200, body: { status: 'duplicate', runId: flowRunId } };
+      if (legacyRunId) return { http: 200, body: { status: 'duplicate', legacyRunId } };
+      throw new Error('flow webhook: the occurrence claim that won names no run');
+    }
+    // A reverted conversion's flow admits nothing new (#5221 B4): to the sender it changed.
+    if (result.reason === 'not_enabled' || result.reason === 'flow_conversion_reverted') {
+      return { http: 409, body: { status: 'refused', code: 'flow_changed' } };
+    }
     const code: FlowAdmissionRefusal = result.reason;
     if (!isFlowAdmissionRefusal(code)) throw new Error(`flow webhook: unhandled createFlowRun refusal '${String(code)}'`);
     // The refusal is the answer; a failed log write must not turn it into a 503.

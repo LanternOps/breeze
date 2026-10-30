@@ -18,7 +18,7 @@ vi.mock('../db', () => ({
 vi.mock('../db/schema', () => ({
   devicePatches: {
     id: 'id', patchId: 'patchId', deviceId: 'deviceId', orgId: 'orgId', status: 'status',
-    createdAt: 'createdAt', availableVersion: 'availableVersion',
+    createdAt: 'createdAt', availableVersion: 'availableVersion', scope: 'scope',
   },
   patches: {
     id: 'id', externalId: 'externalId', title: 'title', category: 'category',
@@ -151,6 +151,15 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
     const view = await loadDevicePatchApprovalView(DEV, ORG);
 
     expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'blocked_by_feature_update_policy', holdUntil: null });
+  });
+
+  it('shows a per-user install the ring would auto-approve as excluded (unsupported_user_scope, #10249)', async () => {
+    mockRingPolicy({ enabled: true, severities: ['critical'], deferralDays: 0 });
+    mockEvaluatorReads([row({ patchId: P1, source: 'third_party', packageId: 'Zoom.Zoom', scope: 'user' })], []);
+
+    const view = await loadDevicePatchApprovalView(DEV, ORG);
+
+    expect(view.byPatchId.get(P1)).toEqual({ state: 'excluded', reason: 'unsupported_user_scope', holdUntil: null });
   });
 
   it('with no patch policy, nothing auto-approves and the ring is null', async () => {

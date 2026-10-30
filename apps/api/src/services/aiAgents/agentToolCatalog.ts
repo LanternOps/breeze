@@ -267,6 +267,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',
+  get_huntress_agents: 'security_response',
   sync_huntress_data: 'security_response',
   create_incident: 'security_response',
   collect_evidence: 'security_response',
@@ -319,6 +320,8 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_contract_templates: 'business',
   manage_contract_documents: 'business',
   get_device_billing: 'business',
+  // W14 PR B (#6784): accounting sync beside the invoice tools (partner-only handler; every write agent-human-only).
+  manage_accounting_sync: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',

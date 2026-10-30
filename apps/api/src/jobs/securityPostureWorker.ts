@@ -36,6 +36,8 @@ const SECURITY_POSTURE_WORKER_CONCURRENCY = parsePositiveIntEnv('SECURITY_POSTUR
 
 type ScanOrgsJobData = {
   type: 'scan-orgs';
+  // Registration (boot) time, frozen across every repeat. Kept so jobs already
+  // in Redis keep their shape; never read it as the tick time (#10478).
   queuedAt: string;
 };
 
@@ -141,7 +143,7 @@ export function getSecurityPostureQueue(): Queue<SecurityPostureJobData> {
   return securityPostureQueue;
 }
 
-async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number }> {
+async function processScanOrgs(now: Date): Promise<{ queued: number }> {
   // #1105 (BREEZE-K class): read the org list in its own short-lived context so
   // the fan-out enqueue below runs AFTER the transaction closes — addBulk is a
   // Redis round-trip that must not run while a pooled Postgres connection sits
@@ -166,14 +168,17 @@ async function processScanOrgs(data: ScanOrgsJobData): Promise<{ queued: number 
   }
 
   const queue = getSecurityPostureQueue();
-  const slotKey = data.queuedAt.slice(0, 13);
+  const queuedAt = now.toISOString();
+  // One compute-org per org per UTC hour: the slot dedupes a double-fired tick
+  // within the hour but must advance hour to hour.
+  const slotKey = queuedAt.slice(0, 13);
   await queue.addBulk(
     orgRows.map((row) => ({
       name: 'compute-org',
       data: {
         type: 'compute-org' as const,
         orgId: row.orgId,
-        queuedAt: data.queuedAt
+        queuedAt
       },
       opts: {
         jobId: `security-posture-${row.orgId}-${slotKey}`,
@@ -213,7 +218,14 @@ export function createSecurityPostureWorker(): Worker<SecurityPostureJobData> {
       const data = job.data;
       if (data.type === 'scan-orgs') {
         // Manages its own context: DB read inside, enqueue outside (#1105).
-        return processScanOrgs(data);
+        // The wall clock, never `data.queuedAt`: a repeatable job reuses the
+        // data it was registered with, so `queuedAt` is boot time on every
+        // tick. Slotting compute-org job ids from it gave each org the same id
+        // every hour, and BullMQ silently drops an add whose id is still held
+        // by a retained completed job, so an org's hourly recompute was skipped
+        // until that job was evicted or the worker restarted (#10478; same
+        // pattern as #10031).
+        return processScanOrgs(new Date());
       }
       return runWithSystemDbAccess(async () => processComputeOrg(data));
     },

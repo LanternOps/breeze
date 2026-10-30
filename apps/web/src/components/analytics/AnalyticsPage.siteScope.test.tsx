@@ -6,7 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 // `AnalyticsPage`, `QueryBuilder` and `DashboardGrid` all read the API through
 // this one helper, so mocking it here controls every request the page makes.
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 

@@ -13,7 +13,11 @@
  *    the wire. A draft's candidate list is offered for a human to choose from;
  *    nothing is auto-selected. When the draft resolves a contact, the submit
  *    sends THAT contact — what the preview showed is what starts.
- *  - The inheritor is a contact OR an address, never both.
+ *  - The inheritor is a contact OR an address, never both, and never the
+ *    person leaving (#10076): that person is left out of the picker, and a
+ *    match the form can see (a contact chosen after the inheritor, an address
+ *    equal to the typed or previewed address) is an inline error that blocks
+ *    preview and submit. The server refuses the same thing at every layer.
  *  - The eight effect toggles come from `IDENTITY_OFFBOARDING_EFFECT_TOGGLES`
  *    with the schema's own defaults.
  *  - Devices are an explicit picker over the org's device list. Nothing is
@@ -35,6 +39,7 @@ import {
   IDENTITY_OFFBOARDING_EFFECT_TOGGLES,
   identityOffboardingEffectsSchema,
   identityOnboardingInputSchema,
+  selfInheritanceField,
   type AiOperatorIdentityOnboardingTaskDraftDto,
   type AiOperatorIdentityTaskDraftDto,
   type AiOperatorWorkflowDto,
@@ -89,11 +94,28 @@ type Inheritor = { mode: 'none' } | { mode: 'contact'; contactId: string } | { m
 
 function initialPerson(launch: StartRecipeLaunch): Person {
   if (launch.kind === 'contact') return { mode: 'contact', contactId: launch.contactId, label: launch.label };
-  if (launch.kind === 'ticket' && launch.contactId) {
-    return { mode: 'contact', contactId: launch.contactId, label: launch.label ?? launch.personHint ?? '' };
-  }
-  if (launch.kind === 'ticket') return { mode: 'hint', text: launch.personHint ?? '' };
+  // A ticket's requester is often the manager reporting SOMEONE ELSE's
+  // departure (#10075): from a ticket the person starts empty and the
+  // requester is only offered, by `ticketRequester`, for the technician to choose.
   return { mode: 'hint', text: '' };
+}
+
+/**
+ * The ticket's requester as the person leaving, offered as a one-click
+ * suggestion (never pre-filled). Null when the ticket names no one.
+ */
+function ticketRequester(launch: StartRecipeLaunch): Person | null {
+  if (launch.kind !== 'ticket') return null;
+  const name = launch.label?.trim() || launch.personHint?.trim() || '';
+  if (launch.contactId && name) return { mode: 'contact', contactId: launch.contactId, label: name };
+  const hint = launch.personHint?.trim();
+  return hint ? { mode: 'hint', text: hint } : null;
+}
+
+function samePerson(a: Person, b: Person): boolean {
+  if (a.mode === 'contact' && b.mode === 'contact') return a.contactId === b.contactId;
+  if (a.mode === 'hint' && b.mode === 'hint') return a.text.trim().toLowerCase() === b.text.trim().toLowerCase();
+  return false;
 }
 
 function toggleLabel(t: T, k: Toggle): { label: string; help: string } {
@@ -147,7 +169,16 @@ function useOrgDevices(orgId: string, search: string): { status: 'loading' | 'er
   return { ...state, retry: () => setAttempt((n) => n + 1) };
 }
 
-function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; value: string; onChange: (id: string, label: string) => void }) {
+const SELF_INHERITOR_ERROR_ID = 'start-recipe-inheritor-self';
+
+function InheritorContactSelect({ orgId, value, excludeContactId, invalid, onChange }: {
+  orgId: string;
+  value: string;
+  /** The person leaving, when known: never offered as their own inheritor. */
+  excludeContactId: string | null;
+  invalid: boolean;
+  onChange: (id: string, label: string) => void;
+}) {
   const { t } = useTranslation('aiOperator');
   const [contacts, setContacts] = useState<ContactOption[]>([]);
   const [page, setPage] = useState(1);
@@ -171,12 +202,19 @@ function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; val
     return () => controller.abort();
   }, [orgId, page, attempt]);
   const labelOf = (c: ContactOption) => c.name ?? c.email ?? c.id;
+  // The current value stays listed even when it is the excluded person, so the
+  // inline error beside it names something the technician can see and change.
+  const excluded = excludeContactId?.toLowerCase() ?? null;
+  const options = contacts.filter((c) => c.id === value || c.id.toLowerCase() !== excluded);
   // A failed page keeps the options already loaded (and so the visible choice):
   // the select never disappears while it still holds a value that will be sent.
   return (
     <div className="space-y-1">
       <select
         data-testid="start-recipe-inheritor-contact"
+        aria-label={t('startRecipe.inheritor.label')}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? SELF_INHERITOR_ERROR_ID : undefined}
         className="h-9 w-full rounded-md border bg-background px-2 text-sm"
         value={value}
         onChange={(e) => {
@@ -185,7 +223,7 @@ function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; val
         }}
       >
         <option value="">{t('startRecipe.inheritor.pickContact')}</option>
-        {contacts.map((c) => (
+        {options.map((c) => (
           <option key={c.id} value={c.id}>{labelOf(c)}{c.name && c.email ? ` · ${c.email}` : ''}</option>
         ))}
       </select>
@@ -220,6 +258,8 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
   const defaults = useMemo(() => identityOffboardingEffectsSchema.parse({}) as Effects, []);
 
   const [person, setPerson] = useState<Person>(() => initialPerson(launch));
+  const requester = ticketRequester(launch);
+  const offerRequester = requester !== null && !samePerson(person, requester);
   const [inheritor, setInheritor] = useState<Inheritor>({ mode: 'none' });
   const [inheritorLabel, setInheritorLabel] = useState('');
   const [autoReply, setAutoReply] = useState<string | null>(null); // null = the generated default
@@ -234,6 +274,9 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
 
   const [draft, setDraft] = useState<AiOperatorIdentityTaskDraftDto | null>(null);
   const [draftFor, setDraftFor] = useState<string | null>(null);
+  // Who the last successful draft was asked about: its resolved person is
+  // known only while the person fields still say the same thing.
+  const [draftPersonFor, setDraftPersonFor] = useState<string | null>(null);
   const [busy, setBusy] = useState<'preview' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [duplicateTaskId, setDuplicateTaskId] = useState<string | null>(null);
@@ -263,10 +306,20 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
     effects,
   }), [person, inheritor, replyText, cutoff, keepMailbox, deviceIds, effects]);
   const inputsKey = JSON.stringify(inputs);
+  const personKey = JSON.stringify([inputs.contactId, inputs.personHint]);
+  // What the form knows about the person leaving: the chosen contact, the
+  // contact the last draft resolved them to, and the typed hint (which may be
+  // an address). The server checks the same rule against the stored contact.
+  const resolvedLeaver = draft !== null && draftPersonFor === personKey ? draft.person.resolved : null;
+  const leaverContactId = inputs.contactId ?? resolvedLeaver?.id ?? null;
+  const selfInheritor = selfInheritanceField(inputs, {
+    contactId: leaverContactId,
+    email: resolvedLeaver?.email ?? inputs.personHint,
+  }) !== null;
   const previewCurrent = draft !== null && draftFor === inputsKey;
   const needsCandidateChoice = previewCurrent && person.mode === 'hint'
     && draft.person.resolved === null && draft.person.candidates.length > 0;
-  const canSubmit = previewCurrent && !needsCandidateChoice && busy === null;
+  const canSubmit = previewCurrent && !needsCandidateChoice && !selfInheritor && busy === null;
 
   const reportFailure = (err: unknown, fallback: string): void => {
     if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -284,6 +337,7 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
     setError(null);
     setDuplicateTaskId(null);
     const sentKey = inputsKey;
+    const sentPersonKey = personKey;
     try {
       const result = await runAction({
         request: () => createOperatorTaskDraft({
@@ -294,6 +348,7 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
       });
       setDraft(result);
       setDraftFor(sentKey);
+      setDraftPersonFor(sentPersonKey);
     } catch (err) {
       // A refused refresh must not leave the previous preview standing as current.
       setDraftFor(null);
@@ -381,7 +436,7 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
                 type="button"
                 data-testid="start-recipe-person-use-hint"
                 className="text-xs underline"
-                onClick={() => setPerson({ mode: 'hint', text: launch.kind === 'ticket' ? launch.personHint ?? '' : '' })}
+                onClick={() => setPerson({ mode: 'hint', text: '' })}
               >
                 {t('startRecipe.person.useHint')}
               </button>
@@ -400,6 +455,20 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
               onChange={(e) => setPerson({ mode: 'hint', text: e.target.value })}
             />
           </label>
+        )}
+        {offerRequester && (
+          <p data-testid="start-recipe-person-requester" className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span id="start-recipe-person-requester-name">{t('startRecipe.person.requesterSuggestion', { name: requester.mode === 'contact' ? requester.label : requester.text })}</span>
+            <button
+              type="button"
+              data-testid="start-recipe-person-use-requester"
+              aria-describedby="start-recipe-person-requester-name"
+              className="underline"
+              onClick={() => setPerson(requester)}
+            >
+              {t('startRecipe.person.useRequester')}
+            </button>
+          </p>
         )}
       </fieldset>
 
@@ -426,6 +495,8 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
           <InheritorContactSelect
             orgId={orgId}
             value={inheritor.contactId}
+            excludeContactId={leaverContactId}
+            invalid={selfInheritor}
             onChange={(id, label) => { setInheritor({ mode: 'contact', contactId: id }); setInheritorLabel(label); }}
           />
         )}
@@ -433,12 +504,20 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
           <input
             type="email"
             data-testid="start-recipe-inheritor-address"
+            aria-label={t('startRecipe.inheritor.address')}
+            aria-invalid={selfInheritor || undefined}
+            aria-describedby={selfInheritor ? SELF_INHERITOR_ERROR_ID : undefined}
             className={fieldClass}
             maxLength={320}
             value={inheritor.address}
             placeholder={t('startRecipe.inheritor.addressPlaceholder')}
             onChange={(e) => setInheritor({ mode: 'address', address: e.target.value })}
           />
+        )}
+        {selfInheritor && (
+          <p id={SELF_INHERITOR_ERROR_ID} role="alert" data-testid="start-recipe-inheritor-self" className="text-xs text-destructive">
+            {t('startRecipe.inheritor.self')}
+          </p>
         )}
       </fieldset>
 
@@ -578,7 +657,7 @@ function OffboardingStartRecipeForm({ workflow, orgId, launch, onClose }: StartR
         <button
           type="button"
           data-testid="start-recipe-preview-button"
-          disabled={busy !== null}
+          disabled={busy !== null || selfInheritor}
           onClick={() => void runPreview()}
           className="rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
         >
