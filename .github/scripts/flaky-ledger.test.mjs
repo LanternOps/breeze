@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { activeQuarantine, changedFiles, failureTouched, isQuarantined, loadBaseLedger, validateLedger } from './flaky-ledger.mjs';
+import { activeEntries, activeQuarantine, changedFiles, failureTouched, isQuarantined, loadBaseLedger, validateLedger } from './flaky-ledger.mjs';
 
 // Flaky-test ledger (W1, #10744). A test listed in .github/flaky-tests.json —
 // read from the BASE commit, never from the PR's head — may fail both retry
@@ -80,6 +80,26 @@ test('validateLedger: a go id names a top-level test (quarantine granularity), n
   assert.match(validateLedger([go('github.com/breeze-rmm/agent/internal/x')]).join('\n'), /top-level/);
 });
 
+test('validateLedger: a vitest id names one test — never a failed-suite or file-level id', () => {
+  const suite = 'src/services/foo.test.ts [ src/services/foo.test.ts ]';
+  assert.match(validateLedger([entry({ id: suite })]).join('\n'), /single test/);
+  assert.match(validateLedger([entry({ id: 'src/services/foo.test.ts' })]).join('\n'), /single test/);
+  // A test name may itself end in brackets.
+  assert.deepEqual(validateLedger([entry({ id: 'src/services/foo.test.ts > foo > handles [a]' })]), []);
+});
+
+test('validateLedger: a vitest entry\'s file is its package prefix + the id\'s file', () => {
+  assert.match(validateLedger([entry({ file: 'apps/web/src/services/foo.test.ts' })]).join('\n'), /file/);
+  assert.deepEqual(validateLedger([entry({ runner: 'vitest-web', file: 'apps/web/src/services/foo.test.ts' })]), []);
+});
+
+test('validateLedger: covers is optional, an array of non-empty repo-relative paths', () => {
+  assert.deepEqual(validateLedger([entry({ covers: ['apps/api/src/services/billing/', 'apps/api/src/db/schema/x.ts'] })]), []);
+  for (const covers of ['apps/api/src', [], [''], ['/abs/path'], ['apps/../etc'], [3]]) {
+    assert.match(validateLedger([entry({ covers })]).join('\n'), /covers/, JSON.stringify(covers));
+  }
+});
+
 test('the committed .github/flaky-tests.json is a valid ledger', () => {
   const ledger = JSON.parse(readFileSync(new URL('.github/flaky-tests.json', REPO_ROOT), 'utf8'));
   assert.deepEqual(validateLedger(ledger), []);
@@ -99,6 +119,12 @@ test('activeQuarantine: ids for that runner while today <= expires; an entry tha
   assert.deepEqual(activeQuarantine(ledger, 'go', '2026-11-10'), new Set());
 });
 
+test('activeQuarantine: an entry whose added is after today is not active (no stretched window)', () => {
+  const ledger = [entry({ id: 'future', added: '2026-11-11', expires: '2026-12-01' }), entry({ id: 'today', added: '2026-11-10' })];
+  assert.deepEqual(activeQuarantine(ledger, 'vitest-api', '2026-11-10'), new Set(['today']));
+  assert.deepEqual(activeEntries(ledger, 'vitest-api', '2026-11-10').map((e) => e.id), ['today']);
+});
+
 // ── git: base ledger + changed files ─────────────────────────────────────
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -116,13 +142,13 @@ function fixtureRepos() {
   git(origin, 'config', 'uploadpack.allowReachableSHA1InWant', 'true');
   writeFileSync(join(origin, 'a.ts'), 'export const a = 1;\n');
   writeFileSync(join(origin, 'b.ts'), 'export const b = 1;\n');
-  writeFileSync(join(origin, '.github/flaky-tests.json'), JSON.stringify([entry({ id: 'base-id' })]));
+  writeFileSync(join(origin, '.github/flaky-tests.json'), JSON.stringify([entry({ id: 'src/services/foo.test.ts > base-id' })]));
   git(origin, 'add', '-A');
   git(origin, 'commit', '-q', '-m', 'base');
   const baseSha = git(origin, 'rev-parse', 'HEAD');
   writeFileSync(join(origin, 'a.ts'), 'export const a = 2;\n');
   git(origin, 'commit', '-q', '-am', 'touch a');
-  writeFileSync(join(origin, '.github/flaky-tests.json'), JSON.stringify([entry({ id: 'head-id' })]));
+  writeFileSync(join(origin, '.github/flaky-tests.json'), JSON.stringify([entry({ id: 'src/services/foo.test.ts > head-id' })]));
   git(origin, 'commit', '-q', '-am', 'head edits the ledger');
   const clone = join(root, 'clone');
   git(root, 'clone', '-q', '--depth=1', pathToFileURL(origin).href, clone);
@@ -143,7 +169,7 @@ test('loadBaseLedger / changedFiles: base not fetched → [] / null (fail closed
 test('loadBaseLedger: reads the ledger at BASE, never the head copy', () => {
   const { clone, baseSha } = fixtureRepos();
   git(clone, 'fetch', '-q', '--no-tags', '--depth=1', 'origin', baseSha);
-  assert.deepEqual(loadBaseLedger({ baseSha, repoRoot: clone }).map((e) => e.id), ['base-id']);
+  assert.deepEqual(loadBaseLedger({ baseSha, repoRoot: clone }).map((e) => e.id), ['src/services/foo.test.ts > base-id']);
 });
 
 test('loadBaseLedger: a ledger absent at base → []', () => {
@@ -199,6 +225,44 @@ test('failureTouched (vitest): the sibling source of foo.test.ts counts, any ext
   const g = vt('src/lib/__tests__/foo.test.tsx');
   assert.equal(failureTouched(g, new Set(['apps/api/src/lib/foo.tsx']), API), true);
   assert.equal(failureTouched(g, new Set(['apps/api/src/lib/__tests__/foo.ts']), API), true);
+});
+
+test('failureTouched (vitest): a multi-part suffix chain still maps to the source (fail closed)', () => {
+  for (const name of ['foo.integration.test.ts', 'foo.contract.test.ts', 'foo.e2e.spec.ts', 'foo.rls.integration.test.ts']) {
+    const f = vt(`src/services/${name}`);
+    assert.equal(failureTouched(f, new Set(['apps/api/src/services/foo.ts']), API), true, name);
+    assert.equal(failureTouched(f, new Set(['apps/api/src/services/foo.service.ts']), API), true, name);
+    assert.equal(failureTouched(f, new Set(['apps/api/src/services/food.ts']), API), false, name);
+  }
+});
+
+// vitest-integration: an integration test exercises far more than a sibling,
+// so without `covers` any non-test change under apps/api/src/ touches it.
+const INT = { prefix: 'apps/api/', sourceRoot: 'apps/api/src/' };
+const it_ = vt('src/__tests__/integration/billing.integration.test.ts');
+
+test('failureTouched (vitest-integration): any changed non-test file under apps/api/src/ touches it', () => {
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/services/unrelated.ts']), INT), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/__tests__/integration/setup.ts']), INT), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/routes/other.test.ts', 'apps/web/src/x.ts', 'docs/a.md']), INT), false);
+  assert.equal(failureTouched(it_, new Set([`apps/api/${it_.file}`]), INT), true);
+});
+
+test('failureTouched (vitest-integration): a declared covers list is used instead (plus the test file)', () => {
+  const paths = { ...INT, covers: new Map([[it_.id, ['apps/api/src/services/billing/', 'apps/api/src/db/schema/invoices.ts']]]) };
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/services/unrelated.ts']), paths), false);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/services/billing/x.ts']), paths), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/services/billing']), paths), true);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/services/billingx.ts']), paths), false);
+  assert.equal(failureTouched(it_, new Set(['apps/api/src/db/schema/invoices.ts']), paths), true);
+  assert.equal(failureTouched(it_, new Set([`apps/api/${it_.file}`]), paths), true);
+});
+
+test('failureTouched: covers on a unit/go entry only adds paths (never narrows the sibling/package rule)', () => {
+  const f = vt('src/services/foo.test.ts');
+  const paths = { ...API, covers: new Map([[f.id, ['apps/api/src/lib/']]]) };
+  assert.equal(failureTouched(f, new Set(['apps/api/src/lib/a.ts']), paths), true);
+  assert.equal(failureTouched(f, new Set(['apps/api/src/services/foo.ts']), paths), true);
 });
 
 const GO = { goModule: 'github.com/breeze-rmm/agent', goDir: 'agent' };

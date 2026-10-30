@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures, unattributedFailure } from './retry-shard.mjs';
+import { decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -59,16 +59,15 @@ test('vitest: splits file on the first " > " only, dedupes, and reads failed sui
   assert.deepEqual(r.failures.map((f) => f.file), ['src/broken.test.ts', 'src/a.test.ts', 'src/b.test.ts']);
 });
 
-test('unattributedFailure: vitest Unhandled Errors section → true; plain failures and go → false', () => {
-  assert.equal(unattributedFailure('vitest', '\x1b[31m⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯\x1b[39m\nError: boom\n'), true);
-  assert.equal(unattributedFailure('vitest', 'Unhandled Rejection\nError: boom\n'), true);
-  assert.equal(unattributedFailure('vitest', fixture('vitest-two-failures.txt')), false);
-  assert.equal(unattributedFailure('go', fixture('go-test-failures.jsonl')), false);
+test('vitest: an Unhandled Errors section → unattributed (failures alone do not explain the exit)', () => {
+  assert.equal(parseFailures('vitest', '\x1b[31m⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯\x1b[39m\nError: boom\n').unattributed, true);
+  assert.equal(parseFailures('vitest', 'Unhandled Rejection\nError: boom\n').unattributed, true);
+  assert.equal(parseFailures('vitest', fixture('vitest-two-failures.txt')).unattributed, false);
 });
 
 test('vitest: no summary section → no failures (setup/infra failure)', () => {
   const r = parseFailures('vitest', 'ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\n FAIL  this is console noise\n');
-  assert.deepEqual(r, { failures: [], buildFailed: false, raceDetected: false });
+  assert.deepEqual(r, { failures: [], buildFailed: false, raceDetected: false, unattributed: false });
 });
 
 // ── parseFailures: go ────────────────────────────────────────────────────
@@ -121,6 +120,53 @@ test('go: a real -race report → raceDetected (and the racy test is still a fai
 test('raceDetected is false for plain go failures and always false for vitest', () => {
   assert.equal(parseFailures('go', fixture('go-test-failures.jsonl')).raceDetected, false);
   assert.equal(parseFailures('vitest', ' FAIL  noise\n⎯ Failed Tests 1 ⎯\n FAIL  src/a.test.ts > WARNING: DATA RACE\n').raceDetected, false);
+});
+
+// ── parseFailures: go, unattributed package failures ─────────────────────
+// Real `go test -json` output (go 1.27) from a throwaway module, one package
+// per case, each with a TestFlaky and a TestOther. The dedupe above keeps the
+// package-level fail out of `failures` (retry targeting), so anything the
+// failed tests do not fully explain must surface as `unattributed`.
+
+const QPKG = (n) => `${AGENT}/internal/q${n}`;
+
+test('go: a test that panics → unattributed (later tests in the package never ran)', () => {
+  const r = parseFailures('go', fixture('go-quarantine-panic.jsonl'));
+  assert.deepEqual(ids(r), [`${QPKG('panic')}.TestFlaky`]);
+  assert.equal(r.unattributed, true);
+});
+
+test('go: TestMain fails after m.Run → unattributed', () => {
+  const r = parseFailures('go', fixture('go-quarantine-main.jsonl'));
+  assert.deepEqual(ids(r), [`${QPKG('main')}.TestFlaky`]);
+  assert.equal(r.unattributed, true);
+});
+
+test('go: -timeout hit → unattributed (a test ran and never finished)', () => {
+  const r = parseFailures('go', fixture('go-quarantine-timeout.jsonl'));
+  assert.equal(r.unattributed, true);
+});
+
+test('go: a plain test failure in an otherwise clean package → not unattributed', () => {
+  const r = parseFailures('go', fixture('go-quarantine-clean.jsonl'));
+  assert.deepEqual(ids(r), [`${QPKG('clean')}.TestFlaky`]);
+  assert.equal(r.unattributed, false);
+  assert.equal(parseFailures('go', fixture('go-test-failures.jsonl')).unattributed, false);
+});
+
+test('go: a test with `run` but no terminal event → unattributed; standard package lines are not', () => {
+  const ev = (o) => JSON.stringify({ Package: 'p/a', ...o });
+  const base = [
+    ev({ Action: 'run', Test: 'TestA' }),
+    ev({ Action: 'fail', Test: 'TestA' }),
+    ev({ Action: 'output', Output: 'FAIL\n' }),
+    ev({ Action: 'output', Output: 'coverage: 12.5% of statements\n' }),
+    ev({ Action: 'output', Output: 'exit status 1\n' }),
+    ev({ Action: 'output', Output: 'FAIL\tp/a\t0.10s\n' }),
+    ev({ Action: 'fail' }),
+  ];
+  assert.equal(parseFailures('go', base.join('\n')).unattributed, false);
+  assert.equal(parseFailures('go', [ev({ Action: 'run', Test: 'TestB' }), ...base].join('\n')).unattributed, true);
 });
 
 // ── decide ───────────────────────────────────────────────────────────────
@@ -274,6 +320,54 @@ test('decide (go): a quarantined top-level test covers its failing subtest; a pa
   assert.deepEqual(go([sub], new Set(['apps/api/x.ts'])).quarantined, [sub.id]);
   assert.equal(go([sub], new Set(['agent/internal/x/x.go'])).exitCode, 1);
   assert.equal(go([{ id: pkg, file: null, pkg }], new Set()).exitCode, 1);
+});
+
+const goFixtureVerdict = (name) => {
+  const r = parseFailures('go', fixture(`go-quarantine-${name}.jsonl`));
+  const attempt = { code: 1, ...r };
+  return decide({
+    first: attempt,
+    second: attempt,
+    quarantine: new Set([`${QPKG(name)}.TestFlaky`]),
+    changedFiles: new Set(['README.md']),
+    paths: { goModule: AGENT, goDir: 'agent' },
+  });
+};
+
+test('decide (go fixtures): quarantined TestFlaky panics / TestMain fails / timeout → non-zero', () => {
+  for (const name of ['panic', 'main', 'timeout']) {
+    const d = goFixtureVerdict(name);
+    assert.notEqual(d.exitCode, 0, name);
+    assert.deepEqual(d.quarantined, [], name);
+  }
+});
+
+test('decide (go fixtures): plain quarantined failure in a clean package → still excused', () => {
+  assert.deepEqual(goFixtureVerdict('clean'), {
+    exitCode: 0,
+    retry: true,
+    flaky: [],
+    quarantined: [`${QPKG('clean')}.TestFlaky`],
+  });
+});
+
+test('decide: an unattributed FIRST attempt also refuses quarantine (retry still happens)', () => {
+  const first = { code: 1, failures: [QF], buildFailed: false, raceDetected: false, unattributed: true };
+  assert.equal(decide({ first, second: null, quarantine: Q, changedFiles: new Set(), paths: API_PATHS }).retry, true);
+  const d = decide({ first, second: { ...first, unattributed: false }, quarantine: Q, changedFiles: new Set(), paths: API_PATHS });
+  assert.equal(d.exitCode, 1);
+  assert.deepEqual(d.quarantined, []);
+});
+
+test('decide: a quarantined verdict keeps first-attempt flaky ids (failed once, passed on retry)', () => {
+  const d = decide({
+    first: { code: 1, failures: [QF, OTHER], buildFailed: false, raceDetected: false },
+    second: { code: 1, failures: [QF], buildFailed: false, raceDetected: false },
+    quarantine: Q,
+    changedFiles: new Set(),
+    paths: API_PATHS,
+  });
+  assert.deepEqual(d, { exitCode: 0, retry: true, flaky: [OTHER.id], quarantined: [QF.id] });
 });
 
 // ── Go retry command + coverage merge ────────────────────────────────────
@@ -558,6 +652,17 @@ test('CLI vitest: no CI_BASE_SHA → no quarantine, exit 1', () => {
     env: { CI_BASE_SHA: '' },
   });
   assert.equal(r.status, 1);
+});
+
+test('CLI vitest: quarantined failure + Unhandled Errors reaches decide() as unattributed → exit 1', () => {
+  const { root, baseSha } = ledgerRepo([vitestEntry], ['README.md']);
+  const script = `console.log('⎯ Failed Tests 1 ⎯\\n FAIL  src/a.test.ts > suite > flaky one\\n\\n⎯⎯ Unhandled Errors ⎯⎯\\nError: leaked');process.exit(1)`;
+  const r = cli(['--runner', 'vitest', '--label', 'api-2', '--', process.execPath, '-e', script], {
+    cwd: root,
+    env: { CI_BASE_SHA: baseSha },
+  });
+  assert.equal(r.status, 1, r.stdout);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'flake-report-api-2.json'), 'utf8')).quarantined, []);
 });
 
 test('CLI vitest: a ledger entry added only on HEAD is ignored → exit 1', () => {

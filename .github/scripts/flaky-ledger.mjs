@@ -10,9 +10,21 @@
 //   - anything unknown fails closed: no base sha, a ledger missing or invalid
 //     at base, or a changed-file list that cannot be computed → no quarantine.
 //
-// Entry: { id, runner, file, issue, added, expires }. `id` is exactly what
-// retry-shard reports: vitest `<package-relative file> > <suite> > <test>`,
-// go `<import path>.<TopLevelTest>`. `file` is repo-relative (for humans).
+// Entry: { id, runner, file, issue, added, expires, covers? }. `id` is exactly
+// what retry-shard reports: vitest `<package-relative file> > <suite> > <test>`
+// (one test — never a failed-suite/file-level id, so a file that fails to load
+// cannot be quarantined), go `<import path>.<TopLevelTest>`. `file` is
+// repo-relative. An entry is active from `added` through `expires`.
+//
+// "Touched" (fails closed — a wider match only blocks quarantine):
+//   - vitest: the test file, or any file in its directory (or the parent of a
+//     `__tests__/` directory) sharing its first name segment — so
+//     `foo.integration.test.ts` covers `foo.ts`, `foo.service.ts`, …;
+//   - vitest-integration additionally: any changed non-test file under
+//     apps/api/src/, unless the entry declares `covers` (repo paths — files,
+//     or directories as prefixes), which is then used instead;
+//   - go: any file under the package's directory;
+//   - `covers` on any other entry only adds paths.
 //
 // Go quarantine is per top-level test: quarantining `pkg.TestX` also covers
 // its failing subtests (`pkg.TestX/sub`). retry-shard drops a parent test when
@@ -28,6 +40,7 @@ export const RUNNERS = ['vitest-api', 'vitest-web', 'vitest-integration', 'go'];
 const MAX_DAYS = 30;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SHA = /^[0-9a-f]{7,64}$/i;
+const VITEST_PREFIX = { 'vitest-api': 'apps/api/', 'vitest-web': 'apps/web/', 'vitest-integration': 'apps/api/' };
 // A top-level Go test id: `<import path>.<Test|Fuzz|Example…>`, no subtest.
 const GO_TOP_LEVEL = /^\S+\.(?:Test|Fuzz|Example)[A-Za-z0-9_]*$/;
 
@@ -66,6 +79,22 @@ export function validateLedger(entries) {
     if (e.runner === 'go' && typeof e.id === 'string' && !GO_TOP_LEVEL.test(e.id)) {
       errors.push(`${at}: a go id must name a top-level test (<import path>.TestX), not a subtest or a package`);
     }
+    if (VITEST_PREFIX[e.runner] && typeof e.id === 'string') {
+      const sep = e.id.indexOf(' > ');
+      const head = sep === -1 ? e.id : e.id.slice(0, sep);
+      if (sep === -1 || / \[ /.test(head)) {
+        errors.push(`${at}: a vitest id must name a single test (<file> > … > <test>), not a failed suite or a whole file`);
+      } else if (typeof e.file === 'string' && e.file !== `${VITEST_PREFIX[e.runner]}${head}`) {
+        errors.push(`${at}: file must be ${VITEST_PREFIX[e.runner]}${head} (the id's file, repo-relative)`);
+      }
+    }
+    if (e.covers !== undefined) {
+      const ok =
+        Array.isArray(e.covers) &&
+        e.covers.length > 0 &&
+        e.covers.every((c) => typeof c === 'string' && c.trim() !== '' && !c.startsWith('/') && !c.includes('\\') && !c.split('/').includes('..'));
+      if (!ok) errors.push(`${at}: covers must be a non-empty array of repo-relative paths`);
+    }
     if (typeof e.id === 'string' && RUNNERS.includes(e.runner)) {
       const key = `${e.runner}\0${e.id}`;
       if (seen.has(key)) errors.push(`${at}: duplicate id for runner ${e.runner}`);
@@ -95,8 +124,14 @@ export function loadBaseLedger({ baseSha, repoRoot }) {
   return entries;
 }
 
+// `added` after today is not active yet: a future-dated `added` would stretch
+// the 30-day window. Validation stays date-independent; this is the gate.
+export function activeEntries(entries, runner, today) {
+  return entries.filter((e) => e.runner === runner && e.added <= today && today <= e.expires);
+}
+
 export function activeQuarantine(entries, runner, today) {
-  return new Set(entries.filter((e) => e.runner === runner && today <= e.expires).map((e) => e.id));
+  return new Set(activeEntries(entries, runner, today).map((e) => e.id));
 }
 
 // Two-dot: HEAD is the merge commit atop the base (pull_request merge ref,
@@ -114,12 +149,19 @@ export function changedFiles({ baseSha, repoRoot }) {
 
 // ── Matching ─────────────────────────────────────────────────────────────
 
-const stripExt = (p) => p.replace(/\.[^./]+$/, '');
 const TEST_SUFFIX = /\.(?:test|spec)\.[^./]+$/;
+const firstSegment = (p) => posix.basename(p).split('.')[0];
+const underPath = (f, c) => {
+  const dir = c.replace(/\/+$/, '');
+  return f === dir || f.startsWith(`${dir}/`);
+};
 
-// `paths`: { prefix } for vitest (package dir, e.g. `apps/api/`), or
-// { goModule, goDir } for go. Unmappable → touched, which blocks quarantine.
+// `paths`: { prefix, sourceRoot? } for vitest (package dir, e.g. `apps/api/`;
+// `sourceRoot` for vitest-integration), or { goModule, goDir } for go; plus an
+// optional `covers` Map(id → repo paths). Unmappable → touched (blocks).
 export function failureTouched(failure, changed, paths = {}) {
+  const covers = paths.covers?.get(failure.id);
+  if (covers && [...changed].some((f) => covers.some((c) => underPath(f, c)))) return true;
   if (failure.pkg) {
     const { goModule, goDir } = paths;
     if (!goModule || goDir === undefined) return true;
@@ -134,12 +176,14 @@ export function failureTouched(failure, changed, paths = {}) {
   if (!failure.file) return true;
   const file = `${paths.prefix ?? ''}${failure.file}`;
   if (changed.has(file)) return true;
-  if (!TEST_SUFFIX.test(file)) return false;
-  // foo.test.ts → foo.* beside it, and ../foo.* when it lives in __tests__/.
-  const stem = file.replace(TEST_SUFFIX, '');
-  const stems = new Set([stem]);
-  if (posix.basename(posix.dirname(stem)) === '__tests__') stems.add(posix.join(posix.dirname(posix.dirname(stem)), posix.basename(stem)));
-  return [...changed].some((f) => stems.has(stripExt(f)));
+  if (paths.sourceRoot && !covers) {
+    if ([...changed].some((f) => f.startsWith(paths.sourceRoot) && !TEST_SUFFIX.test(f))) return true;
+  }
+  // foo[.anything].test.ts → foo[.*] beside it, and in the parent of __tests__/.
+  const seg = firstSegment(file);
+  const dirs = new Set([posix.dirname(file)]);
+  if (posix.basename(posix.dirname(file)) === '__tests__') dirs.add(posix.dirname(posix.dirname(file)));
+  return [...changed].some((f) => dirs.has(posix.dirname(f)) && firstSegment(f) === seg);
 }
 
 export function isQuarantined(failure, quarantine) {

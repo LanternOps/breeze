@@ -31,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { activeQuarantine, changedFiles, failureTouched, isQuarantined, loadBaseLedger } from './flaky-ledger.mjs';
+import { activeEntries, changedFiles, failureTouched, isQuarantined, loadBaseLedger } from './flaky-ledger.mjs';
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -46,12 +46,21 @@ const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const VITEST_SECTION = /Failed (?:Tests|Suites) \d+/;
 const VITEST_FAIL = /^\s*FAIL\s+(\S.*?)\s*$/;
 
+// `unattributed`: a failure the per-test parse cannot pin on a test —
+// vitest's `Unhandled Errors` section exits 1 even when every test passed. It
+// never blocks a retry; it stops quarantine from excusing the attempt, since
+// the parsed failures would not explain the whole exit code. Text match
+// anywhere (console noise included): a false hit only blocks quarantine.
+const VITEST_UNHANDLED = /Unhandled (?:Errors?|Rejection)/;
+
 function parseVitest(output) {
   const failures = [];
   const seen = new Set();
   let inSummary = false;
+  let unattributed = false;
   for (const raw of output.split('\n')) {
     const line = raw.replace(ANSI, '').replace(/\r$/, '');
+    if (VITEST_UNHANDLED.test(line)) unattributed = true;
     if (VITEST_SECTION.test(line)) {
       inSummary = true;
       continue;
@@ -64,7 +73,7 @@ function parseVitest(output) {
     const head = m[1].split(' > ')[0];
     failures.push({ id: m[1], file: head.replace(/\s+\[.*\]$/, '').trim(), pkg: null });
   }
-  return { failures, buildFailed: false, raceDetected: false };
+  return { failures, buildFailed: false, raceDetected: false, unattributed };
 }
 
 // `go test -json` events. A failing subtest also fails its parent; the parent
@@ -77,10 +86,50 @@ function parseVitest(output) {
 const GO_BUILD_FAILED = /^FAIL\t\S+ \[(?:build|setup) failed\]/;
 const GO_DATA_RACE = 'WARNING: DATA RACE';
 
+// The package-level fail is deduped out of `failures` when a test in that
+// package failed (it would only widen the retry). That must not let a failing
+// package look fully explained by its failed tests, so `unattributed` is set
+// when a FAILED package shows anything beyond ordinary test failures:
+//   - a panic (`panic: …` at column 0, which t.Log never produces — the rest
+//     of the package's tests never ran), a `-timeout` (`test timed out`), or
+//     `[setup failed]`, in any of the package's output;
+//   - a package-level output line (no Test) that is not standard go test
+//     framing, e.g. TestMain reporting a leak after m.Run();
+// and, in any package, a test that emitted `run` without ever reaching
+// pass/fail/skip.
+const GO_PKG_MARKER = /^panic: |test timed out after|\[setup failed\]/m;
+const GO_STANDARD_PKG_LINE = [
+  /^$/,
+  /^(?:PASS|FAIL)$/,
+  /^ok\s+\S+/,
+  /^FAIL\t\S+\t[\d.]+s(?:\t.*)?$/,
+  /^\?\s+\S+\s+\[no test files\]$/,
+  /^coverage: /,
+  /^exit status \d+$/,
+  /^testing: warning: no tests to run$/,
+  /^(?:=== (?:RUN|PAUSE|CONT|NAME)|--- (?:FAIL|PASS|SKIP):) /,
+];
+
+function goUnattributed(pkgLines, markers, failedPkgs, started, finished) {
+  for (const key of started) if (!finished.has(key)) return true;
+  for (const pkg of failedPkgs) {
+    if (markers.has(pkg)) return true;
+    for (const line of pkgLines.get(pkg) ?? []) {
+      if (!GO_STANDARD_PKG_LINE.some((re) => re.test(line))) return true;
+    }
+  }
+  return false;
+}
+
 function parseGo(output) {
   const fails = [];
   let buildFailed = false;
   let raceDetected = false;
+  const pkgLines = new Map(); // package-level (no Test) output lines
+  const markers = new Set(); // packages with a panic/timeout/setup-failed line
+  const failedPkgs = new Set();
+  const started = new Set();
+  const finished = new Set();
   for (const line of output.split('\n')) {
     if (!line.startsWith('{')) {
       if (line.includes(GO_DATA_RACE)) raceDetected = true;
@@ -96,7 +145,20 @@ function parseGo(output) {
     if (typeof ev.Output === 'string' && ev.Output.includes(GO_DATA_RACE)) raceDetected = true;
     if (ev.Action === 'build-fail') buildFailed = true;
     if (ev.Action === 'output' && typeof ev.Output === 'string' && GO_BUILD_FAILED.test(ev.Output)) buildFailed = true;
+    if (ev.Package && ev.Action === 'output' && typeof ev.Output === 'string') {
+      if (GO_PKG_MARKER.test(ev.Output)) markers.add(ev.Package);
+      if (!ev.Test) {
+        if (!pkgLines.has(ev.Package)) pkgLines.set(ev.Package, []);
+        pkgLines.get(ev.Package).push(...ev.Output.replace(/\r/g, '').split('\n').filter((l) => l !== ''));
+      }
+    }
+    if (ev.Package && ev.Test) {
+      const key = `${ev.Package}\0${ev.Test}`;
+      if (ev.Action === 'run') started.add(key);
+      if (['pass', 'fail', 'skip'].includes(ev.Action)) finished.add(key);
+    }
     if (ev.Action !== 'fail' || !ev.Package) continue;
+    if (!ev.Test) failedPkgs.add(ev.Package);
     if (ev.FailedBuild) buildFailed = true;
     fails.push({ pkg: ev.Package, test: ev.Test ?? null });
   }
@@ -117,18 +179,8 @@ function parseGo(output) {
     seen.add(id);
     failures.push({ id, file: null, pkg: f.pkg });
   }
-  return { failures, buildFailed, raceDetected };
-}
-
-// A failure the per-test parse cannot attribute to a test: vitest's
-// `Unhandled Errors` section (exit 1 even when every test passed). It never
-// blocks a retry — it only stops quarantine from excusing the attempt, since
-// the parsed failures would not explain the whole exit code.
-const VITEST_UNHANDLED = /Unhandled (?:Errors?|Rejection)/;
-
-export function unattributedFailure(runner, output) {
-  if (runner !== 'vitest') return false;
-  return output.split('\n').some((raw) => VITEST_UNHANDLED.test(raw.replace(ANSI, '')));
+  const unattributed = goUnattributed(pkgLines, markers, failedPkgs, started, finished);
+  return { failures, buildFailed, raceDetected, unattributed };
 }
 
 export function parseFailures(runner, output) {
@@ -143,11 +195,13 @@ export function parseFailures(runner, output) {
 // the second attempt's result for the final verdict.
 //
 // Quarantine applies only after a real second attempt failed with parsed
-// failures and nothing else (no signal, build failure, data race or
-// unattributed failure), and only when `changedFiles` is known: every failure
-// must be in `quarantine` (see isQuarantined) with its file/package untouched
-// (failureTouched, `paths` maps it to a repo-relative path). Otherwise the
-// second attempt's exit code stands.
+// failures and nothing else (no signal, build failure, data race, and no
+// unattributed failure on EITHER attempt), and only when `changedFiles` is
+// known: every failure must be in `quarantine` (see isQuarantined) with its
+// file/package untouched (failureTouched, `paths` maps it to a repo-relative
+// path). Otherwise the second attempt's exit code stands. A quarantined
+// verdict still reports as flaky the first-attempt failures that passed on
+// the retry.
 export function decide({ first, second, quarantine = new Set(), changedFiles = null, paths = {} }) {
   const none = { flaky: [], quarantined: [] };
   if (first.code === 0) return { exitCode: 0, retry: false, ...none };
@@ -159,11 +213,17 @@ export function decide({ first, second, quarantine = new Set(), changedFiles = n
     return { exitCode: 0, retry: true, flaky: [...new Set(first.failures.map((f) => f.id))], quarantined: [] };
   }
   const failed = { exitCode: second.code ?? 1, retry: true, ...none };
-  if (second.code === null || second.buildFailed || second.raceDetected || second.unattributed) return failed;
+  if (second.code === null || second.buildFailed || second.raceDetected || second.unattributed || first.unattributed) return failed;
   if (changedFiles === null || quarantine.size === 0 || second.failures.length === 0) return failed;
   const blocking = second.failures.filter((f) => !isQuarantined(f, quarantine) || failureTouched(f, changedFiles, paths));
   if (blocking.length) return failed;
-  return { exitCode: 0, retry: true, flaky: [], quarantined: [...new Set(second.failures.map((f) => f.id))] };
+  const secondIds = new Set(second.failures.map((f) => f.id));
+  return {
+    exitCode: 0,
+    retry: true,
+    flaky: [...new Set(first.failures.map((f) => f.id))].filter((id) => !secondIds.has(id)),
+    quarantined: [...secondIds],
+  };
 }
 
 // ── Ledger context ───────────────────────────────────────────────────────
@@ -183,7 +243,10 @@ export function ledgerRunner(runner, label) {
 // the package (vitest-api/-integration run in apps/api, vitest-web in
 // apps/web); go packages map through the module path in <go-dir>/go.mod.
 function ledgerPaths(ledger, { repoRoot, goDir }) {
-  if (ledger === 'vitest-api' || ledger === 'vitest-integration') return { prefix: 'apps/api/' };
+  if (ledger === 'vitest-api') return { prefix: 'apps/api/' };
+  // An integration test exercises far beyond its sibling: without a declared
+  // `covers`, any non-test change under apps/api/src/ touches it.
+  if (ledger === 'vitest-integration') return { prefix: 'apps/api/', sourceRoot: 'apps/api/src/' };
   if (ledger === 'vitest-web') return { prefix: 'apps/web/' };
   if (ledger !== 'go') return null;
   try {
@@ -205,8 +268,10 @@ function quarantineContext({ runner, label, goDir }) {
   const paths = ledgerPaths(ledger, { repoRoot, goDir });
   if (!paths) return none;
   const today = new Date().toISOString().slice(0, 10);
-  const quarantine = activeQuarantine(loadBaseLedger({ baseSha, repoRoot }), ledger, today);
-  if (quarantine.size === 0) return none;
+  const active = activeEntries(loadBaseLedger({ baseSha, repoRoot }), ledger, today);
+  if (active.length === 0) return none;
+  const quarantine = new Set(active.map((e) => e.id));
+  paths.covers = new Map(active.filter((e) => e.covers).map((e) => [e.id, e.covers]));
   const changed = changedFiles({ baseSha, repoRoot });
   if (changed === null) {
     process.stdout.write(`::notice title=Quarantine disabled::${escapeData(`${label}: cannot diff ${baseSha}..HEAD, so no test is quarantined`)}\n`);
@@ -448,7 +513,7 @@ async function main(argv) {
 
   const first = await runAttempt(command, { cwd, runner });
   const p1 = parseFailures(runner, first.output);
-  const firstResult = { code: first.code, failures: p1.failures, buildFailed: p1.buildFailed, raceDetected: p1.raceDetected };
+  const firstResult = { code: first.code, ...p1 };
   if (p1.raceDetected && first.code !== 0) {
     process.stdout.write(
       `::error title=Data race::${escapeData(`${label}: the race detector reported a data race; not retrying (a clean re-run would hide it)`)}\n`,
@@ -475,13 +540,7 @@ async function main(argv) {
     const second = await runAttempt(retryCommand, { cwd, runner });
     attempts = 2;
     const p2 = parseFailures(runner, second.output);
-    const secondResult = {
-      code: second.code,
-      failures: p2.failures,
-      buildFailed: p2.buildFailed,
-      raceDetected: p2.raceDetected,
-      unattributed: unattributedFailure(runner, second.output),
-    };
+    const secondResult = { code: second.code, ...p2 };
     // The ledger is consulted only when the second attempt failed too.
     const ctx = second.code === 0 ? {} : quarantineContext({ runner, label, goDir: cwd });
     verdict = decide({ first: firstResult, second: secondResult, ...ctx });
