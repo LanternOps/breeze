@@ -239,6 +239,8 @@
       "hintPlaceholder": "e.g. Dana Smith or dana@example.com",
       "contactChosen": "Contact: {{name}}",
       "useHint": "Use a name or email instead",
+      "requesterSuggestion": "Ticket requester: {{name}}. This is often a manager reporting someone else leaving.",
+      "useRequester": "Use as the person leaving",
       "readOnly": "Started from this contact."
     },
     "inheritor": {
@@ -249,7 +251,8 @@
       "pickContact": "Choose a contact",
       "addressPlaceholder": "name@example.com",
       "contactsFailed": "Contacts failed to load.",
-      "loadMore": "Load more contacts"
+      "loadMore": "Load more contacts",
+      "self": "The person leaving can't inherit their own mail. Choose someone else, or no one."
     },
     "autoReply": {
       "label": "Auto-reply message",

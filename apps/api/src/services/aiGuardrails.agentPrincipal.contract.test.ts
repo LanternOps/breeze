@@ -234,6 +234,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
+  'get_huntress_agents', // #10393 Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -1009,12 +1010,17 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
 
   it('is exactly manage_tags add/remove, manage_groups add_devices/remove_devices (both feed run scope), the two W11 audit-baseline writes, the W12 uninstall, the W13 device-function set and the W14 legal-document writes, each with a real reason', () => {
     expect([...AGENT_HUMAN_ONLY_ACTIONS.keys()].sort()).toEqual([
+      // W14 PR B (#6784): accounting writes leave the tenant (and overwrite the provider's records).
+      'manage_accounting_sync:link_mapping', 'manage_accounting_sync:push', 'manage_accounting_sync:push_bulk',
+      'manage_accounting_sync:sync_mapping', 'manage_accounting_sync:unlink_mapping',
       // W11-D8 (#6781, quorum QW5/QW9): users-FK writes a user-owned release would run without the run's ceiling.
       'manage_audit_baselines:create', 'manage_audit_baselines:request_apply',
       // W14 (#6784): agreement templates and signed agreements are the legal documents customers sign.
       'manage_contract_documents:link',
       'manage_contract_templates:archive', 'manage_contract_templates:create', 'manage_contract_templates:create_version',
       'manage_contract_templates:publish', 'manage_contract_templates:update',
+      // W14 PR B (#6784): generating an invoice bills (and may email) the customer.
+      'manage_contracts:generate_invoice',
       // W13 (#6783): function is an allowed execution-targeting filter -> dynamic groups -> run scope.
       'manage_device_function:set',
       // W12 (#6782, quorum QW6): irreversible removal on a customer machine (conservative D4 exception).
@@ -1121,6 +1127,28 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
   ] as const)('%s is never offered to an agent (W12 D4 exception)', (tool, input) => {
     const check = checkAgentGuardrails(tool, input, policyWith({ mode: 'act', toolAllowlist: [tool] }));
     expect(check.disposition).toBe('deny');
+  });
+
+  describe('W14 PR B (#6784)', () => {
+    it.each(['generate_invoice'])('denies an allowlisted manage_contracts:%s (money)', (action) => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_contracts', `manage_contracts:${action}`] });
+      const check = checkAgentGuardrails('manage_contracts', { action, contractId: 'c-1' }, policy);
+      expect(check.disposition).toBe('deny');
+      expect(check.reason).toMatch(/never available to agents/);
+    });
+
+    it.each(['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'])(
+      'denies an allowlisted manage_accounting_sync:%s (leaves the tenant)', (action) => {
+        const policy = policyWith({ mode: 'act', toolAllowlist: ['manage_accounting_sync', `manage_accounting_sync:${action}`] });
+        expect(checkAgentGuardrails('manage_accounting_sync', { action, provider: 'xero' }, policy).disposition).toBe('deny');
+      },
+    );
+
+    it('control: preview_invoice and the accounting reads reach an agent with no allowlist entry', () => {
+      const policy = policyWith({ mode: 'act', toolAllowlist: [] });
+      expect(checkAgentGuardrails('manage_contracts', { action: 'preview_invoice', contractId: 'c-1' }, policy).disposition).toBe('allow');
+      expect(checkAgentGuardrails('manage_accounting_sync', { action: 'status', provider: 'xero' }, policy).disposition).toBe('allow');
+    });
   });
 
   describe('W14 (#6784)', () => {

@@ -54,7 +54,6 @@ function readTemplates(settings: unknown): TemplatesMap {
 
 export default function EmailTemplatesTab() {
   const { t } = useTranslation('settings');
-  const { t: tBilling } = useTranslation('billing');
   const [templates, setTemplates] = useState<TemplatesMap>({});
   const [selectedId, setSelectedId] = useState<EmailTemplateId | null>(null);
   const [loading, setLoading] = useState(true);
@@ -135,9 +134,7 @@ export default function EmailTemplatesTab() {
                     className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
                     data-testid={AUTOPAY_TEMPLATE_IDS.has(id)?`autopay-email-template-${id}`:id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`}>
                     <span className="text-sm font-medium">
-                      {AUTOPAY_TEMPLATE_IDS.has(id)?t(/* i18n-dynamic */ `emailTemplates.labels.${id}`):id === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
-                        :id === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
-                        :id === 'invoice_autopay' ? tBilling('autopay.noticeTemplate') : t(/* i18n-dynamic */ `emailTemplates.labels.${id}`, { defaultValue: emailTemplateLabel(id) })}
+                      {t(/* i18n-dynamic */ `emailTemplates.labels.${id}`, { defaultValue: emailTemplateLabel(id) })}
                     </span>
                     <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
                       {isCustom(templates[id])?t('emailTemplates.custom'):t('emailTemplates.usingDefault')}

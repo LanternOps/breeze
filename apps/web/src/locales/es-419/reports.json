@@ -32,7 +32,8 @@
       "subtitle": "Información sobre su flota y servicios",
       "title": "Analítica",
       "trend": {
-        "operationalHealth": "Salud operativa"
+        "operationalHealth": "Salud operativa",
+        "weekOf": "Semana del {{date}}"
       },
       "widgets": {
         "alertTable": {
@@ -153,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "últimos 30 días",
       "downtime": "Tiempo de inactividad {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Ventanas de mantenimiento excluidas",
+        "maintenanceSkipped": "Ventanas de mantenimiento no excluidas: demasiados dispositivos para revisar",
+        "maintenanceUnavailable": "Ventanas de mantenimiento no excluidas: estado no disponible",
+        "none": "Sin exclusiones",
+        "title": "Exclusiones",
+        "weekends": "Fines de semana excluidos"
+      },
       "incidents": "incidentes {{count}}",
+      "noDevices": "Aún no se midieron dispositivos",
       "status": {
         "atRisk": "En riesgo",
         "breach": "Incumplimiento",
@@ -161,6 +171,34 @@
       },
       "targetUptime": "Objetivo {{target}}% de tiempo de actividad",
       "title": "SLA Cumplimiento"
+    },
+    "slaEmptyState": {
+      "create": "Crear definición de SLA",
+      "created": "Definición de SLA creada",
+      "description": "Una definición de SLA fija el objetivo de disponibilidad con el que esta pestaña mide sus dispositivos. Cree una para empezar a seguir el cumplimiento.",
+      "errors": {
+        "create": "No se pudo crear la definición de SLA"
+      },
+      "form": {
+        "cancel": "Cancelar",
+        "excludeMaintenance": "Excluir dispositivos en una ventana de mantenimiento",
+        "excludeWeekends": "Excluir fines de semana",
+        "measurementWindow": "Período de medición",
+        "name": "Nombre",
+        "organization": "Organización",
+        "scopeNote": "Mide todos los dispositivos de la organización.",
+        "selectOrganization": "Seleccione una organización",
+        "submit": "Crear",
+        "uptimeTarget": "Objetivo de disponibilidad (%)",
+        "uptimeTargetInvalid": "Ingrese un valor de 0 a 100.",
+        "windows": {
+          "daily": "Diario",
+          "monthly": "Mensual",
+          "weekly": "Semanal"
+        }
+      },
+      "noPermission": "Pida a un administrador con acceso de gestión de organizaciones que cree una definición de SLA.",
+      "title": "Aún no hay una definición de SLA"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtrar",

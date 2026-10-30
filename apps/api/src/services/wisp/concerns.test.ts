@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   inserts: [] as Array<{ values: Record<string, unknown>; conflict: 'nothing' | 'update'; opts: Record<string, unknown> }>,
   updates: [] as Array<{ set: Record<string, unknown>; where: unknown }>,
   executes: [] as unknown[],
+  selectWheres: [] as unknown[],
   rememberForGrant: vi.fn(),
   resolveGrantCeiling: vi.fn(),
   captureException: vi.fn(),
@@ -27,7 +28,8 @@ vi.mock('../../db', () => {
   const select = vi.fn(() => {
     h.calls.push('select');
     const chain: Record<string, unknown> = {};
-    for (const m of ['from', 'leftJoin', 'innerJoin', 'where', 'orderBy', 'limit']) chain[m] = () => chain;
+    for (const m of ['from', 'leftJoin', 'innerJoin', 'orderBy', 'limit']) chain[m] = () => chain;
+    chain.where = (w: unknown) => { h.selectWheres.push(w); return chain; };
     chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
       Promise.resolve(h.selectRows.shift() ?? []).then(res, rej);
     return chain;
@@ -87,6 +89,7 @@ import { CeilingViolationError, GrantInactiveError, type GrantCeiling } from './
 import {
   ConcernNotFoundError,
   isDigestOnly,
+  isLiveConcernRaisedByGrant,
   listConcernsForCeiling,
   nextBackoff,
   recordNudge,
@@ -125,6 +128,7 @@ beforeEach(() => {
   h.inserts.length = 0;
   h.updates.length = 0;
   h.executes.length = 0;
+  h.selectWheres.length = 0;
   h.rememberForGrant.mockReset().mockResolvedValue({ id: 'block' });
   h.resolveGrantCeiling.mockReset().mockResolvedValue(ceiling());
   h.captureException.mockReset();
@@ -358,5 +362,35 @@ describe('concern transition metrics', () => {
     h.updateReturning.push([resolvedRow]);
     await resolveConcern(C1, {}, 'done');
     expect(wm.incWispConcern).toHaveBeenCalledExactlyOnceWith('resolved');
+  });
+});
+
+// #10392: the gate's own-concern check behind card-less snooze/resolve in chat.
+describe('isLiveConcernRaisedByGrant', () => {
+  const render = (w: unknown) => new PgDialect().sqlToQuery(w as SQL);
+
+  it('is true only for a row matching visibility AND id AND raised_by_grant_id = this grant AND a live status', async () => {
+    h.selectRows.push([{ id: C1 }]);
+
+    expect(await isLiveConcernRaisedByGrant(ceiling(), C1)).toBe(true);
+
+    expect(h.calls).toEqual(['system', 'select']);
+    const { sql: text, params } = render(h.selectWheres[0]);
+    expect(text).toContain('"wisp_concerns"."partner_id" = $');
+    expect(text).toContain('"wisp_concerns"."org_id" in');
+    expect(text).toContain('"wisp_concerns"."id" = $');
+    expect(text).toContain('"wisp_concerns"."raised_by_grant_id" = $');
+    expect(text).toContain('"wisp_concerns"."status" in');
+    expect(params).toEqual(expect.arrayContaining([P1, O1, C1, G1, 'open', 'snoozed']));
+  });
+
+  it('is false when no row matches (raised by another grant, a person, closed, or not visible)', async () => {
+    h.selectRows.push([]);
+    expect(await isLiveConcernRaisedByGrant(ceiling(), C1)).toBe(false);
+  });
+
+  it('is false WITHOUT a query when the ceiling can see no concerns', async () => {
+    expect(await isLiveConcernRaisedByGrant(ceiling({ orgIds: new Set() }), C1)).toBe(false);
+    expect(h.calls).toEqual([]);
   });
 });

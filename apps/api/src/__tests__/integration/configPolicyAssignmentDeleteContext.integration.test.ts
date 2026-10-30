@@ -7,18 +7,14 @@ import './setup';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { replayMigration } from './replayMigration';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION_FILE = join(
-  __dirname,
-  '../../../migrations/2026-10-15-120001-restore-assignment-delete-context.sql',
-);
+const MIGRATION_FILE = '2026-10-15-120001-restore-assignment-delete-context.sql';
 const DELETE_TRIGGER_TABLES = [
   'configuration_policies',
   'organizations',
@@ -80,9 +76,8 @@ describe('configuration-policy assignment owner DELETE context', () => {
       JOIN pg_roles owner ON owner.oid = function.proowner
       WHERE function.oid =
         'public.breeze_serialize_config_policy_assignment_owner_deletes()'::regprocedure`);
-    const migration = readFileSync(MIGRATION_FILE, 'utf8');
-    await testDb.execute(sql.raw(migration));
-    await testDb.execute(sql.raw(migration));
+    await replayMigration(MIGRATION_FILE);
+    await replayMigration(MIGRATION_FILE);
     const after = await testDb.execute(sql`
       SELECT owner.rolname AS owner,
              function.prosecdef AS security_definer,

@@ -626,7 +626,8 @@ patchesRoutes.post(
         externalId: patches.externalId,
         packageId: patches.packageId,
         title: patches.title,
-        category: patches.category
+        category: patches.category,
+        scope: devicePatches.scope
       })
       .from(devicePatches)
       .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -646,7 +647,8 @@ patchesRoutes.post(
     // KB-bearing. Omitting it is also safe for older agents: with no packageId
     // their existing fallback resolves the observed externalId through WUA,
     // which matches both a KB article and an exact UpdateID.
-    const patchRefs = observedPatchRefs.map((patch) =>
+    // `scope` gates the request below; it is not part of the command payload.
+    const patchRefs = observedPatchRefs.map(({ scope: _scope, ...patch }) =>
       patch.source === 'microsoft' ? { ...patch, packageId: null } : patch
     );
 
@@ -660,6 +662,21 @@ patchesRoutes.post(
         error: 'Some patches were not found',
         missingPatchIds
       }, 404);
+    }
+
+    // #10249: a per-user WinGet install (#2727) cannot be applied by the
+    // SYSTEM agent — it fails the command, or after an agent restart installs
+    // a second, machine-wide copy. The web UI already disables Install for
+    // these rows; refuse a direct request too, with the same 409 shape as an
+    // unapproved id so the whole batch is rejected rather than half-queued.
+    const userScopePatchIds = observedPatchRefs
+      .filter((patch) => patch.scope === 'user')
+      .map((patch) => patch.id);
+    if (userScopePatchIds.length > 0) {
+      return c.json({
+        error: 'Per-user (user scope) patches cannot be installed by the agent',
+        userScopePatchIds
+      }, 409);
     }
 
     // Derive the partner from the device's org. If null (no partner found), approved

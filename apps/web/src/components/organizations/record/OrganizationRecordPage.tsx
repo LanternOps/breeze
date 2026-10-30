@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity as ActivityIcon,
@@ -88,6 +89,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   usePageItemName(state.kind === 'loaded' ? state.org.name : undefined);
+  useRecordPageContext(state.kind === 'loaded' ? { kind: 'organization', id: state.org.id, orgId: state.org.id, label: state.org.name } : null);
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);

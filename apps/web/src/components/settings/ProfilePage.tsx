@@ -364,7 +364,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       }
 
       const updatedUser = await response.json();
-      setUser(prev => (prev ? { ...prev, ...updatedUser } : updatedUser));
+      setUser(prev => (prev ? {
+        ...prev,
+        ...updatedUser,
+        ...(updatedUser.mfaEnabled === false ? { mfaMethod: null } : {}),
+      } : updatedUser));
       reset({
         name: updatedUser.name ?? '',
       });

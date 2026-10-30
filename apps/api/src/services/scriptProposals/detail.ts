@@ -2,28 +2,14 @@ import type { AuthContext } from '../../middleware/auth';
 import { hasSatisfiedMfa } from '../../middleware/auth';
 import { canAccessOrg, getUserPermissions, hasPermission, userCanDecideApprovals, PERMISSIONS } from '../permissions';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import type { ScriptProposalDetailDto, ScriptProposalReviewFindingDto } from '@breeze/shared';
+import type { ScriptProposalDetailDto } from '@breeze/shared';
 import {
   loadProposalRow, loadLatestReview, loadProposalExecutions, loadProposalDevices, loadProposalRequesterUserId,
 } from './queries';
 import { scopeDeviceIdsToCaller } from '../aiToolsSiteScope';
+import { projectFindings } from './reviewFindings';
 
 export type ProposalReadDenial = 'not_found' | 'forbidden';
-
-const FINDING_SEVERITIES = new Set(['info', 'warning', 'blocking']);
-
-function projectFindings(raw: unknown): ScriptProposalReviewFindingDto[] {
-  if (!Array.isArray(raw)) return [];
-  const out: ScriptProposalReviewFindingDto[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const f = item as { severity?: unknown; text?: unknown; lineRef?: unknown };
-    if (typeof f.text !== 'string') continue;
-    const severity = FINDING_SEVERITIES.has(String(f.severity)) ? (f.severity as ScriptProposalReviewFindingDto['severity']) : 'info';
-    out.push({ severity, text: f.text, ...(typeof f.lineRef === 'number' ? { lineRef: f.lineRef } : {}) });
-  }
-  return out;
-}
 
 /**
  * THE read rule for a script proposal (spec §4.10, roadmap §3.5). One function,

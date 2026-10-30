@@ -191,13 +191,15 @@ describe('replaceContactResponsibilities', () => {
     expect(f.deletes).toHaveLength(0);
   });
 
-  it('rejects a Device Group that is not in the contact organization', async () => {
+  it('characterization: rejects a Device Group outside the contact organization with 400 before writes', async () => {
     const f = makeExec([[{ id: CONTACT }], []]);
     await expect(replaceContactResponsibilities(f.exec, {
       contactId: CONTACT, orgId: ORG, responsibilities: [
         { role: 'technical', scope: { type: 'device_group', deviceGroupId: GROUP } },
       ],
-    })).rejects.toMatchObject({ code: 'device-group-not-in-org' });
+    })).rejects.toMatchObject({ code: 'device-group-not-in-org', status: 400 });
+    expect(f.inserts).toHaveLength(0);
+    expect(f.updates).toHaveLength(0);
     expect(f.deletes).toHaveLength(0);
   });
 
