@@ -1,7 +1,7 @@
 ---
 spec: docs/superpowers/specs/monitoring/2026-10-29-alert-rearm-lifecycle-design.md
 issue: LanternOps/breeze#10538 (Refs only — the plan does not close it)
-tracking_issue: (assigned at Gate B by feature-lifecycle; not registered yet)
+tracking_issue: LanternOps/breeze#10765 (W01 #10766, W02 #10767, W03 #10768)
 waves: 3 (W1 engine, W2 settings, W3 Clears when + docs) — one PR each, merged in order
 tasks: 19
 ---
