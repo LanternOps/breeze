@@ -46,7 +46,7 @@
  *      write whose transaction rolls back enqueues nothing; re-writing an
  *      unchanged value enqueues nothing (the real `setWhere` skip).
  *  10. #10497 — software inventory changes make devices join and leave groups.
- *  11. #10497 — identical installed names enqueue nothing despite version changes.
+ *  11. #10539 — version-only changes enqueue detail fields; identical inventory enqueues nothing.
  *  12. #10497 — POST /devices/:id/move-org enqueues device.created for the target org,
  *      which rebuilds dynamic membership; device.updated with no fields does not.
  *  13. #10497 — a software.notInstalled group gains the device when the software is uninstalled.
@@ -592,7 +592,7 @@ describe('software inventory and org moves re-evaluate groups (#10497)', () => {
     expect(installed.acceptedForInventory).toBe(true);
     const added = await awaitQueuedJob(deviceId);
     expect(added.data.eventType).toBe('device.updated');
-    expect([...added.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
+    expect([...added.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled', 'software.vendor', 'software.version']);
     expect(added.data.reason).toBe('software_inventory_change');
     // Ingest only enqueues; membership is unchanged until the job runs.
     expect(await memberDeviceIds(groupId)).toEqual([]);
@@ -640,28 +640,53 @@ describe('software inventory and org moves re-evaluate groups (#10497)', () => {
     });
     expect(uninstalled.acceptedForInventory).toBe(true);
     const removed = await awaitQueuedJob(deviceId);
-    expect([...removed.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled']);
+    expect([...removed.data.changedFields].sort()).toEqual(['software.installed', 'software.notInstalled', 'software.vendor', 'software.version']);
     await runDeviceGroupReevaluationJob(removed.data);
     expect(await memberDeviceIds(groupId)).toEqual([deviceId]);
   }, 30_000);
 
-  runDb('an accepted report with identical names enqueues nothing', async () => {
+  runDb('version-only changes enqueue detail fields and identical inventory enqueues nothing', async () => {
     const env = await setupTestEnvironment();
     const orgId = env.organization.id;
     const deviceId = await seedDevice(orgId, env.site.id, 'wks-same-software');
     const device = { id: deviceId, orgId, agentVersion: '1.0.0' };
+    const installedGroupId = await seedDynamicGroupWithFilter(orgId, {
+      operator: 'AND',
+      conditions: [{ field: 'software.installed', operator: 'equals', value: 'A' }],
+    });
+    const outdatedGroupId = await seedDynamicGroupWithFilter(orgId, {
+      operator: 'AND',
+      conditions: [{ field: 'software.version', operator: 'below', value: { name: 'A', version: '2' } }],
+    });
 
     await ingestSoftwareInventoryReport({
       device,
       report: report([{ name: 'A', version: '1' }, { name: 'B', version: '1' }]),
       receivedAt: new Date('2026-08-24T12:00:01Z'),
     });
-    await (await awaitQueuedJob(deviceId)).remove();
+    const initial = await awaitQueuedJob(deviceId);
+    await runDeviceGroupReevaluationJob(initial.data);
+    expect(await memberDeviceIds(installedGroupId)).toEqual([deviceId]);
+    expect(await memberDeviceIds(outdatedGroupId)).toEqual([deviceId]);
+    await initial.remove();
 
-    const unchanged = await ingestSoftwareInventoryReport({
+    const upgraded = await ingestSoftwareInventoryReport({
       device,
       report: report([{ name: 'B', version: '2' }, { name: 'A', version: '2' }]),
       receivedAt: new Date('2026-08-24T12:00:02Z'),
+    });
+    expect(upgraded.acceptedForInventory).toBe(true);
+    const detailChange = await awaitQueuedJob(deviceId);
+    expect(detailChange.data.changedFields).toEqual(['software.version', 'software.vendor']);
+    await runDeviceGroupReevaluationJob(detailChange.data);
+    expect(await memberDeviceIds(installedGroupId)).toEqual([deviceId]);
+    expect(await memberDeviceIds(outdatedGroupId)).toEqual([]);
+    await detailChange.remove();
+
+    const unchanged = await ingestSoftwareInventoryReport({
+      device,
+      report: report([{ name: 'A', version: '2' }, { name: 'B', version: '2' }]),
+      receivedAt: new Date('2026-08-24T12:00:03Z'),
     });
     expect(unchanged.acceptedForInventory).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -671,7 +696,7 @@ describe('software inventory and org moves re-evaluate groups (#10497)', () => {
     await ingestSoftwareInventoryReport({
       device,
       report: report([{ name: 'A', version: '2' }]),
-      receivedAt: new Date('2026-08-24T12:00:03Z'),
+      receivedAt: new Date('2026-08-24T12:00:04Z'),
     });
     expect((await awaitQueuedJob(deviceId)).data.reason).toBe('software_inventory_change');
   }, 30_000);

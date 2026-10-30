@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@breeze/shared';
-import { and, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, organizations } from '../db/schema';
 
@@ -85,3 +85,89 @@ export const PARTNER_GROUP_READ_ONLY_BODY = {
   error: 'Partner-wide device groups are read-only here',
   code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
 };
+
+/**
+ * The AI assistant's refusal for any mutation of a partner-wide group. Unlike
+ * the REST body it names where the change CAN be made, so the model can relay
+ * a next step instead of a dead end: a partner admin with access to all
+ * organizations edits or deletes the group on the Device Groups page (All orgs
+ * filter); membership is filter-driven and never changed by hand.
+ */
+export const PARTNER_GROUP_AI_READ_ONLY_BODY = {
+  error: 'Partner-wide device groups are read-only for the AI assistant. A partner administrator with access to all organizations can rename, change the filter of, or delete this group in Device Groups → All orgs. Its members come from its filter and cannot be added or removed by hand.',
+  code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
+};
+
+export interface GroupOrgMembershipPair {
+  groupId: string;
+  orgId: string;
+}
+
+/** All partner rows precede every advisory lock and every membership write. */
+export async function acquirePartnerGroupRowLocks(groupIds: readonly string[]): Promise<void> {
+  const ids = [...new Set(groupIds)];
+  if (ids.length === 0) return;
+  await db.execute(sql`SELECT id FROM device_groups
+    WHERE id = ANY(ARRAY[${sql.join(ids.map((id) => sql`${id}`), sql`, `)}]::uuid[])
+      AND org_id IS NULL AND partner_id IS NOT NULL
+    ORDER BY id FOR KEY SHARE`);
+}
+
+/** Keep PostgreSQL's exact signed 64-bit hash; JavaScript numbers lose precision. */
+export function membershipLockKeysQuery(pairs: readonly GroupOrgMembershipPair[]): SQL {
+  const unique = new Map(pairs.map((pair) => [`${pair.groupId}:${pair.orgId}`, pair]));
+  const values = [...unique.values()].map(({ groupId, orgId }) => sql`(${groupId}::uuid, ${orgId}::uuid)`);
+  return sql`SELECT DISTINCT hashtextextended(
+    'device_group_membership:' || group_id::text || ':' || org_id::text, 0)::text AS key
+    FROM (VALUES ${sql.join(values, sql`, `)}) AS pairs(group_id, org_id)`;
+}
+
+/**
+ * Shared per-device writers commute; a whole-org writer holds ONE exclusive key.
+ * Compute and acquire the complete set before touching memberships/logs/devices.
+ */
+export async function acquireGroupOrgMembershipLocks(
+  pairs: readonly GroupOrgMembershipPair[],
+  mode: 'shared' | 'exclusive',
+): Promise<void> {
+  if (pairs.length === 0) return;
+  const rows = await db.execute<{ key: string }>(membershipLockKeysQuery(pairs));
+  const keys = [...new Set(rows.map(({ key }) => BigInt(key)))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  for (const key of keys) {
+    await db.execute(mode === 'shared'
+      ? sql`SELECT pg_advisory_xact_lock_shared(${key.toString()}::bigint)`
+      : sql`SELECT pg_advisory_xact_lock(${key.toString()}::bigint)`);
+  }
+}
+
+
+/** Match org-move/merge order: export admission must precede membership rows. */
+export async function acquireMembershipExportOrgLock(orgId: string): Promise<void> {
+  await db.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${orgId}]::uuid[])`);
+}
+
+/** Resolve only the caller's own organization under its existing RLS context. */
+export async function resolveOrgSessionPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, orgId)).limit(1);
+  return org?.partnerId ?? null;
+}
+
+export type OrgSessionPartnerGroupRow = Pick<typeof deviceGroups.$inferSelect,
+  'id' | 'partnerId' | 'name' | 'type' | 'createdAt' | 'updatedAt'>;
+
+/**
+ * OD5 read view only. Callers resolve partnerId from their own org first.
+ * Filters and evaluation metadata never leave the database in this projection.
+ */
+export async function readPartnerGroupsForOrgSession(
+  partnerId: string, opts: { groupId?: string },
+): Promise<OrgSessionPartnerGroupRow[]> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({
+    id: deviceGroups.id, partnerId: deviceGroups.partnerId, name: deviceGroups.name,
+    type: deviceGroups.type, createdAt: deviceGroups.createdAt, updatedAt: deviceGroups.updatedAt,
+  }).from(deviceGroups).where(and(
+    isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId),
+    opts.groupId ? eq(deviceGroups.id, opts.groupId) : undefined,
+  ))));
+}

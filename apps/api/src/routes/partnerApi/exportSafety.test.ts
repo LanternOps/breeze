@@ -374,6 +374,13 @@ describe('recursive export safety', () => {
     expect(JSON.stringify(result)).not.toContain('value-');
   });
 
+  it('treats organization external ids and systems as machine observed but labels as customer authored', () => {
+    const value = 'kR8xQ2mVp7LnWc4TgYhBz6JdFs1AeNu9XvCiPo3R';
+    expect(inspectDefinitionForSecrets({ externalLinks: [{ system: value, externalId: value, label: null }] }, 'organizations')).toEqual({ safe: true });
+    expect(inspectDefinitionForSecrets({ externalLinks: [{ system: 'psa', externalId: 'f14ab81d-7c26-4fa5-938b-83cd352dda1f', label: null }] }, 'organizations')).toEqual({ safe: true });
+    expect(inspectDefinitionForSecrets({ externalLinks: [{ system: 'psa', externalId: '1', label: value }] }, 'organizations')).toMatchObject({ safe: false });
+  });
+
   it('skips the structural layer on machine-observed inventory fields', () => {
     // A high-entropy-looking device path on device-inventory must NOT block.
     const inventory = { disks: [{ device: '/dev/mapper/ubuntu--vg-ubuntu--lv' }] };

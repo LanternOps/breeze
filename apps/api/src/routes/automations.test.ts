@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { automationRoutes, automationWebhookRoutes } from './automations';
+
+// W06 R1 (#5221, Decision 8): with Flows enabled (the default) POST /automations
+// answers 410. The legacy create suites below run with Flows off; the R1 suite
+// sets the flag itself.
+beforeEach(() => { vi.stubEnv('FLOWS_ENABLED', 'false'); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 // #7347: models withAuthDbAccessContext as a fresh transaction that COMMITS
 // when its callback resolves (or throws "commit failed" when `failNextCommit`).
@@ -23,6 +29,17 @@ const {
   replaceAutomationResourceBindingsMock: vi.fn(),
   projectAutomationRunsToSitesMock: vi.fn(),
   scanProjectedAutomationRunsMock: vi.fn(),
+}));
+
+// Tool Catalog W06 (#5221) B1: the conversion summary on reads and the shadow
+// reset on edits come from the ledger leaf module.
+const { conversionSummariesForMock, resetShadowIfChangedMock } = vi.hoisted(() => ({
+  conversionSummariesForMock: vi.fn(async () => new Map()),
+  resetShadowIfChangedMock: vi.fn(async () => false),
+}));
+vi.mock('../services/flows/conversion/ledger', () => ({
+  conversionSummariesFor: conversionSummariesForMock,
+  resetShadowIfChanged: resetShadowIfChangedMock,
 }));
 
 vi.mock('../services/automationReadProjection', () => ({
@@ -267,6 +284,13 @@ vi.mock('../middleware/auth', () => ({
   }),
 }));
 
+// #5221 B2 — no conversion unless a test says so; the webhook claim cases set one.
+vi.mock('../services/flows/conversion/claims', async () =>
+  (await import('../__tests__/helpers/noConversionClaims')).noConversionClaims());
+import { claimOccurrence, currentConversionForAutomation } from '../services/flows/conversion/claims';
+// #5221 B6 — a switched Job's old URL forwards to its flow (the forwarder is unit-tested on its own).
+vi.mock('../services/flows/conversion/legacyWebhookForward', () => ({ forwardLegacyWebhook: vi.fn(async () => null) }));
+import { forwardLegacyWebhook } from '../services/flows/conversion/legacyWebhookForward';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
@@ -313,6 +337,8 @@ describe('automations routes', () => {
 	    });
 	    replaceAutomationResourceBindingsMock.mockReset().mockResolvedValue(undefined);
 	    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+	    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+	    resetShadowIfChangedMock.mockReset().mockResolvedValue(false);
 	    app = new Hono();
 	    app.route('/automations/webhooks', automationWebhookRoutes);
 	    app.route('/automations', automationRoutes);
@@ -507,6 +533,63 @@ describe('automations routes', () => {
     expect(body.statistics.totalRuns).toBe(3);
   });
 
+  it('GET /automations/:id has conversion null', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123', trigger: { type: 'manual' },
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ totalRuns: 0, completedRuns: 0, failedRuns: 0, partialRuns: 0 }]),
+        }),
+      } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer valid-token' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('conversion', null);
+    expect(conversionSummariesForMock).toHaveBeenCalledWith(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('GET /automations carries each row\'s conversion (#5221)', async () => {
+    const conversion = { id: '22222222-2222-4222-8222-222222222222', state: 'shadow', flowId: '33333333-3333-4333-8333-333333333333' };
+    conversionSummariesForMock.mockResolvedValue(new Map([['a-1', conversion]]));
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 2 }]) }) } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockResolvedValue([
+                  { id: 'a-1', name: 'One', orgId: 'org-123', trigger: { type: 'manual' } },
+                  { id: 'a-2', name: 'Two', orgId: 'org-123', trigger: { type: 'manual' } },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+    const res = await app.request('/automations', { method: 'GET', headers: { Authorization: 'Bearer valid-token' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((r: any) => r.conversion)).toEqual([conversion, null]);
+  });
+
   it('returns opaque not-found for an automation definition whose targets escape site scope', async () => {
     mockState.permissions = { allowedSiteIds: ['site-allowed'] };
     vi.mocked(db.select).mockReturnValueOnce({
@@ -686,6 +769,50 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.trigger.type).toBe('manual');
+  });
+
+  describe('R1 create refusal (#5221 C5, Decision 8)', () => {
+    const body = {
+      name: 'New Job', trigger: { type: 'manual' }, conditions: { type: 'all' },
+      actions: [{ type: 'run_script', scriptId: 'script-1' }], onFailure: 'stop',
+    };
+    const post = (payload: unknown = body) => app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify(payload),
+    });
+
+    it.each([['unset', undefined], ['true', 'true']] as const)(
+      'POST /automations is 410 with flowsUrl when flows are enabled (FLOWS_ENABLED %s)', async (_label, value) => {
+        if (value === undefined) vi.stubEnv('FLOWS_ENABLED', undefined as unknown as string);
+        else vi.stubEnv('FLOWS_ENABLED', value);
+        const res = await post();
+        expect(res.status).toBe(410);
+        expect(await res.json()).toEqual({ error: 'automations_moved_to_flows', flowsUrl: '/flows' });
+        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+        expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      },
+    );
+
+    it('the 410 answers before body validation (an invalid body is still 410, not 400)', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'true');
+      const res = await post({ name: '' });
+      expect(res.status).toBe(410);
+    });
+
+    it('POST /automations still creates when FLOWS_ENABLED=false', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
+            trigger: { type: 'manual' }, enabled: true,
+          }]),
+        }),
+      } as any);
+      const res = await post();
+      expect(res.status).toBe(201);
+    });
   });
 
   describe('script action elevation at the HTTP boundary', () => {
@@ -911,6 +1038,34 @@ describe('automations routes', () => {
     expect(body.enabled).toBe(false);
   });
 
+  it('editing the automation resets shadow counters', async () => {
+    const before = {
+      id: '11111111-1111-4111-8111-111111111111', name: 'Automation One', orgId: 'org-123', partnerId: null, enabled: true,
+      trigger: { type: 'manual' }, conditions: null, actions: [], onFailure: 'stop', notificationTargets: null,
+    };
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([before]) }) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...before, onFailure: 'continue' }]) }),
+      }),
+    } as any);
+
+    const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify({ onFailure: 'continue' }),
+    });
+    expect(res.status).toBe(200);
+    // Inside the update transaction, with the pre-edit row: the ledger compares its source digest with the stored row's.
+    expect(resetShadowIfChangedMock).toHaveBeenCalledTimes(1);
+    expect(resetShadowIfChangedMock).toHaveBeenCalledWith(db, {
+      automationId: '11111111-1111-4111-8111-111111111111',
+      previous: expect.objectContaining({ trigger: { type: 'manual' }, onFailure: 'stop' }),
+    });
+  });
+
   it.each(['PATCH', 'PUT'])('%s rejects even an enabled toggle on a managed automation', async (method) => {
     const agentId = '33333333-3333-4333-8333-333333333333';
     vi.mocked(db.select).mockReturnValue({
@@ -1075,6 +1230,16 @@ describe('automations routes', () => {
     expect(vi.mocked(db.update)).toHaveBeenCalled();
   });
 
+  /** DELETE runs in one transaction; the row delete returns the deleted id (#10685). */
+  function mockDeleteTransaction() {
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db));
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockReturnValue(Object.assign(Promise.resolve(undefined), {
+        returning: vi.fn().mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111' }]),
+      })),
+    } as any);
+  }
+
   it('should delete an automation', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce({
@@ -1093,9 +1258,7 @@ describe('automations routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 0 }])
         })
       } as any);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined)
-    } as any);
+    mockDeleteTransaction();
 
     const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
@@ -1167,9 +1330,7 @@ describe('automations routes', () => {
     // stayed refused the row would be unremovable by any product path and
     // every disable+recreate cycle would strand another one.
     mockManagedDeleteSelects('33333333-3333-4333-8333-333333333333', [{ disabledAt: new Date() }]);
-    vi.mocked(db.delete).mockReturnValue({
-      where: vi.fn().mockResolvedValue(undefined),
-    } as any);
+    mockDeleteTransaction();
 
     const res = await app.request('/automations/11111111-1111-4111-8111-111111111111', {
       method: 'DELETE',
@@ -1545,7 +1706,226 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.accepted).toBe(true);
 	    expect(body.run.id).toBe('run-1');
+    // #5221 B2: a row with no conversion takes today's path — no claim hook.
+    expect(vi.mocked(createAutomationRunRecord).mock.calls.at(-1)![0]).not.toHaveProperty('onCreated');
+    // #5221 B6: and never consults the forwarder.
+    expect(forwardLegacyWebhook).not.toHaveBeenCalled();
 	  });
+
+  describe('a switched row is frozen (#5221 B7, Decision 9)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    const FLOW = '33333333-3333-4333-8333-333333333333';
+    function switchedRow(over: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Converted Job', orgId: 'org-123', partnerId: null, enabled: false,
+              retiredAt: new Date(), retiredReason: 'converted_to_flow', convertedToFlowId: FLOW,
+              managedByAgentId: null, managedByMonitorId: null,
+              trigger: { type: 'manual' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+              ...over,
+            }]),
+          }),
+        }),
+      } as any);
+    }
+    const call = (method: string, path: string, body?: unknown) => app.request(`/automations/${AUTO}${path}`, {
+      method,
+      headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+
+    it.each([
+      ['PUT', '', { name: 'renamed' }],
+      ['PATCH', '', { enabled: true }],
+      ['DELETE', '', undefined],
+      ['POST', '/trigger', undefined],
+      ['POST', '/run', undefined],
+    ] as const)('PUT, DELETE and trigger on a switched row are 409 with flowId (%s %s)', async (method, path, body) => {
+      switchedRow();
+      const res = await call(method, path, body);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'automation_converted', flowId: FLOW });
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.delete)).not.toHaveBeenCalled();
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+      expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    });
+
+    it('a reverted row (no convertedToFlowId) is not frozen', async () => {
+      switchedRow({ convertedToFlowId: null, retiredAt: null, retiredReason: null, enabled: true });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: AUTO, name: 'renamed', orgId: 'org-123' }]) }),
+        }),
+      } as any);
+      const res = await call('PUT', '', { name: 'renamed' });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('a switched row forwards to its flow (#5221 B6)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    function convertedRow(over: Record<string, unknown> = {}) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: false,
+              retiredReason: 'converted_to_flow', convertedToFlowId: '33333333-3333-4333-8333-333333333333',
+              trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+              ...over,
+            }]),
+          }),
+        }),
+      } as any);
+    }
+    const send = (headers: Record<string, string> = {}) => app.request(`/automations/webhooks/${AUTO}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{"ping":true}',
+    });
+
+    beforeEach(() => {
+      vi.mocked(forwardLegacyWebhook).mockReset().mockResolvedValue(null);
+    });
+
+    it("answers with the forwarder's response before any legacy verification or Redis write", async () => {
+      convertedRow();
+      const redis = { set: vi.fn(async () => 'OK') };
+      vi.mocked(getRedis).mockReturnValue(redis as any);
+      vi.mocked(forwardLegacyWebhook).mockImplementationOnce(async (c: any) => c.json({ status: 'accepted', runId: 'fr-1', deliveryId: 'd-1' }, 202));
+      const res = await send({ 'x-webhook-secret': 'secret-123' });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ status: 'accepted', runId: 'fr-1', deliveryId: 'd-1' });
+      expect(vi.mocked(forwardLegacyWebhook).mock.calls[0]![1]).toBe(AUTO);
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(resolveAutomationWebhookOwnerContext).not.toHaveBeenCalled();
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+      expect(withDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('a row the forwarder does not take (no switched generation) continues on legacy unchanged', async () => {
+      convertedRow();
+      const res = await send();
+      expect(forwardLegacyWebhook).toHaveBeenCalledTimes(1);
+      // Still the disabled row legacy has always refused.
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Automation not found' });
+    });
+  });
+
+  describe('occurrence claims on a converted row (#5221 B2)', () => {
+    const AUTO = '11111111-1111-4111-8111-111111111111';
+    const CONV = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    function signedRequest(eventId: string) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: true,
+              trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+            }]),
+          }),
+        }),
+      } as any);
+      // A distinct body per case: the Redis replay guard would refuse a repeat signature.
+      const rawBody = JSON.stringify({ ping: eventId });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+      return {
+        timestamp,
+        send: () => app.request(`/automations/webhooks/${AUTO}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-breeze-timestamp': timestamp, 'x-breeze-signature': signature, 'x-breeze-event-id': eventId },
+          body: rawBody,
+        }),
+      };
+    }
+    function runRecordCallingHook() {
+      vi.mocked(createAutomationRunRecord).mockImplementationOnce(async (options: any) => {
+        const run = { id: 'run-1', status: 'running', devicesTargeted: 0, startedAt: new Date() };
+        if (options.onCreated) await options.onCreated({ tx: true }, run);
+        return { run, targetDeviceIds: [], reused: false } as any;
+      });
+    }
+
+    beforeEach(() => {
+      vi.mocked(currentConversionForAutomation).mockReset().mockResolvedValue({ id: CONV, state: 'shadow', switchAt: null });
+      vi.mocked(claimOccurrence).mockReset().mockResolvedValue({ ok: true });
+    });
+
+    it('claims both delivery aliases in the run transaction', async () => {
+      runRecordCallingHook();
+      const req = signedRequest('dlv-1');
+      const res = await req.send();
+      expect(res.status).toBe(202);
+      expect(currentConversionForAutomation).toHaveBeenCalledWith(expect.anything(), AUTO);
+      const [tx, claim] = vi.mocked(claimOccurrence).mock.calls[0]!;
+      expect(tx).toEqual({ tx: true });
+      expect(claim).toMatchObject({
+        automationId: AUTO, owner: { orgId: 'org-123', partnerId: null }, engine: 'legacy',
+        conversionId: CONV, legacyRunId: 'run-1', occurrenceAt: new Date(Number(req.timestamp) * 1000),
+      });
+      expect(claim.keys).toHaveLength(2);
+      expect(claim.keys[0]).toMatch(/^webhook:sig:[0-9a-f]{64}$/);
+      expect(claim.keys[1]).toBe('webhook:dlv:dlv-1');
+    });
+
+    it('a delivery the other engine already admitted is a 409 duplicate and enqueues nothing', async () => {
+      runRecordCallingHook();
+      vi.mocked(claimOccurrence).mockResolvedValue({ ok: false, existing: { engine: 'flow', legacyRunId: null, flowRunId: 'f' } });
+      vi.mocked(enqueueAutomationRun).mockClear();
+      const res = await signedRequest('dlv-2').send();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Duplicate webhook delivery' });
+      expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    });
+
+    // #10685 review — a switch or revert committing mid-request never 404s the delivery on both engines.
+    function rowsInTurn(...rows: Array<Record<string, unknown>>) {
+      let n = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(async () => [rows[Math.min(n++, rows.length - 1)]]),
+          }),
+        }),
+      }) as any);
+    }
+    const LIVE = {
+      id: AUTO, name: 'Webhook Automation', orgId: 'org-123', partnerId: null, enabled: true, convertedToFlowId: null,
+      trigger: { type: 'webhook', secret: 'secret-123' }, actions: [{ type: 'execute_command', command: 'echo ok' }],
+    };
+    const SWITCHED = { ...LIVE, enabled: false, retiredReason: 'converted_to_flow', convertedToFlowId: '33333333-3333-4333-8333-333333333333' };
+
+    it('a switch committed between the lookup and the write phase forwards the delivery to the flow', async () => {
+      const req = signedRequest('dlv-race-switch');
+      rowsInTurn(LIVE, SWITCHED);
+      vi.mocked(forwardLegacyWebhook).mockReset().mockImplementationOnce(async (c: any) => c.json({ status: 'accepted', runId: 'fr-9' }, 202));
+      const res = await req.send();
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ status: 'accepted', runId: 'fr-9' });
+      expect(createAutomationRunRecord).not.toHaveBeenCalled();
+    });
+
+    it('a revert committed between the lookup and the forward continues on legacy with the re-read row', async () => {
+      const req = signedRequest('dlv-race-revert');
+      rowsInTurn(SWITCHED, LIVE, LIVE);
+      vi.mocked(forwardLegacyWebhook).mockReset().mockResolvedValue(null);
+      runRecordCallingHook();
+      const res = await req.send();
+      expect(forwardLegacyWebhook).toHaveBeenCalledTimes(1);
+      expect(res.status).toBe(202);
+      expect(createAutomationRunRecord).toHaveBeenCalledTimes(1);
+    });
+
+    it('a delivery id the flow side cannot carry is left out of the claim', async () => {
+      runRecordCallingHook();
+      await signedRequest('has spaces/and slashes').send();
+      expect(vi.mocked(claimOccurrence).mock.calls[0]![1].keys).toEqual([expect.stringMatching(/^webhook:sig:/)]);
+    });
+  });
 
 	  it('rejects automation webhook when signed body is modified', async () => {
 	    vi.mocked(db.select).mockReturnValue({
@@ -3002,6 +3382,8 @@ describe('automations routes — target validation on write (#8598)', () => {
     mockState.auth = undefined;
     validateAutomationTargetConditionsMock.mockImplementation(async () => ({ ok: true }));
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db as any));
+    conversionSummariesForMock.mockReset().mockResolvedValue(new Map());
+    resetShadowIfChangedMock.mockReset().mockResolvedValue(false);
     app = new Hono();
     app.route('/automations', automationRoutes);
   });

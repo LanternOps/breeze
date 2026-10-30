@@ -13,7 +13,8 @@ import { autopayMergeBlockerCount } from './autopay/merge';
  *     its own small system context — none of this belongs in the merge
  *     transaction.
  *
- *   Phase B — re-tenant.  ONE system-context transaction: take both orgs'
+ *   Phase B — re-tenant.  ONE system-context transaction: take the partner's
+ *     partner-owned group rows FOR KEY SHARE (#10692), then both orgs'
  *     partner-export advisory locks (UUID-ascending, as that helper demands),
  *     `SET CONSTRAINTS ALL DEFERRED`, walk the merge registry parents-first
  *     TWICE — once resolving collisions, once moving rows (see
@@ -57,6 +58,7 @@ import {
 import { getOrgMergePolicies, type OrgMergePolicy } from './orgMergeRegistry';
 import { captureLoserContacts, finishBindingMerge } from './callerVerification/merge';
 import { applyTicketChildLockOrder } from './ticketOrgMoveLockOrder';
+import { acquirePartnerGroupRowLocks } from './deviceGroupOwnership';
 import { topologicalCascadeOrder } from './tenantCascade';
 import { EVIDENCE_HOLD_LINEAGE_DEPTH_CAP, heldLineageDepth, writeEvidenceHold } from './orgEvidenceHold';
 import {
@@ -782,6 +784,18 @@ export async function unfenceLoser(loser: OrgMergeCandidate): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Step 1 of the Phase B lock order (see `executeOrgMerge`): FOR KEY SHARE on
+ * the partner's partner-owned groups as of this read. Not a complete set: a
+ * group created after the read is not locked (the residual gap noted there).
+ */
+export async function lockMergePartnerGroupRows(partnerId: string): Promise<void> {
+  const rows = await dbModule.db.execute<{ id: string }>(sql`
+    SELECT id FROM device_groups
+     WHERE org_id IS NULL AND partner_id = ${uuid(partnerId)}`);
+  await acquirePartnerGroupRowLocks(rows.map(({ id }) => id));
+}
+
+/**
  * Re-read both orgs inside the merge transaction, `FOR NO KEY UPDATE`, and re-assert
  * the pair is still mergeable (I2). Must run after the advisory locks and
  * before any row write.
@@ -1307,15 +1321,43 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   try {
     result = await dbModule.runOutsideDbContext(() =>
       dbModule.withSystemDbAccessContext(async () => {
-        // Both orgs' export advisory locks, taken ASCENDING by uuid because
-        // breeze_partner_export_lock_orgs_exclusive raises P0001 on
-        // out-of-order acquisition (migrations/2026-07-22-partner-export-lock-
-        // upgrade-hardening.sql). Taken before any row write so the export
-        // triggers' lock hierarchy cannot deadlock against us mid-merge.
+        // Phase B lock order (#10692):
+        // 1. All of the partner's partner-owned group rows FOR KEY SHARE,
+        //    id-ascending via acquirePartnerGroupRowLocks. The deferred
+        //    membership owner check takes KEY SHARE on the group at COMMIT,
+        //    i.e. after the export locks, while a partner-group delete
+        //    (deleteDeviceGroup) takes FOR UPDATE on the group THEN the export
+        //    locks. Taking the row here first makes the two orders agree. The
+        //    W2b evaluators (partnerGroupEvaluation.ts / groupMembership.ts)
+        //    also take the group row before the export lock; their KEY SHARE
+        //    never conflicts with ours. Every partner group is locked, not just
+        //    those with loser memberships: the membership set is only stable
+        //    under the export locks, which come after. The cost is that a
+        //    delete (or owner change) of any of the partner's groups queues
+        //    behind the merge.
+        // 2. Both orgs' exclusive partner-export locks, UUID-ascending:
+        //    breeze_partner_export_lock_orgs_exclusive raises P0001 on
+        //    out-of-order acquisition (migrations/2026-07-22-partner-export-lock-
+        //    upgrade-hardening.sql). Taken before any row write so the export
+        //    triggers' lock hierarchy cannot deadlock against us mid-merge.
+        // 3. Both org rows FOR NO KEY UPDATE in assertPairStillMergeable.
+        // 4. Registry walk and ticket child row locks (getOrgMergeWalkOrder /
+        //    applyTicketChildLockOrder), then deferred triggers at COMMIT,
+        //    including the membership owner check's KEY SHARE held since 1.
         //
-        // NOTE: this call also takes the partner's SHARED export lock, which is
+        // NOTE: step 2 also takes the partner's SHARED export lock, which is
         // exactly why `organizations` itself is NOT written in this
         // transaction — see `stampTerminalShell`.
+        //
+        // Residual gap: a partner group CREATED after step 1's read is not
+        // locked. It matters only if a membership writer (evaluator or manual
+        // assign) gives it a loser-org membership before step 2 is granted,
+        // including any time spent waiting on the export lock, and the group is
+        // then deleted before this merge commits. That can still 40P01;
+        // Postgres aborts one side. If it is the merge, it rolls back and
+        // unfences as for any Phase B failure; if it is the delete, the caller
+        // sees 40P01.
+        await self.lockMergePartnerGroupRows(input.partnerId);
         const locked = [loser.id, survivor.id].sort();
         await dbModule.db.execute(
           sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${sql.join(

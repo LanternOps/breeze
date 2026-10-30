@@ -539,6 +539,20 @@ describe('partner desired-configuration material watermarks', () => {
       retentionDays: 30, maxEventsPerCycle: 100,
       collectCategories: ['security', 'hardware', 'application', 'system'],
       minimumLevel: 'info', collectionIntervalMinutes: 15, rateLimitPerHour: 12000,
+      applicationProviders: [],
+    });
+    await db.execute(sql`UPDATE public.config_policy_event_log_settings
+      SET application_providers = ARRAY['UPS', 'MSSQL$SQLEXPRESS']
+      WHERE feature_link_id = ${linkId('event_log')}::uuid`);
+    const providersResponse = await configurationExportApp(partner.id, org.id).request('/configuration-policies');
+    expect(providersResponse.status, await providersResponse.clone().text()).toBe(200);
+    const providersBody = await providersResponse.json() as {
+      data: Array<{ features: Array<{ type: string; settings: unknown }> }>;
+    };
+    expect(providersBody.data, JSON.stringify(providersBody)).toHaveLength(1);
+    expect(providersBody.data[0]!.features.find((feature) => feature.type === 'event_log')?.settings).toEqual({
+      ...settings.event_log as Record<string, unknown>,
+      applicationProviders: ['UPS', 'MSSQL$SQLEXPRESS'],
     });
     expect(settings.sensitive_data).toEqual({
       detectionClasses: ['credential'], includePaths: [], excludePaths: [], fileTypes: [],

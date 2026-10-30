@@ -335,7 +335,7 @@ groupsRoutes.delete(
 
     let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
     try {
-      result = await deleteDeviceGroup(groupId, group.orgId);
+      result = await deleteDeviceGroup(groupId, { orgId: group.orgId });
     } catch (err) {
       if (err instanceof DeviceGroupDeleteError) {
         if (err.code === 'NOT_FOUND') return c.json({ error: 'Group not found' }, 404);

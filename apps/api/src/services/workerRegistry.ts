@@ -1279,6 +1279,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Socket-owner: groupMembership reaches peripheralJobs and socket-local dispatch.
+    name: 'partnerGroupEvaluationJobs',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/partnerGroupEvaluationJobs');
+      return { init: m.initializePartnerGroupEvaluationJobs, shutdown: m.shutdownPartnerGroupEvaluationJobs };
+    },
+  },
+  {
     name: 'browserSecurityWorker',
     placement: 'global',
     load: async () => {

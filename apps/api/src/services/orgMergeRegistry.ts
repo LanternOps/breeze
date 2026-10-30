@@ -865,6 +865,7 @@ const REPOINT_TABLES: readonly string[] = [
   "ai_usage_charge_claims",
   "ai_usage_charges",
   "alert_correlation_members",
+  "alert_external_refs",
   "alert_rules",
   "alert_templates",
   "alerts",

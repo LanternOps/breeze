@@ -154,15 +154,39 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		return
 	}
 
-	ask := h.pamRequestDialog
-	if ask == nil {
-		ask = h.sessionBroker.RequestPamApproval
+	// #10190 W07: a pending request asks its first question through the
+	// prompt host when the requester's session can draw elevation.request
+	// (pam_prompt.go); otherwise exactly today's dialog.
+	var (
+		dialog        ipc.PamDialogResult
+		dialogErr     error
+		declineReason pamdecline.Reason
+	)
+	promptWinSession := targetWinSession
+	if promptWinSession == "" {
+		promptWinSession = session.WinSessionID
 	}
-	dialog, dialogErr := ask(session, outcome.RequestID, buildPamRequestDialog(ev), pamDialogTimeout)
-	if dialogErr != nil {
-		log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
-		// Keep dialogErr: pamWithdrawReason tells a timeout from a failure.
-		dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
+	answer, flow, prompted := h.askElevationPrompt(ctx, promptWinSession, outcome, ev)
+	// Runs before the recover above (LIFO): a flow that never reached its
+	// waiting card is withdrawn.
+	defer h.finishElevationFlow(flow)
+	if prompted {
+		dialog, dialogErr, declineReason = answer.dialog, answer.err, answer.decline
+		if dialogErr != nil {
+			log.Warn("pam: elevation prompt ended without an answer; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
+			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "prompt_error"}
+		}
+	} else {
+		ask := h.pamRequestDialog
+		if ask == nil {
+			ask = h.sessionBroker.RequestPamApproval
+		}
+		dialog, dialogErr = ask(session, outcome.RequestID, buildPamRequestDialog(ev), pamDialogTimeout)
+		if dialogErr != nil {
+			log.Warn("pam: dialog round-trip error; treating as deny", "elevationRequestId", outcome.RequestID, "error", dialogErr.Error())
+			// Keep dialogErr: pamWithdrawReason tells a timeout from a failure.
+			dialog = ipc.PamDialogResult{Approved: false, DismissedByUser: true, Reason: "dialog_roundtrip_error"}
+		}
 	}
 
 	var verdict string
@@ -206,7 +230,11 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	case sessionbroker.PamActionDeny:
 		// Record first: the dismissal can take pamDismissTimeout, and an
 		// approval landing meanwhile must already be refused (#8971).
-		decision.decline(pamWithdrawReason(dialog, dialogErr))
+		reason := pamWithdrawReason(dialog, dialogErr)
+		if declineReason != "" {
+			reason = declineReason
+		}
+		decision.decline(reason)
 		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
 		h.kickPamWithdrawDrain()
 	case sessionbroker.PamActionAwaitRemote:
@@ -236,6 +264,10 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 				"elevationRequestId", outcome.RequestID)
 		}
 		log.Info("pam: awaiting remote technician approval; server will issue pam_apply_v2", "elevationRequestId", outcome.RequestID)
+		if flow != nil {
+			// The UAC prompt is dismissed and the waiting card replaces it.
+			h.elevationSendRequested(flow)
+		}
 	}
 }
 

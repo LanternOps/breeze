@@ -62,12 +62,11 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
-  'routes/groups.ts': 'refuses any org_id IS NULL group before writing (PARTNER_GROUP_READ_ONLY); create stays org-only until W3 adds the canManagePartnerWidePolicies gate (#10521)',
   'routes/devices/groups.ts': 'legacy org-only API; refuses partner-owned groups (#10521 W2a)',
-  'services/aiToolsFleet.ts': 'manage_groups refuses partner-owned groups (#10521 W2a; W3 adds the gate)',
   'services/deviceGroupDelete.ts': 'data access; gate in routes/groups.ts',
   'services/fleetDesign/apply.ts': 'org-scoped fleet design; never touches org_id IS NULL rows',
-  'services/groupMembership.ts': 'system-context evaluator; partner groups skipped until W2b',
+  'services/groupMembership.ts': 'system-context evaluator; partner memberships derive from the device organization and eligible partner ownership',
+  'services/partnerGroupEvaluation.ts': 'system-context evaluator; materializes partner-group memberships one eligible organization per fresh transaction',
 
   // --- flows W05 (#5220) ------------------------------------------------------
   'services/flows/webhook/deliveries.ts': 'W05 (#5220) webhook delivery log (flow_webhook_deliveries): append-only ingress bookkeeping, not partner-wide config. Its only writer is services/flows/webhook/ingest.ts behind the router-auth-exempt POST /api/v1/webhooks/flows/:flowId; there is no AuthContext to gate — every write runs in system context AFTER HMAC/token verification against the flow\'s own secret, and a failed verification writes no row. The partner-wide authority is gated where it is granted: minting/rotating a partner-wide flow\'s secret (services/flows/webhook/secret.ts, partner_wide_forbidden; test secret.test.ts) and enabling a partner-wide flow (services/flows/versions.ts canManagePartnerWidePolicies).',
@@ -567,7 +566,11 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     // allowlist, or the exemption silently outlives the code it excused.
     const stillMutating = new Set(
       collectSourceFiles()
-        .filter((file) => mutatedTables(readFileSync(file, 'utf8'), tableNames).length > 0)
+        // Membership materializers write org-owned child rows of partner groups.
+        // Their documented exemption remains live while those child writes exist,
+        // even though they never mutate a partner-owned definition itself.
+        .filter((file) => mutatedTables(readFileSync(file, 'utf8'),
+          [...tableNames, 'deviceGroupMemberships', 'groupMembershipLog']).length > 0)
         .map((file) => relative(API_SRC, file))
     );
 
