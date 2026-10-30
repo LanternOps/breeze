@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePermissions } from '../../lib/permissions';
 import AccessDenied from '../shared/AccessDenied';
 import { Plus, Send, Webhook as WebhookIcon } from 'lucide-react';
-import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
+import WebhookList, { type Webhook, type WebhookOwnerFilter, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { normalizeDelivery, type WebhookDelivery } from './WebhookDeliveryHistory';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
@@ -60,6 +60,22 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
   const canManage = can('organizations', 'write');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const { currentOrgId } = useOrgStore();
+  const [ownerScope, setOwnerScope] = useState<WebhookOwnerFilter>('all');
+
+  useEffect(() => {
+    const readOwnerScope = () => {
+      const value = new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('ownerScope');
+      setOwnerScope(value === 'partner' || value === 'organization' ? value : 'all');
+    };
+    readOwnerScope();
+    window.addEventListener('hashchange', readOwnerScope);
+    return () => window.removeEventListener('hashchange', readOwnerScope);
+  }, []);
+
+  const changeOwnerScope = (value: WebhookOwnerFilter) => {
+    window.location.hash = value === 'all' ? 'webhooks' : `webhooks?ownerScope=${value}`;
+    setOwnerScope(value);
+  };
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -76,7 +92,8 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/webhooks');
+      const url = ownerScope === 'all' ? '/webhooks' : `/webhooks?ownerScope=${ownerScope}`;
+      const response = await fetchWithAuth(url);
       if (!response.ok) {
         throw new Error(stableT('longTail.webhooks.WebhooksPage.errors.fetchWebhooks'));
       }
@@ -87,7 +104,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
     } finally {
       setLoading(false);
     }
-  }, [stableT]);
+  }, [stableT, ownerScope]);
 
   const fetchDeliveries = useCallback(async (webhookId: string) => {
     try {
@@ -305,9 +322,10 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
         modalMode === 'create' ? '/webhooks' : `/webhooks/${selectedWebhook?.id}`;
       const method = modalMode === 'create' ? 'POST' : 'PATCH';
 
-      // Include orgId when creating a new webhook
-      const requestPayload = modalMode === 'create' && currentOrgId
-        ? { ...payload, orgId: currentOrgId }
+      const requestPayload = modalMode === 'create'
+        ? values.ownerScope === 'partner'
+          ? { ...payload, ownerScope: 'partner' }
+          : currentOrgId ? { ...payload, orgId: currentOrgId } : payload
         : payload;
 
       await runAction({
@@ -348,6 +366,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
           fetchWithAuth(`/webhooks/${selectedWebhook.id}`, {
             method: 'DELETE'
           }),
+        successMessage: t('longTail.webhooks.WebhooksPage.success.deleted', { name: selectedWebhook.name }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.deleteWebhook'),
         onUnauthorized: handleSessionExpired,
       });
@@ -469,6 +488,8 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
       <WebhookList
         webhooks={webhooks}
         showTitle={!embedded}
+        ownerScope={ownerScope}
+        onOwnerScopeChange={changeOwnerScope}
         onEdit={canManage ? handleEdit : undefined}
         onDelete={canManage ? handleDelete : undefined}
         onTest={canManage ? handleTest : undefined}
@@ -567,7 +588,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
                 </button>
               </div>
             ) : (
-              <WebhookDeliveryHistory deliveries={deliveries} onRetry={canManage ? handleRetryDelivery : undefined} />
+              <WebhookDeliveryHistory showOrganization={Boolean(activeWebhook.partnerId)} deliveries={deliveries} onRetry={canManage ? handleRetryDelivery : undefined} />
             )}
           </div>
         </div>
@@ -600,6 +621,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
             </div>
           )}
           <WebhookForm
+            isEditing={modalMode === 'edit'}
             onSubmit={handleSubmit}
             onCancel={handleCloseModal}
             defaultValues={

@@ -29,12 +29,13 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, webhooks, webhookDeliveries } from '../../db/schema';
 import {
   STALE_PENDING_MS,
+  runWebhookDeliveryRecoverySweep,
   buildRecoveryClaimCas,
   buildUnresolvedScope
 } from '../../jobs/webhookDeliveryRecovery';
@@ -42,6 +43,17 @@ import {
   claimDeliveryForExecution,
   recordWebhookDelivery
 } from '../../services/webhookDeliveryRecord';
+
+import { closeWebhookDeliveryQueue, getWebhookDeliveryQueue, webhookAttemptJobId } from '../../jobs/webhookDeliveryQueue';
+import { closeRedis } from '../../services/redis';
+
+const recoveryJobIds: string[] = [];
+afterAll(async () => {
+  const queue = getWebhookDeliveryQueue();
+  for (const id of recoveryJobIds) await (await queue.getJob(id))?.remove();
+  await closeWebhookDeliveryQueue();
+  await closeRedis();
+});
 
 const NOW = new Date('2026-09-11T12:00:00.000Z');
 /** Comfortably past the staleness cut-off. */
@@ -204,11 +216,11 @@ describe('webhook delivery recovery against real Postgres', () => {
   });
 
   it('records a delivery, and on the second attempt reports the row that won', async () => {
-    const webhookConfig = { id: webhookId, orgId: 'unused', name: 'n', url: 'u', events: [] };
+    const [webhookConfig] = await withSystemDbAccessContext(() => db.select().from(webhooks).where(eq(webhooks.id, webhookId)));
     const event = {
       id: randomUUID(),
       type: 'alert.triggered',
-      orgId: 'unused',
+      orgId: webhookConfig!.orgId,
       source: 'test',
       priority: 'normal',
       payload: { a: 1 },
@@ -231,12 +243,16 @@ describe('webhook delivery recovery against real Postgres', () => {
     // One event fans out to every subscribed webhook, so `event_id` alone is
     // not unique. A read-back keyed only on event_id would report the sibling's
     // status as this webhook's.
-    const otherWebhookId = await seedWebhook();
+    const [webhookConfig] = await withSystemDbAccessContext(() => db.select().from(webhooks).where(eq(webhooks.id, webhookId)));
+    const [sibling] = await withSystemDbAccessContext(() => db.insert(webhooks).values({
+      orgId: webhookConfig!.orgId, name: 'Sibling', url: 'https://example.test/sibling', events: ['alert.triggered'],
+    }).returning());
+    const otherWebhookId = sibling!.id;
     const sharedEventId = randomUUID();
     const event = {
       id: sharedEventId,
       type: 'alert.triggered',
-      orgId: 'unused',
+      orgId: webhookConfig!.orgId,
       source: 'test',
       priority: 'normal',
       payload: {},
@@ -267,7 +283,7 @@ describe('webhook delivery recovery against real Postgres', () => {
 
   it('the execution claim lets exactly ONE popped copy of a job deliver', async () => {
     const deliveryId = await insertDelivery(webhookId);
-    const job = { id: deliveryId } as never;
+    const job = { deliveryId, attemptsMade: 0 };
 
     // Two copies of the same job, popped by two workers at once. If both won,
     // the customer's endpoint would be POSTed twice for one event.
@@ -297,21 +313,61 @@ describe('webhook delivery recovery against real Postgres', () => {
   it('the execution claim refuses a row that has already resolved', async () => {
     const deliveryId = await insertDelivery(webhookId, { status: 'delivered' });
 
-    expect(await claimDeliveryForExecution({ id: deliveryId } as never))
+    expect(await claimDeliveryForExecution({ deliveryId, attemptsMade: 0 }))
       .toMatchObject({ claimed: false, observedStatus: 'delivered' });
   });
 
   it('the execution claim reports a MISSING row distinctly from a lost race', async () => {
-    // A DLQ replay's minted id has no row at all. Collapsing that to the same
+    // An erased delivery has no row at all. Collapsing that to the same
     // "duplicate" verdict as a lost race sends triage after a race that never
     // happened.
-    expect(await claimDeliveryForExecution({ id: randomUUID() } as never))
+    expect(await claimDeliveryForExecution({ deliveryId: randomUUID(), attemptsMade: 0 }))
       .toMatchObject({ claimed: false, observedStatus: null });
   });
 
+  it('claims due scheduled attempts with a DB-clock delay and ignores pending recovery leases', async () => {
+    const now = new Date();
+    const futureId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, nextRetryAt: new Date(now.getTime() + 600_000) });
+    const future = await claimDeliveryForExecution({ deliveryId: futureId, attemptsMade: 2 });
+    expect(future).toMatchObject({ claimed: false, observedStatus: 'scheduled', observedAttempts: 2 });
+    if (!future.claimed) {
+      expect(future.dueInMs).toBeGreaterThan(0);
+      expect(future.dueInMs).toBeLessThanOrEqual(600_000);
+    }
+    const dueId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, nextRetryAt: new Date(now.getTime() - 60_000) });
+    expect(await claimDeliveryForExecution({ deliveryId: dueId, attemptsMade: 1 })).toMatchObject({ claimed: false, observedAttempts: 2 });
+    expect(await claimDeliveryForExecution({ deliveryId: dueId, attemptsMade: 2 })).toMatchObject({ claimed: true });
+    const [due] = await withSystemDbAccessContext(() => db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, dueId)));
+    expect(due!.status).toBe('retrying');
+    const pendingId = await insertDelivery(webhookId, { nextRetryAt: new Date(now.getTime() + 900_000) });
+    expect(await claimDeliveryForExecution({ deliveryId: pendingId, attemptsMade: 0 })).toMatchObject({ claimed: true });
+  });
+
+  it('lets exactly one concurrent claim win for a due scheduled attempt', async () => {
+    const deliveryId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 3, nextRetryAt: new Date(Date.now() - 60_000) });
+    const outcomes = await Promise.all([0, 1].map(() => claimDeliveryForExecution({ deliveryId, attemptsMade: 3 })));
+    expect(outcomes.filter(outcome => outcome.claimed)).toHaveLength(1);
+  });
+
+  it('a past-due scheduled row is re-driven exactly once with its recorded generation', async () => {
+    const now = new Date();
+    const dueId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, webhookGeneration: 1, createdAt: now, nextRetryAt: new Date(now.getTime() - 20 * 60_000) });
+    const futureId = await insertDelivery(webhookId, { status: 'scheduled', attempts: 2, createdAt: now, nextRetryAt: new Date(now.getTime() + 600_000) });
+    await withSystemDbAccessContext(() => db.update(webhooks).set({ approvalGeneration: 2 }).where(eq(webhooks.id, webhookId)));
+    const jobId = webhookAttemptJobId(dueId, 2);
+    recoveryJobIds.push(jobId, webhookAttemptJobId(futureId, 2));
+    await Promise.all([runWebhookDeliveryRecoverySweep(now), runWebhookDeliveryRecoverySweep(now)]);
+    const queue = getWebhookDeliveryQueue();
+    const jobs = await queue.getJobs(['waiting', 'delayed', 'active', 'completed', 'failed']);
+    expect(jobs.filter(job => job.id === jobId)).toHaveLength(1);
+    expect(await queue.getJob(webhookAttemptJobId(futureId, 2))).toBeUndefined();
+    expect((await queue.getJob(jobId))!.data).toMatchObject({ deliveryId: dueId, webhookId, generation: 1, attemptsMade: 2 });
+    await (await queue.getJob(jobId))!.remove();
+  });
+
   it('the partial index the sweep depends on exists and is partial', async () => {
-    // The sweep ticks every five minutes forever and this table has no
-    // retention job, so a full index (or none) would mean a growing scan.
+    // The sweep ticks every five minutes; only pending/retrying rows belong
+    // in its lease index. Scheduled rows have their own due-time index.
     const rows = await withSystemDbAccessContext(() =>
       db.execute(sql`
         SELECT indexdef FROM pg_indexes
@@ -326,4 +382,15 @@ describe('webhook delivery recovery against real Postgres', () => {
     expect(defs[0]!.indexdef).toMatch(/pending/);
     expect(defs[0]!.indexdef).toMatch(/retrying/);
   });
+  it('the scheduled due index is partial and ordered by the next attempt time', async () => {
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT indexdef FROM pg_indexes WHERE tablename = 'webhook_deliveries'
+        AND indexname = 'webhook_deliveries_scheduled_due_idx'
+    `));
+    const defs = rows as unknown as Array<{ indexdef: string }>;
+    expect(defs).toHaveLength(1);
+    expect(defs[0]!.indexdef).toMatch(/\(next_retry_at\)/i);
+    expect(defs[0]!.indexdef).toMatch(/WHERE.*'scheduled'/i);
+  });
+
 });

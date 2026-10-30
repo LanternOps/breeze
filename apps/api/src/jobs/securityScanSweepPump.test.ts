@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   cancel: vi.fn(),
   audit: vi.fn(),
   enqueue: vi.fn(),
+  orphans: vi.fn(),
   recording: null as null | ReturnType<typeof import('../testUtils/recordingDb').createRecordingDb>,
 }));
 
@@ -34,6 +35,13 @@ vi.mock('../db', async () => {
   };
 });
 vi.mock('../services/commandCancelPropagation', () => ({ cancelDeviceCommands: (...a: unknown[]) => h.cancel(...a) }));
+// #10057: the non-sweep finalize has its own suite (securityScanOrphanFinalize.test.ts).
+vi.mock('./securityScanOrphanFinalize', () => ({
+  finalizeOrphanedDeviceScans: (...a: unknown[]) => {
+    h.events.push(h.inContext ? 'orphans:in-context' : 'orphans');
+    return h.orphans(...a);
+  },
+}));
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: (...a: unknown[]) => {
     h.events.push(h.inContext ? 'audit:in-context' : 'audit');
@@ -57,6 +65,7 @@ type World = {
   expiredQueued?: Array<{ id: string }>;
   pending?: Array<{ scanId: string; commandId: string }>;
   undeliveredFinal?: Array<{ id: string }>;
+  answeredFinal?: Array<{ id: string }>;
   ceilingFinal?: Array<{ id: string }>;
   completed?: Array<Record<string, unknown>>;
   progress?: Array<Record<string, unknown>>;
@@ -75,6 +84,7 @@ function respondWith(w: World) {
       const text = whereText(o);
       if (text.includes('pg_try_advisory_xact_lock')) return [{ locked: w.locked ?? true }];
       if (text.includes('executed_at is null')) return w.undeliveredFinal ?? [];
+      if (text.includes(`c.status in ('completed', 'failed')`)) return w.answeredFinal ?? [];
       if (text.includes('started_at <')) return w.ceilingFinal ?? [];
       return [];
     }
@@ -113,6 +123,7 @@ beforeEach(() => {
   h.recording!.ops.length = 0;
   h.cancel.mockReset().mockResolvedValue([]);
   h.audit.mockReset();
+  h.orphans.mockReset().mockResolvedValue({ expired: 0, failed: 0 });
   h.enqueue.mockReset().mockImplementation(async () => {
     h.events.push(h.inContext ? 'enqueue:in-context' : 'enqueue');
   });
@@ -123,8 +134,9 @@ describe('pumpSweeps', () => {
   it('single-flight: second concurrent pump returns skipped', async () => {
     respondWith({ locked: false });
     expect(await pumpSweeps(NOW, { enqueue: h.enqueue })).toEqual({
-      skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0,
+      skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0,
     });
+    expect(h.orphans).not.toHaveBeenCalled();
     expect(ops()).toHaveLength(1);
     expect(whereText(ops()[0]!)).toContain(`pg_try_advisory_xact_lock(hashtext('security-sweep-pump'))`);
     expect(h.enqueue).not.toHaveBeenCalled();
@@ -201,6 +213,28 @@ describe('pumpSweeps', () => {
     // command was delivered (executed_at set) and is not "undelivered".
     const undelivered = ops().find((o) => o.kind === 'execute' && whereText(o).includes('executed_at is null'))!;
     expect(whereText(undelivered)).not.toContain('timeout');
+  });
+
+  it('#10376 a delivered command that went terminal with a final result → failed; a reopenable one is left alone', async () => {
+    respondWith({ answeredFinal: [{ id: 's4' }] });
+    const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
+    expect(result.finalized).toBe(1);
+    const stmt = ops().find((o) => o.kind === 'execute' && whereText(o).includes(`c.status in ('completed', 'failed')`))!;
+    expect(stmt).toBeDefined();
+    const text = whereText(stmt);
+    expect(text).toContain('c.id = s.command_id');
+    expect(text).toContain('w.org_id = s.org_id');
+    expect(text).toContain(`s.status = 'running'`);
+    expect(text).toContain(`set status = 'failed'`);
+    // A server timeout or a parked processing failure can still accept the
+    // agent's result: those rows keep waiting for it.
+    // Mirrors commandAcceptsAgentResult: excluded only with the server stamp.
+    expect(whereParams(stmt)).toEqual(expect.arrayContaining(['timeout', 'result_processing_failed']));
+    expect(text).toContain(`c.result->>'timedoutby' is not null`);
+    expect(text).toContain(`c.result->>'processingfailedat' is not null`);
+    // Runs after the undelivered rule, so an undelivered command still ends `expired`.
+    const idxUndelivered = ops().findIndex((o) => o.kind === 'execute' && whereText(o).includes('executed_at is null'));
+    expect(ops().indexOf(stmt)).toBeGreaterThan(idxUndelivered);
   });
 
   it('complete: no queued/running → completed + audit', async () => {
@@ -300,5 +334,16 @@ describe('pumpSweeps', () => {
     expect(limits).toEqual([5, 2]);
     // A device admitted for one sweep is not admitted again for another in the same tick.
     expect(whereParams(candidateQueries()[1]!)).toEqual(expect.arrayContaining(['dev-1', 'dev-2', 'dev-3']));
+  });
+
+  it('#10057 finalizes orphaned scheduled/manual scans in the same system transaction and reports them apart', async () => {
+    h.orphans.mockResolvedValue({ expired: 2, failed: 3 });
+    const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
+    expect(h.orphans).toHaveBeenCalledTimes(1);
+    expect(h.orphans).toHaveBeenCalledWith(NOW);
+    expect(h.events).toEqual(['context:open', 'orphans:in-context', 'context:close']);
+    expect(result.deviceScansFinalized).toBe(5);
+    // Sweep-only counter, unchanged by non-sweep rows.
+    expect(result.finalized).toBe(0);
   });
 });

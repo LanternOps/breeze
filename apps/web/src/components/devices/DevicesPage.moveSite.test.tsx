@@ -152,15 +152,20 @@ describe('DevicesPage — bulk move outcome toast', () => {
     expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '3 devices are now at Lakeside' });
   });
 
-  it('some moved → warning "Moved N of M" naming the failures', async () => {
+  it('some moved → warning "Moved N of M" naming the failures with why each was not moved (#10082)', async () => {
     const devices = await openBulk();
     act(() => captured.modalProps!.onBulkMoved({
-      results: [{ id: devices[0]!.id, outcome: 'moved' }, { id: devices[1]!.id, outcome: 'conflict' }, { id: devices[2]!.id, outcome: 'forbidden' }],
+      results: [
+        { id: devices[0]!.id, outcome: 'moved' },
+        { id: devices[1]!.id, outcome: 'conflict', message: "The device's site changed since it was read" },
+        { id: devices[2]!.id, outcome: 'forbidden', message: 'Access to this site denied' },
+      ],
       summary: { moved: 1, total: 3 },
     }, 'Lakeside'));
     expect(showToast).toHaveBeenCalledWith({
       type: 'warning',
-      message: `Moved 1 of 3 devices to Lakeside. Not moved: ${devices[1]!.hostname}, ${devices[2]!.hostname}`,
+      message: `Moved 1 of 3 devices to Lakeside. Not moved: ${devices[1]!.hostname} (its site changed after the list loaded; the list has been refreshed, so try again); `
+        + `${devices[2]!.hostname} (you do not have access to its site or to the target site)`,
     });
   });
 
@@ -171,6 +176,23 @@ describe('DevicesPage — bulk move outcome toast', () => {
     }, 'Lakeside'));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     expect(String(vi.mocked(showToast).mock.calls.at(-1)![0].message)).toContain('No devices were moved');
+  });
+
+  it('none moved → the error toast groups the devices by reason (#10082)', async () => {
+    const devices = await openBulk();
+    act(() => captured.modalProps!.onBulkMoved({
+      results: [
+        { id: devices[0]!.id, outcome: 'not_found' },
+        { id: devices[1]!.id, outcome: 'error', message: 'Move failed' },
+        { id: devices[2]!.id, outcome: 'not_found' },
+      ],
+      summary: { moved: 0, total: 3 },
+    }, 'Lakeside'));
+    expect(showToast).toHaveBeenCalledWith({
+      type: 'error',
+      message: `No devices were moved to Lakeside. Not moved: ${devices[0]!.hostname}, ${devices[2]!.hostname} (no longer found; it may have been deleted); `
+        + `${devices[1]!.hostname} (an unexpected error occurred; try again)`,
+    });
   });
 
   it('the bulk modal is wired to the session-expiry handler for a 401', async () => {

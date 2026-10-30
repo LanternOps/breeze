@@ -87,7 +87,8 @@ const JOB_NAME = 'group-reevaluation';
  * device's org (enrolment, provisioning, and org moves); `device.updated`
  * evaluates only groups whose `filter_fields_used` overlap the changed fields.
  * Hardware and software producers send `device.updated` with dotted fields:
- * `hardware.health`, `software.installed`, and `software.notInstalled`.
+ * `hardware.health` and the `software.installed`, `software.notInstalled`,
+ * `software.version`, and `software.vendor` inventory predicates.
  */
 export type DeviceGroupReevaluationEventType = 'device.created' | 'device.updated';
 

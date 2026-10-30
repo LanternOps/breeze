@@ -171,14 +171,22 @@ describe('organization_external_links RLS — org-axis forge (breeze_app role)',
   runDb('unique index scopes (system, external_id) per partner — both partners can hold the same vendor UID', async () => {
     const { partnerA, orgA, partnerB, orgB } = await seedFixture();
 
-    await withSystemDbAccessContext(async () => {
-      await db.insert(organizationExternalLinks).values({
+    // One transaction per partner: link writes advance the org export
+    // watermark under the partner-export lock hierarchy
+    // (2027-01-14-110200-org-external-links-export-watermark.sql), which
+    // refuses a second partner's lock after an org lock in the same
+    // transaction, exactly as for device/site export writes. No app writer
+    // links orgs of two partners in one transaction.
+    await withSystemDbAccessContext(() =>
+      db.insert(organizationExternalLinks).values({
         orgId: orgA.id, partnerId: partnerA.id, system: 'datto_rmm', externalId: '12345',
-      });
-      await db.insert(organizationExternalLinks).values({
+      })
+    );
+    await withSystemDbAccessContext(() =>
+      db.insert(organizationExternalLinks).values({
         orgId: orgB.id, partnerId: partnerB.id, system: 'datto_rmm', externalId: '12345',
-      });
-    });
+      })
+    );
 
     // Same partner + system + external id must be refused.
     const cause = await captureCause(() =>

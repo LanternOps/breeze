@@ -2,7 +2,10 @@ import { Hono } from 'hono';
 import { eq, and, gte, asc, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { deviceWarranty, deviceHardware, devices } from '../../db/schema';
-import { isAgentCollectedWarrantyDevice } from '../../services/warrantyDataSources';
+import {
+  WARRANTY_REFRESH_REFUSAL_MESSAGES,
+  warrantyRefreshRefusal,
+} from '../../services/warrantyDataSources';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -77,18 +80,20 @@ warrantyRoutes.post(
       .where(eq(deviceWarranty.deviceId, deviceId))
       .limit(1);
 
-    if (
-      isAgentCollectedWarrantyDevice({
-        manufacturer: hw?.manufacturer ?? null,
-        dataSource: existingWarranty?.dataSource ?? null,
-      })
-    ) {
+    // #9862 adds the second reason: imported data with no vendor lookup for the
+    // manufacturer. The sync keeps that row untouched, so say so rather than
+    // answering "queued" for a job that changes nothing. `reason` lets the
+    // card pick its own copy; `code` stays the one callers already branch on.
+    const refusal = warrantyRefreshRefusal({
+      manufacturer: hw?.manufacturer ?? null,
+      dataSource: existingWarranty?.dataSource ?? null,
+    });
+    if (refusal) {
       return c.json(
         {
-          error:
-            "This device's warranty is collected by the Breeze agent, not by a vendor lookup. "
-            + 'A server-side refresh cannot produce newer data.',
+          error: WARRANTY_REFRESH_REFUSAL_MESSAGES[refusal],
           code: 'WARRANTY_REFRESH_NOT_AVAILABLE',
+          reason: refusal,
         },
         409,
       );

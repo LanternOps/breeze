@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
@@ -45,6 +46,7 @@ export default function QuoteWorkspace({ id }: Props) {
   const organizations = useOrgStore((s) => s.organizations);
   const [detail, setDetail] = useState<QuoteDetailData | null>(null);
   usePageItemName(detail ? [detail.quote.quoteNumber, detail.quote.title?.trim()].filter(Boolean).join(' ') : undefined);
+  useRecordPageContext(detail ? { kind: 'quote', id: detail.quote.id, orgId: detail.quote.orgId, label: detail.quote.quoteNumber ?? (detail.quote.title?.trim() || t('quotes.workspace.draftTitle')) } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');

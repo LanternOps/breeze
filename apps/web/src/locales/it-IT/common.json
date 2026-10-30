@@ -569,7 +569,9 @@
       "after": "è dopo",
       "between": "è tra",
       "withinLast": "negli ultimi",
-      "notWithinLast": "non negli ultimi"
+      "notWithinLast": "non negli ultimi",
+      "below": "inferiore a",
+      "atLeast": "almeno"
     },
     "value": {
       "noValue": "Nessun valore necessario",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Rimosso"
-      }
+      },
+      "softwareName": "Nome del software",
+      "softwareVersion": "Versione del software"
     }
   },
   "account": {
@@ -1292,11 +1296,19 @@
           "waiting": "In attesa"
         },
         "ticketCount": "{{filtered}} di {{total}} ticket",
-        "title": "Ticket sincronizzati",
+        "title": "Ticket PSA",
         "unlinked": "Scollegato"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Proprietà",
+        "allOrganizations": "Tutte le organizzazioni",
+        "thisOrganizationOnly": "Solo questa organizzazione",
+        "all": "Tutte",
+        "organization": "Organizzazione",
+        "test": "Invio di prova"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativi di consegna",
         "empty": "Nessun tentativo di consegna ancora.",
@@ -1544,7 +1556,8 @@
           "enabled": "Webhook abilitato",
           "retryQueued": "Nuovo tentativo di consegna in coda",
           "testQueued": "Consegna di prova in coda",
-          "updated": "Webhook aggiornato"
+          "updated": "Webhook aggiornato",
+          "deleted": "Webhook \"{{name}}\" eliminato"
         },
         "title": "Webhook"
       }

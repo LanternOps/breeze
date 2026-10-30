@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { computeTrendPoint, scoreAvHealth, scoreEncryption } from './securityPosture';
+import { computeTrendPoint, scoreAvHealth, scoreEncryption, scorePasswordPolicy } from './securityPosture';
 
 function deviceInputWithEncryption(encryptionStatus: string | null, encryptionDetails: unknown = null) {
   return {
@@ -162,5 +162,25 @@ describe('scoreAvHealth — unknown real-time protection (#8252)', () => {
     expect(unknown.dataGap).toBe('Real-time AV status is unavailable.');
     expect(off.score).toBe(20);
     expect(on.score).toBe(85);
+  });
+});
+
+describe('scorePasswordPolicy — maximum password age (#9597)', () => {
+  function withMaxAge(maxAgeDays: number) {
+    const input = deviceInputWithEncryption('encrypted');
+    return {
+      ...input,
+      security: {
+        ...input.security,
+        passwordPolicySummary: { minLength: 14, complexityEnabled: true, lockoutThreshold: 5, maxAgeDays }
+      }
+    };
+  }
+
+  // The agent reports 0 for "passwords never expire"; that must not count as
+  // meeting the 90-day rule.
+  it('does not credit a never-expiring policy for the max-age check', () => {
+    expect(scorePasswordPolicy(withMaxAge(0) as never).score).toBe(75);
+    expect(scorePasswordPolicy(withMaxAge(60) as never).score).toBe(100);
   });
 });

@@ -206,7 +206,7 @@ export default function WarrantyTab({
               />
               <p className="mt-1 text-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.warrantyTab.generateAWarningAlertWhenWarrantyExpires",
+                  "policies:configurationPolicies.featureTabs.warrantyTab.warnThresholdHelp",
                 )}
               </p>
             </div>
@@ -214,7 +214,7 @@ export default function WarrantyTab({
             <div>
               <label className="text-sm font-medium">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.warrantyTab.criticalThresholdDays",
+                  "policies:configurationPolicies.featureTabs.warrantyTab.urgentThresholdDays",
                 )}
               </label>
               <input
@@ -229,7 +229,7 @@ export default function WarrantyTab({
               />
               <p className="mt-1 text-xs text-muted-foreground">
                 {i18n.t(
-                  "policies:configurationPolicies.featureTabs.warrantyTab.generateACriticalAlertWhenWarrantyExpires",
+                  "policies:configurationPolicies.featureTabs.warrantyTab.urgentThresholdHelp",
                 )}
               </p>
             </div>

@@ -241,16 +241,16 @@ func TestNativeRendererAdvertisesTheShippedKinds(t *testing.T) {
 	if len(got) < len(head) || strings.Join(got[:len(head)], ",") != strings.Join(head, ",") {
 		t.Fatalf("native helper advertises %v; want it to start with %v", got, head)
 	}
-	for _, role := range []ipc.HelperRole{ipc.HelperRoleSystem, ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
+	for _, role := range []ipc.HelperRole{ipc.HelperRoleAssist, ipc.HelperRoleWatchdog} {
 		if got := advertisedNativePromptKinds(role); len(got) != 0 {
-			t.Fatalf("role %s advertises %v; only the user helper renders natively", role, got)
+			t.Fatalf("role %s advertises %v; only the user and SYSTEM helpers render natively", role, got)
 		}
 	}
-	if nativePromptProtocolFor(ipc.HelperRoleUser) != ipc.PromptProtocolVersion {
+	if nativePromptProtocolFor(ipc.HelperRoleUser, "linux") != ipc.PromptProtocolVersion {
 		t.Fatal("the user helper speaks the prompt protocol")
 	}
-	if nativePromptProtocolFor(ipc.HelperRoleSystem) != 0 {
-		t.Fatal("the SYSTEM helper renderer ships in W07 (P14)")
+	if nativePromptProtocolFor(ipc.HelperRoleSystem, "linux") != 0 {
+		t.Fatal("the SYSTEM helper renders prompts on Windows only (W07, P14)")
 	}
 	sink := &promptSink{}
 	r := newNativePromptRenderer(advertisedNativePromptKinds(ipc.HelperRoleUser), (&fakeNativeShow{}).show, sink.send, func() time.Time { return nativeNow })

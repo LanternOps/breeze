@@ -239,6 +239,8 @@
       "hintPlaceholder": "es. Dana Rossi o dana@example.com",
       "contactChosen": "Contatto: {{name}}",
       "useHint": "Usa invece un nome o un indirizzo email",
+      "requesterSuggestion": "Richiedente del ticket: {{name}}. Spesso è un responsabile che segnala l'uscita di un'altra persona.",
+      "useRequester": "Usa come persona in uscita",
       "readOnly": "Avviato da questo contatto."
     },
     "inheritor": {
@@ -249,7 +251,8 @@
       "pickContact": "Scegli un contatto",
       "addressPlaceholder": "nome@example.com",
       "contactsFailed": "Impossibile caricare i contatti.",
-      "loadMore": "Carica altri contatti"
+      "loadMore": "Carica altri contatti",
+      "self": "La persona che lascia non può subentrare nella propria posta. Scegli un'altra persona o nessuno."
     },
     "autoReply": {
       "label": "Messaggio di risposta automatica",

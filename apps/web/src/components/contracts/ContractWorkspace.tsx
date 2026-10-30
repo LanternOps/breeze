@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
@@ -46,6 +47,7 @@ export default function ContractWorkspace({ contractId }: Props) {
 
   const [detail, setDetail] = useState<ContractDetailData | null>(null);
   usePageItemName(detail?.contract.name);
+  useRecordPageContext(detail ? { kind: 'contract', id: detail.contract.id, orgId: detail.contract.orgId, label: detail.contract.name } : null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string>();
   // Active contracts are read-mostly; an explicit toggle reveals the editor.
