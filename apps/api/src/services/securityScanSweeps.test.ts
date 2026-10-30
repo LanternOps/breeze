@@ -214,6 +214,18 @@ describe('previewSweep', () => {
 });
 
 describe('createSweep', () => {
+  it('passes through the partner-group target refusal before any writes or dispatch', async () => {
+    const failure = { ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', detail: { groupIds: [GROUP_ID] } };
+    h.resolveSweepTargets.mockResolvedValueOnce(failure);
+    expect(await createSweep(auth(), { ...create, scope: { kind: 'groups', groupIds: [GROUP_ID] } }, webCtx))
+      .toEqual(failure);
+    expect(h.resolveSweepTargets).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      scope: { kind: 'groups', groupIds: [GROUP_ID] },
+    }));
+    expect(writeOps()).toEqual([]);
+    expect(h.enqueueSweepPump).not.toHaveBeenCalled();
+  });
+
   it('create: one sweep per org sharing groupId; one queued scan per device with sweep_id and initiated_by; 2500 devices → 3 chunked inserts', async () => {
     h.resolveSweepTargets.mockResolvedValue(resolved({ [ORG_A]: ids(2500), [ORG_B]: ids(3, 5000) }));
     respondForCreate();

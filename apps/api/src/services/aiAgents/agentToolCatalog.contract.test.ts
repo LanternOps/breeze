@@ -483,6 +483,14 @@ describe('W14 billing lifecycle tools in the agent catalog (#6784)', () => {
   });
 });
 
+describe('W14 PR B accounting sync in the agent catalog (#6784)', () => {
+  it('manage_accounting_sync is mapped to business and offered (its writes are AGENT_HUMAN_ONLY_ACTIONS)', () => {
+    expect(TOOL_CAPABILITY.manage_accounting_sync).toBe('business');
+    expect(listAgentReachableTools()).toContain('manage_accounting_sync');
+    expect(buildAgentToolCatalog().tools.map((t) => t.name)).toContain('manage_accounting_sync');
+  });
+});
+
 describe('W13 device inventory and ops tools in the agent catalog (#6783)', () => {
   it.each([
     'get_device_events', 'get_device_health', 'get_process_samples', 'get_management_posture',

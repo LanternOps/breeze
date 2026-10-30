@@ -23,7 +23,13 @@ export interface ResourceClassification {
  * until classified — the fail-loud guard for the common mistake.
  */
 export const RESOURCE_CLASSIFICATION: Record<PartnerExportResource, ResourceClassification> = {
-  organizations: { default: 'customer-authored' },
+  organizations: {
+    default: 'customer-authored',
+    exceptions: {
+      'externalLinks[].system': 'machine-observed',
+      'externalLinks[].externalId': 'machine-observed',
+    },
+  },
   sites: { default: 'customer-authored' },
   devices: {
     default: 'customer-authored',

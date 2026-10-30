@@ -53,7 +53,7 @@ const resolvedAlert = { ...openAlert, status: 'resolved', resolvedAt: '2026-08-2
 function mockRaceLostThenRefetch() {
   let alertReads = 0;
   fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
-    if (url.endsWith('/tickets')) {
+    if (url.endsWith('/tickets') || url.endsWith('/external-tickets')) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
     }
     if (init?.method === 'POST' && url.endsWith('/resolve')) {
@@ -78,7 +78,7 @@ function mockRaceLostThenRefetch() {
  */
 function mockPlainServerError() {
   fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
-    if (url.endsWith('/tickets')) {
+    if (url.endsWith('/tickets') || url.endsWith('/external-tickets')) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: [] }) });
     }
     if (init?.method === 'POST' && url.endsWith('/resolve')) {
@@ -95,7 +95,7 @@ function mockPlainServerError() {
 const countAlertReads = () =>
   fetchWithAuth.mock.calls.filter(
     ([url, init]) => typeof url === 'string' && url.includes(ALERT_ID)
-      && !url.endsWith('/tickets') && (init as { method?: string } | undefined)?.method !== 'POST'
+      && !url.endsWith('/tickets') && !url.endsWith('/external-tickets') && (init as { method?: string } | undefined)?.method !== 'POST'
   ).length;
 
 beforeEach(() => {

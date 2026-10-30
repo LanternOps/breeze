@@ -247,8 +247,8 @@
     "nameserver": "Nameserver",
     "degradedIsFailure": "Treat degraded as failure",
     "maxResponseMs": "Fail when slower than (ms)",
-    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level.",
-    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", so this rule only matches its Error or Critical events. Collected providers: {{providers}}."
+    "eventLogCollectionNoSource": "Information and Warning Application events are collected only from {{providers}}. Events from other sources match this rule only at Error or Critical level, unless an Event Logs configuration policy lists it (Configuration policy → Event Logs → Application providers).",
+    "eventLogCollectionSourceNotCollected": "The agent does not collect Information or Warning Application events from \"{{source}}\", unless an Event Logs configuration policy lists it (Configuration policy → Event Logs → Application providers). Otherwise, this rule only matches its Error or Critical events. Built-in providers: {{providers}}."
   },
   "operators": {
     "gt": "greater than",
@@ -333,10 +333,13 @@
     "cancel": "Cancel",
     "detachConfirm": "Detach from {{policy}}?",
     "errors": {
+      "loadGroups": "Couldn't load device groups.",
       "attach": "Failed to attach monitor",
       "detach": "Failed to detach monitor",
       "linkedFeature": "This policy's monitors come from a shared feature policy. Edit that policy or choose another one."
-    }
+    },
+    "partnerWideGroups": "All orgs (partner-wide)",
+    "organizationGroups": "Organization groups"
   },
   "policyTab": {
     "title": "Monitors",

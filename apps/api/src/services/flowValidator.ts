@@ -44,7 +44,7 @@ import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds, type ScriptReadExecutor } from './flows/ownedReferences';
 import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
@@ -66,6 +66,13 @@ export { containsTemplate };
 export interface FlowValidationContext {
   /** Only ever produced by resolveFlowOwnerForCaller or read from a stored flows row. */
   owner: ToolOwnerRef;
+  /**
+   * W06 (#5221) B3, the conversion switch only: read script OWNERSHIP through
+   * this executor (the switch's own transaction, which holds the scripts it
+   * generated) instead of a fresh system context. Every other read keeps its
+   * context; absent, validation is exactly as before.
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 export type FlowDocumentValidation = FlowValidationResult & { document?: FlowDocumentV1 };
@@ -275,7 +282,10 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';
-      issues.push(...await validateBuiltinStep(step, i, { owner, catalog, earlierSteps: document.steps.slice(0, i) }));
+      issues.push(...await validateBuiltinStep(step, i, {
+        owner, catalog, earlierSteps: document.steps.slice(0, i),
+        ...(ctx.scriptReadExecutor ? { scriptReadExecutor: ctx.scriptReadExecutor } : {}),
+      }));
       tier = builtinStepTier(step, catalog);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
@@ -327,7 +337,10 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   // 8. Rule 6 — ownership, independent of approval mode. One message for
   // foreign and nonexistent alike.
   if (scriptRefs.length > 0) {
-    const ok = await findOwnedScriptIds(owner, scriptRefs.map((r) => r.id));
+    const ids = scriptRefs.map((r) => r.id);
+    const ok = ctx.scriptReadExecutor
+      ? await findOwnedScriptIds(owner, ids, { executor: ctx.scriptReadExecutor })
+      : await findOwnedScriptIds(owner, ids);
     for (const r of scriptRefs) {
       if (!ok.has(r.id)) issues.push(issue('reference_not_owned', 'This script is not available to the flow\'s owner.', { stepId: r.stepId, pointer: r.pointer }));
     }

@@ -247,8 +247,8 @@
     "nameserver": "DNS-Server",
     "degradedIsFailure": "Beeinträchtigt als Ausfall werten",
     "maxResponseMs": "Fehler bei Antwort langsamer als (ms)",
-    "eventLogCollectionNoSource": "Informations- und Warnungsereignisse aus dem Anwendungsprotokoll werden nur von {{providers}} erfasst. Ereignisse anderer Quellen lösen diese Regel nur auf den Stufen Fehler oder Kritisch aus.",
-    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Informations- oder Warnungsereignisse aus dem Anwendungsprotokoll von „{{source}}“, daher greift diese Regel nur bei deren Fehler- oder kritischen Ereignissen. Erfasste Anbieter: {{providers}}."
+    "eventLogCollectionNoSource": "Anwendungsereignisse der Stufen Information und Warnung werden nur von {{providers}} erfasst. Ereignisse anderer Quellen entsprechen dieser Regel nur bei Fehler oder Kritisch, sofern die Quelle nicht in einer Ereignisprotokoll-Konfigurationsrichtlinie aufgeführt ist (Konfigurationsrichtlinie → Ereignisprotokolle → Anwendungsanbieter).",
+    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Anwendungsereignisse der Stufen Information oder Warnung von „{{source}}“, sofern die Quelle nicht in einer Ereignisprotokoll-Konfigurationsrichtlinie aufgeführt ist (Konfigurationsrichtlinie → Ereignisprotokolle → Anwendungsanbieter). Andernfalls entspricht diese Regel nur ihren Fehler- oder kritischen Ereignissen. Integrierte Anbieter: {{providers}}."
   },
   "operators": {
     "gt": "größer als",
@@ -333,10 +333,13 @@
     "cancel": "Abbrechen",
     "detachConfirm": "Von {{policy}} lösen?",
     "errors": {
+      "loadGroups": "Gerätegruppen konnten nicht geladen werden.",
       "attach": "Monitor konnte nicht angehängt werden",
       "detach": "Monitor konnte nicht gelöst werden",
       "linkedFeature": "Die Monitore dieser Richtlinie stammen aus einer gemeinsamen Funktionsrichtlinie. Bearbeiten Sie diese oder wählen Sie eine andere Richtlinie."
-    }
+    },
+    "partnerWideGroups": "Alle Org. (partnerweit)",
+    "organizationGroups": "Organisationsgruppen"
   },
   "policyTab": {
     "title": "Monitore",

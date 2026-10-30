@@ -27,6 +27,11 @@ export const ticketExternalRefs = pgTable('ticket_external_refs', {
   // index idx_ticket_external_refs_org_external_number (org_id,
   // lower(external_number)); externalId stays the stable resume key.
   externalNumber: varchar('external_number', { length: 255 }),
+  // The ticket this ref was written on, when a merge moved it onto its
+  // survivor (#10120, 2027-01-08-120000): set only by ticketMerge/repoint.ts,
+  // kept across a second merge (A→B→C keeps A), NULL for a ref written
+  // directly. A plain FK like ticket_comments.merged_from_ticket_id.
+  originTicketId: uuid('origin_ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

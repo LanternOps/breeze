@@ -14,7 +14,9 @@ const {
   schedulePeripheralPolicyDeviceMock,
   propagateCancelledMock,
   invalidateDevicePolicyCachesMock,
+  requestDeviceGroupReevaluationAfterCommitMock,
 } = vi.hoisted(() => ({
+  requestDeviceGroupReevaluationAfterCommitMock: vi.fn(),
   invalidateDevicePolicyCachesMock: vi.fn(async () => undefined),
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock('../../services/businessCalendars/reresolve', () => ({
 }));
 vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
+}));
+
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: requestDeviceGroupReevaluationAfterCommitMock,
 }));
 
 vi.mock('../../services/devicePolicyCache', () => ({
@@ -512,6 +518,7 @@ describe('POST /devices/:id/move-org', () => {
   beforeEach(() => {
     enable2faState.value = true;
     vi.clearAllMocks();
+    requestDeviceGroupReevaluationAfterCommitMock.mockReset();
     barrierMissingOrgIds = new Set<string>();
     executeResultFor = null;
     deviceBarrierOrgId = SOURCE_ORG;
@@ -608,6 +615,33 @@ describe('POST /devices/:id/move-org', () => {
   });
 
   describe('happy path', () => {
+    it('requests a full group re-evaluation for the target org after commit', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, stepUpGrant: GRANT_ID }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledTimes(1);
+      expect(requestDeviceGroupReevaluationAfterCommitMock).toHaveBeenCalledWith({
+        deviceId: DEVICE_ID,
+        orgId: TARGET_ORG,
+        eventType: 'device.created',
+        reason: 'device_org_moved',
+      });
+    });
+
     it('moves the device and writes audit on both orgs', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({
@@ -1667,7 +1701,10 @@ describe('POST /devices/:id/move-org', () => {
       // flip (the flip's trigger restamps security_scans.org_id; the sweep row
       // stays in the source org).
       expect(collapseStmt(statements[23]!)).toContain('UPDATE security_scans SET');
-      expect(statements[24]).toBe('UPDATE devices');
+      expect(collapseStmt(statements[24]!)).toContain('DELETE FROM alert_external_refs');
+      expect(collapseStmt(statements[24]!)).toContain(`WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid AND topology_site_id IS NULL)`);
+      expect(collapseStmt(statements[24]!)).toContain('partner_id IS DISTINCT FROM');
+      expect(statements[25]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
@@ -1817,6 +1854,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
       expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(requestDeviceGroupReevaluationAfterCommitMock).not.toHaveBeenCalled();
       expect(disconnectAgent).not.toHaveBeenCalled();
       expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
       expect(invalidateDevicePolicyCachesMock).not.toHaveBeenCalled();

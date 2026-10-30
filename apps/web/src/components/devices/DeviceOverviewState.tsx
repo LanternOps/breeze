@@ -76,10 +76,12 @@ export default function DeviceOverviewState({
   }, [deviceId]);
 
   const lastSeenValid = lastSeen !== "" && !Number.isNaN(new Date(lastSeen).getTime());
-  const stateLine = !lastSeenValid
-    ? null
-    : status === "offline"
-      ? t("deviceDetails.offlineLastSeen", { ago: formatTimeAgo(lastSeen) })
+  // The header pill directly above already reads "Offline · last seen …" for
+  // an offline device; repeating it here was pure noise. This card only adds
+  // the check-in age for a device that is still reporting.
+  const stateLine =
+    !lastSeenValid || status === "offline"
+      ? null
       : t("deviceOverviewState.lastCheckIn", { ago: formatTimeAgo(lastSeen) });
 
   // The tab-counts number is authoritative; the preview is capped at three, so
@@ -158,18 +160,20 @@ export default function DeviceOverviewState({
             <li
               key={alert.id}
               data-testid={`device-overview-alert-${alert.id}`}
-              className="flex items-center justify-between gap-3 py-2"
+              className="flex items-center gap-3 py-2"
             >
-              <a href={`/alerts/${alert.id}`} className="min-w-0 truncate text-sm hover:underline">
-                {alert.title}
-              </a>
+              {/* Severity leads and stays beside the title; pushed to the far
+                  edge it floated a metre from what it described on wide screens. */}
               <span
-                className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${
+                className={`inline-flex w-16 shrink-0 items-center justify-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${
                   severityStyles[alert.severity] ?? severityStyles.info
                 }`}
               >
                 {alert.severity}
               </span>
+              <a href={`/alerts/${alert.id}`} className="min-w-0 truncate text-sm hover:underline">
+                {alert.title}
+              </a>
             </li>
           ))}
         </ul>
