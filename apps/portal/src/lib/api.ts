@@ -780,7 +780,6 @@ export interface PublicAgreementDetail {
   request: {
     id: string;
     status: 'sent' | 'viewed' | 'signed' | 'declined';
-    label: string | null;
     coverMessage: string | null;
     expiresAt: string;            // ISO instant
     effectiveDate: string | null; // YYYY-MM-DD

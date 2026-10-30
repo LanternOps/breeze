@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { acceptPublicAgreementSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
-import type { AgreementRequestRow } from '../db/schema/contractDocuments';
+import { contractDocuments, type AgreementRequestRow } from '../db/schema/contractDocuments';
 import {
   verifyAgreementAcceptToken,
   isAgreementAcceptJtiRevoked,
@@ -182,7 +182,18 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
       const renderData = await loadTemplateVersionRenderData(request.templateVersionId);
       const { html } = renderRequestForClient(frozenRenderSnapshot(request, now), renderData, request.variableValues ?? {});
       const logoUrl = await loadLogoUrl(request.orgId, claims.partnerId);
-      return { renderData, html, logoUrl };
+      // Once signed, the name frozen with the signed agreement (its certificate
+      // says the same); a later template rename never reaches it (#10294).
+      let signedTemplateName: string | null = null;
+      if (request.status === 'signed') {
+        const [doc] = await db
+          .select({ templateNameSnapshot: contractDocuments.templateNameSnapshot })
+          .from(contractDocuments)
+          .where(and(eq(contractDocuments.agreementRequestId, request.id), eq(contractDocuments.orgId, request.orgId)))
+          .limit(1);
+        signedTemplateName = doc?.templateNameSnapshot?.trim() || null;
+      }
+      return { renderData, html, logoUrl, signedTemplateName };
     }));
 
     // Cosmetic stamp, after the render (a page that failed to render is not
@@ -208,7 +219,7 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
     const data = toPublicAgreementPresentation({
       request,
       status,
-      template: { name: view.renderData.templateName, versionNumber: view.renderData.versionNumber, sourceType: view.renderData.sourceType },
+      template: { name: view.signedTemplateName ?? view.renderData.templateName, versionNumber: view.renderData.versionNumber, sourceType: view.renderData.sourceType },
       html: view.html,
       fileUrl: view.renderData.sourceType === 'uploaded' ? `/agreements/public/${encodeURIComponent(token)}/file` : null,
       partnerName,

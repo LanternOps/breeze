@@ -257,7 +257,9 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect(copy.attachments![0]!.contentType).toBe('application/pdf');
     const [after] = await documentsFor(requestId);
     expect(Buffer.compare(Buffer.from(after!.pdf_data as Buffer), stored)).toBe(0);
-    expect(copy.attachments![0]!.filename).toBe('BAA 2027 (signed).pdf');
+    // Named by the template frozen at signing, never the staff-internal label (#10294).
+    expect(copy.attachments![0]!.filename).toBe('Business Associate Agreement (signed).pdf');
+    expect(after!.template_name_snapshot).toBe('Business Associate Agreement');
     const staff = mailsFor('staff.agreement_outcome')[0]!;
     expect(staff.to).toBe(s.tech.email);
     expect(staff.text).toContain('Dana Buyer at Example Clinic');

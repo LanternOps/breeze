@@ -182,7 +182,8 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
     const list = await users.recipient.get('/portal/agreements');
     expect(list.status).toBe(200);
     const listed = (await list.json()).data as Array<{ id: string; canSign: boolean; name: string }>;
-    expect(listed).toEqual([expect.objectContaining({ id: requestId, canSign: true, name: 'BAA 2027' })]);
+    // Named by the template, never the staff-internal request label (#10294).
+    expect(listed).toEqual([expect.objectContaining({ id: requestId, canSign: true, name: 'Business Associate Agreement' })]);
 
     const view = await users.recipient.get(`/portal/agreements/${requestId}`);
     expect(view.status).toBe(200);
@@ -224,7 +225,7 @@ describe('portal agreements (assembled portal router, breeze_app + Redis)', () =
 
     // The read model lists it, and the request detail names it.
     const signedList = (await (await users.recipient.get('/portal/signed-agreements')).json()).data as Array<{ id: string; sourceKind: string; name: string }>;
-    expect(signedList).toEqual([expect.objectContaining({ id: data.signedAgreementId, sourceKind: 'request', name: 'BAA 2027' })]);
+    expect(signedList).toEqual([expect.objectContaining({ id: data.signedAgreementId, sourceKind: 'request', name: 'Business Associate Agreement' })]);
     expect((await (await users.recipient.get(`/portal/agreements/${requestId}`)).json()).data.signedAgreementId).toBe(data.signedAgreementId);
 
     const certified = await users.recipient.get(`/portal/signed-agreements/${data.signedAgreementId}/file`);
