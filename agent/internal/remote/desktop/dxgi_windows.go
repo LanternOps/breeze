@@ -180,8 +180,14 @@ type dxgiCapturer struct {
 	// Failure tracking for GDI fallback
 	consecutiveFailures int
 	gdiFallback         *gdiCapturer
-	gdiNoFrameCount     int
-	lastGDIRepair       time.Time
+	// gdiFollowsDesktop is the input desktop name this capturer's thread
+	// could NOT attach to, while the GDI fallback's own thread did. Set only
+	// in checkDesktopSwitch's SetThreadDesktop-failure branch; it stops the
+	// next tick re-detecting the same mismatch as a new desktop change.
+	gdiFollowsDesktop string
+	gdiFollowsSince   time.Time // when that attach failed; see gdiAlreadyFollowsInputDesktop
+	gdiNoFrameCount   int
+	lastGDIRepair     time.Time
 
 	// Diagnostic counters for debugging capture failures
 	diagTimeouts      int
