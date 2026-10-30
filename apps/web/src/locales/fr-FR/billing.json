@@ -771,6 +771,7 @@
       "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
       "variables": "Informations de la convention",
       "unresolved": "Renseignez une valeur pour : {{names}}",
+      "needsSignedCopy": "Breeze ne peut pas renseigner {{names}} sans devis. Joignez la copie signée pour enregistrer cet accord.",
       "consequence": "Ceci archive une convention signée pour {{org}}. Elle ne pourra pas être supprimée ensuite.",
       "submit": "Enregistrer la convention signée",
       "success": "Convention signée enregistrée.",
@@ -2106,6 +2107,7 @@
       "title": "Envoyer cette facture ?",
       "message": "La facture de {{amount}} sera envoyée par e-mail à {{customer}}."
     },
+    "sourceHeldForHourBlock": "Une partie du temps de ce brouillon est réservée à un forfait d’heures et sera facturée à la clôture de la période du forfait. Retirez ces lignes, puis émettez la facture.",
     "unsavedHint": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée.",
     "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée."
   },

@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "No devices in this ring yet. Device-reported severity appears once devices are assigned, so most patches read Unrated until then.",
     "shiftedNotice": "Showing {{shown}} of {{total}} patches — the catalog changed while it was loading. Reload to see the rest.",
     "ringDelete": {
+      "messageNone": "No policies use this ring. Its approval rules and schedule settings will be deleted and cannot be restored.",
       "title": "Delete {{name}}?",
       "messageOne": "1 policy will stop scheduled patching until you pick another ring.",
       "messageMany": "{{count}} policies will stop scheduled patching until you pick another ring.",

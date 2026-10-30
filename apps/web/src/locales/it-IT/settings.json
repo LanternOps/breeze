@@ -795,6 +795,10 @@
       "watchdog": "Target watchdog"
     },
     "inheritDefault": "Eredita predefinito partner ({{version}})",
+    "inheritDefaultLatest": "Eredita predefinito partner (ultima promossa)",
+    "latestOverride": "Sempre l’ultima promossa, ignora il pin del partner",
+    "latestOverrideVersion": "Sempre l’ultima promossa ({{version}}), ignora il pin del partner",
+    "latestOrganization": "Impostato per questa organizzazione: sempre l’ultima promossa",
     "latestVersion": "Ultima promossa ({{version}})",
     "latest": "Ultima promossa",
     "pinnedAll": "Bloccata per tutte le organizzazioni",

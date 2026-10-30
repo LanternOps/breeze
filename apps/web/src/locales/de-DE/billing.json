@@ -771,6 +771,7 @@
       "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
       "variables": "Angaben zur Vereinbarung",
       "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "needsSignedCopy": "Breeze kann {{names}} ohne Angebot nicht ausfüllen. Hängen Sie die unterschriebene Kopie an, um diese Vereinbarung zu erfassen.",
       "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
@@ -2106,6 +2107,7 @@
       "title": "Diese Rechnung senden?",
       "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
     },
+    "sourceHeldForHourBlock": "Ein Teil der Zeit auf diesem Entwurf ist für ein Stundenkontingent reserviert und wird beim Abschluss des Kontingentzeitraums abgerechnet. Entfernen Sie diese Positionen und stellen Sie dann aus.",
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },

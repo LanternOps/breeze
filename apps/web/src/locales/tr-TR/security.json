@@ -783,7 +783,6 @@
     "threatStatus": "Tehdit durumu",
     "threatWasMovedToQuarantineByPolicy": "Tehdit, politika veya operatör eylemi nedeniyle karantinaya taşındı.",
     "timeline": "Zaman Çizelgesi",
-    "actionFailed": "İşlem başarısız oldu",
     "quarantineSucceeded": "Tehdit karantinaya alındı",
     "restoreSucceeded": "Tehdit geri yüklendi",
     "removeSucceeded": "Tehdit kaldırıldı",
@@ -1748,13 +1747,18 @@
       "totalQueries": "Toplam sorgu",
       "blocked": "Engellendi",
       "allowed": "İzin veriliyor",
-      "redirected": "Yönlendirildi"
+      "redirected": "Yönlendirildi",
+      "notStored": "Depolanmıyor"
     },
     "topBlocked": {
       "title": "En çok engellenen alan adları",
       "empty": "Geçerli pencerede engellenen alan adı yok."
     },
-    "loading": "Yükleniyor…"
+    "loading": "Yükleniyor…",
+    "allowedTraffic": {
+      "none": "Bu entegrasyonlar için izin verilen sorgular depolanmıyor, bu nedenle yalnızca engellenen ve yönlendirilen sorgular sayılır. Bunları saymak için bir entegrasyonun depolanan veri ayarlarında \"İzin verilen trafiği depola\" seçeneğini açın.",
+      "some": "İzin verilen sorgular yalnızca bazı entegrasyonlar için depolanıyor, bu nedenle izin verilen sayısı kısmidir."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Yapılandırılmış entegrasyonlar",
@@ -1771,7 +1775,7 @@
       "addIntegration": "Entegrasyon ekle",
       "syncNow": "Şimdi senkronize et",
       "deleteIntegration": "Entegrasyonu sil",
-      "editRetention": "Saklama süresini değiştir"
+      "editRetention": "Depolanan veriler"
     },
     "messages": {
       "loadHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
@@ -1802,8 +1806,8 @@
     "deletingInBackground": "Siliniyor…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Veri saklama",
-    "description": "Daha eski olaylar ve günlük istatistikler gece çalışan saklama temizliğiyle silinir.",
+    "title": "Depolanan veriler",
+    "description": "Breeze'in bu entegrasyon için hangi DNS sorgularını depolayacağını ve ne kadar süre saklayacağını seçin.",
     "fieldLabel": "DNS olaylarını ve istatistiklerini sakla (gün)",
     "fieldHelp": "1–365 gün. Kurulumun varsayılanını kullanmak için boş bırakın (yöneticiniz değiştirmediyse 90 gün).",
     "invalid": "1 ile 365 arasında tam sayı bir gün değeri girin veya boş bırakın.",
@@ -1813,8 +1817,13 @@
       "saving": "Kaydediliyor…"
     },
     "messages": {
-      "saved": "{{name}} için saklama süresi güncellendi",
-      "saveFailed": "{{name}} için saklama süresi güncellenemedi"
+      "saved": "{{name}} için depolanan veri ayarları güncellendi",
+      "saveFailed": "{{name}} için depolanan veri ayarları güncellenemedi"
+    },
+    "storeAllowedTraffic": {
+      "label": "İzin verilen trafiği depola",
+      "helpOff": "Yalnızca engellenen ve yönlendirilen sorgular depolanır. İzin verilen sorgular genellikle trafiğin neredeyse tamamıdır ve DNS sağlayıcınız bunları kendi raporlarında tutar.",
+      "helpOn": "İzin verilen sorgular da depolanır; bu genellikle yaklaşık 100 kat daha fazla satır demektir. Daha sonra kapatmak, zaten depolanmış izin verilen sorguları silmez; saklama süresi bunları kaldırır."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

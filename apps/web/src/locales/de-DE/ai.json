@@ -644,7 +644,7 @@
       },
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
-      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
+      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Wisp arbeitet nicht mehr für Sie, und seine Threads werden geschlossen. Deren Unterhaltungen, Anliegen und Aktivitäten werden nicht mehr angezeigt.",
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
@@ -864,7 +864,8 @@
       "workersTitle": "Worker",
       "workersEmpty": "Keine Spezialisten aktiv.",
       "allRuns": "Alle Läufe",
-      "details": "Einzelheiten"
+      "details": "Einzelheiten",
+      "ended": "Diese Berechtigung ist beendet, daher werden ihre Anliegen, Worker und Aktivitäten nicht mehr angezeigt."
     },
     "composer": {
       "placeholder": "Nachricht an Wisp",

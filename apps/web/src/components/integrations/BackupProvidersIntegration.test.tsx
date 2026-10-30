@@ -188,6 +188,13 @@ describe("Dropsuite connections", () => {
     }
   }
 
+  it("uses a provider-specific connection-name placeholder", async () => {
+    await openForm();
+    expect(screen.getByTestId("backup-add-name")).toHaveAttribute("placeholder", "Main NinjaOne SaaS Backup account");
+    fireEvent.change(screen.getByTestId("backup-add-provider"), { target: { value: "cove" } });
+    expect(screen.getByTestId("backup-add-name")).toHaveAttribute("placeholder", "Main Cove account");
+  });
+
   it("shows masked tokens and requires both tokens and the API URL", async () => {
     await openForm();
     expect(screen.queryByTestId("backup-add-password")).toBeNull();

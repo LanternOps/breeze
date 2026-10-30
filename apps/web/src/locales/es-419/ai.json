@@ -644,7 +644,7 @@
       },
       "refresh": "Renovar permiso",
       "revoke": "Desactivar Wisp",
-      "revokeConfirm": "¿Desactivar Wisp para este alcance? Los hilos abiertos seguirán siendo legibles.",
+      "revokeConfirm": "¿Desactivar Wisp para este alcance? Wisp deja de trabajar para ti y sus hilos se cierran. Sus conversaciones, alertas y actividad ya no se mostrarán.",
       "widening": "Puedes hacer más de lo que permite este permiso; renuévalo para que Wisp se mantenga al día.",
       "refreshKeepsTerms": "Esta conversación conserva las condiciones anteriores del permiso. Inicia una conversación nueva para usar el permiso renovado.",
       "startNewConversation": "Iniciar una conversación nueva",
@@ -864,7 +864,8 @@
       "workersTitle": "Trabajadores",
       "workersEmpty": "No hay especialistas en ejecución.",
       "allRuns": "Todas las ejecuciones",
-      "details": "Detalles"
+      "details": "Detalles",
+      "ended": "Este permiso terminó, así que sus alertas, trabajadores y actividad ya no se muestran."
     },
     "composer": {
       "placeholder": "Enviar mensaje a Wisp",

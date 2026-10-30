@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Ainda não há dispositivos neste anel. A severidade informada pelos dispositivos aparece quando dispositivos são atribuídos, então até lá a maioria dos patches fica como Sem classificação.",
     "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
     "ringDelete": {
+      "messageNone": "Nenhuma política usa este anel. Suas regras de aprovação e configurações de agendamento serão excluídas e não poderão ser restauradas.",
       "title": "Excluir {{name}}?",
       "messageOne": "1 política deixará de aplicar patches agendados até que você escolha outro anel.",
       "messageMany": "{{count}} políticas deixarão de aplicar patches agendados até que você escolha outro anel.",

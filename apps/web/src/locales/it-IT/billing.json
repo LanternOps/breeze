@@ -771,6 +771,7 @@
       "fileWrongType": "Allega un file PDF, PNG o JPEG.",
       "variables": "Dati dell'accordo",
       "unresolved": "Indica un valore per: {{names}}",
+      "needsSignedCopy": "Breeze non può compilare {{names}} senza un preventivo. Allega la copia firmata per registrare questo accordo.",
       "consequence": "Questo archivia un accordo firmato per {{org}}. In seguito non potrà essere eliminato.",
       "submit": "Registra accordo firmato",
       "success": "Accordo firmato registrato.",
@@ -2106,6 +2107,7 @@
       "title": "Inviare questa fattura?",
       "message": "La fattura da {{amount}} verrà inviata via e-mail a {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte del tempo in questa bozza è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore. Rimuovi quelle righe, poi emetti la fattura.",
     "unsavedHint": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata.",
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },

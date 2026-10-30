@@ -783,7 +783,6 @@
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
     "timeline": "Zeitleiste",
-    "actionFailed": "Aktion fehlgeschlagen",
     "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
     "restoreSucceeded": "Bedrohung wiederhergestellt",
     "removeSucceeded": "Bedrohung entfernt",
@@ -1748,13 +1747,18 @@
       "totalQueries": "Gesamtzahl der Abfragen",
       "blocked": "Blockiert",
       "allowed": "Erlaubt",
-      "redirected": "Umgeleitet"
+      "redirected": "Umgeleitet",
+      "notStored": "Nicht gespeichert"
     },
     "topBlocked": {
       "title": "Top blockierte Domains",
       "empty": "Im aktuellen Fenster sind keine blockierten Domänen vorhanden."
     },
-    "loading": "Laden…"
+    "loading": "Laden…",
+    "allowedTraffic": {
+      "none": "Zugelassene Anfragen werden für diese Integrationen nicht gespeichert, daher werden nur blockierte und umgeleitete Anfragen gezählt. Um sie zu zählen, aktivieren Sie „Zugelassenen Datenverkehr speichern“ in den Einstellungen für gespeicherte Daten einer Integration.",
+      "some": "Zugelassene Anfragen werden nur für einige Integrationen gespeichert, daher ist die Anzahl der zugelassenen Anfragen unvollständig."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Konfigurierte Integrationen",
@@ -1771,7 +1775,7 @@
       "addIntegration": "Integration hinzufügen",
       "syncNow": "Jetzt synchronisieren",
       "deleteIntegration": "Integration löschen",
-      "editRetention": "Aufbewahrungsdauer ändern"
+      "editRetention": "Gespeicherte Daten"
     },
     "messages": {
       "loadHttpError": "Integrationen konnten nicht geladen werden (HTTP {{status}})",
@@ -1802,8 +1806,8 @@
     "deletingInBackground": "Wird gelöscht…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Datenaufbewahrung",
-    "description": "Ältere Ereignisse und Tagesstatistiken werden von der nächtlichen Bereinigung gelöscht.",
+    "title": "Gespeicherte Daten",
+    "description": "Legen Sie fest, welche DNS-Anfragen Breeze für diese Integration speichert und wie lange sie aufbewahrt werden.",
     "fieldLabel": "DNS-Ereignisse und Statistiken aufbewahren für (Tage)",
     "fieldHelp": "1–365 Tage. Leer lassen, um den Standardwert der Installation zu verwenden (90 Tage, sofern Ihr Administrator ihn nicht geändert hat).",
     "invalid": "Geben Sie eine ganze Zahl von 1 bis 365 Tagen ein oder lassen Sie das Feld leer.",
@@ -1813,8 +1817,13 @@
       "saving": "Wird gespeichert…"
     },
     "messages": {
-      "saved": "Aufbewahrung für {{name}} aktualisiert",
-      "saveFailed": "Aufbewahrung für {{name}} konnte nicht aktualisiert werden"
+      "saved": "Einstellungen für gespeicherte Daten von {{name}} aktualisiert",
+      "saveFailed": "Einstellungen für gespeicherte Daten von {{name}} konnten nicht aktualisiert werden"
+    },
+    "storeAllowedTraffic": {
+      "label": "Zugelassenen Datenverkehr speichern",
+      "helpOff": "Nur blockierte und umgeleitete Anfragen werden gespeichert. Zugelassene Anfragen machen meist fast den gesamten Datenverkehr aus, und Ihr DNS-Anbieter führt sie in seinen eigenen Berichten.",
+      "helpOn": "Zugelassene Anfragen werden ebenfalls gespeichert, meist etwa 100-mal so viele Zeilen. Wenn Sie dies später ausschalten, werden bereits gespeicherte zugelassene Anfragen nicht gelöscht; die Aufbewahrungsfrist entfernt sie."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
