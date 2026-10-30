@@ -246,6 +246,20 @@ describe('AssetCircuitCard', () => {
   });
 
   it.each([
+    ['kind', 'ethernet', /ethernet will no longer/],
+    ['the unknown label', null, /Unknown will no longer/],
+  ])('falls back to %s in the unmark dialog for an unnamed interface', async (_l, kind, re) => {
+    route(() => res(payload({
+      interfaces: [{ id: IF1, name: null, kind, role: 'wan', retired: false, circuitId: 'c1' }],
+    })));
+    render(<AssetCircuitCard subject="device" id={ID} />);
+    fireEvent.click(await screen.findByTestId(`asset-circuit-toggle-${IF1}`));
+    await screen.findByTestId('asset-circuit-unmark-confirm');
+    expect(screen.getByText(re)).toBeTruthy();
+    expect(screen.queryByText(/^\s*will no longer/)).toBeNull();
+  });
+
+  it.each([
     ['MFA_REQUIRED', 403, /Multi-factor/],
     ['WAN_HAS_TERMINATION', 409, /active circuit termination/],
     ['INTERFACE_RETIRED', 422, /retired/],

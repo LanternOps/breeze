@@ -362,7 +362,9 @@ export default function AssetCircuitCard({ subject, id }: AssetCircuitCardProps)
         }}
         isLoading={busy}
         title={t('assetCircuitCard.unmarkConfirm.title')}
-        message={t('assetCircuitCard.unmarkConfirm.message', { name: confirmClear?.name ?? '' })}
+        message={t('assetCircuitCard.unmarkConfirm.message', {
+          name: confirmClear?.name || confirmClear?.kind || t('common:states.unknown'),
+        })}
         confirmLabel={t('assetCircuitCard.unmarkWan')}
         confirmTestId="asset-circuit-unmark-confirm"
       />

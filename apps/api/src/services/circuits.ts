@@ -316,15 +316,15 @@ export async function getCircuitDto(circuitId: string): Promise<CircuitDto | nul
 
 /**
  * Read DTOs for a set of circuit ids (RLS-visible ones only), in `ids` order.
- * `orgId`, when given, is an explicit extra org filter (defence in depth).
+ * `orgId` is a required explicit org filter (defence in depth on top of RLS).
  */
-export async function getCircuitDtosByIds(ids: string[], orgId?: string): Promise<CircuitDto[]> {
+export async function getCircuitDtosByIds(ids: string[], orgId: string): Promise<CircuitDto[]> {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return [];
   const rows = await db
     .select()
     .from(circuits)
-    .where(and(inArray(circuits.id, unique), orgId ? eq(circuits.orgId, orgId) : undefined));
+    .where(and(inArray(circuits.id, unique), eq(circuits.orgId, orgId)));
   const order = new Map(unique.map((id, i) => [id, i]));
   rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
   return buildCircuitDtos(rows);
