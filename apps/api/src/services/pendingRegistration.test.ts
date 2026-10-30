@@ -95,6 +95,13 @@ describe('pendingRegistration service', () => {
     expect(typeof stored?.rawToken).toBe('string');
   });
 
+  it('drops a smuggled legacy launch tuple at runtime', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    await createPendingRegistration({ ...baseRecord, purchaseSelection } as never);
+    const stored = JSON.parse([...store.values()][0]!);
+    expect(Object.hasOwn(stored, 'purchaseSelection')).toBe(false);
+  });
+
   it('retains the signup intent through storage and consumption, and never writes a purchaseSelection key', async () => {
     const signupIntent = { intent: 'cloud' as const, offer: 'founding' };
     const { tokenHash } = await createPendingRegistration({ ...baseRecord, signupIntent });

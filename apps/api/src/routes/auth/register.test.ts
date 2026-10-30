@@ -226,6 +226,7 @@ describe('POST /register-partner — SR2-21: email-first, no account created bef
   it.each([
     { catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' },
     { catalogVersion: 'old', capacity: 250, billingPeriod: 'monthly' },
+    { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_client' },
     {}, null,
   ])('rejects an invalid legacy purchaseSelection before parking it: %j', async (purchaseSelection) => {
     const res = await postRegisterPartner({ ...VALID_BODY, purchaseSelection });

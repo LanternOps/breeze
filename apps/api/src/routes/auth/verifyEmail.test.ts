@@ -807,6 +807,35 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     expect(beginAuthIssuance).toHaveBeenCalledWith({ kind: 'browser', value: 'b'.repeat(64) });
   });
 
+  it('echoes the recorded signupIntent when a cross-binding loser maps to sign_in', async () => {
+    vi.mocked(peekPendingRegistration)
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' })
+      .mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw', signupIntent: { intent: 'wisp', offer: 'founding' } });
+    primeFinalizeSelects([]);
+    const winnerResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'a'.repeat(64),
+    });
+    expect(winnerResponse.status).toBe(200);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([]) as never)
+      .mockReturnValueOnce(selectChain([{ id: 'u-1' }]) as never);
+    vi.mocked(createPartner).mockRejectedValueOnce({
+      cause: {
+        code: '23505',
+        constraint_name: 'partners_slug_unique',
+      },
+    });
+    const loserResponse = await postJson('/verify-email', { token: 'raw' }, {
+      'x-breeze-auth-transition': 'v1',
+      'x-test-auth-binding': 'b'.repeat(64),
+    });
+
+    expect(loserResponse.status).toBe(200);
+    expect(await loserResponse.json()).toEqual({ verified: false, status: 'sign_in', signupIntent: { intent: 'wisp', offer: 'founding' } });
+  });
+
   it('maps a 23505 with no durable email winner to a retryable conflict and leaves Redis untouched', async () => {
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
     vi.mocked(db.select)
