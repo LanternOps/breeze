@@ -279,13 +279,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
         // Get device info
-        const [device] = await db
+        const [device] = alert.deviceId === null ? [] : await db
           .select({ hostname: devices.hostname, osType: devices.osType, status: devices.status })
           .from(devices)
           .where(eq(devices.id, alert.deviceId))
           .limit(1);
 
-        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device });
+        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device: device ?? null });
       }
 
       if (action === 'acknowledge') {

@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -180,7 +181,7 @@ async function loadDeviceDetailsV1Fields(deviceIds: string[], allowedSiteIds?: s
       .where(and(inArray(alerts.deviceId, deviceIds), inArray(alerts.status, OPEN_ALERT_STATUSES), alertTopologySiteGate(allowedSiteIds)))
       .groupBy(alerts.deviceId);
     for (const row of alertCountRows) {
-      openAlertCountByDevice.set(row.deviceId, Number(row.count));
+      if (isDeviceOwned(row)) openAlertCountByDevice.set(row.deviceId, Number(row.count));
     }
   } catch (error) {
     console.error('[MobileRoutes] Failed to load open alert counts for device list:', error);
@@ -1252,6 +1253,7 @@ mobileRoutes.post(
 
     try {
       if (alert.ruleId) {
+      if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
         const [rule] = await db
           .select()
           .from(alertRules)

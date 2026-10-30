@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { closeDb, db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { closeDb, db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { alerts, devices } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
@@ -25,6 +25,7 @@ vi.mock('../../services/sentry', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../services/sentry')>(),
   captureException: captureExceptionMock,
 }));
+import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { createSourcedAlert } from '../../services/alertService';
 
 import { alertSiteScopeCondition, alertSiteScopeByDeviceIds, getAlertWithOrgCheck } from '../../routes/alerts/helpers';
@@ -60,6 +61,22 @@ async function expectSqlState(operation: PromiseLike<unknown>, code: string) {
 }
 
 describe('alert owner database contract', () => {
+  it('G11 device org move leaves a backup_workload alert in its original org', async () => {
+    const f = await fixture();
+    const targetSite = await createSite({ orgId: f.orgBId });
+    const [workload] = await getTestDb().execute(workloadInsert(f.orgAId, 'move-workload'));
+    if (!workload || typeof workload.id !== 'string') throw new Error('Missing workload fixture');
+    await withSystemDbAccessContext(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: f.deviceId, sourceOrgId: f.orgAId, targetOrgId: f.orgBId, targetSiteId: targetSite.id,
+      targetOrgName: 'Target', deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+      actor: { userId: randomUUID(), allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
+    })));
+    expect(await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, f.deviceId)))
+      .toEqual([{ orgId: f.orgBId }]);
+    expect(await getTestDb().select({ orgId: alerts.orgId, deviceId: alerts.deviceId }).from(alerts).where(eq(alerts.id, workload.id)))
+      .toEqual([{ orgId: f.orgAId, deviceId: null }]);
+  });
+
   it('rejects a backup_workload owner with a device (23514)', async () => {
     const f = await fixture();
     await expectSqlState(getTestDb().execute(sql`

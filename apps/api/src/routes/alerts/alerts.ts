@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
@@ -1022,6 +1023,7 @@ alertsRoutes.post(
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker
     if (alert.ruleId) {
+      if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
       const [rule] = await db
         .select()
         .from(alertRules)
@@ -1336,7 +1338,7 @@ alertsRoutes.get(
     }
 
     // Get related information
-    const [device] = await db
+    const [device] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))

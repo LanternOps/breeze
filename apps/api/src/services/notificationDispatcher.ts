@@ -215,7 +215,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // Get device info for in-app notification. Only a device in the ALERT's org
   // is attributable: a site-owned topology alert (M3-D6) stays in its site's
   // org after its origin device moves org, and must not disclose that device.
-  const [deviceRow] = await db
+  const [deviceRow] = alert.deviceId === null ? [] : await db
     .select()
     .from(devices)
     .where(eq(devices.id, alert.deviceId))
@@ -591,7 +591,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
 
     // Get device info for context — only a device in the ALERT's org (a
     // site-owned topology alert outlives its origin device's org move, M3-D6).
-    const [deviceRow] = await db
+    const [deviceRow] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))

@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -232,10 +233,10 @@ export async function buildCorrelationGroups(auth: AuthContext): Promise<Correla
   const deviceRows = await db
     .select({ id: devices.id, hostname: devices.hostname })
     .from(devices)
-    .where(inArray(devices.id, orgAlerts.map((alert) => alert.deviceId)));
+    .where(inArray(devices.id, orgAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : [])));
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
   const alertMap = new Map<string, AlertWithDeviceHostname>(
-    orgAlerts.map((alert) => [alert.id, { ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }])
+    orgAlerts.map((alert) => [alert.id, { ...alert, deviceHostname: isDeviceOwned(alert) ? deviceNames.get(alert.deviceId) ?? null : null }])
   );
 
   const scopedCorrelations = await db
@@ -364,7 +365,7 @@ export async function buildPersistedCorrelationGroups(auth: AuthContext, groupId
   const memberAlerts = await filterAlertsBySiteScope(auth, memberAlertsRaw);
   const alertById = new Map(memberAlerts.map((alert) => [alert.id, alert]));
 
-  const deviceIds = [...new Set(memberAlerts.map((alert) => alert.deviceId))];
+  const deviceIds = [...new Set(memberAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : []))];
   const deviceRows = deviceIds.length > 0
     ? await db.select({ id: devices.id, hostname: devices.hostname }).from(devices).where(inArray(devices.id, deviceIds))
     : [];
@@ -380,7 +381,7 @@ export async function buildPersistedCorrelationGroups(auth: AuthContext, groupId
     const groupAlerts = groupMembers
       .map((member) => alertById.get(member.alertId))
       .filter((alert): alert is AlertRow => Boolean(alert))
-      .map((alert) => ({ ...alert, deviceHostname: deviceNames.get(alert.deviceId) ?? null }))
+      .map((alert) => ({ ...alert, deviceHostname: isDeviceOwned(alert) ? deviceNames.get(alert.deviceId) ?? null : null }))
       .sort((a, b) => b.triggeredAt.getTime() - a.triggeredAt.getTime());
     const rootCause =
       (group.rootAlertId ? groupAlerts.find((alert) => alert.id === group.rootAlertId) : undefined) ??
@@ -954,7 +955,7 @@ export async function explainCorrelationGroup(
     const allowedDevices = await resolveSiteAllowedDeviceIds(group.orgId, auth);
     if (allowedDevices) {
       const allowed = new Set(allowedDevices);
-      groupAlerts = memberAlerts.filter((alert) => allowed.has(alert.deviceId));
+      groupAlerts = memberAlerts.filter((alert) => isDeviceOwned(alert) && allowed.has(alert.deviceId));
     }
     if (groupAlerts.length === 0) return { status: 'not_found' };
   }
