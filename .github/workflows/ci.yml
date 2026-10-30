@@ -206,7 +206,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: pnpm
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -288,7 +290,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Test community README automation
         run: pnpm test:community-readme
@@ -317,6 +321,9 @@ jobs:
 
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
+
+      - name: CI cache policy contract
+        run: node --test .github/scripts/ci-cache-policy.test.mjs
 
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
@@ -380,7 +387,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -433,7 +442,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -564,7 +575,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -592,7 +605,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -634,7 +649,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -694,7 +711,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -777,7 +796,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -813,7 +834,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -845,7 +868,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -981,7 +1006,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install mobile dependencies
         run: pnpm install --filter breeze-mobile... --frozen-lockfile
@@ -1057,7 +1084,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1092,7 +1121,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1129,7 +1160,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1157,7 +1190,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1191,7 +1226,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1222,7 +1259,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1250,7 +1289,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1281,7 +1322,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1321,7 +1364,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1393,7 +1438,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1529,7 +1576,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1575,7 +1624,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1609,7 +1660,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1645,7 +1698,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1681,7 +1736,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1724,7 +1781,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1783,7 +1842,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -1891,7 +1955,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Assert Windows manifests
         working-directory: agent
@@ -1938,7 +2007,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -1999,7 +2073,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -2795,7 +2874,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Toolchain
         run: |
@@ -2905,7 +2989,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: go vet
         working-directory: agent
@@ -2941,7 +3030,7 @@ jobs:
       # skips the install (and its network calls) entirely.
       - name: Cache golangci-lint binary
         id: golangci-lint-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/go/bin/golangci-lint
           key: golangci-lint-v2.12.2-${{ runner.os }}
@@ -2997,7 +3086,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3048,7 +3142,12 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: agent/go.sum
+          cache: false
+
+      - name: Restore Go cache
+        uses: ./.github/actions/restore-go-cache
+        with:
+          go-sum-path: agent/go.sum
 
       - name: Download Go dependencies
         working-directory: agent
@@ -3462,7 +3561,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -3713,7 +3814,6 @@ jobs:
           build-args: ${{ matrix.build-args }}
           outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.image }}.tar
           cache-from: type=gha,scope=ci-smoke-${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=ci-smoke-${{ matrix.image }}
 
       - name: Upload smoke image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -4228,7 +4328,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
@@ -4313,7 +4415,9 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
-          cache: 'pnpm'
+
+      - name: Restore pnpm cache
+        uses: ./.github/actions/restore-pnpm-cache
 
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
@@ -4652,7 +4756,6 @@ jobs:
           load: true
           tags: breeze-ai-workspace:ci
           cache-from: type=gha,scope=workspace-runtime
-          cache-to: type=gha,mode=max,scope=workspace-runtime
 
       - name: Verify non-root offline document round trips
         run: |
