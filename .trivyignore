@@ -122,3 +122,16 @@ GHSA-mrhx-c7xc-m3w5
 # Added 2026-10-29 (Trivy DB refresh).
 CVE-2026-115905
 GHSA-m665-v7pm-7grj
+
+# zip 4.6.1 (Rust) — CVE-2026-115909 / GHSA-q7v9-x93c-xqv3, unbounded
+# symlink-target handling during extraction can abort or exhaust memory
+# (DoS only; fix is 9.0.0). Same dependency path and upstream block as
+# CVE-2026-115905 above: only tauri-plugin-updater uses zip, and only on
+# update bytes that already passed verify_signature against the viewer's
+# pinned updater pubkey, so an attacker-crafted archive never reaches
+# extraction. Remove with the entry above once a stable tauri-plugin-updater
+# depends on zip >= 9.0.5.
+#
+# Added 2026-10-30 (Trivy DB refresh).
+CVE-2026-115909
+GHSA-q7v9-x93c-xqv3
