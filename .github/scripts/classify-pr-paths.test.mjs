@@ -442,7 +442,9 @@ test('test-api has an 8-way shard matrix', () => {
 
 test('test-api runs the main vitest split with --shard and no bare "--"', () => {
   const step = testApiStep('Run API tests');
-  assert.match(step, /run: pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
+  // Wrapped by the whole-shard retry (W1, #10744); the wrapper's own `--` sits
+  // before pnpm, so pnpm still forwards --shard to vitest.
+  assert.match(step, /run: node \.github\/scripts\/retry-shard\.mjs --runner vitest --label api-\$\{\{ matrix\.shard \}\} -- pnpm --filter=@breeze\/api test:run --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
   assert.doesNotMatch(step, /pnpm --filter=@breeze\/api test:run -- /u, 'a bare "--" makes pnpm forward it literally and vitest silently ignores --shard');
 });
 
@@ -487,7 +489,7 @@ test('integration-test has a 16-way shard matrix and does not wait on lint/typec
   // trip on this test's own explanatory comment mentioning them by name).
   assert.match(body, /^    needs: \[changes\]$/mu, 'integration-test must not needs: lint or typecheck — that added ~8 min to the critical path and a lint failure still fails CI Success via ci-success');
   assert.match(body, /^    timeout-minutes: 40$/mu);
-  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
+  assert.match(body, /run: node \.github\/scripts\/retry-shard\.mjs --runner vitest --label integration-\$\{\{ matrix\.shard \}\} -- pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/16$/mu);
 });
 
 // Execute the real summary shell. The bypass may only fire on the literal

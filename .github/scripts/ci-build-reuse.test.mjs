@@ -25,7 +25,9 @@ test('unit tests avoid app compilation while dedicated builds remain required', 
     ['web', 'pnpm --filter=@breeze/web test --run'],
     ['portal', 'pnpm --filter=@breeze/portal test'],
   ]) {
-    assert.ok(job(`test-${app}`).includes(`run: ${command}`));
+    // test-api/test-web run under the whole-shard retry wrapper (W1, #10744).
+    const run = new RegExp(`run: (?:node \\.github/scripts/retry-shard\\.mjs [^\\n]*? -- )?${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u');
+    assert.match(job(`test-${app}`), run);
     assert.doesNotMatch(job(`test-${app}`), /run: pnpm test --filter=/u);
     assert.ok(job(`build-${app}`).includes(`pnpm build --filter=@breeze/${app}`));
     assert.ok(job('ci-success').includes(`[[ "\${BUILD_${app.toUpperCase()}_RESULT}" != "success" ]]`));
