@@ -116,18 +116,48 @@ describe('recordDeliveryOutcome', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('WEBHOOK_DELIVERY_OUTCOME_WRITE_SKIPPED'));
   });
 
-  it('persists the next attempt as scheduled and still counts a failure', async () => {
+  // #9946: failure_count is "failed deliveries" (the webhook list's "N failed"
+  // chip, docs: "Cumulative failed deliveries"), so a retry that is still
+  // scheduled is not a failed delivery yet. Only the terminal `failed` write counts.
+  it('persists the next attempt as scheduled without counting a failed delivery', async () => {
     const nextAttemptAt = new Date('2026-09-11T12:01:00Z');
     state.updateResults = [[{ id: 'delivery-1' }], []];
     expect(await recordDeliveryOutcome({ ...RESULT, success: false, nextAttemptAt })).toBe(true);
     expect(state.updateCalls[0]!.set).toMatchObject({ status: 'scheduled', nextRetryAt: nextAttemptAt, failedAt: null });
-    expect(state.updateCalls[1]!.set).toHaveProperty('failureCount');
+    expect(state.updateCalls[1]!.set).not.toHaveProperty('failureCount');
+    expect(state.updateCalls[1]!.set).not.toHaveProperty('successCount');
+    // "Last Triggered" still moves on every attempt.
+    expect(state.updateCalls[1]!.set).toHaveProperty('lastDeliveryAt', expect.any(Date));
   });
 
-  it('persists terminal failures with no next attempt', async () => {
+  it('persists terminal failures with no next attempt and counts one failed delivery', async () => {
     state.updateResults = [[{ id: 'delivery-1' }], []];
     expect(await recordDeliveryOutcome({ ...RESULT, success: false, nextAttemptAt: null })).toBe(true);
     expect(state.updateCalls[0]!.set).toMatchObject({ status: 'failed', nextRetryAt: null, failedAt: expect.any(Date) });
+    expect(state.updateCalls[1]!.set).toHaveProperty('failureCount');
+    expect(state.updateCalls[1]!.set).toHaveProperty('lastDeliveryAt', expect.any(Date));
+  });
+
+  it('counts a delivery that fails every attempt as exactly one failed delivery', async () => {
+    const attempts = 5;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      state.updateResults.push([{ id: 'delivery-1' }], []);
+      const nextAttemptAt = attempt < attempts ? new Date(Date.UTC(2026, 8, 11, 12, attempt)) : null;
+      expect(await recordDeliveryOutcome({ ...RESULT, success: false, attempts: attempt, nextAttemptAt })).toBe(true);
+    }
+    const aggregateWrites = state.updateCalls.filter((_, i) => i % 2 === 1);
+    expect(aggregateWrites).toHaveLength(attempts);
+    expect(aggregateWrites.filter((call) => 'failureCount' in call.set)).toHaveLength(1);
+    expect(aggregateWrites.every((call) => call.set.lastDeliveryAt instanceof Date)).toBe(true);
+  });
+
+  it('counts a delivery that fails, then succeeds on retry, as one success and no failure', async () => {
+    state.updateResults = [[{ id: 'delivery-1' }], [], [{ id: 'delivery-1' }], []];
+    await recordDeliveryOutcome({ ...RESULT, success: false, attempts: 1, nextAttemptAt: new Date('2026-09-11T12:01:00Z') });
+    await recordDeliveryOutcome({ ...RESULT, success: true, attempts: 2 });
+    const aggregateWrites = [state.updateCalls[1]!, state.updateCalls[3]!];
+    expect(aggregateWrites.filter((call) => 'failureCount' in call.set)).toHaveLength(0);
+    expect(aggregateWrites.filter((call) => 'successCount' in call.set)).toHaveLength(1);
   });
 
   it.each([0, 3])('releases only the matching claim for attempt %i', async attemptsMade => {
