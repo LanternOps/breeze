@@ -352,6 +352,7 @@ export default function UsersPage() {
           fetchWithAuth(`/users/${selectedUser.id}`, {
             method: 'DELETE'
           }),
+        successMessage: t('usersPage.toasts.userRemoved', { name: selectedUser.name || selectedUser.email }),
         errorFallback: t('usersPage.errors.removeUser'),
         onUnauthorized: handleSessionExpired,
       });

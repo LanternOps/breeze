@@ -37,6 +37,7 @@ import {
   previewSweep,
 } from '../../services/securityScanSweeps';
 import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
+import { commandResultHandlers } from '../../services/commandResultHandlers';
 import { startDeviceScan } from '../../services/securityScanStart';
 import { topSweepRuleHits } from '../../services/securityScanSweepHits';
 import { listVisibleRuleSets } from '../../services/yaraRuleSetAccess';
@@ -356,6 +357,118 @@ describe('races', () => {
       }),
     );
     expect((await scanRow(w.scanIds[0]!)).status).toBe('completed');
+  });
+
+  it('#10376 a websocket-delivered result completes the scan, ingests its threat, and the pump completes the sweep', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const claim = await claimAndDispatchScan(sweepJob(w));
+    expect(claim.outcome).toBe('dispatched');
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'sent', executed_at = now() WHERE id = ${claim.commandId!}`);
+    const [command] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, claim.commandId!));
+
+    // The websocket transport dispatches only through the registry, inside the
+    // agent's org context (agentWs.runWithAgentOrgDbAccess).
+    const stdout = JSON.stringify({
+      scanRecordId: w.scanIds[0], scanType: 'quick', engine: 'yara', filesScanned: 12, threatsFound: 1,
+      threats: [{ name: 'Marker_Rule', type: 'yara', severity: 'high', path: 'C:\\hunt\\marker.txt', ruleSetId: w.setId }],
+    });
+    await as(orgCtx(w.orgId, w.partnerId), () =>
+      commandResultHandlers.security_scan!({
+        agentId: 'agent-1',
+        command: command!,
+        commandId: command!.id,
+        resolvedDeviceId: w.deviceIds[0]!,
+        result: { status: 'completed', exitCode: 0, durationMs: 4000 },
+        stdout,
+      }),
+    );
+
+    const scan = await scanRow(w.scanIds[0]!);
+    expect(scan.status).toBe('completed');
+    expect(scan.threatsFound).toBe(1);
+    expect(scan.completedAt).not.toBeNull();
+    const threats = await getTestDb().execute<{ threat_name: string }>(
+      sql`SELECT threat_name FROM security_threats WHERE device_id = ${w.deviceIds[0]!}`,
+    );
+    expect(threats.map((t) => t.threat_name)).toEqual(['Marker_Rule']);
+
+    const pump = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(pump.completed).toBe(1);
+    const [sweep] = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.id, w.sweepId));
+    expect(sweep!.state).toBe('completed');
+  });
+
+  it('#10376 a delivered command the agent failed (restart) fails its scan at the next pump; a server timeout keeps waiting', async () => {
+    const w = await seedSweepWorld({ devices: 5, online: false });
+    const commandIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const claim = await claimAndDispatchScan(sweepJob(w, i));
+      expect(claim.outcome).toBe('dispatched');
+      commandIds.push(claim.commandId!);
+    }
+    const [agentFailed, serverTimeout, processingFailed, completedUnrecorded, inFlight] =
+      commandIds as [string, string, string, string, string];
+    // The agent's own failure report — terminal, accepts no further result.
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'failed', executed_at = now(), completed_at = now(),
+      result = ${JSON.stringify({ status: 'failed', error: 'agent restarted while command was running' })}::jsonb
+      WHERE id = ${agentFailed}`);
+    // Completed, but the scan never received it (the pre-fix websocket drop).
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'completed', executed_at = now(), completed_at = now(),
+      result = ${JSON.stringify({ status: 'completed', exitCode: 0 })}::jsonb
+      WHERE id = ${completedUnrecorded}`);
+    // Delivered and still running on the agent.
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'sent', executed_at = now() WHERE id = ${inFlight}`);
+    // A manual (non-sweep) scan with a failed command is not the pump's to finalize.
+    const [manualCmd] = await getTestDb().execute<{ id: string }>(sql`
+      INSERT INTO device_commands (device_id, type, status, executed_at, completed_at, result)
+      VALUES (${w.deviceIds[0]!}, 'security_scan', 'failed', now(), now(), ${JSON.stringify({ status: 'failed' })}::jsonb)
+      RETURNING id`);
+    const [manualScan] = await getTestDb().execute<{ id: string }>(sql`
+      INSERT INTO security_scans (org_id, device_id, scan_type, status, started_at, command_id)
+      VALUES (${w.orgId}, ${w.deviceIds[0]!}, 'quick', 'running', now(), ${manualCmd!.id}) RETURNING id`);
+    // Provisional terminal states that still accept the agent's late result.
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'failed', executed_at = now(), completed_at = now(),
+      result = ${JSON.stringify({ status: 'timeout', timedOutBy: 'server' })}::jsonb
+      WHERE id = ${serverTimeout}`);
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'failed', executed_at = now(), completed_at = now(),
+      result = ${JSON.stringify({ status: 'result_processing_failed', processingFailedAt: new Date().toISOString() })}::jsonb
+      WHERE id = ${processingFailed}`);
+
+    const pump = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(pump.finalized).toBe(2);
+    expect((await scanRow(w.scanIds[0]!)).status).toBe('failed');
+    expect((await scanRow(w.scanIds[1]!)).status).toBe('running');
+    expect((await scanRow(w.scanIds[2]!)).status).toBe('running');
+    expect((await scanRow(w.scanIds[3]!)).status).toBe('failed');
+    expect((await scanRow(w.scanIds[4]!)).status).toBe('running');
+    expect((await scanRow(manualScan!.id)).status).toBe('running');
+    const progress = await as(SYSTEM_CTX, () =>
+      db.select({ status: securityScans.status, n: sql<number>`count(*)::int` })
+        .from(securityScans).where(eq(securityScans.sweepId, w.sweepId)).groupBy(securityScans.status),
+    );
+    expect(Object.fromEntries(progress.map((p) => [p.status, Number(p.n)]))).toEqual({ failed: 2, running: 3 });
+    // Idempotent: the next tick finalizes nothing more.
+    expect((await pumpSweeps(new Date(), { enqueue: async () => {} })).finalized).toBe(0);
+  });
+
+  it('#10376 the sweep finishes in the same tick that fails its last answered child', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const claim = await claimAndDispatchScan(sweepJob(w));
+    expect(claim.outcome).toBe('dispatched');
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'failed', executed_at = now(), completed_at = now(),
+      result = ${JSON.stringify({ status: 'failed', error: 'agent restarted while command was running' })}::jsonb
+      WHERE id = ${claim.commandId!}`);
+
+    const pump = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(pump.finalized).toBe(1);
+    expect(pump.completed).toBe(1);
+    const [sweep] = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.id, w.sweepId));
+    expect(sweep!.state).toBe('completed');
+    // The org's running count no longer includes it, so the concurrency slot is free.
+    const [running] = await getTestDb().execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM security_scans WHERE org_id = ${w.orgId} AND status = 'running'`,
+    );
+    expect(Number(running!.n)).toBe(0);
   });
 
   it('Redis job lost → next pump re-admits', async () => {

@@ -25,12 +25,17 @@ type DeviceStatus = {
     vendor: string;
   } | null;
 };
+// Only the slices of `/security/dashboard` this page reads. Its
+// protectedDevices / atRiskDevices / totalDevices are fleet posture-risk
+// counts, not antivirus coverage — do not use them here (#10378).
 type DashboardStats = {
-  totalDevices: number;
-  protectedDevices: number;
-  atRiskDevices: number;
-  unprotectedDevices: number;
-  offlineDevices: number;
+  // Real-time protection per device with a security status row; null readings
+  // land in `unknown` (#8252). Same buckets as the /security overview card.
+  antivirus?: {
+    protected: number;
+    unprotected: number;
+    unknown: number;
+  };
   providers: Array<{
     providerId: string;
     providerName: string;
@@ -169,10 +174,16 @@ export default function AntivirusPage() {
   // that to 0 painted "Total 0 / Protected 0 / Coverage 0%" with no banner at all
   // — a fabricated all-clear for a fleet we simply failed to read. Show an em
   // dash for the unknown instead of inventing a zero. (#2472)
-  const hasDashboard = dashboard !== null;
-  const total = dashboard?.totalDevices ?? 0;
-  const prot = dashboard?.protectedDevices ?? 0;
-  const unprot = dashboard?.unprotectedDevices ?? 0;
+  //
+  // The tiles count real-time protection from the `antivirus` block (#10378) —
+  // the same buckets as the /security overview card and this page's Real-time
+  // column. Total includes unknown readings; coverage counts only confirmed
+  // protection, so an unread device is never reported as covered.
+  const antivirus = dashboard?.antivirus;
+  const hasDashboard = antivirus != null;
+  const prot = antivirus?.protected ?? 0;
+  const unprot = antivirus?.unprotected ?? 0;
+  const total = prot + unprot + (antivirus?.unknown ?? 0);
   const coveragePercent = total ? Math.round((prot / total) * 100) : 0;
   const stat = (value: number) => (hasDashboard ? formatNumber(value) : "—");
   // Failed collection is stored as provider 'unknown' (#8538); localize it
@@ -197,23 +208,27 @@ export default function AntivirusPage() {
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.totalDevices")}
+          testId="antivirus-stat-total"
           value={stat(total)}
         />
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.protected")}
+          testId="antivirus-stat-protected"
           value={stat(prot)}
           variant={hasDashboard ? "success" : "default"}
         />
         <SecurityStatCard
           icon={ShieldOff}
           label={t("securityAntivirusPage.unprotected")}
+          testId="antivirus-stat-unprotected"
           value={stat(unprot)}
           variant={hasDashboard ? "danger" : "default"}
         />
         <SecurityStatCard
           icon={ShieldCheck}
           label={t("securityAntivirusPage.coverage")}
+          testId="antivirus-stat-coverage"
           value={hasDashboard ? `${coveragePercent}%` : "—"}
           variant={
             !hasDashboard

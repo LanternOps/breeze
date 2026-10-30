@@ -327,7 +327,12 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         criticalRiskDevices: counts.criticalRiskDevices
       };
 
-      const envelope = pageEnvelope({ key: 'devices', items: rows, limit, offset: cappedOffset, fingerprint, total: counts.total });
+      // maxOffset (#10385): chat compaction must not mint a resume cursor past
+      // the ceiling — it would be clamped back onto rows already shown.
+      const envelope = pageEnvelope({
+        key: 'devices', items: rows, limit, offset: cappedOffset, fingerprint, total: counts.total,
+        maxOffset: Math.max(0, POSTURE_OFFSET_CEILING - limit),
+      });
       if (atOffsetCeiling) {
         // Honest at the ceiling: no request can ever move this window
         // further, regardless of how large `total` is.

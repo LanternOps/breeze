@@ -2200,6 +2200,27 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #9597: the Windows password-policy collector queried Win32_AccountPolicy,
+      # a WMI class that exists on no Windows build, so every device reported
+      # no policy. These run the real secedit export and NetUserModalsGet on
+      # this elevated runner and require the two sources to agree. Only these
+      # tests run: internal/security's other tests have never been verified on
+      # Windows. The secedit test skips on a filtered token, so assert no skips.
+      - name: Run Windows password policy reader tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/security -run '^TestLivePasswordPolicy' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the password policy tests SKIPPED - the runner token is not elevated, so secedit has no live coverage here" }
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running
       # `breeze-agent enroll` was refused SYSTEM as the ProgramData owner

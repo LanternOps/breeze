@@ -1,3 +1,5 @@
+const setPageContext = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/aiStore', () => ({ useAiStore: (select: (s: unknown) => unknown) => select({ setPageContext }) }));
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -52,7 +54,7 @@ const okRes = (name: string) => ({
   ok: true,
   status: 200,
   json: async () => ({
-    data: { contract: { id: 'c1', name, status: 'draft' }, lines: [] } as unknown as ContractDetailData,
+    data: { contract: { id: 'c1', name, status: 'draft', orgId: 'org-7' }, lines: [] } as unknown as ContractDetailData,
   }),
 }) as Response;
 
@@ -68,6 +70,7 @@ describe('ContractWorkspace background refresh (#9305)', () => {
     render(<ContractWorkspace contractId="c1" />);
     expect(screen.getByTestId('contract-workspace-loading')).toBeInTheDocument();
     await screen.findByTestId('mock-contract-editor');
+    expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'contract', id: 'c1', orgId: 'org-7', label: 'A' }));
     expect(screen.queryByTestId('contract-workspace-loading')).toBeNull();
   });
 

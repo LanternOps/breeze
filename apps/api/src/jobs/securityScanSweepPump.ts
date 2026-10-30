@@ -11,6 +11,8 @@
  *        - the command terminalized undelivered (looked up by
  *          `security_scans.command_id`, `device_commands.executed_at IS NULL`)
  *          -> `expired`;
+ *        - the command went terminal with a final result the scan never
+ *          received (#10376) -> `failed`;
  *        - no result 720 + SECURITY_SWEEP_RUNNING_GRACE_MINUTES after the
  *          claim -> `failed`. The command's own 30-minute server timeout is
  *          NOT used: scans legitimately run up to 720 minutes, and a late
@@ -30,6 +32,10 @@ import { and, asc, eq, inArray, lte, gt, notInArray, sql, type SQL } from 'drizz
 import * as dbModule from '../db';
 import { devices, organizations, securityScans, securityScanSweeps } from '../db/schema';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
+import {
+  RESULT_PROCESSING_FAILED_RESULT_STATUS,
+  SERVER_TIMEOUT_RESULT_STATUS,
+} from '../services/commandResultAcceptance';
 import { createAuditLogAsync, type CreateAuditLogParams } from '../services/auditService';
 import {
   parsePositiveIntEnv,
@@ -151,6 +157,39 @@ export async function pumpSweeps(
          AND c.executed_at IS NULL
       RETURNING s.id
     `)) as unknown as Array<{ id: string }>;
+    // #10376: the command went terminal with a FINAL result (typically the
+    // agent's own completed/failed report, e.g. "agent restarted while command
+    // was running") yet the scan is still running — the result never reached
+    // handleSecurityCommandResult, which runs in the same transaction as the
+    // command's terminal write. Such a row accepts no further result, so
+    // nothing will ever finish the scan; waiting out the 720-minute ceiling
+    // only holds the sweep (and an org/partner concurrency slot) for 12 hours.
+    // Results were not recorded, so it is `failed`, never `completed`. The two
+    // reopenable shapes are excluded exactly as commandAcceptsAgentResult
+    // defines them — a server timeout (`timedOutBy` stamped) and a parked
+    // processing failure (`processingFailedAt` stamped) — so the agent's
+    // result can still land on them.
+    const answered = (await db.execute(sql`
+      UPDATE security_scans s SET status = 'failed', completed_at = ${now.toISOString()}
+        FROM device_commands c, security_scan_sweeps w
+       WHERE s.sweep_id = w.id AND w.org_id = s.org_id
+         AND s.status = 'running'
+         AND c.id = s.command_id
+         AND c.status IN ('completed', 'failed')
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${SERVER_TIMEOUT_RESULT_STATUS}
+                          AND c.result->>'timedOutBy' IS NOT NULL, false)
+         AND NOT coalesce(c.status = 'failed' AND c.result->>'status' = ${RESULT_PROCESSING_FAILED_RESULT_STATUS}
+                          AND c.result->>'processingFailedAt' IS NOT NULL, false)
+      RETURNING s.id
+    `)) as unknown as Array<{ id: string }>;
+    if (answered.length > 0) {
+      // After this fix a nonzero count means a result was lost on the way to
+      // the scan row (rows stuck before the fix also drain here once).
+      console.warn('[securityScanSweepPump] failed sweep scan(s) whose command finished without a recorded result', {
+        count: answered.length,
+        scanIds: answered.slice(0, 20).map((r) => r.id),
+      });
+    }
     const ceiling = new Date(
       now.getTime() - (SECURITY_SCAN_TIMEOUT_CEILING_MINUTES + sweepRunningGraceMinutes()) * 60_000,
     );
@@ -284,7 +323,7 @@ export async function pumpSweeps(
     return {
       skipped: false,
       expired: expired.length,
-      finalized: undelivered.length + stale.length,
+      finalized: undelivered.length + answered.length + stale.length,
       completed: completed.length,
       admitted: jobs.length,
       deviceScansFinalized: orphans.expired + orphans.failed,
@@ -294,7 +333,7 @@ export async function pumpSweeps(
 
   for (const audit of audits) void createAuditLogAsync(audit);
   if (result.finalized > 0) {
-    console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered or past the scan ceiling)`);
+    console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered, answered without a recorded result, or past the scan ceiling)`);
   }
   const allJobs: PumpDispatchJob[] = [...jobs, ...manualJobs];
   if (allJobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(allJobs);

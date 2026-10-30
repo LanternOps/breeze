@@ -906,12 +906,12 @@
     "logoPreview": "Logo-Vorschau",
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
-    "imageHelp": "PNG, JPEG oder WebP · max. 400 KB nach der Kodierung · Größe angepasst an 256×256",
+    "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",
     "customCssPlaceholder": "/* Benutzerdefiniertes CSS wird auf alle untergeordneten Organisationen angewendet */",
-    "customCssHelp": "CSS Überschreibungen wurden auf das Portal für alle untergeordneten Organisationen angewendet."
+    "customCssHelp": "Wird im Portal jedes Kunden eingebunden, vor dem eigenen benutzerdefinierten CSS der Organisation, das es überschreiben kann. @import und url() ohne HTTPS sind nicht erlaubt."
   },
   "partnerSecurity": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -1615,7 +1615,18 @@
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
       "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
-      "ticket_merged": "Ticket zusammengeführt"
+      "ticket_merged": "Ticket zusammengeführt",
+      "ticket_comment_notification": "Benachrichtigung über öffentliche Antwort",
+      "ticket_autoresponse": "Eingangsbestätigung für Ticket",
+      "ticket_resolved": "Ticket gelöst",
+      "quote_send": "Angebot",
+      "agreement_request_send": "Anfrage zur Vereinbarung",
+      "invoice_send": "Rechnung",
+      "portal_invite": "Portaleinladung",
+      "staff_invite": "Mitarbeitereinladung",
+      "invoice_autopay": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
+      "payment_reminder": "Zahlungserinnerung",
+      "payment_overdue": "Erinnerung an überfällige Zahlung"
     }
   },
   "inboundEmail": {
@@ -1844,7 +1855,11 @@
     },
     "colors": {
       "primary": "Primärfarbe",
-      "secondary": "Sekundärfarbe"
+      "secondary": "Sekundärfarbe",
+      "primaryInheritedSource": "Markenfarbe des Partners",
+      "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
+      "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "theme": {
       "title": "Thema",
@@ -1887,6 +1902,12 @@
     "description": "Optimieren Sie die Standardrichtlinien und das Registrierungsverhalten für {{organization}}.",
     "save": "Standardeinstellungen speichern",
     "managedByPartner": "Verwaltet durch Partner",
+    "inheritance": {
+      "inherited": "Geerbter Standardwert",
+      "overridden": "Für diese Organisation festgelegt",
+      "reset": "Auf Standard zurücksetzen",
+      "resetLabel": "{{setting}} auf Standard zurücksetzen"
+    },
     "policies": {
       "title": "Standardrichtlinien",
       "fields": {
@@ -2074,6 +2095,49 @@
         "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
         "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
         "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      },
+      "tiles": {
+        "awaitingYou": "Wartet auf Ihren Kunden",
+        "devicesProtected": "Endpunktschutz",
+        "securityScore": "Sicherheitsbewertung",
+        "actionItems": "Offene Aufgaben",
+        "patchesApplied": "In diesem Monat installierte Patches",
+        "backup": "Letzte verifizierte Sicherung",
+        "service": "Erbrachte Leistungen (90 Tage)",
+        "support": "Kundensupport"
+      },
+      "tileStatus": {
+        "noData": "Noch nicht verfügbar",
+        "notConfigured": "Nicht eingerichtet",
+        "stale": "Möglicherweise veraltet"
+      },
+      "bands": {
+        "strong": "Stark",
+        "good": "Gut",
+        "fair": "Mittel",
+        "at_risk": "Gefährdet"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} von {{total}} geschützt",
+        "awaitingCounts": "Angebote: {{proposals}} · Rechnungen: {{invoices}}",
+        "serviceCounts": "Pünktlich: {{onTime}} · Verspätet: {{late}} · Versäumt: {{missed}}",
+        "nextDue": "Nächste Fälligkeit: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} offene Anfrage",
+        "openRequests_other": "{{count}} offene Anfragen",
+        "threatCounts": "Erkannt: {{detected}} · Behoben: {{resolved}}",
+        "unknownAll": "Für alle {{total}} Geräte noch unbekannt",
+        "unknownSome_one": "{{count}} noch unbekannt",
+        "unknownSome_other": "{{count}} noch unbekannt"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Offene Schwachstellen",
+        "knownExploited": "Bekannt ausgenutzt (KEV)",
+        "threatEvents": "Bedrohungsereignisse auf Endpunkten"
+      },
+      "backupRows": {
+        "devices": "Gesicherte Geräte",
+        "breaches": "Offene RPO-/RTO-Verstöße",
+        "providers": "Sicherung von Drittanbietern"
       }
     },
     "loading": "Portaleinstellungen werden geladen…",
@@ -2218,6 +2282,7 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
+      "welcomeMessageHelp": "Wird oben auf der Startseite des Kunden im Portal angezeigt und auf der Anmeldeseite des Portals, wenn die Organisation eine verifizierte eigene Domain nutzt. Nur Text; Zeilenumbrüche bleiben erhalten.",
       "footerText": "Fußzeilentext",
       "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
       "footerTextInheritedSource": "Partner-Dokumentfußzeile"
@@ -3090,6 +3155,7 @@
           "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
+          "unsupported_user_scope": "Installation pro Benutzer, die Breeze noch nicht anwenden kann",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
         },
         "failureClasses": {
@@ -4269,7 +4335,9 @@
     "active": "Aktiv",
     "revoked": "Widerrufen",
     "expired": "Abgelaufen",
-    "statusFilterLabel": "API-Schlüsselstatus"
+    "statusFilterLabel": "API-Schlüsselstatus",
+    "expires": "Läuft ab",
+    "neverExpires": "Niemals"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API-Schlüssel werden geladen...",
@@ -4310,7 +4378,8 @@
     "rotating": "Rotierend...",
     "rotateKey": "Schlüssel rotieren",
     "revoking": "Widerrufen...",
-    "revokeKey": "Schlüssel widerrufen"
+    "revokeKey": "Schlüssel widerrufen",
+    "revokedToast": "API-Schlüssel \"{{name}}\" widerrufen"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Dieses Gerät kann jetzt Anfragen genehmigen",
@@ -4964,6 +5033,11 @@
     "eGOktaProduction": "z. B. Okta Production",
     "providerPreset": "Anbietervoreinstellung",
     "selectAPresetToAutoFillRecommendedSettings": "Wählen Sie eine Voreinstellung aus, um die empfohlenen Einstellungen automatisch auszufüllen",
+    "replacePresetFields": {
+      "title": "Durch die Standardwerte von {{preset}} ersetzen?",
+      "message": "Wenn Sie die Voreinstellung {{preset}} anwenden, werden die aktuellen Bereiche und die Attributzuordnung einschließlich Ihrer Änderungen ersetzt, und jeder Claim, den die Voreinstellung nicht festlegt (z. B. das Gruppenattribut), wird geleert. Gespeichert wird erst, wenn Sie den Anbieter speichern.",
+      "confirm": "Ersetzen"
+    },
     "connectionSettings": "Verbindungseinstellungen",
     "issuerURL": "Emittent URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6355,7 +6429,11 @@
       "label": "Etikett",
       "notes": "Notizen"
     },
-    "empty": "Noch keine bekannten Gäste."
+    "empty": "Noch keine bekannten Gäste.",
+    "removeConfirm": {
+      "title": "Bekanntes Gastgerät entfernen?",
+      "message": "{{label}} ({{mac}}) entfernen? Geräte mit dieser MAC-Adresse werden in Ihren verwalteten Organisationen nicht mehr automatisch genehmigt."
+    }
   },
   "userInviteForm": {
     "title": "Benutzer einladen",
@@ -6376,7 +6454,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Rolle auswählen"
     },
     "orgAccess": {
       "title": "Organisationszugriff",
@@ -6476,7 +6555,8 @@
       "copyLink": "Link kopieren",
       "mfaReset": "MFA für {{email}} zurückgesetzt",
       "roleUpdated": "Rolle aktualisiert",
-      "orgAccessUpdated": "Organisationszugriff aktualisiert"
+      "orgAccessUpdated": "Organisationszugriff aktualisiert",
+      "userRemoved": "{{name}} entfernt"
     },
     "resetMfa": {
       "title": "MFA zurücksetzen?",

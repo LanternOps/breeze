@@ -5,7 +5,7 @@ import { showToast } from '@/components/shared/Toast';
 import { useJwtClaims } from '@/lib/authScope';
 import { StepUpMintError, type StepUpReauth } from '@/lib/mfaStepUp';
 import { ActionError, runAction } from '@/lib/runAction';
-import { discoverStepUpTier, fetchWispThread, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
+import { discoverStepUpTier, fetchWispThread, isNoActiveGrant, mintWispGrantStepUp, WispPreviewError } from '@/lib/wispGrant';
 import { fetchWithAuth } from '@/stores/auth';
 import type { WispState } from '@/stores/aiStore';
 import type { ReauthTier } from '@/components/settings/StepUpPrompt';
@@ -37,7 +37,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   const partnerToken = claims.status === 'resolved' && claims.claims.scope === 'partner';
   const partnerId = claims.status === 'resolved' ? claims.claims.partnerId : null;
 
-  const [scope, setScope] = useState<'org' | 'partner'>(defaultOrgId ? 'org' : 'partner');
+  // Set before the modal opens (not only by the reset below), so the live-grant
+  // probe never reads a scope the user was not offered.
+  const initialScope: 'org' | 'partner' = defaultOrgId || !partnerToken ? 'org' : 'partner';
+  const [scope, setScope] = useState<'org' | 'partner'>(initialScope);
   const [tier, setTier] = useState<ReauthTier | null>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -50,33 +53,94 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     };
   }, []);
 
+  const [factorFailed, setFactorFailed] = useState(false);
+  // Whether the chosen scope already has a live grant, keyed by the scope it
+  // was read for so a scope switch never shows the previous scope's answer.
+  const [probe, setProbe] = useState<{ key: string; live: boolean } | null>(null);
+
   useEffect(() => {
+    setScope(initialScope);
     if (!open) return;
     setCode('');
     setError(null);
     setTier(null);
-    setScope(defaultOrgId || !partnerToken ? 'org' : 'partner');
+    setFactorFailed(false);
     let cancelled = false;
     discoverStepUpTier()
       .then((next) => { if (!cancelled) setTier(next); })
-      .catch(() => { if (!cancelled) setError(t('wisp.modal.stepUpUnavailable')); });
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.warn('[wisp] step-up factor discovery failed', err);
+        setFactorFailed(true);
+      });
     return () => { cancelled = true; };
-  }, [open, defaultOrgId, partnerToken, t]);
+  }, [open, initialScope]);
 
   const orgId = refresh ? refresh.orgId : scope === 'org' ? defaultOrgId : null;
   const missingOrg = !refresh && scope === 'org' && !defaultOrgId;
-  const canConfirm =
-    !busy && !!partnerId && !missingOrg && (tier === 'passkey' || (tier === 'totp' && code.length === 6));
+  const scopeKey = orgId ?? '*';
+  // Only "turn on" can re-enter a grant; a refresh always takes a new proof.
+  const probes = open && !refresh && !missingOrg;
+
+  // One live grant per scope (W02 ONE_LIVE_PER_SCOPE_INDEX): a grant made
+  // earlier (before a reload, another tab) is re-entered, not re-created, and
+  // re-entering needs no new proof — so find out before asking for one (#10105).
+  // A failed read is no answer, never "live": the step-up stays, and a grant
+  // that does exist surfaces as 409 ALREADY_ACTIVE at submit.
+  useEffect(() => {
+    if (!probes) {
+      setProbe(null);
+      return;
+    }
+    let cancelled = false;
+    fetchWispThread(orgId).then(
+      () => { if (!cancelled) setProbe({ key: scopeKey, live: true }); },
+      (err: unknown) => {
+        if (cancelled) return;
+        if (!isNoActiveGrant(err)) console.warn('[wisp] live-grant probe failed; asking for the step-up', err);
+        setProbe({ key: scopeKey, live: false });
+      },
+    );
+    return () => { cancelled = true; };
+  }, [probes, orgId, scopeKey]);
+
+  const grant: 'checking' | 'live' | 'none' = !probes
+    ? 'none'
+    : probe?.key !== scopeKey
+      ? 'checking'
+      : probe.live ? 'live' : 'none';
+  const reenter = grant === 'live';
+  const canConfirm = reenter
+    ? !busy
+    : !busy && grant === 'none' && !!partnerId && !missingOrg && (tier === 'passkey' || (tier === 'totp' && code.length === 6));
+  // Both can apply at once (a grant that ended, on an account whose factor
+  // lookup failed): show both, so "confirm it is you" is never left unexplained.
+  const factorError = factorFailed && !reenter ? t('wisp.modal.stepUpUnavailable') : null;
+  const shownErrors = [...new Set([error, factorError].filter((m): m is string => !!m))];
+  /** A message is about the scope it was raised for. */
+  const chooseScope = (next: 'org' | 'partner') => {
+    setScope(next);
+    setError(null);
+  };
 
   /** Open the grant's thread, then report "on" — never "on" for a thread that did not open. */
-  const finish = async (successMessage: string) => {
+  const finish = async (successMessage: string, opts: { reentry?: boolean } = {}) => {
     let state: NonNullable<WispState>;
     try {
       // The scope the user chose, not the response body: it is what /wisp/thread is keyed by.
       state = await fetchWispThread(orgId);
     } catch (err) {
-      // The grant exists; only its thread failed to open. Re-confirming later
-      // reopens it through the live-grant probe below (no second grant).
+      if (opts.reentry && isNoActiveGrant(err)) {
+        // The grant ended (expired, revoked) while the modal was open: back to
+        // the step-up, which creates a new one.
+        if (live.current) {
+          setProbe({ key: scopeKey, live: false });
+          setError(t('wisp.modal.grantEnded'));
+        }
+        return;
+      }
+      // The grant exists; only its thread failed to open. Re-opening the modal
+      // finds it through the live-grant probe (no second grant).
       console.error('[wisp] grant ok but its thread did not open', err);
       showToast({ type: 'error', message: t('wisp.toast.threadFailed') });
       if (live.current) onClose();
@@ -87,7 +151,18 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   };
 
   const submit = async () => {
-    if (!canConfirm || !partnerId || !tier) return;
+    if (!canConfirm) return;
+    if (reenter) {
+      setBusy(true);
+      setError(null);
+      try {
+        await finish(t('wisp.toast.on'), { reentry: true });
+      } finally {
+        if (live.current) setBusy(false);
+      }
+      return;
+    }
+    if (!partnerId || !tier) return;
     setBusy(true);
     setError(null);
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
@@ -108,19 +183,10 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
       });
     };
     try {
-      // One live grant per scope (W02 ONE_LIVE_PER_SCOPE_INDEX): a grant made
-      // earlier (before a reload, another tab) is re-entered, not re-created —
-      // entering Wisp on an existing grant needs no new proof.
-      if (!refresh) {
-        const existing = await fetchWispThread(orgId).then(() => true, () => false);
-        if (existing) {
-          await finish(successMessage);
-          return;
-        }
-      }
       try {
         await attempt();
       } catch (err) {
+        // A grant made after the live-grant probe (another tab): open it.
         if (err instanceof ActionError && err.status === 409 && err.code === 'ALREADY_ACTIVE') {
           await finish(successMessage);
           return;
@@ -160,18 +226,18 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
     <Dialog open={open} onClose={busy ? () => {} : onClose} title={refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')} maxWidth="md" className="p-5">
       <div data-testid="wisp-grant-modal" className="space-y-4">
         <h2 className="text-base font-semibold">{refresh ? t('wisp.modal.refreshTitle') : t('wisp.modal.title')}</h2>
-        <p className="text-sm text-muted-foreground">{t('wisp.modal.explain')}</p>
+        {!reenter && <p className="text-sm text-muted-foreground">{t('wisp.modal.explain')}</p>}
 
         {!refresh && (
           <fieldset className="space-y-2" disabled={busy}>
             <legend className="text-sm font-medium">{t('wisp.modal.scopeLabel')}</legend>
             <label className="flex items-center gap-2 text-sm">
-              <input type="radio" name="wisp-scope" data-testid="wisp-scope-org" checked={scope === 'org'} onChange={() => setScope('org')} />
+              <input type="radio" name="wisp-scope" data-testid="wisp-scope-org" checked={scope === 'org'} onChange={() => chooseScope('org')} />
               {t('wisp.modal.scopeOrg')}
             </label>
             {partnerToken && (
               <label className="flex items-center gap-2 text-sm">
-                <input type="radio" name="wisp-scope" data-testid="wisp-scope-partner" checked={scope === 'partner'} onChange={() => setScope('partner')} />
+                <input type="radio" name="wisp-scope" data-testid="wisp-scope-partner" checked={scope === 'partner'} onChange={() => chooseScope('partner')} />
                 {t('wisp.modal.scopePartner')}
               </label>
             )}
@@ -179,7 +245,11 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
           </fieldset>
         )}
 
-        {tier === 'password' ? (
+        {grant === 'checking' ? null : reenter ? (
+          <p data-testid="wisp-grant-live" role="status" className="text-sm">
+            {scope === 'partner' ? t('wisp.modal.alreadyOnPartner') : t('wisp.modal.alreadyOnOrg')}
+          </p>
+        ) : tier === 'password' ? (
           <p role="alert" className="text-sm text-destructive">{t('wisp.modal.noFactor')}</p>
         ) : tier === 'totp' ? (
           <label className="block text-sm font-medium">
@@ -199,7 +269,9 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
           <p className="text-xs text-muted-foreground">{t('wisp.modal.passkey')}</p>
         ) : null}
 
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {shownErrors.map((message) => (
+          <p key={message} role="alert" className="text-sm text-destructive">{message}</p>
+        ))}
 
         <div className="flex justify-end gap-2">
           <button type="button" className="rounded-md border px-3 py-2 text-sm" disabled={busy} onClick={onClose} data-testid="wisp-grant-cancel">
@@ -212,7 +284,9 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
             onClick={() => void submit()}
             data-testid="wisp-grant-confirm"
           >
-            {busy ? t('wisp.modal.turningOn') : t('wisp.modal.confirm')}
+            {reenter
+              ? busy ? t('wisp.modal.opening') : t('wisp.modal.open')
+              : busy ? t('wisp.modal.turningOn') : t('wisp.modal.confirm')}
           </button>
         </div>
       </div>

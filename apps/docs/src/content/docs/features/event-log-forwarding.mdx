@@ -49,7 +49,23 @@ Stored credentials are encrypted at rest and masked when the settings screen rel
 
 ### Which Application-log events are collected
 
-Windows Application-log events at Error and Critical level are collected from every provider. Warning and Information Application events are collected only from a built-in provider list: `MsiInstaller` (software install/uninstall) and `APCPBEAgent` (APC PowerChute Business Edition UPS events). Other providers' Warning and Information events are not collected, so they are neither forwarded nor matched by an `event_log` monitor. The policy's minimum severity filters what was collected; setting it to Information does not widen this list. A policy-level provider list is tracked in [#10493](https://github.com/LanternOps/breeze/issues/10493).
+Windows Application-log events at Error and Critical level are collected from every provider. Warning and Information Application events are collected only from the built-in providers, `MsiInstaller` (software install/uninstall) and `APCPBEAgent` (APC PowerChute Business Edition UPS events), plus providers listed in the device's winning Event Logs configuration policy. Events that are not collected cannot be forwarded or matched by an `event_log` monitor.
+
+### Collect Warning and Information events from more Application providers
+
+Use **Configuration policy → Event Logs → Application providers** to add up to 20 provider names. Use the exact name from Event Viewer's **Source** column, or find registered providers on a Windows host with PowerShell:
+
+```powershell
+Get-WinEvent -ListProvider *UPS*
+```
+
+Names must start with an ASCII letter or digit and may contain ASCII letters, digits, spaces, periods, underscores, dollar signs, parentheses and hyphens, up to 256 characters. Names are trimmed and duplicates are ignored regardless of case. For example, `MSSQL$SQLEXPRESS` is valid; `.NET Runtime` is not supported because it starts with a period. Quotes, brackets, slashes and other punctuation are not allowed.
+
+Only the single winning Event Logs policy for each device applies; lists are not combined across policies. Scope the policy by assignment, for example to a device group containing machines that run your UPS software. Keep the **Application** category selected. The minimum severity still applies: choose **Info** to collect both Information and Warning, or **Warning+** for Warning and higher. Selecting **Error+** or **Critical only** filters out the lower levels even when their provider is listed.
+
+A newly added provider is collected from the next collection pass onward, without a history back-fill. This requires **agents released after this change**; older agents ignore the provider list. Update agents before relying on these events for monitoring or forwarding.
+
+For a UPS deployment, APC PowerChute's `APCPBEAgent` provider is already built in, so it needs no additional entry. For a Dell UPS manager, read the registered provider name from a host where that software is installed; do not infer it from the product name. If the host reports `Dell UPS Local Node Manager`, add that exact name to the policy assigned to those machines, choose the minimum severity you need, and save. Subsequent matching events become available for monitors and forwarding.
 
 ---
 
