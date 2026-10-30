@@ -65,6 +65,8 @@ const PARTNER_API_NON_GET_ROUTE_ALLOWLIST: readonly string[] = [
   // Opt-in alerts:write; CAS, idempotent; no suppress/dismiss/delete/bulk.
   'POST /alerts/:id/acknowledge',
   'POST /alerts/:id/resolve',
+  'PUT /alerts/:id/external-ticket',
+  'DELETE /alerts/:id/external-ticket',
 ];
 
 describe('partner API write surface', () => {

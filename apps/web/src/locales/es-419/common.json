@@ -569,7 +569,9 @@
       "after": "es después",
       "between": "esta entre",
       "withinLast": "dentro del último",
-      "notWithinLast": "no dentro del último"
+      "notWithinLast": "no dentro del último",
+      "below": "inferior a",
+      "atLeast": "al menos"
     },
     "value": {
       "noValue": "No se necesita valor",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Quitado"
-      }
+      },
+      "softwareName": "Nombre del software",
+      "softwareVersion": "Versión del software"
     }
   },
   "account": {
@@ -1292,7 +1296,7 @@
           "waiting": "En espera"
         },
         "ticketCount": "{{filtered}} de entradas {{total}}",
-        "title": "Entradas sincronizadas",
+        "title": "Tickets de PSA",
         "unlinked": "Desvinculado"
       }
     },
@@ -1552,7 +1556,8 @@
           "enabled": "Webhook habilitado",
           "retryQueued": "Reintento de entrega en cola",
           "testQueued": "Entrega de prueba en cola",
-          "updated": "Webhook actualizado"
+          "updated": "Webhook actualizado",
+          "deleted": "Se eliminó el webhook \"{{name}}\""
         },
         "title": "Webhooks"
       }

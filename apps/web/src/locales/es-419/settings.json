@@ -69,7 +69,7 @@
           "executing": "Ejecutando",
           "completed": "Completado",
           "failed": "Fallido",
-          "rejected": "Rechazado"
+          "rejected": "Denegado"
         }
       },
       "intents": {
@@ -795,6 +795,10 @@
       "watchdog": "Objetivo de vigilancia"
     },
     "inheritDefault": "Heredar valor predeterminado del socio ({{version}})",
+    "inheritDefaultLatest": "Heredar valor predeterminado del socio (último promocionado)",
+    "latestOverride": "Siempre el último promocionado, ignorar la fijación del socio",
+    "latestOverrideVersion": "Siempre el último promocionado ({{version}}), ignorar la fijación del socio",
+    "latestOrganization": "Definido para esta organización: siempre el último promocionado",
     "latestVersion": "Último promocionado ({{version}})",
     "latest": "Último promocionado",
     "pinnedAll": "Fijado para todas las organizaciones",
@@ -906,12 +910,12 @@
     "logoPreview": "Vista previa del logotipo",
     "noLogo": "Sin logotipo",
     "uploadImage": "Subir imagen",
-    "imageHelp": "PNG, JPEG o WebP · máximo 400 KB después de la codificación · redimensionado para ajustarse a 256×256",
+    "imageHelp": "PNG, JPEG o WebP, hasta 400 KB después de la codificación; las imágenes grandes se reducen a 800 px.",
     "invalidSavedLogo": "Los datos del logotipo guardado no son válidos. Elimínelos o suba uno nuevo.",
     "pasteUrl": "O pegar una imagen URL",
     "customCss": "Personalizado CSS",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas las organizaciones secundarias */",
-    "customCssHelp": "Las anulaciones de CSS se aplicaron al portal para todas las organizaciones secundarias."
+    "customCssHelp": "Se agrega al portal de cada cliente, antes del CSS personalizado propio de la organización, que puede anularlo. No se permiten @import ni url() sin HTTPS."
   },
   "partnerSecurity": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
@@ -1615,7 +1619,18 @@
       "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
       "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
       "ticket_approval_decided": "Decisión sobre la aprobación de trabajo",
-      "ticket_merged": "Ticket combinado"
+      "ticket_merged": "Ticket combinado",
+      "ticket_comment_notification": "Aviso de respuesta pública",
+      "ticket_autoresponse": "Acuse de recibo del ticket",
+      "ticket_resolved": "Ticket resuelto",
+      "quote_send": "Cotización / propuesta",
+      "agreement_request_send": "Solicitud de acuerdo",
+      "invoice_send": "Factura",
+      "portal_invite": "Invitación al portal",
+      "staff_invite": "Invitación de personal",
+      "invoice_autopay": "Factura con aviso de pago automático",
+      "payment_reminder": "Recordatorio de pago",
+      "payment_overdue": "Recordatorio de pago vencido"
     }
   },
   "inboundEmail": {
@@ -1844,7 +1859,11 @@
     },
     "colors": {
       "primary": "color primario",
-      "secondary": "color secundario"
+      "secondary": "color secundario",
+      "primaryInheritedSource": "Color de marca del socio",
+      "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
+      "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "theme": {
       "title": "Tema",
@@ -1887,6 +1906,12 @@
     "description": "Ajuste las políticas predeterminadas y el comportamiento de inscripción para {{organization}}.",
     "save": "Guardar valores predeterminados",
     "managedByPartner": "Gestionado por socio",
+    "inheritance": {
+      "inherited": "Valor predeterminado heredado",
+      "overridden": "Definido para esta organización",
+      "reset": "Restablecer al valor predeterminado",
+      "resetLabel": "Restablecer {{setting}} al valor predeterminado"
+    },
     "policies": {
       "title": "Políticas predeterminadas",
       "fields": {
@@ -2074,6 +2099,49 @@
         "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
         "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
         "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Pendiente de su cliente",
+        "devicesProtected": "Protección de endpoints",
+        "securityScore": "Puntuación de seguridad",
+        "actionItems": "Acciones pendientes",
+        "patchesApplied": "Parches aplicados este mes",
+        "backup": "Último respaldo verificado",
+        "service": "Servicio entregado (90 días)",
+        "support": "Soporte"
+      },
+      "tileStatus": {
+        "noData": "Aún no disponible",
+        "notConfigured": "Sin configurar",
+        "stale": "Puede estar desactualizado"
+      },
+      "bands": {
+        "strong": "Sólida",
+        "good": "Buena",
+        "fair": "Regular",
+        "at_risk": "En riesgo"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propuestas: {{proposals}} · Facturas: {{invoices}}",
+        "serviceCounts": "A tiempo: {{onTime}} · Con retraso: {{late}} · Omitidos: {{missed}}",
+        "nextDue": "Próximo vencimiento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitud abierta",
+        "openRequests_other": "{{count}} solicitudes abiertas",
+        "threatCounts": "Detectados: {{detected}} · Resueltos: {{resolved}}",
+        "unknownAll": "Aún desconocido para los {{total}} dispositivos",
+        "unknownSome_one": "{{count}} aún desconocido",
+        "unknownSome_other": "{{count}} aún desconocidos"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abiertas",
+        "knownExploited": "Explotadas conocidas (KEV)",
+        "threatEvents": "Eventos de amenazas en endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos respaldados",
+        "breaches": "Incumplimientos de RPO / RTO abiertos",
+        "providers": "Respaldo de terceros"
       }
     },
     "loading": "Cargando configuración del portal...",
@@ -2218,6 +2286,7 @@
       "email": "Correo electrónico de soporte",
       "phone": "Teléfono de soporte",
       "welcomeMessage": "Mensaje de bienvenida",
+      "welcomeMessageHelp": "Se muestra en la parte superior de la página de inicio del cliente en el portal y en la página de inicio de sesión del portal cuando la organización usa un dominio personalizado verificado. Texto sin formato; se conservan los saltos de línea.",
       "footerText": "Texto de pie de página",
       "footerTextHelp": "Se muestra al pie del portal de clientes y se imprime en las cotizaciones y facturas de esta organización, en lugar del pie de página de documentos del socio. Déjelo en blanco para imprimir el pie de página del socio.",
       "footerTextInheritedSource": "Pie de página de documentos del socio"
@@ -2548,7 +2617,7 @@
     "failedToLoadData": "No se pudieron cargar los datos",
     "failedToSaveBudget": "No se pudo guardar el presupuesto",
     "failedToSave": "No se pudo guardar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la rechaza.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la deniega.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI propone un plan de varios pasos. El usuario aprueba todo el plan a la vez y luego los pasos se ejecutan automáticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Las herramientas de nivel 2 se ejecutan automáticamente con registro de auditoría. Las herramientas de nivel 3 aún requieren aprobación.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
@@ -3090,6 +3159,7 @@
           "explicitly_declined": "Rechazado explícitamente",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
           "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
+          "unsupported_user_scope": "Instalación por usuario que Breeze aún no puede aplicar",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
         },
         "failureClasses": {
@@ -4269,7 +4339,9 @@
     "active": "Activo",
     "revoked": "Revocado",
     "expired": "Vencido",
-    "statusFilterLabel": "Estado de la clave"
+    "statusFilterLabel": "Estado de la clave",
+    "expires": "Vence",
+    "neverExpires": "Nunca"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Cargando claves API...",
@@ -4310,7 +4382,8 @@
     "rotating": "Rotando...",
     "rotateKey": "Rotar clave",
     "revoking": "Revocando...",
-    "revokeKey": "Revocar clave"
+    "revokeKey": "Revocar clave",
+    "revokedToast": "Se revocó la clave API \"{{name}}\""
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Este dispositivo ahora puede aprobar solicitudes",
@@ -4964,6 +5037,11 @@
     "eGOktaProduction": "por ejemplo, Okta Production",
     "providerPreset": "Preestablecido de proveedor",
     "selectAPresetToAutoFillRecommendedSettings": "Seleccione un ajuste preestablecido para completar automáticamente la configuración recomendada",
+    "replacePresetFields": {
+      "title": "¿Reemplazar con los valores predeterminados de {{preset}}?",
+      "message": "Al aplicar el preestablecido {{preset}} se reemplazan los alcances y el mapeo de atributos actuales, incluidos sus cambios, y se borra cualquier reclamo que el preestablecido no defina, como el atributo de grupos. No se guarda nada hasta que guarde el proveedor.",
+      "confirm": "Reemplazar"
+    },
     "connectionSettings": "Configuración de conexión",
     "issuerURL": "Emisor URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6180,6 +6258,11 @@
       "fleetAddDescription": "Agregue un nuevo sitio y elija la organización a la que pertenece.",
       "empty": "Aún no hay sitios. Agregue un sitio a una organización para comenzar.",
       "viewDevicesAt": "ver dispositivos en {{name}}"
+    },
+    "toasts": {
+      "created": "Sitio {{name}} creado",
+      "saved": "Sitio {{name}} guardado",
+      "deleted": "Sitio {{name}} eliminado"
     }
   },
   "siteList": {
@@ -6355,7 +6438,11 @@
       "label": "Etiqueta",
       "notes": "Notas"
     },
-    "empty": "Aún no hay invitados conocidos."
+    "empty": "Aún no hay invitados conocidos.",
+    "removeConfirm": {
+      "title": "¿Eliminar invitado conocido?",
+      "message": "¿Eliminar {{label}} ({{mac}})? Los dispositivos con esta dirección MAC ya no se aprobarán automáticamente en sus organizaciones administradas."
+    }
   },
   "userInviteForm": {
     "title": "Invitar usuario",
@@ -6376,7 +6463,8 @@
     },
     "placeholders": {
       "name": "fulana",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Elija un rol"
     },
     "orgAccess": {
       "title": "Acceso a la organización",
@@ -6476,7 +6564,8 @@
       "copyLink": "Copiar enlace",
       "mfaReset": "MFA restablecido para {{email}}",
       "roleUpdated": "Rol actualizado",
-      "orgAccessUpdated": "Acceso a organizaciones actualizado"
+      "orgAccessUpdated": "Acceso a organizaciones actualizado",
+      "userRemoved": "Se eliminó a {{name}}"
     },
     "resetMfa": {
       "title": "¿Restablecer MFA?",

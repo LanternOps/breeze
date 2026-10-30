@@ -32,6 +32,7 @@ describe('GET /config', () => {
   beforeEach(() => {
     vi.stubEnv('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', undefined);
     vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+    vi.stubEnv('EMAIL_DOMAINS_PROVIDER', undefined);
     delete process.env.BREEZE_BILLING_URL;
     delete process.env.ENABLE_REGISTRATION;
     mocks.authRef.current = {
@@ -78,14 +79,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false, sendingDomains: false });
   });
 
   it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
@@ -147,9 +148,16 @@ describe('GET /config', () => {
     vi.unstubAllEnvs();
   });
 
-  it('features.flows is false when FLOWS_ENABLED is unset', async () => {
+  it('features.flows is true when FLOWS_ENABLED is unset (W06 R1 default, #5221)', async () => {
+    const { body } = await request();
+    expect(body.features.flows).toBe(true);
+  });
+
+  it('features.flows is false when FLOWS_ENABLED=false', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
     const { body } = await request();
     expect(body.features.flows).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it('features.flows is true when FLOWS_ENABLED=true', async () => {
@@ -165,6 +173,16 @@ describe('GET /config', () => {
       const { body } = await request();
       expect(body.features.preAssignmentEnrollment).toBe(enabled);
       vi.unstubAllEnvs();
+    },
+  );
+
+  // #9949: the partner settings page reads this before probing
+  // GET /partner/sending-domains, which 404s whenever no provider is set.
+  it.each([['resend', true], ['static', true], ['fake', true], ['', false], ['bogus', false]])(
+    'features.sendingDomains reflects EMAIL_DOMAINS_PROVIDER=%s', async (value, enabled) => {
+      vi.stubEnv('EMAIL_DOMAINS_PROVIDER', value);
+      const { body } = await request();
+      expect(body.features.sendingDomains).toBe(enabled);
     },
   );
 

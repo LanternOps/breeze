@@ -41,6 +41,17 @@ const deviceLabel = (rem: Remediation) => rem.deviceDisplayName || rem.deviceHos
 const hasEvidence = (rem: Remediation) =>
   Boolean(rem.approvedBy || rem.approvedAt || rem.approvalNote || rem.beforeState || rem.afterState || rem.rollbackHint);
 
+// Stable API status values (cis_remediation_status). Filter options and row
+// badges both label a value via `status.<value>`, so the two can't drift (#9929).
+const REMEDIATION_STATUSES = [
+  'pending_approval',
+  'queued',
+  'in_progress',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
 const statusBadge: Record<string, string> = {
   pending_approval: 'bg-amber-500/20 text-amber-800 border-amber-500/40',
   queued: 'bg-blue-500/20 text-blue-700 border-blue-500/30',
@@ -220,12 +231,11 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
           className="h-10"
         >
           <option value="all">{t('cisHardeningCisRemediationsTab.filters.allStatuses')}</option>
-          <option value="pending_approval">{t('cisHardeningCisRemediationsTab.status.pendingApproval')}</option>
-          <option value="queued">{t('cisHardeningCisRemediationsTab.status.queued')}</option>
-          <option value="in_progress">{t('cisHardeningCisRemediationsTab.status.inProgress')}</option>
-          <option value="completed">{t('cisHardeningCisRemediationsTab.status.completed')}</option>
-          <option value="failed">{t('cisHardeningCisRemediationsTab.status.failed')}</option>
-          <option value="cancelled">{t('cisHardeningCisRemediationsTab.status.cancelled')}</option>
+          {REMEDIATION_STATUSES.map((status) => (
+            <option key={status} value={status}>
+              {t(/* i18n-dynamic */ `cisHardeningCisRemediationsTab.status.${status}`)}
+            </option>
+          ))}
         </FilterSelect>
       </div>
 
@@ -294,7 +304,7 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
                   <td className="px-4 py-3">
                     <span
                       className={cn(
-                        'inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold capitalize',
+                        'inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold',
                         statusBadge[rem.status] ?? statusBadge.cancelled
                       )}
                     >
@@ -306,7 +316,7 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
                   <td className="px-4 py-3">
                     <span
                       className={cn(
-                        'inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold capitalize',
+                        'inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold',
                         approvalBadge[rem.approvalStatus] ?? approvalBadge.pending
                       )}
                     >

@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Fournisseurs d’applications (Avertissement et Information)",
+        "applicationProvidersHelp": "Les événements d’application de niveau Erreur et Critique sont recueillis auprès de tous les fournisseurs; ceux de niveau Avertissement et Information, seulement auprès des fournisseurs intégrés ({{providers}}) et de ceux indiqués ici. Utilisez le nom exact du fournisseur affiché dans la colonne « Source » de l’Observateur d’événements ou dans Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Seule la stratégie de journaux d’événements prioritaire pour un appareil s’applique. Les listes de fournisseurs des différentes stratégies ne sont pas combinées.",
+        "providerNameLabel": "Nom du fournisseur d’événements d’application",
+        "addProvider": "Ajouter un fournisseur",
+        "removeProvider": "Retirer",
+        "removeProviderNamed": "Retirer {{provider}}",
+        "providerNameInvalid": "Utilisez de 1 à {{max}} caractères, en commençant par une lettre ou un chiffre. Caractères permis : lettres, chiffres, espaces, points, traits de soulignement, signes de dollar, parenthèses et traits d’union.",
+        "providerLimitReached": "Vous pouvez ajouter jusqu’à {{max}} fournisseurs supplémentaires. Supprimez-en un pour en ajouter un autre.",
+        "providerAlreadyListed": "Ce fournisseur figure déjà dans la liste.",
+        "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
         "override": "Outremise",
@@ -1197,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
         "generateAlertsWhenFixedTermDeviceWarranties": "Générez des alertes lorsque les garanties à durée déterminée des dispositifs approchent de leur expiration.",
         "warningThresholdDays": "Seuil d’avertissement (jours)",
-        "generateAWarningAlertWhenWarrantyExpires": "Générez une alerte lorsque la garantie expire dans ce délai de jours.",
-        "criticalThresholdDays": "Seuil critique (jours)",
-        "generateACriticalAlertWhenWarrantyExpires": "Générez une alerte critique lorsque la garantie expire dans ce délai de jours.",
+        "warnThresholdHelp": "Générez une alerte de gravité Information lorsque la garantie expire dans ce délai de jours.",
+        "urgentThresholdDays": "Seuil d’urgence (jours)",
+        "urgentThresholdHelp": "Générez une alerte de gravité Faible lorsque la garantie expire dans ce délai de jours. Une garantie expirée génère une alerte de gravité Moyenne.",
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
         "criticalDays": "Critical Days",
@@ -1219,6 +1230,20 @@
         "title": "Les appareils de cette politique alerteront deux fois",
         "body": "Ces conditions existent à la fois comme moniteur attaché et comme règle ou surveillance héritée : {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Groupes d’appareils (toutes les org.)",
+      "description": "Ciblez un groupe d’appareils à l’échelle du partenaire. Une affectation de groupe s’applique au niveau du groupe d’appareils et a donc priorité sur les affectations d’autres politiques au niveau de l’organisation et du site.",
+      "selectGroup": "Sélectionner un groupe d’appareils",
+      "assign": "Affecter",
+      "remove": "Retirer",
+      "assigned": "Groupe d’appareils affecté",
+      "removed": "Affectation du groupe d’appareils retirée",
+      "failedToLoad": "Impossible de charger les groupes d’appareils",
+      "failedToAssign": "Impossible d’affecter le groupe d’appareils",
+      "failedToRemove": "Impossible de retirer l’affectation du groupe d’appareils",
+      "empty": "Aucun groupe d’appareils à l’échelle du partenaire pour le moment. Créez-en un sous Groupes d’appareils → Toutes les org.",
+      "loading": "Chargement des groupes d’appareils…"
     }
   },
   "software": {
@@ -1526,7 +1551,8 @@
       "devicesFinished": "{{finished}} appareils sur {{total}} terminés",
       "setupNeeded": "Configuration requise",
       "managerUnavailableSummary_one": "Le gestionnaire de paquets est absent sur {{count}} appareil. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS); d'ici là, tout déploiement par gestionnaire de paquets échouera.",
-      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS); d'ici là, tout déploiement par gestionnaire de paquets échouera."
+      "managerUnavailableSummary_other": "Le gestionnaire de paquets est absent sur {{count}} appareils. Il s'agit d'une configuration ponctuelle : installez-y winget (Windows) ou Homebrew (macOS); d'ici là, tout déploiement par gestionnaire de paquets échouera.",
+      "deviceOutputTail": "Sortie de l’appareil (dernières lignes)"
     },
     "deploymentWizard": {
       "selectSoftware": "Logiciel sélectionné",

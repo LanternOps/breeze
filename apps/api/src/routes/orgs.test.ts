@@ -20,6 +20,7 @@ vi.mock('../services/trustPage/servingSet', () => trustServing);
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
+import { PORTAL_CUSTOM_CSS_MAX_LENGTH } from '@breeze/shared';
 
 beforeEach(() => {
   defaultAssigneeSettingsErrorMock.mockReset();
@@ -373,7 +374,14 @@ vi.mock('drizzle-orm', async (importActual) => {
 // `resource:action` pairs so a test can withhold ONE permission (e.g.
 // sites:write) while the rest stay granted. Hoisted because the vi.mock
 // factory below references it. Reset to granted/empty in beforeEach.
-const permissionMockState = vi.hoisted(() => ({ granted: true, denied: new Set<string>() }));
+// `throwStatus`, when set, makes the mock THROW an HTTPException with that
+// status the way the real requirePermission does (it never returns a
+// Response) — used by the #9528 gate tests, whose probe catches only a 403.
+const permissionMockState = vi.hoisted(() => ({
+  granted: true,
+  denied: new Set<string>(),
+  throwStatus: null as null | 401 | 403 | 500,
+}));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -398,6 +406,10 @@ vi.mock('../middleware/auth', () => ({
   }),
   requirePartner: vi.fn((c: any, next: any) => next()),
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionMockState.throwStatus !== null) {
+      const { HTTPException } = await import('hono/http-exception');
+      throw new HTTPException(permissionMockState.throwStatus, { message: 'Permission denied' });
+    }
     if (!permissionMockState.granted || permissionMockState.denied.has(`${resource}:${action}`)) {
       return c.json({ error: 'Permission denied' }, 403);
     }
@@ -471,6 +483,10 @@ describe('org routes', () => {
     // c.get('permissions').allowedSiteIds, mirroring the production permissions
     // middleware. Omit for an unconfined user (allowedSiteIds undefined).
     allowedSiteIds: string[];
+    // Request principal. Omitted by most tests (the route rarely reads it);
+    // set it to exercise a principal-sensitive gate such as the #9528
+    // name-level org list, which an automation principal must not reach.
+    principal: { kind: string };
   }> = {}) => {
     const scope = overrides.scope ?? 'system';
     const accessibleOrgIds = 'accessibleOrgIds' in overrides
@@ -490,6 +506,7 @@ describe('org routes', () => {
           ? overrides.partnerOrgAccess
           : scope === 'partner' ? 'all' : null,
         accessibleOrgIds,
+        ...('principal' in overrides ? { principal: overrides.principal } : {}),
         orgCondition: () => undefined,
         canAccessOrg: overrides.canAccessOrg ?? ((orgId: string) => {
           if (!Array.isArray(accessibleOrgIds)) return true;
@@ -509,6 +526,7 @@ describe('org routes', () => {
     vi.mocked(countMfaPolicyLockouts).mockReset().mockResolvedValue(0);
     permissionMockState.granted = true;
     permissionMockState.denied.clear();
+    permissionMockState.throwStatus = null;
     selectedOrgIds.current = [];
     isHoldingOrg.mockReset().mockResolvedValue(false);
     setAuthContext();
@@ -2583,6 +2601,94 @@ describe('org routes', () => {
     });
   });
 
+  // #9674: partner Custom CSS now reaches every child org's portal, so the
+  // partner write path must apply the same disallowed-pattern rules as the org
+  // portal-settings write path (updatePortalSettingsSchema).
+  describe('PATCH /orgs/partners/me — branding.customCss (#9674)', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('stores safe Custom CSS', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: '.portal-card { border-radius: 4px; }' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding.customCss).toBe('.portal-card { border-radius: 4px; }');
+    });
+
+    it('accepts a branding save without Custom CSS, which clears it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ branding: { customCss: '.old {}', primaryColor: '#111111' } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { primaryColor: '#222222' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding).toEqual({ primaryColor: '#222222' });
+    });
+
+    it.each([
+      ['@import', '@import "https://evil.example/x.css";'],
+      ['a non-https url()', '.a { background: url(http://evil.example/x.png); }'],
+      ['expression()', '.a { width: expression(alert(1)); }'],
+      ['an escaped @import', '@\\69mport "x.css";'],
+    ])('rejects %s with 400 and writes nothing', async (_label, css) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: css } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects Custom CSS over the portal size cap with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: `/*${'a'.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH)}*/` } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+  });
+
   describe('PATCH /orgs/partners/me — security scalar clear (#8976)', () => {
     function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
       vi.mocked(db.select).mockReturnValue({
@@ -3691,13 +3797,223 @@ describe('org routes', () => {
       expect(row).not.toHaveProperty('maxDevices');
     });
 
-    it('still requires organizations:read for partner scope', async () => {
-      permissionMockState.granted = false;
-      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+    // #9528 — a partner-scope user restricted to selected orgs, whose role
+    // (e.g. a "Remote Control" custom role) lacks organizations:read, still
+    // needs the NAMES of the orgs they can already reach: the top-nav org
+    // switcher and the /devices org filter are fed by this route. Without
+    // organizations:read the partner caller gets the same name-level projection
+    // the org-scope branch serves, limited to auth.accessibleOrgIds — never a
+    // full row, never an org outside their access, never the archived block.
+    describe('partner scope without organizations:read (#9528)', () => {
+      const pageQuery = (rows: Array<Record<string, unknown>>) =>
+        ({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({
+                offset: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockResolvedValue(rows)
+                })
+              })
+            })
+          })
+        }) as any;
 
-      const res = await app.request('/orgs/organizations');
+      it('lists exactly the caller\'s accessible orgs as a name-level projection', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a', 'org-b'],
+          principal: { kind: 'user_session' },
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 2 }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(pageQuery([
+            { id: 'org-a', name: 'Alpha', slug: 'alpha', status: 'active' },
+            { id: 'org-b', name: 'Beta', slug: 'beta', status: 'trial' },
+          ]));
 
-      expect(res.status).toBe(403);
+        const res = await app.request('/orgs/organizations?page=1&limit=100&partnerId=11111111-1111-4111-8111-111111111111');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-a', 'org-b']);
+        expect(body.pagination.total).toBe(2);
+
+        // The population predicate is the caller's accessible set, nothing wider.
+        expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, ['org-a', 'org-b']);
+
+        // The page query projects to the safe fields — the same four the
+        // org-scope branch serves — so no settings/ssoConfig/billing blob can
+        // reach a role that never held organizations:read.
+        const pageSelectArg = vi.mocked(db.select).mock.calls[2]?.[0];
+        expect(pageSelectArg).toBeDefined();
+        expect(Object.keys(pageSelectArg as Record<string, unknown>).sort())
+          .toEqual(['id', 'name', 'slug', 'status']);
+
+        // No per-org device count query rides along on the name-level list.
+        expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
+        for (const row of body.data) {
+          expect(Object.keys(row).sort()).toEqual(['id', 'name', 'slug', 'status']);
+        }
+      });
+
+      // The real requirePermission THROWS a 403 HTTPException rather than
+      // returning a Response; the gate's probe must catch exactly that and
+      // fall back to the name-level list.
+      it('serves the name-level list when the strict gate throws a 403', async () => {
+        permissionMockState.throwStatus = 403;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(pageQuery([{ id: 'org-a', name: 'Alpha', slug: 'alpha', status: 'active' }]));
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(200);
+        expect((await res.json()).data.map((o: { id: string }) => o.id)).toEqual(['org-a']);
+        expect(vi.mocked(inArray)).toHaveBeenCalledWith(organizations.id, ['org-a']);
+        expect(Object.keys(vi.mocked(db.select).mock.calls[2]?.[0] as Record<string, unknown>).sort())
+          .toEqual(['id', 'name', 'slug', 'status']);
+      });
+
+      it.each([401, 500] as const)('propagates a non-403 failure (%i) from the strict gate instead of degrading to the name list', async (status) => {
+        permissionMockState.throwStatus = status;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(status);
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('still 403s an automation principal when the strict gate throws', async () => {
+        permissionMockState.throwStatus = 403;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'flow' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('returns no orgs for a partner user with no org access', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'none',
+          accessibleOrgIds: [],
+          principal: { kind: 'user_session' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual([]);
+        expect(body.pagination.total).toBe(0);
+        // Fails closed before any org read.
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('never serves the archived block without organizations:read', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(pageQuery([{ id: 'org-a', name: 'Alpha', slug: 'alpha', status: 'active' }]));
+
+        const res = await app.request('/orgs/organizations?includeArchived=true');
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.map((o: { id: string }) => o.id)).toEqual(['org-a']);
+        expect(body).not.toHaveProperty('archivedTruncated');
+        expect(listArchivedOrgs).not.toHaveBeenCalled();
+      });
+
+      it('still 403s an automation principal without organizations:read', async () => {
+        permissionMockState.granted = false;
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'ai_agent' },
+        });
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(403);
+        expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+      });
+
+      it('keeps full rows (with device counts) for a partner user who holds organizations:read', async () => {
+        setAuthContext({
+          scope: 'partner',
+          partnerId: 'partner-123',
+          partnerOrgAccess: 'selected',
+          accessibleOrgIds: ['org-a'],
+          principal: { kind: 'user_session' },
+        });
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          } as any)
+          .mockReturnValueOnce(mockPartnerOrderSettings())
+          .mockReturnValueOnce(pageQuery([{ id: 'org-a', name: 'Alpha', maxDevices: 50 }]))
+          .mockReturnValueOnce(mockOrgDeviceCounts([{ orgId: 'org-a', count: 3 }]));
+
+        const res = await app.request('/orgs/organizations');
+
+        expect(res.status).toBe(200);
+        // Full-row path: unprojected select(), device count attached.
+        expect(vi.mocked(db.select).mock.calls[2]?.[0]).toBeUndefined();
+        const row = (await res.json()).data[0];
+        expect(row.maxDevices).toBe(50);
+        expect(row.deviceCount).toBe(3);
+      });
     });
 
     // The partner happy-path (permission granted → 200) is already covered by

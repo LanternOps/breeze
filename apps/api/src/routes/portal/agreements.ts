@@ -91,9 +91,9 @@ export function isPortalVisibleRequest(
   return true;
 }
 
-function portalAuthOf(c: Context): { userId: string; orgId: string; email: string; partnerId: string | null } {
-  const auth = c.get('portalAuth') as { user: { id: string; orgId: string; email: string }; partnerId?: string | null };
-  return { userId: auth.user.id, orgId: auth.user.orgId, email: auth.user.email, partnerId: auth.partnerId ?? null };
+function portalAuthOf(c: Context): { userId: string; orgId: string; email: string; partnerId: string | null; timezone: string } {
+  const auth = c.get('portalAuth') as { user: { id: string; orgId: string; email: string }; partnerId?: string | null; timezone: string };
+  return { userId: auth.user.id, orgId: auth.user.orgId, email: auth.user.email, partnerId: auth.partnerId ?? null, timezone: auth.timezone };
 }
 
 /** The org-scoped read every :id route starts with (RLS + explicit org). */
@@ -208,7 +208,7 @@ function respondError(c: Context, err: unknown): Response {
 // GET /agreements — the org's requests still awaiting a signature, soonest
 // expiry first. `canSign` = the session email is on the recipient list.
 portalAgreementRoutes.get('/agreements', async (c) => {
-  const { orgId, email } = portalAuthOf(c);
+  const { orgId, email, timezone } = portalAuthOf(c);
   const now = new Date();
   const rows = await db
     .select({
@@ -242,7 +242,9 @@ portalAgreementRoutes.get('/agreements', async (c) => {
       canSign: signable.has(r.id),
     };
   });
-  return c.json({ data });
+  // `timezone` (org → partner → UTC): the zone every portal surface formats
+  // these instants in, so the SSR list and the hydrated detail print one day (#10291).
+  return c.json({ data, timezone });
 });
 
 // GET /agreements/:id — the request as the client sees it (the public page's
@@ -250,7 +252,7 @@ portalAgreementRoutes.get('/agreements', async (c) => {
 // document id for the certified download. Stamps sent → viewed when the viewer
 // is a recipient (a colleague browsing the org's list is not the signer).
 portalAgreementRoutes.get('/agreements/:id', zValidator('param', idParam), async (c) => {
-  const { orgId, email, partnerId } = portalAuthOf(c);
+  const { orgId, email, partnerId, timezone } = portalAuthOf(c);
   const { id } = c.req.valid('param');
   const now = new Date();
   const row = await loadVisibleRequest(orgId, id, now);
@@ -309,7 +311,7 @@ portalAgreementRoutes.get('/agreements/:id', zValidator('param', idParam), async
     partnerName: brand.partnerName,
     logoUrl: brand.logoUrl,
   });
-  return c.json({ data: { ...presentation, canSign, signedAgreementId } });
+  return c.json({ data: { ...presentation, canSign, signedAgreementId, timezone } });
 });
 
 // GET /agreements/:id/file — the pinned version's uploaded file (always a PDF:

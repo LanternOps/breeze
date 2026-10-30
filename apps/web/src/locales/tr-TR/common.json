@@ -569,7 +569,9 @@
       "after": "peşinde",
       "between": "arasındadır",
       "withinLast": "sonuncu içinde",
-      "notWithinLast": "sonuncusu içinde değil"
+      "notWithinLast": "sonuncusu içinde değil",
+      "below": "daha düşük",
+      "atLeast": "en az"
     },
     "value": {
       "noValue": "Değere gerek yok",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Çıkarıldı"
-      }
+      },
+      "softwareName": "Yazılım adı",
+      "softwareVersion": "Yazılım sürümü"
     }
   },
   "account": {
@@ -1292,7 +1296,7 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "PSA Biletleri",
         "unlinked": "Bağlantı kaldırıldı"
       }
     },
@@ -1552,7 +1556,8 @@
           "enabled": "Web kancası etkinleştirildi",
           "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
-          "updated": "Web kancası güncellendi"
+          "updated": "Web kancası güncellendi",
+          "deleted": "\"{{name}}\" web kancası silindi"
         },
         "title": "Web kancaları"
       }

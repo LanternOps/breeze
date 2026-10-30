@@ -145,8 +145,8 @@ interface SecurityMiddlewareOptions {
   skipHeadersWhen?: (c: Context) => boolean;
   /**
    * Paths whose CSP says `frame-ancestors 'self'` instead of `'none'`; every other directive is unchanged. index.ts
-   * passes `isSameOriginFramePath` (middleware/sameOriginFrame.ts): the two inline public PDF routes the portal
-   * embeds in an iframe (#10192).
+   * passes `isSameOriginFramePath` (middleware/sameOriginFrame.ts): the inline PDF routes the portal embeds in an
+   * iframe (#10192, #10290).
    */
   sameOriginFrameWhen?: (path: string) => boolean;
 }

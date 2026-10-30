@@ -134,6 +134,7 @@ import { registerBillingProfileTools } from './aiToolsBillingProfiles';
 import { registerBillingSettingsTools } from './aiToolsBillingSettings';
 import { registerContractTemplateTools } from './aiToolsContractTemplates';
 import { registerDeviceBillingTools } from './aiToolsDeviceBilling';
+import { registerAccountingSyncTools } from './aiToolsAccountingSync';
 import { registerTicketConfigTools } from './aiToolsTicketConfig';
 import { registerTicketChecklistTemplateTools } from './aiToolsTicketChecklistTemplates';
 import { registerTicketInboxTools } from './aiToolsTicketInbox';
@@ -472,6 +473,8 @@ registerBillingProfileTools(aiTools);
 registerBillingSettingsTools(aiTools);
 registerContractTemplateTools(aiTools);
 registerDeviceBillingTools(aiTools);
+// Full-control W14 PR B (#6784): QuickBooks / Xero sync (generate_invoice lives on manage_contracts).
+registerAccountingSyncTools(aiTools);
 registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);

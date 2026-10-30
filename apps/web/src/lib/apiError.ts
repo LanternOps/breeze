@@ -10,6 +10,8 @@
 // Falling back to `new Error(obj)` produces `[object Object]` in the UI;
 // this function picks the most readable rendering of whatever we got.
 
+import { DISPLAY_ACRONYMS } from './displayAcronyms';
+
 type ZodIssue = { message?: string; path?: Array<string | number> };
 
 function joinZodIssues(issues: unknown): string | null {
@@ -23,14 +25,6 @@ function joinZodIssues(issues: unknown): string | null {
     .filter((m): m is string => m !== null);
   return messages.length > 0 ? messages.join('; ') : null;
 }
-
-// Words that read wrong when sentence-cased ("Slack webhook url").
-const FIELD_ACRONYMS: Record<string, string> = {
-  ai: 'AI', api: 'API', cidr: 'CIDR', cve: 'CVE', dns: 'DNS', html: 'HTML', http: 'HTTP',
-  https: 'HTTPS', id: 'ID', ids: 'IDs', ip: 'IP', ips: 'IPs', json: 'JSON', mfa: 'MFA', os: 'OS',
-  rpo: 'RPO', rto: 'RTO', sms: 'SMS', smtp: 'SMTP', ssh: 'SSH', ssl: 'SSL', sso: 'SSO', tls: 'TLS',
-  totp: 'TOTP', ttl: 'TTL', uri: 'URI', url: 'URL', urls: 'URLs', vpn: 'VPN',
-};
 
 /**
  * Turns a zod field path from the API's validation 400
@@ -55,7 +49,7 @@ export function humanizeFieldPath(path: string): string {
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .split(/[\s_-]+/)
     .filter((w) => w.length > 0)
-    .map((w) => FIELD_ACRONYMS[w.toLowerCase()] ?? w.toLowerCase());
+    .map((w) => DISPLAY_ACRONYMS[w.toLowerCase()] ?? w.toLowerCase());
   if (words.length === 0) return path;
   words[0] = words[0].charAt(0).toUpperCase() + words[0].slice(1);
   return words.join(' ');

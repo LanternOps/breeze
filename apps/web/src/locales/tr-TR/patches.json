@@ -417,8 +417,10 @@
       "createTitle": "Güncelleme halkası oluştur"
     },
     "truncatedNotice": "{{total}} yamalardan {{shown}} gösteriliyor. Buradaki filtreler yalnızca önceden yüklenmiş olanları daraltır, dolayısıyla geri kalanlara bu görünümden erişilemez; kataloğun tamamı üzerinde çalışmak için API yamalarını kullanın.",
+    "emptyRingSeverityNotice": "Bu halkada henüz cihaz yok. Cihazların bildirdiği önem derecesi cihazlar atandığında görünür; o zamana kadar yamaların çoğu Derecelendirilmemiş olarak görünür.",
     "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin.",
     "ringDelete": {
+      "messageNone": "Bu halkayı kullanan ilke yok. Onay kuralları ve zamanlama ayarları silinecek ve geri yüklenemeyecek.",
       "title": "{{name}} silinsin mi?",
       "messageOne": "1 ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
       "messageMany": "{{count}} ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",

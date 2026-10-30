@@ -569,7 +569,9 @@
       "after": "is after",
       "between": "is between",
       "withinLast": "within last",
-      "notWithinLast": "not within last"
+      "notWithinLast": "not within last",
+      "below": "below",
+      "atLeast": "at least"
     },
     "value": {
       "noValue": "No value needed",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removed"
-      }
+      },
+      "softwareName": "Software name",
+      "softwareVersion": "Software version"
     }
   },
   "account": {
@@ -1292,7 +1296,7 @@
           "waiting": "Waiting"
         },
         "ticketCount": "{{filtered}} of {{total}} tickets",
-        "title": "Synced Tickets",
+        "title": "PSA Tickets",
         "unlinked": "Unlinked"
       }
     },
@@ -1552,7 +1556,8 @@
           "enabled": "Webhook enabled",
           "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
-          "updated": "Webhook updated"
+          "updated": "Webhook updated",
+          "deleted": "Webhook \"{{name}}\" deleted"
         },
         "title": "Webhooks"
       }

@@ -390,7 +390,9 @@
     "filterRules": "Règles de filtrage",
     "cancel": "Annuler",
     "creating": "Création…",
-    "createGroup": "Créer un groupe"
+    "createGroup": "Créer un groupe",
+    "created": "Groupe d’appareils créé",
+    "missingGroupId": "Le groupe a été créé, mais la réponse du serveur ne contenait pas son identifiant. Veuillez actualiser la page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} retirés masqués",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Attribuer une politique à",
     "policy2": "Politique",
     "selectAPolicy": "Sélectionnez une stratégie",
-    "applying": "En postulant..."
+    "applying": "En postulant...",
+    "ownerFilterAll": "Tous les groupes",
+    "ownerFilterOrganization": "Groupes d’organisation",
+    "ownerFilterPartner": "Toutes les org.",
+    "noGroupsMatchFilter": "Aucun groupe ne correspond à ce filtre.",
+    "managedByPartner": "Géré par votre prestataire de services. Les règles d’appartenance ne sont pas affichées ; vous voyez les appareils de votre organisation.",
+    "partnerDynamicType": "Dynamique · Toutes les org.",
+    "partnerDeleteWarning": "Cette action supprime le groupe de toutes les organisations et supprime ses affectations de politiques."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Impossible de récupérer l’inventaire matériel",
@@ -2067,11 +2076,14 @@
     "loading": "Chargement de l’état du patch...",
     "notDownloadedTitle": "Pas encore téléchargé — l’installation prendra plus de temps",
     "notices": {
+      "installCommandEnded": "La commande d’installation s’est terminée ({{status}}) avant que l’appareil ne signale un résultat. Consultez l’historique des commandes de l’appareil pour plus de détails.",
+      "installFinishedWithIssues": "Installation terminée : {{installed}} installé(s), {{failed}} en échec, {{awaitingRestart}} en attente de redémarrage, {{unresolved}} pas encore confirmé(s). Consultez les lignes des patchs pour plus de détails.",
       "installLongerThanExpected": "L’installation prend plus de temps que prévu. macOS les mises à jour peuvent prendre 30+ minutes. Rafraîchir la page plus tard pour vérifier le statut.",
       "installPatchFailed": "Impossible d’installer {{name}}",
       "installPatchQueued": "L’installation était en file d’attente pour « {{name}} »",
       "installPatchQueuedDetail": "Installation mise en file pour « {{name}} »{{dispatchSuffix}}.",
       "installQueuedForPatches": "{{label}} en file d’attente pour {{count}} patches{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Impossible de vérifier l’état de l’installation : la liste des patchs n’a pas pu être chargée. Rafraîchissez la page pour voir l’état le plus récent.",
       "installedSuccessfully": "{{installed}} patch(es) installé(es) avec succès. {{pending}} toujours en attente.",
       "installingPolling": "Installation de correctifs... Sondage pour des mises à jour.",
       "noPendingForLabel": "Aucun correctif en attente n’est disponible pour {{label}}.",
@@ -2117,6 +2129,7 @@
       "excludedCategoryTitle": "L'anneau de mise à jour {{ring}} exclut la catégorie de ce correctif : les exécutions planifiées l'ignorent.",
       "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de l'anneau de mise à jour lié retient ce correctif : les exécutions planifiées l'ignorent.",
       "excludedRingReferenceTitle": "Retenu : la stratégie de correctifs de cet appareil est liée à un anneau de mise à jour qui n'existe plus ou n'est pas disponible pour ce partenaire. Corrigez l'anneau de mise à jour de la stratégie pour reprendre l'application des correctifs.",
+      "excludedUserScopeTitle": "Non installable : il s'agit d'une installation par utilisateur que Breeze ne peut pas encore appliquer, donc aucune exécution de correctifs ne l'installera.",
       "excludedFeatureUpdateTitle": "L'anneau de mise à jour {{ring}} bloque cette version de fonctionnalités Windows (ou épingle les appareils à une autre), donc les exécutions planifiées de correctifs l'ignorent.",
       "excludedDeclinedTitle": "Refusé : ce correctif a été explicitement refusé, l'approbation automatique de l'anneau ne l'installera donc pas. Approuvez-le de nouveau pour l'autoriser.",
       "pending": "Approbation en attente",
@@ -2608,9 +2621,18 @@
       "refreshFailed": "Renouvellement de la garantie échouée : {{error}}",
       "refreshing": "Garantie rafraîchissante...",
       "stillInProgress": "La refonte de la garantie est encore en cours ; La carte sera mise à jour une fois terminée.",
-      "updated": "Informations sur la garantie mises à jour."
+      "updated": "Informations sur la garantie mises à jour.",
+      "agentCollected": "La garantie de cet appareil est collectée par l'agent Breeze ; une vérification auprès du fabricant ne peut rien apporter de plus récent.",
+      "noVendorLookupKept": "Aucune vérification de garantie n'est disponible pour ce fabricant. Les données de garantie existantes ont été conservées."
     },
-    "lookUp": "Rechercher"
+    "lookUp": "Rechercher",
+    "sources": {
+      "agentCmsl": "Agent (CMSL d'HP)",
+      "agentPlist": "Agent (plist macOS)",
+      "import": "Importé",
+      "importVendorEarlier": "Importé (le fabricant indique une date de fin antérieure)",
+      "provider": "API du fabricant"
+    }
   },
   "devicesPage": {
     "accessDenied": "Vous n’avez pas la permission de voir les appareils.",
@@ -2744,6 +2766,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} appareils sont maintenant sur le site {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} appareils sur {{total}} déplacés vers {{site}}. Non déplacés : {{devices}}",
       "bulkMoveSiteAllFailed": "Aucun appareil n’a été déplacé vers {{site}}. Non déplacés : {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (son site a changé après le chargement de la liste ; la liste a été actualisée, réessayez)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (vous n’avez pas accès à son site ou au site de destination)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (introuvable ; il a peut-être été supprimé)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (une erreur inattendue s’est produite ; réessayez)",
       "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site"
     },
     "tryAgain": "Réessayer",
@@ -2862,7 +2888,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -2932,7 +2960,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -2950,8 +2980,10 @@
     "title": "Raccourcis de filtre"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Choisissez une valeur pour voir les appareils correspondants",
     "counting": "… Comptage",
-    "matches": "~{{count}} dispositifs correspondent",
+    "matches_one": "~{{count}} appareil correspond",
+    "matches_other": "~{{count}} appareils correspondent",
     "unavailable": "Aperçu indisponible"
   },
   "filterSentenceBuilder": {
@@ -3019,7 +3051,9 @@
       },
       "software": {
         "installed": "A un logiciel installé",
-        "notInstalled": "Logiciels manquants"
+        "notInstalled": "Logiciels manquants",
+        "version": "Version du logiciel",
+        "vendor": "Éditeur du logiciel"
       },
       "logShippingFailing": "Échec de l'envoi des journaux"
     }
@@ -4304,6 +4338,7 @@
       "pending": "Pas encore vérifiée",
       "private": "Registre privé — identifiants requis",
       "unsupported_registry": "Registre non pris en charge",
+      "provenance_unknown": "Provenance inconnue — le nom de l'image n'est envoyé à aucun registre",
       "error": "Échec de la vérification du registre — nouvelle tentative prévue",
       "behind": "Une image plus récente est publiée pour ce tag",
       "current": "Correspond au registre",
@@ -4666,5 +4701,28 @@
       "authorityDevice": "Cet actif est désormais lié à un appareil géré. Modifiez l'emplacement sur l'appareil.",
       "mfaRequired": "L'authentification multifacteur est requise pour modifier l'emplacement physique."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Propriétaire du groupe",
+    "organization": "Cette organisation",
+    "partner": "Toutes les organisations",
+    "dynamicOnly": "à l’échelle du partenaire, dynamique uniquement",
+    "scopeHint": "L’appartenance est évaluée dans chaque organisation que vous gérez ; l’appartenance statique, les sites et les conditions de filtre par groupe ou organisation ne sont pas disponibles.",
+    "allOrgs": "Toutes les org.",
+    "pending": "Mise à jour des membres…",
+    "current": "Dernière évaluation : {{time}}",
+    "notEvaluated": "Pas encore évalué",
+    "partial_one": "{{count}} organisation non évaluée · dernière évaluation réussie {{time}}",
+    "partial_other": "{{count}} organisations non évaluées · dernière évaluation réussie {{time}}",
+    "retryHint": "Breeze réessaie automatiquement pour ces organisations. L’enregistrement du filtre du groupe lance une nouvelle évaluation.",
+    "showMembers": "Afficher les membres",
+    "hideMembers": "Masquer les membres",
+    "device": "Appareil",
+    "organizationColumn": "Organisation",
+    "status": "État",
+    "loading": "Chargement des membres…",
+    "membersError": "Impossible de charger les membres du groupe.",
+    "retry": "Réessayer",
+    "emptyMembers": "Aucun appareil dans ce groupe."
   }
 }

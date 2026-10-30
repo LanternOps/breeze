@@ -2662,7 +2662,7 @@ const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
  * warns and falls back to midnight rather than treating the window as never
  * open.
  */
-function parseRecurringWindowAnchor(
+export function parseRecurringWindowAnchor(
   rawWindowStart: string | null
 ): { hours: number; minutes: number } | 'invalid' {
   const value = (rawWindowStart ?? '').trim();

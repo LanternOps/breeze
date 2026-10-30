@@ -64,7 +64,7 @@ const session = (over: Record<string, unknown> = {}, messages: unknown[] = []) =
   session: {
     id: 's1', status: 'active', orgId: ORG_A, type: 'general', title: 'Disk cleanup',
     deviceId: 'dev-1', delegantM365ConnectionId: 'm365-1',
-    contextSnapshot: { type: 'device', id: 'dev-1', hostname: 'host-01', orgAnchor: 'page_context' },
+    contextSnapshot: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'host-01', orgAnchor: 'page_context' },
     ...over,
   },
   messages,
@@ -130,8 +130,21 @@ describe('openSession — new conversation', () => {
       sessionId: 's1', title: 'Disk cleanup', orgId: ORG_A, deviceId: 'dev-1', deviceLabel: 'host-01',
       m365ConnectionId: 'm365-1', composerDraft: 'half typed', errorAction: null,
     });
-    expect(opened.pageContext).toEqual({ type: 'device', id: 'dev-1', hostname: 'host-01' });
+    expect(opened.pageContext).toEqual({ type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'host-01' });
     expect(opened.messages.map((m) => m.id)).toEqual(['m1']);
+  });
+
+  it('restores a record label in the context chip', async () => {
+    const context = { type: 'record', kind: 'ticket', id: 'dddddddd-1111-4222-8333-444455556666', orgId: ORG_A, label: 'T-42 Printer offline' };
+    on('/ai/sessions/s1', () => session({ deviceId: null, contextSnapshot: { ...context, orgAnchor: 'page_context' } }));
+    on('/ai/sessions/s1/stream', () => idleSse());
+    expect(await useWorkspaceStore.getState().openSession('s1')).toBe('opened');
+    expect(useWorkspaceStore.getState().tabs[0]).toMatchObject({ pageContext: context, contextLabel: context.label, deviceLabel: null });
+  });
+
+  it('uses the record label for a new tab', () => {
+    useWorkspaceStore.getState().createTab(undefined, { type: 'record', kind: 'ticket', id: 'dddddddd-1111-4222-8333-444455556666', label: 'T-42' });
+    expect(useWorkspaceStore.getState().tabs[0]?.contextLabel).toBe('T-42');
   });
 
   it('a running snapshot marks the tab streaming and a partial join sets joinedMidResponse', async () => {

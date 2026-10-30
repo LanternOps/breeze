@@ -94,11 +94,19 @@ describe('GET /wisp/home', () => {
     expect(h.buildHomeSections).toHaveBeenCalledWith(expect.objectContaining({ grantId: G_PAUSED, ceiling: null }));
   });
 
-  it('no usable grant → 404 no_grant (the page shows the start card)', async () => {
+  it('no usable grant → 200 { data: null }, an expected state, not a 404 (#10200; the page shows the start card)', async () => {
     h.listGrants.mockResolvedValue([grant(G_ACTIVE, { status: 'revoked' })]);
     const res = await get('/home');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: null });
+    expect(h.buildHomeSections).not.toHaveBeenCalled();
+  });
+
+  it('an explicit grantId that is not the caller\'s usable grant stays the existence-neutral 404', async () => {
+    h.listGrants.mockResolvedValue([grant(G_ACTIVE, { status: 'revoked' })]);
+    const res = await get(`/home?grantId=${G_ACTIVE}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ code: 'no_grant' });
+    expect(await res.json()).toMatchObject({ code: 'not_found' });
   });
 
   it('a corrupt ceiling pin is the thread route\'s 500, not a quiet empty home', async () => {

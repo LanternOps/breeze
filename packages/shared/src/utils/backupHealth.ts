@@ -239,3 +239,20 @@ export function deriveBackupHealth(input: {
 
 /** Re-exported so consumers can iterate the enum without a second import. */
 export { EXTERNAL_BACKUP_STATUSES };
+
+const SAAS_WORKLOAD_LABELS: Readonly<Record<string, string>> = {
+  m365_mail: 'Microsoft 365 mail',
+  m365_onedrive: 'Microsoft 365 OneDrive',
+  m365_sharepoint: 'Microsoft 365 SharePoint',
+  m365_teams: 'Microsoft 365 Teams',
+  gws_mail: 'Google Workspace mail',
+  gws_drive: 'Google Drive',
+  gws_shared_drive: 'Google shared drives',
+};
+
+/** Customer-facing workload names; unknown provider identifiers stay private. */
+export function saasWorkloadLabel(dataSource: string | null | undefined): string {
+  return dataSource && Object.prototype.hasOwnProperty.call(SAAS_WORKLOAD_LABELS, dataSource)
+    ? SAAS_WORKLOAD_LABELS[dataSource]!
+    : 'SaaS';
+}

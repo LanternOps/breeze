@@ -1,5 +1,5 @@
 /** #10521 W2a: partner-group assignment expansion against real PostgreSQL. */
-import './setup';
+import { getTestDb } from './setup';
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { sql, type SQL } from 'drizzle-orm';
@@ -135,6 +135,34 @@ describe('partner device group fanout (#10521 W2a)', () => {
       { level: 'device_group', targetId: f.groupId, roleFilter: null, osFilter: null },
       { policyOrgId: null, policyPartnerId: f.otherPartnerId }, options,
     ))).deviceIds).toEqual([]);
+  });
+
+  runDb('groupOwnerMatchesMembershipOrg ignores a forged foreign-partner membership', async () => {
+    const f = await fixture();
+    // The owner test connection can disable this ordinary trigger. All DDL
+    // and the forged insert share a transaction: a failure rolls the trigger
+    // state back, and successful setup re-enables it before commit.
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+      await tx.execute(sql`ALTER TABLE device_group_memberships DISABLE TRIGGER device_group_memberships_group_owner_check`);
+      await tx.execute(sql`INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.c.deviceId}, ${f.groupId}, ${f.c.orgId})`);
+      // Flush the deferred device/org FK events before ALTER TABLE.
+      await tx.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
+      await tx.execute(sql`ALTER TABLE device_group_memberships ENABLE TRIGGER device_group_memberships_group_owner_check`);
+    });
+    try {
+      const forged = await query(sql`SELECT device_id FROM device_group_memberships
+        WHERE group_id = ${f.groupId} AND device_id = ${f.c.deviceId}`);
+      expect(forged).toHaveLength(1);
+      expect((await expand(f)).deviceIds.sort()).toEqual([f.a.deviceId, f.b.deviceId].sort());
+      expect(await withSystemDbAccessContext(() =>
+        resolveDeviceIdsForAssignment('device_group', f.groupId, null, f.partnerId)))
+        .not.toContain(f.c.deviceId);
+    } finally {
+      await query(sql`DELETE FROM device_group_memberships
+        WHERE group_id = ${f.groupId} AND device_id = ${f.c.deviceId} AND org_id = ${f.c.orgId}`);
+    }
   });
 
   runDb('write refusals detect a partner group for an org-session caller (no partner id in the DB context)', async () => {

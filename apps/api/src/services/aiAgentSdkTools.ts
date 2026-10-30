@@ -265,6 +265,7 @@ export const TOOL_TIERS = {
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
+  get_huntress_agents: 1,
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
@@ -723,6 +724,8 @@ export const TOOL_TIERS = {
   manage_contract_templates: 1,
   manage_contract_documents: 1,
   get_device_billing: 1,
+  // W14 PR B (#6784): accounting sync. Reads tier 1; link / unlink / sync supervised, push four-eyes (aiGuardrails).
+  manage_accounting_sync: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -2351,6 +2354,7 @@ export function buildBreezeSdkTools(
       'get_huntress_incidents',
       registryDescription('get_huntress_incidents'),
       {
+        incidentId: uuid.optional(),
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
         status: z.string().max(30).optional(),
@@ -2362,6 +2366,22 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_agents',
+      registryDescription('get_huntress_agents'),
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+        offlineOnly: z.boolean().optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -4035,6 +4055,14 @@ export function buildBreezeSdkTools(
       makeHandler('get_device_billing', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // Spec 2026-09-23 W14 PR B (#6784): QuickBooks / Xero sync. Pushes are four-eyes and agent-human-only.
+    tool(
+      'manage_accounting_sync',
+      registryDescription('manage_accounting_sync'),
+      inputShape('manage_accounting_sync'),
+      makeHandler('manage_accounting_sync', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
     // Classes live in aiGuardrails (W04 class review); every device write is
     // supervised, remote sessions and elevation requests four-eyes.
@@ -5129,6 +5157,8 @@ export function buildBreezeSdkTools(
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
+      // Inline (aiToolsContracts.registryParity reads this enum from source); W14 PR B (#6784) adds
+      // preview_invoice / generate_invoice and generate_invoice's assertions, as toolInputSchemas.
       {
         action: z.enum([
           'create_draft',
@@ -5141,12 +5171,18 @@ export function buildBreezeSdkTools(
           'pause',
           'resume',
           'cancel',
+          'preview_invoice',
+          'generate_invoice',
         ]),
         contractId: uuid.optional(),
         lineId: uuid.optional(),
         input: z.record(z.string(), z.unknown()).optional(),
         line: z.record(z.string(), z.unknown()).optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
+        periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+        autoIssue: z.boolean().optional(),
+        expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),
