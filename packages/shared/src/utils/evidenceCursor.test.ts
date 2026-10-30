@@ -13,10 +13,10 @@ function expectOrder(earlier: EvidenceCursor, later: EvidenceCursor) {
 }
 
 describe('evidence cursor', () => {
-  it('orders same-log rows by recordId even when ts disagrees', () => {
+  it('orders same-log rows by recordId when timestamps tie (clamped batch), ahead of createdAt', () => {
     expectOrder(
-      { ...base, logName: 'System', recordId: 10 },
-      { ...base, ts: '2026-10-29T09:00:00Z', logName: 'System', recordId: 11 },
+      { ...base, createdAt: '2026-10-29T11:00:05Z', id: 'z', logName: 'System', recordId: 10 },
+      { ...base, id: '0', logName: 'System', recordId: 11 },
     );
   });
 
@@ -92,6 +92,22 @@ describe('evidence cursor', () => {
     expect(isAfterCursor(row, cursor, 'resolve')).toBe(true);
     expect(isAfterCursor(row, cursor, 'trigger')).toBe(false);
     expect(isAfterCursor(cursor, row, 'trigger')).toBe(false);
+  });
+
+  it('a newer timestamp with a lower recordId (log cleared/wrapped) is after the cursor', () => {
+    const cursor = { ...base, logName: 'System', recordId: 9000 };
+    const row = { ...base, ts: '2026-10-29T10:05:00Z', id: '0', logName: 'System', recordId: 3 };
+    expect(compareEvidence(row, cursor)).toBe(1);
+    expect(isAfterCursor(row, cursor, 'trigger')).toBe(true);
+    expect(maxEvidence(cursor, row)).toBe(row);
+  });
+
+  it('never compares recordIds across different channels', () => {
+    const cursor = { ...base, logName: 'System', recordId: 1 };
+    const row = { ...base, id: '0', logName: 'Application', recordId: 999 };
+    // Same ts and createdAt, different log: a causal tie, not ordered by recordId.
+    expect(isAfterCursor(row, cursor, 'trigger')).toBe(false);
+    expect(isAfterCursor(row, cursor, 'resolve')).toBe(true);
   });
 
   it('undefined cursor admits every row', () => {

@@ -16,9 +16,14 @@ function timestamp(value: string): number {
 }
 
 /**
- * Same-log finite record IDs take precedence over timestamps. Ingest clamps
- * unparseable/future device timestamps to the batch receipt time, so trigger
- * and recovery can share a timestamp; record IDs break that tie causally.
+ * Order: device timestamp, then (only when timestamps are equal) the Windows
+ * record id of the same log, then server ingest time, then row id.
+ *
+ * Ingest clamps unparseable/future device timestamps to the batch receipt
+ * time, so a trigger and its recovery can share a timestamp; the same-log
+ * record id breaks that tie causally. Record ids never outrank timestamps:
+ * they are per channel and reset when a log is cleared or wraps, so a newer
+ * event can carry a lower id. Ids from different logs are never compared.
  */
 export function compareEvidence(a: EvidenceCursor, b: EvidenceCursor): -1 | 0 | 1 {
   return compareCausal(a, b) || compare(a.id, b.id);
@@ -30,17 +35,17 @@ export function compareEvidence(a: EvidenceCursor, b: EvidenceCursor): -1 | 0 | 
  * `isAfterCursor` treats them as a tie instead of letting UUID order decide.
  */
 function compareCausal(a: EvidenceCursor, b: EvidenceCursor): -1 | 0 | 1 {
+  const byTs = compare(timestamp(a.ts), timestamp(b.ts));
+  if (byTs !== 0) return byTs;
   if (
     a.logName !== undefined && a.logName === b.logName &&
     typeof a.recordId === 'number' && Number.isFinite(a.recordId) &&
     typeof b.recordId === 'number' && Number.isFinite(b.recordId)
   ) {
-    const order = compare(a.recordId, b.recordId);
-    if (order !== 0) return order;
+    const byRecord = compare(a.recordId, b.recordId);
+    if (byRecord !== 0) return byRecord;
   }
-
-  return compare(timestamp(a.ts), timestamp(b.ts)) ||
-    compare(timestamp(a.createdAt), timestamp(b.createdAt));
+  return compare(timestamp(a.createdAt), timestamp(b.createdAt));
 }
 
 /** Tie (same causal position) → consumed on the trigger side, after on the resolve side. */
