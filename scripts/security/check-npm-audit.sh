@@ -93,7 +93,13 @@ while [ "$#" -gt 0 ]; do
       case "$1" in
         --lockfile) LOCKFILE="$(abs_path "$2")" ;;
         --exceptions) EXCEPTIONS_FILE="$(abs_path "$2")" ;;
-        --findings-json) FINDINGS_JSON="$(abs_path "$2")" ;;
+        # Removed as soon as it is named, before any later usage error can
+        # exit: a findings file from an earlier run must never be mistaken
+        # for this run's.
+        --findings-json)
+          FINDINGS_JSON="$(abs_path "$2")"
+          rm -f "$FINDINGS_JSON"
+          ;;
       esac
       shift 2
       ;;
@@ -106,11 +112,6 @@ cd "$ROOT_DIR"
 
 THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
 MAX_EXCEPTION_DAYS=30
-
-# A findings file from an earlier run must never be mistaken for this run's.
-if [ -n "$FINDINGS_JSON" ]; then
-  rm -f "$FINDINGS_JSON"
-fi
 
 fail() {
   echo "ERROR: $*" >&2

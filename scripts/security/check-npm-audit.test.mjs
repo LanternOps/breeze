@@ -503,3 +503,15 @@ test('--findings-json fully explains the exit status: 1 iff a blocking finding o
     assert.equal(res.status, explains ? 1 : 0, `${JSON.stringify(doc)}\n${out(res)}`);
   }
 });
+
+test('a usage error after --findings-json still removes a stale findings file', () => {
+  const res = runGate({
+    osvReport: CLEAN,
+    exceptions: { exceptions: [] },
+    args: ['--findings-json', 'findings.json', '--bogus'],
+    setup: (root) => writeFileSync(join(root, 'findings.json'), '{"stale": true}'),
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /unknown option/, out(res));
+  assert.equal(existsSync(join(res.root, 'findings.json')), false, out(res));
+});

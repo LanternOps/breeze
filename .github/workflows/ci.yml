@@ -334,7 +334,7 @@ jobs:
 
       # security-audit's base/head advisory comparison (W1, #10744).
       - name: Test dependency audit comparison
-        run: node --test .github/scripts/new-findings.test.mjs
+        run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
 
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
@@ -1574,77 +1574,12 @@ jobs:
       # Same reason: a regression in the base/head comparison could wave a
       # new advisory through.
       - name: Test dependency audit base/head comparison
-        run: node --test .github/scripts/new-findings.test.mjs
+        run: node --test .github/scripts/new-findings.test.mjs .github/scripts/security-audit-compare.test.mjs
 
-      # Blocks only on advisories the change introduces (W1, #10744). A newly
-      # published advisory against a package already on the base would
-      # otherwise fail every PR and queue entry at once (3 merge-queue
-      # ejections in one sampled week); it is a warning here and surfaces on
-      # main through security.yml's daily npm-audit tracking issue.
-      #   - head passes → pass (no base scan needed);
-      #   - head wrote no findings document → scan integrity / tooling failure
-      #     → block, whatever the base says;
-      #   - no usable base (no base sha, fetch failed, base scan unusable) →
-      #     block on every blocking advisory, as before;
-      #   - else new-findings.mjs: block on blocking findings the head adds;
-      #     findings on both warn; an expired / out-of-policy exception blocks
-      #     only when the change edits the exceptions file.
+      # Blocks only on advisories the change introduces (W1, #10744); the
+      # decision tree is in the script header and its test.
       - name: Run dependency audit (high+critical gate, new advisories only)
-        run: |
-          # NOTE: no -e. Every exit status below is handled explicitly; the
-          # step's own exit is always one of the decisions listed above.
-          set -uo pipefail
-          gate=scripts/security/check-npm-audit.sh
-          exceptions=scripts/security/npm-audit-exceptions.json
-          head_json="${RUNNER_TEMP}/npm-audit-head.json"
-          base_json="${RUNNER_TEMP}/npm-audit-base.json"
-
-          bash "$gate" --findings-json "$head_json"
-          head_status=$?
-          if [ "$head_status" -eq 0 ]; then
-            exit 0
-          fi
-          # The gate writes its findings document only after every integrity
-          # check passed, so a missing one is never compared away.
-          if [ ! -s "$head_json" ]; then
-            echo "::error title=Dependency audit failed::The head scan failed before producing findings (scanner exit, package-count mismatch, or an unusable exceptions file) — see the log above. This blocks regardless of the base."
-            exit 1
-          fi
-          if [ -z "${CI_BASE_SHA}" ]; then
-            echo "::notice title=Dependency audit::No base commit for a ${GITHUB_EVENT_NAME} run; every blocking advisory blocks."
-            exit "$head_status"
-          fi
-          base_dir="${RUNNER_TEMP}/npm-audit-base"
-          rm -rf "$base_dir" && mkdir -p "$base_dir" || exit "$head_status"
-          # The lockfile keeps its basename: osv-scanner picks the parser by it.
-          if ! git cat-file -e "${CI_BASE_SHA}^{commit}" 2>/dev/null \
-            || ! git show "${CI_BASE_SHA}:pnpm-lock.yaml" > "$base_dir/pnpm-lock.yaml" \
-            || ! git show "${CI_BASE_SHA}:${exceptions}" > "$base_dir/npm-audit-exceptions.json"; then
-            echo "::warning title=Audit comparison disabled::Could not read the lockfile and exceptions file at base ${CI_BASE_SHA}; every blocking advisory blocks."
-            exit "$head_status"
-          fi
-
-          echo "Head audit failed on advisories or exceptions (exit ${head_status}); comparing against base ${CI_BASE_SHA} — only what this change introduces blocks."
-          echo "::group::Dependency audit at base ${CI_BASE_SHA}"
-          bash "$gate" --lockfile "$base_dir/pnpm-lock.yaml" --exceptions "$base_dir/npm-audit-exceptions.json" --findings-json "$base_json"
-          base_status=$?
-          echo "::endgroup::"
-          if [ ! -s "$base_json" ]; then
-            echo "::warning title=Audit comparison disabled::The base scan failed before producing findings (exit ${base_status}); every blocking advisory blocks."
-            exit "$head_status"
-          fi
-
-          compare=(--base "$base_json" --head "$head_json")
-          # Unknown → touched (fail closed: an out-of-policy exception blocks).
-          if touched=$(git diff --name-only --no-renames "${CI_BASE_SHA}" HEAD -- "$exceptions"); then
-            if [ -n "$touched" ]; then
-              compare+=(--exceptions-touched)
-            fi
-          else
-            echo "::warning::Could not diff ${exceptions} against base; treating it as edited."
-            compare+=(--exceptions-touched)
-          fi
-          node .github/scripts/new-findings.mjs "${compare[@]}"
+        run: bash .github/scripts/security-audit-compare.sh
 
       - name: Run supply-chain hardening guard
         run: bash scripts/security/check-supply-chain-hardening.sh
