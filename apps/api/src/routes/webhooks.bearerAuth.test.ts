@@ -14,8 +14,8 @@ const { validateWebhookUrlSafetyWithDnsMock } = vi.hoisted(() => ({
   validateWebhookUrlSafetyWithDnsMock: vi.fn(),
 }));
 
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: vi.fn(() => ({ queueDelivery: vi.fn() })),
+vi.mock('../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: vi.fn(async () => undefined),
 }));
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
@@ -36,7 +36,7 @@ vi.mock('../services/notificationSenders/webhookSender', () => ({
   },
 }));
 
-vi.mock('../db', () => ({
+vi.mock('../db', () => ({ runAfterDbContextCommit: vi.fn((_label, work) => work()),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),

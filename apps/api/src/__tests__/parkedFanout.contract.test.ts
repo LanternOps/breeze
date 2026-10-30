@@ -101,7 +101,8 @@ const EE_FILES = existsSync(EE) ? walk(EE).map((f) => `ee/${relative(EE, f).repl
 
 /** Every background/service module that reads devices or carries a Quick Support/ephemeral exclusion. */
 function discovered(): string[] {
-  const hits = new Set<string>();
+  // This wrapper delegates device reads to filterEngine, so SQL discovery cannot see it.
+  const hits = new Set<string>(['services/partnerGroupPreview.ts']);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
     if (DEVICE_READ.test(code) || EXCLUSION_MARKERS.test(code)) hits.add(file);
@@ -112,6 +113,7 @@ function discovered(): string[] {
 
 /** What a human sees (listings, reports, read models, billing counts). */
 const VISIBILITY_MODULES: Record<string, string> = {
+  'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
@@ -206,6 +208,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
   'services/localVaultUpdate.ts': 'site-locked vault update (W03-D12, #6757; lifted from routes/backup/vault.ts): row-locks the ONE device that owns a vault the caller already resolved, inside the caller\'s sites, then updates that vault; selects no targets, and the follow-up vault_configure to a parked device is refused by command delivery',

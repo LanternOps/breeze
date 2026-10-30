@@ -1076,12 +1076,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'pause',
       'resume',
       'cancel',
+      // Full-control W14 PR B (#6784).
+      'preview_invoice',
+      'generate_invoice',
     ]),
     contractId: uuid.optional(),
     lineId: uuid.optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     line: z.record(z.string(), z.unknown()).optional(),
     patch: z.record(z.string(), z.unknown()).optional(),
+    // generate_invoice assertions, copied from preview_invoice's generateWith (W14 PR B).
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+    autoIssue: z.boolean().optional(),
+    expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
   }),
 
   // Service deliverables W02 (#5573 spec §10). Payload objects stay open

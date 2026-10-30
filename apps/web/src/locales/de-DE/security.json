@@ -959,6 +959,19 @@
     "statusFilterLabel": "Bedrohungsstatus",
     "categoryFilterLabel": "Kategorie"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Abgelehnt: Entscheidungsprotokoll des Geräts nicht verfügbar",
+    "userDeclined": "Auf dem Gerät abgelehnt",
+    "userDecisionPending": "Keine Antwort auf dem Gerät"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "Der Benutzer hat diese Anfrage auf dem Gerät zurückgezogen."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Abfrage auf dem Gerät fehlgeschlagen",
+    "user_denied": "Vom Benutzer abgelehnt",
+    "user_timeout": "Keine Antwort auf dem Gerät"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Audit-Verlauf konnte nicht geladen werden (HTTP {{status}})",

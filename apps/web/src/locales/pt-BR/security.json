@@ -959,6 +959,19 @@
     "statusFilterLabel": "Status da ameaça",
     "categoryFilterLabel": "Categoria"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Recusada: registro de decisão do dispositivo indisponível",
+    "userDeclined": "Recusada no dispositivo",
+    "userDecisionPending": "Sem resposta no dispositivo"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "O usuário retirou esta solicitação no dispositivo."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Falha no aviso no dispositivo",
+    "user_denied": "Recusada pelo usuário",
+    "user_timeout": "Sem resposta no dispositivo"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Falha ao carregar o histórico de auditoria (HTTP {{status}})",

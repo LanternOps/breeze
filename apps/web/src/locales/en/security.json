@@ -959,6 +959,19 @@
     "statusFilterLabel": "Status",
     "categoryFilterLabel": "Category"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Refused: device decision record unavailable",
+    "userDeclined": "Declined on the device",
+    "userDecisionPending": "No answer on the device"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "The user withdrew this request on the device."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Prompt failed on the device",
+    "user_denied": "Declined by the user",
+    "user_timeout": "No answer on the device"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Failed to load audit history (HTTP {{status}})",
