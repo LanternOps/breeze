@@ -5,7 +5,8 @@ vi.mock('./auth', () => ({
 }));
 
 import { fetchWithAuth } from './auth';
-import { useFeaturesStore } from './featuresStore';
+import { renderHook, waitFor } from '@testing-library/react';
+import { useAiAgentsPolicyDecideGate, useFeaturesStore } from './featuresStore';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -16,7 +17,7 @@ describe('featuresStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
       softwarePackages: { uploadsEnabled: true },
@@ -52,7 +53,7 @@ describe('featuresStore', () => {
       res({ features: { billing: true, support: true } })
     );
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
   });
 
@@ -72,7 +73,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('network'));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -82,7 +83,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(res({}, false, 500));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -116,10 +117,46 @@ describe('featuresStore', () => {
     expect(useFeaturesStore.getState().features.aiAgentsSweepAct).toBe(enabled === true);
   });
 
+  it.each([
+    [true, true],
+    [false, false],
+    [undefined, false],
+    ['true', false],
+  ])('reads policy-decide capability %s and defaults closed (#9939)', async (value, expected) => {
+    fetchMock.mockResolvedValueOnce(res({ features: { aiAgentsPolicyDecide: value } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.aiAgentsPolicyDecide).toBe(expected);
+  });
+
+  it('shares one /config request between concurrent loads (#9939)', async () => {
+    // Every gate hook on a page (the sidebar alone mounts four, the approvals
+    // inbox one more) calls load() from its own mount effect, all before the
+    // first response lands — each used to fire its own GET /config.
+    let resolveFetch: (value: Response) => void = () => {};
+    fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => { resolveFetch = resolve; }));
+    const loads = [useFeaturesStore.getState().load(), useFeaturesStore.getState().load(), useFeaturesStore.getState().load()];
+    resolveFetch(res({ features: { aiAgentsPolicyDecide: true } }));
+    await Promise.all(loads);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useFeaturesStore.getState().features.aiAgentsPolicyDecide).toBe(true);
+    expect(useFeaturesStore.getState().loaded).toBe(true);
+  });
+
+  it('useAiAgentsPolicyDecideGate loads /config once and reports the policy-decide flag (#9939)', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { aiAgentsPolicyDecide: true, aiAgentsSweepAct: false } }));
+    const { result } = renderHook(() => useAiAgentsPolicyDecideGate());
+    expect(result.current).toEqual({ enabled: false, loaded: false });
+
+    await waitFor(() => expect(result.current).toEqual({ enabled: true, loaded: true }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/config', { method: 'GET' });
+  });
+
   it('coerces missing fields to false', async () => {
     fetchMock.mockResolvedValueOnce(res({}));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, aiAgentsPolicyDecide: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
   });
 });
 
