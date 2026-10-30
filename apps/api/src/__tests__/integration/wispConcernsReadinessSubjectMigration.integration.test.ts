@@ -1,5 +1,5 @@
 /**
- * Live-Postgres proof for 2027-01-10-120000-wisp-concerns-readiness-subject.sql
+ * Live-Postgres proof for 2027-01-17-110500-wisp-concerns-readiness-subject.sql
  * (#10386): readiness notes stored under the org subject move to the
  * `readiness` kind, the org concerns the onboarding note overwrote are
  * resolved, and nothing else is touched. Replaying it is a no-op.
@@ -18,7 +18,7 @@ import { createOrganization, createPartner } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION = '2027-01-10-120000-wisp-concerns-readiness-subject.sql';
+const MIGRATION = '2027-01-17-110500-wisp-concerns-readiness-subject.sql';
 const migrationSql = readFileSync(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
 
 async function replayMigration() {
