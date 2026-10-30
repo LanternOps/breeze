@@ -3769,6 +3769,7 @@
         "m365_query_signins": "Inicios de sesión de Microsoft 365",
         "m365_query_sites": "Sitios de Microsoft 365",
         "m365_query_users": "Usuarios de Microsoft 365",
+        "manage_accounting_sync": "Administrar la sincronización contable",
         "manage_alert_rules": "Administrar reglas de alerta",
         "manage_alerts": "Administrar alertas",
         "manage_audit_baselines": "Administrar líneas base de auditoría",
@@ -4019,6 +4020,14 @@
           "dashboard": "Panel de SNMP",
           "history": "Historial de métricas de SNMP"
         },
+        "manage_accounting_sync": {
+          "customers": "Listar clientes contables",
+          "income_accounts": "Listar cuentas de ingresos",
+          "mappings": "Listar asignaciones contables",
+          "owed_operations": "Listar operaciones de sincronización pendientes",
+          "remote_candidates": "Buscar registros del proveedor para vincular",
+          "status": "Ver el estado de la sincronización contable"
+        },
         "manage_alert_rules": {
           "alert_summary": "Resumen de alertas",
           "create_rule": "Crear una regla de alerta",
@@ -4131,6 +4140,7 @@
           "create_draft": "Crear un borrador de contrato",
           "delete_draft": "Eliminar un borrador de contrato",
           "pause": "Pausar un contrato",
+          "preview_invoice": "Previsualizar la próxima factura del contrato",
           "remove_line": "Quitar una línea de contrato",
           "resume": "Reanudar un contrato",
           "update": "Actualizar un contrato",

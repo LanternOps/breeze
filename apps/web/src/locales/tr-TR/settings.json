@@ -3769,6 +3769,7 @@
         "m365_query_signins": "Microsoft 365 oturum açmaları",
         "m365_query_sites": "Microsoft 365 siteleri",
         "m365_query_users": "Microsoft 365 kullanıcıları",
+        "manage_accounting_sync": "Muhasebe senkronizasyonunu yönet",
         "manage_alert_rules": "Uyarı kurallarını yönet",
         "manage_alerts": "Uyarıları yönet",
         "manage_audit_baselines": "Denetim taban çizgilerini yönet",
@@ -4019,6 +4020,14 @@
           "dashboard": "SNMP panosu",
           "history": "SNMP metrik geçmişi"
         },
+        "manage_accounting_sync": {
+          "customers": "Muhasebe müşterilerini listele",
+          "income_accounts": "Gelir hesaplarını listele",
+          "mappings": "Muhasebe eşlemelerini listele",
+          "owed_operations": "Bekleyen senkronizasyon işlemlerini listele",
+          "remote_candidates": "Bağlanacak sağlayıcı kayıtlarını ara",
+          "status": "Muhasebe senkronizasyon durumunu göster"
+        },
         "manage_alert_rules": {
           "alert_summary": "Uyarı özeti",
           "create_rule": "Bir uyarı kuralı oluştur",
@@ -4131,6 +4140,7 @@
           "create_draft": "Bir sözleşme taslağı oluştur",
           "delete_draft": "Bir sözleşme taslağını sil",
           "pause": "Bir sözleşmeyi duraklat",
+          "preview_invoice": "Sonraki sözleşme faturasını önizle",
           "remove_line": "Bir sözleşme kalemini kaldır",
           "resume": "Bir sözleşmeyi sürdür",
           "update": "Bir sözleşmeyi güncelle",

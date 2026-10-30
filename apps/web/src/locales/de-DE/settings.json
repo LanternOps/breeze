@@ -3769,6 +3769,7 @@
         "m365_query_signins": "Microsoft 365-Anmeldungen",
         "m365_query_sites": "Microsoft 365-Websites",
         "m365_query_users": "Microsoft 365-Benutzer",
+        "manage_accounting_sync": "Buchhaltungssynchronisierung verwalten",
         "manage_alert_rules": "Warnregeln verwalten",
         "manage_alerts": "Warnungen verwalten",
         "manage_audit_baselines": "Audit-Baselines verwalten",
@@ -4019,6 +4020,14 @@
           "dashboard": "SNMP-Dashboard",
           "history": "SNMP-Metrikverlauf"
         },
+        "manage_accounting_sync": {
+          "customers": "Buchhaltungskunden auflisten",
+          "income_accounts": "Ertragskonten auflisten",
+          "mappings": "Buchhaltungszuordnungen auflisten",
+          "owed_operations": "Ausstehende Synchronisierungsvorgänge auflisten",
+          "remote_candidates": "Anbieterdatensätze zum Verknüpfen suchen",
+          "status": "Status der Buchhaltungssynchronisierung anzeigen"
+        },
         "manage_alert_rules": {
           "alert_summary": "Warnungsübersicht",
           "create_rule": "Eine Warnregel erstellen",
@@ -4131,6 +4140,7 @@
           "create_draft": "Einen Vertragsentwurf erstellen",
           "delete_draft": "Einen Vertragsentwurf löschen",
           "pause": "Einen Vertrag pausieren",
+          "preview_invoice": "Vorschau der nächsten Vertragsrechnung anzeigen",
           "remove_line": "Eine Vertragsposition entfernen",
           "resume": "Einen Vertrag fortsetzen",
           "update": "Einen Vertrag aktualisieren",

@@ -3769,6 +3769,7 @@
         "m365_query_signins": "Microsoft 365 sign-ins",
         "m365_query_sites": "Microsoft 365 sites",
         "m365_query_users": "Microsoft 365 users",
+        "manage_accounting_sync": "Manage accounting sync",
         "manage_alert_rules": "Manage alert rules",
         "manage_alerts": "Manage alerts",
         "manage_audit_baselines": "Manage audit baselines",
@@ -3835,7 +3836,7 @@
         "manage_ticket_checklist_templates": "Manage checklist templates for tickets",
         "manage_ticket_config": "Manage ticket settings",
         "manage_ticket_forms": "Manage ticket forms",
-        "manage_ticket_inbox": "Manage the ticket email inbox",
+        "manage_ticket_inbox": "Manage the ticket mailbox",
         "manage_ticket_response_templates": "Manage ticket reply templates",
         "manage_ticket_routing_rules": "Manage routing rules for tickets",
         "manage_tickets": "Manage tickets",
@@ -4019,6 +4020,14 @@
           "dashboard": "SNMP dashboard",
           "history": "SNMP metric history"
         },
+        "manage_accounting_sync": {
+          "customers": "List accounting customers",
+          "income_accounts": "List income accounts",
+          "mappings": "List accounting mappings",
+          "owed_operations": "List pending sync operations",
+          "remote_candidates": "Search provider records to link",
+          "status": "Show accounting sync status"
+        },
         "manage_alert_rules": {
           "alert_summary": "Alert summary",
           "create_rule": "Create an alert rule",
@@ -4131,6 +4140,7 @@
           "create_draft": "Create a draft contract",
           "delete_draft": "Delete a draft contract",
           "pause": "Pause a contract",
+          "preview_invoice": "Preview the next contract invoice",
           "remove_line": "Remove a contract line",
           "resume": "Resume a contract",
           "update": "Update a contract",
