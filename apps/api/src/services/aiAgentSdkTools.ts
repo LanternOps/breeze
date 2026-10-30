@@ -123,8 +123,11 @@ export type PreToolUseResult =
    * `detail`: an optional model-actionable elaboration of a denial, published
    * beside `error` as `{ error, detail }` — the same shape the tool's own
    * handler returns (#10144, the launch_specialist pre-approval refusal).
+   *
+   * `message`: an optional person-facing sentence for the refusal, published
+   * as `{ error, detail, message }` — again the handler's own shape (#10193).
    */
-  | { allowed: false; error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+  | { allowed: false; error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
 
 /**
  * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
@@ -825,13 +828,14 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; detail?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
+  check: { error: string; detail?: string; message?: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
     : {
         error: check.error,
         ...(check.detail ? { detail: check.detail } : {}),
+        ...(check.message ? { message: check.message } : {}),
         ...(check.requiresCallerVerification
           ? { requiresCallerVerification: check.requiresCallerVerification }
           : {}),
