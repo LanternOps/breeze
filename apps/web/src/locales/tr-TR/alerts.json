@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% güven"
   },
   "alertDetailPage": {
+    "externalTickets": "Harici destek talepleri",
+    "externalTicketsFailedToLoad": "Harici destek talepleri yüklenemedi.",
     "loadingAlert": "Uyarı yükleniyor...",
     "backToAlerts": "Uyarılara geri dön",
     "goBack": "Geri dön",

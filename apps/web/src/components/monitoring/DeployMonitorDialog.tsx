@@ -9,7 +9,7 @@ import { navigateTo } from '@/lib/navigation';
 
 type ConfigPolicy = { id: string; name: string };
 type Site = { id: string; name: string };
-type Group = { id: string; name: string };
+type Group = { id: string; name: string; ownerScope?: 'organization' | 'partner' };
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -40,6 +40,7 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
   const [policies, setPolicies] = useState<ConfigPolicy[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsError, setGroupsError] = useState<string>();
   const [selectedPolicyId, setSelectedPolicyId] = useState('');
   const [level, setLevel] = useState<TargetLevel>('organization');
   const [targetId, setTargetId] = useState('');
@@ -56,11 +57,15 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
     void fetchAllSites<Site>('/orgs/sites')
       .then((list) => setSites(list))
       .catch(() => setSites([]));
-    void fetchWithAuth('/groups')
-      .then((res) => (res.ok ? res.json() : { data: [] }))
+    setGroupsError(undefined);
+    void fetchWithAuth(orgId ? '/groups' : '/groups?ownerScope=all')
+      .then((res) => {
+        if (!res.ok) throw new Error(t('deploy.errors.loadGroups'));
+        return res.json();
+      })
       .then((data) => setGroups(data.data ?? data.groups ?? []))
-      .catch(() => setGroups([]));
-  }, [open]);
+      .catch(() => setGroupsError(t('deploy.errors.loadGroups')));
+  }, [open, orgId, t]);
 
   useEffect(() => {
     if (mode !== 'new') return;
@@ -204,12 +209,26 @@ export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, o
                   onChange={(e) => setTargetId(e.target.value)}
                 >
                   <option value="">{t('deploy.selectTarget')}</option>
-                  {groups.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.name}
-                    </option>
-                  ))}
+                  {orgId ? groups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name}</option>
+                  )) : <>
+                    {groups.some((group) => group.ownerScope === 'partner') && (
+                      <optgroup label={t('deploy.partnerWideGroups')}>
+                        {groups.filter((group) => group.ownerScope === 'partner').map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </optgroup>
+                    )}
+                    {groups.some((group) => group.ownerScope !== 'partner') && (
+                      <optgroup label={t('deploy.organizationGroups')}>
+                        {groups.filter((group) => group.ownerScope !== 'partner').map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </optgroup>
+                    )}
+                  </>}
                 </select>
+              )}
+              {level === 'device_group' && groupsError && (
+                <p className="text-sm text-destructive" data-testid="deploy-monitor-groups-error">
+                  {groupsError}
+                </p>
               )}
               <input
                 data-testid="deploy-monitor-policy-name"

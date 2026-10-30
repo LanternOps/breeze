@@ -21,6 +21,7 @@ vi.mock('../jobs/peripheralJobs', () => ({
 }));
 
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => work(),
   db: {
     select: mockSelect,
     insert: mockInsert,

@@ -180,6 +180,8 @@ export const alerts = pgTable('alerts', {
   // Never set it from application code.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`)
 }, (table) => ({
+  // Composite target for alert_external_refs' database-driven org restamp.
+  idOrgUq: uniqueIndex('alerts_id_org_uq').on(table.id, table.orgId),
   // Backs the `alerts.critical` device-filter field (#968).
   activeCriticalIdx: index('idx_alerts_active_critical')
     .on(table.deviceId)

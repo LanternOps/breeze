@@ -123,9 +123,9 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/groups` | List groups |
+| `GET` | `/groups` | List groups; `ownerScope=organization` (default), `partner`, or `all` |
 | `GET` | `/groups/:id` | Get group details |
-| `POST` | `/groups` | Create group (static or dynamic) |
+| `POST` | `/groups` | Create group; body `ownerScope=organization` (default) or `partner` (dynamic only) |
 | `PATCH` | `/groups/:id` | Update group |
 | `DELETE` | `/groups/:id` | Delete group |
 | `GET` | `/groups/:id/devices` | List devices in group |
@@ -229,7 +229,7 @@ Each route requires the listed scope on the principal.
 
 | Method | Path | Scope | Description |
 |---|---|---|---|
-| `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations |
+| `GET` | `/partner-api/organizations` | `organizations:read` | Export organizations, including `externalLinks: [{ system, externalId, label }]` (empty array when none). Link insert, exported-field update, or deletion advances the org watermark so incremental polls re-emit it. |
 | `GET` | `/partner-api/sites` | `sites:read` | Export sites |
 | `GET` | `/partner-api/devices` | `devices:read` | Export devices |
 | `GET` | `/partner-api/device-inventory` | `inventory:read` | Export device inventory |
@@ -245,6 +245,9 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/alerts` | `alerts:read` | Latest-state alert feed with signed cursor and checkpoint |
 | `POST` | `/partner-api/alerts/:id/acknowledge` | `alerts:write` | Acknowledge an active alert as the principal. No body or `{}`; repeated acknowledgment returns `200` with `changed: false`. No alert content is returned. |
 | `POST` | `/partner-api/alerts/:id/resolve` | `alerts:write` | Resolve an active, acknowledged, or suppressed alert as the principal. Optional `note` (max 2,000 characters); repeated resolution returns `200` with `changed: false`. No alert content is returned. |
+| `PUT` | `/partner-api/alerts/:id/external-ticket` | `alerts:write` | Set the caller's reference: `{ externalId, externalUrl?, externalNumber? }`. HTTPS URL only, max 2,048 characters; ids/numbers are trimmed, 1–255 characters; control characters other than newlines/tabs are rejected. Unknown keys return `400`. Optional fields may be null; omission clears them. `201` on create; `200` on replacement or identical input (`changed: false`). |
+| `DELETE` | `/partner-api/alerts/:id/external-ticket` | `alerts:write` | Delete only the caller's reference. Idempotent `200 { schemaVersion: "1", deleted: boolean }`. |
+| `GET` | `/partner-api/alerts/:id/external-tickets` | `alerts:read` | Read all principals' references and PSA mappings from connections owned by the viewing partner or alert's org. Returns `{ schemaVersion: "1", data: [...] }`. |
 | `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
 | `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
 | `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). Every ticket record, here and in the feed, carries `mergedIntoTicketId` and `mergedAt`: both are set when this ticket was merged into another, and the record is then read-only; both are `null` otherwise. |
@@ -259,11 +262,42 @@ Each route requires the listed scope on the principal.
 | `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
 | `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
 | `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. Responds `{ "data": { "ok": true, "retired": <boolean> } }`; `retired` is `true` when a block-hours line with billing history was retired instead of deleted. |
-| `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). `submitterEmail` is stored as given and is not verified. |
+| `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Optional UUID `alertId` links an alert in that org with `created_from`, atomically with the ticket. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). `submitterEmail` is stored as given and is not verified. |
 | `PATCH` | `/partner-api/tickets/:id` | `tickets:write` | Update fields (not status/assignee, never SLA targets). Unknown keys are rejected. |
 | `POST` | `/partner-api/tickets/:id/status` | `tickets:write` | Change status (`status` or `statusId`, `resolutionNote` required when resolving). |
 | `POST` | `/partner-api/tickets/:id/assign` | `tickets:write` | Assign (`assigneeId`, or `null` to unassign). |
 | `POST` | `/partner-api/tickets/:id/comments` | `tickets:write` | Add a comment; `isPublic` is required (a public comment emails the requester). Supports `X-Idempotency-Key`. |
+
+Alert external references are namespaced by principal: one reference per
+principal and alert, with the same external ticket allowed on several alerts.
+PUT/DELETE cannot change another principal's reference. Partner-level viewers
+can read every principal's references plus mappings from their partner's or the
+alert organization's PSA connections. Org-scoped users and org-owned webhooks
+see only mappings from PSA connections owned by the alert's organization with
+no partner owner; they do not see partner-principal references or partner-owned
+PSA connection mappings. An identical PUT performs no write or audit,
+and repeated DELETE returns `deleted: false`. Neither requires an
+`X-Idempotency-Key`. PUT responds with `{ schemaVersion: "1", changed, data }`;
+`data` contains `alertId`, `orgId`, `partnerServicePrincipalId`, `externalId`,
+nullable `externalUrl`/`externalNumber`, and ISO `createdAt`/`updatedAt`.
+GET items contain `source` (`partner_api` or `psa`), nullable
+`partnerServicePrincipalId`, `externalId`, nullable `externalUrl`,
+`externalNumber`, `state`, ISO `createdAt`, and nullable ISO `updatedAt`.
+All three routes return `404 partner_alert_not_found` for unknown or
+out-of-reach alerts and `403` without the required scope. PUT/DELETE share the
+default 120/hour write budget.
+
+When creating a ticket with `alertId`, an unknown or out-of-reach alert returns
+`404 partner_alert_not_found`; an alert in another accessible org returns
+`422 partner_ticket_alert_org_mismatch`. A failure rolls back the ticket,
+external reference, alert link, and idempotency claim together. Reusing the
+same `X-Idempotency-Key` with a different `alertId` returns
+`409 partner_tickets_idempotency_key_reused`.
+
+Organization export `externalLinks` entries have string `system` and
+`externalId`, plus nullable string `label`. They are limited to the exporting
+partner, sorted by `system` and `externalId`, and read in the same snapshot as
+the org record. Deleting the last link re-emits the org with an empty array.
 
 Tenancy provisioning is deliberately **create-only**: there are no `DELETE` routes
 for organizations, sites, or enrollment keys, and organization deletion remains
@@ -320,6 +354,7 @@ schemas in
 | `GET` | `/alerts` | List alerts |
 | `GET` | `/alerts/summary` | Alert summary counts |
 | `GET` | `/alerts/:id` | Get alert details |
+| `GET` | `/alerts/:id/external-tickets` | Read external tickets using the usual alert read permission, organization and site scope. Org-scoped users see only org-owned PSA mappings, never partner-principal refs or partner-owned PSA mappings; partner-level viewers also see those refs and their partner’s PSA mappings. Returns `404` when the alert is not accessible. |
 | `POST` | `/alerts/:id/acknowledge` | Acknowledge alert. Valid only from `active`; returns `409` if the alert left that status first (another user, or the auto-resolve sweep, got there first) |
 | `POST` | `/alerts/:id/resolve` | Resolve alert. Returns `409` if the alert already reached a terminal status |
 | `POST` | `/alerts/:id/suppress` | Suppress alert. Returns `409` if the alert already reached a terminal status |

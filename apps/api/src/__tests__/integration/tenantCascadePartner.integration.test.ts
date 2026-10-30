@@ -120,6 +120,24 @@ async function seedPartner(label: string): Promise<PartnerSeed> {
     VALUES (${item!.id}, ${orgId}, ${partnerId}, 'USD', 9.00)
   `);
 
+  // Alert refs carry both org and partner axes; partner erasure must remove
+  // them while retaining the control partner's principal namespace.
+  const [principal] = await testDb.execute(sql`
+    INSERT INTO partner_service_principals (partner_id, name, scopes, created_by, updated_by)
+    VALUES (${partnerId}, 'Alert refs', ARRAY['alerts:write'], ${userId}, ${userId}) RETURNING id
+  `);
+  const [device] = await testDb.execute(sql`
+    INSERT INTO devices (org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version)
+    VALUES (${orgId}, ${siteId}, ${`ref-${suffix}`}, 'ref-purge', 'linux', '1', 'amd64', '1') RETURNING id
+  `);
+  const [alert] = await testDb.execute(sql`
+    INSERT INTO alerts (org_id, device_id, severity, title) VALUES (${orgId}, ${device!.id}, 'high', 'Ref purge') RETURNING id
+  `);
+  await testDb.execute(sql`
+    INSERT INTO alert_external_refs (alert_id, org_id, partner_id, partner_service_principal_id, external_id)
+    VALUES (${alert!.id}, ${orgId}, ${partnerId}, ${principal!.id}, 'PSA-purge')
+  `);
+
   return { partnerId, userId, roleId, orgId, siteId };
 }
 
@@ -159,6 +177,7 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('catalog_items', 'partner_id', purge.partnerId)).toBe(0);
     expect(await countById('catalog_item_prices', 'partner_id', purge.partnerId)).toBe(0);
     expect(await countById('catalog_item_org_pricing', 'partner_id', purge.partnerId)).toBe(0);
+    expect(await countById('alert_external_refs', 'partner_id', purge.partnerId)).toBe(0);
 
     // Control partner: every row untouched (no cross-tenant leak).
     expect(await countById('partners', 'id', control.partnerId)).toBe(1);
@@ -172,6 +191,7 @@ describe('cascadeDeletePartner — end-to-end', () => {
     expect(await countById('catalog_items', 'partner_id', control.partnerId)).toBe(1);
     expect(await countById('catalog_item_prices', 'partner_id', control.partnerId)).toBe(1);
     expect(await countById('catalog_item_org_pricing', 'partner_id', control.partnerId)).toBe(1);
+    expect(await countById('alert_external_refs', 'partner_id', control.partnerId)).toBe(1);
   });
 
   it('partner erasure removes partner webhooks and both event and test deliveries', async () => {

@@ -379,7 +379,7 @@ x-api-env: &api-env
   # deployment (same trap as AI_OPERATOR_* above).
   TOOL_SOURCES_ENABLED: ${TOOL_SOURCES_ENABLED:-false}
   # Flows (#5218) kill switch; default off. Must be mapped here or the API never sees it.
-  FLOWS_ENABLED: ${FLOWS_ENABLED:-false}
+  FLOWS_ENABLED: ${FLOWS_ENABLED:-true}
   # Hours a parked Tier-3 flow step waits for approval (1-168).
   FLOW_APPROVAL_TTL_HOURS: ${FLOW_APPROVAL_TTL_HOURS:-24}
   # Flow runs per owner executing at once (1-500) and run-body retention days (7-3650).

@@ -39,6 +39,22 @@ describe('buildPamActuationCommand', () => {
       .toBe(Date.parse(result.payload.expiresAt));
   });
 
+  it('adds decidedBy only when the snapshot carries it (#10190 W07)', () => {
+    const named = buildPamActuationCommand({ ...base, decidedBy: { technicianName: 'Dana Tech' } }, new Date(canonical.apply.serverTime));
+    expect(named).toEqual({
+      kind: 'command',
+      commandType: 'pam_apply_v2',
+      payload: { ...canonical.apply, decidedBy: { technicianName: 'Dana Tech' } },
+    });
+    const anonymous = buildPamActuationCommand({ ...base, decidedBy: { technicianName: null } }, new Date(canonical.apply.serverTime));
+    expect(anonymous.kind === 'command' && anonymous.payload).toEqual({ ...canonical.apply, decidedBy: { technicianName: null } });
+    const cleanup = buildPamActuationCommand(
+      { ...base, desiredState: 'cleanup', decidedBy: { technicianName: 'Dana Tech' } },
+      new Date(canonical.apply.serverTime),
+    );
+    expect(cleanup.kind === 'command' && cleanup.payload).not.toHaveProperty('decidedBy');
+  });
+
   it('builds cleanup with no apply-only keys', () => {
     const result = buildPamActuationCommand({
       ...base,

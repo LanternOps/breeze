@@ -39,7 +39,9 @@
     "inputs": "Entrées",
     "steps": "Étapes",
     "version": "Version {{version}}",
-    "createdInChat": "Créé dans Breeze AI"
+    "createdInChat": "Créé dans Breeze AI",
+    "movedFromJob": "Déplacé depuis une tâche",
+    "movedFromJobReverted": "(remis en tâche)"
   },
   "step": {
     "tool": "Outil",
@@ -61,7 +63,10 @@
     "builtin": {
       "notify": "Envoyer une notification",
       "http_request": "Appeler une API externe",
-      "ai": "Interroger l’IA"
+      "ai": "Interroger l’IA",
+      "run_script_on_targets": "Exécuter un script sur des appareils",
+      "resolve_targets": "Trouver des appareils",
+      "create_alert": "Déclencher une alerte"
     },
     "notify": {
       "channel": "Canal : {{channel}}"
@@ -74,6 +79,28 @@
       "tools": "Outils : {{tools}}",
       "noTools": "Aucun outil",
       "output": "Champs de résultat : {{fields}}"
+    },
+    "fleet": {
+      "script": "Script n° {{scriptId}}",
+      "target": {
+        "all": "Tous les appareils",
+        "devices": "Appareils listés",
+        "groups": "Groupes d'appareils",
+        "filter": "Appareils correspondant à un filtre",
+        "other": "Une cible d'appareils"
+      },
+      "conditions": "Appareils correspondant aux conditions de la tâche",
+      "triggerDevice": "L'appareil de l'événement",
+      "devices_one": "{{count}} appareil",
+      "devices_other": "{{count}} appareils",
+      "fromStep": {
+        "succeeded": "Appareils réussis dans {{stepId}}",
+        "dispatched": "Appareils atteints par {{stepId}}",
+        "failed": "Appareils en échec dans {{stepId}}"
+      },
+      "offlineQueue": "Appareils hors ligne : mis en file",
+      "offlineSkip": "Appareils hors ligne : ignorés",
+      "alert": "Gravité {{severity}}"
     }
   },
   "issues": {
@@ -442,5 +469,308 @@
     "readOnly": "Vous pouvez consulter ces limites, mais pas les modifier.",
     "partnerWideForbidden": "Modifier la valeur par défaut du partenaire nécessite l’accès à toutes les organisations.",
     "orgScopeReadOnly": "Les limites de l’organisation sont définies par votre fournisseur de services."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Identique",
+      "needs_review": "À vérifier",
+      "unconvertible": "Pas encore déplaçable"
+    },
+    "fidelityBlocked": "Pas encore déplaçable : {{blocker}}",
+    "severity": {
+      "blocker": "Bloquant",
+      "review": "À vérifier",
+      "info": "Remarque"
+    },
+    "state": {
+      "shadow": "En mode fantôme",
+      "switched": "Déplacé vers Flux",
+      "reverted": "Remis en tâche"
+    },
+    "actionNumber": "Action n° {{n}}",
+    "noFindings": "Rien à vérifier : cette tâche se déplace à l'identique.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Les flux sont désactivés ici",
+        "line": "Cette installation s'exécute avec FLOWS_ENABLED=false ; les tâches restent donc telles quelles."
+      },
+      "managed_row": {
+        "title": "Géré par Breeze",
+        "line": "Un agent IA ou un moniteur est propriétaire de cette tâche ; elle se déplace avec son propriétaire, pas seule."
+      },
+      "policy_workflow": {
+        "title": "Fait partie d'un workflow de politique",
+        "line": "Des politiques de configuration exécutent cette tâche ; elle se déplace quand les workflows de politique se déplaceront."
+      },
+      "already_retired": {
+        "title": "Déjà désactivée",
+        "line": "Cette tâche a été retirée et ne s'exécute plus."
+      },
+      "compliance_remediation_target": {
+        "title": "Utilisée pour la remédiation de conformité",
+        "line": "Une politique de conformité exécute cette tâche pour corriger des appareils ; elle reste une tâche pour l'instant."
+      },
+      "event_dispatch_not_durable": {
+        "title": "La remise des événements n'est pas durable ici",
+        "line": "Les tâches d'événement ne se déplacent qu'avec EVENT_DISPATCH_MODE=enforce et flow-event-trigger abonné."
+      },
+      "event_filter_not_strict": {
+        "title": "Le filtre d'événement ne peut pas être copié à l'identique",
+        "line": "Le filtre utilise des listes, des objets, trop de clés ou une clé que les flux ne savent pas comparer."
+      },
+      "event_filter_null": {
+        "title": "Le filtre d'événement teste les valeurs vides",
+        "line": "Les tâches distinguent une valeur vide d'une valeur absente ; pas les flux."
+      },
+      "cron_semantics_differ": {
+        "title": "Le calendrier se déclencherait à d'autres moments",
+        "line": "Cette expression cron ne correspond pas au planificateur de flux lors des changements d'heure."
+      },
+      "condition_unknown_type": {
+        "title": "Condition de cible inconnue",
+        "line": "Un type de condition que l'exécuteur de tâches ignore ; un flux ne peut pas la copier en toute sécurité."
+      },
+      "targets_over_cap": {
+        "title": "Trop d'appareils",
+        "line": "Cette tâche cible plus de 400 appareils ; une étape de flux en exécute au plus 500."
+      },
+      "partner_wide_group_target": {
+        "title": "Une tâche toutes organisations cible des groupes",
+        "line": "Les groupes d'appareils appartiennent à une seule organisation ; une tâche toutes organisations ne peut donc pas les cibler."
+      },
+      "run_as_elevated": {
+        "title": "S'exécute avec élévation",
+        "line": "Un script déplacé ne s'exécute jamais avec élévation sans que quelqu'un le surveille."
+      },
+      "restart_service_monitor_only": {
+        "title": "Redémarre un service",
+        "line": "Les redémarrages de service ne s'exécutent que depuis des moniteurs."
+      },
+      "command_mixed_os": {
+        "title": "Commande sans shell sur des appareils mixtes",
+        "line": "Choisissez un shell ou limitez les cibles à un seul système d'exploitation."
+      },
+      "notify_per_run_cap": {
+        "title": "Trop de notifications par exécution",
+        "line": "Les flux envoient au plus 20 notifications par exécution."
+      },
+      "channel_type_not_supported": {
+        "title": "Canal de notification non pris en charge",
+        "line": "Un flux ne peut pas encore envoyer vers ce type de canal."
+      },
+      "deploy_software_unmapped": {
+        "title": "Déploie des logiciels",
+        "line": "Le déploiement de logiciels ne passe pas encore dans Flux."
+      },
+      "monthly_cap_exceeded": {
+        "title": "S'exécute plus souvent que la limite mensuelle",
+        "line": "Les exécutions mensuelles estimées dépassent la limite de flux de ce propriétaire."
+      },
+      "reference_not_owned": {
+        "title": "Utilise un élément qui n'appartient pas à ce propriétaire",
+        "line": "Un script, un canal ou un groupe appartient à un autre propriétaire."
+      },
+      "partner_wide_webhook": {
+        "title": "Tâche webhook toutes organisations",
+        "line": "Un webhook de flux a besoin d'une organisation dans laquelle s'exécuter."
+      },
+      "text_template_unsupported": {
+        "title": "Le texte contient des accolades de modèle",
+        "line": "Un flux lirait les doubles accolades du texte comme un modèle."
+      },
+      "event_filter_string_coercion": {
+        "title": "Valeur de filtre texte",
+        "line": "Les tâches comparent en texte, les flux comparent exactement ; confirmez que le champ est toujours du texte."
+      },
+      "approval_each_run": {
+        "title": "Approbation à chaque exécution par webhook",
+        "line": "La préapprobation ne s'applique jamais aux exécutions par webhook ; chaque exécution attend donc une personne."
+      },
+      "command_becomes_script": {
+        "title": "La commande devient un script",
+        "line": "La commande est enregistrée comme script de bibliothèque que vous vérifiez avant de basculer."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "S'exécute une fois par organisation",
+        "line": "Un flux ignore les organisations suspendues et s'exécute dans au plus 500 d'entre elles."
+      },
+      "failure_notice_cap": {
+        "title": "Les avis d'échec peuvent être plafonnés",
+        "line": "Au-delà de 20 avis d'échec dans une exécution, les suivants ne sont pas envoyés."
+      },
+      "owner_cap_pressure": {
+        "title": "Proche de la limite mensuelle",
+        "line": "Ce flux utiliserait plus de 80 % des exécutions mensuelles du propriétaire."
+      },
+      "site_ceiling_removed": {
+        "title": "Périmètre d'appareils élargi",
+        "line": "La tâche était limitée aux sites de son créateur ; le flux ne l'est pas."
+      },
+      "webhook_body_shape": {
+        "title": "Le corps du webhook doit être un objet JSON",
+        "line": "Le flux ignore les envois qui ne sont pas des objets JSON."
+      },
+      "legacy_secret_header_possible": {
+        "title": "En-tête de secret simple",
+        "line": "Les expéditeurs qui envoient le secret en clair doivent passer à X-Breeze-Webhook-Token."
+      },
+      "name_truncated": {
+        "title": "Nom raccourci",
+        "line": "Les noms de flux font au plus 120 caractères."
+      },
+      "duration_minutes_ignored": {
+        "title": "Durée ignorée",
+        "line": "Le paramètre de durée d'événement n'a jamais eu d'effet et est supprimé."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Rattrape après une panne",
+        "line": "Après une interruption, le flux exécute une fois la dernière heure manquée ; la tâche n'en exécutait aucune."
+      },
+      "queued_is_success": {
+        "title": "En file d'attente compte comme réussi",
+        "line": "Comme avant, un script mis en file pour un appareil hors ligne compte comme envoyé."
+      },
+      "severity_mapped": {
+        "title": "Gravité convertie",
+        "line": "Élevée et moyenne deviennent avertissement ; faible et info deviennent info."
+      },
+      "notification_emails_unused": {
+        "title": "Liste d'e-mails supprimée",
+        "line": "La liste d'e-mails de la tâche n'a jamais servi et est supprimée."
+      },
+      "webhook_url_changes": {
+        "title": "Adresse du webhook",
+        "line": "Les expéditeurs gardent l'ancienne adresse ; elle redirige vers le flux."
+      },
+      "delegator_pause": {
+        "title": "Se met en pause si vous perdez l'accès",
+        "line": "Le flux s'exécute sous votre identité et se met en pause si votre compte est désactivé ou restreint."
+      }
+    },
+    "column": {
+      "heading": "Déplacer vers Flux",
+      "move": "Déplacer vers Flux",
+      "view": "Afficher"
+    },
+    "panel": {
+      "title": "Déplacer « {{name}} » vers Flux",
+      "subtitle": "Voyez ce qui est conservé, regardez le flux tourner en fantôme à côté de la tâche, puis basculez.",
+      "close": "Fermer",
+      "loading": "Vérification de cette tâche…",
+      "openFlow": "Ouvrir le flux",
+      "findingsHeading": "Ce qui est conservé",
+      "stepsHeading": "Étapes du flux",
+      "startShadow": "Démarrer le mode fantôme",
+      "switch": "Basculer…",
+      "switchedNote": "Le flux exécute maintenant cette tâche. La tâche est en lecture seule tant que vous ne la remettez pas en tâche.",
+      "flowUnavailable": "Impossible de charger le flux. Vous pouvez tout de même remettre la tâche."
+    },
+    "shadow": {
+      "heading": "Mode fantôme",
+      "explain": "Le flux contrôle chaque exécution de la tâche sans rien exécuter.",
+      "runs": "Exécutions contrôlées",
+      "divergences": "Différences",
+      "startedAt": "Démarré",
+      "divergence": {
+        "trigger_mismatch": "Dernière différence : le flux et la tâche n'étaient pas d'accord sur l'exécution.",
+        "target_set_mismatch": "Dernière différence : le flux aurait choisi d'autres appareils.",
+        "would_park": "Dernière différence : une étape aurait attendu une approbation.",
+        "over_cap": "Dernière différence : l'exécution aurait atteint une limite de flux."
+      }
+    },
+    "switch": {
+      "title": "Basculer « {{name}} » vers son flux",
+      "body": "Une minute après la bascule, le flux exécute chaque occurrence et la tâche s'arrête. Rien ne s'exécute deux fois.",
+      "blocked": {
+        "shadow_too_new": "La bascule s'ouvre quand le mode fantôme a 10 minutes.",
+        "shadow_too_short": "Le mode fantôme a contrôlé moins de 3 exécutions ou a moins de 7 jours.",
+        "shadow_divergent": "Le mode fantôme a vu des différences entre le flux et la tâche.",
+        "source_changed": "La tâche a changé depuis sa conversion. Démarrez un nouveau mode fantôme.",
+        "unconvertible": "Cette tâche ne peut pas encore être déplacée."
+      },
+      "acknowledge": "Basculer quand même ; j'accepte les éléments présentés.",
+      "preApprovalsHeading": "Exécuter sans attendre d'approbation",
+      "preApprovalsHelp": "Désactivé par défaut. Sans cela, chaque exécution d'une étape de script attend l'approbation d'une personne.",
+      "noPreApprovals": "Aucune étape de script ne peut s'exécuter sans approbation.",
+      "preApprove": "Préapprouver l'étape de script",
+      "currentTargets_one": "Cible {{count}} appareil aujourd'hui.",
+      "currentTargets_other": "Cible {{count}} appareils aujourd'hui.",
+      "maxTargets": "Nombre maximal d'appareils par exécution (1–{{max}})",
+      "maxTargetsInvalid": "Saisissez un nombre entier de 1 à {{max}}.",
+      "liveMembership": "Les appareils sont recalculés à chaque exécution. Quiconque peut modifier les membres d'un groupe peut changer où cela s'exécute ; une exécution au-delà de la limite met le flux en pause.",
+      "frozenDevices": "Si une exécution attend une approbation, l'approbateur voit les appareils exacts et seuls ceux-ci sont exécutés.",
+      "perOrgMultiplies": "Il s'agit d'un flux toutes organisations : la limite s'applique dans chaque organisation, le total peut donc être ce nombre multiplié par le nombre d'organisations.",
+      "webhookApprovalEachRun": "Les exécutions par webhook attendent toujours une approbation, même avec une préapprobation.",
+      "generatedScriptsHeading": "Scripts créés à la bascule",
+      "generatedScriptsHelp": "Chaque commande devient un script de bibliothèque dont le propriétaire est celui de la tâche.",
+      "acceptScripts": "J'ai vérifié ces scripts.",
+      "acceptScopeWidening": "J'accepte que le flux ne soit pas limité aux sites du créateur de la tâche.",
+      "webhookChange": "Les expéditeurs gardent l'ancienne adresse de webhook ; elle redirige vers le flux. Le flux n'accepte que des objets JSON, et les expéditeurs du secret en clair doivent utiliser X-Breeze-Webhook-Token.",
+      "acceptDelegatorLifecycle": "Le flux s'exécute sous mon identité. Si mon compte est désactivé ou perd l'accès, le flux se met en pause (pas la tâche).",
+      "confirm": "Basculer",
+      "switching": "Bascule en cours…"
+    },
+    "revert": {
+      "action": "Remettre en tâche…",
+      "title": "Remettre « {{name}} » en tâche ?",
+      "body": "La tâche est réactivée et le flux ne démarre plus rien de nouveau. Les exécutions déjà démarrées sur le flux se terminent.",
+      "confirm": "Remettre en tâche"
+    },
+    "toast": {
+      "created": "Mode fantôme démarré.",
+      "bulkCreated_one": "Mode fantôme démarré pour {{count}} tâche.",
+      "bulkCreated_other": "Mode fantôme démarré pour {{count}} tâches.",
+      "switched": "Basculé. Le flux exécute désormais cette tâche.",
+      "reverted": "Remise en tâche. La tâche s'exécute de nouveau."
+    },
+    "errors": {
+      "loadFailed": "Impossible de charger le déplacement de cette tâche.",
+      "createFailed": "Impossible de démarrer le mode fantôme.",
+      "bulkFailed": "Impossible de démarrer les modes fantôme.",
+      "switchFailed": "Impossible de basculer.",
+      "revertFailed": "Impossible de remettre en tâche.",
+      "automation_not_found": "Cette tâche n'existe plus.",
+      "conversion_not_found": "Ce déplacement n'existe plus.",
+      "conversion_exists": "Cette tâche est déjà en cours de déplacement.",
+      "source_changed": "La tâche a changé depuis son ouverture. Rechargez et réessayez.",
+      "unconvertible": "Cette tâche ne peut pas encore être déplacée.",
+      "draft_rejected": "Le brouillon de flux n'a pas été accepté.",
+      "partner_wide_forbidden": "Déplacer des tâches toutes organisations nécessite un accès partenaire complet.",
+      "owner_forbidden": "Sélectionnez d'abord une organisation.",
+      "interactive_session_required": "Connectez-vous en tant que personne pour effectuer cette action.",
+      "delegation_scope_restricted": "Votre accès est limité à certains sites ; vous ne pouvez donc ni basculer ni remettre en tâche.",
+      "not_shadow": "Seule une tâche en mode fantôme peut basculer.",
+      "not_switched": "Seule une tâche basculée peut être remise en tâche.",
+      "version_conflict": "Le flux a changé. Rechargez et réessayez.",
+      "already_enabled": "Le flux est déjà activé.",
+      "slug_unavailable": "Un autre flux utilise déjà ce nom.",
+      "shadow_too_new": "La bascule s'ouvre quand le mode fantôme a 10 minutes.",
+      "shadow_too_short": "Pas encore assez d'éléments du mode fantôme. Confirmez pour basculer quand même.",
+      "shadow_divergent": "Le mode fantôme a vu des différences. Confirmez-les pour basculer quand même.",
+      "scope_widening_not_accepted": "Acceptez le périmètre d'appareils élargi pour basculer.",
+      "automation_disabled": "Activez la tâche avant de la basculer.",
+      "automation_converted": "Cette tâche a été déplacée vers Flux. Modifiez-la là-bas.",
+      "automations_moved_to_flows": "Les nouvelles tâches sont créées dans Flux.",
+      "flow_not_found": "Le flux de cette tâche n'existe plus.",
+      "revert_closed": "Le retour en tâche est fermé sur cette installation.",
+      "generated_script_rejected": "Impossible de créer un script pour cette tâche.",
+      "permission_missing": "Il vous manque une permission dont le flux a besoin.",
+      "pre_approval_not_eligible": "Une étape ne peut pas être préapprouvée.",
+      "invalid": "Le flux n'est pas valide.",
+      "event_dispatch_not_durable": "La remise des événements n'est pas durable ici.",
+      "webhook_secret_missing": "Le secret du webhook est manquant."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Les tâches passent dans Flux.",
+        "r1Body": "Les nouvelles tâches sont créées dans Flux. Déplacez chaque tâche quand son mode fantôme correspond ; vous pouvez la remettre en tâche."
+      },
+      "convertAll": "Démarrer le mode fantôme pour toutes les tâches convertibles",
+      "converting": "Démarrage…",
+      "bulkSummary": "{{created}} démarré(s), {{skipped}} ignoré(s).",
+      "newJobOpensFlows": "Nouveau flux"
+    }
   }
 }

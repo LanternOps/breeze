@@ -1070,6 +1070,28 @@ describe('buildApproverAuthContextForIntent (#4177, W04)', () => {
     expect(permState.getUserPermissions).toHaveBeenCalledWith('approver-1', { partnerId: 'partner-1', orgId: 'org-1' });
   });
 
+  // Full-control W14 PR B (#6784, PR B quorum QB6): the partner-wide gate (canManagePartnerWidePolicies) reads
+  // partnerOrgAccess; a released partner-axis context must carry the CURRENT membership's value.
+  it.each(['all', 'selected'] as const)('carries the live partner membership orgAccess (%s) as partnerOrgAccess', async (orgAccess) => {
+    dbState.selectUsersResults.push([approver]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: null, roleId: 'role-1', scope: 'partner', orgAccess,
+      ...(orgAccess === 'selected' ? { allowedOrgIds: ['org-1'] } : {}),
+    });
+    const result = await buildApproverAuthContextForIntent(agentIntent(), 'approver-1');
+    expect(result!.partnerOrgAccess).toBe(orgAccess);
+  });
+
+  it('an org-scoped user-owned release carries no partnerOrgAccess, even for an orgAccess:all partner member', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      permissions: [], partnerId: 'partner-1', orgId: 'org-1', roleId: 'role-1', scope: 'partner', orgAccess: 'all',
+    });
+    const result = await buildAuthContextForIntent(baseIntent({ partnerId: 'partner-1', originPrincipalKind: 'user_session' } as Partial<ActionIntent>));
+    expect(result!.scope).toBe('organization');
+    expect(result!.partnerOrgAccess ?? null).toBeNull();
+  });
+
   it('returns null for an org-axis approver — never widens an org member to partner scope', async () => {
     dbState.selectUsersResults.push([approver]);
     permState.getUserPermissions.mockResolvedValueOnce({

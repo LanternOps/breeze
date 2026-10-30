@@ -1,7 +1,7 @@
 /**
  * Tool Catalog W06 (#5221) Task A4 — the `resolve_targets` built-in (Tier 1,
- * `devices.read`): a target, a legacy condition array, or an earlier fleet
- * step's device set, resolved once in the run org. Its output is the fleet
+ * `devices.read`): a target, a legacy condition array, explicit device ids, or
+ * an earlier fleet step's device set, resolved once in the run org. Its output is the fleet
  * shape with every set equal to the resolved set, plus each device's hostname
  * and display name (converted Jobs' per-device notices and alerts read them).
  *
@@ -17,9 +17,10 @@ import { loadFleetStepOutput } from './stepOutputs';
 import type { BuiltinContext } from './types';
 
 export type ResolveTargetsInput =
-  | { target: DeploymentTargetConfig; conditions?: undefined; fromStep?: undefined }
-  | { conditions: LegacyCondition[]; target?: undefined; fromStep?: undefined }
-  | { fromStep: { stepId: string; set: 'succeeded' | 'dispatched' | 'failed' }; target?: undefined; conditions?: undefined };
+  | { target: DeploymentTargetConfig; conditions?: undefined; deviceIds?: undefined; fromStep?: undefined }
+  | { conditions: LegacyCondition[]; target?: undefined; deviceIds?: undefined; fromStep?: undefined }
+  | { deviceIds: string[]; target?: undefined; conditions?: undefined; fromStep?: undefined }
+  | { fromStep: { stepId: string; set: 'succeeded' | 'dispatched' | 'failed' }; target?: undefined; conditions?: undefined; deviceIds?: undefined };
 
 function policyFailure(code: 'targets_unresolvable' | 'targets_over_cap', message: string): StepOutcome {
   return { kind: 'failed', code, message, policy: true };
@@ -43,6 +44,10 @@ export async function executeResolveTargets(input: ResolveTargetsInput, ctx: Bui
         : sets.failedDeviceIds;
     if (ids.length > FLEET_MAX_TARGETS) return policyFailure('targets_over_cap', overCapMessage(ids.length));
     found = await resolveDeviceIdsInRunOrg(run, ids);
+  } else if (input.deviceIds) {
+    // Explicit ids (rendered templates included), kept to the run org's devices like a fromStep set.
+    if (input.deviceIds.length > FLEET_MAX_TARGETS) return policyFailure('targets_over_cap', overCapMessage(input.deviceIds.length));
+    found = await resolveDeviceIdsInRunOrg(run, input.deviceIds);
   } else {
     const resolved = await resolveTargetsOnce(run, input.target ? { target: input.target } : { conditions: input.conditions! });
     if (resolved.problems.length > 0) {

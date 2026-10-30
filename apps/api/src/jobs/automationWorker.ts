@@ -7,6 +7,7 @@
  * - execution of automation runs
  */
 
+import { captureException } from '../services/sentry';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { groupOwnerMatchesMembershipOrg } from '../services/deviceGroupOwnership';
@@ -58,6 +59,30 @@ import { writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvent
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from '../services/executionTargetGating';
 import { notHoldingOrgCondition } from '../services/unassignedPool/selectorPredicate';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
+import { occurrenceKey } from '@breeze/shared';
+import {
+  OccurrenceClaimedError,
+  claimOccurrence,
+  currentConversionForAutomation,
+  eventInstant,
+  eventOccurrenceKey,
+  legacyPrefers,
+  loadSwitchedConvertedAutomations,
+  reportOccurrenceAnomaly,
+  scheduleInstantFromSlotKey,
+  switchedConvertedAutomationCondition,
+  type ClaimExisting,
+  type ConversionStateView,
+  type ShadowFanoutView,
+} from '../services/flows/conversion/claims';
+import type { ShadowRunTrigger } from '../services/flows/conversion/shadow';
+
+/**
+ * #5221 B4 — the shadow hooks load on first use: only a row with a shadow
+ * conversion ever reaches them, so the worker (and every suite that mocks its
+ * DB and schema partially) never loads the converter's read path otherwise.
+ */
+const loadShadow = () => import('../services/flows/conversion/shadow');
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -382,10 +407,19 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
     .select()
     .from(automations)
     .where(eq(automations.enabled, true));
+  // #5221 B2 (Decision 6) — legacy keeps loading SWITCHED rows (the switch
+  // disabled them), for the occurrences it still prefers: those before
+  // switch_at. A row disabled any other way is never read here.
+  const switchedRows = await loadSwitchedConvertedAutomations(db);
+  const slotInstant = new Date(Math.floor(scanDate.getTime() / 60_000) * 60_000);
 
   let due = 0;
 
-  for (const automation of candidates) {
+  const entries: Array<{ automation: typeof candidates[number]; switched: ConversionStateView | null }> = [
+    ...candidates.map((automation) => ({ automation, switched: null })),
+    ...switchedRows.map(({ automation, conversion }) => ({ automation, switched: conversion })),
+  ];
+  for (const { automation, switched } of entries) {
     let trigger;
     try {
       trigger = normalizeAutomationTrigger(automation.trigger);
@@ -401,6 +435,10 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
       continue;
     }
 
+    if (switched && !legacyPrefers(switched, slotInstant, false)) {
+      continue;
+    }
+
     due += 1;
 
     await queue.add(
@@ -410,6 +448,7 @@ async function processScanSchedules(_scanAt: string): Promise<{ due: number }> {
         automationId: automation.id,
         slotKey,
         scanAt: scanDate.toISOString(),
+        ...(switched ? { enqueuedWhileUnswitched: false } : {}),
       },
       {
         jobId: `automation-schedule-${automation.id}-${slotKey}`,
@@ -489,17 +528,132 @@ async function commitThenEnqueue<R extends object>(
   return result as unknown as R;
 }
 
-function processTriggerSchedule(data: TriggerScheduleJobData): Promise<{ runId?: string; skipped?: string }> {
+type TriggerResult = { runId?: string; skipped?: string; claimedBy?: ClaimExisting };
+
+/**
+ * #5221 B2 (Decision 6) — the legacy half of the occurrence-claim contract,
+ * for a STANDALONE row (classes M, A and P can never carry a conversion and
+ * never reach this). Runs inside the admission transaction, right before the
+ * run insert:
+ *  - locks the automation row and reads its generation
+ *    (`currentConversionForAutomation`); no generation ⇒ today's path, no hook;
+ *  - `legacyPrefers` false ⇒ the occurrence is not attempted at all;
+ *  - otherwise returns the `onCreated` hook that claims the occurrence in the
+ *    run's own transaction and, on a conflict, throws `OccurrenceClaimedError`
+ *    so the run rolls back with it.
+ * An occurrence with no key (an event id that is not a uuid) is admitted
+ * without a claim; a switched flow never attempts it.
+ */
+async function legacyOccurrenceGate(
+  automation: typeof automations.$inferSelect,
+  o: { key: string | null; instant: Date | null; enqueuedWhileUnswitched: boolean; eventLabel?: string },
+): Promise<{
+  skip?: 'occurrence_not_preferred';
+  onCreated?: NonNullable<Parameters<typeof createAutomationRunRecord>[0]['onCreated']>;
+  conversion?: ConversionStateView;
+}> {
+  const conversion = await currentConversionForAutomation(db, automation.id);
+  if (!conversion) return {};
+  if (o.eventLabel !== undefined) {
+    if (!o.key) reportOccurrenceAnomaly('flow_conversion_event_key_unbuildable', 'legacy', o.eventLabel);
+    else if (!o.instant) reportOccurrenceAnomaly('flow_conversion_event_instant_missing', 'legacy', o.key);
+  }
+  if (!legacyPrefers(conversion, o.instant, o.enqueuedWhileUnswitched)) return { skip: 'occurrence_not_preferred', conversion };
+  const key = o.key;
+  if (!key) {
+    if (o.eventLabel === undefined) console.warn(`[AutomationWorker] automation ${automation.id}: occurrence has no claim key; admitted without a claim`);
+    return { conversion };
+  }
+  return {
+    conversion,
+    onCreated: async (tx, run) => {
+      const claim = await claimOccurrence(tx, {
+        automationId: automation.id,
+        owner: { orgId: automation.orgId, partnerId: automation.partnerId },
+        keys: [key],
+        engine: 'legacy',
+        conversionId: conversion.id,
+        legacyRunId: run.id,
+        occurrenceAt: o.instant,
+      });
+      if (!claim.ok) throw new OccurrenceClaimedError(claim.existing);
+    },
+  };
+}
+
+/** `createAutomationRunRecord` with the gate's hook; a lost claim becomes the `occurrence_claimed` skip. */
+async function createGatedRunRecord(
+  options: Parameters<typeof createAutomationRunRecord>[0],
+  onCreated: Parameters<typeof createAutomationRunRecord>[0]['onCreated'],
+): Promise<Awaited<ReturnType<typeof createAutomationRunRecord>> | { claimedBy: ClaimExisting }> {
+  try {
+    return await createAutomationRunRecord(onCreated ?{ ...options, onCreated } : options);
+  } catch (err) {
+    if (err instanceof OccurrenceClaimedError) return { claimedBy: err.existing };
+    throw err;
+  }
+}
+
+/**
+ * #5221 B4 (Decision 3) — after a legacy run of a SHADOW row commits, compare
+ * it with the converted draft (target set, fleet cap, would-park). Gated on the
+ * conversion the occurrence gate already read: a row without a conversion, or
+ * a switched / reverted one, does nothing here. Best effort: the observation
+ * never throws, and this wrapper guarantees a failure can never fail the run.
+ */
+async function observeShadowAfterRun(
+  conversion: ConversionStateView | undefined,
+  automation: typeof automations.$inferSelect,
+  run: ShadowRunTrigger,
+  legacyTargetIds: readonly string[],
+): Promise<void> {
+  if (conversion?.state !== 'shadow') return;
+  try {
+    const { observeShadowRun } = await loadShadow();
+    await observeShadowRun({
+      conversionId: conversion.id,
+      automation: { id: automation.id, orgId: automation.orgId, partnerId: automation.partnerId },
+      run,
+      legacyTargetIds,
+    });
+  } catch (err) {
+    console.error(`[AutomationWorker] shadow observation failed for automation ${automation.id}`, err);
+    captureException(err);
+  }
+}
+
+/** #5221 B4 — the fan-out's trigger comparison for a shadow row (both directions). Never throws. */
+async function observeShadowTrigger(
+  conversionId: string,
+  shadow: ShadowFanoutView,
+  event: BreezeEvent<Record<string, unknown>>,
+  legacyMatched: boolean,
+): Promise<void> {
+  try {
+    const { recordShadow, shadowTriggerVerdict } = await loadShadow();
+    const verdict = shadowTriggerVerdict({ flowTrigger: shadow.flowTrigger, eventType: event.type, payload: event.payload, legacyMatched });
+    if (verdict) await recordShadow(conversionId, { ...verdict, documentDigest: shadow.documentDigest });
+  } catch (err) {
+    console.error(`[AutomationWorker] shadow trigger comparison failed for conversion ${conversionId}`, err);
+    captureException(err);
+  }
+}
+
+function processTriggerSchedule(data: TriggerScheduleJobData): Promise<TriggerResult> {
   return commitThenEnqueue(() => admitTriggerSchedule(data));
 }
 
 async function admitTriggerSchedule(
   data: TriggerScheduleJobData,
-): Promise<TriggerAdmission<{ runId?: string; skipped?: string }>> {
+): Promise<TriggerAdmission<TriggerResult>> {
+  // #5221 B2: or a switched row (its own predicate; see the scan).
   const [automation] = await db
     .select()
     .from(automations)
-    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true)))
+    .where(and(
+      eq(automations.id, data.automationId),
+      or(eq(automations.enabled, true), switchedConvertedAutomationCondition()),
+    ))
     .limit(1);
 
   if (!automation) {
@@ -579,11 +733,21 @@ async function admitTriggerSchedule(
     }
   }
 
+  // #5221 B2 — the claim is the UTC ISO minute of the slot (automation_runs
+  // keeps legacy's compact spelling; claims.ts reads both as history).
+  const slotInstant = scheduleInstantFromSlotKey(data.slotKey);
+  const gate = await legacyOccurrenceGate(automation, {
+    key: slotInstant ? occurrenceKey.schedule(slotInstant) : null,
+    instant: slotInstant,
+    enqueuedWhileUnswitched: data.enqueuedWhileUnswitched ?? true,
+  });
+  if (gate.skip) return { skipped: gate.skip };
+
   // #3189 — the slot is the occurrence. A replay of this job (stalled-job
   // recovery) gets the run the first attempt minted back, and the enqueue
   // below then either dedupes on the stable `automation-run-<runId>` job id,
   // resumes a half-dispatched run, or short-circuits a finished one.
-  const { run, targetDeviceIds } = await createAutomationRunRecord({
+  const created = await createGatedRunRecord({
     automation,
     triggeredBy: `schedule:${data.slotKey}`,
     details: {
@@ -593,13 +757,17 @@ async function admitTriggerSchedule(
     ...(boundDeviceIds ? { boundDeviceIds } : {}),
     ...(boundDeviceIds && boundTargetDiagnostics ? { targetDiagnostics: boundTargetDiagnostics } : {}),
     occurrenceKey: `schedule:${data.slotKey}`,
-  });
+  }, gate.onCreated);
+  if ('claimedBy' in created) return { skipped: 'occurrence_claimed', claimedBy: created.claimedBy };
+  const { run, targetDeviceIds } = created;
 
   return {
     runId: run.id,
     // #7187 — enqueued only after this transaction commits (commitThenEnqueue).
     afterCommit: async () => {
       await enqueueAutomationRun(run.id, targetDeviceIds);
+      // A replayed job that got its first run back was observed the first time.
+      if (!created.reused) await observeShadowAfterRun(gate.conversion, automation, { kind: 'schedule', at: slotInstant }, targetDeviceIds);
     },
   };
 }
@@ -617,17 +785,21 @@ async function policyWorkflowMaintenanceSuppressed(deviceId: string): Promise<bo
   }
 }
 
-function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?: string; skipped?: string }> {
+function processTriggerEvent(data: TriggerEventJobData): Promise<TriggerResult> {
   return commitThenEnqueue(() => admitTriggerEvent(data));
 }
 
 async function admitTriggerEvent(
   data: TriggerEventJobData,
-): Promise<TriggerAdmission<{ runId?: string; skipped?: string }>> {
+): Promise<TriggerAdmission<TriggerResult>> {
+  // #5221 B2: or a switched row (see the scan).
   const [automation] = await db
     .select()
     .from(automations)
-    .where(and(eq(automations.id, data.automationId), eq(automations.enabled, true), isNull(automations.retiredAt)))
+    .where(and(
+      eq(automations.id, data.automationId),
+      or(and(eq(automations.enabled, true), isNull(automations.retiredAt)), switchedConvertedAutomationCondition()),
+    ))
     .limit(1);
 
   if (!automation) {
@@ -646,6 +818,7 @@ async function admitTriggerEvent(
   }
 
   const payload = normalizePayload(data.eventPayload);
+  const isPolicyWorkflow = Boolean(trigger.filter?._policyWorkflow);
   if (trigger.filter?._policyWorkflow) {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : undefined;
     if (!deviceId || !await policyWorkflowApplies(automation, deviceId, db)) {
@@ -788,7 +961,24 @@ async function admitTriggerEvent(
     });
   }
 
-  const { run, targetDeviceIds } = await createAutomationRunRecord({
+  // #5221 B2 — a standalone row only: classes M, A and P never carry a
+  // conversion (the converter refuses managed_row / policy_workflow), so their
+  // admission is left exactly as it was.
+  let onCreated: Parameters<typeof createAutomationRunRecord>[0]['onCreated'];
+  let conversion: ConversionStateView | undefined;
+  if (!isManaged && !isPolicyWorkflow) {
+    const gate = await legacyOccurrenceGate(automation, {
+      key: eventOccurrenceKey(data.eventId),
+      instant: eventInstant(data.eventTimestamp),
+      enqueuedWhileUnswitched: data.enqueuedWhileUnswitched ?? true,
+      eventLabel: `event:${data.eventId ?? 'missing'}`,
+    });
+    if (gate.skip) return { skipped: gate.skip };
+    onCreated = gate.onCreated;
+    conversion = gate.conversion;
+  }
+
+  const created = await createGatedRunRecord({
     automation,
     triggeredBy: `event:${data.eventType}`,
     details: {
@@ -800,7 +990,9 @@ async function admitTriggerEvent(
     // #3189 — one run per (automation, event). Without an event id there is no
     // occurrence identity to deduplicate on.
     ...(data.eventId ? { occurrenceKey: `event:${data.eventId}` } : {}),
-  });
+  }, onCreated);
+  if ('claimedBy' in created) return { skipped: 'occurrence_claimed', claimedBy: created.claimedBy };
+  const { run, targetDeviceIds } = created;
 
   // #5290 — record the response attempt on the OPEN episode for the pair. The
   // outcome walks forward only: automationActionResults terminalises it to
@@ -824,6 +1016,7 @@ async function admitTriggerEvent(
       } else {
         await enqueueAutomationRun(run.id, targetDeviceIds);
       }
+      if (!created.reused) await observeShadowAfterRun(conversion, automation, { kind: 'event', eventType: data.eventType, payload }, targetDeviceIds);
     },
   };
 }
@@ -1489,10 +1682,26 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
     .select()
     .from(automations)
     .where(and(ownershipCondition, eq(automations.enabled, true), isNull(automations.retiredAt)));
+  // #5221 B2 (Decision 6) — switched rows of the same owners. Their job says
+  // what this read saw (`enqueuedWhileUnswitched: false`), and an event at or
+  // after switch_at is the flow's: not enqueued here, and refused again at
+  // admission if a job for it exists anyway.
+  // #5221 B4 — the same read also returns the owners' SHADOW generations (with
+  // the draft's trigger), the only rows the shadow hook looks at; a row with
+  // no conversion is never in it.
+  const convertedRows = await loadSwitchedConvertedAutomations(db, ownershipCondition, { withShadow: true });
+  const switchedRows = convertedRows.filter((r) => r.conversion.state === 'switched');
+  const shadowById = new Map(convertedRows.flatMap((r) => (r.shadow ? [[r.automation.id, { conversionId: r.conversion.id, view: r.shadow }] as const] : [])));
+  const eventAt = eventInstant(event.metadata?.timestamp);
 
   const payload = normalizePayload(event.payload);
 
-  for (const automation of candidates) {
+  const entries: Array<{ automation: typeof candidates[number]; switched: ConversionStateView | null }> = [
+    ...candidates.map((automation) => ({ automation, switched: null })),
+    ...switchedRows.map(({ automation, conversion }) => ({ automation, switched: conversion })),
+  ];
+  for (const { automation, switched } of entries) {
+    if (switched && !legacyPrefers(switched, eventAt, false)) continue;
     // #7277: never hand an automation the terminal event of its own script.
     if (scriptOrigin.originAutomationId && automation.id === scriptOrigin.originAutomationId) continue;
 
@@ -1515,7 +1724,10 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
       trigger = { ...trigger, filter };
     }
 
-    if (!shouldTriggerEventAutomation(trigger, event.type, payload)) {
+    const legacyMatched = shouldTriggerEventAutomation(trigger, event.type, payload);
+    const shadow = switched ? undefined : shadowById.get(automation.id);
+    if (shadow) await observeShadowTrigger(shadow.conversionId, shadow.view, event, legacyMatched);
+    if (!legacyMatched) {
       continue;
     }
 
@@ -1528,6 +1740,7 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
         eventId: event.id,
         eventPayload: payload,
         eventTimestamp: event.metadata.timestamp,
+        ...(switched ? { enqueuedWhileUnswitched: false } : {}),
       },
       {
         jobId: `automation-event-${automation.id}-${event.id}`,
