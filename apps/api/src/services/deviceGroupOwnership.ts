@@ -86,6 +86,18 @@ export const PARTNER_GROUP_READ_ONLY_BODY = {
   code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
 };
 
+/**
+ * The AI assistant's refusal for any mutation of a partner-wide group. Unlike
+ * the REST body it names where the change CAN be made, so the model can relay
+ * a next step instead of a dead end: a partner admin with access to all
+ * organizations edits or deletes the group on the Device Groups page (All orgs
+ * filter); membership is filter-driven and never changed by hand.
+ */
+export const PARTNER_GROUP_AI_READ_ONLY_BODY = {
+  error: 'Partner-wide device groups are read-only for the AI assistant. A partner administrator with access to all organizations can rename, change the filter of, or delete this group in Device Groups → All orgs. Its members come from its filter and cannot be added or removed by hand.',
+  code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
+};
+
 export interface GroupOrgMembershipPair {
   groupId: string;
   orgId: string;

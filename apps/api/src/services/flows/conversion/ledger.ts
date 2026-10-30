@@ -15,7 +15,7 @@
  */
 import { createHash } from 'node:crypto';
 import { and, desc, eq, inArray, sql, type AnyColumn, type SQL } from 'drizzle-orm';
-import type { FlowConversionState, FlowDocumentV1, FlowIssue } from '@breeze/shared';
+import type { FlowConversionState, FlowConvertedFromDto, FlowDocumentV1, FlowIssue } from '@breeze/shared';
 import { db } from '../../../db';
 import { automations, flowAutomationConversions, flows } from '../../../db/schema';
 import { canonicalizeArguments } from '../../actionIntents/canonicalize';
@@ -65,6 +65,26 @@ export async function conversionSummariesFor(automationIds: readonly string[]): 
     .orderBy(flowAutomationConversions.automationId, desc(flowAutomationConversions.createdAt), desc(flowAutomationConversions.id));
   for (const r of rows) out.set(r.automationId, { id: r.id, state: r.state, flowId: r.flowId });
   return out;
+}
+
+/**
+ * W6 C3: the Job a flow was converted from (flow detail "Moved from Job"), or
+ * null. Read in the caller's context: a caller who cannot see the Job (RLS)
+ * gets null rather than a name it may not read.
+ */
+export async function convertedFromForFlow(flowId: string): Promise<FlowConvertedFromDto | null> {
+  const [r] = await db
+    .select({
+      conversionId: flowAutomationConversions.id,
+      state: flowAutomationConversions.state,
+      automationId: automations.id,
+      name: automations.name,
+    })
+    .from(flowAutomationConversions)
+    .innerJoin(automations, eq(automations.id, flowAutomationConversions.automationId))
+    .where(eq(flowAutomationConversions.flowId, flowId))
+    .limit(1);
+  return r ? { automationId: r.automationId, name: r.name, conversionId: r.conversionId, state: r.state } : null;
 }
 
 /**

@@ -390,7 +390,9 @@
     "filterRules": "Filter Rules",
     "cancel": "Cancel",
     "creating": "Creating...",
-    "createGroup": "Create Group"
+    "createGroup": "Create Group",
+    "created": "Device group created",
+    "missingGroupId": "Group created but server response was missing the group ID. Please refresh the page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Assign a policy to",
     "policy2": "Policy",
     "selectAPolicy": "Select a policy",
-    "applying": "Applying..."
+    "applying": "Applying...",
+    "ownerFilterAll": "All groups",
+    "ownerFilterOrganization": "Organization groups",
+    "ownerFilterPartner": "All orgs",
+    "noGroupsMatchFilter": "No groups match this filter.",
+    "managedByPartner": "Managed by your service provider. Membership rules are not shown; you see the devices from your organization.",
+    "partnerDynamicType": "Dynamic · All orgs",
+    "partnerDeleteWarning": "This removes the group from every organization and deletes its policy assignments."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Failed to fetch hardware inventory",
@@ -2862,7 +2871,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -2932,7 +2943,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -3019,7 +3032,9 @@
       },
       "software": {
         "installed": "Has Software Installed",
-        "notInstalled": "Missing Software"
+        "notInstalled": "Missing Software",
+        "version": "Software Version",
+        "vendor": "Software Vendor"
       },
       "logShippingFailing": "Log Shipping Failing"
     }
@@ -4667,5 +4682,28 @@
       "authorityDevice": "This asset is now linked to a managed device. Edit the placement on the device.",
       "mfaRequired": "Multi-factor authentication is required to change the physical placement."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Group owner",
+    "organization": "This organization",
+    "partner": "All organizations",
+    "dynamicOnly": "partner-wide, dynamic only",
+    "scopeHint": "Membership is evaluated in every organization you manage; static membership, sites and group/organization filter conditions are not available.",
+    "allOrgs": "All orgs",
+    "pending": "Updating membership…",
+    "current": "Last evaluated {{time}}",
+    "notEvaluated": "Not evaluated yet",
+    "partial_one": "{{count}} org not evaluated · last good evaluation {{time}}",
+    "partial_other": "{{count}} orgs not evaluated · last good evaluation {{time}}",
+    "retryHint": "Breeze retries these organizations automatically. Saving the group's filter starts a new evaluation.",
+    "showMembers": "Show members",
+    "hideMembers": "Hide members",
+    "device": "Device",
+    "organizationColumn": "Organization",
+    "status": "Status",
+    "loading": "Loading members…",
+    "membersError": "Failed to load group members.",
+    "retry": "Retry",
+    "emptyMembers": "No devices in this group."
   }
 }

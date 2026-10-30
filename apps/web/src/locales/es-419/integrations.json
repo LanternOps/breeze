@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Proveedores de copia de seguridad",
-    "subtitle": "Lleve el estado de las copias de seguridad de terceros a Breeze. Hoy es compatible con Cove Data Protection.",
+    "subtitle": "Consulta en Breeze el estado de los respaldos de Cove Data Protection y NinjaOne SaaS Backup (Dropsuite).",
     "partnerOnly": "Las conexiones con proveedores de copia de seguridad solo están disponibles para cuentas de partner.",
     "addConnection": "Agregar conexión",
     "providerLabel": "Proveedor",
@@ -648,7 +648,19 @@
     "errorTest": "No se pudo probar la conexión de copia de seguridad",
     "errorSync": "No se pudo iniciar la sincronización",
     "errorDelete": "No se pudo eliminar la conexión de copia de seguridad",
-    "errorMap": "No se pudo actualizar la asignación"
+    "errorMap": "No se pudo actualizar la asignación",
+    "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "resellerTokenLabel": "Token de distribuidor",
+    "authTokenLabel": "Token de autenticación",
+    "baseUrlLabel": "URL de la API",
+    "baseUrlHelp": "Se muestra como URL de la API en el portal de socios de NinjaOne SaaS Backup, en Configuración → Configuración de la API",
+    "dropsuiteCredentialsHelp": "Basta con acceso de distribuidor de solo lectura. Los tokens se almacenan cifrados.",
+    "dropsuiteReentryHelp": "Deja ambos tokens en blanco para conservar las credenciales guardadas o ingresa ambos para reemplazarlas.",
+    "workloads": "Cargas de trabajo",
+    "unmappedWorkloads": "Cargas de trabajo sin asignar",
+    "unmappedWorkloadsSummary": "{{customers}} clientes sin asignar, {{devices}} cargas de trabajo",
+    "workloadMappingHelp": "Asigna cada cliente del proveedor a una organización de Breeze. Las cargas de trabajo de clientes sin asignar se cuentan, pero nunca se almacenan.",
+    "deleteWorkloadsConfirm": "¿Eliminar \"{{name}}\"? Sus cargas de trabajo sincronizadas y su historial se eliminarán de Breeze. El producto de respaldo no se modifica."
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "No se pudieron cargar contratos para esta organización. Cierre y vuelva a intentarlo.",

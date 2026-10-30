@@ -390,7 +390,9 @@
     "filterRules": "Filterregeln",
     "cancel": "Abbrechen",
     "creating": "Wird erstellt...",
-    "createGroup": "Gruppe erstellen"
+    "createGroup": "Gruppe erstellen",
+    "created": "Gerätegruppe erstellt",
+    "missingGroupId": "Die Gruppe wurde erstellt, aber die Serverantwort enthielt keine Gruppen-ID. Bitte laden Sie die Seite neu."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} Entfernte ausgeblendet",
@@ -1361,7 +1363,14 @@
     "assignAPolicyTo": "Weisen Sie eine Richtlinie zu",
     "policy2": "Richtlinie",
     "selectAPolicy": "Wählen Sie eine Richtlinie aus",
-    "applying": "Wird angewendet..."
+    "applying": "Wird angewendet...",
+    "ownerFilterAll": "Alle Gruppen",
+    "ownerFilterOrganization": "Organisationsgruppen",
+    "ownerFilterPartner": "Alle Org.",
+    "noGroupsMatchFilter": "Keine Gruppen entsprechen diesem Filter.",
+    "managedByPartner": "Von Ihrem Dienstleister verwaltet. Mitgliedschaftsregeln werden nicht angezeigt; Sie sehen die Geräte Ihrer Organisation.",
+    "partnerDynamicType": "Dynamisch · Alle Org.",
+    "partnerDeleteWarning": "Dadurch wird die Gruppe aus allen Organisationen entfernt und ihre Richtlinienzuweisungen werden gelöscht."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Das Abrufen des Hardwareinventars ist fehlgeschlagen",
@@ -2862,7 +2871,9 @@
       },
       "software": {
         "installed": "Software installiert ist",
-        "notInstalled": "Fehlende Software"
+        "notInstalled": "Fehlende Software",
+        "version": "Softwareversion",
+        "vendor": "Softwareanbieter"
       },
       "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
@@ -2932,7 +2943,9 @@
       },
       "software": {
         "installed": "Software installiert ist",
-        "notInstalled": "Fehlende Software"
+        "notInstalled": "Fehlende Software",
+        "version": "Softwareversion",
+        "vendor": "Softwareanbieter"
       },
       "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
@@ -3019,7 +3032,9 @@
       },
       "software": {
         "installed": "Software installiert ist",
-        "notInstalled": "Fehlende Software"
+        "notInstalled": "Fehlende Software",
+        "version": "Softwareversion",
+        "vendor": "Softwareanbieter"
       },
       "logShippingFailing": "Log-Übertragung fehlerhaft"
     }
@@ -4667,5 +4682,28 @@
       "authorityDevice": "Dieses Asset ist jetzt mit einem verwalteten Gerät verknüpft. Bearbeiten Sie den Standort auf dem Gerät.",
       "mfaRequired": "Zum Ändern des physischen Standorts ist eine Multi-Faktor-Authentifizierung erforderlich."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Gruppeneigentümer",
+    "organization": "Diese Organisation",
+    "partner": "Alle Organisationen",
+    "dynamicOnly": "partnerweit, nur dynamisch",
+    "scopeHint": "Die Mitgliedschaft wird in jeder von Ihnen verwalteten Organisation ausgewertet; statische Mitgliedschaft, Standorte sowie Gruppen- und Organisationsfilter sind nicht verfügbar.",
+    "allOrgs": "Alle Org.",
+    "pending": "Mitgliedschaft wird aktualisiert…",
+    "current": "Zuletzt ausgewertet: {{time}}",
+    "notEvaluated": "Noch nicht ausgewertet",
+    "partial_one": "{{count}} Organisation nicht ausgewertet · letzte erfolgreiche Auswertung {{time}}",
+    "partial_other": "{{count}} Organisationen nicht ausgewertet · letzte erfolgreiche Auswertung {{time}}",
+    "retryHint": "Breeze versucht es für diese Organisationen automatisch erneut. Das Speichern des Gruppenfilters startet eine neue Auswertung.",
+    "showMembers": "Mitglieder anzeigen",
+    "hideMembers": "Mitglieder ausblenden",
+    "device": "Gerät",
+    "organizationColumn": "Organisation",
+    "status": "Zustand",
+    "loading": "Mitglieder werden geladen…",
+    "membersError": "Gruppenmitglieder konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "emptyMembers": "Keine Geräte in dieser Gruppe."
   }
 }

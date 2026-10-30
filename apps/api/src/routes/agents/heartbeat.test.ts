@@ -4822,6 +4822,7 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
       collect_categories: ['security', 'system'],
       minimum_level: 'warning',
       collection_interval_minutes: 15,
+      application_providers: [],
     };
     vi.mocked(buildEventLogConfigUpdate).mockResolvedValueOnce(settings);
 

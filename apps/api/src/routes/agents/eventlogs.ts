@@ -8,7 +8,7 @@ import { recordAgentIngestSubmission } from '../metrics';
 import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
-import { submitEventLogsSchema } from './schemas';
+import { eventLogRowSchema, submitEventLogsSchema } from './schemas';
 import { getDeviceEventLogSettings, EVENT_LOG_DEFAULTS, sanitizeTimestamp, type EventLogSettings } from './helpers';
 import { enqueueLogForwarding } from '../../jobs/logForwardingWorker';
 import { getOrgForwardingConfig } from '../../services/logForwarding';
@@ -100,6 +100,47 @@ interface InsertPhaseResult {
   forwardEvents: ForwardEvent[] | null;
 }
 
+// For a rejected `level` / `category` (agent-defined enums, never free text),
+// echo the first 32 chars of the received value so an agent build that ships a
+// new enum value is diagnosable from the log line. Never applied to `message`
+// or `details`.
+const ECHOED_ENUM_FIELDS = new Set(['level', 'category']);
+function rejectedEnumValue(row: unknown, path: PropertyKey[]): string {
+  const field = path.length === 1 ? path[0] : undefined;
+  if (typeof field !== 'string' || !ECHOED_ENUM_FIELDS.has(field)) return '';
+  if (typeof row !== 'object' || row === null) return '';
+  const value = (row as Record<string, unknown>)[field];
+  return `=${JSON.stringify(String(value).slice(0, 32))}`;
+}
+
+function validateEventLogRows(submitted: unknown[]) {
+  const events: Array<ReturnType<typeof eventLogRowSchema.parse>> = [];
+  let invalidDropped = 0;
+  let emptyMessageCoerced = 0;
+  const issues: string[] = [];
+
+  for (const [index, row] of submitted.entries()) {
+    const parsed = eventLogRowSchema.safeParse(row);
+    if (!parsed.success) {
+      invalidDropped++;
+      for (const issue of parsed.error.issues) {
+        if (issues.length >= 5) break;
+        const path = issue.path.length > 0 ? `.${issue.path.join('.')}` : '';
+        issues.push(`events[${index}]${path}:${issue.code}${rejectedEnumValue(row, issue.path)}`);
+      }
+      continue;
+    }
+    // Only successfully parsed rows can have a message stored or forwarded.
+    if (typeof row === 'object' && row !== null && 'message' in row
+      && typeof row.message === 'string' && row.message.trim() === '') {
+      emptyMessageCoerced++;
+    }
+    events.push(parsed.data);
+  }
+
+  return { events, invalidDropped, emptyMessageCoerced, issues };
+}
+
 export const eventLogsRoutes = new Hono();
 // Event-log ingest is the main agent's job; reject watchdog-role tokens so a
 // weaker credential can't falsify operator-facing event-log posture (F8).
@@ -144,8 +185,11 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     currentPartnerId: agent.partnerId ?? null,
   };
 
+  const { events, invalidDropped, emptyMessageCoerced, issues } = validateEventLogRows(data.events);
+  const validationCounts = { invalidDropped, emptyMessageCoerced };
+
   if (data.events.length === 0) {
-    return c.json({ success: true, count: 0, filtered: 0 });
+    return c.json({ success: true, count: 0, filtered: 0, ...validationCounts });
   }
 
   // Phase 1 (short org-scoped context): resolve the device and its event_log
@@ -176,7 +220,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
   });
 
   if (!lookup.ok) {
-    return c.json({ error: 'Device not found' }, 404);
+    return c.json({ error: 'Device not found', ...validationCounts }, 404);
   }
   // deviceOrgId (the DB row's own org) is used for the inserted rows'
   // `orgId` column below; everywhere else (RLS context, forwarding config,
@@ -185,16 +229,23 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
   // only because they did).
   const { deviceId, deviceOrgId, hostname, settings } = lookup;
 
+  if (invalidDropped > 0 || emptyMessageCoerced > 0) {
+    console.warn(
+      `[EventLogs] agentId=${agentId} deviceId=${deviceId} submitted=${data.events.length} `
+      + `invalidDropped=${invalidDropped} emptyMessageCoerced=${emptyMessageCoerced} issues=${issues.join(',')}`,
+    );
+  }
+
   // Filter events by minimum level — pure, no DB/Redis, no context needed.
   const minLevel = settings ? LEVEL_ORDER[settings.minimumLevel] ?? 0 : 0;
   const filteredEvents = minLevel > 0
-    ? data.events.filter((event: any) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
-    : data.events;
+    ? events.filter((event) => (LEVEL_ORDER[event.level] ?? 0) >= minLevel)
+    : events;
 
-  const filteredCount = data.events.length - filteredEvents.length;
+  const filteredCount = events.length - filteredEvents.length;
 
   if (filteredEvents.length === 0) {
-    return c.json({ success: true, count: 0, filtered: filteredCount });
+    return c.json({ success: true, count: 0, filtered: filteredCount, ...validationCounts });
   }
 
   // Rate limit check (after filtering, so we check against actual insert
@@ -212,6 +263,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
     if (!rateCheck.allowed) {
       return c.json({
         error: 'Rate limit exceeded',
+        ...validationCounts,
         remaining: rateCheck.remaining,
         resetAt: rateCheck.resetAt.toISOString(),
       }, 429);
@@ -220,7 +272,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
 
   const now = new Date();
   let timestampClampedCount = 0;
-  const rows = filteredEvents.map((event: any) => {
+  const rows = filteredEvents.map((event) => {
     const normalized = normalizeEventLogTimestamp(event.timestamp, now);
     if (normalized.timestampClamped) timestampClampedCount++;
     return {
@@ -273,7 +325,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         + `(device bytes=${deviceQuota.bytesUsed}, org rows=${orgQuota.rowsUsed} bytes=${orgQuota.bytesUsed}) `
         + `— dropping ${rows.length} row(s)`,
       );
-      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length }, 429);
+      return c.json({ error: 'Daily event-log ingest budget exceeded', count: 0, filtered: filteredCount, dropped: rows.length, ...validationCounts }, 429);
     }
   }
 
@@ -328,7 +380,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         if (!fwdConfig) {
           return { inserted, insertError, forwardEvents: null };
         }
-        const forwardEvents = filteredEvents.flatMap((event: any, index: number) => {
+        const forwardEvents = filteredEvents.flatMap((event, index) => {
           const row = rows[index];
           if (!row || !insertedKeys.has(eventLogRowKey(row.source, row.eventId, row.timestamp))) {
             return [];
@@ -340,7 +392,7 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
             message: event.message,
             timestamp: row.timestamp.toISOString(),
             // The agent's structured per-event context lives in `details`
-            // (see submitEventLogsSchema). The forward payload historically
+            // (see eventLogRowSchema). The forward payload historically
             // read `event.rawData`, a field the schema strips — so it was
             // always `undefined` and nothing reached the SIEM. Forward the
             // persisted `row.details` so the SIEM matches what was stored
@@ -398,6 +450,8 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
         insertedCount: inserted,
         filteredCount,
         ...(timestampClampedCount > 0 ? { timestampClampedCount } : {}),
+        ...(invalidDropped > 0 ? { invalidDroppedCount: invalidDropped } : {}),
+        ...(emptyMessageCoerced > 0 ? { emptyMessageCoercedCount: emptyMessageCoerced } : {}),
       },
     });
   }
@@ -409,8 +463,9 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
       count: inserted,
       filtered: filteredCount,
       expectedCount: rows.length,
+      ...validationCounts,
     }, 500);
   }
 
-  return c.json({ success: true, count: inserted, filtered: filteredCount });
+  return c.json({ success: true, count: inserted, filtered: filteredCount, ...validationCounts });
 });
