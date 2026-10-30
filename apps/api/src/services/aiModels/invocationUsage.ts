@@ -11,7 +11,9 @@
  *   per-key delta against the last snapshot persisted for the breeze session.
  * - `result.usage` is main-loop only and was verified per-turn only for the
  *   first result of a freshly created/resumed query. It is used only when
- *   there is no snapshot, capped by modelUsage.
+ *   there is no snapshot, capped by modelUsage — except for a query known to
+ *   start at zero (no resume, no persisted transcript: an agent-run hop),
+ *   whose first result is billed per key from an empty baseline (#10413).
  * - `total_cost_usd` / `costUSD` are cumulative estimates: telemetry only.
  * - The CLI can switch the session model on its own (refusal fallback, even
  *   with no `fallbackModel` configured) and silently retries fast mode as
@@ -395,14 +397,26 @@ export function sdkTurnUsage(input: {
   result: SdkResultLike | null;
   /** The session's last persisted snapshot (parseSdkUsageSnapshot), or null. */
   previousSnapshot: SdkUsageSnapshot | null;
+  /**
+   * #10413: the query was created fresh (no `resume`, `persistSession: false`),
+   * so its cumulative `modelUsage` started at zero and counts nothing from an
+   * earlier transcript. With no snapshot, the first result is then billed as an
+   * exact per-key delta from zero — every key at its own rate, including the
+   * CLI's background call — instead of `result.usage` capped by modelUsage,
+   * which leaves a second key unbilled. Never set it for a query that resumed.
+   */
+  queryStartedAtZero?: boolean;
 }): SdkTurnUsageResult {
-  const { binding, observation: obs, result, previousSnapshot: prev } = input;
+  const { binding, observation: obs, result, previousSnapshot: snapshot } = input;
+  // A fresh query's baseline is an empty snapshot: its counters start at zero.
+  const fromZero = snapshot === null && input.queryStartedAtZero === true;
+  const prev: SdkUsageSnapshot | null = fromZero ? { version: 1, models: {} } : snapshot;
   const errored = !result || result.subtype !== 'success' || result.is_error === true;
 
   const untrusted = (): SdkTurnUsageResult => ({
     usage: [],
     outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-    nextSnapshot: prev,
+    nextSnapshot: snapshot,
     usageConfirmed: false,
     usageNote: 'no_result',
   });
@@ -420,7 +434,7 @@ export function sdkTurnUsage(input: {
     return {
       usage: [],
       outcome: sdkOutcome(binding, obs, result, obs.refusalFallback?.fallbackModel ?? binding.wireModel),
-      nextSnapshot: prev,
+      nextSnapshot: snapshot,
       usageConfirmed: true,
       usageNote: 'empty_usage',
     };
@@ -456,7 +470,9 @@ export function sdkTurnUsage(input: {
         usageNote: 'snapshot_regressed',
       };
     }
-    const newKeys = new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
+    // From zero every key is "new", so newness says nothing about a swap: the
+    // served model is read the way a first result reads it (no newKeys).
+    const newKeys = fromZero ? null : new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
     const servedModel = servedModelOf(binding, obs, deltas, newKeys);
     const fastServed = sdkFastServed(binding, obs, result, servedModel);
     return {
