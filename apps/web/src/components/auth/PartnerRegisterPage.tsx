@@ -34,7 +34,7 @@ export default function PartnerRegisterPage(_props: PartnerRegisterPageProps = {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setHandoff({ intent: parseSignupIntentParams(params), explicit: params.has('intent') || params.has('offer') });
+    setHandoff({ intent: parseSignupIntentParams(params), explicit: params.has('intent') || params.has('offer') || params.has('catalog') });
   }, []);
 
   // The quote comes from billing only. A failed lookup shows no price and

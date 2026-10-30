@@ -57,14 +57,14 @@ describe('fetchSignupOffer', () => {
     });
   });
 
-  it('returns null for anything unexpected', async () => {
-    const bad = [
-      respond({ plans: [{ id: 'community', price: 99 }] }),
-      respond({ error: 'nope' }, { status: 404 }),
-      respond('<html></html>', { type: 'text/html' }),
-      vi.fn().mockRejectedValue(new Error('offline')),
-      respond({ ...beta, beta: { ...beta.beta, terms: [{ term: 'monthly', amountCents: '9900', holdMonths: 12 }, ...beta.beta.terms.slice(1)] } }),
-    ];
-    for (const f of bad) expect(await fetchSignupOffer(f as unknown as typeof fetch)).toBeNull();
+  it.each([
+    ['a plans-only body', () => respond({ plans: [{ id: 'community', price: 99 }] })],
+    ['a 404', () => respond({ error: 'nope' }, { status: 404 })],
+    ['an HTML body', () => respond('<html></html>', { type: 'text/html' })],
+    ['a 200 without a JSON content-type but a valid beta body', () => respond(beta, { type: 'text/html' })],
+    ['a network failure', () => vi.fn().mockRejectedValue(new Error('offline'))],
+    ['a string amount', () => respond({ ...beta, beta: { ...beta.beta, terms: [{ term: 'monthly', amountCents: '9900', holdMonths: 12 }, ...beta.beta.terms.slice(1)] } })],
+  ])('returns null for %s', async (_name, make) => {
+    expect(await fetchSignupOffer(make() as unknown as typeof fetch)).toBeNull();
   });
 });

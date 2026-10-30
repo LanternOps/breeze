@@ -132,9 +132,37 @@ describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
     mockApiRegisterPartner.mockResolvedValue({ success: true, message: 'Check email' });
     render(<PartnerRegisterPage />);
     await screen.findByTestId('register-company-name');
-    expect(screen.getByTestId('register-purchase-selection').textContent ?? '').not.toContain('$');
+    expect(screen.queryByTestId('register-purchase-selection')).toBeNull();
     await submitValidForm();
     await waitFor(() => expect(mockApiRegisterPartner).toHaveBeenCalled());
+  });
+
+  it('keeps the Wisp note when the quote is unavailable', async () => {
+    window.history.replaceState({}, '', '/register-partner?intent=wisp');
+    mockFetchOffer.mockResolvedValue(null);
+    render(<PartnerRegisterPage />);
+    expect(await screen.findByTestId('register-wisp-note')).toBeInTheDocument();
+  });
+
+  it('shows no Wisp note for the cloud intent', async () => {
+    render(<PartnerRegisterPage />);
+    await screen.findByTestId('register-purchase-selection');
+    expect(screen.queryByTestId('register-wisp-note')).toBeNull();
+  });
+
+  it('renders the form while the quote lookup never resolves', async () => {
+    mockFetchOffer.mockReturnValue(new Promise(() => {}));
+    render(<PartnerRegisterPage />);
+    expect(await screen.findByTestId('register-company-name')).toBeInTheDocument();
+    expect(screen.queryByTestId('register-purchase-selection')).toBeNull();
+  });
+
+  it('sends a signed-in visitor on a legacy launch link to billing plans', async () => {
+    window.history.replaceState({}, '', '/register-partner?catalog=launch-2026-10&capacity=250&billing=monthly');
+    authState.isAuthenticated = true;
+    mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('restored');
+    render(<PartnerRegisterPage />);
+    await waitFor(() => expect(mockNavigateTo).toHaveBeenCalledWith('/billing/plans?intent=cloud', { replace: true }));
   });
 
   it('shows the per-device quote after the beta ends', async () => {

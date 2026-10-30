@@ -3,7 +3,7 @@ import { launchPurchaseSelectionSchema } from './launchPurchaseSelection';
 
 // What a signup is for. Core holds no prices: the billing service resolves the
 // offer to terms. The offer is an opaque slug.
-export const SIGNUP_OFFER_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
+const SIGNUP_OFFER_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 
 export const signupIntentSchema = z.object({
   intent: z.enum(['cloud', 'wisp']),
@@ -19,6 +19,8 @@ export const partnerPurchaseSelectionSchema = z.union([signupIntentSchema, launc
 export type PartnerPurchaseSelection = z.infer<typeof partnerPurchaseSelectionSchema>;
 
 const INTENT_KEYS = ['intent', 'offer'] as const;
+// Legacy launch-tuple params: the page treats them as the cloud intent.
+const ALIAS_KEYS = [...INTENT_KEYS, 'catalog', 'capacity', 'billing'] as const;
 
 /** Lenient URL parse: anything unknown, malformed or duplicated falls back to the default. */
 export function parseSignupIntentParams(params: URLSearchParams): SignupIntent {
@@ -45,10 +47,10 @@ export function signupIntentHandoffQuery(selection: SignupIntent): string {
   return query.toString();
 }
 
-/** /register alias: carries only intent and offer; everything else (next, utm) is dropped. */
+/** /register alias: carries only intent, offer and the legacy launch params; everything else (next, utm) is dropped. */
 export function registrationAliasTarget(params: URLSearchParams): string {
   const allowed = new URLSearchParams();
-  for (const key of INTENT_KEYS) {
+  for (const key of ALIAS_KEYS) {
     for (const value of params.getAll(key)) allowed.append(key, value);
   }
   const query = allowed.toString();

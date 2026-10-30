@@ -65,6 +65,10 @@ describe('handoff helpers', () => {
       .toBe('/register-partner?intent=wisp&offer=founding');
     expect(registrationAliasTarget(new URLSearchParams())).toBe('/register-partner');
   });
+  it('keeps the legacy launch tuple params so old links reach the page', () => {
+    expect(registrationAliasTarget(new URLSearchParams('catalog=launch-2026-10&capacity=250&billing=monthly&next=//evil.test')))
+      .toBe('/register-partner?catalog=launch-2026-10&capacity=250&billing=monthly');
+  });
 });
 
 describe('partnerPurchaseSelectionSchema', () => {
