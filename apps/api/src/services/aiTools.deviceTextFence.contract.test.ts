@@ -81,6 +81,14 @@ const NO_DEVICE_TEXT: Readonly<Record<string, string>> = {
   collect_evidence: 'queued-command status; device output lands in incident evidence (get_incident_timeline)',
   list_incidents: 'safe projection of technician/AI-authored incident fields',
   manage_browser_policy: 'technician-authored policy fields and Breeze status only',
+  // aiToolsFleet.ts became a device-command file when manage_patches scan started
+  // queueing patch_scan (#10383); manage_patches itself is fenced (errorMessage).
+  manage_deployments: 'admin-authored deployment config, status counts and device hostnames only',
+  manage_groups: 'admin-authored group config/filters, enum membership-log reasons, device hostnames/display names and OS type only',
+  manage_maintenance_windows: 'admin-authored window config, occurrence overrides and notes only',
+  manage_automations: 'admin-authored automation config, run counts and Breeze-authored run log entries; per-device command output is not returned',
+  manage_service_monitors: 'admin-authored monitor definitions resolved per device (ids, names, conditions) only',
+  generate_report: 'device inventory metadata (hostname, OS/agent version, site), counts, admin-authored report definitions and Breeze-authored run errors only',
 };
 
 function toolsRegisteredIn(source: string, registered: ReadonlySet<string>): string[] {
