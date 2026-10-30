@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { z } from 'zod';
@@ -1121,11 +1122,13 @@ softwareRoutes.post(
   // #7347 — self-managed: every row commits before any push (commitThenDeliver).
   async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetType === 'groups' ? payload.targetIds ?? [] : []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
-
-    const payload = c.req.valid('json');
 
     const result = await createSoftwareDeploymentFromRequest({
       auth,
@@ -1182,11 +1185,14 @@ softwareRoutes.post(
   // #7347 — self-managed: every row commits before any push (commitThenDeliver).
   async (c) => commitThenDeliver(c, async (deliveries) => {
     const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(body.targets?.deviceGroupIds ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgResult = resolveScopedOrgId(auth, c.req.query('orgId'));
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const { orgId } = orgResult;
 
-    const body = c.req.valid('json');
     const softwareId = body.softwareId;
     const version = body.version;
     const deviceIds = body.targets?.deviceIds ?? [];

@@ -1406,7 +1406,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // A tool whose pin is MANDATORY (topology diagnose_connectivity, M4-D3) never
   // inherits the NULL-means-nothing-to-check fallback below: no pinned digest
   // is an explicit refusal, before anything executes.
-  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName)) {
+  if (!hasPinnedDigest(intent) && requiresPinnedEffectDigest(intent.actionName, intent.arguments as Record<string, unknown> | null)) {
     await failIntent(intent, 'digest_required', { details: { actionName: intent.actionName } });
     return;
   }

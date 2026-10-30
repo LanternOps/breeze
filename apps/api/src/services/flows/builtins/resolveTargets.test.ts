@@ -33,6 +33,7 @@ vi.mock('./stepOutputs', () => ({ loadFleetStepOutput: m.stepOutputs }));
 import { executeResolveTargets } from './resolveTargets';
 import { resolveTargetsOnce } from './fleetTargets';
 import type { BuiltinContext } from './types';
+import { FLEET_MAX_TARGETS } from '@breeze/shared';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const PARTNER = '22222222-2222-4222-8222-222222222222';
@@ -155,6 +156,22 @@ describe('executeResolveTargets', () => {
     expect(m.stepOutputs).toHaveBeenCalledWith('run-1', 'a0_run_script');
     expect(m.resolve).not.toHaveBeenCalled();
     expect(out).toMatchObject({ kind: 'completed', output: { count: 2, succeededDeviceIds: [D1, D2] } });
+  });
+
+  it('deviceIds (an event Job\'s triggering device) resolve in the run org, kept to its devices', async () => {
+    // The DB query is org-scoped: a device of another org never comes back.
+    m.devices.mockResolvedValue(rows([D1]));
+    const out = await executeResolveTargets({ deviceIds: [D1, D2] }, ctx());
+    expect(m.resolve).not.toHaveBeenCalled();
+    expect(m.stepOutputs).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ kind: 'completed', output: { count: 1, succeededDeviceIds: [D1], devices: [{ id: D1, hostname: 'host-0' }] } });
+  });
+
+  it('deviceIds over the cap fail targets_over_cap without a lookup', async () => {
+    const ids = Array.from({ length: FLEET_MAX_TARGETS + 1 }, (_, i) => `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    const out = await executeResolveTargets({ deviceIds: ids }, ctx());
+    expect(out).toMatchObject({ kind: 'failed', code: 'targets_over_cap', policy: true });
+    expect(m.devices).not.toHaveBeenCalled();
   });
 
   it('fromStep naming a step without a fleet output fails targets_unresolvable', async () => {

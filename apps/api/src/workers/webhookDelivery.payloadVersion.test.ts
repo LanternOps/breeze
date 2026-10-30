@@ -11,11 +11,11 @@ import { configureWebhookFanout, handleWebhookFanoutEvent, deliverWebhook, type 
 import type { BreezeEvent } from '../services/eventBus';
 const event: BreezeEvent = { id: 'event-1', type: 'alert.triggered', orgId: 'org-1', source: 'test', priority: 'normal', payload: { alertId: 'alert-1' }, metadata: { timestamp: '2026-10-28T12:00:00.000Z' } };
 const org = Object.freeze({ alertId: 'alert-1', status: 'active' });
-function target(id: string, payloadVersion: 1 | 2) { return { id, orgId: 'org-1', approvalGeneration: 1, payloadVersion }; }
+function target(id: string, payloadVersion: 1 | 2) { return { id, orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion }; }
 function job(extra: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
-  return { id: 'delivery-1', webhookId: 'hook-1', generation: 1, payloadVersion: 1, event: { id: event.id, type: event.type, payload: event.payload, timestamp: event.metadata.timestamp }, attempts: 0, ...extra };
+  return { orgId: 'org-1', id: 'delivery-1', webhookId: 'hook-1', generation: 1, payloadVersion: 1, event: { id: event.id, type: event.type, payload: event.payload, timestamp: event.metadata.timestamp }, attempts: 0, ...extra };
 }
-beforeEach(() => { vi.clearAllMocks(); mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'hook-1', status: 'active', approvalGeneration: 1, orgId: 'org-1', name: 'Hook', url: 'https://hooks.example.com', secret: 'secret', events: ['*'] }] }) }) }); mocks.enrich.mockResolvedValue({ org, partner: { ...org, orgExternalIds: [] } }); mocks.fetch.mockResolvedValue(new Response('ok')); });
+beforeEach(() => { vi.clearAllMocks(); mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: async () => [{ id: 'hook-1', status: 'active', approvalGeneration: 1, orgId: 'org-1', partnerId: null, name: 'Hook', url: 'https://hooks.example.com', secret: 'secret', events: ['*'] }] }) }) }); mocks.enrich.mockResolvedValue({ org, partner: { ...org, orgExternalIds: [] } }); mocks.fetch.mockResolvedValue(new Response('ok')); });
 afterEach(() => vi.restoreAllMocks());
 describe('per-delivery payload version', () => {
   it('still records and queues v1 when v2 enrichment rejects', async () => {
@@ -61,5 +61,27 @@ describe('per-delivery payload version', () => {
     expect(parsed.replayOf).toBe(payloadVersion === 2 ? 'original-id' : undefined);
     expect(headers['X-Breeze-Replay-Of']).toBe('original-id');
     expect(headers['X-Breeze-Signature']).toBe('sha256=' + createHmac('sha256', 'secret').update(headers['X-Breeze-Signature-Timestamp'] + '.' + body).digest('hex'));
+  });
+});
+
+
+describe('partner payload isolation', () => {
+  it.each([false, true])('keeps projections separate with partnerFirst=%s', async partnerFirst => {
+    const partnerPayload = Object.freeze({ ...org, orgExternalIds: Object.freeze([{ system: 'connectwise', externalId: 'company-1' }]) });
+    mocks.enrich.mockResolvedValue({ org, partner: partnerPayload });
+    const orgTarget = { ...target('org-hook', 2), partnerId: null };
+    const partnerTarget = { ...target('partner-hook', 2), orgId: null, partnerId: 'partner-1' };
+    const targets = partnerFirst ? [partnerTarget, orgTarget] : [orgTarget, partnerTarget];
+    const recorded = new Map<string, unknown>();
+    configureWebhookFanout({ getWebhooksForEvent: async () => targets, createDeliveryRecord: async (hook, event) => {
+      recorded.set(hook.id, event.payload);
+      expect(Object.isFrozen(event.payload)).toBe(true);
+      return { created: true, deliveryId: hook.id };
+    } });
+    await handleWebhookFanoutEvent(event);
+    expect(recorded.get('partner-hook')).toEqual(partnerPayload);
+    expect(recorded.get('org-hook')).not.toHaveProperty('orgExternalIds');
+    expect(recorded.get('org-hook')).not.toBe(recorded.get('partner-hook'));
+    expect(event.payload).toEqual({ alertId: 'alert-1' });
   });
 });

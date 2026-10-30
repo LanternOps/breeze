@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, devices, deviceGroups, deviceGroupMemberships } from '../../db/schema';
-import { GroupEvaluationError, resolveEffectiveGroupMembers } from '../../services/groupMembership';
+import { GroupEvaluationError, groupIncludesDevice, resolveEffectiveGroupMembers } from '../../services/groupMembership';
 
 const SERVER_FILTER = { operator: 'AND' as const, conditions: [{ field: 'deviceRole', operator: 'equals', value: 'server' }] };
 
@@ -16,6 +16,7 @@ async function seed() {
   return withSystemDbAccessContext(async () => {
     const sfx = Math.random().toString(36).slice(2, 8);
     const [p] = await db.insert(partners).values({ name: `RP ${sfx}`, slug: `rp-${sfx}`, type: 'msp', plan: 'pro', status: 'active' }).returning({ id: partners.id });
+    if (!p) throw new Error('partner fixture missing');
     const [oA, oB] = await db.insert(organizations).values([
       { currencyCode: 'USD', partnerId: p!.id, name: 'RA', slug: `ra-${sfx}` },
       { currencyCode: 'USD', partnerId: p!.id, name: 'RB', slug: `rb-${sfx}` },
@@ -32,7 +33,7 @@ async function seed() {
       dev('srv-eph', 'server', sA!.id, { isEphemeral: true }),
     ]).returning({ id: devices.id });
     const [otherOrgDev] = await db.insert(devices).values([{ ...dev('srv-other', 'server', sB2!.id), orgId: oB!.id }]).returning({ id: devices.id });
-    return { orgId, orgB: oB!.id, siteA: sA!.id, siteB: sB!.id, srvA: srvA!.id, srvB: srvB!.id, wsA: wsA!.id, ephemeralSrv: ephemeralSrv!.id, otherOrgDev: otherOrgDev!.id };
+    return { partnerId: p.id, orgId, orgB: oB!.id, siteA: sA!.id, siteB: sB!.id, srvA: srvA!.id, srvB: srvB!.id, wsA: wsA!.id, ephemeralSrv: ephemeralSrv!.id, otherOrgDev: otherOrgDev!.id };
   });
 }
 
@@ -50,11 +51,32 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const ids = (s: ReadonlySet<string>) => [...s].sort();
 
 describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
+  runDb('partner group resolves per evaluation org and reads only that org\'s membership rows', async () => {
+    const f = await seed();
+    const g = await group(f.orgId, { orgId: null, partnerId: f.partnerId, type: 'dynamic', filterConditions: SERVER_FILTER });
+    await member(g.id, f.wsA, f.orgId, true);
+    await member(g.id, f.otherOrgDev, f.orgB, true);
+    const a = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
+    const b = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgB));
+    expect(ids(a.matched)).toEqual([f.srvA, f.srvB].sort());
+    expect(ids(a.pinned)).toEqual([f.wsA]);
+    expect(ids(b.matched)).toEqual([f.otherOrgDev]);
+    expect(ids(b.pinned)).toEqual([f.otherOrgDev]);
+  });
+
+  runDb('groupIncludesDevice is false for a partner group', async () => {
+    const f = await seed();
+    const g = await group(f.orgId, { orgId: null, partnerId: f.partnerId, type: 'dynamic', filterConditions: SERVER_FILTER });
+    expect(await withSystemDbAccessContext(() => groupIncludesDevice(g, {
+      id: f.srvA, orgId: f.orgId, siteId: f.siteA, isEphemeral: false,
+    }))).toBe(false);
+  });
+
   runDb('static: every membership row is matched, nothing pinned', async () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'static' });
     await member(g.id, f.wsA, f.orgId); await member(g.id, f.srvB, f.orgId);
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.srvB, f.wsA].sort());
     expect(r.pinned.size).toBe(0);
   });
@@ -66,7 +88,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
     await member(g.id, f.srvA, f.orgId);             // materialized server: also a live match
     await withSystemDbAccessContext(() => db.execute(sql`UPDATE devices SET device_role = 'workstation' WHERE id = ${f.srvB}::uuid`));
     await member(g.id, f.srvB, f.orgId);             // stale row: srvB is no longer a server
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.srvA]);       // not srvB (stale), not ephemeral
     expect(ids(r.pinned)).toEqual([f.wsA]);
   });
@@ -75,7 +97,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'dynamic', filterConditions: null });
     await member(g.id, f.wsA, f.orgId, true); await member(g.id, f.srvA, f.orgId);
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(r.matched.size).toBe(0);
     expect(ids(r.pinned)).toEqual([f.wsA]);
   });
@@ -83,7 +105,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
   runDb('dynamic with malformed non-null filter throws GroupEvaluationError(invalid_filter)', async () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'dynamic', filterConditions: { nope: true } });
-    await expect(withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g)))
+    await expect(withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId)))
       .rejects.toMatchObject({ name: 'GroupEvaluationError', groupId: g.id, reason: 'invalid_filter' });
     expect(new GroupEvaluationError(g.id, 'invalid_filter')).toBeInstanceOf(Error);
   });
@@ -91,7 +113,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
   runDb('site-bound dynamic group: filter matches only inside the site', async () => {
     const f = await seed();
     const g = await group(f.orgId, { type: 'dynamic', siteId: f.siteA, filterConditions: SERVER_FILTER });
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.srvA]);
   });
 
@@ -109,7 +131,7 @@ describe('resolveEffectiveGroupMembers (real DB) #3205 W02', () => {
     expect(forged, 'the forged membership must be rejected (#3182)').toBeInstanceOf(Error);
     expect(JSON.stringify(forged)).toContain('device_group_memberships_group_owner_check');
 
-    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
+    const r = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g, f.orgId));
     expect(ids(r.matched)).toEqual([f.wsA]);
   });
 });

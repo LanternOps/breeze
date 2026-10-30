@@ -684,9 +684,10 @@ export const deviceConfigState = pgTable('device_config_state', {
 
 export const deviceGroups = pgTable('device_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
-  // Plan D3: DB nullable since 2027-01-12-200000; the type flips in W2a.
-  // No partner row can be created through the application before W3's create route.
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  // org_id XOR partner_id (#10521). NULL org_id = a partner-owned group whose
+  // members live in every org of the partner; memberships keep the DEVICE's org.
+  // Use services/deviceGroupOwnership.ts helpers, never `group.orgId` alone.
+  orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   siteId: uuid('site_id').references(() => sites.id),
   name: varchar('name', { length: 255 }).notNull(),

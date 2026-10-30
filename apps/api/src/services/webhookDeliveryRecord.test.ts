@@ -143,7 +143,7 @@ describe('recordDeliveryOutcome', () => {
   });
 
   it('returns the claimed persisted delivery and stamps an execution lease', async () => {
-    const delivery = { id: 'delivery-1', webhookId: 'webhook-1', attempts: 3, payloadVersion: 1 };
+    const delivery = { orgId: 'org-1', id: 'delivery-1', webhookId: 'webhook-1', attempts: 3, payloadVersion: 1 };
     state.updateResults = [[delivery]];
     expect(await claimDeliveryForExecution({ deliveryId: 'delivery-1', attemptsMade: 3 })).toEqual({ claimed: true, delivery });
     expect(state.updateCalls[0]!.set).toMatchObject({ status: 'retrying', nextRetryAt: expect.any(Date) });
@@ -171,8 +171,8 @@ describe('recordWebhookDelivery wire identity', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const values = vi.fn(() => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }));
     state.insert.mockReturnValue({ values });
-    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 2 }, {
-      id: 'event-1', type: 'alert.triggered', payload: {}, metadata: { timestamp }
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 2 }, {
+      id: 'event-1', orgId: 'org-1', type: 'alert.triggered', payload: {}, metadata: { timestamp }
     } as never);
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ eventTimestamp: null }));
     expect(warn).toHaveBeenCalledTimes(1);
@@ -185,8 +185,8 @@ describe('recordWebhookDelivery wire identity', () => {
   it('does not warn when the timestamp is absent', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     state.insert.mockReturnValue({ values: () => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }) });
-    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 }, {
-      id: 'event-1', type: 'device.offline', payload: {}, metadata: {}
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 }, {
+      id: 'event-1', orgId: 'org-1', type: 'device.offline', payload: {}, metadata: {}
     } as never);
     expect(warn).not.toHaveBeenCalled();
   });
@@ -195,7 +195,7 @@ describe('recordWebhookDelivery wire identity', () => {
     const values = vi.fn(() => ({ onConflictDoNothing: () => ({ returning: async () => [{ id: 'delivery-1' }] }) }));
     state.insert.mockReturnValue({ values });
     const payload = { alertId: 'alert-1', status: 'active' };
-    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 2 }, { id: 'event-1', type: 'alert.triggered', payload, metadata: { timestamp } } as never);
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ webhookGeneration: 1, payloadVersion: 2, payload, eventTimestamp: timestamp?.startsWith('2026') ? new Date(timestamp) : null, replayRootEventId: null }));
+    await recordWebhookDelivery({ id: 'hook-1', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 2 }, { id: 'event-1', orgId: 'org-1', type: 'alert.triggered', payload, metadata: { timestamp } } as never);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', webhookGeneration: 1, payloadVersion: 2, payload, eventTimestamp: timestamp?.startsWith('2026') ? new Date(timestamp) : null, replayRootEventId: null }));
   });
 });

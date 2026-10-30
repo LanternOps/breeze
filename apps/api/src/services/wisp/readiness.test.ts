@@ -190,6 +190,8 @@ describe('readinessInventory', () => {
     for (const level of ['partner', 'organization', 'site', 'device_group', 'device']) {
       expect(all).toContain(`= '${level}' AND`);
     }
+    expect(all).toContain('"device_groups"."org_id" = "organizations"."id"');
+    expect(all).toContain('"device_groups"."org_id" IS NULL AND "device_groups"."partner_id" = "organizations"."partner_id"');
     expect(all).toContain('"configuration_policies"."partner_id" = "organizations"."partner_id"');
     expect(all).toContain('"config_policy_effective_feature_links"');
     expect(all).toContain('"config_policy_patch_settings"."feature_link_id"');

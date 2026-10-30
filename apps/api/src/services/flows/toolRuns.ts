@@ -55,7 +55,7 @@ export type StartToolRunResult =
   | {
       ok: false;
       error: 'flow_tool_changed' | 'not_enabled' | 'org_required' | 'org_forbidden' | 'delegation_scope_restricted'
-        | 'interactive_user_required' | 'flow_not_allowed_for_agent' | FlowRunAdmissionRefusal;
+        | 'interactive_user_required' | 'flow_not_allowed_for_agent' | 'flow_conversion_reverted' | FlowRunAdmissionRefusal;
     }
   | { ok: false; error: 'inputs_invalid'; issues: Array<{ name: string; message: string }> }
   | { ok: false; error: 'permission_missing'; missing: Array<{ stepId: string; permission: string }> };

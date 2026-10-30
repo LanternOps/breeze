@@ -293,7 +293,7 @@ describe('POST /organizations', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as any;
     expect(body.schemaVersion).toBe('1');
-    expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer' });
+    expect(body.data).toMatchObject({ id: ORG_ID, orgId: ORG_ID, name: 'Acme', slug: 'acme', type: 'customer', externalLinks: [] });
     expect(body.data.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(mocks.systemContextOpens).toBe(1);
     expect(ensureDefaultProfile).toHaveBeenCalledWith(PARTNER_ID, 'CAD', expect.anything());

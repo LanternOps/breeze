@@ -402,10 +402,15 @@ export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
 
 /**
  * #8928 — normalize the PAM user-notify protocol (pam_request_notify outcome
- * notices). Anything other than exactly 1 means "not capable".
+ * notices).
+ *   1 — the agent tracks a request handed to IT and shows outcome notices.
+ *   2 — #10190 W07: also decodes `decidedBy` on pam_apply_v2 (whose decoder
+ *       rejects unknown fields, so the apply worker adds it only at >= 2) and
+ *       draws the elevation prompt states.
+ * Anything else means "not capable" (0).
  */
-export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 {
-  return value === 1 ? 1 : 0;
+export function normalizePamUserNotifyProtocolVersion(value: unknown): 0 | 1 | 2 {
+  return value === 1 || value === 2 ? value : 0;
 }
 
 /**

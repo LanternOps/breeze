@@ -23,8 +23,9 @@
  * table; acceptable for a once-a-day off-peak job. A partial (created_at)
  * index on terminal statuses would need a migration.
  *
- * The table has no org_id (scoped via webhook_id), so this is one global sweep,
- * not a per-org fan-out. Each batch runs in its own system-context transaction
+ * org_id records the event organization; retention keys on status and age,
+ * so this is one global sweep rather than a per-org fan-out.
+ * Each batch runs in its own system-context transaction
  * (see retentionBatch.ts).
  */
 

@@ -596,7 +596,7 @@
   },
   "backupProviders": {
     "title": "Yedekleme sağlayıcıları",
-    "subtitle": "Üçüncü taraf yedekleme durumunu Breeze'e taşıyın. Bugün Cove Data Protection destekleniyor.",
+    "subtitle": "Cove Data Protection ve NinjaOne SaaS Backup (Dropsuite) yedekleme durumunu Breeze’de görüntüleyin.",
     "partnerOnly": "Yedekleme sağlayıcısı bağlantıları yalnızca iş ortağı hesaplarında kullanılabilir.",
     "addConnection": "Bağlantı ekle",
     "providerLabel": "Sağlayıcı",
@@ -648,7 +648,19 @@
     "errorTest": "Yedekleme bağlantısı sınanamadı",
     "errorSync": "Eşitleme başlatılamadı",
     "errorDelete": "Yedekleme bağlantısı silinemedi",
-    "errorMap": "Eşleme güncellenemedi"
+    "errorMap": "Eşleme güncellenemedi",
+    "dropsuite": "NinjaOne SaaS Backup (Dropsuite)",
+    "resellerTokenLabel": "Bayi belirteci",
+    "authTokenLabel": "Kimlik doğrulama belirteci",
+    "baseUrlLabel": "API adresi",
+    "baseUrlHelp": "NinjaOne SaaS Backup iş ortağı portalınızda Ayarlar → API Ayarları altında API adresi olarak gösterilir",
+    "dropsuiteCredentialsHelp": "Salt okunur bayi erişimi yeterlidir. Belirteçler şifrelenerek saklanır.",
+    "dropsuiteReentryHelp": "Kayıtlı kimlik bilgilerini korumak için her iki belirteç alanını da boş bırakın veya değiştirmek için ikisini de girin.",
+    "workloads": "İş yükleri",
+    "unmappedWorkloads": "Eşlenmemiş iş yükleri",
+    "unmappedWorkloadsSummary": "{{customers}} eşlenmemiş müşteri, {{devices}} iş yükü",
+    "workloadMappingHelp": "Her sağlayıcı müşterisini bir Breeze kuruluşuyla eşleyin. Eşlenmemiş müşterilerin iş yükleri sayılır ancak saklanmaz.",
+    "deleteWorkloadsConfirm": "\"{{name}}\" silinsin mi? Eşitlenen iş yükleri ve geçmişi Breeze’den kaldırılır. Yedekleme ürününde değişiklik yapılmaz."
   },
   "linkSubscriptionPicker": {
     "couldNotLoadContractsForThisOrganizationClose": "Bu kuruluş için sözleşmeler yüklenemedi. Kapatıp yeniden deneyin.",

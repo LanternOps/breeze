@@ -21,6 +21,7 @@ const ELEVATION_EVENTS = [
   'elevation.activated',
   'elevation.expired',
   'elevation.revoked',
+  'elevation.withdrawn',
 ];
 
 const DISCONNECTED_REFRESH_MS = 10_000;

@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../../services/deviceGroupOwnership';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -36,6 +37,10 @@ slaRoutes.post(
   zValidator('json', slaConfigCreateSchema),
   async (c) => {
     const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetGroups ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
@@ -43,7 +48,6 @@ slaRoutes.post(
     // canAccessOrg is true for system scope: the holding org is never a target.
     if (await isHoldingOrg(orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
 
-    const payload = c.req.valid('json');
     const now = new Date();
     const [row] = await db
       .insert(backupSlaConfigs)
@@ -107,13 +111,16 @@ slaRoutes.patch(
   zValidator('json', slaConfigUpdateSchema),
   async (c) => {
     const auth = c.get('auth');
+    const payload = c.req.valid('json');
+    const partnerGroupIds = await findPartnerOwnedGroupIds(payload.targetGroups ?? []);
+    if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
     const orgId = resolveScopedOrgId(auth, c.req.query('orgId'));
     if (!orgId) {
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
     const { id } = c.req.valid('param');
-    const payload = c.req.valid('json');
 
     const [existing] = await db
       .select()

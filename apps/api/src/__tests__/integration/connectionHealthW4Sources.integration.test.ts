@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   backupProviderConnections,
+  connectionHealthIncidents,
   googleWorkspaceConnections,
   huntressIntegrations,
   pax8Integrations,
@@ -21,6 +22,7 @@ import {
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { webhookSource } from '../../services/connectionHealth/sources/webhook';
+import { runKindInSystemScope } from '../../services/connectionHealth/reconcile';
 import { sentinelOneSource } from '../../services/connectionHealth/sources/sentinelOne';
 import { pax8Source } from '../../services/connectionHealth/sources/pax8';
 import { unifiSource } from '../../services/connectionHealth/sources/unifi';
@@ -55,6 +57,25 @@ describe('webhook source (terminal delivery failures)', () => {
       webhookId, eventType: 'device.offline', eventId: randomUUID(), payload: {}, status: 'failed', attempts: 5, createdAt: minAgo(21 * 60), failedAt: minAgo(10), ...over,
     }));
   }
+
+  it('a broken partner webhook produces a partner incident without attributing it to the event org', async () => {
+    const { p, o } = await org();
+    const w = await webhook(o, { orgId: null, partnerId: p });
+    await delivery(w, { orgId: o, responseStatus: 503 });
+    expect((await observe(webhookSource)).find(x => x.sourceId === w)).toMatchObject({
+      partnerId: p, orgId: null, state: 'broken', condition: 'delivery_failed',
+    });
+    // Transient failures need two observations before opening. Exercise the
+    // real transition/store path so a partner observation cannot silently fail
+    // to become an incident or inherit the delivery event's organization.
+    await runKindInSystemScope(webhookSource, NOW, false);
+    await runKindInSystemScope(webhookSource, new Date(NOW.getTime() + 60_000), false);
+    const incidents = await asSystem(() => db.select().from(connectionHealthIncidents)
+      .where(eq(connectionHealthIncidents.sourceId, w)));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({ partnerId: p, orgId: null, sourceKind: 'webhook', resolvedAt: null });
+    expect(incidents[0]!.openedAt).toBeInstanceOf(Date);
+  });
 
   it('a terminal failure in the window opens; non-terminal, superseded, sweep and old rows do not', async () => {
     const { p, o } = await org();

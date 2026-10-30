@@ -569,7 +569,9 @@
       "after": "é posterior a",
       "between": "está entre",
       "withinLast": "nos últimos",
-      "notWithinLast": "não nos últimos"
+      "notWithinLast": "não nos últimos",
+      "below": "inferior a",
+      "atLeast": "pelo menos"
     },
     "value": {
       "noValue": "Nenhum valor necessário",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Removido"
-      }
+      },
+      "softwareName": "Nome do software",
+      "softwareVersion": "Versão do software"
     }
   },
   "account": {
@@ -1297,6 +1301,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Propriedade",
+        "allOrganizations": "Todas as organizações",
+        "thisOrganizationOnly": "Somente esta organização",
+        "all": "Todas",
+        "organization": "Organização",
+        "test": "Teste"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} tentativas de entrega",
         "empty": "Ainda não há tentativas de entrega.",

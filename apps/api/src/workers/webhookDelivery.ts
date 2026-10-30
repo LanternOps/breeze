@@ -1,6 +1,6 @@
 import { createHmac } from 'crypto';
 import { DelayedError, type Job, Worker } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { parseQueueJobData } from '../services/bullmqValidation';
 import { webhookAttemptJobDataSchema, type WebhookAttemptJobData } from '../jobs/queueSchemas';
@@ -15,7 +15,8 @@ import { formatHttpFailure } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
-import { webhooks as webhooksTable, webhookDeliveryStatusEnum } from '../db/schema';
+import { organizations, webhooks as webhooksTable, webhookDeliveryStatusEnum } from '../db/schema';
+import { partnerFanoutOrgCondition } from '../services/partnerFanoutOrgs';
 import { toWebhookConfig } from '../services/webhookConfig';
 import { scrubUrlsInText } from '../utils/endpointDisplay';
 import { isSelfDeliveryOfHealthEvent } from '../services/connectionHealth/eventPayload';
@@ -37,7 +38,8 @@ const MIN_REDELAY_MS = 1000;
 
 export interface WebhookConfig {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   name: string;
   url: string;
   secret?: string;
@@ -52,6 +54,7 @@ export interface WebhookConfig {
 }
 
 export interface WebhookDeliveryJob {
+  orgId: string | null;
   id: string;
   webhookId: string;
   generation: number;
@@ -73,11 +76,13 @@ export interface WebhookDeliveryJob {
 export interface WebhookFanoutTarget {
   payloadVersion: 1 | 2;
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   approvalGeneration: number;
 }
 
 export interface ClaimedWebhookDelivery {
+  orgId: string | null;
   webhookGeneration: number | null;
   id: string;
   webhookId: string;
@@ -95,6 +100,8 @@ export type DeliveryClaimOutcome =
   | { claimed: true; delivery: ClaimedWebhookDelivery }
   | { claimed: false; observedStatus: typeof webhookDeliveryStatusEnum.enumValues[number] | null; observedAttempts: number | null; dueInMs: number | null };
 
+export type WebhookDeliverySupersededReason = 'not_found' | 'superseded' | 'decrypt_failed' | 'org_departed' | 'org_inactive';
+
 export interface WebhookDeliveryResult {
   deliveryId: string;
   webhookId: string;
@@ -109,6 +116,7 @@ export interface WebhookDeliveryResult {
   deliveredAt?: string;
   /** Lifecycle changes invalidate the queued premise, so they never schedule a retry. */
   superseded?: boolean;
+  supersededReason?: WebhookDeliverySupersededReason;
   nextAttemptAt?: Date | null;
 }
 
@@ -125,9 +133,15 @@ function generateSignature(payload: string, secret: string, timestamp: number): 
 
 export type ResolveDeliveryWebhookConfigOutcome =
   | { status: 'ok'; webhook: WebhookConfig }
-  | { status: 'not_found' }
-  | { status: 'superseded' }
-  | { status: 'decrypt_failed' };
+  | { status: WebhookDeliverySupersededReason };
+
+const SUPERSEDED_MESSAGES: Record<WebhookDeliverySupersededReason, string> = {
+  not_found: 'Webhook not found (deleted after this delivery was queued)',
+  superseded: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued',
+  decrypt_failed: 'superseded_by_edit: webhook credentials could not be decrypted',
+  org_departed: "superseded_by_edit: organization no longer belongs to this webhook's partner",
+  org_inactive: 'superseded_by_edit: organization is not active for partner-wide delivery',
+};
 
 /** Reload and decrypt at send time so queued jobs never store credentials. */
 async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<ResolveDeliveryWebhookConfigOutcome> {
@@ -143,6 +157,20 @@ async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<Re
   }
   if (row.approvalGeneration !== job.generation) {
     return { status: 'superseded' };
+  }
+
+  // A queued event remains tied to its original org, even after that org moves
+  // or stops being eligible for partner-wide fan-out. Tests have no event org.
+  if (row.partnerId && job.orgId != null) {
+    const [org] = await runWithSystemDbAccess(() => db.select({
+      partnerId: organizations.partnerId,
+      live: sql<boolean>`${partnerFanoutOrgCondition()}`,
+    })
+      .from(organizations)
+      .where(eq(organizations.id, job.orgId!))
+      .limit(1));
+    if (!org || org.partnerId !== row.partnerId) return { status: 'org_departed' };
+    if (org.live !== true) return { status: 'org_inactive' };
   }
 
   try {
@@ -169,11 +197,6 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   const resolved = await resolveDeliveryWebhookConfig(job);
   if (resolved.status !== 'ok') {
-    const errorMessage = resolved.status === 'not_found'
-      ? 'Webhook not found (deleted after this delivery was queued)'
-      : resolved.status === 'decrypt_failed'
-        ? 'superseded_by_edit: webhook credentials could not be decrypted'
-        : 'superseded_by_edit: webhook was edited or disabled after this delivery was queued';
     return {
       deliveryId,
       webhookId: job.webhookId,
@@ -181,8 +204,9 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       eventType: event.type,
       success: false,
       superseded: true,
+      supersededReason: resolved.status,
       attempts: job.attempts + 1,
-      errorMessage
+      errorMessage: SUPERSEDED_MESSAGES[resolved.status],
     };
   }
   const { webhook } = resolved;
@@ -202,8 +226,7 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     id: event.id,
     type: event.type,
     timestamp: event.timestamp,
-    // W1-C will source this from the delivery's own org for partner webhooks.
-    orgId: webhook.orgId,
+    orgId: job.orgId ?? webhook.orgId,
     data: event.payload,
     replayOf: job.replayOf ?? null
   });
@@ -372,7 +395,7 @@ export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, 
   let result: WebhookDeliveryResult;
   try {
     result = await deliverWebhook({
-      id: row.id, webhookId: row.webhookId, generation,
+      id: row.id, webhookId: row.webhookId, orgId: row.orgId, generation,
       payloadVersion: row.payloadVersion, replayOf: row.replayRootEventId, attempts: row.attempts,
       event: { id: row.eventId, type: row.eventType, payload: row.payload,
         timestamp: (row.eventTimestamp ?? row.createdAt).toISOString() }
@@ -435,7 +458,8 @@ export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, 
   }
   if (result.superseded) {
     console.warn(`[WebhookWorker] delivery-superseded ${JSON.stringify({
-      errorId: 'WEBHOOK_DELIVERY_SUPERSEDED', deliveryId, webhookId, eventId: row.eventId
+      errorId: 'WEBHOOK_DELIVERY_SUPERSEDED', deliveryId, webhookId, eventId: row.eventId,
+      cause: result.supersededReason, orgId: row.orgId,
     })}`);
   } else if (!nextAttemptAt && !result.success) {
     console.warn(`[WebhookWorker] retries-exhausted ${JSON.stringify({
@@ -613,8 +637,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
       let data = event.payload;
       if (version === 2 && isAlertV2EventType(event.type)) {
         projections ??= buildAlertWebhookProjections(event);
-        // Partner-owned webhooks arrive in a later wave and take .partner.
-        data = (await projections).org;
+        data = webhook.partnerId != null ? (await projections).partner : (await projections).org;
       }
       const deliveryEvent = data === event.payload ? event : { ...event, payload: data };
       const outcome = await runWithSystemDbAccess(() => createDeliveryRecord({ ...webhook, payloadVersion: version }, deliveryEvent));
