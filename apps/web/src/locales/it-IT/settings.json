@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Generazione di chiavi di registrazione dei dispositivi. Richiede una scadenza e almeno un IP di origine o CIDR.",
       "contracts_write": "Lettura, creazione e modifica di contratti e righe di contratto, e rimozione di righe. Impossibile attivare, sospendere o annullare.",
       "tickets_write": "Creazione, aggiornamento, assegnazione, cambio di stato e commento dei ticket. Impossibile eliminare o spostare i ticket.",
+      "alerts_write": "Confermare e risolvere gli avvisi in ogni organizzazione accessibile al principal. Non consente di leggere i dettagli degli avvisi (alerts:read), sospenderli, ignorarli o eliminarli.",
       "ai_read": "Connessione all'endpoint MCP e uso di strumenti in sola lettura. Richiesto da ogni altro ambito ai:*.",
       "ai_write": "Strumenti MCP che modificano i dati.",
       "ai_execute": "Strumenti MCP che eseguono azioni sui dispositivi.",

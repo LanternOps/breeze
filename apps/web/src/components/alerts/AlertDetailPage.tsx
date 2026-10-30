@@ -74,6 +74,19 @@ type Alert = {
   aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
+type ExternalTicket = {
+  source: 'partner_api' | 'psa';
+  partnerServicePrincipalId: string | null;
+  externalId: string;
+  externalUrl: string | null;
+  externalNumber: string | null;
+};
+
+function secureExternalTicketUrl(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try { return new URL(value).protocol === 'https:' ? value : undefined; } catch { return undefined; }
+}
+
 type LinkedTicket = {
   id: string;
   internalNumber: string | null;
@@ -109,6 +122,8 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [linkedTickets, setLinkedTickets] = useState<LinkedTicket[]>([]);
   const [linkedError, setLinkedError] = useState(false);
+  const [externalTickets, setExternalTickets] = useState<ExternalTicket[]>([]);
+  const [externalTicketsError, setExternalTicketsError] = useState(false);
   const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
 
@@ -160,6 +175,23 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     fetchAlert();
     void fetchLinkedTickets();
   }, [fetchAlert, fetchLinkedTickets]);
+
+  useEffect(() => {
+    let current = true;
+    setExternalTickets([]);
+    setExternalTicketsError(false);
+    void (async () => {
+      try {
+        const response = await fetchWithAuth(`/alerts/${alertId}/external-tickets`);
+        if (!response.ok) throw new Error('External tickets read failed');
+        const body = await response.json();
+        if (current) setExternalTickets(body.data ?? []);
+      } catch {
+        if (current) setExternalTicketsError(true);
+      }
+    })();
+    return () => { current = false; };
+  }, [alertId]);
 
   // Inject AI context when alert data is available
   const setPageContext = useAiStore((s) => s.setPageContext);
@@ -453,6 +485,34 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>
+      )}
+
+      {(externalTickets.length > 0 || externalTicketsError) && (
+        <section data-testid="alert-external-tickets" aria-labelledby="alert-external-tickets-heading" className="space-y-2">
+          <h3 id="alert-external-tickets-heading" className="text-sm font-semibold">{t('alertDetailPage.externalTickets')}</h3>
+          {externalTicketsError ? (
+            <p data-testid="alert-external-tickets-error" className="text-sm text-muted-foreground">{t('alertDetailPage.externalTicketsFailedToLoad')}</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {externalTickets.map((ticket, index) => {
+                const href = secureExternalTicketUrl(ticket.externalUrl);
+                const label = ticket.externalNumber || ticket.externalId;
+                return (
+                  <li key={`${ticket.source}:${ticket.partnerServicePrincipalId}:${ticket.externalId}:${index}`} className="max-w-full">
+                    {href ? (
+                      <a data-testid="alert-external-ticket-link" href={href} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-primary hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <span className="break-all">{label}</span><ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      </a>
+                    ) : (
+                      <span data-testid="alert-external-ticket-label" className="inline-block max-w-full break-all rounded-md border px-3 py-1.5 text-sm">{label}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* Linked Tickets */}

@@ -545,6 +545,18 @@ export async function moveDeviceOrgInTransaction(
         WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
   );
 
+  // breeze_cascade_device_org_id() restamps alerts.org_id inside the devices
+  // UPDATE, except for site-owned topology alerts that stay with their site.
+  // The composite FK then cascades the moved alerts' refs to the new org.
+  // Discard their refs pinned to another partner BEFORE that flip or the
+  // immediate org/partner FK would abort it. Within one partner this deletes
+  // nothing; site-owned topology refs always stay unchanged with their alert.
+  await tx.execute(
+    sql`DELETE FROM alert_external_refs
+        WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid AND topology_site_id IS NULL)
+          AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx
@@ -894,13 +906,12 @@ export async function moveDeviceOrgInTransaction(
   );
 
   // #3182 — a device that has LEFT org A cannot remain a member of org
-  // A's device group, and device_group_memberships_group_org_fk
-  // ((group_id, org_id) -> device_groups(id, org_id)) now says so
-  // structurally. Delete, never re-point: device_groups.org_id is NOT
-  // NULL with no partner axis, groups nest and can be site-bound, and
+  // A's device group, and the deferred
+  // device_group_memberships_group_owner_check trigger enforces its owner.
+  // Delete, never re-point: org groups nest and can be site-bound, and
   // there is no deterministic source-group -> target-group mapping.
-  // Dynamic groups in the TARGET org re-materialize on their own next
-  // evaluation.
+  // Partner-group memberships are detached too; dynamic groups
+  // re-materialize on their own next evaluation.
   //
   // Placement is load-bearing, same class as the scope_ticket_id
   // tombstone above: `device_group_memberships` IS returned by

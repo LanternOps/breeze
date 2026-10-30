@@ -78,14 +78,14 @@ describe('GET /config', () => {
   it('returns both flags false when BREEZE_BILLING_URL unset', async () => {
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
+    expect(body.features).toEqual({ billing: false, support: false, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
   });
 
   it('returns both flags true when BREEZE_BILLING_URL is set', async () => {
     process.env.BREEZE_BILLING_URL = 'http://localhost:4000';
     const { status, body } = await request();
     expect(status).toBe(200);
-    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: false, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
+    expect(body.features).toEqual({ billing: true, support: true, aiOperatorTasks: false, toolSources: false, flows: true, aiAgentsSweepAct: false, callerVerification: false, preAssignmentEnrollment: false });
   });
 
   it.each(['true', 'false', '', 'garbage'])('returns caller verification readiness for %s', async (value) => {
@@ -147,9 +147,16 @@ describe('GET /config', () => {
     vi.unstubAllEnvs();
   });
 
-  it('features.flows is false when FLOWS_ENABLED is unset', async () => {
+  it('features.flows is true when FLOWS_ENABLED is unset (W06 R1 default, #5221)', async () => {
+    const { body } = await request();
+    expect(body.features.flows).toBe(true);
+  });
+
+  it('features.flows is false when FLOWS_ENABLED=false', async () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
     const { body } = await request();
     expect(body.features.flows).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it('features.flows is true when FLOWS_ENABLED=true', async () => {

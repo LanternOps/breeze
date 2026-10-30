@@ -8,11 +8,15 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceVulnerabilities, softwareInventory } from '../db/schema';
 import { tightenLockTimeout } from '../db/lockTimeout';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { resolveInventoryVersion } from '../routes/agents/agentSelfInventory';
 import { sanitizeDate } from '../routes/agents/helpers';
 import { pgErrorCode, retryOnTransientLockError } from '../utils/pgErrors';
 import { captureMessage } from './sentry';
 import { throttledReporter } from './sentryThrottle';
+import { SOFTWARE_GROUP_FILTER_FIELDS, type SoftwareGroupFilterField } from './softwareGroupFilterFields';
+
+export { SOFTWARE_GROUP_FILTER_FIELDS } from './softwareGroupFilterFields';
 
 /**
  * Bound for `lock_timeout`, set at the top of the ingest transaction (#3925).
@@ -227,6 +231,40 @@ function rows<T>(result: unknown): T[] {
   return result as T[];
 }
 
+type SoftwareInventoryPredicateRow = { name: string; version: string | null; vendor: string | null };
+
+/**
+ * Name-set changes affect every software predicate. Otherwise compare the full
+ * stored name/version/vendor multiset, ignoring row order but preserving counts,
+ * so upgrades and publisher changes re-evaluate the detail predicates too.
+ * Keep names exact because installed equals/in predicates are case-sensitive.
+ */
+function changedSoftwareFilterFields(
+  previous: readonly SoftwareInventoryPredicateRow[],
+  next: readonly SoftwareInventoryPredicateRow[],
+): SoftwareGroupFilterField[] {
+  const previousNames = new Set(previous.map((row) => row.name));
+  const nextNames = new Set(next.map((row) => row.name));
+  if (previousNames.size !== nextNames.size || [...previousNames].some((name) => !nextNames.has(name))) {
+    return [...SOFTWARE_GROUP_FILTER_FIELDS];
+  }
+
+  const rowKey = (row: SoftwareInventoryPredicateRow) => JSON.stringify([row.name, row.version, row.vendor]);
+  const counts = new Map<string, number>();
+  for (const row of previous) {
+    const key = rowKey(row);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  for (const row of next) {
+    const key = rowKey(row);
+    const count = counts.get(key) ?? 0;
+    if (count === 0) return ['software.version', 'software.vendor'];
+    if (count === 1) counts.delete(key);
+    else counts.set(key, count - 1);
+  }
+  return counts.size > 0 ? ['software.version', 'software.vendor'] : [];
+}
+
 export async function replaceSoftwareInventoryProjection(
   tx: Pick<typeof db, 'select' | 'delete' | 'insert' | 'update'>,
   input: {
@@ -235,7 +273,7 @@ export async function replaceSoftwareInventoryProjection(
     observationId: string;
     receivedAt: Date;
   },
-): Promise<void> {
+): Promise<{ changedFields: SoftwareGroupFilterField[] }> {
   const { device, items, observationId, receivedAt } = input;
   const linkedFindings = await tx
     .select({ findingId: deviceVulnerabilities.id, name: softwareInventory.name, vendor: softwareInventory.vendor })
@@ -245,10 +283,10 @@ export async function replaceSoftwareInventoryProjection(
     .orderBy(deviceVulnerabilities.id)
     .for('update', { of: deviceVulnerabilities });
 
-  await tx.delete(softwareInventory).where(eq(softwareInventory.deviceId, device.id));
-
-  if (items.length === 0) return;
-  await tx.insert(softwareInventory).values(items.map((item) => ({
+  const previous = await tx.delete(softwareInventory).where(eq(softwareInventory.deviceId, device.id))
+    .returning({ name: softwareInventory.name, version: softwareInventory.version, vendor: softwareInventory.vendor });
+  // Compare the resolved values that will actually be stored (not stale MSI versions).
+  const next = items.map((item) => ({
     deviceId: device.id,
     orgId: device.orgId,
     name: item.name,
@@ -261,9 +299,12 @@ export async function replaceSoftwareInventoryProjection(
     hashAlgorithm: item.hashAlgorithm || null,
     lastSeen: receivedAt,
     observationId,
-  })));
+  }));
+  const changedFields = changedSoftwareFilterFields(previous, next);
+  if (next.length === 0) return { changedFields };
+  await tx.insert(softwareInventory).values(next);
 
-  if (linkedFindings.length === 0) return;
+  if (linkedFindings.length === 0) return { changedFields };
   const findingNames = [...new Set(linkedFindings.map((finding) => finding.name.trim().toLowerCase()))];
   const replacements = await tx
     .select({ id: softwareInventory.id, name: softwareInventory.name, vendor: softwareInventory.vendor })
@@ -303,6 +344,7 @@ export async function replaceSoftwareInventoryProjection(
   if (severed > 0) {
     console.warn(`[Inventory] Software report for device ${device.id} severed ${severed} vuln finding link(s) with no replacement row (uninstalled or renamed software)`);
   }
+  return { changedFields };
 }
 
 type PersistedObservation = {
@@ -466,13 +508,15 @@ async function ingestSoftwareInventoryReportInner(input: {
         )
       `);
 
+      let changedFields: SoftwareGroupFilterField[] = [];
       if (decision.acceptedForInventory) {
-        await replaceSoftwareInventoryProjection(tx, {
+        const projection = await replaceSoftwareInventoryProjection(tx, {
           device: input.device,
           items,
           observationId,
           receivedAt: input.receivedAt,
         });
+        changedFields = projection.changedFields;
       }
 
       if (decision.reasonCode !== 'rejected_out_of_order') {
@@ -501,6 +545,18 @@ async function ingestSoftwareInventoryReportInner(input: {
             WHERE device_id = ${input.device.id}::uuid
           `);
         }
+      }
+
+      // Software-keyed dynamic groups (#10497) depend on this request. The queue has no
+      // software event type, so send device.updated with the software filter fields.
+      if (decision.acceptedForInventory && changedFields.length > 0) {
+        requestDeviceGroupReevaluationAfterCommit({
+          deviceId: input.device.id,
+          orgId: input.device.orgId,
+          eventType: 'device.updated',
+          changedFields,
+          reason: 'software_inventory_change',
+        });
       }
 
       return {

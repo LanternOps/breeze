@@ -1290,27 +1290,36 @@ export const agentLogIngestSchema = z.object({
 // Event Logs
 // ============================================
 
+export const EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER = '(no message text)';
+
+export const eventLogRowSchema = z.object({
+  timestamp: z.string().min(1),
+  level: z.enum(['info', 'warning', 'error', 'critical']),
+  category: z.enum(['security', 'hardware', 'application', 'system']),
+  source: z.string().min(1),
+  eventId: z.string().optional(),
+  // The agent truncates every event message to 500 chars on all collector
+  // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
+  // only — a compromised or older agent could POST arbitrarily large messages
+  // into device_event_logs, which carries a GIN trigram index (search) that
+  // bloats super-linearly in value size. Re-bound it server-side. 2000 (4x the
+  // agent truncation) leaves headroom for the one un-truncated darwin path
+  // (crash-report synthesized messages, eventlogs_darwin.go) and future
+  // collectors while still hard-bounding the abuse vector. (#2642)
+  message: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === ''
+      ? EVENT_LOG_EMPTY_MESSAGE_PLACEHOLDER
+      : value,
+    z.string().min(1).max(2000),
+  ),
+  details: z.record(z.string(), z.unknown()).optional().refine(
+    (val) => !val || JSON.stringify(val).length <= 65536,
+    { message: 'Object too large (max 64KB)' }
+  )
+});
+
 export const submitEventLogsSchema = z.object({
-  events: z.array(z.object({
-    timestamp: z.string().min(1),
-    level: z.enum(['info', 'warning', 'error', 'critical']),
-    category: z.enum(['security', 'hardware', 'application', 'system']),
-    source: z.string().min(1),
-    eventId: z.string().optional(),
-    // The agent truncates every event message to 500 chars on all collector
-    // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
-    // only — a compromised or older agent could POST arbitrarily large messages
-    // into device_event_logs, which carries a GIN trigram index (search) that
-    // bloats super-linearly in value size. Re-bound it server-side. 2000 (4x the
-    // agent truncation) leaves headroom for the one un-truncated darwin path
-    // (crash-report synthesized messages, eventlogs_darwin.go) and future
-    // collectors while still hard-bounding the abuse vector. (#2642)
-    message: z.string().min(1).max(2000),
-    details: z.record(z.string(), z.any()).optional().refine(
-      (val) => !val || JSON.stringify(val).length <= 65536,
-      { message: 'Object too large (max 64KB)' }
-    )
-  })).max(5000)
+  events: z.array(z.unknown()).max(5000),
 });
 
 // ============================================

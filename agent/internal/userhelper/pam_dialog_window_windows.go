@@ -3,6 +3,7 @@
 package userhelper
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -50,6 +51,7 @@ var (
 	procPamGetWindowLongPtrW   = pamDialogUser32.NewProc("GetWindowLongPtrW")
 	procPamSetForegroundWindow = pamDialogUser32.NewProc("SetForegroundWindow")
 	procPamShowWindow          = pamDialogUser32.NewProc("ShowWindow")
+	procPamPostMessageW        = pamDialogUser32.NewProc("PostMessageW")
 	procPamAdjustWindowRectEx  = pamDialogUser32.NewProc("AdjustWindowRectEx")
 	procPamGetDpiForSystem     = pamDialogUser32.NewProc("GetDpiForSystem")
 	procPamGetDC               = pamDialogUser32.NewProc("GetDC")
@@ -168,6 +170,13 @@ type pamDialogState struct {
 	headline []uint16
 	subline  []uint16
 	fields   []pamDialogField
+	// note is the consequence line under the fields (#10190 W07 prompts;
+	// nil for today's dialog), countPrefix the text before the countdown.
+	note         []uint16
+	noteTop      int32
+	countPrefix  string
+	approveLabel []uint16
+	denyLabel    []uint16
 
 	dpi        int
 	width      int32
@@ -189,7 +198,7 @@ type pamDialogState struct {
 
 var (
 	pamDialogStatesMu sync.Mutex
-	pamDialogStates   = map[uintptr]*pamDialogState{}
+	pamDialogStates           = map[uintptr]*pamDialogState{}
 	pamDialogNextID   uintptr = 1
 
 	pamWndProcCallback uintptr
@@ -316,6 +325,15 @@ func pamEnsureClass(hInstance uintptr) bool {
 // thread's current desktop. ok=false means the window could not be created
 // and the caller should fall back to the MessageBox rendering.
 func showPamDialogWindow(req ipc.PamRequestDialog) (result ipc.PamDialogResult, ok bool) {
+	c := pamDialogContentFromRequest(req)
+	return showPamDialogWindowContent(context.Background(), c, "Expires in ", nil)
+}
+
+// showPamDialogWindowContent draws the PAM window with c. countPrefix
+// precedes the countdown ("" draws the bare M:SS, for localized prompts).
+// presented, when set, runs once the window is on screen. When ctx ends
+// the window is closed and its result is meaningless to the caller.
+func showPamDialogWindowContent(ctx context.Context, c pamDialogContent, countPrefix string, presented func()) (result ipc.PamDialogResult, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error("pam: custom elevation dialog panicked; falling back to MessageBox", "panic", r)
@@ -329,14 +347,20 @@ func showPamDialogWindow(req ipc.PamRequestDialog) (result ipc.PamDialogResult, 
 	}
 
 	state := &pamDialogState{
-		dpi:      pamSystemDPI(),
-		headline: pamUTF16(pamDialogHeadline(req)),
-		subline:  pamUTF16("Breeze intercepted an elevation request on this device."),
-		fields:   pamDialogFields(req),
-		hasCount: req.TimeoutSeconds > 0,
+		dpi:          pamSystemDPI(),
+		headline:     pamUTF16(c.Headline),
+		subline:      pamUTF16(c.Subline),
+		fields:       c.Fields,
+		hasCount:     c.Total > 0,
+		countPrefix:  countPrefix,
+		approveLabel: pamUTF16(c.ApproveLabel),
+		denyLabel:    pamUTF16(c.DenyLabel),
+	}
+	if c.Note != "" {
+		state.note = pamUTF16(c.Note)
 	}
 	if state.hasCount {
-		state.total = time.Duration(req.TimeoutSeconds) * time.Second
+		state.total = c.Total
 		state.deadline = time.Now().Add(state.total)
 	}
 	// Deny is the safe default for any exit that never reaches WM_COMMAND.
@@ -344,21 +368,25 @@ func showPamDialogWindow(req ipc.PamRequestDialog) (result ipc.PamDialogResult, 
 
 	// Layout (96-dpi units, scaled at draw/create time).
 	const (
-		designWidth  = 520
-		margin       = 24
-		headerH      = 56 // icon + headline + subline block
-		fieldRowH    = 26
-		countBlockH  = 34 // countdown text + progress bar
-		buttonH      = 30
-		buttonW      = 104
-		footerGap    = 20
-		sectionGap   = 14
+		designWidth = 520
+		margin      = 24
+		headerH     = 56 // icon + headline + subline block
+		fieldRowH   = 26
+		countBlockH = 34 // countdown text + progress bar
+		buttonH     = 30
+		buttonW     = 104
+		footerGap   = 20
+		sectionGap  = 14
 	)
 	state.margin = state.scale(margin)
 	state.labelWidth = state.scale(110)
 	state.width = state.scale(designWidth)
 	state.fieldTop = state.scale(margin + headerH + sectionGap)
 	fieldsH := int32(len(state.fields)) * state.scale(fieldRowH)
+	if state.note != nil {
+		state.noteTop = state.fieldTop + fieldsH
+		fieldsH += state.scale(fieldRowH)
+	}
 	state.countTop = state.fieldTop + fieldsH + state.scale(sectionGap)
 	clientH := state.countTop + state.scale(footerGap) + state.scale(buttonH) + state.scale(margin)
 	if state.hasCount {
@@ -429,6 +457,20 @@ func showPamDialogWindow(req ipc.PamRequestDialog) (result ipc.PamDialogResult, 
 	procPamShowWindow.Call(hwnd, 5 /* SW_SHOW */)
 	procPamSetForegroundWindow.Call(hwnd)
 	procPamSetFocus.Call(state.hwndDeny)
+	if presented != nil {
+		presented()
+	}
+	// The agent took the prompt down (fenced, superseded, withdrawn): close
+	// the window from outside its message loop.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_, _, _ = procPamPostMessageW.Call(hwnd, pamWMClose, 0, 0)
+		case <-stop:
+		}
+	}()
 
 	var msg pamMsg
 	for {
@@ -455,8 +497,8 @@ func pamCreateButtons(hwnd, hInstance uintptr, state *pamDialogState) bool {
 	denyX := approveX - gap - buttonW
 
 	buttonClass := pamUTF16("BUTTON")
-	denyLabel := pamUTF16("&Deny")
-	approveLabel := pamUTF16("&Approve")
+	denyLabel := state.denyLabel
+	approveLabel := state.approveLabel
 
 	deny, _, _ := procPamCreateWindowExW.Call(
 		0,
@@ -608,6 +650,11 @@ func pamPaint(hwnd uintptr, state *pamDialogState) {
 		pamDrawText(hdc, value, &valueRect, state.fontBody, pamColInk, pamDTSingleLine|pamDTVCenter|pamDTEndEllipsis|pamDTNoPrefix)
 	}
 
+	if state.note != nil {
+		noteRect := pamRect{m, state.noteTop, state.width - m, state.noteTop + rowH}
+		pamDrawText(hdc, state.note, &noteRect, state.fontBody, pamColGray, pamDTSingleLine|pamDTVCenter|pamDTEndEllipsis|pamDTNoPrefix)
+	}
+
 	// Countdown text + proportional progress bar.
 	if state.hasCount {
 		remaining := time.Until(state.deadline)
@@ -615,7 +662,7 @@ func pamPaint(hwnd uintptr, state *pamDialogState) {
 			remaining = 0
 		}
 		countRect := pamRect{m, state.countTop, state.width - m, state.countTop + state.scale(18)}
-		countdown := pamUTF16("Expires in " + formatPamCountdown(remaining))
+		countdown := pamUTF16(state.countPrefix + formatPamCountdown(remaining))
 		pamDrawText(hdc, countdown, &countRect, state.fontBody, pamColGray, pamDTSingleLine|pamDTNoPrefix)
 
 		barTop := state.countTop + state.scale(22)
