@@ -281,6 +281,10 @@ describe('UsersPage — remove confirmation surfaces failures (#3531)', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Remove User' })).toBeNull());
     expect(listFetches()).toBe(2);
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // #9950: the row vanishing used to be the only confirmation.
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'success', message: 'Trevor removed' }),
+    );
   });
 });
 

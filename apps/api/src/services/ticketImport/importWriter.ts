@@ -79,9 +79,11 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * Merged in Breeze (#8972): a ticket merged into another is a read-only
  * tombstone. Resuming one this principal imported writes nothing, charges
  * nothing and returns `outcome: 'skipped'` with `skip.reason:
- * 'merged_in_breeze'` and the survivor (see `lockImportedTicket`). A ref that
- * resolves to a ticket this principal did not import (a live ticket, merged
- * or not, or another principal's import) is refused, never resumed.
+ * 'merged_in_breeze'` and the survivor (see `lockImportedTicket`), also when
+ * the merge moved the ref onto the survivor (`origin_ticket_id`, #10120).
+ * Any other ref that resolves to a ticket this principal did not import (a
+ * live ticket, merged or not, or another principal's import) is refused,
+ * never resumed.
  *
  * Attachments (#8313 W1; spec 2026-10-19 §4): the files of each comment chunk
  * are reserved (pending rows, one unit each, at most 100 per transaction),
@@ -153,11 +155,11 @@ export type ImportTicketResult = {
  * merge that committed mid-ticket), the transactions before it stay
  * committed, that transaction's charge is spent and it writes nothing.
  *
- * Known limit: when the survivor had no ref from this principal, the merge
- * moves the tombstone's ref onto the survivor (ticketMerge/repoint.ts). The
- * source id then resolves to a ticket this principal did not import, and the
- * resume is refused (`live_ticket` or `other_principal_ticket`) on every pass:
- * nothing on the moved ref says where it came from.
+ * When the survivor had no ref from this principal, the merge moves the
+ * tombstone's ref onto the survivor (ticketMerge/repoint.ts) and records the
+ * tombstone in `origin_ticket_id` (#10120); the answer is the same. A ref
+ * moved before that column existed has no origin, and the resume is refused
+ * (`live_ticket` or `other_principal_ticket`) on every pass.
  */
 export type ImportSkip = { reason: 'merged_in_breeze'; mergedIntoTicketId: string };
 
@@ -253,6 +255,8 @@ type StoredTicket = HeaderRow & {
 };
 
 type StoredRef = { ticketId: string; externalNumber: string | null; externalUrl: string | null };
+/** The ref the plan resolves, with the ticket a merge moved it off (#10120). */
+type ResolvedRef = StoredRef & { originTicketId: string | null };
 
 type HeaderChanges = {
   fields: UpdateTicketFieldsInput;
@@ -313,12 +317,13 @@ function toCreateInput(t: ImportedTicket): CreateTicketInput {
   } as CreateTicketInput;
 }
 
-async function readRef(principalId: string, sourceId: string): Promise<StoredRef | null> {
+async function readRef(principalId: string, sourceId: string): Promise<ResolvedRef | null> {
   const [row] = await db
     .select({
       ticketId: ticketExternalRefs.ticketId,
       externalNumber: ticketExternalRefs.externalNumber,
       externalUrl: ticketExternalRefs.externalUrl,
+      originTicketId: ticketExternalRefs.originTicketId,
     })
     .from(ticketExternalRefs)
     .where(and(eq(ticketExternalRefs.partnerServicePrincipalId, principalId), eq(ticketExternalRefs.externalId, sourceId)))
@@ -801,6 +806,14 @@ export async function importTicket(
     // A ref whose ticket the window's RLS hides: the same reason code the
     // locked re-check gives (lockImportedTicket).
     if (!stored) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: ref.ticketId });
+    // Merged in Breeze, and the merge moved the ref onto the survivor
+    // (#10120): the ticket it was written on is this principal's tombstone.
+    if (ref.originTicketId) {
+      const origin = await readStoredTicket(ref.originTicketId);
+      if (origin?.mergedIntoTicketId && origin.migrationWindowId && origin.windowPrincipalId === principalId) {
+        return { kind: 'merged' as const, ticketId: origin.id, mergedIntoTicketId: origin.mergedIntoTicketId };
+      }
+    }
     // A ticket this principal did not import is never resumed, merged or not
     // (checked first, so a never-imported live ticket that was merged stays a
     // conflict, not a final skip): a live ticket, or another principal's

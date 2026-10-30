@@ -142,6 +142,11 @@ type Event struct {
 
 	// ObservedAt is when the agent saw the event (UTC, RFC3339 in JSON).
 	ObservedAt time.Time `json:"observed_at"`
+
+	// FirstQuestionRenderer (#10190 W07) is the renderer the agent expects
+	// to ask the first question with if the server answers pending
+	// ("assist" | "native"), for the ingest audit. Set at submit time.
+	FirstQuestionRenderer string `json:"first_question_renderer,omitempty"`
 }
 
 // ElevationStatus is the server's ingest decision for a uac_intercept request.
@@ -175,6 +180,9 @@ type ElevationOutcome struct {
 	RequestID   string
 	Status      ElevationStatus
 	SupportName string
+	// PendingExpiresAt (#10190 W07) is when the server expires a pending
+	// request (the elevation waiting card's deadline); zero when not sent.
+	PendingExpiresAt time.Time
 }
 
 // Subscriber abstracts the ETW event source. Real Windows builds use

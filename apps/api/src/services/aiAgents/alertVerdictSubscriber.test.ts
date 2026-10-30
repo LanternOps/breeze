@@ -36,6 +36,7 @@ vi.mock('../../db/schema/alerts', () => ({
     severity: 'severity',
     resolvedAt: 'resolved_at',
     resolvedBy: 'resolved_by',
+    resolvedByPrincipalId: 'resolved_by_principal_id',
     triggeredAt: 'triggered_at',
   },
 }));
@@ -75,6 +76,7 @@ interface AlertVerdictRowFixture {
   ruleId: string | null;
   resolvedAt: Date | null;
   resolvedBy: string | null;
+  resolvedByPrincipalId: string | null;
   triggeredAt: Date;
   /** #6749 — `context ->> 'source'`; explicit `null` so "no lifecycle source"
    *  is asserted rather than left as an accidental `undefined`. */
@@ -88,6 +90,7 @@ const BASE_ALERT_ROW: AlertVerdictRowFixture = {
   ruleId: 'rule-1',
   resolvedAt: null,
   resolvedBy: null,
+  resolvedByPrincipalId: null,
   triggeredAt: new Date('2026-08-28T00:00:00.000Z'),
   source: null,
 };
@@ -279,6 +282,40 @@ describe('ai-agent-alert-verdict subscriber', () => {
   });
 
   describe('alert.resolved', () => {
+    const principalId = '00000000-0000-4000-8000-0000000000e5';
+    const inWindowPayload = {
+      resolvedBy: null,
+      resolvedAt: '2026-08-28T00:10:00.000Z',
+      triggeredAt: '2026-08-28T00:00:00.000Z',
+    };
+
+    it('skips a principal resolve carried by the payload even when the row is stale', async () => {
+      mockCleanAutoResolve();
+      await handleAlertVerdictEvent(alertResolvedEvent({ ...inWindowPayload, resolvedByPrincipalId: principalId }));
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+      expect(console.info).toHaveBeenCalledWith(
+        expect.stringContaining('human-equivalent resolve (partner service principal)'), expect.anything(),
+      );
+    });
+
+    it('skips a principal resolve from the row when the payload lacks C2 fields', async () => {
+      mockCleanAutoResolve({ resolvedByPrincipalId: principalId });
+      await handleAlertVerdictEvent(alertResolvedEvent());
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+
+    it('admits the same in-window payload without a principal key', async () => {
+      mockCleanAutoResolve();
+      await handleAlertVerdictEvent(alertResolvedEvent(inWindowPayload));
+      expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when the row adds a principal to a system-shaped payload', async () => {
+      mockCleanAutoResolve({ resolvedByPrincipalId: principalId });
+      await handleAlertVerdictEvent(alertResolvedEvent(inWindowPayload));
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+
     it('admits a verdict run for an AUTO-resolved alert (resolvedBy null, within the window)', async () => {
       mockCleanAutoResolve();
 

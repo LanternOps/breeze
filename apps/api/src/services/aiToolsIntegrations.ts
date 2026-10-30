@@ -6,7 +6,8 @@
  * org-scoped isolation.
  */
 
-import { db } from '../db';
+import { randomUUID } from 'node:crypto';
+import { db, runAfterDbContextCommit } from '../db';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import {
   webhooks,
@@ -14,13 +15,15 @@ import {
   psaConnections,
   psaTicketMappings,
 } from '../db/schema/integrations';
-import { eq, and, desc, sql, SQL } from 'drizzle-orm';
+import { eq, and, or, isNull, isNotNull, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { decryptForColumn } from './secretCrypto';
 import { describeEndpointUrl, type EndpointUrlView } from '../utils/endpointDisplay';
-import { getWebhookWorker } from '../workers/webhookDelivery';
+import { enqueueWebhookAttempt } from '../jobs/webhookDeliveryQueue';
+import { canManagePartnerWidePolicies } from './partnerWideAccess';
+import { captureException } from './sentry';
 
 // webhooks.url is encrypted at rest, and for chat-provider endpoints the PATH
 // is what authorizes a post, so AI tools show only the origin plus a short
@@ -37,6 +40,21 @@ function describeWebhookEndpoint(stored: string): EndpointUrlView {
     return { url: '[encrypted]', fingerprint: null };
   }
   return describeEndpointUrl(decrypted);
+}
+
+/** Partner plumbing stays private to full partner administrators (OD1). */
+function webhookOwnerCondition(auth: AuthContext): SQL | undefined {
+  if (auth.scope === 'system') return undefined;
+  const org = and(isNotNull(webhooks.orgId), auth.orgCondition(webhooks.orgId));
+  return auth.scope === 'partner' && auth.partnerId && canManagePartnerWidePolicies(auth)
+    ? or(org, and(isNull(webhooks.orgId), eq(webhooks.partnerId, auth.partnerId)))
+    : org;
+}
+
+function canReadWebhookOwner(auth: AuthContext, row: { partnerId: string | null }): boolean {
+  return !row.partnerId || auth.scope === 'system' || (
+    auth.scope === 'partner' && row.partnerId === auth.partnerId && canManagePartnerWidePolicies(auth)
+  );
 }
 
 type IntegrationHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -106,13 +124,15 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       const limit = Math.min(Math.max((input.limit as number) ?? 25, 1), 50);
 
       const conditions: SQL[] = [];
-      const orgCond = auth.orgCondition(webhooks.orgId);
+      const orgCond = webhookOwnerCondition(auth);
       if (orgCond) conditions.push(orgCond);
       if (status) conditions.push(eq(webhooks.status, status as 'active' | 'disabled' | 'error'));
 
       const rows = await db
         .select({
           id: webhooks.id,
+          orgId: webhooks.orgId,
+          partnerId: webhooks.partnerId,
           name: webhooks.name,
           url: webhooks.url,
           status: webhooks.status,
@@ -128,7 +148,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         .orderBy(desc(webhooks.createdAt))
         .limit(limit);
 
-      const maskedRows = rows.map((row) => {
+      const maskedRows = rows.filter(row => canReadWebhookOwner(auth, row)).map((row) => {
         const endpoint = describeWebhookEndpoint(row.url);
         return { ...row, url: endpoint.url, urlFingerprint: endpoint.fingerprint };
       });
@@ -161,7 +181,7 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         }),
       );
 
-      return JSON.stringify({ webhooks: webhooksWithDeliveries, count: rows.length });
+      return JSON.stringify({ webhooks: webhooksWithDeliveries, count: maskedRows.length });
     }),
   });
 
@@ -288,11 +308,9 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
       }
       const webhookId = input.webhookId as string;
 
-      // Verify webhook exists and belongs to org. Select the full row — the
-      // worker config mapper needs orgId/secret/headers/events/retryPolicy,
-      // not just id/name/url.
+      // Scope the lookup before creating a delivery so cross-org ids cannot send.
       const conditions: SQL[] = [eq(webhooks.id, webhookId)];
-      const orgCond = auth.orgCondition(webhooks.orgId);
+      const orgCond = webhookOwnerCondition(auth);
       if (orgCond) conditions.push(orgCond);
 
       const [webhook] = await db
@@ -301,23 +319,25 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
         .where(and(...conditions))
         .limit(1);
 
-      if (!webhook) {
+      if (!webhook || !canReadWebhookOwner(auth, webhook)) {
         return JSON.stringify({ error: 'Webhook not found or access denied' });
       }
 
       // Insert a test delivery record
       const eventType = 'test';
-      const eventId = `test-${Date.now()}`;
+      const eventId = `test-${webhook.partnerId ? randomUUID() : Date.now()}`;
       const now = new Date();
       const payload = { test: true, timestamp: now.toISOString() };
       const [delivery] = await db
         .insert(webhookDeliveries)
         .values({
           webhookId: webhook.id,
+          orgId: webhook.orgId,
           eventType,
           eventId,
           payload,
           payloadVersion: webhook.payloadVersion,
+          webhookGeneration: webhook.approvalGeneration,
           eventTimestamp: now,
           status: 'pending',
           attempts: 0,
@@ -326,45 +346,20 @@ export function registerIntegrationTools(aiTools: Map<string, AiTool>): void {
 
       if (!delivery) return JSON.stringify({ error: 'Failed to create test delivery record' });
 
-      // Mirror routes/webhooks.ts POST /:id/test — an inserted 'pending' row
-      // with no worker dispatch never actually sends anything. Queue the
-      // delivery the same way the route does, and mark it 'failed' on a queue
-      // error instead of leaving a permanently-stuck 'pending' row.
-      const event = {
-        id: eventId,
-        type: eventType,
-        orgId: webhook.orgId,
-        source: 'webhook.test',
-        priority: 'normal',
-        payload,
-        metadata: {
-          timestamp: now.toISOString(),
-          userId: auth.user.id,
-        },
-      };
-
-      try {
-        await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, event as any, delivery.id, {
-          payloadVersion: webhook.payloadVersion === 2 ? 2 : 1,
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown queue error';
-        await db
-          .update(webhookDeliveries)
-          .set({
-            status: 'failed',
-            attempts: 1,
-            errorMessage,
-            deliveredAt: new Date(),
-          })
-          .where(eq(webhookDeliveries.id, delivery.id));
-
-        return JSON.stringify({
-          error: 'Failed to queue webhook delivery',
+      // The worker must read the committed row; recovery can re-drive it if Redis is down.
+      runAfterDbContextCommit('ai.test_webhook', () => enqueueWebhookAttempt({
+        deliveryId: delivery.id,
+        webhookId: webhook.id,
+        generation: webhook.approvalGeneration,
+        attemptsMade: 0,
+      }, new Date()).catch((error) => {
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        console.error(`[integrations:test_webhook] enqueue-failed ${JSON.stringify({
+          errorId: 'WEBHOOK_DELIVERY_ENQUEUE_FAILED',
           deliveryId: delivery.id,
           webhookId: webhook.id,
-        });
-      }
+        })}`);
+      }));
 
       const endpoint = describeWebhookEndpoint(webhook.url);
       return JSON.stringify({

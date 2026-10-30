@@ -34,6 +34,7 @@ var levelOrder = map[string]int{
 // EventLogCollector collects OS event logs on a per-platform basis
 type EventLogCollector struct {
 	mu              sync.Mutex
+	name            string
 	lastCollectTime time.Time
 	// sourceWatermarks tracks per-sub-collector watermarks on platforms whose
 	// sub-collectors can fail independently (darwin). Each source advances only
@@ -43,15 +44,30 @@ type EventLogCollector struct {
 	// Sources fall back to lastCollectTime until their first success, which
 	// preserves the reliability collector's initial-lookback seeding.
 	sourceWatermarks map[string]time.Time
-	maxEvents        int
-	categories       []string
-	minimumLevel     string
-	intervalMinutes  int
+	// Windows bookmarks advance only through consumed records. Persistent
+	// collectors stage each pass until the heartbeat acknowledges its upload.
+	bookmarks                         map[string]eventLogBookmark
+	pending                           map[string]eventLogBookmark
+	bookmarkPath                      string
+	bookmarksLoaded                   bool
+	ackRequired                       bool
+	failedSends                       int
+	floored                           map[string]bool
+	failing                           map[string]bool
+	saveFailing                       bool
+	maxEvents                         int
+	categories                        []string
+	minimumLevel                      string
+	intervalMinutes                   int
+	policyApplicationProviders        []string
+	applicationProvidersConfigured    bool
+	applicationProviderReanchorLogged []string
 }
 
 // NewEventLogCollector creates a new EventLogCollector
 func NewEventLogCollector() *EventLogCollector {
 	return &EventLogCollector{
+		name:            "eventlogs",
 		lastCollectTime: time.Now(),
 		maxEvents:       100,
 		categories:      []string{"security", "hardware", "application", "system"},
@@ -176,7 +192,7 @@ func (c *EventLogCollector) runEventLogSubCollectors(subs []eventLogSubCollector
 			defer wg.Done()
 			events, err := sc.fn(c.sourceSince(sc.name))
 			if err != nil {
-				slog.Warn("event log sub-collector error", "source", sc.name, "error", err.Error())
+				slog.Warn("event log sub-collector error", "collector", c.name, "source", sc.name, "error", err.Error())
 				return
 			}
 			mu.Lock()
@@ -222,4 +238,11 @@ func filterByLevel(events []EventLogEntry, minLevel string) []EventLogEntry {
 		}
 	}
 	return filtered
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

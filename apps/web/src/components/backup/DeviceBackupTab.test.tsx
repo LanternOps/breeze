@@ -322,6 +322,48 @@ describe('DeviceBackupTab', () => {
     expect(body?.className).toContain('whitespace-pre-line');
   });
 
+  describe('skipped reparse points (#9543)', () => {
+    const reparseNote =
+      '2 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 2 other): ' +
+      'C:\\a.exe (other reparse point, tag 0x8000001B); C:\\b.exe (other reparse point, tag 0x8000001B)';
+
+    const mockLastJob = (status: string, errorLog: string) => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/status/device-1') {
+          return makeJsonResponse({
+            data: {
+              protected: true,
+              lastJob: { id: 'j', deviceId: 'device-1', type: 'file', status, startedAt: '2026-03-30T00:00:00Z', errorCount: 0, errorLog },
+            },
+          });
+        }
+        if (url === '/backup/jobs?deviceId=device-1') return makeJsonResponse({ data: [] });
+        if (url === '/backup/snapshots?deviceId=device-1') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({}, false, 404);
+      });
+    };
+
+    it('shows a completed run that only skipped reparse points as info, not a warning banner', async () => {
+      mockLastJob('completed', reparseNote);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      expect((await screen.findByTestId('backup-job-reparse-skipped')).textContent).toContain('2 reparse points skipped');
+      expect(screen.queryByTestId('backup-last-job-diagnostic')).toBeNull();
+    });
+
+    it('keeps the failure banner to the real reason when the run also skipped reparse points', async () => {
+      mockLastJob('failed', `backup stopped; ${reparseNote}`);
+
+      render(<DeviceBackupTab deviceId="device-1" />);
+
+      const banner = await screen.findByTestId('backup-last-job-diagnostic');
+      expect(banner.querySelector('p.mt-1')?.textContent).toBe('backup stopped');
+      expect(screen.getByTestId('backup-job-reparse-skipped')).toBeTruthy();
+    });
+  });
+
   it('shows the provider fallback warning on a restore point', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

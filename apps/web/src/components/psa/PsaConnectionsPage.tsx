@@ -57,11 +57,6 @@ type PsaConnectionDetails = {
   lastSyncedAt?: string | null;
   settings?: {
     defaultQueue?: string;
-    syncEnabled?: boolean;
-    syncInterval?: PsaConnectionFormValues['syncInterval'];
-    syncDirection?: PsaConnectionFormValues['syncDirection'];
-    syncOnClose?: boolean;
-    includeNotes?: boolean;
   };
   credentials?: Partial<Record<'baseUrl' | PsaCredentialField, string>>;
   credentialFields?: Partial<Record<PsaCredentialField, boolean>>;
@@ -88,7 +83,8 @@ const CREDENTIAL_FIELDS = [
 
 // Map flat form values onto the server's nested {credentials, settings} payload.
 // Empty credential fields are omitted: on PATCH the server merges provided keys
-// over the stored blob, so omitting an untouched secret keeps it.
+// over the stored blob, so omitting an untouched secret keeps it. Ticket sync
+// is not implemented (#9655), so no sync settings are sent (#9947).
 function toConnectionPayload(values: PsaConnectionFormValues) {
   const credentials: Record<string, string> = {};
   for (const field of CREDENTIAL_FIELDS) {
@@ -102,12 +98,7 @@ function toConnectionPayload(values: PsaConnectionFormValues) {
     name: values.name,
     credentials,
     settings: {
-      ...(values.defaultQueue && values.defaultQueue.trim() !== '' ? { defaultQueue: values.defaultQueue } : {}),
-      syncEnabled: values.syncEnabled,
-      syncInterval: values.syncInterval,
-      syncDirection: values.syncDirection,
-      syncOnClose: values.syncOnClose,
-      includeNotes: values.includeNotes
+      ...(values.defaultQueue && values.defaultQueue.trim() !== '' ? { defaultQueue: values.defaultQueue } : {})
     }
   };
 }
@@ -479,12 +470,7 @@ export default function PsaConnectionsPage({ embedded = false }: PsaConnectionsP
                     integrationCode: '',
                     secret: '',
                     apiKey: '',
-                    personalAccessToken: '',
-                    syncEnabled: selectedConnectionDetails.settings?.syncEnabled ?? true,
-                    syncInterval: selectedConnectionDetails.settings?.syncInterval || '1h',
-                    syncDirection: selectedConnectionDetails.settings?.syncDirection || 'bidirectional',
-                    syncOnClose: selectedConnectionDetails.settings?.syncOnClose ?? true,
-                    includeNotes: selectedConnectionDetails.settings?.includeNotes ?? true
+                    personalAccessToken: ''
                   }
                 : {
                     // Create defaults. ownerScope comes from the shared hook,

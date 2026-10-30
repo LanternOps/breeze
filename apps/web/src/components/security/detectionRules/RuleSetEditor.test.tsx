@@ -269,22 +269,30 @@ describe('RuleSetEditor Sweep now (#6263 W05 PR C)', () => {
     routeFetch();
   });
 
-  it('is disabled for a set that was never published, with the reason in the title', async () => {
+  // #10080: the reason is visible text tied to the button, not a hover-only title.
+  const expectVisibleReason = (button: HTMLButtonElement, pattern: RegExp) => {
+    const reason = screen.getByTestId('rule-set-sweep-now-disabled-reason');
+    expect(reason.textContent).toMatch(pattern);
+    expect(reason.id).not.toBe('');
+    expect(button.getAttribute('aria-describedby')).toBe(reason.id);
+  };
+
+  it('is disabled for a set that was never published, with the reason shown next to it', async () => {
     current = setDetail({ publishedVersion: 0 });
     renderEditor();
     await settle();
     const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(button.title).toMatch(/publish this rule set/i);
+    expectVisibleReason(button, /publish this rule set/i);
   });
 
-  it('is disabled for a disabled set, with the reason in the title', async () => {
+  it('is disabled for a disabled set, with the reason shown next to it', async () => {
     current = setDetail({ enabled: false });
     renderEditor();
     await settle();
     const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(button.title).toMatch(/enable this rule set/i);
+    expectVisibleReason(button, /enable this rule set/i);
   });
 
   it('opens the sweep dialog for a published, enabled set (built-in sets too)', async () => {
@@ -293,6 +301,8 @@ describe('RuleSetEditor Sweep now (#6263 W05 PR C)', () => {
     await settle();
     const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
+    expect(screen.queryByTestId('rule-set-sweep-now-disabled-reason')).toBeNull();
+    expect(button.hasAttribute('aria-describedby')).toBe(false);
     fireEvent.click(button);
     expect(screen.getByTestId('sweep-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog-detect-only')).toBeInTheDocument();
