@@ -45,7 +45,7 @@ function queueReads(...results: Array<Array<Record<string, unknown>>>) {
   return queries;
 }
 function compiled(query: ReturnType<typeof queueReads>[number]) {
-  return dialect.sqlToQuery(query.where.mock.calls[0][0] as SQL);
+  return dialect.sqlToQuery(query.where.mock.calls[0]![0] as SQL);
 }
 
 describe('eventLogHandler.evaluate', () => {
@@ -89,16 +89,16 @@ describe('eventLogHandler.evaluate', () => {
   it('window still applies under a cursor', async () => {
     const queries = queueReads([{ count: 5 }], [row()], []);
     await eventLogHandler.evaluate({ ...condition, sourcePattern: 'app_%', messagePattern: 'disk_%' }, 'device-1', { evidenceAfter: cursor });
-    const count = compiled(queries[0]);
-    const candidates = compiled(queries[2]);
+    const count = compiled(queries[0]!);
+    const candidates = compiled(queries[2]!);
     expect(candidates.params).toEqual([...count.params, '2026-10-30T11:29:59.000Z']);
     expect(candidates.params).toContain('2026-10-30T11:00:00.000Z');
     expect(candidates.params).toContain('device-1');
     expect(candidates.params).toContain('%app\\_\\%%');
     expect(candidates.params).toContain('%disk\\_\\%%');
     expect(candidates.sql).toContain('"timestamp" >=');
-    expect(queries[2].limit).toHaveBeenCalledWith(50);
-    expect(queries[2].orderBy.mock.calls[0].map((s: SQL) => dialect.sqlToQuery(s).sql))
+    expect(queries[2]!.limit).toHaveBeenCalledWith(50);
+    expect(queries[2]!.orderBy.mock.calls[0]!.map((s: SQL) => dialect.sqlToQuery(s).sql))
       .toEqual(['"device_event_logs"."timestamp" desc', '"device_event_logs"."created_at" desc', '"device_event_logs"."id" desc']);
   });
 
@@ -106,7 +106,7 @@ describe('eventLogHandler.evaluate', () => {
     const queries = queueReads([{ count: 5 }], [row({ logName: 'Application', recordId: '42' })]);
     const result = await eventLogHandler.evaluate(condition, 'device-1');
     expect(result.evidenceWatermark).toEqual({ ...cursor, logName: 'Application', recordId: 42 });
-    expect(queries[1].limit).toHaveBeenCalledWith(1);
+    expect(queries[1]!.limit).toHaveBeenCalledWith(1);
   });
 
   it('no cursor → behaviour identical to today', async () => {
@@ -127,10 +127,10 @@ describe('eventLogHandler.evaluate', () => {
       const queries = queueReads([{ count: 5 }], [row()], probe);
       const result = await eventLogHandler.evaluate(condition, 'device-1', { legacyIngestedBefore: now });
       expect(result.passed).toBe(probe.length > 0);
-      const query = compiled(queries[2]);
+      const query = compiled(queries[2]!);
       expect(query.sql).toContain('"created_at" >');
-      expect(query.params).toEqual([...compiled(queries[0]).params, now.toISOString()]);
-      expect(queries[2].limit).toHaveBeenCalledWith(1);
+      expect(query.params).toEqual([...compiled(queries[0]!).params, now.toISOString()]);
+      expect(queries[2]!.limit).toHaveBeenCalledWith(1);
     }
   });
 

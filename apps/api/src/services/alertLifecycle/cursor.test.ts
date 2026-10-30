@@ -49,14 +49,14 @@ describe('cursor store', () => {
       ['rule-2', { cursors: {}, closedAt, legacy: false }],
     ]));
     expect(mocks.execute).toHaveBeenCalledTimes(1);
-    const query = compile(mocks.execute.mock.calls[0][0]);
+    const query = compile(mocks.execute.mock.calls[0]![0]);
     expect(query.sql).toMatch(/order by "alerts"\."rule_id", COALESCE\("alerts"\."resolved_at", "alerts"\."dismissed_at"\) desc/i);
     expect(query.params).toEqual(['device-1', ['rule-1', 'rule-2']]);
   });
 
   it('ignores open alerts', async () => {
     await readClosedCursors('device-1', ['rule-1']);
-    const { sql } = compile(mocks.execute.mock.calls[0][0]);
+    const { sql } = compile(mocks.execute.mock.calls[0]![0]);
     expect(sql).toMatch(/distinct on \("alerts"\."rule_id"\)/i);
     expect(sql).toContain('"alerts"."device_id" = $1');
     expect(sql).toMatch(/"alerts"\."rule_id" = ANY\(\$2/i);
@@ -67,7 +67,7 @@ describe('cursor store', () => {
 
   it('reads closedAt as UTC so the driver never parses a tz-less timestamp in local time', async () => {
     await readClosedCursors('device-1', ['rule-1']);
-    const { sql } = compile(mocks.execute.mock.calls[0][0]);
+    const { sql } = compile(mocks.execute.mock.calls[0]![0]);
     expect(sql).toMatch(/COALESCE\("alerts"\."resolved_at", "alerts"\."dismissed_at"\) AT TIME ZONE 'UTC' AS "closedAt"/);
   });
 
@@ -88,7 +88,7 @@ describe('cursor store', () => {
     expect(await readOpenCursors('alert-1')).toEqual({ root: event(1) });
     expect(await readOpenCursors('alert-1')).toEqual({});
     expect(await readOpenCursors('missing')).toEqual({});
-    expect(compile(mocks.readWhere.mock.calls[0][0]).params).toEqual(['alert-1']);
+    expect(compile(mocks.readWhere.mock.calls[0]![0]).params).toEqual(['alert-1']);
   });
 
   it('advance-only: never moves a cursor backwards', async () => {
@@ -114,7 +114,7 @@ describe('cursor store', () => {
     mocks.returning.mockResolvedValue([]);
     expect(await advanceOpenCursors('alert-1', { root: event(2) })).toBe(false);
     expect(mocks.update).toHaveBeenCalledTimes(1);
-    const query = compile(mocks.where.mock.calls[0][0]);
+    const query = compile(mocks.where.mock.calls[0]![0]);
     expect(query.sql).toContain('"alerts"."id" = $1 and "alerts"."status" in ($2, $3, $4) and');
     expect(query.sql).toContain("->'lifecycle'->'cursor') IS NOT DISTINCT FROM $5::jsonb");
     expect(query.params).toEqual(['alert-1', 'active', 'acknowledged', 'suppressed', JSON.stringify({ root: event(1) })]);
@@ -125,7 +125,7 @@ describe('cursor store', () => {
       .mockResolvedValueOnce([row({ root: event(3), other: event(2) })]);
     mocks.returning.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'alert-1' }]);
     expect(await advanceOpenCursors('alert-1', { root: event(2), added: event(1) })).toBe(true);
-    expect(compile(mocks.set.mock.calls[1][0].context).params).toEqual([
+    expect(compile(mocks.set.mock.calls[1]![0].context).params).toEqual([
       JSON.stringify({ root: event(3), other: event(2), added: event(1) }),
     ]);
   });
@@ -142,8 +142,8 @@ describe('cursor store', () => {
     mocks.limit.mockResolvedValueOnce([{ status: 'active', context: null }]).mockResolvedValueOnce([row(null)]);
     await advanceOpenCursors('alert-1', { root: event(1) });
     await advanceOpenCursors('alert-1', { root: event(1) });
-    expect(compile(mocks.where.mock.calls[0][0]).sql).toContain('IS NOT DISTINCT FROM NULL');
-    expect(compile(mocks.where.mock.calls[1][0]).params.at(-1)).toBe('null');
+    expect(compile(mocks.where.mock.calls[0]![0]).sql).toContain('IS NOT DISTINCT FROM NULL');
+    expect(compile(mocks.where.mock.calls[1]![0]).params.at(-1)).toBe('null');
   });
 
   it('contextWithCursorSql preserves other context keys', () => {
@@ -177,7 +177,7 @@ describe('advanceOpenRuleCursors', () => {
   it('writes nothing when no open non-subject alert exists', async () => {
     expect(await advanceOpenRuleCursors('rule-1', 'device-1', { root: event(2) })).toBe(false);
     expect(mocks.update).not.toHaveBeenCalled();
-    const query = compile(mocks.readWhere.mock.calls[0][0]);
+    const query = compile(mocks.readWhere.mock.calls[0]![0]);
     expect(query.sql).toContain('"alerts"."subject_key" is null');
     expect(query.params).toEqual(['rule-1', 'device-1', 'active', 'acknowledged', 'suppressed']);
     expect(mocks.limit).toHaveBeenCalledWith(1);
@@ -187,8 +187,8 @@ describe('advanceOpenRuleCursors', () => {
     mocks.limit.mockResolvedValueOnce([{ id: 'alert-1' }])
       .mockResolvedValueOnce([row({ root: event(1) }, 'acknowledged')]);
     expect(await advanceOpenRuleCursors('rule-1', 'device-1', { root: event(2) })).toBe(true);
-    expect(compile(mocks.readWhere.mock.calls[1][0]).params).toEqual(['alert-1']);
-    expect(compile(mocks.set.mock.calls[0][0].context).params)
+    expect(compile(mocks.readWhere.mock.calls[1]![0]).params).toEqual(['alert-1']);
+    expect(compile(mocks.set.mock.calls[0]![0].context).params)
       .toEqual([JSON.stringify({ root: event(2) })]);
   });
 });
