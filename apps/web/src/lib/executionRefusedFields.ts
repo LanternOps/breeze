@@ -19,6 +19,8 @@ export const EXECUTION_REFUSED_FIELDS: readonly string[] = [
   'agentVersion',
   'software.installed',
   'software.notInstalled',
+  'software.version',
+  'software.vendor',
   'hostsWorkloads',
   'workloadRuntimes',
   'logShippingFailing',

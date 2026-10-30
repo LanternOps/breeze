@@ -22,7 +22,7 @@ const PENDING_DECLARATION = new Set<string>([]); // search_documentation was dec
 const BASELINE_UNDECLARED_TOOLS = new Set<string>([]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 108 unique ids', () => {
+  it('has 113 unique ids', () => {
     // g68 (#8167 W03): EDR-framework containment. g69 (#8167 W03 PR-B): EDR "sync now".
     // g70-g75 (full-control W02, #6756; the plan's g73-g78): PSA/billing writes.
     // g76-g78 (full-control W03, #6757): backup restore, DR rehearsal, Hyper-V power.
@@ -36,8 +36,15 @@ describe('GOLDEN_CASES', () => {
     // g100-g102 (full-control W12, #6782): installed software, deploy a catalog package (supervised), inventory approve (supervised).
     // g103-g105 (full-control W13, #6783 PR A): device events + health, expiring warranties, set a device function (supervised).
     // g106-g108 (full-control W13, #6783 PR B): live event-log query (supervised), tenant variables, end a support session (supervised).
-    expect(GOLDEN_CASES).toHaveLength(108);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(108);
+    // g109-g111 (full-control W14, #6784 PR A): an org's rate card, publish a template version (supervised), device billing.
+    // g112-g113 (full-control W14, #6784 PR B): generate a contract invoice (preview, then four-eyes), push to Xero (four-eyes).
+    expect(GOLDEN_CASES).toHaveLength(113);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(113);
+    expect(GOLDEN_CASES.find((c) => c.id === 'g112')?.expect.map((e) => e.action)).toContain('generate_invoice');
+    expect(GOLDEN_CASES.find((c) => c.id === 'g113')?.expect[0]).toEqual({ tool: 'manage_accounting_sync', action: 'push' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g109')?.expect[0]).toEqual({ tool: 'manage_billing_profiles', action: 'get_org_profile' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g110')?.expect[0]).toEqual({ tool: 'manage_contract_templates', action: 'publish' });
+    expect(GOLDEN_CASES.find((c) => c.id === 'g111')?.expect[0]).toEqual({ tool: 'get_device_billing' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g106')?.expect[0]).toEqual({ tool: 'browse_device_event_log', action: 'query' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g107')?.expect[0]).toEqual({ tool: 'manage_tenant_variables', action: 'list' });
     expect(GOLDEN_CASES.find((c) => c.id === 'g108')?.expect[0]).toEqual({ tool: 'manage_support_sessions', action: 'end' });

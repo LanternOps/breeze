@@ -486,7 +486,7 @@ describe('rollbackFleetDesign — function row (group + assessments)', () => {
 
     expect(deviceFunctionMock.restoreDeviceFunction).toHaveBeenCalledWith({ deviceId: 'd1', orgId: ORG, assessmentId: 'prior-1', userId: USER });
     expect(deviceFunctionMock.restoreDeviceFunction).toHaveBeenCalledWith({ deviceId: 'd2', orgId: ORG, assessmentId: null, userId: USER });
-    expect(deviceGroupDeleteMock.deleteDeviceGroup).toHaveBeenCalledWith('g1', ORG);
+    expect(deviceGroupDeleteMock.deleteDeviceGroup).toHaveBeenCalledWith('g1', { orgId: ORG });
     expect(result.rolledBack).toEqual(['functions:file_server']);
   });
 
