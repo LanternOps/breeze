@@ -25,7 +25,7 @@ describe('buildSystemPrompt tool index (W19, unmocked)', () => {
 
   it('a device page appends its Devices and Scripts tool lines after the page lines', async () => {
     const prompt = await buildSystemPrompt(auth, device);
-    const blocks = renderPageContextToolBlocks('device', names);
+    const blocks = renderPageContextToolBlocks(device, names);
     expect(blocks).toContain(renderDomainBlock('devices', names));
     expect(prompt).toContain(blocks);
     expect(prompt.indexOf(blocks)).toBeGreaterThan(prompt.indexOf('The user is viewing device "FS-01"'));
@@ -55,7 +55,7 @@ describe('buildSystemPrompt tool index (W19, unmocked)', () => {
   });
 
   it('an unknown page type renders no block instead of throwing', () => {
-    expect(renderPageContextToolBlocks('not_a_page' as never, names)).toBe('');
-    expect(renderPageContextToolBlocks('constructor' as never, names)).toBe('');
+    expect(renderPageContextToolBlocks({ type: 'not_a_page' } as never, names)).toBe('');
+    expect(renderPageContextToolBlocks({ type: 'constructor' } as never, names)).toBe('');
   });
 });

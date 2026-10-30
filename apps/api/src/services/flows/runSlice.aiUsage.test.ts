@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aiUsageColumns } from './runSlice';
+import { aiUsageColumns, failedUnitOutput } from './runSlice';
 
 /**
  * W5 PR B (#5220, Decision 13): an `ai` step's usage lands on its step row.
@@ -16,5 +16,18 @@ describe('aiUsageColumns', () => {
   it('writes nothing for an outcome without usage, and for a skipped step', () => {
     expect(aiUsageColumns({ kind: 'completed', output: {}, truncated: false })).toEqual({});
     expect(aiUsageColumns({ kind: 'skipped' })).toEqual({});
+  });
+});
+
+/**
+ * W6 (#5221): a failed fleet step keeps its device sets as output, so a later
+ * step under onFailure 'continue' chains on them (steps.<id>.output).
+ */
+describe('failedUnitOutput', () => {
+  it('a failed row carries its recorded output into the scope; other failed rows carry null', () => {
+    const sets = { dispatchedDeviceIds: ['d1'], succeededDeviceIds: [], failedDeviceIds: ['d1'] };
+    expect(failedUnitOutput({ output: sets })).toEqual(sets);
+    expect(failedUnitOutput({ output: null })).toBeNull();
+    expect(failedUnitOutput({ output: undefined })).toBeNull();
   });
 });

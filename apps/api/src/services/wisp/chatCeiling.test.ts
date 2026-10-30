@@ -264,6 +264,14 @@ describe('helpers', () => {
     expect(targetOrgIdFor({}, ORG_A)).toBe(ORG_A);
   });
 
+  it('wispSeedForSession reuses the prompt ceiling without a second lookup', async () => {
+    const liveCeiling = ceiling();
+    shared.seedContextForSession.mockResolvedValueOnce('seed');
+    expect(await wispSeedForSession(grant, null, liveCeiling)).toBe('seed');
+    expect(shared.seedContextForSession).toHaveBeenCalledWith('t-1', liveCeiling, null);
+    expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
   it('wispSeedForSession returns "" when the grant is inactive', async () => {
     shared.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g-1', 'paused'));
     await expect(wispSeedForSession(grant)).resolves.toBe('');

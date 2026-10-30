@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from '../services/deviceGroupOwnership';
 import { deleteSiteTopologyAiSessions } from '../services/topology/siteTopologySessions';
 import { removeUnreferencedScreenshotFiles } from '../services/screenshotStorage';
 import { ensureDefaultProfile } from '../services/billingProfileService';
@@ -83,7 +84,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, portalCustomCssSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -214,6 +215,16 @@ const paginationSchema = z.object({
   limit: z.string().optional()
 });
 
+/** UUID enrollment defaults name groups; legacy sentinels remain valid. */
+async function partnerEnrollmentGroupIds(settings: unknown): Promise<string[]> {
+  if (!settings || typeof settings !== 'object') return [];
+  const defaults = (settings as Record<string, unknown>).defaults;
+  if (!defaults || typeof defaults !== 'object') return [];
+  const groupId = (defaults as Record<string, unknown>).deviceGroup;
+  if (typeof groupId !== 'string' || !z.string().guid().safeParse(groupId).success) return [];
+  return findPartnerOwnedGroupIds([groupId]);
+}
+
 /**
  * Save-time validation for agent/watchdog version pins on a `settings.defaults`
  * object (issue #2124). A pin of 'latest' / unset is always valid. A concrete
@@ -288,6 +299,18 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
     message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
   }),
 });
+
+/**
+ * A settings subtree with its own home (e.g. `flows`, written only by
+ * PUT /flows/limits): a wholesale settings write keeps the stored subtree and
+ * ignores an incoming one, so it can neither erase nor set it. Mutates `next`.
+ */
+function keepOwnedSettingsSubtree(next: Record<string, unknown>, currentSettings: unknown, key: string): void {
+  const stored = currentSettings && typeof currentSettings === 'object' && !Array.isArray(currentSettings)
+    ? (currentSettings as Record<string, unknown>)[key]
+    : undefined;
+  if (stored === undefined) delete next[key]; else next[key] = stored;
+}
 
 // PATCH /partners/:id writes the settings column wholesale. A write whose
 // settings (or security object) simply omits `ipAllowlist` must not silently
@@ -647,9 +670,16 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   if (createAssigneeError) {
     return c.json({ error: createAssigneeError, code: 'DEFAULT_ASSIGNEE_NOT_ASSIGNABLE' }, 400);
   }
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   const clash = await db
@@ -889,7 +919,9 @@ const partnerSettingsSchema = z.object({
     primaryColor: z.string().optional(),
     secondaryColor: z.string().optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
-    customCss: z.string().optional(),
+    // #9674: layered ahead of each child org's own CSS on the portal
+    // (routes/portal/portalCustomCss.ts), so it gets the org path's rules.
+    customCss: portalCustomCssSchema,
   }).optional(),
   aiBudgets: z.object({
     enabled: z.boolean().optional(),
@@ -1129,6 +1161,9 @@ orgRoutes.patch(
   async (c) => {
   const auth = c.get('auth');
   const body = c.req.valid('json');
+
+  const partnerGroupIds = await partnerEnrollmentGroupIds(body.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
 
   // Agent/watchdog version pins (issue #2124) — reject unknown versions at save
   // time so a partner-locked pin can't silently freeze every child org's fleet.
@@ -1468,6 +1503,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
   const id = c.req.param('id')!;
 
   const data = c.req.valid('json');
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const updates: Record<string, unknown> = { ...data, updatedAt: new Date() };
 
   if (Object.keys(data).length === 0) {
@@ -1523,6 +1561,8 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
         const next = updates.settings as Record<string, unknown>;
         const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
         if (stored === undefined) delete next.ai; else next.ai = stored;
+        // settings.flows is owned by PUT /flows/limits (W05 #5220): same rule.
+        keepOwnedSettingsSubtree(next, currentPartner.settings, 'flows');
 
         // Same contract as PATCH /partners/me: a default inbound assignee
         // must be an assignable member of THIS partner.
@@ -2088,9 +2128,16 @@ orgRoutes.post('/organizations', requireScope('partner', 'system'), requireOrgWr
   const data = c.req.valid('json');
   // M8: canonicalize the MFA allowed-methods alias on CREATE (see /partners).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   const createSecrets = resolveIncomingSettingsSecrets(data.settings, undefined);
   if (!createSecrets.ok) {
     return c.json({ error: createSecrets.error }, 400);
+  }
+  // settings.flows is owned by PUT /flows/limits (W05 #5220): a create cannot seed it.
+  if (createSecrets.settings && typeof createSecrets.settings === 'object' && !Array.isArray(createSecrets.settings)) {
+    keepOwnedSettingsSubtree(createSecrets.settings as Record<string, unknown>, undefined, 'flows');
   }
 
   let targetPartnerId: string | null = null;
@@ -2557,6 +2604,9 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   const id = c.req.param('id')!;
   const data = c.req.valid('json');
 
+  const partnerGroupIds = await partnerEnrollmentGroupIds(data.settings);
+  if (partnerGroupIds.length > 0) return c.json(partnerGroupTargetRefusal(partnerGroupIds), 400);
+
   // #2879 — suspended orgs are outside canAccessOrg/accessibleOrgIds, so a
   // partner-scope status-only lifecycle transition (suspended→offboarding /
   // reactivation) gets one narrow escape hatch; anything else stays a 404.
@@ -2749,11 +2799,13 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
     // later restore/unfence reactivates the tenant AS.
     // Encrypt secret-bearing fields (e.g. logForwarding.elasticsearchApiKey)
     // before writing organizations.settings. See encryptedColumnRegistry.
-    updates.settings = encryptColumnValueForWrite(
-      'organizations',
-      'settings',
-      stripOrgLifecycleInternalSettings(resolvedSecrets.settings)
-    );
+    const orgSettingsNext = stripOrgLifecycleInternalSettings(resolvedSecrets.settings);
+    // settings.flows is owned by PUT /flows/limits (W05 #5220; orgs:write is
+    // not automations:write): the wholesale write keeps the stored block.
+    if (orgSettingsNext && typeof orgSettingsNext === 'object' && !Array.isArray(orgSettingsNext)) {
+      keepOwnedSettingsSubtree(orgSettingsNext as Record<string, unknown>, currentOrg?.settings, 'flows');
+    }
+    updates.settings = encryptColumnValueForWrite('organizations', 'settings', orgSettingsNext);
   }
   // `billingContact` is deliberately NOT in this UPDATE. It is written by
   // syncBillingContactRow in runUpdate below, only after this guarded UPDATE

@@ -865,6 +865,7 @@ const REPOINT_TABLES: readonly string[] = [
   "ai_usage_charge_claims",
   "ai_usage_charges",
   "alert_correlation_members",
+  "alert_external_refs",
   "alert_rules",
   "alert_templates",
   "alerts",
@@ -875,6 +876,14 @@ const REPOINT_TABLES: readonly string[] = [
   "audit_baseline_results",
   "audit_policy_states",
   "automation_action_results",
+  // automation_occurrence_claims (Tool Catalog W06, #5221, 2027-01-09-100000):
+  // claims follow their automation so a merged automation never re-admits a
+  // claimed occurrence. Append-only: breeze_app holds only UPDATE (org_id),
+  // which is all this plain repoint needs; the append-only trigger admits an
+  // org_id → org_id restamp and the DEFERRED owner guard checks the moved row
+  // against its automation at commit. Unique key (automation_id,
+  // occurrence_key) carries no org_id, so a repoint cannot collide.
+  "automation_occurrence_claims",
   "automation_policies",
   "automation_run_device_results",
   "automations",
@@ -1086,6 +1095,14 @@ const REPOINT_TABLES: readonly string[] = [
   "fleet_finding_devices",
   "fleet_remediation_run_targets",
   "fleet_remediation_runs",
+  // flow_automation_conversions (Tool Catalog W06, #5221, 2027-01-09-100000):
+  // a conversion follows its automation and flow (both repoint); partner-wide
+  // rows (org_id NULL) are untouched. The DEFERRED owner-guard constraint
+  // trigger checks at commit that each row's owner equals its automation's and
+  // its flow's, and flow_automation_conversions_immutable_guard admits an
+  // org_id → org_id restamp (partner unchanged). The only unique keys are per
+  // automation (live) and per flow, so a plain repoint cannot collide.
+  "flow_automation_conversions",
   // flow_versions (Tool Catalog W04, #5219, 2027-01-06-130000-flow-runs.sql):
   // publications follow their flow; partner-wide rows (org_id NULL) untouched.
   // The DEFERRED flow_versions_owner_guard_trg checks at commit that each
@@ -1370,6 +1387,8 @@ const REPOINT_TABLES: readonly string[] = [
   "user_risk_events",
   "users",
   "vault_snapshot_inventory",
+  // Repoint event ownership; the stored payload stays a send-time snapshot.
+  "webhook_deliveries",
   "webhooks",
   // Wisp W05a (#9911). Partner-level rows (org_id NULL) never match the
   // `WHERE org_id = <loser>` repoint. No unique key is org-scoped in a way a

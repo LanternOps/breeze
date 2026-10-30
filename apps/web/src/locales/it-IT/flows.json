@@ -39,7 +39,9 @@
     "inputs": "Input",
     "steps": "Passaggi",
     "version": "Versione {{version}}",
-    "createdInChat": "Creato in Breeze AI"
+    "createdInChat": "Creato in Breeze AI",
+    "movedFromJob": "Spostato da un'attività",
+    "movedFromJobReverted": "(riportato indietro)"
   },
   "step": {
     "tool": "Strumento",
@@ -55,9 +57,52 @@
     "source": {
       "core": "Strumento di base",
       "tenant": "Origine strumenti",
-      "builtin": "Integrato"
+      "builtin": "Integrato",
+      "unknown": "Strumento sconosciuto"
     },
-    "preApprovedBadge": "Pre-approvato"
+    "preApprovedBadge": "Pre-approvato",
+    "builtin": {
+      "notify": "Invia una notifica",
+      "http_request": "Chiama un’API esterna",
+      "ai": "Chiedi all’IA",
+      "run_script_on_targets": "Esegui uno script sui dispositivi",
+      "resolve_targets": "Trova dispositivi",
+      "create_alert": "Genera un avviso"
+    },
+    "notify": {
+      "channel": "Canale: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonimo (nessuna credenziale)"
+    },
+    "ai": {
+      "tools": "Strumenti: {{tools}}",
+      "noTools": "Nessuno strumento",
+      "output": "Campi del risultato: {{fields}}"
+    },
+    "fleet": {
+      "script": "Script n. {{scriptId}}",
+      "target": {
+        "all": "Tutti i dispositivi",
+        "devices": "Dispositivi in elenco",
+        "groups": "Gruppi di dispositivi",
+        "filter": "Dispositivi che corrispondono a un filtro",
+        "other": "Una destinazione di dispositivi"
+      },
+      "conditions": "Dispositivi che corrispondono alle condizioni dell'attività",
+      "triggerDevice": "Il dispositivo dell'evento",
+      "devices_one": "{{count}} dispositivo",
+      "devices_other": "{{count}} dispositivi",
+      "fromStep": {
+        "succeeded": "Dispositivi riusciti in {{stepId}}",
+        "dispatched": "Dispositivi raggiunti da {{stepId}}",
+        "failed": "Dispositivi falliti in {{stepId}}"
+      },
+      "offlineQueue": "Dispositivi offline: in coda",
+      "offlineSkip": "Dispositivi offline: saltati",
+      "alert": "Gravità {{severity}}"
+    }
   },
   "issues": {
     "title": "Convalida",
@@ -80,7 +125,8 @@
   },
   "tabs": {
     "overview": "Panoramica",
-    "runs": "Esecuzioni"
+    "runs": "Esecuzioni",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Abilita",
@@ -103,7 +149,11 @@
       "variable_dependent": "Questo passaggio dipende da valori noti solo durante l'esecuzione.",
       "script_not_found": "Lo script usato da questo passaggio non è stato trovato.",
       "four_eyes": "Questa azione richiede sempre l'approvazione di una seconda persona.",
-      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate."
+      "tenant_tool": "Le fonti di strumenti personalizzate non possono essere pre-approvate.",
+      "for_each": "I passaggi che si ripetono per ogni elemento non possono essere pre-approvati.",
+      "run_as_elevated": "Questo script viene eseguito con privilegi elevati, quindi non può essere pre-approvato.",
+      "selector_not_literal": "I dispositivi vengono scelti al momento dell'esecuzione, quindi questo passaggio non può essere pre-approvato.",
+      "max_targets_invalid": "Imposta su quanti dispositivi può essere eseguito questo passaggio (1–500) per pre-approvarlo."
     },
     "eventScope": "I flussi a evento reagiscono agli eventi della piattaforma qualunque ne sia la causa, comprese le azioni di persone, di altri flussi o di automazioni. Controlla il filtro del trigger prima di abilitare.",
     "missingPermissions": "Ti mancano permessi necessari ai passaggi di questo flusso:",
@@ -121,7 +171,10 @@
     "partnerWideForbidden": "Non hai l’autorizzazione per attivare flussi per tutte le organizzazioni.",
     "interactiveRequired": "I flussi possono essere attivati solo da una sessione del browser autenticata.",
     "slugUnavailable": "Un altro flusso in questo ambito usa già questo identificatore.",
-    "generic": "Impossibile attivare il flusso."
+    "generic": "Impossibile attivare il flusso.",
+    "webhookSecretMissing": "Crea un segreto del webhook prima di attivare questo flusso.",
+    "aiBudgetUnavailable": "Questa organizzazione non ha budget IA, quindi un flusso con un passaggio IA non può essere attivato.",
+    "webhookSecretInvalidated": "L’attivazione di questa versione ha cancellato il segreto del webhook, perché era stato creato per una bozza precedente. Tutte le richieste vengono rifiutate finché non crei un nuovo segreto e lo consegni al mittente."
   },
   "run": {
     "title": "Esegui flusso",
@@ -217,7 +270,11 @@
       "notify_failed": "Non è stato possibile inviare l'avviso.",
       "ai_budget_exhausted": "Il budget IA dell'organizzazione è esaurito.",
       "ai_output_invalid": "Il risultato dell'IA non corrispondeva al formato previsto.",
-      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA."
+      "ai_token_cap_reached": "L'esecuzione ha raggiunto il limite di token IA.",
+      "targets_over_cap": "Il passaggio puntava a più dispositivi di quanti un passaggio di flusso ne possa gestire (500).",
+      "targets_unresolvable": "Non è stato possibile risolvere il target di dispositivi del passaggio.",
+      "alert_create_failed": "Non è stato possibile creare l'avviso.",
+      "script_dispatch_failed": "Non è stato possibile inviare lo script a uno o più dispositivi."
     },
     "step": {
       "status": {
@@ -247,7 +304,9 @@
       "loading": "Caricamento...",
       "loadFailed": "Impossibile caricare i dettagli del passaggio.",
       "pruned": "I dettagli sono stati rimossi dalla politica di conservazione.",
-      "redacted": "I dettagli del passaggio non sono disponibili con il tuo livello di accesso."
+      "redacted": "I dettagli del passaggio non sono disponibili con il tuo livello di accesso.",
+      "aiUsage": "IA: {{input}} token in ingresso, {{output}} in uscita, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Esecuzione non trovata.",
     "alreadyTerminal": "Questa esecuzione è già terminata.",
@@ -259,7 +318,11 @@
     "queuedNote": "In coda. In attesa di uno slot di esecuzione libero.",
     "paused": "Aggiornamenti in tempo reale sospesi.",
     "lastUpdated": "Ultimo aggiornamento {{time}}",
-    "timeline": "Passaggi"
+    "timeline": "Passaggi",
+    "agentRun": "Avviato dall’esecuzione di un agente IA",
+    "openAgentRun": "Apri esecuzione dell’agente",
+    "aiTokensUsed": "Token IA utilizzati: {{count}}",
+    "parallel": "{{count}} elementi eseguiti in parallelo"
   },
   "toast": {
     "enabled": "Flusso abilitato",
@@ -270,5 +333,445 @@
   "disable": {
     "title": "Disattiva flusso",
     "message": "La disattivazione interrompe le nuove esecuzioni e annulla quelle in corso. Potrai riattivare il flusso in seguito."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "URL del webhook",
+    "copy": "Copia",
+    "copied": "Copiato",
+    "copyFailed": "Impossibile copiare automaticamente. Seleziona il valore e copialo manualmente.",
+    "authMode": {
+      "label": "Autenticazione",
+      "hmac": "Richiesta firmata (HMAC-SHA256)",
+      "token": "Segreto in un’intestazione"
+    },
+    "authHelp": {
+      "hmac": "Il mittente firma ogni richiesta con il segreto. Breeze rifiuta le richieste non firmate, firmate in modo errato o più vecchie di cinque minuti, ed esegue una richiesta ripetuta una sola volta.",
+      "token": "Il mittente inserisce il segreto stesso in un’intestazione. È meno sicuro della firma: chiunque veda una richiesta può inviarne altre. Usalo solo per mittenti che non possono firmare."
+    },
+    "signing": {
+      "title": "Come inviare una richiesta",
+      "hmac": "Invia un oggetto JSON come corpo. Calcola HMAC-SHA256 su <timestamp>.<raw body> con il segreto e invia queste intestazioni:",
+      "token": "Invia un oggetto JSON come corpo, con il segreto in questa intestazione:",
+      "deliveryId": "Facoltativo: invia un {{header}} univoco così che un nuovo tentativo della stessa consegna venga eseguito una sola volta."
+    },
+    "secret": {
+      "label": "Segreto",
+      "create": "Crea segreto",
+      "rotate": "Ruota segreto",
+      "none": "Nessun segreto per ora. Tutte le richieste vengono rifiutate finché non ne crei uno.",
+      "fingerprint": "Impronta",
+      "rotatedAt": "Creato",
+      "dialogTitle": "Segreto del webhook",
+      "warning": "Copia subito questo segreto. Non verrà mostrato di nuovo.",
+      "done": "Fine",
+      "rotateTitle": "Ruotare il segreto del webhook?",
+      "rotateMessage": "Il segreto attuale smette di funzionare immediatamente. Il mittente viene rifiutato finché non usa il nuovo segreto.",
+      "failed": "Impossibile creare il segreto del webhook.",
+      "draftUnresolvable": "I passaggi della bozza non possono più essere risolti, quindi non è possibile creare un segreto per essa. Correggi prima la bozza.",
+      "notWebhook": "Questo flusso non viene avviato da un webhook."
+    },
+    "lastFailure": {
+      "label": "Ultima richiesta rifiutata",
+      "none": "Nessuna",
+      "missing_signature": "La richiesta non era firmata.",
+      "bad_signature": "La firma non corrispondeva.",
+      "stale_timestamp": "Il timestamp mancava o differiva di oltre cinque minuti.",
+      "missing_token": "L’intestazione del segreto mancava.",
+      "bad_token": "Il segreto nell’intestazione era errato.",
+      "bad_delivery_id": "L’ID di consegna non era valido."
+    },
+    "orgResolver": {
+      "label": "Organizzazione",
+      "externalId": "Associata tramite {{path}} agli ID esterni di tipo {{system}}",
+      "breezeOrgId": "Letta da {{path}} come ID organizzazione Breeze",
+      "orgFlow": "Viene eseguito nell’organizzazione di questo flusso"
+    }
+  },
+  "deliveries": {
+    "title": "Consegne recenti",
+    "empty": "Ancora nessuna consegna.",
+    "loadFailed": "Impossibile caricare le consegne.",
+    "loadMore": "Carica altro",
+    "hidden": "Gli ID di consegna e i valori dell’organizzazione sono nascosti con il tuo livello di accesso.",
+    "columns": {
+      "received": "Ricevuta",
+      "status": "Stato",
+      "org": "Organizzazione",
+      "run": "Esecuzione",
+      "attempts": "Tentativi",
+      "detail": "Dettaglio"
+    },
+    "status": {
+      "accepted": "Accettata",
+      "org_unresolved": "Nessuna organizzazione corrispondente",
+      "refused": "Rifiutata",
+      "invalid_body": "Corpo non valido"
+    },
+    "resolverValue": "Valore: {{value}}",
+    "deliveryId": "ID di consegna: {{id}}",
+    "openRun": "Apri esecuzione"
+  },
+  "usage": {
+    "title": "Esecuzioni di questo mese",
+    "period": "{{period}} (UTC)",
+    "flowCap": "Questo flusso",
+    "ownerCap": "Tutti i flussi di questo proprietario",
+    "count": "{{used}} su {{cap}}",
+    "limitsLink": "Limiti dei flussi",
+    "refused": {
+      "flow_queue_full": "Ci sono troppe esecuzioni in attesa.",
+      "flow_monthly_cap_reached": "Questo flusso ha raggiunto il limite mensile di esecuzioni.",
+      "owner_monthly_cap_reached": "Il proprietario ha raggiunto il limite mensile di esecuzioni per tutti i flussi."
+    },
+    "refusedBanner": "Le esecuzioni vengono rifiutate. {{reason}} Ultimo rifiuto: {{time}}. Il flusso resta attivato e riparte quando il mese si azzera o il limite viene aumentato.",
+    "refusedBadge": "Esecuzioni rifiutate"
+  },
+  "limits": {
+    "title": "Limiti dei flussi",
+    "subtitle": "Limiti mensili di esecuzioni e limite di token IA per ogni esecuzione. Imposta un valore predefinito per il tuo partner e abbassalo per un’organizzazione quando serve.",
+    "level": {
+      "label": "Livello",
+      "partner": "Predefinito del partner",
+      "org": "Organizzazione"
+    },
+    "selectOrg": "Seleziona un’organizzazione",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Esecuzioni al mese, tutti i flussi",
+        "help": "Il numero massimo di esecuzioni che tutti i flussi di un proprietario possono avviare in un mese di calendario (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Esecuzioni al mese, per flusso",
+        "help": "Il numero massimo di esecuzioni che un flusso può avviare in un mese di calendario (UTC). Un flusso può impostare un proprio limite più basso."
+      },
+      "aiTokensPerRun": {
+        "label": "Token IA per esecuzione",
+        "help": "Il numero massimo di token IA che i passaggi IA di una singola esecuzione possono usare."
+      }
+    },
+    "inherited": "Ereditato: {{value}} ({{source}})",
+    "source": {
+      "default": "predefinito della piattaforma",
+      "partner": "predefinito del partner",
+      "org": "questa organizzazione"
+    },
+    "ceilingNote": "Le organizzazioni possono solo abbassarlo. Il valore del partner è {{value}}.",
+    "aboveCeiling": "Il valore memorizzato {{value}} supera il valore del partner, quindi non viene applicato.",
+    "aboveCeilingError": "Deve essere {{value}} o inferiore (il valore del partner).",
+    "range": "Inserisci un numero intero da 1 a {{max}}.",
+    "placeholder": "Eredita",
+    "save": "Salva",
+    "saving": "Salvataggio...",
+    "saved": "Limiti dei flussi salvati",
+    "saveFailed": "Impossibile salvare i limiti dei flussi.",
+    "loadFailed": "Impossibile caricare i limiti dei flussi.",
+    "orgNotFound": "Questa organizzazione non è stata trovata oppure non hai più accesso.",
+    "readOnly": "Puoi visualizzare questi limiti ma non modificarli.",
+    "partnerWideForbidden": "Modificare il valore predefinito del partner richiede l’accesso a tutte le organizzazioni.",
+    "orgScopeReadOnly": "I limiti dell’organizzazione sono impostati dal tuo fornitore di servizi."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Esatto",
+      "needs_review": "Da controllare",
+      "unconvertible": "Non ancora spostabile"
+    },
+    "fidelityBlocked": "Non ancora spostabile: {{blocker}}",
+    "severity": {
+      "blocker": "Bloccante",
+      "review": "Da controllare",
+      "info": "Nota"
+    },
+    "state": {
+      "shadow": "In ombra",
+      "switched": "Spostato in Flussi",
+      "reverted": "Riportato indietro"
+    },
+    "actionNumber": "Azione {{n}}",
+    "noFindings": "Niente da controllare: questa attività si sposta in modo esatto.",
+    "finding": {
+      "flows_disabled": {
+        "title": "I flussi sono disattivati qui",
+        "line": "Questa installazione usa FLOWS_ENABLED=false, quindi le attività restano come sono."
+      },
+      "managed_row": {
+        "title": "Gestita da Breeze",
+        "line": "Un agente IA o un monitor possiede questa attività; si sposta con il suo proprietario, non da sola."
+      },
+      "policy_workflow": {
+        "title": "Parte di un workflow di criteri",
+        "line": "I criteri di configurazione eseguono questa attività; si sposta quando si sposteranno i workflow dei criteri."
+      },
+      "already_retired": {
+        "title": "Già disattivata",
+        "line": "Questa attività è stata ritirata e non viene più eseguita."
+      },
+      "compliance_remediation_target": {
+        "title": "Usata per la correzione della conformità",
+        "line": "Un criterio di conformità esegue questa attività per correggere i dispositivi; per ora resta un'attività."
+      },
+      "event_dispatch_not_durable": {
+        "title": "La consegna degli eventi qui non è durevole",
+        "line": "Le attività su evento si spostano solo con EVENT_DISPATCH_MODE=enforce e flow-event-trigger sottoscritto."
+      },
+      "event_filter_not_strict": {
+        "title": "Il filtro eventi non può essere copiato in modo esatto",
+        "line": "Il filtro usa elenchi, oggetti, troppe chiavi o una chiave che i flussi non sanno confrontare."
+      },
+      "event_filter_null": {
+        "title": "Il filtro eventi controlla valori vuoti",
+        "line": "Le attività distinguono un valore vuoto da uno mancante; i flussi no."
+      },
+      "cron_semantics_differ": {
+        "title": "La pianificazione scatterebbe in momenti diversi",
+        "line": "Questa espressione cron non coincide con il pianificatore dei flussi durante i cambi di ora legale."
+      },
+      "condition_unknown_type": {
+        "title": "Condizione di destinazione sconosciuta",
+        "line": "Un tipo di condizione che l'esecutore delle attività ignora; un flusso non può copiarla in sicurezza."
+      },
+      "targets_over_cap": {
+        "title": "Troppi dispositivi",
+        "line": "Questa attività ha come destinazione più di 400 dispositivi; un passaggio di flusso ne esegue al massimo 500."
+      },
+      "partner_wide_group_target": {
+        "title": "Un'attività per tutte le organizzazioni punta a gruppi",
+        "line": "I gruppi di dispositivi appartengono a una sola organizzazione, quindi un'attività per tutte le organizzazioni non può usarli come destinazione."
+      },
+      "run_as_elevated": {
+        "title": "Viene eseguita con privilegi elevati",
+        "line": "Uno script spostato non viene mai eseguito con privilegi elevati senza che qualcuno controlli."
+      },
+      "restart_service_monitor_only": {
+        "title": "Riavvia un servizio",
+        "line": "I riavvii dei servizi vengono eseguiti solo dai monitor."
+      },
+      "command_mixed_os": {
+        "title": "Comando senza shell su dispositivi misti",
+        "line": "Scegli una shell oppure limita le destinazioni a un solo sistema operativo."
+      },
+      "notify_per_run_cap": {
+        "title": "Troppe notifiche per esecuzione",
+        "line": "I flussi inviano al massimo 20 notifiche per esecuzione."
+      },
+      "channel_type_not_supported": {
+        "title": "Canale di notifica non supportato",
+        "line": "Un flusso non può ancora inviare a questo tipo di canale."
+      },
+      "deploy_software_unmapped": {
+        "title": "Distribuisce software",
+        "line": "La distribuzione software non si sposta ancora in Flussi."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Viene eseguita più spesso del limite mensile",
+        "line": "Le esecuzioni mensili stimate superano il limite di flussi di questo proprietario."
+      },
+      "reference_not_owned": {
+        "title": "Usa qualcosa che questo proprietario non possiede",
+        "line": "Uno script, un canale o un gruppo appartiene a un altro proprietario."
+      },
+      "partner_wide_webhook": {
+        "title": "Attività webhook per tutte le organizzazioni",
+        "line": "Il webhook di un flusso richiede un'organizzazione in cui essere eseguito."
+      },
+      "text_template_unsupported": {
+        "title": "Il testo contiene parentesi graffe di modello",
+        "line": "Un flusso leggerebbe le doppie parentesi graffe nel testo come un modello."
+      },
+      "event_filter_string_coercion": {
+        "title": "Valore del filtro di testo",
+        "line": "Le attività confrontano come testo, i flussi in modo esatto; conferma che il campo sia sempre testo."
+      },
+      "approval_each_run": {
+        "title": "Approvazione a ogni esecuzione webhook",
+        "line": "La preapprovazione non si applica mai alle esecuzioni webhook, quindi ogni esecuzione attende una persona."
+      },
+      "command_becomes_script": {
+        "title": "Il comando diventa uno script",
+        "line": "Il comando viene salvato come script della libreria che controlli prima del passaggio."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Viene eseguita una volta per organizzazione",
+        "line": "Un flusso salta le organizzazioni sospese e viene eseguito in al massimo 500 di esse."
+      },
+      "failure_notice_cap": {
+        "title": "Gli avvisi di errore possono essere limitati",
+        "line": "Oltre 20 avvisi di errore in un'esecuzione non vengono inviati."
+      },
+      "owner_cap_pressure": {
+        "title": "Vicino al limite mensile",
+        "line": "Questo flusso userebbe più dell'80% delle esecuzioni mensili del proprietario."
+      },
+      "site_ceiling_removed": {
+        "title": "Ambito dispositivi più ampio",
+        "line": "L'attività era limitata ai siti del suo creatore; il flusso no."
+      },
+      "webhook_body_shape": {
+        "title": "Il corpo del webhook deve essere un oggetto JSON",
+        "line": "Il flusso ignora le consegne che non sono oggetti JSON."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Header del segreto semplice",
+        "line": "I mittenti che inviano il segreto in chiaro devono passare a X-Breeze-Webhook-Token."
+      },
+      "name_truncated": {
+        "title": "Nome accorciato",
+        "line": "I nomi dei flussi sono lunghi al massimo 120 caratteri."
+      },
+      "duration_minutes_ignored": {
+        "title": "Durata ignorata",
+        "line": "L'impostazione della durata dell'evento non ha mai avuto effetto e viene scartata."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Recupera dopo un'interruzione",
+        "line": "Dopo un'interruzione il flusso esegue una volta l'ultimo orario perso; l'attività non ne eseguiva nessuno."
+      },
+      "queued_is_success": {
+        "title": "In coda conta come completato",
+        "line": "Come prima, uno script messo in coda per un dispositivo offline conta come inviato."
+      },
+      "severity_mapped": {
+        "title": "Gravità convertita",
+        "line": "Alta e media diventano avviso; bassa e info diventano info."
+      },
+      "notification_emails_unused": {
+        "title": "Elenco e-mail scartato",
+        "line": "L'elenco e-mail dell'attività non è mai stato usato e viene scartato."
+      },
+      "webhook_url_changes": {
+        "title": "Indirizzo del webhook",
+        "line": "I mittenti mantengono il vecchio indirizzo; inoltra al flusso."
+      },
+      "delegator_pause": {
+        "title": "Si mette in pausa se perdi l'accesso",
+        "line": "Il flusso viene eseguito come te e si mette in pausa se il tuo account viene disattivato o ristretto."
+      }
+    },
+    "column": {
+      "heading": "Sposta in Flussi",
+      "move": "Sposta in Flussi",
+      "view": "Visualizza"
+    },
+    "panel": {
+      "title": "Sposta \"{{name}}\" in Flussi",
+      "subtitle": "Guarda cosa viene mantenuto, osserva il flusso in ombra accanto all'attività, poi passa.",
+      "close": "Chiudi",
+      "loading": "Controllo di questa attività…",
+      "openFlow": "Apri il flusso",
+      "findingsHeading": "Cosa viene mantenuto",
+      "stepsHeading": "Passaggi del flusso",
+      "startShadow": "Avvia ombra",
+      "switch": "Passa…",
+      "switchedNote": "Ora il flusso esegue questa attività. L'attività è di sola lettura finché non la riporti indietro.",
+      "flowUnavailable": "Impossibile caricare il flusso. Puoi comunque riportare indietro l'attività."
+    },
+    "shadow": {
+      "heading": "Ombra",
+      "explain": "Il flusso controlla ogni esecuzione dell'attività senza eseguire nulla.",
+      "runs": "Esecuzioni controllate",
+      "divergences": "Differenze",
+      "startedAt": "Avviata",
+      "divergence": {
+        "trigger_mismatch": "Ultima differenza: il flusso e l'attività non concordavano sull'esecuzione.",
+        "target_set_mismatch": "Ultima differenza: il flusso avrebbe scelto dispositivi diversi.",
+        "would_park": "Ultima differenza: un passaggio avrebbe atteso l'approvazione.",
+        "over_cap": "Ultima differenza: l'esecuzione avrebbe raggiunto un limite del flusso."
+      }
+    },
+    "switch": {
+      "title": "Passa \"{{name}}\" al suo flusso",
+      "body": "Un minuto dopo il passaggio, il flusso esegue ogni occorrenza e l'attività si ferma. Niente viene eseguito due volte.",
+      "blocked": {
+        "shadow_too_new": "Il passaggio si apre quando l'ombra ha 10 minuti.",
+        "shadow_too_short": "L'ombra ha controllato meno di 3 esecuzioni oppure ha meno di 7 giorni.",
+        "shadow_divergent": "L'ombra ha rilevato differenze tra il flusso e l'attività.",
+        "source_changed": "L'attività è cambiata dopo la conversione. Avvia una nuova ombra.",
+        "unconvertible": "Questa attività non può ancora essere spostata."
+      },
+      "acknowledge": "Passa comunque; accetto le evidenze mostrate.",
+      "preApprovalsHeading": "Esegui senza attendere l'approvazione",
+      "preApprovalsHelp": "Disattivato per impostazione predefinita. Senza di esso, ogni esecuzione di un passaggio script attende l'approvazione di una persona.",
+      "noPreApprovals": "Nessun passaggio script può essere eseguito senza approvazione.",
+      "preApprove": "Preapprova passaggio script",
+      "currentTargets_one": "Oggi ha come destinazione {{count}} dispositivo.",
+      "currentTargets_other": "Oggi ha come destinazione {{count}} dispositivi.",
+      "maxTargets": "Numero massimo di dispositivi per esecuzione (1–{{max}})",
+      "maxTargetsInvalid": "Inserisci un numero intero da 1 a {{max}}.",
+      "liveMembership": "I dispositivi vengono calcolati di nuovo a ogni esecuzione. Chiunque possa modificare i membri di un gruppo può cambiare dove viene eseguito; un'esecuzione oltre il limite mette in pausa il flusso.",
+      "frozenDevices": "Se un'esecuzione attende l'approvazione, chi approva vede i dispositivi esatti e vengono eseguiti solo quelli.",
+      "perOrgMultiplies": "Questo è un flusso per tutte le organizzazioni: il limite vale in ogni organizzazione, quindi il totale può essere questo numero moltiplicato per il numero di organizzazioni.",
+      "webhookApprovalEachRun": "Le esecuzioni webhook attendono sempre l'approvazione, anche con la preapprovazione.",
+      "generatedScriptsHeading": "Script creati al passaggio",
+      "generatedScriptsHelp": "Ogni comando diventa uno script della libreria con lo stesso proprietario dell'attività.",
+      "acceptScripts": "Ho controllato questi script.",
+      "acceptScopeWidening": "Accetto che il flusso non sia limitato ai siti del creatore dell'attività.",
+      "webhookChange": "I mittenti mantengono il vecchio indirizzo del webhook; inoltra al flusso. Il flusso accetta solo oggetti JSON e i mittenti del segreto in chiaro devono usare X-Breeze-Webhook-Token.",
+      "acceptDelegatorLifecycle": "Il flusso viene eseguito come me. Se il mio account viene disattivato o perde l'accesso, il flusso si mette in pausa (l'attività no).",
+      "confirm": "Passa",
+      "switching": "Passaggio in corso…"
+    },
+    "revert": {
+      "action": "Riporta all'attività…",
+      "title": "Riportare \"{{name}}\" all'attività?",
+      "body": "L'attività viene riattivata e il flusso non avvia nulla di nuovo. Le esecuzioni già avviate sul flusso terminano.",
+      "confirm": "Riporta indietro"
+    },
+    "toast": {
+      "created": "Ombra avviata.",
+      "bulkCreated_one": "Ombra avviata per {{count}} attività.",
+      "bulkCreated_other": "Ombra avviata per {{count}} attività.",
+      "switched": "Passaggio completato. Da ora il flusso esegue questa attività.",
+      "reverted": "Riportata indietro. L'attività viene eseguita di nuovo."
+    },
+    "errors": {
+      "loadFailed": "Impossibile caricare lo spostamento di questa attività.",
+      "createFailed": "Impossibile avviare l'ombra.",
+      "bulkFailed": "Impossibile avviare le ombre.",
+      "switchFailed": "Impossibile passare.",
+      "revertFailed": "Impossibile riportare indietro.",
+      "automation_not_found": "Questa attività non esiste più.",
+      "conversion_not_found": "Questo spostamento non esiste più.",
+      "conversion_exists": "Questa attività è già in fase di spostamento.",
+      "source_changed": "L'attività è cambiata da quando l'hai aperta. Ricarica e riprova.",
+      "unconvertible": "Questa attività non può ancora essere spostata.",
+      "draft_rejected": "La bozza del flusso non è stata accettata.",
+      "partner_wide_forbidden": "Spostare attività per tutte le organizzazioni richiede l'accesso completo di partner.",
+      "owner_forbidden": "Seleziona prima un'organizzazione.",
+      "interactive_session_required": "Accedi come persona per farlo.",
+      "delegation_scope_restricted": "Il tuo accesso è limitato ad alcuni siti, quindi non puoi passare né riportare indietro.",
+      "not_shadow": "Solo un'attività in ombra può passare.",
+      "not_switched": "Solo un'attività già passata può essere riportata indietro.",
+      "version_conflict": "Il flusso è cambiato. Ricarica e riprova.",
+      "already_enabled": "Il flusso è già attivo.",
+      "slug_unavailable": "Un altro flusso usa già questo nome.",
+      "shadow_too_new": "Il passaggio si apre quando l'ombra ha 10 minuti.",
+      "shadow_too_short": "Non ci sono ancora abbastanza evidenze dall'ombra. Conferma per passare comunque.",
+      "shadow_divergent": "L'ombra ha rilevato differenze. Confermale per passare comunque.",
+      "scope_widening_not_accepted": "Accetta l'ambito dispositivi più ampio per passare.",
+      "automation_disabled": "Attiva l'attività prima di farla passare.",
+      "automation_converted": "Questa attività è stata spostata in Flussi. Modificala lì.",
+      "automations_moved_to_flows": "Le nuove attività si creano in Flussi.",
+      "flow_not_found": "Il flusso di questa attività non esiste più.",
+      "revert_closed": "Il ritorno all'attività è chiuso su questa installazione.",
+      "generated_script_rejected": "Impossibile creare uno script per questa attività.",
+      "permission_missing": "Non hai tutti i permessi necessari al flusso.",
+      "pre_approval_not_eligible": "Un passaggio non può essere preapprovato.",
+      "invalid": "Il flusso non è valido.",
+      "event_dispatch_not_durable": "La consegna degli eventi qui non è durevole.",
+      "webhook_secret_missing": "Il segreto del webhook manca."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Le attività si stanno spostando in Flussi.",
+        "r1Body": "Le nuove attività si creano in Flussi. Sposta ogni attività quando la sua ombra coincide; puoi riportarla indietro."
+      },
+      "convertAll": "Avvia l'ombra per tutte le attività convertibili",
+      "converting": "Avvio…",
+      "bulkSummary": "Avviate {{created}}, saltate {{skipped}}.",
+      "newJobOpensFlows": "Nuovo flusso"
+    }
   }
 }

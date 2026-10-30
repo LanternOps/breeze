@@ -38,8 +38,8 @@
     "title": "Script Proposals",
     "proposalsPerDay": "Proposals per day",
     "reviewerDisagreements": "Reviewer disagreements",
-    "humanRejectedAfterApprove": "Human rejected after AI approved",
-    "humanApprovedAfterReject": "Human approved after AI rejected",
+    "humanRejectedAfterApprove": "Human denied, AI recommended approving",
+    "humanApprovedAfterReject": "Human approved, AI recommended rejecting",
     "unattendedRuns": "Unattended runs",
     "laneState": "Unattended lane",
     "laneOpen": "Open (paused after repeated failed verifications)",
@@ -54,7 +54,15 @@
     "exec": "Exec: {{duration}}ms",
     "noTier3ToolExecutionsFound": "No Tier 3 tool executions found.",
     "pending": "Pending",
-    "rejected": "Rejected",
+    "rejected": "Denied",
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "executing": "Executing",
+      "completed": "Completed",
+      "failed": "Failed",
+      "rejected": "Denied"
+    },
     "session": "Session: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "The temporary password has already been revealed.",
     "tempPasswordCopied": "Copied",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "All",
-    "denied": "Denied",
+    "denied": "Blocked",
     "error": "Error",
     "failed": "Failed",
-    "noRejectionsOrDenialsFound": "No rejections or denials found.",
-    "rejected": "Rejected",
-    "rejectionsAndDenials": "Rejections & Denials",
+    "noRejectionsOrDenialsFound": "No denied, blocked or failed actions found.",
+    "rejected": "Denied",
+    "rejectionsAndDenials": "Denied & blocked",
     "search": "Search...",
     "session": "Session",
     "status": "Status",
@@ -960,6 +968,19 @@
     "statusFilterLabel": "Status",
     "categoryFilterLabel": "Category"
   },
+  "pamEnforcement": {
+    "declineRecordUntrusted": "Refused: device decision record unavailable",
+    "userDeclined": "Declined on the device",
+    "userDecisionPending": "No answer on the device"
+  },
+  "pamRespond": {
+    "withdrawnConflict": "The user withdrew this request on the device."
+  },
+  "pamWithdrawReason": {
+    "dialog_error": "Prompt failed on the device",
+    "user_denied": "Declined by the user",
+    "user_timeout": "No answer on the device"
+  },
   "pamPamAuditTab": {
     "errors": {
       "loadWithStatus": "Failed to load audit history (HTTP {{status}})",
@@ -1129,6 +1150,8 @@
       "durationHelp": "1 to 1440 minutes (24h max).",
       "reasonRecommended": "Reason (recommended)",
       "reasonOptional": "Reason (optional)",
+      "reasonShownToUser": "Reason (shown to the user)",
+      "reasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
       "reasonPlaceholder": "Recorded in the audit trail"
     },
     "actions": {
@@ -1757,7 +1780,8 @@
       "syncQueued": "Sync queued for {{name}}",
       "deleteConfirm": "Delete {{name}}? Its policies, events and statistics are removed in the background.",
       "deleteFailed": "Failed to delete {{name}}",
-      "deleteSuccess": "Deleting {{name}} in the background"
+      "deleteSuccess": "Deleting {{name}} in the background",
+      "deleteComplete": "{{name}} deleted"
     },
     "loading": "Loading integrations…",
     "empty": {
@@ -1773,6 +1797,7 @@
     },
     "lastSyncFailedSuffix": " — failed",
     "lastSyncPartialSuffix": " — catching up",
+    "lastSyncTruncatedSuffix": " — some events not fetched",
     "never": "Never",
     "deletingInBackground": "Deleting…"
   },
@@ -2414,9 +2439,12 @@
       "rateLimited": "Too many sweeps were started recently. Try again later."
     },
     "skipReasons": {
-      "agent_too_old": "devices with an agent that is too old",
-      "busy_same_sweep": "devices already running this sweep",
-      "rule_set_not_eligible": "devices the rule sets do not apply to"
+      "agent_too_old_one": "{{count}} device with an agent that is too old",
+      "agent_too_old_other": "{{count}} devices with an agent that is too old",
+      "busy_same_sweep_one": "{{count}} device already running this sweep",
+      "busy_same_sweep_other": "{{count}} devices already running this sweep",
+      "rule_set_not_eligible_one": "{{count}} device the rule sets do not apply to",
+      "rule_set_not_eligible_other": "{{count}} devices the rule sets do not apply to"
     },
     "skipExplain": {
       "agent_too_old": "The agent must be updated before it can run YARA rule sets.",
@@ -2430,9 +2458,17 @@
       "back": "Back",
       "next": "Next",
       "previewAction": "Preview",
-      "confirm": "Sweep {{targeted}} devices",
+      "confirm_one": "Sweep {{count}} device",
+      "confirm_other": "Sweep {{count}} devices",
       "viewRunning": "View the running sweep",
-      "confirmSummary": "{{targeted}} devices in {{orgs}} organizations will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the devices.",
+      "confirmSummary_one": "{{devices}} in {{orgs}} will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the device.",
+      "confirmSummary_other": "{{devices}} in {{orgs}} will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the devices.",
+      "counts": {
+        "devices_one": "{{count}} device",
+        "devices_other": "{{count}} devices",
+        "orgs_one": "{{count}} organization",
+        "orgs_other": "{{count}} organizations"
+      },
       "steps": {
         "scope": "Scope",
         "type": "Scan type",
@@ -2461,15 +2497,19 @@
         "full": "Full",
         "custom": "Custom paths",
         "paths": "Paths, one per line",
-        "pathsHelp": "Up to {{max}} paths, {{chars}} characters each."
+        "pathsHelp": "Up to {{max}} paths, {{chars}} characters each.",
+        "pathsCount": "{{paths}} of {{max}} paths",
+        "pathsTooMany": "{{paths}} of {{max}} paths: remove {{remove}}.",
+        "pathTooLong": "Line {{line}} is longer than {{chars}} characters."
       },
       "duration": {
         "label": "Run for (hours)",
-        "help": "Offline devices run the scan when they come back within this time. Between 1 and {{max}} hours."
+        "help": "Offline devices run the scan when they come back within this time. Between 1 and {{max}} hours.",
+        "invalid": "Enter a whole number of hours from 1 to {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} devices in {{orgs}} organizations",
-        "org": "{{org}}: {{devices}} devices",
+        "targeted": "{{devices}} in {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Rule sets",
         "skipped": "Skipped",
         "scopeChanged": "The devices or rule sets changed since the preview. Review the new numbers, then confirm again."

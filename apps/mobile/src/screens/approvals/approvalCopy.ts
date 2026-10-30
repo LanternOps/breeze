@@ -108,6 +108,18 @@ export function humanizeRawActionLabel(
   return detail.length > 0 ? `${head}: ${detail.join(' ')}` : head;
 }
 
+/** Server cap on an approval decision reason (z.string().max(500)). */
+export const DENY_REASON_MAX_LENGTH = 500;
+
+/** Shown under the deny field when the reason is relayed to the end user. */
+export const DENY_REASON_SHOWN_TO_END_USER_HINT =
+  'The end user sees this in their notification (first 500 characters).';
+
+/** A PAM elevation (uac_intercept) deny reason is shown to the end user. */
+export function denyReasonShownToEndUser(approval: ApprovalCopyInput): boolean {
+  return resolveApprovalFlowType(approval) === 'uac_intercept';
+}
+
 export function getApprovalCopy(approval: ApprovalCopyInput): ApprovalCopy {
   if (resolveApprovalFlowType(approval) === 'uac_intercept') {
     const name = executableName(extractUacDetails(approval.actionArguments).exePath);

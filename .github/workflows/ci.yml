@@ -2143,11 +2143,18 @@ jobs:
       # skips unless TIMESYNC_LIVE=1, as it needs a described lab scenario). Its
       # GOOS=windows CGO_ENABLED=0 test dependency graph contains no
       # remote/desktop and no cgo.
+      #
+      # ./internal/pamdecline (#8971) is the durable record of the end user's
+      # PAM answer. Its tests are untagged; the Windows-sensitive part is the
+      # write path (atomicrename.Replace over an existing file, Chmod, the
+      # directory sync) and the corrupt-file quarantine rename. Its
+      # GOOS=windows CGO_ENABLED=0 test binary compiles and its dependency
+      # graph is atomicrename and logging only.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./internal/backup/wingpt ./internal/backup/layout ./internal/backup/windisks ./internal/recoveryconsole ./internal/backup/rebuild ./internal/backup/winhive ./internal/backup/bmr ./internal/backup/hosttool ./internal/collectors/timesync ./internal/executor ./internal/securefs ./internal/winsvcinstall ./internal/svcquery ./internal/pamdecline ./cmd/breeze-watchdog
 
       # The step above runs without -v, so a t.Skip is indistinguishable from a
       # pass in its output. That matters here more than usual: elevaccount's two
@@ -2192,6 +2199,27 @@ jobs:
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
           if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # #9597: the Windows password-policy collector queried Win32_AccountPolicy,
+      # a WMI class that exists on no Windows build, so every device reported
+      # no policy. These run the real secedit export and NetUserModalsGet on
+      # this elevated runner and require the two sources to agree. Only these
+      # tests run: internal/security's other tests have never been verified on
+      # Windows. The secedit test skips on a filtered token, so assert no skips.
+      - name: Run Windows password policy reader tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/security -run '^TestLivePasswordPolicy' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the password policy tests SKIPPED - the runner token is not elevated, so secedit has no live coverage here" }
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running

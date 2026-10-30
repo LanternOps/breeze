@@ -29,6 +29,7 @@ function ctx(over: Partial<BuiltinContext & { literalOrigin: string }> = {}): Bu
     run: { id: RUN, orgId: 'o1', flowId: 'f1' } as FlowRunRow,
     version: {} as FlowVersionRow,
     step: { id: 'call', tool: 'http_request', input: {}, approval: 'default', onFailure: 'stop', timeoutSec: 300 } as never,
+    itemIndex: null,
     owner: { orgId: 'o1', partnerId: 'p1' },
     auth: {} as never,
     stepRowId: 'row-1',

@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 const { ensureDefaultProfile } = vi.hoisted(() => ({ ensureDefaultProfile: vi.fn(async () => ({ id: 'default-profile' })) }));
 vi.mock('../services/billingProfileService', () => ({ ensureDefaultProfile }));
 import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
@@ -15,6 +20,7 @@ vi.mock('../services/trustPage/servingSet', () => trustServing);
 import { Hono } from 'hono';
 import { orgRoutes, createOrganizationSchema, updateOrganizationSchema } from './orgs';
 import { invalidateAgentOrgSettingsCaches } from '../services/agentOrgSettingsCache';
+import { PORTAL_CUSTOM_CSS_MAX_LENGTH } from '@breeze/shared';
 
 beforeEach(() => {
   defaultAssigneeSettingsErrorMock.mockReset();
@@ -436,6 +442,21 @@ import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 describe('org routes', () => {
+  it.each(['PATCH', 'PUT'])('refuses partner group enrollment default without persisting (%s)', async (method) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+
+    const res = await app.request('/orgs/organizations/org-123', {
+      method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({settings:{defaults:{deviceGroup:groupId}}}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   let app: Hono;
 
   const setAuthContext = (overrides: Partial<{
@@ -1441,6 +1462,28 @@ describe('org routes', () => {
         expect(res.status).toBe(200);
         expect(getCaptured().settings).not.toHaveProperty('ai');
       });
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The system
+      // wholesale write can neither erase nor set it.
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 100_000 }, branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+      });
+
+      it('cannot create settings.flows when none is stored', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { flows: { monthlyRunsPerFlow: 1 } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings).not.toHaveProperty('flows');
+      });
     });
 
     // SR2-05: the system-scoped wholesale settings write is a THIRD write path
@@ -2069,6 +2112,27 @@ describe('org routes', () => {
       return app.request('/orgs/partners/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
 
+    // settings.flows has one home: PUT /flows/limits (W05 #5220). PATCH
+    // /partners/me (no automations.write, no partner-wide gate) must neither
+    // change nor erase it.
+    it('cannot write settings.flows, and keeps the stored block', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ flows: { monthlyRunsPerFlow: 500 } });
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.flows).toEqual({ monthlyRunsPerFlow: 500 });
+    });
+
+    it('cannot create settings.flows when none is stored', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { flows: { monthlyRunsPerFlow: 1 }, ml: { anomalies: { enabled: true } } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings).not.toHaveProperty('flows');
+    });
+
     it('persists settings.ml.anomalies (the schema must not strip it) and keeps sibling ml keys', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       mockCurrentPartnerSelect({ ml: { rca: { enabled: true } }, security: { requireMfa: true } });
@@ -2514,6 +2578,94 @@ describe('org routes', () => {
       const getCaptured = mockUpdateCapture();
 
       const res = await patchMe({ settings: { topologyFeatureFlags: { ui: 'yes' } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+  });
+
+  // #9674: partner Custom CSS now reaches every child org's portal, so the
+  // partner write path must apply the same disallowed-pattern rules as the org
+  // portal-settings write path (updatePortalSettingsSchema).
+  describe('PATCH /orgs/partners/me — branding.customCss (#9674)', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('stores safe Custom CSS', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: '.portal-card { border-radius: 4px; }' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding.customCss).toBe('.portal-card { border-radius: 4px; }');
+    });
+
+    it('accepts a branding save without Custom CSS, which clears it', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ branding: { customCss: '.old {}', primaryColor: '#111111' } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { primaryColor: '#222222' } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.branding).toEqual({ primaryColor: '#222222' });
+    });
+
+    it.each([
+      ['@import', '@import "https://evil.example/x.css";'],
+      ['a non-https url()', '.a { background: url(http://evil.example/x.png); }'],
+      ['expression()', '.a { width: expression(alert(1)); }'],
+      ['an escaped @import', '@\\69mport "x.css";'],
+    ])('rejects %s with 400 and writes nothing', async (_label, css) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: css } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects Custom CSS over the portal size cap with 400', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { branding: { customCss: `/*${'a'.repeat(PORTAL_CUSTOM_CSS_MAX_LENGTH)}*/` } } });
 
       expect(res.status).toBe(400);
       expect(getCaptured()).toBeUndefined();
@@ -3760,6 +3912,24 @@ describe('org routes', () => {
       });
     });
 
+    // settings.flows has one home: PUT /flows/limits (W05 #5220); creating an
+    // org (orgs:write) cannot seed it.
+    it('drops an incoming settings.flows on create', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      queueCreateSelects();
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      const res = await app.request('/orgs/organizations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Org', slug: 'org-flows', settings: { flows: { monthlyRunsPerFlow: 1 }, timezone: 'UTC' } }),
+      });
+      expect(res.status).toBe(201);
+      const inserted = values.mock.calls.map((c) => c[0]).find((v) => v && typeof v === 'object' && 'settings' in v);
+      expect(inserted?.settings).toBeDefined();
+      expect(inserted.settings).not.toHaveProperty('flows');
+    });
+
     it('should create an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       queueCreateSelects();
@@ -4444,6 +4614,30 @@ describe('org routes', () => {
           .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any) // assertNotLocked: partner settings (no locks)
           .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { eventLogs: storedEventLogs } }]) as any); // current org settings
       }
+
+      // settings.flows has one home: PUT /flows/limits (W05 #5220). The
+      // wholesale org settings write keeps the stored block and ignores an
+      // incoming one (orgs:write is not automations:write).
+      it('keeps the stored settings.flows and ignores an incoming one', async () => {
+        vi.mocked(db.select)
+          .mockReturnValueOnce(noLockSelect([{ partnerId: 'partner-123' }]) as any)
+          .mockReturnValueOnce(noLockSelect([{ settings: {} }]) as any)
+          .mockReturnValueOnce(currentOrgSettingsSelect([{ settings: { flows: { monthlyRunsPerFlow: 50 } } }]) as any);
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'O' }]) }),
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+
+        const res = await app.request('/orgs/organizations/org-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { flows: { monthlyRunsPerFlow: 9_999 }, eventLogs: { enabled: false } } }),
+        });
+
+        expect(res.status).toBe(200);
+        const written = set.mock.calls[0]![0].settings as Record<string, unknown>;
+        expect(written.flows).toEqual({ monthlyRunsPerFlow: 50 });
+      });
 
       it('refuses a URL change that would carry the stored API key ciphertext to a new origin', async () => {
         queueSelects({

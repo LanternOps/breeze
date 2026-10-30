@@ -62,6 +62,12 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  'routes/devices/groups.ts': 'legacy org-only API; refuses partner-owned groups (#10521 W2a)',
+  'services/deviceGroupDelete.ts': 'data access; gate in routes/groups.ts',
+  'services/fleetDesign/apply.ts': 'org-scoped fleet design; never touches org_id IS NULL rows',
+  'services/groupMembership.ts': 'system-context evaluator; partner memberships derive from the device organization and eligible partner ownership',
+  'services/partnerGroupEvaluation.ts': 'system-context evaluator; materializes partner-group memberships one eligible organization per fresh transaction',
+
   // --- flows W05 (#5220) ------------------------------------------------------
   'services/flows/webhook/deliveries.ts': 'W05 (#5220) webhook delivery log (flow_webhook_deliveries): append-only ingress bookkeeping, not partner-wide config. Its only writer is services/flows/webhook/ingest.ts behind the router-auth-exempt POST /api/v1/webhooks/flows/:flowId; there is no AuthContext to gate — every write runs in system context AFTER HMAC/token verification against the flow\'s own secret, and a failed verification writes no row. The partner-wide authority is gated where it is granted: minting/rotating a partner-wide flow\'s secret (services/flows/webhook/secret.ts, partner_wide_forbidden; test secret.test.ts) and enabling a partner-wide flow (services/flows/versions.ts canManagePartnerWidePolicies).',
   'services/wisp/nudgePreferences.ts': 'Wisp W06a: user-scoped row, RLS pins breeze_current_user_id — writes only wisp_nudge_preferences (user_id PK, the caller\'s own row inside their own partner; the policy ANDs breeze_current_user_id() with breeze_has_partner_access) and the worker digest/brief stamps in system context. The partner-wide urgent-capable writer lives in services/wisp/partnerNudgeSettings.ts and is gated on canManagePartnerWidePolicies',
@@ -166,7 +172,6 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/oauthInteraction.ts': 'records the end-user\'s own OAuth consent grant, not partner configuration',
 
   // --- known gaps, tracked; listed so the count cannot silently grow ---------
-  'routes/softwareInstallMethods.ts': 'software_catalog rows here are catalog metadata, gated by the software permission set',
   // Corrected 2026-09 (site-ceiling gate review): this entry previously read
   // "read-oriented inventory surface; its policy writes delegate to
   // softwarePolicies routes" — false. POST /approve, /deny, /clear DIRECTLY
@@ -190,7 +195,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
-  'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
+  'services/softwareInventoryPolicy.ts': 'software_policies/configurationPolicies writes here (lifted from routes/softwareInventory.ts) are always org-scoped — resolveOrgId always resolves a concrete org id, so these writes can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance in the route (an AI caller must apply the same gate)',
 
   // ==========================================================================
   // services/** (walk extended 2026-08-23 — the aiProvider/stripeConnect gate
@@ -349,6 +354,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offeringVerificationStore.ts': 'W06 (#7604) Task 12: worker-only writer of a gateway offering\'s verification record (capabilities), run by the ai-model-discovery verify-offering job under system scope for the job\'s (offeringId, partnerId); the route that queues it (routes/aiModels/offerings.ts /verify) is gated BILLING_MANAGE + MFA + requirePartnerWide. Never enables, never takes caller-supplied capabilities',
   'services/aiModels/connectionSettings.ts':'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
+  // Tool Catalog W06 (#5221): the create_alert writer, moved verbatim out of
+  // automationRuntime.ts and shared with the flow `create_alert` built-in.
+  'services/alertCreation.ts': 'ORG-axis only by construction: ensureAutomationAlertRule(orgId: string) inserts the per-org template and rule with org_id = that org, target org, and never sets partner_id (pinned in alertCreation.test.ts). Callers pass the device\'s org (automationRuntime.ts) or the flow run\'s org (flow_runs.org_id NOT NULL, shape 1), so a partner-owned flow or automation never writes partner-wide alert config',
   'services/builtinDeploymentPackages.ts': 'ensureBuiltinPackage: routes/huntress.ts + routes/sentinelOne.ts behind requirePartnerManager; ensurePinnedBuiltinPackage: routes/softwareBuiltinPackages.ts behind canManagePartnerWidePolicies + devices.execute + MFA (#6958 D2); refreshPinnedBuiltinPackages: boot task, no caller',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',
   'services/partnerStripe.ts': 'gated at routes/stripeConnect/index.ts — capability check on every handler (#3916)',
@@ -558,7 +566,11 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     // allowlist, or the exemption silently outlives the code it excused.
     const stillMutating = new Set(
       collectSourceFiles()
-        .filter((file) => mutatedTables(readFileSync(file, 'utf8'), tableNames).length > 0)
+        // Membership materializers write org-owned child rows of partner groups.
+        // Their documented exemption remains live while those child writes exist,
+        // even though they never mutate a partner-owned definition itself.
+        .filter((file) => mutatedTables(readFileSync(file, 'utf8'),
+          [...tableNames, 'deviceGroupMemberships', 'groupMembershipLog']).length > 0)
         .map((file) => relative(API_SRC, file))
     );
 

@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Fournisseurs d’applications (Avertissement et Information)",
+        "applicationProvidersHelp": "Les événements d’application de niveau Erreur et Critique sont collectés auprès de tous les fournisseurs ; ceux de niveau Avertissement et Information, uniquement auprès des fournisseurs intégrés ({{providers}}) et de ceux indiqués ici. Utilisez le nom exact du fournisseur affiché dans la colonne « Source » de l’Observateur d’événements ou dans Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Seule la stratégie de journaux d’événements prioritaire pour un appareil s’applique. Les listes de fournisseurs des différentes stratégies ne sont pas combinées.",
+        "providerNameLabel": "Nom du fournisseur d’événements d’application",
+        "addProvider": "Ajouter un fournisseur",
+        "removeProvider": "Supprimer",
+        "removeProviderNamed": "Supprimer {{provider}}",
+        "providerNameInvalid": "Utilisez de 1 à {{max}} caractères, en commençant par une lettre ou un chiffre. Caractères autorisés : lettres, chiffres, espaces, points, traits de soulignement, signes dollar, parenthèses et traits d’union.",
+        "providerLimitReached": "Vous pouvez ajouter jusqu’à {{max}} fournisseurs supplémentaires. Supprimez-en un pour en ajouter un autre.",
+        "providerAlreadyListed": "Ce fournisseur figure déjà dans la liste.",
+        "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
         "override": "Outremise",
@@ -899,7 +910,17 @@
         "ringInvalidBody": "Les correctifs de cette stratégie sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
         "ringDetailsNoHold": "Ordre de déploiement {{order}} · aucun délai avant l’approbation",
         "ringDetailsWithHold_one": "Ordre de déploiement {{order}} · délai de {{count}} jour avant l’approbation",
-        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation"
+        "ringDetailsWithHold_other": "Ordre de déploiement {{order}} · délai de {{count}} jours avant l’approbation",
+        "rebootPreviewHeading": "Aperçu",
+        "rebootPreviewDescription": "Ce que voit la personne devant l’ordinateur si un redémarrage est planifié maintenant. Les heures sont des exemples.",
+        "rebootPreviewDefaultMarker": "Par défaut",
+        "rebootPreviewDefaultTitle": "Redémarrage requis pour terminer l'installation des mises à jour",
+        "rebootPreviewDefaultBody": "Votre équipe d'assistance informatique doit redémarrer cet ordinateur pour terminer l'installation des mises à jour.",
+        "rebootPreviewConsequence": "Si vous ne faites rien, cet ordinateur redémarrera à {{time}}. Enregistrez votre travail avant.",
+        "rebootPreviewRestartNow": "Redémarrer maintenant",
+        "rebootPreviewPostponeUntil": "Reporter à {{time}}",
+        "rebootPreviewDeadline": "Reporter ne repousse jamais le redémarrage après {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",
@@ -986,6 +1007,9 @@
         "showIndicatorHelp": "Afficher le bandeau à l'écran pendant qu'un technicien est connecté.",
         "notifyOnEnd": "Avis de fin de session",
         "notifyOnEndHelp": "Avertir l'utilisateur final à la fin de la session.",
+        "allowUserEnd": "Autoriser l’utilisateur à mettre fin à la session",
+        "allowUserEndHelp": "La personne devant l’appareil peut mettre fin à la session depuis l’indicateur à l’écran, après confirmation. Le technicien voit « Terminée par l’utilisateur ».",
+        "allowUserEndNeedsIndicator": "Activez l’indicateur de session active pour permettre aux utilisateurs de mettre fin à une session.",
         "identityLevel": "Identité du technicien",
         "identityLevelHelp": "La part de l'identité du technicien visible par l'utilisateur final. Le nom du MSP est toujours affiché.",
         "identityNameEmail": "Nom et e-mail",
@@ -1184,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
         "generateAlertsWhenFixedTermDeviceWarranties": "Générez des alertes lorsque les garanties à durée déterminée des dispositifs approchent de leur expiration.",
         "warningThresholdDays": "Seuil d’avertissement (jours)",
-        "generateAWarningAlertWhenWarrantyExpires": "Générez une alerte lorsque la garantie expire dans ce délai de jours.",
-        "criticalThresholdDays": "Seuil critique (jours)",
-        "generateACriticalAlertWhenWarrantyExpires": "Générez une alerte critique lorsque la garantie expire dans ce délai de jours.",
+        "warnThresholdHelp": "Générez une alerte de gravité Information lorsque la garantie expire dans ce délai de jours.",
+        "urgentThresholdDays": "Seuil d’urgence (jours)",
+        "urgentThresholdHelp": "Générez une alerte de gravité Faible lorsque la garantie expire dans ce délai de jours. Une garantie expirée génère une alerte de gravité Moyenne.",
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
         "criticalDays": "Critical Days",
@@ -1206,6 +1230,20 @@
         "title": "Les appareils de cette politique alerteront deux fois",
         "body": "Ces conditions existent à la fois comme moniteur attaché et comme règle ou surveillance héritée : {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Groupes d’appareils (toutes les org.)",
+      "description": "Ciblez un groupe d’appareils à l’échelle du partenaire. Une affectation de groupe s’applique au niveau du groupe d’appareils et est donc prioritaire sur les affectations d’autres politiques au niveau de l’organisation et du site.",
+      "selectGroup": "Sélectionner un groupe d’appareils",
+      "assign": "Affecter",
+      "remove": "Retirer",
+      "assigned": "Groupe d’appareils affecté",
+      "removed": "Affectation du groupe d’appareils retirée",
+      "failedToLoad": "Impossible de charger les groupes d’appareils",
+      "failedToAssign": "Impossible d’affecter le groupe d’appareils",
+      "failedToRemove": "Impossible de retirer l’affectation du groupe d’appareils",
+      "empty": "Aucun groupe d’appareils à l’échelle du partenaire pour le moment. Créez-en un sous Groupes d’appareils → Toutes les org.",
+      "loading": "Chargement des groupes d’appareils…"
     }
   },
   "software": {

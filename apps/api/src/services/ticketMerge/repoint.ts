@@ -146,9 +146,14 @@ export async function repointTicketChildren(
 
   // UNIQUE (principal, ticket_id): a ref whose principal already has one on
   // the survivor STAYS on the tombstone, so a Partner API read of that
-  // external id returns the tombstone with mergedIntoTicketId (§3.7).
+  // external id returns the tombstone with mergedIntoTicketId (§3.7). A ref
+  // that moves records the ticket it was written on (#10120), kept across a
+  // later merge like a comment's merged_from_ticket_id (A→B→C keeps A), so
+  // its principal can tell the ref came off one of its own tickets.
   counts.ticket_external_refs = await affected(tx, sql`
-    UPDATE ticket_external_refs s SET ticket_id = ${dstId}::uuid
+    UPDATE ticket_external_refs s
+       SET ticket_id = ${dstId}::uuid,
+           origin_ticket_id = COALESCE(s.origin_ticket_id, ${srcId}::uuid)
      WHERE s.ticket_id = ${srcId}::uuid
        AND NOT EXISTS (
          SELECT 1 FROM ticket_external_refs d

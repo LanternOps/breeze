@@ -34,8 +34,8 @@ func (h *Host) replay(r RendererSession, now time.Time, ob *outbox) {
 	}
 	var moves []move
 	for _, rec := range h.sortedRecords() {
-		if !rec.lingerUntil.IsZero() {
-			continue
+		if !rec.lingerUntil.IsZero() || rec.neverReask() {
+			continue // a NeverReask prompt stays where it was drawn
 		}
 		for _, pl := range rec.placements {
 			if pl.deferred != deferNone || pl.renderer == r.Key || !rendererServes(r, pl.owner) {

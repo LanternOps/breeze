@@ -977,6 +977,46 @@ describe('heartbeatSchema — rebootStatus (#3207 W5)', () => {
     expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
     expect(data.rebootStatus?.deadline).toBeUndefined();
   });
+
+  // #10190 W05 — the last decision the person at the keyboard made on the
+  // restart prompt. Audit input only; never part of the stored schedule.
+  it('accepts lastUserAction with each action and renderer', () => {
+    for (const action of ['postponed', 'restart_now']) {
+      for (const renderer of ['assist', 'native', 'headless']) {
+        const data = parse({
+          scheduledAt: SCHEDULED_AT,
+          deferralsUsed: 1,
+          maxDeferrals: 3,
+          lastUserAction: { action, atUnixMs: 1_788_349_000_000, renderer },
+        });
+        expect(data.rebootStatus?.lastUserAction).toEqual({ action, atUnixMs: 1_788_349_000_000, renderer });
+      }
+    }
+  });
+
+  it('malformed lastUserAction does not fail heartbeat', () => {
+    // An unknown action or renderer, a non-integer or negative time, a
+    // missing member or a wrong type drops only lastUserAction: the heartbeat
+    // still parses and the rest of the restart snapshot is kept.
+    const malformed: unknown[] = [
+      { action: 'snooze', atUnixMs: 1_788_349_000_000, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: 1_788_349_000_000, renderer: 'webview' },
+      { action: 'postponed', atUnixMs: 1.5, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: -1, renderer: 'assist' },
+      { action: 'postponed', atUnixMs: '1788349000000', renderer: 'assist' },
+      { action: 'postponed', renderer: 'assist' },
+      'postponed',
+      null,
+      42,
+    ];
+    for (const lastUserAction of malformed) {
+      const data = parse({ scheduledAt: SCHEDULED_AT, deferralsUsed: 2, maxDeferrals: 3, lastUserAction });
+      expect(data.status).toBe('ok');
+      expect(data.rebootStatus?.scheduledAt).toBe(SCHEDULED_AT);
+      expect(data.rebootStatus?.deferralsUsed).toBe(2);
+      expect(data.rebootStatus?.lastUserAction).toBeUndefined();
+    }
+  });
 });
 
 // #8317 — the identity-sync fields are informational: a malformed value drops

@@ -69,6 +69,32 @@ func (d *fakeDir) Send(key, msgType, kind string, payload any) error {
 	return errRendererGone
 }
 
+// PromptRenderers models the broker: only a renderer that advertised a kind
+// holds a prompt scope.
+func (d *fakeDir) PromptRenderers() []RendererSession {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var out []RendererSession
+	for _, r := range d.renderers {
+		if r.Protocol >= 1 && len(r.KindAds) > 0 {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// UserLocaleInWinSession models the broker's SYSTEM-helper locale borrow.
+func (d *fakeDir) UserLocaleInWinSession(ws uint32) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, r := range d.renderers {
+		if r.Role != ipc.HelperRoleSystem && r.Owner.WinSessionID == ws && r.UILocale != "" {
+			return r.UILocale
+		}
+	}
+	return ""
+}
+
 func (d *fakeDir) add(r RendererSession) {
 	d.mu.Lock()
 	d.renderers = append(d.renderers, r)

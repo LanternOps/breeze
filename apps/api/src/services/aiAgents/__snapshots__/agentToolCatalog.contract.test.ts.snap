@@ -3,6 +3,7 @@
 exports[`agentToolCatalog contract > pins the unreachable set so a reachability change is a deliberate edit (#3300) 1`] = `
 [
   "apply_topology_template",
+  "bootstrap_homebrew",
   "cancel_flow_run",
   "confirm_memory",
   "diagnostic_list_directory",
@@ -23,6 +24,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "manage_access_reviews",
   "manage_ai_agents",
   "manage_alert_correlations",
+  "manage_custom_fields",
   "manage_known_guests",
   "manage_pam_rules",
   "manage_topology_manual",

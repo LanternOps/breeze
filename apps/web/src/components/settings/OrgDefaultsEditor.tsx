@@ -47,11 +47,28 @@ function deriveWindowState(raw: string | undefined): WindowState {
 }
 
 // The shape of `organizations.settings.defaults`. This deliberately ALIASES the
-// shared type rather than restating it: this editor rebuilds the whole object
-// on save (see handleSave), so a field this type doesn't know about is dropped
-// on every save with no error. Add new fields to InheritableDefaultSettings in
-// packages/shared and wire them into handleSave — never re-fork this type.
+// shared type rather than restating it. Add new editable fields to
+// InheritableDefaultSettings in packages/shared, to EditableField below, and to
+// the `current` map in handleSave — never re-fork this type.
 type DefaultsData = InheritableDefaultSettings;
+
+// The fields this form edits. Save writes ONLY the fields the admin changed or
+// reset (issue #9945): everything else is passed through exactly as stored, so
+// a field the org never set keeps inheriting instead of being materialised as
+// an explicit override of whatever the control happened to display.
+type EditableField =
+  | 'policyDefaults'
+  | 'deviceGroup'
+  | 'autoEnrollment'
+  | 'agentUpdatePolicy'
+  | 'maintenanceWindow'
+  | 'agentVersionPins'
+  | 'defaultEnrollmentTtlMinutes'
+  | 'defaultEnrollmentDeviceCount';
+
+// 'set' = write the control's current value; 'clear' = drop the org's override
+// so the field inherits again ("Reset to default").
+type FieldEdit = 'set' | 'clear';
 
 type OrgDefaultsEditorProps = {
   organizationName: string;
@@ -93,6 +110,14 @@ const LOCKABLE_FIELDS = [
 // arrive via `locked`, so the lock helper must accept it alongside the
 // seedable editor fields.
 type LockableField = (typeof LOCKABLE_FIELDS)[number] | 'maxEnrollmentLinkTtlMinutes';
+
+// Section titles that name each field in its "Reset to default" button label.
+const INHERITANCE_TITLE_KEYS: Record<(typeof LOCKABLE_FIELDS)[number], string> = {
+  policyDefaults: 'orgDefaultsEditor.policies.title',
+  autoEnrollment: 'orgDefaultsEditor.autoEnrollment.title',
+  agentUpdatePolicy: 'orgDefaultsEditor.agentUpdates.title',
+  maintenanceWindow: 'orgDefaultsEditor.maintenance.title',
+};
 
 const defaultValues: DefaultsData = {
   policyDefaults: {
@@ -264,6 +289,67 @@ export default function OrgDefaultsEditor({
     onDirty?.();
   };
 
+  // Per-field edit intent (issue #9945). A field absent from this map is
+  // untouched and is saved exactly as stored — or not at all if the org never
+  // set it. Two stored values the runtime already ignores start as 'clear', so
+  // saving drops them instead of writing the displayed fallback as a new
+  // override: an invalid window (fails open to "anytime", which is what the
+  // control shows) and a legacy display-string device group (not an id, so
+  // enrollment treats it as unset — #9617).
+  const [edits, setEdits] = useState<Partial<Record<EditableField, FieldEdit>>>(() => {
+    const initial: Partial<Record<EditableField, FieldEdit>> = {};
+    if (storedWindowInvalid && !isLocked('maintenanceWindow')) initial.maintenanceWindow = 'clear';
+    if (defaults?.deviceGroup !== undefined && !UUID_RE.test(String(defaults.deviceGroup))) initial.deviceGroup = 'clear';
+    return initial;
+  });
+  const editField = (field: EditableField) => {
+    setEdits(prev => ({ ...prev, [field]: 'set' }));
+    markDirty();
+  };
+  const hasOwnValue = (field: EditableField): boolean =>
+    edits[field] === 'set' || (edits[field] !== 'clear' && defaults?.[field] !== undefined);
+
+  // "Reset to default": drop the org override and show the inherited value. A
+  // partner-set value for these fields is a lock (the control is disabled and
+  // this is never offered), so the inherited value is the product default.
+  const resetField = (field: Extract<EditableField, LockableField>) => {
+    if (field === 'policyDefaults') setPolicyDefaults(defaultValues.policyDefaults!);
+    if (field === 'autoEnrollment') setAutoEnrollment(defaultValues.autoEnrollment!);
+    if (field === 'agentUpdatePolicy') setAgentUpdatePolicy(defaultValues.agentUpdatePolicy!);
+    if (field === 'maintenanceWindow') setWindowMode('always');
+    setEdits(prev => ({ ...prev, [field]: 'clear' }));
+    markDirty();
+  };
+
+  // Granularity is the whole field, not each sub-control: editing one policy
+  // select or one auto-enrollment checkbox writes that field's full object,
+  // because the partner lock and the resolvers treat each field as one unit.
+  const renderInheritance = (field: Extract<EditableField, LockableField>) => {
+    if (isLocked(field)) return null; // "Managed by partner" already says where it comes from
+    const own = hasOwnValue(field);
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {/* Live region: Reset unmounts its own button, so announce the new state. */}
+        <span role="status" data-testid={`defaults-source-${field}`}>
+          {own ? t('orgDefaultsEditor.inheritance.overridden') : t('orgDefaultsEditor.inheritance.inherited')}
+        </span>
+        {own && (
+          <button
+            type="button"
+            onClick={() => resetField(field)}
+            aria-label={t('orgDefaultsEditor.inheritance.resetLabel', {
+              setting: t(/* i18n-dynamic */ INHERITANCE_TITLE_KEYS[field]),
+            })}
+            data-testid={`defaults-reset-${field}`}
+            className="font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t('orgDefaultsEditor.inheritance.reset')}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // If the stored window was invalid, the editor is already showing a corrected
   // value — mark the form dirty on mount so saving actually persists the fix.
   // Mount-only: intentionally empty deps (onDirty/storedWindowInvalid are stable
@@ -274,41 +360,49 @@ export default function OrgDefaultsEditor({
 
   const handleSave = () => {
     if (windowError || !builtWindow) return; // never persist an invalid window
-    const data: DefaultsData = {
+    // Start from what the org stored, so untouched fields (including ones this
+    // form does not know about) are written back exactly as they were.
+    //
+    // maxEnrollmentLinkTtlMinutes is the one exception. It is a partner-only
+    // ceiling: the resolver ignores an org-set value, and the org PATCH rejects
+    // it with 403 once the partner has set one. Dropping it both clears any
+    // stale org-stored cap and keeps Save from 403ing.
+    const { maxEnrollmentLinkTtlMinutes: _staleCap, ...stored } = defaults ?? {};
+    const data: Record<string, unknown> = { ...stored };
+    // Values the controls currently hold. `undefined` means "no override":
+    // the key is removed, which is what "inherit" means to the resolvers (they
+    // key on presence, not value).
+    //
+    // The enrollment TTL is persisted verbatim, never clamped to the partner
+    // cap: resolveEnrollmentDefaults applies the cap at read time and the
+    // select shows the stored value honestly (see ttlOptions above).
+    const current: Record<EditableField, unknown> = {
       policyDefaults,
       deviceGroup: deviceGroup || undefined,
       autoEnrollment,
       agentUpdatePolicy,
       maintenanceWindow: builtWindow,
-      agentVersionPins,
-      // `undefined` serializes away entirely, which is what "inherit from the
-      // partner" means to the resolver (it keys on key presence, not value).
-      //
-      // Persisted verbatim, never clamped to the partner cap. This editor
-      // rebuilds the entire blob on every save, so a save triggered by an
-      // unrelated field must not rewrite this one. The cap is applied at read
-      // time by resolveEnrollmentDefaults; the select shows the stored value
-      // honestly (see ttlOptions above) so nothing is hidden either way.
+      agentVersionPins: Object.keys(agentVersionPins).length > 0 ? agentVersionPins : undefined,
       defaultEnrollmentTtlMinutes: enrollmentTtlMinutes,
       defaultEnrollmentDeviceCount: enrollmentDeviceCount,
-      // maxEnrollmentLinkTtlMinutes is intentionally NOT rebuilt here. It is a
-      // partner-only ceiling: the resolver ignores an org-set value, and the
-      // org PATCH rejects it with 403 once the partner has set one. Omitting it
-      // both drops any stale org-stored cap and keeps Save from 403ing.
     };
-    // Partner-locked fields are enforced server-side and inert on the org row, so
-    // echo the partner's value back verbatim. That keeps the write a permitted
-    // no-op (issue #2752) and sidesteps any client-side canonicalisation — the
-    // maintenance-window round-trip, say — reading as a real change and 403ing
-    // the whole category.
+    for (const [field, edit] of Object.entries(edits) as Array<[EditableField, FieldEdit]>) {
+      if (edit === 'clear' || current[field] === undefined) delete data[field];
+      else data[field] = current[field];
+    }
+    // A partner-locked field the org still stores its own (inert) value for is
+    // replaced by the partner's value: re-posting a value that diverges from the
+    // partner's 403s the whole category (issue #2752). A locked field the org
+    // never stored stays absent — writing the partner's value would materialise
+    // a copy that outlives the lock (#9945).
     if (effectiveDefaults) {
       for (const field of LOCKABLE_FIELDS) {
-        if (isLocked(field) && field in effectiveDefaults) {
-          (data as Record<string, unknown>)[field] = (effectiveDefaults as Record<string, unknown>)[field];
+        if (isLocked(field) && field in data && field in effectiveDefaults) {
+          data[field] = (effectiveDefaults as Record<string, unknown>)[field];
         }
       }
     }
-    onSave?.(data);
+    onSave?.(data as DefaultsData);
   };
 
   return (
@@ -349,7 +443,7 @@ export default function OrgDefaultsEditor({
                     ...prev,
                     [policy.id]: event.target.value
                   }));
-                  markDirty();
+                  editField('policyDefaults');
                 }}
                 className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('policyDefaults') ? 'opacity-60' : ''}`}
               >
@@ -365,6 +459,7 @@ export default function OrgDefaultsEditor({
             </label>
           ))}
         </div>
+        {renderInheritance('policyDefaults')}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -382,7 +477,7 @@ export default function OrgDefaultsEditor({
             data-testid="default-device-group"
             onChange={event => {
               setDeviceGroup(event.target.value);
-              markDirty();
+              editField('deviceGroup');
             }}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
           >
@@ -418,7 +513,7 @@ export default function OrgDefaultsEditor({
               disabled={isLocked('autoEnrollment')}
               onChange={event => {
                 setAutoEnrollment(prev => ({ ...prev, enabled: event.target.checked }));
-                markDirty();
+                editField('autoEnrollment');
               }}
               data-testid="auto-enrollment-enabled"
               className="h-4 w-4"
@@ -432,7 +527,7 @@ export default function OrgDefaultsEditor({
               disabled={isLocked('autoEnrollment')}
               onChange={event => {
                 setAutoEnrollment(prev => ({ ...prev, requireApproval: event.target.checked }));
-                markDirty();
+                editField('autoEnrollment');
               }}
               data-testid="auto-enrollment-require-approval"
               className="h-4 w-4"
@@ -443,6 +538,7 @@ export default function OrgDefaultsEditor({
               {t('orgDefaultsEditor.managedByPartner')}
             </span>
           )}
+          {renderInheritance('autoEnrollment')}
         </div>
 
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
@@ -459,7 +555,7 @@ export default function OrgDefaultsEditor({
             disabled={isLocked('agentUpdatePolicy')}
             onChange={event => {
               setAgentUpdatePolicy(event.target.value);
-              markDirty();
+              editField('agentUpdatePolicy');
             }}
             className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${isLocked('agentUpdatePolicy') ? 'opacity-60' : ''}`}
           >
@@ -469,6 +565,7 @@ export default function OrgDefaultsEditor({
           {isLocked('agentUpdatePolicy') && (
             <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
           )}
+          {renderInheritance('agentUpdatePolicy')}
           <p className="text-xs text-muted-foreground">
             <Trans
               i18nKey="orgDefaultsEditor.agentUpdates.description"
@@ -495,7 +592,7 @@ export default function OrgDefaultsEditor({
                   disabled={isLocked('maintenanceWindow')}
                   onChange={() => {
                     setWindowMode('always');
-                    markDirty();
+                    editField('maintenanceWindow');
                   }}
                   data-testid="maintenance-mode-always"
                   className="h-4 w-4"
@@ -511,7 +608,7 @@ export default function OrgDefaultsEditor({
                   disabled={isLocked('maintenanceWindow')}
                   onChange={() => {
                     setWindowMode('window');
-                    markDirty();
+                    editField('maintenanceWindow');
                   }}
                   data-testid="maintenance-mode-window"
                   className="h-4 w-4"
@@ -522,6 +619,7 @@ export default function OrgDefaultsEditor({
             {isLocked('maintenanceWindow') && (
               <span className="text-xs text-amber-600 dark:text-amber-400 italic">{t('orgDefaultsEditor.managedByPartner')}</span>
             )}
+            {renderInheritance('maintenanceWindow')}
 
             {windowMode === 'window' && (
               <div className="space-y-2 rounded-md border bg-background/60 p-3">
@@ -532,7 +630,7 @@ export default function OrgDefaultsEditor({
                       value={windowDay}
                       onChange={event => {
                         setWindowDay(event.target.value);
-                        markDirty();
+                        editField('maintenanceWindow');
                       }}
                       disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-day"
@@ -553,7 +651,7 @@ export default function OrgDefaultsEditor({
                       value={windowStart}
                       onChange={event => {
                         setWindowStart(event.target.value);
-                        markDirty();
+                        editField('maintenanceWindow');
                       }}
                       disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-start"
@@ -567,7 +665,7 @@ export default function OrgDefaultsEditor({
                       value={windowEnd}
                       onChange={event => {
                         setWindowEnd(event.target.value);
-                        markDirty();
+                        editField('maintenanceWindow');
                       }}
                       disabled={isLocked('maintenanceWindow')}
                       data-testid="maintenance-end"
@@ -606,7 +704,7 @@ export default function OrgDefaultsEditor({
               value={enrollmentTtlMinutes ?? ''}
               onChange={event => {
                 setEnrollmentTtlMinutes(event.target.value ? Number(event.target.value) : undefined);
-                markDirty();
+                editField('defaultEnrollmentTtlMinutes');
               }}
               data-testid="org-default-enrollment-ttl"
               className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -628,7 +726,7 @@ export default function OrgDefaultsEditor({
               value={enrollmentDeviceCount ?? ''}
               onChange={event => {
                 setEnrollmentDeviceCount(event.target.value ? Number(event.target.value) : undefined);
-                markDirty();
+                editField('defaultEnrollmentDeviceCount');
               }}
               placeholder={t('orgDefaultsEditor.enrollment.inherit')}
               data-testid="org-default-enrollment-device-count"
@@ -658,7 +756,7 @@ export default function OrgDefaultsEditor({
         value={agentVersionPins}
         onChange={(next) => {
           setAgentVersionPins(next);
-          markDirty();
+          editField('agentVersionPins');
         }}
         pinnable={pinnableVersions ?? null}
         inheritedPins={partnerPins}

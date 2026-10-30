@@ -1546,3 +1546,88 @@ it('keeps the retirement migration scoped to legacy source columns', () => {
   const sql = readFileSync(new URL('../../migrations/2026-10-23-120000-legacy-source-retirement-columns.sql', import.meta.url), 'utf8');
   expect(sql).not.toMatch(/ALTER\s+TABLE\s+(?:public\.)?monitor_definitions\b/i);
 });
+
+describe('webhook payload version migration', () => {
+  it('preserves legacy versions before changing the new-webhook default, without row writes', () => {
+    const migration = readFileSync(new URL('../../migrations/2027-01-12-100000-webhook-payload-version.sql', import.meta.url), 'utf8');
+    expect(migration).toContain('ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS payload_version smallint NOT NULL DEFAULT 1;');
+    expect(migration).toContain("conrelid = 'public.webhooks'::regclass");
+    expect(migration).toContain("conname = 'webhooks_payload_version_chk'");
+    expect(migration).toContain('CHECK (payload_version IN (1, 2))');
+    expect(migration.indexOf('DEFAULT 1')).toBeLessThan(migration.indexOf('SET DEFAULT 2'));
+    expect(migration).toContain('ALTER TABLE public.webhook_deliveries ADD COLUMN IF NOT EXISTS payload_version smallint NOT NULL DEFAULT 1;');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS event_timestamp timestamptz NULL;');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS replay_root_event_id varchar(100) NULL;');
+    const statements = migration.replace(/--[^\n]*/g, '');
+    expect(statements).not.toMatch(/\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
+    expect(statements).toContain("conname = 'webhook_deliveries_payload_version_chk'");
+    expect(statements).toContain("conrelid = 'public.webhook_deliveries'::regclass");
+    expect(statements).toMatch(/ADD CONSTRAINT webhook_deliveries_payload_version_chk CHECK \(payload_version IN \(1, 2\)\) NOT VALID;/);
+    expect(statements).not.toMatch(/VALIDATE CONSTRAINT/i);
+  });
+  it('models defaults, the webhook check, and nullable persisted wire identity in Drizzle', async () => {
+    const { webhooks, webhookDeliveries } = await import('./schema/integrations');
+    expect(webhooks.payloadVersion.default).toBe(2);
+    expect(webhooks.payloadVersion.notNull).toBe(true);
+    expect(getTableConfig(webhooks).checks.map(check => check.name)).toContain('webhooks_payload_version_chk');
+    expect(webhookDeliveries.payloadVersion.default).toBe(1);
+    expect(getTableConfig(webhookDeliveries).checks.map(check => check.name)).toContain('webhook_deliveries_payload_version_chk');
+    expect(webhookDeliveries.eventTimestamp.notNull).toBe(false);
+    expect(webhookDeliveries.replayRootEventId.notNull).toBe(false);
+  });
+});
+
+describe('webhook scheduled delivery migrations', () => {
+  const enumName = '2027-01-12-300000-webhook-delivery-scheduled-enum.sql';
+  const indexName = '2027-01-12-300100-webhook-delivery-scheduled-indexes.sql';
+  const evidenceName = '2027-01-12-300200-webhook-delivery-failed-at-generation.sql';
+  it('adds terminal time and recorded generation without backfilling rows', () => {
+    const content = readFileSync(path.resolve(__dirname, '../../migrations', evidenceName), 'utf8');
+    expect(content.startsWith('-- @no-transaction\n')).toBe(true);
+    const statements = content.replace(/--[^\n]*/g, '');
+    expect(statements).toContain('ALTER TABLE public.webhook_deliveries ADD COLUMN IF NOT EXISTS failed_at timestamp NULL;');
+    expect(statements).toContain('ALTER TABLE public.webhook_deliveries ADD COLUMN IF NOT EXISTS webhook_generation integer NULL;');
+    expect(statements).toMatch(/CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_deliveries_failed_at_recent_idx\s+ON public.webhook_deliveries \(failed_at\)\s+WHERE status = 'failed';/);
+    expect(statements).toContain('DROP INDEX CONCURRENTLY IF EXISTS public.webhook_deliveries_failed_recent_idx;');
+    expect(statements).toContain("('public.webhook_deliveries'::regclass, 'webhook_deliveries_failed_at_recent_idx')");
+    expect(statements).toContain('WHERE NOT i.indisvalid');
+    expect(statements).toContain('RAISE EXCEPTION');
+    expect(statements).not.toMatch(/\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
+    expect([evidenceName, indexName].sort((a, b) => a.localeCompare(b))).toEqual([indexName, evidenceName]);
+  });
+  it('models nullable terminal time and generation and the replacement index in Drizzle', async () => {
+    const { webhookDeliveries } = await import('./schema/integrations');
+    expect(webhookDeliveries.failedAt?.name).toBe('failed_at');
+    expect(webhookDeliveries.failedAt?.getSQLType()).toBe('timestamp');
+    expect(webhookDeliveries.failedAt?.notNull).toBe(false);
+    expect(webhookDeliveries.webhookGeneration?.name).toBe('webhook_generation');
+    expect(webhookDeliveries.webhookGeneration?.getSQLType()).toBe('integer');
+    expect(webhookDeliveries.webhookGeneration?.notNull).toBe(false);
+    const indexes = getTableConfig(webhookDeliveries).indexes.map(index => index.config.name);
+    expect(indexes).toContain('webhook_deliveries_failed_at_recent_idx');
+    expect(indexes).not.toContain('webhook_deliveries_failed_recent_idx');
+  });
+  it('adds the guarded enum value without using it in the same transaction', () => {
+    const content = readFileSync(path.resolve(__dirname, '../../migrations', enumName), 'utf8');
+    const statements = content.replace(/--[^\n]*/g, '');
+    expect(statements).toContain("IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'webhook_delivery_status') THEN");
+    expect(statements).toContain("ALTER TYPE webhook_delivery_status ADD VALUE IF NOT EXISTS 'scheduled';");
+    expect(statements.match(/'scheduled'/g)).toHaveLength(1);
+    expect(statements).not.toMatch(/CREATE INDEX|\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
+  });
+  it('builds the partial due index concurrently and rejects an invalid build', () => {
+    const content = readFileSync(path.resolve(__dirname, '../../migrations', indexName), 'utf8');
+    expect(content.startsWith('-- @no-transaction\n')).toBe(true);
+    const statements = content.replace(/--[^\n]*/g, '');
+    expect(statements).toMatch(/CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_deliveries_scheduled_due_idx\s+ON public.webhook_deliveries \(next_retry_at\)\s+WHERE status = 'scheduled';/);
+    expect(statements).toContain('WHERE NOT i.indisvalid');
+    expect(statements).toContain('RAISE EXCEPTION');
+    expect(statements).not.toMatch(/\b(?:UPDATE|INSERT|DELETE|COMMIT)\b|BEGIN;/i);
+  });
+  it('orders the enum before the index and models scheduled in Drizzle', async () => {
+    expect([indexName, enumName].sort((a, b) => a.localeCompare(b))).toEqual([enumName, indexName]);
+    const { webhookDeliveryStatusEnum, webhookDeliveries } = await import('./schema/integrations');
+    expect(webhookDeliveryStatusEnum.enumValues).toEqual(['pending', 'delivered', 'failed', 'retrying', 'scheduled']);
+    expect(getTableConfig(webhookDeliveries).indexes.map(index => index.config.name)).toContain('webhook_deliveries_scheduled_due_idx');
+  });
+});

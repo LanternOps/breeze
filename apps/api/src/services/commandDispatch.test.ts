@@ -90,6 +90,7 @@ import {
   claimPendingCommandsForDevice,
   releaseClaimedCommandDelivery,
   expireRefusedClaimedCommandDelivery,
+  stripPamApplyDecidedByForClaim,
 } from './commandDispatch';
 
 const DEVICE_ROW = { id: 'dev-1', orgId: 'org-1', status: 'online', partnerId: 'partner-1' };
@@ -326,7 +327,7 @@ describe('command dispatch helpers', () => {
     expect(rejectWhere).toHaveBeenCalledTimes(1);
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
-      ['peripheral_policy_sync_v2', 'agent_rollback_v1', 'pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2'],
+      ['peripheral_policy_sync_v2', 'agent_rollback_v1', 'pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2', 'pam_request_notify'],
     );
   });
 
@@ -345,7 +346,7 @@ describe('command dispatch helpers', () => {
 
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
-      ['agent_rollback_v1', 'pam_reconcile_v2'],
+      ['agent_rollback_v1', 'pam_reconcile_v2', 'pam_request_notify'],
     );
   });
 
@@ -364,7 +365,7 @@ describe('command dispatch helpers', () => {
 
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith(
       'deviceCommands.type',
-      ['pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2'],
+      ['pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2', 'pam_request_notify'],
     );
   });
 
@@ -376,7 +377,47 @@ describe('command dispatch helpers', () => {
       pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: resetVersion,
     });
     expect(vi.mocked(notInArray)).toHaveBeenCalledWith('deviceCommands.type',
-      resetVersion === 1 ? ['pam_apply_v2', 'pam_cleanup_v2'] : ['pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2']);
+      resetVersion === 1
+        ? ['pam_apply_v2', 'pam_cleanup_v2', 'pam_request_notify']
+        : ['pam_apply_v2', 'pam_cleanup_v2', 'pam_reconcile_v2', 'pam_request_notify']);
+  });
+
+  // #8928 — the user-outcome notice is claimable only by agents that report
+  // pamUserNotifyProtocolVersion 1 or 2 (#10190 W07) on THIS heartbeat.
+  // Unsupported rows stay pending and expire at deliverBy.
+  it.each([undefined, 0, 3, 1, 2])('gates pam_request_notify on pamUserNotifyProtocolVersion %s', async (notifyVersion) => {
+    const tx = { select: selectChain([]), update: vi.fn() };
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+    await claimPendingCommandsForDevice({ deviceId: 'dev-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined, {
+      peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1,
+      pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1,
+      pamUserNotifyProtocolVersion: notifyVersion,
+    });
+    if (notifyVersion === 1 || notifyVersion === 2) {
+      expect(vi.mocked(notInArray)).not.toHaveBeenCalledWith('deviceCommands.type', expect.arrayContaining(['pam_request_notify']));
+    } else {
+      expect(vi.mocked(notInArray)).toHaveBeenCalledWith('deviceCommands.type', ['pam_request_notify']);
+    }
+  });
+
+  // #10190 W07: a pam_apply_v2 built with decidedBy for a notify-v2 agent
+  // can be claimed after the device rolled back to an agent whose strict
+  // decoder rejects the key. The claim hands such a caller the payload
+  // without it.
+  it.each([
+    [2, true], [1, false], [0, false], [undefined, false],
+  ])('pam_apply_v2 claimed with pamUserNotifyProtocolVersion %s keeps decidedBy: %s', async (notifyVersion, keeps) => {
+    expect(stripPamApplyDecidedByForClaim([
+      { id: 'c1', type: 'pam_apply_v2', payload: { protocolVersion: 2, requestId: 'r1', decidedBy: { technicianName: 'Dana' } } },
+      { id: 'c2', type: 'pam_cleanup_v2', payload: { protocolVersion: 2, decidedBy: 'untouched' } },
+      { id: 'c3', type: 'pam_apply_v2', payload: { protocolVersion: 2, requestId: 'r2' } },
+    ] as never, { pamUserNotifyProtocolVersion: notifyVersion }).map((c) => (c as { payload: unknown }).payload)).toEqual([
+      keeps
+        ? { protocolVersion: 2, requestId: 'r1', decidedBy: { technicianName: 'Dana' } }
+        : { protocolVersion: 2, requestId: 'r1' },
+      { protocolVersion: 2, decidedBy: 'untouched' },
+      { protocolVersion: 2, requestId: 'r2' },
+    ]);
   });
 
   it('expires a refused claim so no heartbeat claims it again and the reaper reports why', async () => {

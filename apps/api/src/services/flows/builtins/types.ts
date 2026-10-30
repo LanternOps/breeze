@@ -21,6 +21,8 @@ export interface BuiltinContext {
   auth: AuthContext;
   /** The `flow_run_steps` row of this attempt. */
   stepRowId: string;
+  /** W6: the attempt's for-each item index (null outside a for-each). */
+  itemIndex: number | null;
   /** Absolute epoch ms; the step's own deadline. */
   deadline: number;
   /** Calls of each capped built-in in this run so far (non-skipped step rows), THIS call included. */

@@ -1,10 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TableRows } from '../../__tests__/helpers/tableKeyedDb';
 
-const m = vi.hoisted(() => ({ db: null as any, partnerAxis: vi.fn() }));
-vi.mock('../../db', () => ({ db: new Proxy({}, { get: (_, key) => m.db[key] }) }));
+const m = vi.hoisted(() => ({ rows: {} as Record<string, unknown>, partnerAxis: vi.fn(), resolverCalls: [] as string[] }));
+vi.mock('../../db', async () => {
+  const { createTableKeyedDb } = await import('../../__tests__/helpers/tableKeyedDb');
+  return { db: createTableKeyedDb(() => m.rows as Record<string, TableRows>).db };
+});
 vi.mock('../../db/partnerAxisRead', () => ({ readWithPartnerAxisVisibility: (fn: () => unknown) => { m.partnerAxis(); return fn(); } }));
+vi.mock('../promptIdentity', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../promptIdentity')>();
+  return {
+    ...real,
+    resolvePromptIdentity: async (orgId: string) => {
+      m.resolverCalls.push(orgId);
+      return real.resolvePromptIdentity(orgId);
+    },
+  };
+});
 
-import { makeDbMock } from './testing';
 import { callerHelperBranding, safeLogo } from './helperBranding';
 
 describe('safeLogo', () => {
@@ -15,29 +28,48 @@ describe('safeLogo', () => {
 });
 
 describe('callerHelperBranding', () => {
-  let state: ReturnType<typeof makeDbMock>;
+  function setRows(over: { org?: unknown[]; partner?: unknown[]; portal?: unknown[] } = {}) {
+    m.rows = {
+      organizations: over.org ?? [{ partnerId: 'p1' }],
+      partners: over.partner ?? [{ name: '  Northwind IT  ', settings: { branding: { logoUrl: 'https://cdn.example.com/brand.png' } } }],
+      portal_branding: over.portal ?? [],
+      // The pre-#10190 source. Present on purpose: it must no longer be used.
+      partner_login_branding: [{ logoUrl: 'https://cdn.example.com/login-page.png' }],
+    };
+  }
   beforeEach(() => {
     vi.clearAllMocks();
-    state = makeDbMock(); m.db = state.db;
+    m.resolverCalls = [];
+    setRows();
   });
 
-  it('resolves the partner from the authenticated device org, then reads partner-axis branding', async () => {
-    state.results.push([{ partnerId: 'p1' }], [{ name: '  Northwind IT  ', logo: 'https://cdn.example.com/n.png' }]);
-    expect(await callerHelperBranding('org-1')).toEqual({ partnerName: 'Northwind IT', logoUrl: 'https://cdn.example.com/n.png' });
+  it('comes from the prompt identity resolver for the authenticated device org (OD-2 (a))', async () => {
+    expect(await callerHelperBranding('org-1')).toEqual({ partnerName: 'Northwind IT', logoUrl: 'https://cdn.example.com/brand.png' });
+    expect(m.resolverCalls).toEqual(['org-1']);
     expect(m.partnerAxis).toHaveBeenCalledTimes(1);
   });
 
-  it('drops an unsafe logo but keeps the name', async () => {
-    state.results.push([{ partnerId: 'p1' }], [{ name: 'Northwind', logo: 'http://insecure.example.com/n.png' }]);
+  it('the logo is Partner → Branding, never the partner login-page logo', async () => {
+    setRows({ partner: [{ name: 'Northwind IT', settings: {} }] });
+    expect(await callerHelperBranding('org-1')).toEqual({ partnerName: 'Northwind IT', logoUrl: null });
+  });
+
+  it("the org portal override wins for the logo; the name stays the partner's", async () => {
+    setRows({ portal: [{ logoUrl: 'https://cdn.example.com/org.png', primaryColor: null, companyName: 'Spoofed' }] });
+    expect(await callerHelperBranding('org-1')).toEqual({ partnerName: 'Northwind IT', logoUrl: 'https://cdn.example.com/org.png' });
+  });
+
+  it('passes only an https logo (a data: upload is not sent to the card)', async () => {
+    setRows({ partner: [{ name: 'Northwind', settings: { branding: { logoUrl: 'data:image/png;base64,AAAA' } } }] });
     expect(await callerHelperBranding('org-1')).toEqual({ partnerName: 'Northwind', logoUrl: null });
   });
 
   it('returns null without an org/partner or a usable name', async () => {
-    state.results.push([]);
+    setRows({ org: [] });
     expect(await callerHelperBranding('org-1')).toBeNull();
-    state.results.push([{ partnerId: null }]);
+    setRows({ org: [{ partnerId: null }] });
     expect(await callerHelperBranding('org-1')).toBeNull();
-    state.results.push([{ partnerId: 'p1' }], [{ name: '   ', logo: null }]);
+    setRows({ partner: [{ name: '   ', settings: {} }] });
     expect(await callerHelperBranding('org-1')).toBeNull();
   });
 });

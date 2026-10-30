@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Provedores de aplicativos (Aviso e Informação)",
+        "applicationProvidersHelp": "Os eventos de aplicativo dos níveis Erro e Crítico são coletados de todos os provedores; os de Aviso e Informação, somente dos provedores integrados ({{providers}}) e dos listados aqui. Use o nome exato do provedor exibido na coluna “Origem” do Visualizador de Eventos ou em Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Somente a política de Logs de Eventos com precedência para o dispositivo se aplica. As listas de provedores não são combinadas entre políticas.",
+        "providerNameLabel": "Nome do provedor de eventos de aplicativo",
+        "addProvider": "Adicionar provedor",
+        "removeProvider": "Remover",
+        "removeProviderNamed": "Remover {{provider}}",
+        "providerNameInvalid": "Use de 1 a {{max}} caracteres, começando com uma letra ou um dígito. São permitidos letras, dígitos, espaços, pontos, sublinhados, cifrões, parênteses e hífens.",
+        "providerLimitReached": "Você pode adicionar até {{max}} provedores adicionais. Remova um para adicionar outro.",
+        "providerAlreadyListed": "Este provedor já está na lista.",
+        "providerLimit": "{{total}} de {{max}} provedores adicionais"
       },
       "featureTabShell": {
         "override": "Substituir",
@@ -899,7 +910,17 @@
         "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
         "ringDetailsNoHold": "Ordem de implantação {{order}} · sem espera antes da aprovação",
         "ringDetailsWithHold_one": "Ordem de implantação {{order}} · {{count}} dia de espera antes da aprovação",
-        "ringDetailsWithHold_other": "Ordem de implantação {{order}} · {{count}} dias de espera antes da aprovação"
+        "ringDetailsWithHold_other": "Ordem de implantação {{order}} · {{count}} dias de espera antes da aprovação",
+        "rebootPreviewHeading": "Pré-visualização",
+        "rebootPreviewDescription": "O que a pessoa no computador vê se uma reinicialização for agendada agora. Os horários são exemplos.",
+        "rebootPreviewDefaultMarker": "Padrão",
+        "rebootPreviewDefaultTitle": "Reinicie para concluir a instalação das atualizações",
+        "rebootPreviewDefaultBody": "Sua equipe de suporte de TI precisa reiniciar este computador para concluir a instalação das atualizações.",
+        "rebootPreviewConsequence": "Se você não fizer nada, este computador será reiniciado às {{time}}. Salve seu trabalho antes disso.",
+        "rebootPreviewRestartNow": "Reiniciar agora",
+        "rebootPreviewPostponeUntil": "Adiar até as {{time}}",
+        "rebootPreviewDeadline": "Adiar nunca leva a reinicialização para depois das {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",
@@ -986,6 +1007,9 @@
         "showIndicatorHelp": "Mostrar o banner na tela enquanto um técnico estiver conectado.",
         "notifyOnEnd": "Aviso de término de sessão",
         "notifyOnEndHelp": "Notificar o usuário final quando a sessão terminar.",
+        "allowUserEnd": "Permitir que o usuário encerre a sessão",
+        "allowUserEndHelp": "A pessoa no dispositivo pode encerrar a sessão pelo indicador na tela, após uma confirmação. O técnico vê “Encerrada pelo usuário”.",
+        "allowUserEndNeedsIndicator": "Ative o indicador de sessão ativa para permitir que os usuários encerrem uma sessão.",
         "identityLevel": "Identidade do técnico",
         "identityLevelHelp": "Quanto da identidade do técnico o usuário final vê. O nome do MSP é sempre exibido.",
         "identityNameEmail": "Nome e e-mail",
@@ -1184,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Ativar alertas de vencimento da garantia",
         "generateAlertsWhenFixedTermDeviceWarranties": "Gerar alertas quando garantias de dispositivos com prazo determinado estiverem próximas do vencimento.",
         "warningThresholdDays": "Limite de aviso (dias)",
-        "generateAWarningAlertWhenWarrantyExpires": "Gerar um alerta de aviso quando a garantia vencer dentro deste número de dias.",
-        "criticalThresholdDays": "Limite crítico (dias)",
-        "generateACriticalAlertWhenWarrantyExpires": "Gerar um alerta crítico quando a garantia vencer dentro deste número de dias.",
+        "warnThresholdHelp": "Gerar um alerta de severidade Informativo quando a garantia vencer dentro deste número de dias.",
+        "urgentThresholdDays": "Limite de urgência (dias)",
+        "urgentThresholdHelp": "Gerar um alerta de severidade Baixa quando a garantia vencer dentro deste número de dias. Uma garantia vencida gera um alerta de severidade Média.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1206,6 +1230,20 @@
         "title": "Os dispositivos desta política alertarão duas vezes",
         "body": "Estas condições existem como monitor anexado e também como regra ou vigilância legada: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Grupos de dispositivos (todas as org.)",
+      "description": "Selecione como destino um grupo de dispositivos de todo o parceiro. Uma atribuição de grupo se aplica no nível do grupo de dispositivos e, portanto, tem precedência sobre atribuições de outras políticas nos níveis de organização e site.",
+      "selectGroup": "Selecione um grupo de dispositivos",
+      "assign": "Atribuir",
+      "remove": "Remover",
+      "assigned": "Grupo de dispositivos atribuído",
+      "removed": "Atribuição do grupo de dispositivos removida",
+      "failedToLoad": "Não foi possível carregar os grupos de dispositivos",
+      "failedToAssign": "Não foi possível atribuir o grupo de dispositivos",
+      "failedToRemove": "Não foi possível remover a atribuição do grupo de dispositivos",
+      "empty": "Ainda não há grupos de dispositivos de todo o parceiro. Crie um em Grupos de dispositivos → Todas as org.",
+      "loading": "Carregando grupos de dispositivos…"
     }
   },
   "software": {

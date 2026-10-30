@@ -265,6 +265,7 @@ export const TOOL_TIERS = {
   get_dns_security: 1,
   get_huntress_status: 1,
   get_huntress_incidents: 1,
+  get_huntress_agents: 1,
   manage_dns_policy: 2,
   get_s1_status: 1,
   get_s1_threats: 1,
@@ -691,6 +692,40 @@ export const TOOL_TIERS = {
   manage_security_policies: 1,
   manage_recovery_keys: 1,
   manage_pam_rules: 1,
+  // Spec 2026-09-23 W12 (#6782): software + fleet findings + custom fields. Per-action classes live in aiGuardrails
+  // (W12 class review); bootstrap_homebrew and manage_device_software are tier 3 as whole tools.
+  manage_software_catalog: 1,
+  search_packages: 1,
+  manage_software_deployments: 1,
+  get_device_software: 1,
+  manage_device_software: 3,
+  manage_software_inventory: 1,
+  bootstrap_homebrew: 3,
+  manage_fleet_findings: 2,
+  manage_custom_fields: 2,
+  // Spec 2026-09-23 W13 (#6783): device inventory + ops. Per-action classes live in aiGuardrails (W13 class
+  // review); every tool is tier 1 at the registry and its writes are classed per action.
+  get_device_events: 1,
+  get_device_health: 1,
+  get_process_samples: 1,
+  get_management_posture: 1,
+  manage_device_function: 1,
+  manage_device_links: 1,
+  manage_manual_assets: 1,
+  manage_device_warranty: 1,
+  // W13 PR B (#6783): live event-log browse, tenant variables, Quick Support sessions (classed per action).
+  browse_device_event_log: 1,
+  manage_tenant_variables: 1,
+  manage_support_sessions: 1,
+  // Spec 2026-09-23 W14 (#6784): billing lifecycle. Every tool is tier 1 at the registry; per-action classes live in
+  // aiGuardrails (W14 class review: billing writes supervised, org-owned template drafts tier 2).
+  manage_billing_profiles: 1,
+  manage_billing_settings: 1,
+  manage_contract_templates: 1,
+  manage_contract_documents: 1,
+  get_device_billing: 1,
+  // W14 PR B (#6784): accounting sync. Reads tier 1; link / unlink / sync supervised, push four-eyes (aiGuardrails).
+  manage_accounting_sync: 1,
   // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
   // in aiGuardrails (input-aware public comment / resolve / requester edit,
   // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
@@ -2319,6 +2354,7 @@ export function buildBreezeSdkTools(
       'get_huntress_incidents',
       registryDescription('get_huntress_incidents'),
       {
+        incidentId: uuid.optional(),
         orgId: uuid.optional(),
         integrationId: uuid.optional(),
         status: z.string().max(30).optional(),
@@ -2330,6 +2366,22 @@ export function buildBreezeSdkTools(
         offset: z.number().int().min(0).optional(),
       },
       makeHandler('get_huntress_incidents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_huntress_agents',
+      registryDescription('get_huntress_agents'),
+      {
+        orgId: uuid.optional(),
+        integrationId: uuid.optional(),
+        mapping: z.enum(['mapped', 'unmapped', 'all']).optional(),
+        offlineOnly: z.boolean().optional(),
+        deviceId: uuid.optional(),
+        search: z.string().max(200).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+      makeHandler('get_huntress_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -3176,6 +3228,8 @@ export function buildBreezeSdkTools(
         startTime: z.string().datetime({ offset: true }).optional(),
         endTime: z.string().datetime({ offset: true }).optional(),
         message: z.string().max(500).optional(),
+        // Full-control W13 (#6783): watchdog logs only, or excluding them.
+        source: z.enum(['agent', 'watchdog']).optional(),
         ...keysetZodShape(18, 500),
         includeFields: z.boolean().optional(),
       },
@@ -3816,6 +3870,197 @@ export function buildBreezeSdkTools(
       registryDescription('manage_pam_rules'),
       inputShape('manage_pam_rules'),
       makeHandler('manage_pam_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W12 (#6782): software, fleet-finding and custom-field tools. Reads are tier 1; writes are classed
+    // in aiGuardrails; bootstrap_homebrew is agent-human-only.
+    tool(
+      'manage_software_catalog',
+      registryDescription('manage_software_catalog'),
+      inputShape('manage_software_catalog'),
+      makeHandler('manage_software_catalog', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'search_packages',
+      registryDescription('search_packages'),
+      inputShape('search_packages'),
+      makeHandler('search_packages', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_deployments',
+      registryDescription('manage_software_deployments'),
+      inputShape('manage_software_deployments'),
+      makeHandler('manage_software_deployments', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_software',
+      registryDescription('get_device_software'),
+      inputShape('get_device_software'),
+      makeHandler('get_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_software',
+      registryDescription('manage_device_software'),
+      inputShape('manage_device_software'),
+      makeHandler('manage_device_software', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_software_inventory',
+      registryDescription('manage_software_inventory'),
+      inputShape('manage_software_inventory'),
+      makeHandler('manage_software_inventory', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'bootstrap_homebrew',
+      registryDescription('bootstrap_homebrew'),
+      inputShape('bootstrap_homebrew'),
+      makeHandler('bootstrap_homebrew', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_fleet_findings',
+      registryDescription('manage_fleet_findings'),
+      inputShape('manage_fleet_findings'),
+      makeHandler('manage_fleet_findings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_custom_fields',
+      registryDescription('manage_custom_fields'),
+      inputShape('manage_custom_fields'),
+      makeHandler('manage_custom_fields', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR A): device inventory reads and per-device records. Reads are tier 1; writes
+    // are classed in aiGuardrails; manage_device_function:set is agent-human-only.
+    tool(
+      'get_device_events',
+      registryDescription('get_device_events'),
+      inputShape('get_device_events'),
+      makeHandler('get_device_events', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_health',
+      registryDescription('get_device_health'),
+      inputShape('get_device_health'),
+      makeHandler('get_device_health', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_process_samples',
+      registryDescription('get_process_samples'),
+      inputShape('get_process_samples'),
+      makeHandler('get_process_samples', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_management_posture',
+      registryDescription('get_management_posture'),
+      inputShape('get_management_posture'),
+      makeHandler('get_management_posture', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_function',
+      registryDescription('manage_device_function'),
+      inputShape('manage_device_function'),
+      makeHandler('manage_device_function', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_links',
+      registryDescription('manage_device_links'),
+      inputShape('manage_device_links'),
+      makeHandler('manage_device_links', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_manual_assets',
+      registryDescription('manage_manual_assets'),
+      inputShape('manage_manual_assets'),
+      makeHandler('manage_manual_assets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_device_warranty',
+      registryDescription('manage_device_warranty'),
+      inputShape('manage_device_warranty'),
+      makeHandler('manage_device_warranty', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W13 (#6783, PR B): event-log query / get_event, tenant-variable writes and support-session end
+    // are supervised; tenant-variable writes are agent-human-only.
+    tool(
+      'browse_device_event_log',
+      registryDescription('browse_device_event_log'),
+      inputShape('browse_device_event_log'),
+      makeHandler('browse_device_event_log', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tenant_variables',
+      registryDescription('manage_tenant_variables'),
+      inputShape('manage_tenant_variables'),
+      makeHandler('manage_tenant_variables', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_support_sessions',
+      registryDescription('manage_support_sessions'),
+      inputShape('manage_support_sessions'),
+      makeHandler('manage_support_sessions', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W14 (#6784, PR A): billing lifecycle. Writes are supervised (org-owned template drafts tier 2);
+    // template and signed-agreement writes are agent-human-only.
+    tool(
+      'manage_billing_profiles',
+      registryDescription('manage_billing_profiles'),
+      inputShape('manage_billing_profiles'),
+      makeHandler('manage_billing_profiles', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_billing_settings',
+      registryDescription('manage_billing_settings'),
+      inputShape('manage_billing_settings'),
+      makeHandler('manage_billing_settings', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_contract_templates',
+      registryDescription('manage_contract_templates'),
+      inputShape('manage_contract_templates'),
+      makeHandler('manage_contract_templates', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_contract_documents',
+      registryDescription('manage_contract_documents'),
+      inputShape('manage_contract_documents'),
+      makeHandler('manage_contract_documents', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'get_device_billing',
+      registryDescription('get_device_billing'),
+      inputShape('get_device_billing'),
+      makeHandler('get_device_billing', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Spec 2026-09-23 W14 PR B (#6784): QuickBooks / Xero sync. Pushes are four-eyes and agent-human-only.
+    tool(
+      'manage_accounting_sync',
+      registryDescription('manage_accounting_sync'),
+      inputShape('manage_accounting_sync'),
+      makeHandler('manage_accounting_sync', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Spec 2026-09-23 W04 (#6758): security, incident and device-operation writes.
@@ -4789,9 +5034,8 @@ export function buildBreezeSdkTools(
     tool(
       'get_invoice',
       registryDescription('get_invoice'),
-      {
-        invoiceId: uuid,
-      },
+      // W14 (#6784): lineId / limit / cursor (billed devices) — the toolInputSchemas shape.
+      inputShape('get_invoice'),
       makeHandler('get_invoice', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -4872,20 +5116,16 @@ export function buildBreezeSdkTools(
     tool(
       'list_contracts',
       registryDescription('list_contracts'),
-      {
-        orgId: uuid.optional(),
-        status: z.enum(['draft', 'active', 'paused', 'cancelled', 'expired']).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-      },
+      // W14 (#6784): view / cursor (currency mismatches) — the toolInputSchemas shape.
+      inputShape('list_contracts'),
       makeHandler('list_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
       'get_contract',
       registryDescription('get_contract'),
-      {
-        contractId: uuid,
-      },
+      // W14 (#6784): periodId (period outcome) — the toolInputSchemas shape.
+      inputShape('get_contract'),
       makeHandler('get_contract', getAuth, onPreToolUse, onPostToolUse)
     ),
 
@@ -4917,6 +5157,8 @@ export function buildBreezeSdkTools(
     tool(
       'manage_contracts',
       registryDescription('manage_contracts'),
+      // Inline (aiToolsContracts.registryParity reads this enum from source); W14 PR B (#6784) adds
+      // preview_invoice / generate_invoice and generate_invoice's assertions, as toolInputSchemas.
       {
         action: z.enum([
           'create_draft',
@@ -4929,12 +5171,18 @@ export function buildBreezeSdkTools(
           'pause',
           'resume',
           'cancel',
+          'preview_invoice',
+          'generate_invoice',
         ]),
         contractId: uuid.optional(),
         lineId: uuid.optional(),
         input: z.record(z.string(), z.unknown()).optional(),
         line: z.record(z.string(), z.unknown()).optional(),
         patch: z.record(z.string(), z.unknown()).optional(),
+        periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        expectedTotal: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/).optional(),
+        autoIssue: z.boolean().optional(),
+        expectedRecipients: z.array(z.string().max(320)).max(20).optional(),
       },
       makeHandler('manage_contracts', getAuth, onPreToolUse, onPostToolUse)
     ),

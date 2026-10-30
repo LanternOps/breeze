@@ -69,7 +69,7 @@
           "executing": "Ejecutando",
           "completed": "Completado",
           "failed": "Fallido",
-          "rejected": "Rechazado"
+          "rejected": "Denegado"
         }
       },
       "intents": {
@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Generar claves de inscripción de dispositivos. Requiere una fecha de vencimiento y al menos una IP de origen o CIDR.",
       "contracts_write": "Leer, crear y editar contratos y líneas de contrato, y eliminar líneas. No puede activar, pausar ni cancelar.",
       "tickets_write": "Crear, actualizar, asignar, cambiar el estado y comentar tickets. No puede eliminar ni mover tickets.",
+      "alerts_write": "Reconocer y resolver alertas en todas las organizaciones a las que puede acceder la entidad de servicio. No permite leer los detalles de las alertas (alerts:read), suprimirlas, descartarlas ni eliminarlas.",
       "ai_read": "Conectarse al endpoint de MCP y usar herramientas de solo lectura. Lo requieren todos los demás permisos ai:*.",
       "ai_write": "Herramientas de MCP que modifican datos.",
       "ai_execute": "Herramientas de MCP que ejecutan acciones en los dispositivos.",
@@ -278,8 +279,7 @@
       "actionPlan": "Plan de acción",
       "autoApprove": "Aprobación automática",
       "hybridPlan": "Plan híbrido"
-    },
-    "overridesOrgTab": "Los campos que establece aquí sobrescriben y bloquean el mismo campo en la pestaña de IA de cada organización."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Ingresa hasta cinco números enteros entre 1 y 99, separados por comas."
@@ -761,9 +761,9 @@
     "enrollment": {
       "title": "Inscripción de dispositivos",
       "ttl": "Vigencia predeterminada del enlace",
-      "ttlHint": "Preselecciona cuánto tiempo siguen siendo válidos los nuevos enlaces de inscripción e instaladores. Las organizaciones pueden elegir un valor predeterminado distinto.",
+      "ttlHint": "Preselecciona cuánto tiempo siguen siendo válidos los nuevos enlaces de inscripción e instaladores.",
       "deviceCount": "Dispositivos predeterminados por enlace",
-      "deviceCountHint": "Cuántas máquinas puede inscribir un enlace de inscripción de forma predeterminada. Las organizaciones pueden elegir un valor predeterminado distinto.",
+      "deviceCountHint": "Cuántas máquinas puede inscribir un enlace de inscripción de forma predeterminada.",
       "maxTtl": "Vigencia máxima del enlace",
       "maxTtlHint": "Es un límite sobre la vida útil de la clave, no solo sobre lo que un administrador puede solicitar: nada emitido bajo este partner sigue siendo utilizable por más tiempo — enlaces de inscripción, invitaciones de implementación de MCP y las credenciales secundarias emitidas al canjear un instalador.",
       "maxTtlWarning": "Las organizaciones no pueden aumentarlo. Un límite corto también reduce el tiempo que tiene una máquina para terminar de inscribirse después de canjear un enlace, no solo el tiempo para descargarlo."
@@ -789,7 +789,6 @@
   "agentVersionPins": {
     "title": "Actualizar destinos de versión",
     "description": "Fije el agente y el perro guardián a una versión registrada específica, o déjelo en <strong>Latest promocionado</strong> para realizar un seguimiento de la versión promocionada globalmente. El agente y el organismo de control son independientes.",
-    "partnerDescription": "Un pin aquí es el valor predeterminado para todas sus organizaciones; una organización puede anularlo.",
     "organizationDescription": "Un pin de organización anula el valor predeterminado del socio.",
     "components": {
       "agent": "Objetivo del agente",
@@ -907,12 +906,12 @@
     "logoPreview": "Vista previa del logotipo",
     "noLogo": "Sin logotipo",
     "uploadImage": "Subir imagen",
-    "imageHelp": "PNG, JPEG o WebP · máximo 400 KB después de la codificación · redimensionado para ajustarse a 256×256",
+    "imageHelp": "PNG, JPEG o WebP, hasta 400 KB después de la codificación; las imágenes grandes se reducen a 800 px.",
     "invalidSavedLogo": "Los datos del logotipo guardado no son válidos. Elimínelos o suba uno nuevo.",
     "pasteUrl": "O pegar una imagen URL",
     "customCss": "Personalizado CSS",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas las organizaciones secundarias */",
-    "customCssHelp": "Las anulaciones de CSS se aplicaron al portal para todas las organizaciones secundarias."
+    "customCssHelp": "Se agrega al portal de cada cliente, antes del CSS personalizado propio de la organización, que puede anularlo. No se permiten @import ni url() sin HTTPS."
   },
   "partnerSecurity": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
@@ -997,7 +996,7 @@
     "networkProxy": {
       "title": "Proxy de red",
       "label": "Servir el proxy de red desde un origen dedicado",
-      "help": "Se aplica a todas las organizaciones; las organizaciones no pueden anularlo. Solo tiene efecto donde su región ofrece un origen dedicado y mejora la compatibilidad con las interfaces web de los dispositivos."
+      "help": "Solo tiene efecto donde su región ofrece un origen dedicado y mejora la compatibilidad con las interfaces web de los dispositivos."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1124,6 @@
     "description": "Configure los valores predeterminados para {{name}}.",
     "yourMsp": "su MSP",
     "saveSettings": "Guardar configuración",
-    "enforcedDescription": "Los valores que establezca aquí se aplicarán en todas las organizaciones. Deje los campos vacíos para permitir que cada organización configure individualmente.",
     "ticketingDescription": "Configure los estados de los tickets, los valores predeterminados de SLA de prioridad, las categorías y las exportaciones de facturación. Estos se aplican en todas sus organizaciones.",
     "modules": {
       "title": "Módulos",
@@ -1173,6 +1171,106 @@
     "knownGuests": {
       "added": "Invitado conocido agregado",
       "removed": "Invitado conocido eliminado"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Bloquea organizaciones",
+        "locksConditional": "Bloquea organizaciones si está activado",
+        "overridable": "La organización puede cambiarlo",
+        "overridableCap": "La organización puede cambiarlo, hasta {{limit}}",
+        "partnerOnly": "Para todo el partner"
+      },
+      "badgeHelp": {
+        "locks": "Mientras esté definido, todas las organizaciones usan tu valor. Se ignora el valor propio de la organización.",
+        "locksConditional": "Si está activado, todas las organizaciones usan tu valor en lugar del suyo. Si está desactivado, usan el suyo.",
+        "overridable": "Tu valor es el predeterminado. Una organización que define su propio valor usa ese en su lugar.",
+        "overridableCap": "Tu valor es el predeterminado. Una organización puede definir su propio valor, hasta {{limit}}.",
+        "partnerOnly": "Las organizaciones no tienen un ajuste propio. Tu valor se aplica a todas."
+      },
+      "badgeHelpLabel": "Acerca de «{{badge}}» ({{field}})",
+      "legend": {
+        "title": "Cómo se aplican los ajustes:",
+        "locks": "todas las organizaciones usan tu valor",
+        "overridable": "tu valor es el predeterminado; una organización puede definir el suyo",
+        "partnerOnly": "se aplica a todas las organizaciones; no hay ajuste por organización"
+      },
+      "value": {
+        "on": "Activado",
+        "off": "Desactivado",
+        "minutes_one": "{{count}} minuto",
+        "minutes_other": "{{count}} minutos",
+        "hours_one": "{{count}} hora",
+        "hours_other": "{{count}} horas",
+        "days_one": "{{count}} día",
+        "days_other": "{{count}} días"
+      },
+      "line": {
+        "appliesToAll_one": "Se aplica a {{count}} organización",
+        "appliesToAll_other": "Se aplica a las {{count}} organizaciones",
+        "hadOwnValue_one": "{{count}} tenía su propio valor",
+        "hadOwnValue_other": "{{count}} tenían su propio valor",
+        "notSet": "Sin definir.",
+        "someSetOwn_one": "{{count}} de {{total}} organizaciones define el suyo",
+        "someSetOwn_other": "{{count}} de {{total}} organizaciones definen el suyo",
+        "restUsePlatformDefault": "el resto usa el valor predeterminado de la plataforma ({{value}})",
+        "orgsUsePlatformDefault": "Las organizaciones usan el valor predeterminado de la plataforma ({{value}})",
+        "noneSetOwn": "Ninguna organización tiene su propio valor",
+        "defaultFor_one": "Predeterminado para {{count}} organización",
+        "defaultFor_other": "Predeterminado para {{count}} organizaciones",
+        "override_one": "{{count}} lo cambia",
+        "override_other": "{{count}} lo cambian",
+        "setOwn_one": "{{count}} define el suyo",
+        "setOwn_other": "{{count}} definen el suyo",
+        "clamped_one": "{{count}} se limita a tu tope",
+        "clamped_other": "{{count}} se limitan a tu tope",
+        "notInForce": "Sin efecto (destino desactivado).",
+        "orgsUseOwnDestination": "Las organizaciones usan su propio destino",
+        "haveOne_one": "{{count}} tiene uno",
+        "haveOne_other": "{{count}} tienen uno",
+        "partnerOnlyDefault": "El valor predeterminado de la plataforma ({{value}}) se aplica a todas las organizaciones",
+        "partnerOnlyBlank": "Sin definir. Se aplica el valor predeterminado de la plataforma a todas las organizaciones",
+        "consumerAll": "{{consumer}}: se aplica a todas las organizaciones",
+        "consumerOwn_one": "{{consumer}}: {{count}} organización usa su propio valor",
+        "consumerOwn_other": "{{consumer}}: {{count}} organizaciones usan su propio valor",
+        "noOrgs": "Aún no hay organizaciones",
+        "savedValue": "Valor guardado:",
+        "restricted": "El desglose por organización requiere acceso completo de partner"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organizaciones con su propio valor",
+          "overrides": "Organizaciones que cambian tu valor predeterminado",
+          "shadowed": "Organizaciones cuyo valor propio no tiene efecto",
+          "clamped": "Organizaciones limitadas a tu tope"
+        },
+        "loading": "Cargando organizaciones…",
+        "error": "No se pudieron cargar las organizaciones.",
+        "empty": "No hay organizaciones en esta lista.",
+        "loadMore": "Cargar más",
+        "set": "Definido",
+        "notSet": "Sin definir",
+        "inEffect": "En efecto",
+        "notInEffect": "Sin efecto",
+        "ownValue": "Valor propio:",
+        "channels": "Canales",
+        "readOnly": "Solo lectura. Cambia el valor de una organización desde sus propios ajustes."
+      },
+      "summary": {
+        "title": "En tus organizaciones",
+        "locks_one": "{{count}} ajuste bloquea organizaciones",
+        "locks_other": "{{count}} ajustes bloquean organizaciones",
+        "overridable_one": "{{count}} se puede cambiar",
+        "overridable_other": "{{count}} se pueden cambiar",
+        "differ_one": "{{count}} tiene organizaciones que difieren de tus valores",
+        "differ_other": "{{count}} tienen organizaciones que difieren de tus valores",
+        "noneDiffer": "Todas las organizaciones usan tus valores en esta pestaña.",
+        "hint": "Selecciona un ajuste, o un número bajo un campo, para ver sus organizaciones.",
+        "unavailable": "El desglose por organización no está disponible en este momento.",
+        "back": "Volver al resumen"
+      },
+      "fields": {
+        "defaultProvider": "Proveedor de acceso remoto predeterminado"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1517,7 +1615,18 @@
       "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
       "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
       "ticket_approval_decided": "Decisión sobre la aprobación de trabajo",
-      "ticket_merged": "Ticket combinado"
+      "ticket_merged": "Ticket combinado",
+      "ticket_comment_notification": "Aviso de respuesta pública",
+      "ticket_autoresponse": "Acuse de recibo del ticket",
+      "ticket_resolved": "Ticket resuelto",
+      "quote_send": "Cotización / propuesta",
+      "agreement_request_send": "Solicitud de acuerdo",
+      "invoice_send": "Factura",
+      "portal_invite": "Invitación al portal",
+      "staff_invite": "Invitación de personal",
+      "invoice_autopay": "Factura con aviso de pago automático",
+      "payment_reminder": "Recordatorio de pago",
+      "payment_overdue": "Recordatorio de pago vencido"
     }
   },
   "inboundEmail": {
@@ -1746,7 +1855,11 @@
     },
     "colors": {
       "primary": "color primario",
-      "secondary": "color secundario"
+      "secondary": "color secundario",
+      "primaryInheritedSource": "Color de marca del socio",
+      "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
+      "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "theme": {
       "title": "Tema",
@@ -1789,6 +1902,12 @@
     "description": "Ajuste las políticas predeterminadas y el comportamiento de inscripción para {{organization}}.",
     "save": "Guardar valores predeterminados",
     "managedByPartner": "Gestionado por socio",
+    "inheritance": {
+      "inherited": "Valor predeterminado heredado",
+      "overridden": "Definido para esta organización",
+      "reset": "Restablecer al valor predeterminado",
+      "resetLabel": "Restablecer {{setting}} al valor predeterminado"
+    },
     "policies": {
       "title": "Políticas predeterminadas",
       "fields": {
@@ -1976,6 +2095,49 @@
         "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
         "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
         "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      },
+      "tiles": {
+        "awaitingYou": "Pendiente de su cliente",
+        "devicesProtected": "Protección de endpoints",
+        "securityScore": "Puntuación de seguridad",
+        "actionItems": "Acciones pendientes",
+        "patchesApplied": "Parches aplicados este mes",
+        "backup": "Último respaldo verificado",
+        "service": "Servicio entregado (90 días)",
+        "support": "Soporte"
+      },
+      "tileStatus": {
+        "noData": "Aún no disponible",
+        "notConfigured": "Sin configurar",
+        "stale": "Puede estar desactualizado"
+      },
+      "bands": {
+        "strong": "Sólida",
+        "good": "Buena",
+        "fair": "Regular",
+        "at_risk": "En riesgo"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} de {{total}} protegidos",
+        "awaitingCounts": "Propuestas: {{proposals}} · Facturas: {{invoices}}",
+        "serviceCounts": "A tiempo: {{onTime}} · Con retraso: {{late}} · Omitidos: {{missed}}",
+        "nextDue": "Próximo vencimiento: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} solicitud abierta",
+        "openRequests_other": "{{count}} solicitudes abiertas",
+        "threatCounts": "Detectados: {{detected}} · Resueltos: {{resolved}}",
+        "unknownAll": "Aún desconocido para los {{total}} dispositivos",
+        "unknownSome_one": "{{count}} aún desconocido",
+        "unknownSome_other": "{{count}} aún desconocidos"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Vulnerabilidades abiertas",
+        "knownExploited": "Explotadas conocidas (KEV)",
+        "threatEvents": "Eventos de amenazas en endpoints"
+      },
+      "backupRows": {
+        "devices": "Dispositivos respaldados",
+        "breaches": "Incumplimientos de RPO / RTO abiertos",
+        "providers": "Respaldo de terceros"
       }
     },
     "loading": "Cargando configuración del portal...",
@@ -2120,6 +2282,7 @@
       "email": "Correo electrónico de soporte",
       "phone": "Teléfono de soporte",
       "welcomeMessage": "Mensaje de bienvenida",
+      "welcomeMessageHelp": "Se muestra en la parte superior de la página de inicio del cliente en el portal y en la página de inicio de sesión del portal cuando la organización usa un dominio personalizado verificado. Texto sin formato; se conservan los saltos de línea.",
       "footerText": "Texto de pie de página",
       "footerTextHelp": "Se muestra al pie del portal de clientes y se imprime en las cotizaciones y facturas de esta organización, en lugar del pie de página de documentos del socio. Déjelo en blanco para imprimir el pie de página del socio.",
       "footerTextInheritedSource": "Pie de página de documentos del socio"
@@ -2450,7 +2613,7 @@
     "failedToLoadData": "No se pudieron cargar los datos",
     "failedToSaveBudget": "No se pudo guardar el presupuesto",
     "failedToSave": "No se pudo guardar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la rechaza.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la deniega.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI propone un plan de varios pasos. El usuario aprueba todo el plan a la vez y luego los pasos se ejecutan automáticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Las herramientas de nivel 2 se ejecutan automáticamente con registro de auditoría. Las herramientas de nivel 3 aún requieren aprobación.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
@@ -2992,6 +3155,7 @@
           "explicitly_declined": "Rechazado explícitamente",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
           "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
+          "unsupported_user_scope": "Instalación por usuario que Breeze aún no puede aplicar",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
         },
         "failureClasses": {
@@ -4171,7 +4335,9 @@
     "active": "Activo",
     "revoked": "Revocado",
     "expired": "Vencido",
-    "statusFilterLabel": "Estado de la clave"
+    "statusFilterLabel": "Estado de la clave",
+    "expires": "Vence",
+    "neverExpires": "Nunca"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "Cargando claves API...",
@@ -4212,7 +4378,8 @@
     "rotating": "Rotando...",
     "rotateKey": "Rotar clave",
     "revoking": "Revocando...",
-    "revokeKey": "Revocar clave"
+    "revokeKey": "Revocar clave",
+    "revokedToast": "Se revocó la clave API \"{{name}}\""
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Este dispositivo ahora puede aprobar solicitudes",
@@ -4866,6 +5033,11 @@
     "eGOktaProduction": "por ejemplo, Okta Production",
     "providerPreset": "Preestablecido de proveedor",
     "selectAPresetToAutoFillRecommendedSettings": "Seleccione un ajuste preestablecido para completar automáticamente la configuración recomendada",
+    "replacePresetFields": {
+      "title": "¿Reemplazar con los valores predeterminados de {{preset}}?",
+      "message": "Al aplicar el preestablecido {{preset}} se reemplazan los alcances y el mapeo de atributos actuales, incluidos sus cambios, y se borra cualquier reclamo que el preestablecido no defina, como el atributo de grupos. No se guarda nada hasta que guarde el proveedor.",
+      "confirm": "Reemplazar"
+    },
     "connectionSettings": "Configuración de conexión",
     "issuerURL": "Emisor URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6257,7 +6429,11 @@
       "label": "Etiqueta",
       "notes": "Notas"
     },
-    "empty": "Aún no hay invitados conocidos."
+    "empty": "Aún no hay invitados conocidos.",
+    "removeConfirm": {
+      "title": "¿Eliminar invitado conocido?",
+      "message": "¿Eliminar {{label}} ({{mac}})? Los dispositivos con esta dirección MAC ya no se aprobarán automáticamente en sus organizaciones administradas."
+    }
   },
   "userInviteForm": {
     "title": "Invitar usuario",
@@ -6278,7 +6454,8 @@
     },
     "placeholders": {
       "name": "fulana",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Elija un rol"
     },
     "orgAccess": {
       "title": "Acceso a la organización",
@@ -6378,7 +6555,8 @@
       "copyLink": "Copiar enlace",
       "mfaReset": "MFA restablecido para {{email}}",
       "roleUpdated": "Rol actualizado",
-      "orgAccessUpdated": "Acceso a organizaciones actualizado"
+      "orgAccessUpdated": "Acceso a organizaciones actualizado",
+      "userRemoved": "Se eliminó a {{name}}"
     },
     "resetMfa": {
       "title": "¿Restablecer MFA?",
@@ -6905,7 +7083,6 @@
     "productDefault": "Predeterminado del producto ({{minutes}} minutos)",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "description": "Cuánto tiempo espera un turno activo de Breeze AI a que alguien apruebe una acción restringida (Tier 2/3) antes de desistir.",
-    "orgOverrideNote": "Las organizaciones pueden anular este valor desde su propia configuración de IA; el valor de la organización prevalece cuando está establecido.",
     "notForUnattendedNote": "Esto no es para trabajo nocturno o desatendido: el trabajo de larga duración pasa por la cola de aprobaciones, que tiene su propio vencimiento."
   },
   "orgAiApprovalTimeout": {

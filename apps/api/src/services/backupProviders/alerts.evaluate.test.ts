@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const { createSourcedAlert, resolveAlert, publishEvent } = vi.hoisted(() => ({
   createSourcedAlert: vi.fn(async (..._args: unknown[]) => 'alert-1' as string | null),
@@ -10,9 +12,17 @@ let providerRows: unknown[] = [];
 let openAlerts: unknown[] = [];
 const executed: string[] = [];
 
-function chain(result: unknown) {
+function chain(result: unknown, providerQuery = false) {
   const c: Record<string, unknown> = {};
   for (const m of ['from', 'leftJoin', 'where', 'limit']) c[m] = vi.fn(() => c);
+  if (providerQuery) c.where = vi.fn((condition: SQL) => {
+    // Model the actual account-type restriction, so fixtures cannot bypass SQL.
+    const query = new PgDialect().sqlToQuery(condition);
+    if (query.sql.includes('account_type')) {
+      result = (result as Array<{ accountType: string }>).filter((row) => query.params.includes(row.accountType));
+    }
+    return c;
+  });
   (c as { then: unknown }).then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
     Promise.resolve(result).then(res, rej);
   return c;
@@ -21,7 +31,10 @@ function chain(result: unknown) {
 let selectCall = 0;
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => chain(selectCall++ === 0 ? providerRows : openAlerts)),
+    select: vi.fn(() => {
+      const providerQuery = selectCall++ === 0;
+      return chain(providerQuery ? providerRows : openAlerts, providerQuery);
+    }),
     execute: vi.fn((statement: { queryChunks?: unknown[] }) => {
       executed.push(JSON.stringify(statement?.queryChunks ?? statement));
       return Promise.resolve([]);
@@ -51,6 +64,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   id: 'p1',
   orgId: ORG,
   provider: 'cove',
+  accountType: 'backup_manager',
   vendorDeviceId: 'v1',
   vendorDeviceName: 'SRV-01',
   status: 'failed',
@@ -73,6 +87,69 @@ beforeEach(() => {
 });
 
 describe('evaluateProviderAlerts', () => {
+  it.each(['m365', 'gws'])('evaluates %s workload transitions with two-poll hysteresis and events only', async (accountType) => {
+    const now = new Date('2026-10-28T12:00:00Z');
+    const saasRow = row({ accountType, provider: 'dropsuite', breezeDeviceId: null,
+      deviceDisplayName: null, deviceHostname: null, vendorDeviceName: 'Mail backup' });
+    providerRows = [saasRow];
+    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(executed.some((statement) => statement.includes('pending_condition'))).toBe(true);
+
+    selectCall = 0;
+    providerRows = [{ ...saasRow, pendingCondition: 'failed' }];
+    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
+      expect.objectContaining({ deviceId: null, condition: 'failed', providerKey: 'dropsuite' }), 'backup-provider-sync');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+
+    selectCall = 0;
+    publishEvent.mockClear();
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:failed' }];
+    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(publishEvent).not.toHaveBeenCalled();
+
+    selectCall = 0;
+    providerRows = [{ ...saasRow, pendingCondition: 'raised:failed', status: 'completed', lastSuccessAt: now, errorsCount: 0 }];
+    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_recovered', ORG,
+      expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
+  it.each(['m365', 'gws'])('never treats a legacy-linked %s workload as a device alert', async (accountType) => {
+    providerRows = [row({ accountType, pendingCondition: 'failed', breezeDeviceId: 'legacy-device' })];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
+      expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
+
+    selectCall = 0;
+    publishEvent.mockClear();
+    providerRows = [row({ accountType, pendingCondition: 'raised:failed', breezeDeviceId: 'legacy-device' })];
+    openAlerts = [{ id: 'legacy-alert', status: 'active', suppressedUntil: null, providerDeviceId: 'p1', condition: 'failed' }];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(resolveAlert).toHaveBeenCalledWith('legacy-alert', 'Condition cleared by provider sync', undefined, false, 'condition_cleared');
+    expect(publishEvent).not.toHaveBeenCalled();
+
+    selectCall = 0;
+    providerRows = [row({ accountType, pendingCondition: 'raised:failed', breezeDeviceId: 'legacy-device',
+      status: 'completed', lastSuccessAt: new Date(), errorsCount: 0 })];
+    await evaluateProviderAlerts(CONNECTION);
+    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_recovered', ORG,
+      expect.objectContaining({ deviceId: null, condition: 'failed' }), 'backup-provider-sync');
+  });
+
+  it.each(['m365', 'gws'])('retains the 48-hour staleness threshold for %s workloads', async (accountType) => {
+    const now = new Date('2026-10-28T12:00:00Z');
+    providerRows = [row({ accountType, breezeDeviceId: null, status: 'completed', errorsCount: 0,
+      lastSuccessAt: new Date(now.getTime() - 49 * 3600_000), pendingCondition: 'stale' })];
+    await evaluateProviderAlerts(CONNECTION, { now });
+    expect(publishEvent).toHaveBeenCalledWith('backup.provider_device_unhealthy', ORG,
+      expect.objectContaining({ deviceId: null, condition: 'stale' }), 'backup-provider-sync');
+    expect(createSourcedAlert).not.toHaveBeenCalled();
+  });
+
   it('takes the per-connection advisory lock before reading anything', async () => {
     providerRows = [];
     await evaluateProviderAlerts(CONNECTION);

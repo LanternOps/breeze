@@ -47,6 +47,7 @@ const DEVICE_DISPATCH = new RegExp(
  * where it is the subject (query_devices, get_device_details).
  */
 const NO_DEVICE_TEXT: Readonly<Record<string, string>> = {
+  bootstrap_homebrew: 'queues a command and returns its id and the device id only (W12, #6782)',
   query_agent_versions: 'agent version strings and Breeze release notes only',
   get_backup_status: 'Breeze job/snapshot status and counts only',
   query_backups: 'admin-authored config/policy names and device hostnames only',

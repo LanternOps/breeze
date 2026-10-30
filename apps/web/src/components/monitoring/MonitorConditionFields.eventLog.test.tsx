@@ -37,12 +37,22 @@ describe('MonitorConditionFields event_log collection warning (#8174)', () => {
     const warning = screen.getByTestId('event-log-collection-warning');
     expect(warning.textContent).toContain('Application Error');
     expect(warning.textContent).toContain('MsiInstaller');
+    expect(warning.textContent).toContain('unless an Event Logs configuration policy lists it');
+    expect(warning.textContent).toContain('Configuration policy → Event Logs → Application providers');
   });
 
   it('warns when an info-level Application rule names no source', () => {
     render(<Host />);
     fireEvent.change(screen.getByTestId('condition-field-level'), { target: { value: 'info' } });
     expect(screen.getByTestId('event-log-collection-warning').textContent).toContain('MsiInstaller');
+    expect(screen.getByTestId('event-log-collection-warning').textContent).toContain('APCPBEAgent');
+  });
+
+  it('shows no warning for APC PowerChute warnings', () => {
+    render(<Host />);
+    fireEvent.change(screen.getByTestId('condition-field-level'), { target: { value: 'warning' } });
+    fireEvent.change(screen.getByTestId('condition-field-sourcePattern'), { target: { value: 'APCPBEAgent' } });
+    expect(screen.queryByTestId('event-log-collection-warning')).toBeNull();
   });
 
   it('clears the warning for an allowlisted provider', () => {

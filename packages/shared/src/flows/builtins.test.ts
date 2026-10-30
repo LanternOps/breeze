@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FLOW_BUILTIN_STEPS, FLOW_LATER_BUILTINS, isFlowBuiltin } from './builtins';
+import { FLOW_BUILTIN_STEPS, FLOW_LATER_BUILTINS, isFlowBuiltin, legacyConditionSchema } from './builtins';
 
 describe('flow builtins', () => {
   it('wait bounds minutes', () => {
@@ -26,7 +26,9 @@ describe('flow builtins', () => {
     expect(isFlowBuiltin('notify')).toBe(true);
     expect(isFlowBuiltin('toString')).toBe(false);
     expect([...FLOW_LATER_BUILTINS]).toEqual([]);
-    expect(Object.keys(FLOW_BUILTIN_STEPS).sort()).toEqual(['ai', 'http_request', 'notify', 'set', 'wait']);
+    expect(Object.keys(FLOW_BUILTIN_STEPS).sort()).toEqual([
+      'ai', 'create_alert', 'http_request', 'notify', 'resolve_targets', 'run_script_on_targets', 'set', 'wait',
+    ]);
     for (const n of Object.keys(FLOW_BUILTIN_STEPS)) expect(n).not.toContain('__');
   });
 
@@ -80,5 +82,90 @@ describe('flow builtins', () => {
     const tools = (n: number) => Array.from({ length: n }, (_, i) => `get_thing_${i}`);
     expect(FLOW_BUILTIN_STEPS.ai.inputSchema.safeParse({ prompt: 'p', output: {}, tools: tools(20) }).success).toBe(true);
     expect(FLOW_BUILTIN_STEPS.ai.inputSchema.safeParse({ prompt: 'p', output: {}, tools: tools(21) }).success).toBe(false);
+  });
+});
+
+describe('W6 fleet built-ins (#5221)', () => {
+  const SCRIPT = '7d1c3a5e-2b4f-4c6a-9e8d-1f2a3b4c5d6e';
+  const GROUP = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
+  const run = FLOW_BUILTIN_STEPS.run_script_on_targets;
+
+  it('run_script_on_targets requires exactly one selector', () => {
+    const parse = (sel: Record<string, unknown>) => run.inputSchema.safeParse({ scriptId: SCRIPT, ...sel });
+    expect(parse({}).success).toBe(false);
+    expect(parse({ target: { type: 'groups', groupIds: [GROUP] } }).success).toBe(true);
+    expect(parse({ conditions: [] }).success).toBe(true);
+    expect(parse({ deviceIds: ['{{trigger.device.id}}'] }).success).toBe(true);
+    expect(parse({ fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }).success).toBe(true);
+    expect(parse({ target: { type: 'all' }, deviceIds: [GROUP] }).success).toBe(false);
+    expect(parse({ conditions: [], fromStep: { stepId: 'a0', set: 'dispatched' } }).success).toBe(false);
+    expect(parse({ deviceIds: Array.from({ length: 501 }, () => GROUP) }).success).toBe(false);
+    const ok = parse({ conditions: [] });
+    expect(ok.success && ok.data.whenOffline).toBe('queue');
+  });
+
+  it('run_script_on_targets parameters are script parameters (primitive values, env-var keys)', () => {
+    const parse = (parameters: unknown) => run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], parameters });
+    expect(parse({ mode: 'quick', n: 3, b: true }).success).toBe(true);
+    expect(parse({ nested: { bad: true } }).success).toBe(false);
+    expect(parse({ 'has space': 'v' }).success).toBe(false);
+    expect(parse({ list: ['a'] }).success).toBe(false);
+  });
+
+  it('run_script_on_targets refuses runAs elevated', () => {
+    expect(run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], runAs: 'elevated' }).success).toBe(false);
+    expect(run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], runAs: 'user' }).success).toBe(true);
+    expect(run.inputSchema.safeParse({ scriptId: SCRIPT, conditions: [], runAs: 'system' }).success).toBe(true);
+  });
+
+  it('fromStep set must be succeeded or dispatched', () => {
+    const parse = (set: string) => run.inputSchema.safeParse({ scriptId: SCRIPT, fromStep: { stepId: 'a0_run_script', set } });
+    expect(parse('succeeded').success).toBe(true);
+    expect(parse('dispatched').success).toBe(true);
+    expect(parse('failed').success).toBe(false);
+    expect(run.inputSchema.safeParse({ scriptId: SCRIPT, fromStep: { stepId: 'Bad Id', set: 'succeeded' } }).success).toBe(false);
+  });
+
+  it('resolve_targets is tier 1, create_alert tier 2, run_script_on_targets tier 3', () => {
+    expect(FLOW_BUILTIN_STEPS.resolve_targets.maxTier).toBe(1);
+    expect(FLOW_BUILTIN_STEPS.resolve_targets.tierFor({})).toBe(1);
+    expect(FLOW_BUILTIN_STEPS.create_alert.maxTier).toBe(2);
+    expect(FLOW_BUILTIN_STEPS.create_alert.tierFor({})).toBe(2);
+    expect(run.maxTier).toBe(3);
+    for (const p of [null, {}, { scriptId: SCRIPT, conditions: [] }]) expect(run.tierFor(p)).toBe(3);
+  });
+
+  it('resolve_targets takes exactly one of target, conditions or fromStep', () => {
+    const r = FLOW_BUILTIN_STEPS.resolve_targets.inputSchema;
+    expect(r.safeParse({}).success).toBe(false);
+    expect(r.safeParse({ target: { type: 'all' } }).success).toBe(true);
+    expect(r.safeParse({ conditions: [{ type: 'os', value: 'windows' }] }).success).toBe(true);
+    expect(r.safeParse({ target: { type: 'all' }, conditions: [] }).success).toBe(false);
+    expect(r.safeParse({ fromStep: { stepId: 'a0_run_script', set: 'succeeded' } }).success).toBe(true);
+    expect(r.safeParse({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }).success).toBe(true);
+    expect(r.safeParse({ target: { type: 'all' }, fromStep: { stepId: 'a0', set: 'succeeded' } }).success).toBe(false);
+    expect(r.safeParse({ conditions: Array.from({ length: 51 }, () => ({ type: 'os', value: 'linux' })) }).success).toBe(false);
+    // The triggering device of an event Job (a template at save time, rendered at run time).
+    expect(r.safeParse({ deviceIds: ['{{trigger.device.id}}'] }).success).toBe(true);
+    expect(r.safeParse({ deviceIds: [] }).success).toBe(false);
+    expect(r.safeParse({ deviceIds: ['d1'], target: { type: 'all' } }).success).toBe(false);
+  });
+
+  it('unknown legacy condition type is invalid', () => {
+    const parse = (c: unknown) => legacyConditionSchema.safeParse(c);
+    const ok = parse({ type: 'tag', value: 'prod' });
+    expect(ok.success && ok.data.operator).toBe('is');
+    expect(parse({ type: 'hostname', value: 'x' }).success).toBe(false);
+    expect(parse({ type: 'os', operator: 'matches', value: 'x' }).success).toBe(false);
+    expect(parse({ type: 'os', value: '' }).success).toBe(false);
+    expect(parse({ type: 'os', value: 'x', extra: 1 }).success).toBe(false);
+  });
+
+  it('create_alert input', () => {
+    const c = FLOW_BUILTIN_STEPS.create_alert.inputSchema;
+    expect(c.safeParse({ deviceId: '{{item.id}}', severity: 'high', message: 'm' }).success).toBe(true);
+    expect(c.safeParse({ deviceId: GROUP, severity: 'urgent', message: 'm' }).success).toBe(false);
+    expect(c.safeParse({ deviceId: GROUP, severity: 'low', message: '' }).success).toBe(false);
+    expect(c.safeParse({ deviceId: GROUP, severity: 'low', message: 'm', title: 'x'.repeat(201) }).success).toBe(false);
   });
 });

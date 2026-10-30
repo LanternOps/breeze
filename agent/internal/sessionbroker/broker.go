@@ -304,6 +304,10 @@ type Broker struct {
 	promptSink      PromptSink          // prompt host (#10190); guarded by mu
 	selfHashes      map[string]struct{} // SHA-256 of allowed helper binaries; guarded by mu
 
+	// TCC skew rule (#10190 W04, tcc_notice.go); both guarded by mu.
+	tccNoticeGate    func() bool
+	tccStatusHandler func(s *Session, status ipc.TCCStatus)
+
 	// helperPathsFn overrides allowedHelperPaths (test seam). Nil in
 	// production, where the allowlist is derived from os.Executable().
 	helperPathsFn func() []string
@@ -1460,7 +1464,11 @@ func (b *Broker) BroadcastNotification(title, body, urgency string) {
 // of its own. A reply arriving after the wait has given up is dropped as
 // unsolicited at WARN again — the noise #9266 removed — so this is generous:
 // it costs one parked goroutine per helper per broadcast, and broadcasts are
-// rare (the reboot-warning ladder). A var only so tests can shorten it.
+// rare (the reboot-warning ladder). Session.SendNotification uses the same
+// bound for single-session notices (#10224): a notice that asks for the
+// fallback dialog is answered only when that dialog closes (60 s each, and the
+// helper queues them), so the generous wait covers it too. A var only so tests
+// can shorten it.
 var broadcastNotifyResultTimeout = 5 * time.Minute
 
 // awaitBroadcastNotifyResult consumes the reply a broadcast notification is
@@ -2529,10 +2537,12 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 
 	// Send auth response
+	handlesTCCNotice := b.agentHandlesTCCNoticeFor(helperRole, authReq, scopes)
 	authResp := ipc.AuthResponse{
-		Accepted:      true,
-		SessionKey:    hex.EncodeToString(sessionKey),
-		AllowedScopes: scopes,
+		Accepted:              true,
+		SessionKey:            hex.EncodeToString(sessionKey),
+		AllowedScopes:         scopes,
+		AgentHandlesTCCNotice: handlesTCCNotice,
 	}
 	if err := conn.SendTyped(env.ID, ipc.TypeAuthResponse, authResp); err != nil {
 		log.Warn("failed to send auth response", "error", err.Error())
@@ -2560,6 +2570,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 	}
 	session.DesktopContext = authReq.DesktopContext
 	applyAuthAdvertisements(session, helperRole, authReq)
+	session.agentHandlesTCCNotice.Store(handlesTCCNotice)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2982,6 +2993,7 @@ func applyAuthAdvertisements(session *Session, role ipc.HelperRole, authReq ipc.
 	session.ConsentProtocolVersion = consentProtocolFromAuth(role, authReq)
 	session.SupportsTargetedPamDismiss = targetedPamDismissFromAuth(role, authReq)
 	applyPromptGrant(session, promptGrantFromAuth(role, authReq))
+	session.uiLocale = uiLocaleFromAuth(authReq)
 }
 
 // targetedPamDismissFromAuth reports whether the agent may send this helper a
@@ -3369,6 +3381,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", boolPtrString(sanitized.RemoteDesktop),
 			)
+			b.forwardTCCStatus(s, *sanitized)
 		}
 	case ipc.TypeDisconnect:
 		log.Info("user helper disconnecting", "uid", s.UID, "sessionId", s.SessionID)

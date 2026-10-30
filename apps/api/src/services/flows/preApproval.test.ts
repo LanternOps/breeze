@@ -25,6 +25,7 @@ vi.mock('../../db', () => {
   };
 });
 vi.mock('./ownedReferences', () => ({ findOwnedScriptIds: vi.fn() }));
+vi.mock('./fleetGroups', () => ({ loadDynamicGroupDefinitions: vi.fn(async () => ({})) }));
 
 import { findOwnedScriptIds } from './ownedReferences';
 import type { RunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
@@ -206,7 +207,7 @@ describe('assessPreApprovals', () => {
     expect(Object.keys(r.eligibility)).toEqual(['run']);
     expect(r.eligibility.run).toEqual({ eligible: true });
     expect(r.bindings.run).toMatchObject({ stepId: 'run', lane: 'act_asset', assetKind: 'script', scriptId: SCRIPT });
-    expect(r.bindings.run!.contentDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect((r.bindings.run as { contentDigest: string }).contentDigest).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a script the owner does not own is script_not_found (same as missing), and is never read', async () => {
@@ -237,5 +238,92 @@ describe('assessPreApprovals', () => {
       ['pause'],
     );
     expect(r.eligibility.pause).toEqual({ eligible: false, reason: 'not_tier3' });
+  });
+
+  // W6 (#5221, Decision 5): run_script_on_targets is assessed on the fleet lane.
+  describe('fleet lane', () => {
+    const PUB = '55555555-5555-4555-8555-555555555555';
+    const GROUP = '44444444-4444-4444-8444-444444444444';
+    const fleetStep = (id: string, input: Record<string, unknown>, over: Partial<Step> = {}) =>
+      step({ scriptId: SCRIPT, whenOffline: 'queue', ...input }, { id, tool: 'run_script_on_targets', onFailure: 'continue', ...over });
+    const fleetPin = (stepId: string): FlowStepPin => ({ stepId, tool: 'run_script_on_targets', source: 'builtin', tier: 3, approvalScope: 'supervised' });
+
+    it('binds an eligible fleet step with the requested maxTargets on the new publication', async () => {
+      selectQueue.push([scriptRow()]);
+      const r = await assessPreApprovals(
+        doc([fleetStep('a0', { target: { type: 'groups', groupIds: [GROUP] } })]), [fleetPin('a0')], OWNER, ['a0'],
+        { publicationId: PUB, fleetMaxTargets: { a0: 40 } },
+      );
+      expect(r.eligibility.a0).toEqual({ eligible: true });
+      expect(r.bindings.a0).toMatchObject({ lane: 'fleet', kind: 'fleet_v1', publicationId: PUB, maxTargets: 40, scriptId: SCRIPT, effectiveRunAs: 'system' });
+    });
+
+    // W6 (#5221) Task B3: the switch's generated scripts exist only in its own transaction.
+    it('a scriptReadExecutor reads ownership and the script through that executor, and binds the same digest', async () => {
+      const executorRows: unknown[][] = [[scriptRow()]];
+      const executor = {
+        select: vi.fn(() => {
+          const proxy: unknown = new Proxy(() => {}, {
+            get(_t, prop) {
+              if (prop === 'then') return (res: (v: unknown) => void) => Promise.resolve(executorRows.shift() ?? []).then(res);
+              return () => proxy;
+            },
+          });
+          return proxy;
+        }),
+      };
+      const d = doc([fleetStep('a0', { target: { type: 'groups', groupIds: [GROUP] } })]);
+      const viaExecutor = await assessPreApprovals(d, [fleetPin('a0')], OWNER, ['a0'], {
+        publicationId: PUB, fleetMaxTargets: { a0: 40 }, scriptReadExecutor: executor as never,
+      });
+      expect(viaExecutor.eligibility.a0).toEqual({ eligible: true });
+      expect(vi.mocked(findOwnedScriptIds)).toHaveBeenCalledWith(OWNER, [SCRIPT], { executor });
+      expect(executor.select).toHaveBeenCalled();
+      expect(selectQueue).toHaveLength(0);
+
+      // The default path (system context, the global db) binds byte-identical material.
+      vi.mocked(findOwnedScriptIds).mockClear();
+      selectQueue.push([scriptRow()]);
+      const viaSystem = await assessPreApprovals(d, [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB, fleetMaxTargets: { a0: 40 } });
+      expect(vi.mocked(findOwnedScriptIds)).toHaveBeenCalledWith(OWNER, [SCRIPT]);
+      expect(viaExecutor.bindings.a0).toEqual(viaSystem.bindings.a0);
+    });
+
+    it('a requested fleet step without maxTargets is max_targets_invalid', async () => {
+      selectQueue.push([scriptRow()]);
+      const r = await assessPreApprovals(doc([fleetStep('a0', { conditions: [] })]), [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB });
+      expect(r.eligibility.a0).toEqual({ eligible: false, reason: 'max_targets_invalid' });
+      expect(r.bindings.a0).toBeUndefined();
+    });
+
+    it('a script that runs elevated (inherited) is run_as_elevated', async () => {
+      selectQueue.push([scriptRow({ runAs: 'elevated' })]);
+      const r = await assessPreApprovals(doc([fleetStep('a0', { conditions: [] })]), [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB, fleetMaxTargets: { a0: 5 } });
+      expect(r.eligibility.a0).toEqual({ eligible: false, reason: 'run_as_elevated' });
+    });
+
+    it('a variable-dependent script is variable_dependent', async () => {
+      selectQueue.push([scriptRow({ content: 'echo {{var.site_code}}' })], []);
+      const r = await assessPreApprovals(doc([fleetStep('a0', { conditions: [] })]), [fleetPin('a0')], OWNER, ['a0'], { publicationId: PUB, fleetMaxTargets: { a0: 5 } });
+      expect(r.eligibility.a0).toEqual({ eligible: false, reason: 'variable_dependent' });
+    });
+
+    it('a for-each fleet step is for_each', async () => {
+      const r = await assessPreApprovals(
+        doc([fleetStep('a0', { conditions: [] }, { forEach: { items: '{{trigger.payload.x}}' } } as Partial<Step>)]), [fleetPin('a0')], OWNER, ['a0'],
+        { publicationId: PUB, fleetMaxTargets: { a0: 5 } },
+      );
+      expect(r.eligibility.a0).toEqual({ eligible: false, reason: 'for_each' });
+    });
+
+    it('a fromStep chain onto an eligible earlier fleet step is eligible; onto an ineligible one it is not', async () => {
+      selectQueue.push([scriptRow()], [scriptRow()]);
+      const steps = [fleetStep('a0', { conditions: [] }), fleetStep('a1', { fromStep: { stepId: 'a0', set: 'succeeded' } })];
+      const r = await assessPreApprovals(doc(steps), [fleetPin('a0'), fleetPin('a1')], OWNER, ['a0', 'a1'], { publicationId: PUB, fleetMaxTargets: { a0: 5, a1: 5 } });
+      expect(r.eligibility.a1).toEqual({ eligible: true });
+      const bad = [fleetStep('a0', { conditions: [] }, { forEach: { items: '{{trigger.payload.x}}' } } as Partial<Step>), fleetStep('a1', { fromStep: { stepId: 'a0', set: 'succeeded' } })];
+      const r2 = await assessPreApprovals(doc(bad), [fleetPin('a0'), fleetPin('a1')], OWNER, ['a1'], { publicationId: PUB, fleetMaxTargets: { a1: 5 } });
+      expect(r2.eligibility.a1).toEqual({ eligible: false, reason: 'selector_not_literal' });
+    });
   });
 });

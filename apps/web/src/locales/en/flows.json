@@ -39,7 +39,9 @@
     "inputs": "Inputs",
     "steps": "Steps",
     "version": "Version {{version}}",
-    "createdInChat": "Created in Breeze AI"
+    "createdInChat": "Created in Breeze AI",
+    "movedFromJob": "Moved from Job",
+    "movedFromJobReverted": "(moved back)"
   },
   "step": {
     "tool": "Tool",
@@ -55,9 +57,52 @@
     "source": {
       "core": "Core tool",
       "tenant": "Tool source",
-      "builtin": "Built-in"
+      "builtin": "Built-in",
+      "unknown": "Unknown tool"
     },
-    "preApprovedBadge": "Pre-approved"
+    "preApprovedBadge": "Pre-approved",
+    "builtin": {
+      "notify": "Send a notice",
+      "http_request": "Call an outside API",
+      "ai": "Ask the AI",
+      "run_script_on_targets": "Run a script on devices",
+      "resolve_targets": "Find devices",
+      "create_alert": "Raise an alert"
+    },
+    "notify": {
+      "channel": "Channel: {{channel}}"
+    },
+    "http": {
+      "request": "{{method}} {{origin}}",
+      "anonymous": "Anonymous (no credentials)"
+    },
+    "ai": {
+      "tools": "Tools: {{tools}}",
+      "noTools": "No tools",
+      "output": "Result fields: {{fields}}"
+    },
+    "fleet": {
+      "script": "Script {{scriptId}}",
+      "target": {
+        "all": "All devices",
+        "devices": "Listed devices",
+        "groups": "Device groups",
+        "filter": "Devices matching a filter",
+        "other": "A device target"
+      },
+      "conditions": "Devices matching the job conditions",
+      "triggerDevice": "The device from the event",
+      "devices_one": "{{count}} device",
+      "devices_other": "{{count}} devices",
+      "fromStep": {
+        "succeeded": "Devices that succeeded in {{stepId}}",
+        "dispatched": "Devices reached by {{stepId}}",
+        "failed": "Devices that failed in {{stepId}}"
+      },
+      "offlineQueue": "Offline devices: queued",
+      "offlineSkip": "Offline devices: skipped",
+      "alert": "Severity {{severity}}"
+    }
   },
   "issues": {
     "title": "Validation",
@@ -80,7 +125,8 @@
   },
   "tabs": {
     "overview": "Overview",
-    "runs": "Runs"
+    "runs": "Runs",
+    "webhook": "Webhook"
   },
   "actions": {
     "enable": "Enable",
@@ -103,7 +149,11 @@
       "variable_dependent": "This step depends on values that are only known at run time.",
       "script_not_found": "The script this step uses could not be found.",
       "four_eyes": "This action always needs a second person to approve it.",
-      "tenant_tool": "Custom tool sources cannot be pre-approved."
+      "tenant_tool": "Custom tool sources cannot be pre-approved.",
+      "for_each": "Steps that repeat for each item cannot be pre-approved.",
+      "run_as_elevated": "This script runs elevated, so it cannot be pre-approved.",
+      "selector_not_literal": "The devices are chosen at run time, so this step cannot be pre-approved.",
+      "max_targets_invalid": "Set how many devices this step may run on (1–500) to pre-approve it."
     },
     "eventScope": "Event flows react to platform events whatever caused them, including actions taken by people, other flows, or automations. Check the trigger filter before you enable it.",
     "missingPermissions": "You are missing permissions that this flow's steps need:",
@@ -121,7 +171,10 @@
     "partnerWideForbidden": "You do not have permission to enable flows for all organizations.",
     "interactiveRequired": "Flows can only be enabled from a signed-in browser session.",
     "slugUnavailable": "Another flow in this scope already uses this identifier.",
-    "generic": "Could not enable the flow."
+    "generic": "Could not enable the flow.",
+    "webhookSecretMissing": "Create a webhook secret before you enable this flow.",
+    "aiBudgetUnavailable": "This organization has no AI budget to spend, so a flow with an AI step cannot be enabled.",
+    "webhookSecretInvalidated": "Enabling this version cleared the webhook secret, because the secret was created for an older draft. Every request is refused until you create a new secret and give it to the sender."
   },
   "run": {
     "title": "Run flow",
@@ -217,7 +270,11 @@
       "notify_failed": "The notice could not be sent.",
       "ai_budget_exhausted": "The organization's AI budget is used up.",
       "ai_output_invalid": "The AI result did not match the expected shape.",
-      "ai_token_cap_reached": "The run reached its AI token limit."
+      "ai_token_cap_reached": "The run reached its AI token limit.",
+      "targets_over_cap": "The step targeted more devices than a flow step may run on (500).",
+      "targets_unresolvable": "The step's device target could not be resolved.",
+      "alert_create_failed": "The alert could not be created.",
+      "script_dispatch_failed": "The script could not be sent to one or more devices."
     },
     "step": {
       "status": {
@@ -247,7 +304,9 @@
       "loading": "Loading...",
       "loadFailed": "Could not load step details.",
       "pruned": "Details were removed by the retention policy.",
-      "redacted": "Step details aren't available with your access."
+      "redacted": "Step details aren't available with your access.",
+      "aiUsage": "AI: {{input}} in, {{output}} out tokens, {{cost}}",
+      "httpStatus": "HTTP {{status}}"
     },
     "notFound": "Run not found.",
     "alreadyTerminal": "This run has already finished.",
@@ -259,7 +318,11 @@
     "queuedNote": "Queued. Waiting for a free run slot.",
     "paused": "Live updates paused.",
     "lastUpdated": "Last updated {{time}}",
-    "timeline": "Steps"
+    "timeline": "Steps",
+    "agentRun": "Started by an AI agent run",
+    "openAgentRun": "Open agent run",
+    "aiTokensUsed": "AI tokens used: {{count}}",
+    "parallel": "{{count}} items ran in parallel"
   },
   "toast": {
     "enabled": "Flow enabled",
@@ -270,5 +333,445 @@
   "disable": {
     "title": "Disable flow",
     "message": "Disabling stops new runs and cancels runs that are in progress. You can enable the flow again later."
+  },
+  "webhook": {
+    "title": "Webhook",
+    "url": "Webhook URL",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Could not copy automatically. Select the value and copy it by hand.",
+    "authMode": {
+      "label": "Authentication",
+      "hmac": "Signed request (HMAC-SHA256)",
+      "token": "Secret in a header"
+    },
+    "authHelp": {
+      "hmac": "The sender signs each request with the secret. Breeze refuses requests that are unsigned, wrongly signed or more than five minutes old, and runs a replayed request only once.",
+      "token": "The sender puts the secret itself in a header. This is weaker than signing: anyone who sees one request can send more. Use it only for senders that cannot sign."
+    },
+    "signing": {
+      "title": "How to send a request",
+      "hmac": "Send a JSON object as the body. Compute HMAC-SHA256 over <timestamp>.<raw body> with the secret, and send these headers:",
+      "token": "Send a JSON object as the body, with the secret in this header:",
+      "deliveryId": "Optional: send a unique {{header}} so a retry of the same delivery runs only once."
+    },
+    "secret": {
+      "label": "Secret",
+      "create": "Create secret",
+      "rotate": "Rotate secret",
+      "none": "No secret yet. Every request is refused until you create one.",
+      "fingerprint": "Fingerprint",
+      "rotatedAt": "Created",
+      "dialogTitle": "Webhook secret",
+      "warning": "Copy this secret now. It will not be shown again.",
+      "done": "Done",
+      "rotateTitle": "Rotate the webhook secret?",
+      "rotateMessage": "The current secret stops working immediately. The sender gets refused until it uses the new secret.",
+      "failed": "Could not create the webhook secret.",
+      "draftUnresolvable": "The draft's steps no longer resolve, so a secret cannot be created for it. Fix the draft first.",
+      "notWebhook": "This flow is not started by a webhook."
+    },
+    "lastFailure": {
+      "label": "Last refused request",
+      "none": "None",
+      "missing_signature": "The request was not signed.",
+      "bad_signature": "The signature did not match.",
+      "stale_timestamp": "The timestamp was missing or more than five minutes off.",
+      "missing_token": "The secret header was missing.",
+      "bad_token": "The secret in the header was wrong.",
+      "bad_delivery_id": "The delivery ID was not valid."
+    },
+    "orgResolver": {
+      "label": "Organization",
+      "externalId": "Matched by {{path}} against external IDs of type {{system}}",
+      "breezeOrgId": "Read from {{path}} as a Breeze organization ID",
+      "orgFlow": "Runs in this flow's organization"
+    }
+  },
+  "deliveries": {
+    "title": "Recent deliveries",
+    "empty": "No deliveries yet.",
+    "loadFailed": "Could not load deliveries.",
+    "loadMore": "Load more",
+    "hidden": "Delivery IDs and organization values are hidden with your access.",
+    "columns": {
+      "received": "Received",
+      "status": "Status",
+      "org": "Organization",
+      "run": "Run",
+      "attempts": "Attempts",
+      "detail": "Detail"
+    },
+    "status": {
+      "accepted": "Accepted",
+      "org_unresolved": "No matching organization",
+      "refused": "Refused",
+      "invalid_body": "Invalid body"
+    },
+    "resolverValue": "Value: {{value}}",
+    "deliveryId": "Delivery ID: {{id}}",
+    "openRun": "Open run"
+  },
+  "usage": {
+    "title": "Runs this month",
+    "period": "{{period}} (UTC)",
+    "flowCap": "This flow",
+    "ownerCap": "All flows of this owner",
+    "count": "{{used}} of {{cap}}",
+    "limitsLink": "Flow limits",
+    "refused": {
+      "flow_queue_full": "Too many runs are waiting.",
+      "flow_monthly_cap_reached": "This flow reached its monthly run limit.",
+      "owner_monthly_cap_reached": "The owner reached its monthly run limit for all flows."
+    },
+    "refusedBanner": "Runs are being refused. {{reason}} Last refused {{time}}. The flow stays enabled and runs again when the month resets or the limit is raised.",
+    "refusedBadge": "Runs refused"
+  },
+  "limits": {
+    "title": "Flow limits",
+    "subtitle": "Monthly run limits and the AI token limit for each run. Set a default for your partner, and lower it for an organization when needed.",
+    "level": {
+      "label": "Level",
+      "partner": "Partner default",
+      "org": "Organization"
+    },
+    "selectOrg": "Select an organization",
+    "fields": {
+      "monthlyRunsPerOwner": {
+        "label": "Runs per month, all flows",
+        "help": "The most runs all flows of one owner can start in a calendar month (UTC)."
+      },
+      "monthlyRunsPerFlow": {
+        "label": "Runs per month, per flow",
+        "help": "The most runs one flow can start in a calendar month (UTC). A flow can set a lower limit of its own."
+      },
+      "aiTokensPerRun": {
+        "label": "AI tokens per run",
+        "help": "The most AI tokens the AI steps of one run can use."
+      }
+    },
+    "inherited": "Inherited: {{value}} ({{source}})",
+    "source": {
+      "default": "platform default",
+      "partner": "partner default",
+      "org": "this organization"
+    },
+    "ceilingNote": "Organizations can only lower this. The partner value is {{value}}.",
+    "aboveCeiling": "The stored value {{value}} is above the partner value, so it does not apply.",
+    "aboveCeilingError": "Must be {{value}} or lower (the partner value).",
+    "range": "Enter a whole number from 1 to {{max}}.",
+    "placeholder": "Inherit",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Flow limits saved",
+    "saveFailed": "Could not save the flow limits.",
+    "loadFailed": "Could not load the flow limits.",
+    "orgNotFound": "This organization was not found or you no longer have access to it.",
+    "readOnly": "You can view these limits but not change them.",
+    "partnerWideForbidden": "Changing the partner default needs access to all organizations.",
+    "orgScopeReadOnly": "Organization limits are set by your service provider."
+  },
+  "conversion": {
+    "fidelity": {
+      "exact": "Exact",
+      "needs_review": "Needs review",
+      "unconvertible": "Can't move yet"
+    },
+    "fidelityBlocked": "Can't move yet: {{blocker}}",
+    "severity": {
+      "blocker": "Blocker",
+      "review": "Review",
+      "info": "Note"
+    },
+    "state": {
+      "shadow": "Shadowing",
+      "switched": "Moved to Flows",
+      "reverted": "Moved back"
+    },
+    "actionNumber": "Action {{n}}",
+    "noFindings": "Nothing to review: this job moves exactly.",
+    "finding": {
+      "flows_disabled": {
+        "title": "Flows are off here",
+        "line": "This installation runs with FLOWS_ENABLED=false, so jobs stay as they are."
+      },
+      "managed_row": {
+        "title": "Managed by Breeze",
+        "line": "An AI agent or a monitor owns this job; it moves with its owner, not on its own."
+      },
+      "policy_workflow": {
+        "title": "Part of a policy workflow",
+        "line": "Configuration policies run this job; it moves when policy workflows move."
+      },
+      "already_retired": {
+        "title": "Already turned off",
+        "line": "This job was retired and no longer runs."
+      },
+      "compliance_remediation_target": {
+        "title": "Used for compliance remediation",
+        "line": "A compliance policy runs this job to fix devices; it stays a job for now."
+      },
+      "event_dispatch_not_durable": {
+        "title": "Event delivery isn't durable here",
+        "line": "Event jobs move only with EVENT_DISPATCH_MODE=enforce and flow-event-trigger subscribed."
+      },
+      "event_filter_not_strict": {
+        "title": "Event filter can't be copied exactly",
+        "line": "The filter uses lists, objects, too many keys or a key flows can't match."
+      },
+      "event_filter_null": {
+        "title": "Event filter checks for empty values",
+        "line": "Jobs tell an empty value from a missing one; flows can't."
+      },
+      "cron_semantics_differ": {
+        "title": "Schedule would fire at different times",
+        "line": "This cron expression doesn't match the flow scheduler across daylight-saving changes."
+      },
+      "condition_unknown_type": {
+        "title": "Unknown target condition",
+        "line": "A condition type the job runner ignores; a flow can't copy it safely."
+      },
+      "targets_over_cap": {
+        "title": "Too many devices",
+        "line": "This job targets more than 400 devices; a flow step runs at most 500."
+      },
+      "partner_wide_group_target": {
+        "title": "All-orgs job targets groups",
+        "line": "Device groups belong to one organization, so an all-orgs job can't target them."
+      },
+      "run_as_elevated": {
+        "title": "Runs elevated",
+        "line": "A moved script never runs elevated without someone watching."
+      },
+      "restart_service_monitor_only": {
+        "title": "Restarts a service",
+        "line": "Service restarts only run from monitors."
+      },
+      "command_mixed_os": {
+        "title": "Command without a shell on mixed devices",
+        "line": "Pick a shell, or narrow the targets to one operating system."
+      },
+      "notify_per_run_cap": {
+        "title": "Too many notifications per run",
+        "line": "Flows send at most 20 notifications per run."
+      },
+      "channel_type_not_supported": {
+        "title": "Notification channel not supported",
+        "line": "A flow can't send to this channel type yet."
+      },
+      "deploy_software_unmapped": {
+        "title": "Deploys software",
+        "line": "Software deployment doesn't move to Flows yet."
+      },
+      "monthly_cap_exceeded": {
+        "title": "Runs more often than the monthly limit",
+        "line": "The estimated monthly runs are above this owner's flow limit."
+      },
+      "reference_not_owned": {
+        "title": "Uses something this owner doesn't own",
+        "line": "A script, channel or group belongs to a different owner."
+      },
+      "partner_wide_webhook": {
+        "title": "All-orgs webhook job",
+        "line": "A flow webhook needs one organization to run in."
+      },
+      "text_template_unsupported": {
+        "title": "Text contains template braces",
+        "line": "A flow would read double braces in the text as a template."
+      },
+      "event_filter_string_coercion": {
+        "title": "Text filter value",
+        "line": "Jobs compare as text, flows compare exactly; confirm the field is always text."
+      },
+      "approval_each_run": {
+        "title": "Approval on every webhook run",
+        "line": "Pre-approval never applies to webhook runs, so each run waits for a person."
+      },
+      "command_becomes_script": {
+        "title": "Command becomes a script",
+        "line": "The command is saved as a library script you review before switching."
+      },
+      "partner_wide_org_set_differs": {
+        "title": "Runs once per organization",
+        "line": "A flow skips suspended organizations and runs in at most 500 of them."
+      },
+      "failure_notice_cap": {
+        "title": "Failure notices may be capped",
+        "line": "More than 20 failure notices in one run are not sent."
+      },
+      "owner_cap_pressure": {
+        "title": "Close to the monthly limit",
+        "line": "This flow would use more than 80% of the owner's monthly runs."
+      },
+      "site_ceiling_removed": {
+        "title": "Wider device scope",
+        "line": "The job was limited to its creator's sites; the flow is not."
+      },
+      "webhook_body_shape": {
+        "title": "Webhook body must be a JSON object",
+        "line": "The flow ignores deliveries that aren't JSON objects."
+      },
+      "legacy_secret_header_possible": {
+        "title": "Plain secret header",
+        "line": "Senders that send the plain secret must switch to X-Breeze-Webhook-Token."
+      },
+      "name_truncated": {
+        "title": "Name shortened",
+        "line": "Flow names are at most 120 characters."
+      },
+      "duration_minutes_ignored": {
+        "title": "Duration ignored",
+        "line": "The event duration setting never had an effect and is dropped."
+      },
+      "schedule_outage_catch_up": {
+        "title": "Catches up after an outage",
+        "line": "After downtime the flow runs the latest missed time once; the job ran none."
+      },
+      "queued_is_success": {
+        "title": "Queued counts as done",
+        "line": "As before, a script queued for an offline device counts as dispatched."
+      },
+      "severity_mapped": {
+        "title": "Severity mapped",
+        "line": "High and medium become warning; low and info become info."
+      },
+      "notification_emails_unused": {
+        "title": "Email list dropped",
+        "line": "The job's email list was never used and is dropped."
+      },
+      "webhook_url_changes": {
+        "title": "Webhook address",
+        "line": "Senders keep the old address; it forwards to the flow."
+      },
+      "delegator_pause": {
+        "title": "Pauses if you lose access",
+        "line": "The flow runs as you and pauses if your account is turned off or narrowed."
+      }
+    },
+    "column": {
+      "heading": "Move to Flows",
+      "move": "Move to Flows",
+      "view": "View"
+    },
+    "panel": {
+      "title": "Move \"{{name}}\" to Flows",
+      "subtitle": "See what carries over, watch the flow shadow the job, then switch.",
+      "close": "Close",
+      "loading": "Checking this job…",
+      "openFlow": "Open the flow",
+      "findingsHeading": "What carries over",
+      "stepsHeading": "Flow steps",
+      "startShadow": "Start shadow",
+      "switch": "Switch…",
+      "switchedNote": "The flow runs this job now. The job is read-only until you move it back.",
+      "flowUnavailable": "Couldn't load the flow. You can still move the job back."
+    },
+    "shadow": {
+      "heading": "Shadow",
+      "explain": "The flow checks each run of the job without running anything.",
+      "runs": "Runs checked",
+      "divergences": "Differences",
+      "startedAt": "Started",
+      "divergence": {
+        "trigger_mismatch": "Last difference: the flow and the job disagreed on whether to run.",
+        "target_set_mismatch": "Last difference: the flow would have picked different devices.",
+        "would_park": "Last difference: a step would have waited for approval.",
+        "over_cap": "Last difference: the run would have hit a flow limit."
+      }
+    },
+    "switch": {
+      "title": "Switch \"{{name}}\" to its flow",
+      "body": "From one minute after you switch, the flow runs every occurrence and the job stops. Nothing runs twice.",
+      "blocked": {
+        "shadow_too_new": "Switch opens once the shadow is 10 minutes old.",
+        "shadow_too_short": "The shadow has checked fewer than 3 runs or is under 7 days old.",
+        "shadow_divergent": "The shadow saw differences between the flow and the job.",
+        "source_changed": "The job changed since it was converted. Start a new shadow.",
+        "unconvertible": "This job can't move yet."
+      },
+      "acknowledge": "Switch anyway; I accept the evidence shown.",
+      "preApprovalsHeading": "Run without waiting for approval",
+      "preApprovalsHelp": "Off by default. Without it, each run of a script step waits for a person to approve it.",
+      "noPreApprovals": "No script step can run without approval.",
+      "preApprove": "Pre-approve script step",
+      "currentTargets_one": "Targets {{count}} device today.",
+      "currentTargets_other": "Targets {{count}} devices today.",
+      "maxTargets": "Most devices per run (1–{{max}})",
+      "maxTargetsInvalid": "Enter a whole number from 1 to {{max}}.",
+      "liveMembership": "Devices are worked out fresh on each run. Anyone who can change a group's members can change where this runs; a run above the limit pauses the flow.",
+      "frozenDevices": "If a run waits for approval, the approver sees the exact devices and only those run.",
+      "perOrgMultiplies": "This is an all-orgs flow: the limit applies in each organization, so the total can be this many times the number of organizations.",
+      "webhookApprovalEachRun": "Webhook runs always wait for approval, even with pre-approval.",
+      "generatedScriptsHeading": "Scripts created on switch",
+      "generatedScriptsHelp": "Each command becomes a library script owned like the job.",
+      "acceptScripts": "I reviewed these scripts.",
+      "acceptScopeWidening": "I accept that the flow is not limited to the job creator's sites.",
+      "webhookChange": "Senders keep the old webhook address; it forwards to the flow. The flow accepts JSON objects only, and senders of the plain secret must use X-Breeze-Webhook-Token.",
+      "acceptDelegatorLifecycle": "The flow runs as me. If my account is turned off or loses access, the flow pauses (the job did not).",
+      "confirm": "Switch",
+      "switching": "Switching…"
+    },
+    "revert": {
+      "action": "Move back to the job…",
+      "title": "Move \"{{name}}\" back to the job?",
+      "body": "The job turns on again and the flow starts nothing new. Runs already started on the flow finish.",
+      "confirm": "Move back"
+    },
+    "toast": {
+      "created": "Shadow started.",
+      "bulkCreated_one": "Started a shadow for {{count}} job.",
+      "bulkCreated_other": "Started a shadow for {{count}} jobs.",
+      "switched": "Switched. The flow runs this job from now on.",
+      "reverted": "Moved back. The job runs again."
+    },
+    "errors": {
+      "loadFailed": "Couldn't load this job's move.",
+      "createFailed": "Couldn't start the shadow.",
+      "bulkFailed": "Couldn't start the shadows.",
+      "switchFailed": "Couldn't switch.",
+      "revertFailed": "Couldn't move back.",
+      "automation_not_found": "This job no longer exists.",
+      "conversion_not_found": "This move no longer exists.",
+      "conversion_exists": "This job is already being moved.",
+      "source_changed": "The job changed since you opened it. Reload and try again.",
+      "unconvertible": "This job can't move yet.",
+      "draft_rejected": "The flow draft wasn't accepted.",
+      "partner_wide_forbidden": "Moving all-orgs jobs needs full partner access.",
+      "owner_forbidden": "Select an organization first.",
+      "interactive_session_required": "Sign in as a person to do this.",
+      "delegation_scope_restricted": "Your access is limited to some sites, so you can't switch or move back.",
+      "not_shadow": "Only a job in shadow can switch.",
+      "not_switched": "Only a switched job can move back.",
+      "version_conflict": "The flow changed. Reload and try again.",
+      "already_enabled": "The flow is already on.",
+      "slug_unavailable": "Another flow already uses this name.",
+      "shadow_too_new": "Switch opens once the shadow is 10 minutes old.",
+      "shadow_too_short": "Not enough shadow evidence yet. Acknowledge it to switch anyway.",
+      "shadow_divergent": "The shadow saw differences. Acknowledge them to switch anyway.",
+      "scope_widening_not_accepted": "Accept the wider device scope to switch.",
+      "automation_disabled": "Turn the job on before you switch it.",
+      "automation_converted": "This job moved to Flows. Change it there.",
+      "automations_moved_to_flows": "New jobs are made in Flows.",
+      "flow_not_found": "The job's flow no longer exists.",
+      "revert_closed": "Moving back is closed on this installation.",
+      "generated_script_rejected": "A script for this job couldn't be created.",
+      "permission_missing": "You don't have every permission the flow needs.",
+      "pre_approval_not_eligible": "A step can't be pre-approved.",
+      "invalid": "The flow isn't valid.",
+      "event_dispatch_not_durable": "Event delivery here is not durable.",
+      "webhook_secret_missing": "The webhook secret is missing."
+    }
+  },
+  "jobs": {
+    "migration": {
+      "banner": {
+        "r1": "Jobs are moving to Flows.",
+        "r1Body": "New jobs are made in Flows. Move each job when its shadow matches; you can move it back."
+      },
+      "convertAll": "Start shadow for all convertible",
+      "converting": "Starting…",
+      "bulkSummary": "Started {{created}}, skipped {{skipped}}.",
+      "newJobOpensFlows": "New flow"
+    }
   }
 }

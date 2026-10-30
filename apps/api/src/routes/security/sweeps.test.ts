@@ -137,6 +137,7 @@ describe('IOC sweep routes', () => {
       { ok: false, status: 403, code: 'MFA_REQUIRED', detail: { targeted: 51, threshold: 50 } },
       { ok: false, status: 403, code: 'SITE_OUT_OF_SCOPE', detail: { siteIds: ['s'] } },
       { ok: false, status: 404, code: 'RULE_SET_NOT_FOUND', detail: { ruleSetIds: [SET] } },
+      { ok: false, status: 400, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', detail: { groupIds: [GROUP] } },
       { ok: false, status: 400, code: 'NO_ELIGIBLE_DEVICES', detail: { skipped: {} } },
       { ok: false, status: 429, code: 'RATE_LIMITED', detail: { retryAt: 'x' } },
     ]) {

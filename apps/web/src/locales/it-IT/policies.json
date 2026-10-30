@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Provider applicazioni (Avviso e Informazioni)",
+        "applicationProvidersHelp": "Gli eventi applicazione di livello Errore e Critico vengono raccolti da tutti i provider; quelli di livello Avviso e Informazioni solo dai provider integrati ({{providers}}) e da quelli elencati qui. Usa il nome esatto del provider mostrato nella colonna \"Origine\" del Visualizzatore eventi o da Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Per ogni dispositivo si applica solo il criterio Registri eventi con precedenza. Gli elenchi dei provider non vengono combinati tra criteri.",
+        "providerNameLabel": "Nome del provider di eventi applicazione",
+        "addProvider": "Aggiungi provider",
+        "removeProvider": "Rimuovi",
+        "removeProviderNamed": "Rimuovi {{provider}}",
+        "providerNameInvalid": "Usa da 1 a {{max}} caratteri, iniziando con una lettera o una cifra. Sono consentiti lettere, cifre, spazi, punti, trattini bassi, simboli del dollaro, parentesi tonde e trattini.",
+        "providerLimitReached": "Puoi aggiungere fino a {{max}} provider aggiuntivi. Rimuovine uno per aggiungerne un altro.",
+        "providerAlreadyListed": "Questo provider è già presente nell’elenco.",
+        "providerLimit": "{{total}} di {{max}} provider aggiuntivi"
       },
       "featureTabShell": {
         "override": "Sovrascrivi",
@@ -899,7 +910,17 @@
         "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
         "ringDetailsNoHold": "Ordine di rollout {{order}} · nessuna attesa prima dell’approvazione",
         "ringDetailsWithHold_one": "Ordine di rollout {{order}} · {{count}} giorno di attesa prima dell’approvazione",
-        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione"
+        "ringDetailsWithHold_other": "Ordine di rollout {{order}} · {{count}} giorni di attesa prima dell’approvazione",
+        "rebootPreviewHeading": "Anteprima",
+        "rebootPreviewDescription": "Ciò che vede la persona al computer se un riavvio viene pianificato ora. Gli orari sono esempi.",
+        "rebootPreviewDefaultMarker": "Predefinito",
+        "rebootPreviewDefaultTitle": "Riavvio necessario per completare l'installazione degli aggiornamenti",
+        "rebootPreviewDefaultBody": "Il tuo team di assistenza IT deve riavviare questo computer per completare l'installazione degli aggiornamenti.",
+        "rebootPreviewConsequence": "Se non fai nulla, questo computer verrà riavviato alle {{time}}. Salva il tuo lavoro prima di allora.",
+        "rebootPreviewRestartNow": "Riavvia ora",
+        "rebootPreviewPostponeUntil": "Rinvia alle {{time}}",
+        "rebootPreviewDeadline": "Posticipare non sposta mai il riavvio oltre le {{time}}.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",
@@ -986,6 +1007,9 @@
         "showIndicatorHelp": "Mostra il banner sullo schermo mentre un tecnico è connesso.",
         "notifyOnEnd": "Avviso di fine sessione",
         "notifyOnEndHelp": "Notifica l'utente finale al termine della sessione.",
+        "allowUserEnd": "Consenti all’utente di terminare la sessione",
+        "allowUserEndHelp": "La persona al dispositivo può terminare la sessione dall’indicatore a schermo, dopo una conferma. Il tecnico vede «Terminata dall’utente».",
+        "allowUserEndNeedsIndicator": "Attiva l’indicatore di sessione attiva per consentire agli utenti di terminare una sessione.",
         "identityLevel": "Identità tecnico",
         "identityLevelHelp": "Quanto dell'identità del tecnico viene mostrato all'utente finale. Il nome dell'MSP viene sempre mostrato.",
         "identityNameEmail": "Nome ed email",
@@ -1184,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Abilita avvisi di scadenza garanzia",
         "generateAlertsWhenFixedTermDeviceWarranties": "Genera avvisi quando le garanzie dei dispositivi a termine fisso si avvicinano alla scadenza.",
         "warningThresholdDays": "Soglia di avviso (giorni)",
-        "generateAWarningAlertWhenWarrantyExpires": "Genera un avviso quando la garanzia scade entro questo numero di giorni.",
-        "criticalThresholdDays": "Soglia critica (giorni)",
-        "generateACriticalAlertWhenWarrantyExpires": "Genera un avviso critico quando la garanzia scade entro questo numero di giorni.",
+        "warnThresholdHelp": "Genera un avviso con gravità Info quando la garanzia scade entro questo numero di giorni.",
+        "urgentThresholdDays": "Soglia di urgenza (giorni)",
+        "urgentThresholdHelp": "Genera un avviso con gravità Bassa quando la garanzia scade entro questo numero di giorni. Una garanzia scaduta genera un avviso con gravità Media.",
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays",
@@ -1206,6 +1230,20 @@
         "title": "I dispositivi di questa policy genereranno avvisi doppi",
         "body": "Queste condizioni esistono sia come monitor collegato sia come regola o controllo legacy: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Gruppi di dispositivi (tutte le org.)",
+      "description": "Seleziona come destinazione un gruppo di dispositivi a livello di partner. Un’assegnazione di gruppo si applica a livello di gruppo di dispositivi e ha quindi precedenza sulle assegnazioni di altri criteri a livello di organizzazione e sito.",
+      "selectGroup": "Seleziona un gruppo di dispositivi",
+      "assign": "Assegna",
+      "remove": "Rimuovi",
+      "assigned": "Gruppo di dispositivi assegnato",
+      "removed": "Assegnazione del gruppo di dispositivi rimossa",
+      "failedToLoad": "Impossibile caricare i gruppi di dispositivi",
+      "failedToAssign": "Impossibile assegnare il gruppo di dispositivi",
+      "failedToRemove": "Impossibile rimuovere l’assegnazione del gruppo di dispositivi",
+      "empty": "Non ci sono ancora gruppi di dispositivi a livello di partner. Creane uno in Gruppi di dispositivi → Tutte le org.",
+      "loading": "Caricamento dei gruppi di dispositivi…"
     }
   },
   "software": {

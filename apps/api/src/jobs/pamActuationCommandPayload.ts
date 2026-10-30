@@ -11,7 +11,17 @@ export type PamApplyV2Payload = {
   expiresAt: string;
   serverTime: string;
   maxRemainingLifetimeMs: number;
+  /**
+   * #10190 W07: who approved it, for the end user's "Approved by
+   * {technician}". Present ONLY for a device reporting
+   * pamUserNotifyProtocolVersion >= 2: every older agent decodes this payload
+   * with DisallowUnknownFields and would refuse the apply.
+   */
+  decidedBy?: PamDecidedBy;
 };
+
+/** The technician an end user may see, per technician_identity_level; never an email. */
+export type PamDecidedBy = { technicianName: string | null };
 
 export type PamCleanupV2Payload = {
   protocolVersion: 2;
@@ -33,6 +43,8 @@ export type PamDispatchSnapshot = {
   targetHash: string | null;
   subjectUsername: string;
   expiresAt: Date | null;
+  /** Set only when the device can decode it (see PamApplyV2Payload.decidedBy). */
+  decidedBy?: PamDecidedBy;
 };
 
 export type PamCommandBuildResult =
@@ -84,6 +96,7 @@ export function buildPamActuationCommand(
       expiresAt: snapshot.expiresAt!.toISOString(),
       serverTime: serverTime.toISOString(),
       maxRemainingLifetimeMs: remainingMs,
+      ...(snapshot.decidedBy ? { decidedBy: { technicianName: snapshot.decidedBy.technicianName } } : {}),
     },
   };
 }

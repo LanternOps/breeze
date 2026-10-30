@@ -136,6 +136,7 @@ export * from './businessCalendars';
 export * from './ticketAttachments';
 export * from './ticketEmailLinks';
 export * from './ticketExternalRefs';
+export * from './alertExternalRefs';
 export * from './ticketLinks';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';
@@ -199,6 +200,7 @@ export * from './toolSources';
 export * from './flows';
 export * from './flowRuns';
 export * from './flowWebhooks';
+export * from './flowConversions';
 export * from './flowUsage';
 export * from './topology';
 

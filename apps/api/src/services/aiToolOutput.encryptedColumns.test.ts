@@ -37,6 +37,8 @@ vi.mock('../db', async (importOriginal) => {
   const db: Record<string, unknown> = {
     select,
     selectDistinct: select,
+    // The W06 conversion summary on manage_automations reads (#5221).
+    selectDistinctOn: (_on: unknown, fields?: Record<string, unknown>) => select(fields),
     insert: () => chain(null),
     update: () => chain(null),
     delete: () => chain(null),
@@ -54,8 +56,8 @@ vi.mock('../db', async (importOriginal) => {
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => 'event-1') }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitAlertStateFeedback: vi.fn(async () => undefined) }));
-vi.mock('../workers/webhookDelivery', () => ({
-  getWebhookWorker: () => ({ queueDelivery: vi.fn(async () => undefined) }),
+vi.mock('../jobs/webhookDeliveryQueue', () => ({
+  enqueueWebhookAttempt: vi.fn(async () => undefined),
 }));
 vi.mock('./mlFeatureFlags', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./mlFeatureFlags')>()),
@@ -71,6 +73,12 @@ const monitorService = vi.hoisted(() => ({
 vi.mock('./monitors/monitorService', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./monitors/monitorService')>()),
   ...monitorService,
+}));
+
+const tenantVariableService = vi.hoisted(() => ({ listTenantVariables: vi.fn() }));
+vi.mock('./tenantVariables', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./tenantVariables')>()),
+  ...tenantVariableService,
 }));
 
 const channelConfig = vi.hoisted(() => ({
@@ -98,6 +106,7 @@ import { registerMonitoringTools } from './aiToolsMonitoring';
 import { registerMonitorTools } from './aiToolsMonitors';
 import { registerAlertTools } from './aiToolsAlerts';
 import { registerFixMemoryTools } from './aiToolsFixMemory';
+import { registerTenantVariableTools } from './aiToolsTenantVariables';
 
 // ===========================================================================
 // Part 1 — registered columns whose name is specific enough to mask by name
@@ -227,7 +236,17 @@ const STORED_SECRET_COLUMNS: StoredSecretColumn[] = [
   { column: 'organizations.settings', table: 'organizations', fields: ['settings'], readers: [] },
   { column: 'partners.settings', table: 'partners', fields: ['settings'], readers: [] },
   { column: 'sites.settings', table: 'sites', fields: ['settings'], readers: [] },
-  { column: 'tenant_variables.value', table: 'tenantVariables', fields: ['value'], readers: [] },
+  {
+    column: 'tenant_variables.value',
+    table: 'tenantVariables',
+    fields: ['value'],
+    // Each returns rows carrying the value (decrypted for a plain row by the list).
+    accessors: ['listTenantVariables', 'createTenantVariable', 'updateTenantVariable', 'deleteTenantVariable'],
+    readers: [
+      // W13-D7: a secret row's value is never shown; a plain row's is (it is what the tool is for).
+      { file: 'services/aiToolsTenantVariables.ts', tools: ['manage_tenant_variables'], masking: 'presentTenantVariable' },
+    ],
+  },
   {
     column: 'backup_configs.provider_config',
     table: 'backupConfigs',
@@ -383,6 +402,7 @@ registerMonitoringTools(registry);
 registerMonitorTools(registry);
 registerAlertTools(registry);
 registerFixMemoryTools(registry);
+registerTenantVariableTools(registry);
 
 interface SentinelCase {
   name: string;
@@ -509,6 +529,17 @@ const SENTINEL_CASES: SentinelCase[] = [
     reached: '"disabled":true',
   },
   { name: 'manage_alerts list', tool: 'manage_alerts', input: { action: 'list' }, rows: [[{ count: 1 }], [networkMonitorAlert]] },
+  {
+    // The service nulls a secret value itself; this stands for a service that
+    // regressed and handed one back. The tool must still not show it.
+    name: 'manage_tenant_variables list',
+    tool: 'manage_tenant_variables',
+    input: { action: 'list' },
+    setup: () => tenantVariableService.listTenantVariables.mockResolvedValueOnce([{
+      id: ROW_ID, key: 'db_password', value: SENTINEL, isSecret: true, description: null, ownerScope: 'organization',
+      orgId: ORG, orgName: 'Org', partnerId: PARTNER, version: 1, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    }]),
+  },
 ];
 
 async function runCase(c: SentinelCase): Promise<{ raw: string; chat: string }> {

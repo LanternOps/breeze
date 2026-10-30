@@ -44,8 +44,8 @@ import { toolInputSchemas } from './aiToolSchemas';
 import { EVENT_TYPES } from './eventBus';
 import type { SubscriberId } from './eventSubscriberIds';
 import { FLOW_OWNED_REFERENCE_FIELDS, isRegisteredCoreTool, loadFlowCatalog, type FlowCatalog, type FlowCatalogEntry } from './flows/catalog';
-import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds } from './flows/ownedReferences';
-import { builtinStepTier, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
+import { findOwnedDeviceGroupIds, findOwnedDeviceIds, findOwnedScriptIds, type ScriptReadExecutor } from './flows/ownedReferences';
+import { builtinApprovalScope, builtinStepTier, fleetBuiltinReferences, isFlowToolName, validateBuiltinStep, validateNoticesChannel } from './flows/validateBuiltins';
 import {
   containsTemplate,
   escapePointerSegment,
@@ -57,7 +57,8 @@ import {
 } from './flows/validationIssues';
 import { guardrailCheckForTenantTool } from './toolSources/guardrails';
 import type { ToolOwnerRef } from './toolSources/resolver';
-import type { FlowPreApprovalBinding } from './flows/preApproval';
+import type { ActAssetPreApprovalBinding, FlowPreApprovalBinding } from './flows/preApproval';
+import { fleetBindingV1Schema } from './flows/fleetBindingSchema';
 
 // Re-exported: preApproval.ts and callers import it from here.
 export { containsTemplate };
@@ -65,6 +66,13 @@ export { containsTemplate };
 export interface FlowValidationContext {
   /** Only ever produced by resolveFlowOwnerForCaller or read from a stored flows row. */
   owner: ToolOwnerRef;
+  /**
+   * W06 (#5221) B3, the conversion switch only: read script OWNERSHIP through
+   * this executor (the switch's own transaction, which holds the scripts it
+   * generated) instead of a fresh system context. Every other read keeps its
+   * context; absent, validation is exactly as before.
+   */
+  scriptReadExecutor?: ScriptReadExecutor;
 }
 
 export type FlowDocumentValidation = FlowValidationResult & { document?: FlowDocumentV1 };
@@ -149,9 +157,17 @@ function coreStepTier(name: string, input: Record<string, unknown>, stepId: stri
 
 // ── main ───────────────────────────────────────────────────────────────────
 
+/**
+ * A step's source before the catalog lookup (and the whole answer when a
+ * structure error skips it). A bare name is `core` only when the core registry
+ * has it; anything else is `unknown`, never a guessed "Core tool" (#9937). A
+ * `slug__name` stays `tenant` here: without the catalog that is only its shape.
+ */
 function inferredSource(tool: string): FlowStepSummary['source'] {
   if (isFlowBuiltin(tool)) return 'builtin';
-  return tool.includes('__') ? 'tenant' : 'core';
+  if (isFlowToolName(tool)) return 'unknown';
+  if (tool.includes('__')) return 'tenant';
+  return isRegisteredCoreTool(tool) ? 'core' : 'unknown';
 }
 
 function result(issues: FlowIssue[], steps: FlowStepSummary[], document?: FlowDocumentV1): FlowDocumentValidation {
@@ -271,10 +287,15 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
       } else {
         // Same text for "not enabled", "another tenant's" and "nonexistent".
         issues.push(issue('tool_not_found', TOOL_NOT_FOUND_MESSAGE(step.tool), { stepId: step.id, pointer: `/steps/${i}/tool` }));
+        // The catalog has no such tool for this owner: no source to name (#9937).
+        source = 'unknown';
       }
     } else if (entry.source === 'builtin') {
       source = 'builtin';
-      issues.push(...await validateBuiltinStep(step, i, { owner, catalog }));
+      issues.push(...await validateBuiltinStep(step, i, {
+        owner, catalog, earlierSteps: document.steps.slice(0, i),
+        ...(ctx.scriptReadExecutor ? { scriptReadExecutor: ctx.scriptReadExecutor } : {}),
+      }));
       tier = builtinStepTier(step, catalog);
     } else if (entry.source === 'tenant') {
       source = 'tenant';
@@ -326,7 +347,10 @@ export async function validateFlowDocument(doc: unknown, ctx: FlowValidationCont
   // 8. Rule 6 — ownership, independent of approval mode. One message for
   // foreign and nonexistent alike.
   if (scriptRefs.length > 0) {
-    const ok = await findOwnedScriptIds(owner, scriptRefs.map((r) => r.id));
+    const ids = scriptRefs.map((r) => r.id);
+    const ok = ctx.scriptReadExecutor
+      ? await findOwnedScriptIds(owner, ids, { executor: ctx.scriptReadExecutor })
+      : await findOwnedScriptIds(owner, ids);
     for (const r of scriptRefs) {
       if (!ok.has(r.id)) issues.push(issue('reference_not_owned', 'This script is not available to the flow\'s owner.', { stepId: r.stepId, pointer: r.pointer }));
     }
@@ -397,13 +421,16 @@ export const flowStepPinSchema: z.ZodType<FlowStepPin> = z.union([
   }).strict(),
 ]);
 
-export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.object({
+const actAssetPreApprovalBindingSchema: z.ZodType<ActAssetPreApprovalBinding> = z.object({
   stepId: pinStepIdSchema,
   lane: z.literal('act_asset'),
   assetKind: z.literal('script'),
   scriptId: z.string().uuid(),
   contentDigest: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict();
+
+/** A stored binding: W04 act-asset, or the W06 fleet lane (`fleet_v1`, #5221). */
+export const flowPreApprovalBindingSchema: z.ZodType<FlowPreApprovalBinding> = z.union([actAssetPreApprovalBindingSchema, fleetBindingV1Schema]);
 
 /** Thrown by `stepPinsFor` for a step that does not resolve — only reachable for a document that is not valid. */
 export class FlowStepPinError extends Error {
@@ -419,7 +446,7 @@ function pinForEntry(step: FlowDocumentV1['steps'][number], entry: FlowCatalogEn
     // W5 (#5220, Decision 12): a Tier-3 built-in (an http_request write) parks
     // for one supervised approval, like a Tier-3 tenant tool.
     const tier = builtinStepTier(step, catalog);
-    return { stepId: step.id, tool: step.tool, source: 'builtin', tier, approvalScope: tier === 3 ? 'supervised' : null };
+    return { stepId: step.id, tool: step.tool, source: 'builtin', tier, approvalScope: tier === 3 ? builtinApprovalScope(step.tool, step.input) : null };
   }
   if (entry.source === 'tenant') {
     const tier = guardrailCheckForTenantTool(entry.descriptor).tier as 1 | 2 | 3;
@@ -503,7 +530,7 @@ export async function revalidateRenderedStep(
     const parsed = FLOW_BUILTIN_STEPS[entry.name].inputSchema.safeParse(rendered);
     if (!parsed.success) return { ok: false, code: 'input_invalid', message: zodMessage(parsed.error) };
     tier = builtinStepTier({ tool: entry.name, input: parsed.data as Record<string, unknown> }, catalog);
-    approvalScope = tier === 3 ? 'supervised' : null;
+    approvalScope = tier === 3 ? builtinApprovalScope(entry.name, parsed.data as Record<string, unknown>) : null;
   } else if (entry.source === 'tenant') {
     if (pin.source !== 'tenant' || entry.descriptor.id !== pin.tenantToolId || entry.descriptor.revision !== pin.tenantRevision) {
       return { ok: false, code: 'drift', message: 'This step\'s external tool changed since the flow was enabled.' };
@@ -534,14 +561,23 @@ export async function revalidateRenderedStep(
     return { ok: false, code: 'drift', message: 'This step\'s approval requirement changed since the flow was enabled.' };
   }
 
-  if (entry.source === 'core') {
+  if (entry.source === 'core' || entry.source === 'builtin') {
     const scriptIds: string[] = [];
     const groupIds: string[] = [];
     const deviceIds: string[] = [];
-    for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
-      (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+    if (entry.source === 'core') {
+      for (const [field, kind] of Object.entries(FLOW_OWNED_REFERENCE_FIELDS[pin.tool] ?? {})) {
+        (kind === 'script' ? scriptIds : groupIds).push(...renderedStrings(rendered[field]));
+      }
+      for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
+    } else {
+      // W6 (#5221): the fleet built-ins list their own references; groups and
+      // devices belong to the RUN org, the script to the owner.
+      for (const r of fleetBuiltinReferences(pin.tool, rendered)) {
+        if (typeof r.value !== 'string') continue;
+        (r.kind === 'script' ? scriptIds : r.kind === 'group' ? groupIds : deviceIds).push(r.value);
+      }
     }
-    for (const field of entry.deviceArgs) deviceIds.push(...renderedStrings(rendered[field]));
 
     const anyNotOwned = async (ids: string[], find: (ids: string[]) => Promise<Set<string>>): Promise<boolean> => {
       if (ids.length === 0) return false;

@@ -103,6 +103,8 @@ describe('invalidateDevicePolicyCaches', () => {
     expect(allDevicePolicyCacheKeys('x').sort()).toEqual([
       'helper:settings:v2:device:x', 'eventlog:settings:v2:device:x', 'hwmon:settings:v2:device:x',
       'monitoring:settings:v2:device:x', 'pam:settings:v2:device:x',
+      // #10190: born org-bound, so it has no legacy unbound key.
+      'prompt-identity:settings:v2:device:x',
       'helper:settings:device:x', 'eventlog:settings:device:x', 'hwmon:settings:device:x',
       'monitoring:settings:device:x', 'pam:settings:device:x',
       'timesync:settings:device:x', 'workloads:settings:device:x',

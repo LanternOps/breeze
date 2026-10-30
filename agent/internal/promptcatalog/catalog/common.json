@@ -100,6 +100,16 @@
       "it-IT": "{partner} · Messaggio",
       "pt-BR": "{partner} · Mensagem",
       "tr-TR": "{partner} · Mesaj"
+    },
+    "chrome.remoteReportDraft": {
+      "en": "Problem with remote session {sessionId}:",
+      "de-DE": "Problem mit der Remotesitzung {sessionId}:",
+      "es-419": "Problema con la sesión remota {sessionId}:",
+      "fr-FR": "Problème avec la session à distance {sessionId} :",
+      "fr-CA": "Problème avec la session à distance {sessionId} :",
+      "it-IT": "Problema con la sessione remota {sessionId}:",
+      "pt-BR": "Problema com a sessão remota {sessionId}:",
+      "tr-TR": "Uzak oturumla ilgili sorun ({sessionId}):"
     }
   }
 }

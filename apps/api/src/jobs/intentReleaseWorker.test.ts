@@ -1751,6 +1751,38 @@ describe('releaseApprovedIntent', () => {
       );
     });
 
+    it.each([
+      ['push', { action: 'push', provider: 'xero', invoiceId: '00000000-0000-4000-8000-0000000000a1' }],
+      ['push_bulk', { action: 'push_bulk', provider: 'xero', invoiceIds: ['00000000-0000-4000-8000-0000000000a1'] }],
+    ])('digest_required: manage_accounting_sync %s with no pinned digest fails before any recompute or execution', async (_n, args) => {
+      const intent = baseIntent({ actionName: 'manage_accounting_sync', arguments: args, argumentDigest: computeArgumentDigest(canonicalizeArguments(args)), effectDigest: null });
+      primeThroughRevalidation(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(effectDigestMock.computeEffectDigestForRelease).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'digest_required' }),
+      );
+    });
+
+    const STATUS_ARGS = { action: 'status', provider: 'xero' };
+    it('control: manage_accounting_sync status with a null digest does not fail on digest_required', async () => {
+      const intent = baseIntent({ actionName: 'manage_accounting_sync', arguments: STATUS_ARGS, argumentDigest: computeArgumentDigest(canonicalizeArguments(STATUS_ARGS)), effectDigest: null });
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).toHaveBeenCalledTimes(1);
+      for (const call of intentServiceMock.transitionIntent.mock.calls) {
+        expect(call[3]).not.toEqual(expect.objectContaining({ errorCode: 'digest_required' }));
+      }
+    });
+
     it('releases diagnose_connectivity with its topology AI preconditions resolved BEFORE the release context opens (review R1)', async () => {
       const digest = 'd'.repeat(64);
       const intent = baseIntent({ actionName: 'diagnose_connectivity', effectDigest: digest });
@@ -5996,7 +6028,7 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
 
       await releaseApprovedIntent(intent.id);
 
-      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth);
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth, undefined);
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(frame).toEqual({ runId: RUN_ID, chainDepth: 2 });
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -6063,6 +6095,30 @@ describe('releaseApprovedIntent — flow-origin intents (#5219)', () => {
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'tier_escalated' }),
       );
+    });
+
+    // W6 (#5221, Decision 5): the worker's digest recompute read the script
+    // for the FROZEN device list; that verified observation is what the
+    // fleet built-in dispatches from (W05 dropped it at this call).
+    it('parked release dispatches the frozen list: the verified snapshot reaches the built-in', async () => {
+      const FROZEN = { scriptId: '33333333-3333-4333-8333-333333333333', whenOffline: 'queue', deviceIds: ['aaaaaaaa-0000-4000-8000-000000000001'] };
+      const intent = flowIntent({
+        actionName: 'run_script_on_targets',
+        arguments: FROZEN,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(FROZEN)),
+        riskTier: 3,
+        effectDigest: 'a'.repeat(64),
+      } as Partial<ActionIntent>);
+      primeFlow(intent);
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      const context = { verifiedRunScript: { scriptRow: { id: FROZEN.scriptId }, snapshot: { script: { id: FROZEN.scriptId } }, scope: {} } };
+      effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'a'.repeat(64), context });
+      flowBuiltinReleaseMock.executeReleasedFlowBuiltin.mockResolvedValueOnce(JSON.stringify({ count: 1 }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(flowBuiltinReleaseMock.executeReleasedFlowBuiltin).toHaveBeenCalledWith(intent, flowAuth, context);
     });
   });
 });

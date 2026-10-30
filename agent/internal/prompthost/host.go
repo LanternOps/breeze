@@ -12,6 +12,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -31,6 +32,12 @@ type Deps struct {
 	Inbox  PromptInbox // optional
 	Clock  Clock       // optional; the system clock by default
 	Log    *slog.Logger
+	// Identity is the cached MSP identity sent in prompt_branding_sync
+	// (optional; nil = always {cleared:true}).
+	Identity IdentitySource
+	// OSLocale is the machine's UI language, the fallback for a renderer
+	// that reported none (optional; nil = en).
+	OSLocale func() string
 }
 
 // Host is the agent's prompt host. All methods are safe for concurrent use.
@@ -51,16 +58,30 @@ type Host struct {
 	clock Clock
 	log   *slog.Logger
 
+	identity IdentitySource
+	osLocale func() string
+
 	actionMu sync.Mutex
 	flushMu  sync.Mutex
 
 	mu        sync.Mutex
 	enabled   EnabledKinds
+	kinds     map[string]map[int]KindSpec // kinds this build constructs (RegisterKind)
 	prompts   map[string]*record
 	tombs     *tombstones
 	limiter   *cardLimiter
 	locked    map[uint32]bool
 	connected map[string]RendererSession // renderers awaiting replay at the next tick
+	// revFloor is the last rev of each closed prompt, kept for the
+	// tombstone TTL: a renderer drops any rev not greater than the last it
+	// applied for an id, also across a close, so a Reshowable prompt shown
+	// again continues its revs instead of restarting at 1.
+	revFloor map[string]revMark
+}
+
+type revMark struct {
+	rev uint64
+	at  time.Time
 }
 
 type deferReason int
@@ -93,7 +114,8 @@ type actionKey struct {
 type placement struct {
 	owner       Owner
 	path        Path
-	renderer    string // broker session id while on the prompt path
+	renderer    string         // broker session id while on the prompt path
+	role        ipc.HelperRole // that renderer's helper role
 	version     int
 	epoch       uint32
 	presented   bool
@@ -106,10 +128,17 @@ type placement struct {
 	sendFailed  bool // the last prompt_show never left; fall back at the next tick
 	legacyDone  bool
 	tried       map[string]bool
+	// locale is the catalog locale this placement's copy is rendered in
+	// (Prompt.Localize), fixed at each assignment ("" = not assigned yet).
+	locale promptcatalog.Locale
 }
 
 func (pl *placement) lease() ipc.PromptLease {
 	return ipc.PromptLease{RendererSession: pl.renderer, Epoch: pl.epoch}
+}
+
+func (pl *placement) info() PlacementInfo {
+	return PlacementInfo{Path: pl.path, RendererKey: pl.renderer, Role: pl.role, Presented: pl.presented}
 }
 
 // New builds a host with an empty kind registry and nothing enabled.
@@ -119,11 +148,15 @@ func New(deps Deps) *Host {
 		inbox:     deps.Inbox,
 		clock:     deps.Clock,
 		log:       deps.Log,
+		identity:  deps.Identity,
+		osLocale:  deps.OSLocale,
 		prompts:   map[string]*record{},
+		kinds:     map[string]map[int]KindSpec{},
 		tombs:     newTombstones(deps.Inbox),
 		limiter:   newCardLimiter(),
 		locked:    map[uint32]bool{},
 		connected: map[string]RendererSession{},
+		revFloor:  map[string]revMark{},
 	}
 	if h.clock == nil {
 		h.clock = systemClock{}
@@ -230,6 +263,10 @@ func (h *Host) Show(p Prompt) error {
 	}
 	rec := &record{p: p, show: p.Show, createdAt: now, results: map[actionKey]ipc.PromptActionResult{}}
 	rec.show.Rev = 1
+	if f, ok := h.revFloor[p.ID]; ok {
+		rec.show.Rev = f.rev + 1 // continue past the closed copy's last rev
+		delete(h.revFloor, p.ID)
+	}
 	h.prompts[p.ID] = rec
 	h.addMissingOwners(rec, now, ob)
 	h.persist(rec, now, ob)
@@ -307,16 +344,22 @@ func (h *Host) RendererConnected(r RendererSession) {
 }
 
 // RendererDisconnected starts the grace period for open decisions on that
-// renderer; non-decision prompts wait for a replay.
+// renderer; non-decision prompts wait for a replay. A NeverReask prompt on
+// it is lost at once: there is nothing to wait for, since it is never moved.
 func (h *Host) RendererDisconnected(sessionKey string) {
+	ob := &outbox{}
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	defer h.unlockAndFlush(ob)
 	now := h.clock.Now()
 	delete(h.connected, sessionKey)
-	for _, rec := range h.prompts {
+	for _, rec := range h.sortedRecords() {
 		for _, pl := range rec.placements {
 			if pl.path != PathPrompt || pl.renderer != sessionKey {
 				continue
+			}
+			if rec.neverReask() {
+				h.lose(rec, pl, now, ob, "renderer_gone")
+				break
 			}
 			if ipc.IsPromptDecision(rec.show.State, rec.show.Presentation) && !pl.listOnly {
 				pl.graceUntil = now.Add(assistDisconnectGrace)
@@ -353,8 +396,11 @@ func (h *Host) place(rec *record, pl *placement, now time.Time, ob *outbox, from
 }
 
 func (h *Host) choose(rec *record, pl *placement) Choice {
-	return selectRenderer(rec.p.Kind.Name, []int{rec.p.Kind.Version}, h.dir.Renderers(pl.owner), h.enabled, pl.tried, rec.p.Legacy != nil, rec.p.Headless != nil)
+	return selectRendererVia(rec.p.Kind.Name, []int{rec.p.Kind.Version}, rec.p.Roles, h.dir.Renderers(pl.owner), h.enabled, pl.tried, rec.p.Legacy != nil, rec.p.Headless != nil)
 }
+
+// neverReask: the kind or this prompt is never moved to another renderer.
+func (r *record) neverReask() bool { return r.p.Kind.NeverReask || r.p.NeverReask }
 
 func (h *Host) modalBusy(rec *record, o Owner) bool {
 	for _, other := range h.prompts {
@@ -373,11 +419,13 @@ func (h *Host) modalBusy(rec *record, o Owner) bool {
 // assign moves a placement onto the chosen path.
 func (h *Host) assign(rec *record, pl *placement, c Choice, now time.Time, ob *outbox, fromFallback bool) {
 	pl.path = c.Path
+	pl.locale = h.placementLocale(c)
 	pl.sendFailed = false
 	switch c.Path {
 	case PathPrompt:
 		pl.epoch++ // a new lease for every assignment; older leases are stale
 		pl.renderer = c.Renderer.Key
+		pl.role = c.Renderer.Role
 		pl.version = c.Version
 		pl.presented = false
 		pl.hidden = false
@@ -446,7 +494,7 @@ func (h *Host) wireShow(rec *record, pl *placement) ipc.PromptShow {
 		s.Presentation = ipc.PromptPresentationListOnly
 		s.Focus = ipc.PromptFocusNoActivate
 	}
-	return s
+	return h.localize(rec, s, pl.locale)
 }
 
 // wireTiming never restarts a budget: once a response window has started
@@ -487,6 +535,10 @@ func (h *Host) fence(rec *record, pl *placement, ob *outbox) {
 // fallback moves a placement off a renderer that failed it (render_failed,
 // a missed present budget, a failed send, or a renderer gone past its grace).
 func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
+	if rec.neverReask() {
+		h.lose(rec, pl, now, ob, why)
+		return
+	}
 	if pl.renderer != "" {
 		pl.tried[pl.renderer] = true
 	}
@@ -494,6 +546,59 @@ func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, w
 	h.fence(rec, pl, ob)
 	pl.graceUntil = time.Time{}
 	h.assign(rec, pl, h.choose(rec, pl), now, ob, true)
+}
+
+// lose ends a NeverReask prompt whose renderer failed it: the renderer is
+// fenced, the prompt withdrawn everywhere, and the domain told where it was
+// and whether it had been on screen. It is never moved or re-shown.
+func (h *Host) lose(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
+	info := pl.info()
+	h.log.Info("prompt renderer lost; the prompt is not asked again", "promptId", rec.show.PromptID, "kind", rec.show.Kind,
+		"owner", pl.owner.Key(), "renderer", pl.renderer, "presented", pl.presented, "reason", why)
+	h.fence(rec, pl, ob)
+	pl.path = PathNone
+	pl.graceUntil = time.Time{}
+	h.closeLocked(rec, ipc.PromptCloseWithdrawn, now, ob)
+	if cb := rec.p.OnRendererLost; cb != nil {
+		ob.call(func() { cb(info, why) })
+	}
+}
+
+// PlacementOf reports where o's copy of the open prompt id is (false when
+// the prompt is not open or o has no placement). A domain callback uses it
+// to learn which renderer answered.
+func (h *Host) PlacementOf(id string, o Owner) (PlacementInfo, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.prompts[id]
+	if rec == nil {
+		return PlacementInfo{}, false
+	}
+	for _, pl := range rec.placements {
+		if pl.owner.Key() == o.Key() {
+			return pl.info(), true
+		}
+	}
+	return PlacementInfo{}, false
+}
+
+// WithdrawUnplaced closes an open prompt as withdrawn if, and only if, no
+// renderer was ever assigned to it (it was held, or nothing could draw it),
+// and reports whether it did. It decides under the state lock, so a renderer
+// assigned and lost in between can never read as "never drawn": a caller may
+// then ask another way without asking twice. Unknown or closed prompts
+// (decided, or lost — their callbacks answer) return false.
+func (h *Host) WithdrawUnplaced(id string) bool {
+	ob := &outbox{}
+	h.mu.Lock()
+	rec := h.prompts[id]
+	if rec == nil || rec.everPrompt {
+		h.mu.Unlock()
+		return false
+	}
+	h.closeLocked(rec, ipc.PromptCloseWithdrawn, h.clock.Now(), ob)
+	h.unlockAndFlush(ob)
+	return true
 }
 
 func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) error {
@@ -512,10 +617,43 @@ func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) e
 	if err != nil {
 		return fmt.Errorf("prompthost: %w", err)
 	}
+	replace := patch.Presentation != nil || patch.Focus != nil || patch.Roles != nil
+	if patch.Presentation != nil {
+		merged.Presentation = *patch.Presentation
+	}
+	if patch.Focus != nil {
+		merged.Focus = *patch.Focus
+	}
+	if replace {
+		if err := ipc.ValidatePromptShow(merged); err != nil {
+			return fmt.Errorf("prompthost: %w", err)
+		}
+	}
 	merged.Lease = rec.show.Lease
 	rec.show = merged
+	if patch.NeverReask != nil {
+		rec.p.NeverReask = *patch.NeverReask
+	}
+	if patch.Roles != nil {
+		rec.p.Roles = append([]ipc.HelperRole{}, (*patch.Roles)...)
+	}
+	if replace {
+		// Placed again: fence every copy first (the old renderer must never
+		// see the new state), then the selector chooses under the new roles.
+		// Each placement gets a new lease and a full prompt_show.
+		for _, pl := range rec.placements {
+			h.fence(rec, pl, ob)
+			pl.tried = map[string]bool{}
+			pl.legacyDone = false
+		}
+		for _, pl := range rec.placements {
+			if pl.deferred == deferNone {
+				h.assign(rec, pl, h.choose(rec, pl), now, ob, false)
+			}
+		}
+	}
 	for _, pl := range rec.placements {
-		if pl.path != PathPrompt || pl.renderer == "" {
+		if replace || pl.path != PathPrompt || pl.renderer == "" {
 			continue
 		}
 		wu := u
@@ -523,6 +661,9 @@ func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) e
 		if wu.Timing != nil {
 			t := rec.wireTiming()
 			wu.Timing = &t
+		}
+		if patch.Relocalize {
+			h.relocalizeUpdate(rec, pl, &wu)
 		}
 		ob.send(pl.renderer, ipc.TypePromptUpdate, rec.show.Kind, rec.show.PromptID, nil, wu)
 	}
@@ -545,7 +686,10 @@ func (h *Host) closeLocked(rec *record, reason ipc.PromptCloseReason, now time.T
 		}
 	}
 	delete(h.prompts, rec.show.PromptID)
-	h.tombs.add(rec.show.PromptID, now, ob, h)
+	h.revFloor[rec.show.PromptID] = revMark{rev: rec.show.Rev, at: now}
+	if !rec.p.Reshowable || reason == ipc.PromptCloseResolved {
+		h.tombs.add(rec.show.PromptID, now, ob, h)
+	}
 	if h.inbox == nil || !rec.show.ListEntry.Persistent {
 		return
 	}
@@ -593,13 +737,19 @@ func (h *Host) persist(rec *record, now time.Time, ob *outbox) {
 	inbox := h.inbox
 	seen := map[string]bool{}
 	for _, pl := range rec.placements {
+		loc := pl.locale
+		if loc == "" {
+			// Held (locked session, busy modal) before any assignment: the
+			// entry still reads in the machine's language.
+			loc = h.SessionLocale(RendererSession{})
+		}
 		e := ListEntry{
 			ID:        listEntryID(rec.show.PromptID, pl.owner),
 			PromptID:  rec.show.PromptID,
 			OwnerKey:  pl.owner.PrincipalKey(),
 			ScopeID:   scope,
 			ExpiresAt: expires,
-			Show:      rec.show,
+			Show:      h.localize(rec, rec.show, loc),
 		}
 		if seen[e.ID] {
 			continue // one principal in two sessions: one entry
@@ -777,6 +927,12 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		offered = offered && hasNext
 	}
 	onAction, owner := rec.p.OnAction, pl.owner
+	if onAction == nil && rec.p.OnActionRenderer != nil {
+		withRole, role := rec.p.OnActionRenderer, pl.role
+		onAction = func(actionID string, from Owner) (ActionOutcome, error) {
+			return withRole(actionID, from, role)
+		}
+	}
 	if !offered || onAction == nil {
 		h.mu.Unlock()
 		if onAction == nil {
@@ -805,6 +961,7 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		h.mu.Unlock()
 		return invalid(slog.LevelDebug, "the domain refused a prompt action")
 	}
+	changed := outcome.Close != nil
 	if cur != nil {
 		patch := outcome.Patch
 		if patch == nil && hasNext && next != cur.show.State {
@@ -813,6 +970,8 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		if patch != nil {
 			if perr := h.applyPatch(cur, *patch, now, ob); perr != nil {
 				h.log.Warn("prompt action patch refused", "promptId", m.PromptID, "error", perr.Error())
+			} else {
+				changed = true
 			}
 		}
 		res.Rev = cur.show.Rev
@@ -821,7 +980,13 @@ func (h *Host) onAction(fromKey string, m ipc.PromptActionRequest) ipc.PromptAct
 		}
 	}
 	res.Result = ipc.PromptActionAccepted
-	rec.results[key] = res
+	// Remember the answer only for an action that changed the prompt (a
+	// decision): a duplicate of that click must not apply it twice. An
+	// action that leaves the prompt as it was (Open Settings) keeps the
+	// same rev, and the person may take it again.
+	if changed {
+		rec.results[key] = res
+	}
 	h.unlockAndFlush(ob)
 	h.log.Info("prompt action accepted", "promptId", m.PromptID, "action", m.ActionID, "via", m.Via, "renderer", fromKey)
 	return res
