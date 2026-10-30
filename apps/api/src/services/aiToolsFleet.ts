@@ -8,7 +8,7 @@
 
 import { ERROR_CODES } from '@breeze/shared';
 import { findPartnerGroupRefs } from './groupFilterRefs';
-import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_READ_ONLY_BODY } from './deviceGroupOwnership';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal, PARTNER_GROUP_AI_READ_ONLY_BODY } from './deviceGroupOwnership';
 import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { reportRunOwnerColumns } from './reportRunOwner';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -1890,7 +1890,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!existing || !groupReadable(existing)) return JSON.stringify({ error: 'Group not found or access denied' });
-        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
+        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Exact-device axis, beside the site check and never inside it (#6096 I2).
@@ -1922,7 +1922,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [existing] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!existing || !groupReadable(existing)) return JSON.stringify({ error: 'Group not found or access denied' });
-        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
+        if (existing.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
         // Exact-device axis (#6096 I2): the delete unmembers every device in the
@@ -1951,7 +1951,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
-        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
+        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
 
         const orgId = group.orgId;
         const deviceIdList = (input.deviceIds as string[]).slice(0, 100);
@@ -1992,7 +1992,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         const [group] = await db.select().from(deviceGroups).where(and(...conditions)).limit(1);
         if (!group || !groupReadable(group)) return JSON.stringify({ error: 'Group not found or access denied' });
-        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_READ_ONLY_BODY);
+        if (group.orgId === null) return JSON.stringify(PARTNER_GROUP_AI_READ_ONLY_BODY);
 
         const requestedIds = (input.deviceIds as string[]).slice(0, 100);
         // Only remove devices in the caller's site scope. Site is an app-layer

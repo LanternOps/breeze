@@ -1466,6 +1466,7 @@ async function assembleInlineSettings(
         collectCategories: row.collectCategories,
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
+        applicationProviders: row.applicationProviders ?? [],
         rateLimitPerHour: row.rateLimitPerHour,
       };
     }

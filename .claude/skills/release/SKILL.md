@@ -55,6 +55,24 @@ If migrations are listed, you're committing prod to those migrations the moment 
 2. **Rows a sweep left `BLOCKED` / `PARTIAL` for want of a live agent are run on the SSH lab rigs before tagging — not deferred to after the cut, and not left for a reporter to find.** Use the non-prod rigs (the second Windows Server VM and the lab-hyperv-host `lab-ubuntu-src` VM are lab-enrolled against a local stack; the first Windows VM and the Ubuntu KVM rig are prod-enrolled — leave those alone unless the row is about prod upgrade behaviour). Recipe: `pnpm wt-stack up` at the commit to be tagged → cross-compile the agent family from that commit (`GOOS=… CGO_ENABLED=0 go build -ldflags "-X main.version=<v>"`) → back up the rig's agent config → re-point `server_url` at the Mac's Tailscale/LAN address and re-enroll → run the rows → restore the config. Record results in the sweep doc.
 3. A row that still cannot be run (no hardware for it) is carried into the release body's known-gaps note with the exact prerequisite, by name.
 
+## Step 0.25 — macOS upgrade-in-place gate: no re-prompt, desktop still works
+
+**Why this gate exists.** Every macOS remote-desktop regression since September 2026 (#5953, #8058, #8390, #8755) broke the same promise: an agent update pushed to a Mac that *already* has Screen Recording granted must not show another permission prompt and must leave Breeze Remote Desktop working. Each fix was verified in isolation and the next build re-broke it, so partners pinned their fleets and treated every release as a beta. This step makes the promise an acceptance test. It is **not** a hand-install test — the whole point is the auto-update path.
+
+**The hardware problem is the gate.** We do not own Macs we can run this on: Todd's machines carry the installed prod agent (never run a lab agent on a host with the installed agent), and the video-lab MacBook Air is one Apple Silicon box. The Intel leg needs a **partner-donated host enrolled in our Tailscale lab** — offer it explicitly to any partner reporting a macOS regression (SemoTech's Intel Sequoia "Host B" on #5953 is the standing first candidate). Until a host exists for a leg, that leg goes into the release body's known-gaps note **by name** ("Intel macOS upgrade-in-place not verified: no Intel host in the lab") — it is never silently skipped.
+
+**Procedure, per leg (Intel, Apple Silicon), on the two newest macOS majors available:**
+1. Start state: the **previous promoted** agent + helper version installed via the normal pkg, enrolled against the lab stack (`pnpm wt-stack up` at the commit to be tagged), Screen Recording + Accessibility already granted, a desktop session known to connect. Record `breeze-desktop-helper probe` output (do not run it from Remote Terminal — the result is charged to whatever launched it, #5953).
+2. Promote the candidate version on the lab stack (`agent_versions` row change, same SQL as Step 6) and let the device **auto-update**. No hand install, no `kickstart`.
+3. Assert, in order, and paste the evidence into the sweep doc:
+   - **No TCC prompt** of any kind (Screen Recording, Accessibility, monthly acknowledgement) during the update, on the helper restart, or over the next 10 minutes idle. Watch the console session, not just logs.
+   - Helper startup probe reports `captureAccess=granted` / `canCapture=true` / `screenRecording=true`; the device page shows Screen Recording present and a helper version.
+   - A desktop session connects from the Viewer: video, pointer move, a typed string arrives with the right keys (modifier-latch family, #9595).
+   - `sqlite3` on the TCC DB shows the helper's grant still at `auth_value=2` — a grant that was re-created rather than kept means the signing identity changed, which is a packaging regression even if no prompt appeared.
+4. Any failure blocks the tag. Open an issue with the probe output, `codesign -dvv` of the installed helper, and the macOS build, and link it from the sweep doc.
+
+**Restore:** leave a partner-donated host on the promoted release, not a lab build, and tell the partner which version it runs.
+
 ## Step 0.3 — Dynamic security gates, at the exact commit you will tag
 
 Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
@@ -581,6 +599,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
 - [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
+- [ ] **macOS upgrade-in-place gate** (Step 0.25): previous version → candidate via auto-update on each Mac leg; no TCC prompt, `canCapture=true`, desktop connects — legs with no lab host named in the release body's known gaps
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
