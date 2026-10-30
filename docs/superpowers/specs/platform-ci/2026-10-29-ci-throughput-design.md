@@ -113,12 +113,20 @@ it judges:
    still run and report, but don't fail the job — **unless the change touches the test file
    or the source it covers**, in which case the test blocks as normal. Entries carry an
    issue number and expire (builder: e.g. 14 days).
-3. **Known offenders fixed, not just retried:** Tauri apt fallback (#9847, 19 ejections),
+3. **Stop cache thrash (root cause of the Tauri apt ejections).** On 2026-10-30 the repo
+   held 15.7 GB of Actions caches against GitHub's 10 GB limit, so eviction runs within
+   hours. ~9.5 GB of the 100 newest entries were `setup-go`, `setup-node` and buildkit
+   caches saved from merge-queue and PR refs — ref-scoped, so nothing else can ever restore
+   them. Meanwhile the Tauri apt cache seeded on main daily is evicted before use ("Cache
+   not found" in every sampled failure). Rule: PR and merge-queue jobs **restore only**;
+   caches are saved only from main by a seed workflow (generalising
+   `tauri-apt-cache-seed.yml`), since CI itself never runs on `push: main`.
+4. **Known offenders fixed, not just retried:** Tauri apt fallback (#9847, 19 ejections),
    Go agent timing tests (17), the UTC-midnight brief test, PaymentMethodsPage timeout.
-4. **Advisories don't block the queue.** `security-audit` blocks on PRs that change the
+5. **Advisories don't block the queue.** `security-audit` blocks on PRs that change the
    lockfile; in the queue it reports only. A scheduled daily audit on main files an issue for
    new advisories. A GHSA published mid-day no longer ejects every queued PR.
-5. **Shepherd auto re-enqueue (backstop).** The cron'd Claude session watches for
+6. **Shepherd auto re-enqueue (backstop).** The cron'd Claude session watches for
    ejections, reads the failed job, and re-enqueues when it's a ledger flake, infra or an
    advisory; otherwise it comments the cause on the PR (and can dispatch a fixer).
 
@@ -245,19 +253,22 @@ Targets are proposals, not claims.
 
 ## Waves (order matters: the safety pieces land before anything gets thinner)
 
-1. **W1 Trust boundary + flake defense:** required gate pinned outside the candidate
-   change (confirm mechanism first); base-revision policy; whole-shard retry-once; flaky
-   ledger/quarantine with touch-exemption; advisories non-blocking in the queue + daily
-   audit; Tauri apt and Go timing fixes. *Cuts ejections immediately; no change to what's
-   verified.*
-2. **W2 PR selection fixes:** install inputs as readers; path-read edges in the reader map;
+1. **W1 Flake defense + cache hygiene:** restore-only caches on PR/queue refs + main seed;
+   whole-shard retry-once (failed-package retry for Go); flaky ledger/quarantine with
+   touch-exemption (ledger read from base); new-findings-only advisory gates + main-side
+   issue. *Cuts ejections immediately; no change to what's verified.*
+2. **W2 Trust boundary:** required gate pinned outside the candidate change (needs an org
+   admin to confirm and configure the ruleset mechanism); base-revision policy; policy and
+   workflow edits force the full queue run. Must land before W5.
+3. **W3 PR selection fixes:** install inputs as readers; path-read edges in the reader map;
    protected floor file; `agent/**` area both directions (full rigor).
-3. **W3 Thin queue run, shadow:** provenance records on PR runs; `R`/`B`/`Δ`/`O`
+4. **W4 Thin queue run, shadow:** provenance records on PR runs; `R`/`B`/`Δ`/`O`
    computation, selection, the five fixtures plus same-file-overlap and docs-path-read
    fixtures, shadow logging.
-4. **W4 Thin queue run, enforced** after the shadow week.
-5. **W5 Shepherd v1:** auto re-enqueue, ledger upkeep, weekly metrics.
-6. **W6+ Refinements:** shard rebalancing, named integration suites, import-graph
+5. **W5 Thin queue run, enforced** after the shadow week.
+6. **W6 Shepherd v1:** auto re-enqueue, ledger upkeep, Go/agent flake fixes from the
+   ledger, weekly metrics.
+7. **W7+ Refinements:** shard rebalancing, named integration suites, import-graph
    selection, `CI Plan`.
 
 ## Left to the builder
