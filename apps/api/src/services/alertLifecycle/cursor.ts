@@ -1,5 +1,5 @@
 import { compareEvidence, maxEvidence, type EvidenceCursor } from '@breeze/shared';
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { alerts } from '../../db/schema';
 
@@ -107,6 +107,21 @@ export async function advanceOpenCursors(alertId: string, next: LeafCursors): Pr
     if (updated.length > 0) return true;
   }
   return false;
+}
+
+export async function advanceOpenRuleCursors(
+  ruleId: string,
+  deviceId: string,
+  next: LeafCursors,
+): Promise<boolean> {
+  if (Object.keys(next).length === 0) return false;
+  const [open] = await db.select({ id: alerts.id }).from(alerts).where(and(
+    eq(alerts.ruleId, ruleId),
+    eq(alerts.deviceId, deviceId),
+    inArray(alerts.status, [...OPEN_ALERT_STATUSES]),
+    isNull(alerts.subjectKey),
+  )).limit(1);
+  return open ? advanceOpenCursors(open.id, next) : false;
 }
 
 export function freezeRecoveryCursor(

@@ -14,7 +14,7 @@ vi.mock('../../db', () => ({ db: {
 } }));
 
 import {
-  readClosedCursors, readOpenCursors, mergeCursors, advanceOpenCursors,
+  readClosedCursors, readOpenCursors, mergeCursors, advanceOpenCursors, advanceOpenRuleCursors,
   contextWithCursorSql, freezeRecoveryCursor, resolveSideCursors,
 } from './cursor';
 
@@ -165,5 +165,30 @@ describe('cursor store', () => {
       .toEqual({ a: event(3), b: event(3) });
     expect(resolveSideCursors({}, ['a'])).toEqual({});
     expect(resolveSideCursors({ root: event(1) }, [])).toEqual({});
+  });
+});
+
+describe('advanceOpenRuleCursors', () => {
+  it('skips the query for empty watermarks', async () => {
+    expect(await advanceOpenRuleCursors('rule-1', 'device-1', {})).toBe(false);
+    expect(mocks.select).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when no open non-subject alert exists', async () => {
+    expect(await advanceOpenRuleCursors('rule-1', 'device-1', { root: event(2) })).toBe(false);
+    expect(mocks.update).not.toHaveBeenCalled();
+    const query = compile(mocks.readWhere.mock.calls[0][0]);
+    expect(query.sql).toContain('"alerts"."subject_key" is null');
+    expect(query.params).toEqual(['rule-1', 'device-1', 'active', 'acknowledged', 'suppressed']);
+    expect(mocks.limit).toHaveBeenCalledWith(1);
+  });
+
+  it('advances the matching open alert using the guarded cursor update', async () => {
+    mocks.limit.mockResolvedValueOnce([{ id: 'alert-1' }])
+      .mockResolvedValueOnce([row({ root: event(1) }, 'acknowledged')]);
+    expect(await advanceOpenRuleCursors('rule-1', 'device-1', { root: event(2) })).toBe(true);
+    expect(compile(mocks.readWhere.mock.calls[1][0]).params).toEqual(['alert-1']);
+    expect(compile(mocks.set.mock.calls[0][0].context).params)
+      .toEqual([JSON.stringify({ root: event(2) })]);
   });
 });
