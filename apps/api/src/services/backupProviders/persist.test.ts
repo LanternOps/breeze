@@ -181,7 +181,9 @@ describe('persistVendorSnapshot', () => {
     );
     const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
       customers: [vendorCustomer()],
-      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' })],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'v2' }),
+        vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
     });
     expect(counters.devices).toBe(0);
     expect(counters.unmappedDevices).toBe(2);
@@ -325,6 +327,52 @@ describe('persistVendorSnapshot', () => {
     expect(restamp).toContain('backup_provider_devices');
     expect(restamp).toContain(CONNECTION.id);
     expect(restamp).toContain('org_id');
+  });
+
+  it('persists SaaS workloads without counting them as customer or connection devices', async () => {
+    const { tx, calls } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }],
+        [{ id: 'p1', orgId: ORG }, { id: 'p2', orgId: ORG }, { id: 'p3', orgId: ORG }]],
+    );
+    const counters = await persistVendorSnapshot(tx as never, CONNECTION, {
+      customers: [vendorCustomer()],
+      devices: [vendorDevice(), vendorDevice({ vendorDeviceId: 'mail', accountType: 'm365' }),
+        vendorDevice({ vendorDeviceId: 'drive', accountType: 'gws' })],
+    });
+    expect(counters.devices).toBe(1);
+    const inserts = calls.filter((call) => call.kind === 'insert');
+    expect(inserts[0]!.payload).toMatchObject([{ deviceCount: 1 }]);
+    expect(inserts[1]!.payload).toHaveLength(3);
+    expect(inserts[2]!.payload).toHaveLength(3); // SaaS history remains evidence.
+  });
+
+  it.each([true, false])('counts three SaaS workloads for a Dropsuite customer (mapped=%s)', async (mapped) => {
+    vi.mocked(matchProviderDevices).mockResolvedValue({ linked: 2, ambiguous: 1 });
+    const { tx, calls } = makeTx(
+      [[], [{ id: 'c1', vendorCustomerId: 'vc1', orgId: mapped ? ORG : null }], []],
+      [[{ id: 'c1', vendorCustomerId: 'vc1' }], []],
+    );
+    const counters = await persistVendorSnapshot(tx as never, {
+      ...CONNECTION, provider: 'dropsuite', inventoryKind: 'saas',
+    }, {
+      customers: [vendorCustomer()],
+      devices: ['m365', 'm365', 'gws'].map((accountType, i) => vendorDevice({ accountType, vendorDeviceId: `w${i}` })),
+    });
+    expect(counters).toMatchObject({ devices: mapped ? 3 : 0, unmappedDevices: mapped ? 0 : 3, linked: 0, ambiguous: 0 });
+    expect(calls.find(call => call.kind === 'insert')?.payload).toMatchObject([{ deviceCount: 3 }]);
+  });
+
+  it('retains failed-customer SaaS workload counts for a SaaS connection', async () => {
+    const { tx } = makeTx([
+      [{ id: 'c1', vendorCustomerId: 'vc1' }],
+      [{ id: 'c1', vendorCustomerId: 'vc1', orgId: ORG }],
+      [{ id: 'p1', vendorDeviceId: 'mail', customerId: 'c1', accountType: 'm365' }],
+    ], []);
+    const counters = await persistVendorSnapshot(tx as never, {
+      ...CONNECTION, provider: 'dropsuite', inventoryKind: 'saas',
+    }, { customers: [vendorCustomer()], devices: [], failedCustomerIds: ['vc1'] });
+    expect(counters.devices).toBe(1);
   });
 
   it('returns the counters the connection card shows', async () => {

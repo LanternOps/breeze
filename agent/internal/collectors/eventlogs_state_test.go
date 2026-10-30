@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestWindowsStreamsRunnerPanicIsIsolated(t *testing.T) {
 	if len(got) != 2 || got[0].EventID != "1104:21" || got[1].EventID != "1104:22" {
 		t.Fatalf("healthy streams did not advance: %+v", got)
 	}
-	if bookmark := streamTestBookmark(t, c, "security"); bookmark != old || !c.failing["security"] {
+	if bookmark := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(bookmark, old) || !c.failing["security"] {
 		t.Fatalf("panicking stream advanced or was not marked failed: %+v", bookmark)
 	}
 	if !c.mu.TryLock() {
@@ -120,7 +121,7 @@ func TestWindowsStreamsRunnerPanicIsIsolated(t *testing.T) {
 		t.Fatal("collector configuration is unusable after panic")
 	}
 	c.collectWindowsStreams(func(_, _ string) ([]winEvent, error) { return nil, nil }, now)
-	if bookmark := streamTestBookmark(t, c, "security"); bookmark != (eventLogBookmark{RecordID: 10, Time: now}) || c.failing["security"] {
+	if bookmark := streamTestBookmark(t, c, "security"); !reflect.DeepEqual(bookmark, eventLogBookmark{RecordID: 10, Time: now}) || c.failing["security"] {
 		t.Fatalf("collector did not recover on next pass: %+v", bookmark)
 	}
 }

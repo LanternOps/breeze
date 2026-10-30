@@ -569,7 +569,9 @@
       "after": "liegt nach",
       "between": "liegt zwischen",
       "withinLast": "innerhalb der letzten",
-      "notWithinLast": "nicht innerhalb der letzten"
+      "notWithinLast": "nicht innerhalb der letzten",
+      "below": "niedriger als",
+      "atLeast": "mindestens"
     },
     "value": {
       "noValue": "Kein Wert erforderlich",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Entfernt"
-      }
+      },
+      "softwareName": "Softwarename",
+      "softwareVersion": "Softwareversion"
     }
   },
   "account": {

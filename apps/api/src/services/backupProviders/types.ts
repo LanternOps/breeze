@@ -93,6 +93,8 @@ export type ProviderTestResult =
 export interface BackupProviderAdapter {
   readonly key: string;
   readonly label: string;
+  /** Counter units for this connection; omitted means endpoint devices. */
+  readonly inventoryKind?: 'endpoint' | 'saas';
   /** Validates the credential blob BEFORE it is encrypted and stored. */
   readonly credentialsSchema: z.ZodTypeAny;
   readonly defaultBaseUrl?: string;

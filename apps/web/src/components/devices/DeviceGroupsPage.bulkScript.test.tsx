@@ -7,7 +7,8 @@ import DeviceGroupsPage from './DeviceGroupsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../stores/auth')>(),
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn(),
 }));

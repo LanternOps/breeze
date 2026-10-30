@@ -52,7 +52,7 @@ func powerEventSelection() string {
 func applicationProviderSelection(providers []string) string {
 	parts := make([]string, 0, len(providers))
 	for _, provider := range providers {
-		if strings.ContainsAny(provider, "'\"[]<>&") {
+		if !validApplicationProviderName(provider) {
 			continue
 		}
 		parts = append(parts, "@Name='"+provider+"'")

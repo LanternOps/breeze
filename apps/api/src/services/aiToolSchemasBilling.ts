@@ -2,7 +2,7 @@
  * Input schemas for the W14 PR A tools (full-control W14, #6784):
  * `manage_billing_profiles`, `manage_billing_settings`,
  * `manage_contract_templates`, `manage_contract_documents`,
- * `get_device_billing`.
+ * `get_device_billing`; and W14 PR B's `manage_accounting_sync`.
  *
  * Plain strict `z.object`s with an `action` enum (no top-level unions or
  * refinements) so `toolActionEnum` can read `.shape.action.options` and the
@@ -31,6 +31,15 @@ export const CONTRACT_TEMPLATE_ACTIONS = [
   'list', 'get', 'get_version', 'usage', 'create', 'update', 'create_version', 'publish', 'archive',
 ] as const;
 export const CONTRACT_DOCUMENT_ACTIONS = ['list', 'link'] as const;
+/** W14 PR B (#6784): `manage_accounting_sync`. No create_new, import, reconcile or connection lifecycle (PR B quorum). */
+export const ACCOUNTING_SYNC_ACTIONS = [
+  'status', 'owed_operations', 'customers', 'mappings', 'income_accounts', 'remote_candidates',
+  'link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk',
+] as const;
+/** The tool's own provider list (ACCOUNTING_PROVIDER_IDS in services/accounting/types.ts; parity-pinned in tests). */
+export const ACCOUNTING_PROVIDERS = ['quickbooks', 'xero'] as const;
+/** push_bulk pushes synchronously at release (QB5), so it is far below REST's 100. */
+export const ACCOUNTING_PUSH_BULK_MAX = 10;
 
 const uuid = z.string().uuid();
 const coverage = z.enum(['billable', 'included', 'non_billable']);
@@ -148,5 +157,17 @@ export const billingToolSchemas = {
 
   get_device_billing: z.object({
     deviceId: uuid,
+  }).strict(),
+
+  // W14 PR B (#6784).
+  manage_accounting_sync: z.object({
+    action: z.enum(ACCOUNTING_SYNC_ACTIONS),
+    provider: z.enum(ACCOUNTING_PROVIDERS),
+    entityType: z.enum(['org', 'catalog_item']).optional(),
+    entityId: uuid.optional(),
+    remoteEntityId: z.string().min(1).max(255).optional(),
+    q: z.string().max(255).optional(),
+    invoiceId: uuid.optional(),
+    invoiceIds: z.array(uuid).min(1).max(ACCOUNTING_PUSH_BULK_MAX).optional(),
   }).strict(),
 };
