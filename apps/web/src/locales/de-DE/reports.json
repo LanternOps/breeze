@@ -32,7 +32,8 @@
       "subtitle": "Einblicke in Ihre Flotte und Dienstleistungen",
       "title": "Analytik",
       "trend": {
-        "operationalHealth": "Betriebszustand"
+        "operationalHealth": "Betriebszustand",
+        "weekOf": "Woche vom {{date}}"
       },
       "widgets": {
         "alertTable": {
@@ -153,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Letzte 30 Tage",
       "downtime": "Ausfallzeit {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Wartungsfenster ausgeschlossen",
+        "maintenanceSkipped": "Wartungsfenster nicht ausgeschlossen: zu viele Geräte zum Prüfen",
+        "maintenanceUnavailable": "Wartungsfenster nicht ausgeschlossen: Status nicht verfügbar",
+        "none": "Keine Ausschlüsse",
+        "title": "Ausschlüsse",
+        "weekends": "Wochenenden ausgeschlossen"
+      },
       "incidents": "{{count}} Vorfälle",
+      "noDevices": "Noch keine Geräte gemessen",
       "status": {
         "atRisk": "In Gefahr",
         "breach": "Verstoß",
@@ -161,6 +171,34 @@
       },
       "targetUptime": "Ziel ist eine Betriebszeit von {{target}} %",
       "title": "SLA Compliance"
+    },
+    "slaEmptyState": {
+      "create": "SLA-Definition erstellen",
+      "created": "SLA-Definition erstellt",
+      "description": "Eine SLA-Definition legt das Verfügbarkeitsziel fest, an dem diese Registerkarte Ihre Geräte misst. Erstellen Sie eine, um die Einhaltung zu verfolgen.",
+      "errors": {
+        "create": "SLA-Definition konnte nicht erstellt werden"
+      },
+      "form": {
+        "cancel": "Abbrechen",
+        "excludeMaintenance": "Geräte im Wartungsfenster ausschließen",
+        "excludeWeekends": "Wochenenden ausschließen",
+        "measurementWindow": "Messzeitraum",
+        "name": "Bezeichnung",
+        "organization": "Organisation",
+        "scopeNote": "Misst alle Geräte der Organisation.",
+        "selectOrganization": "Organisation auswählen",
+        "submit": "Erstellen",
+        "uptimeTarget": "Verfügbarkeitsziel (%)",
+        "uptimeTargetInvalid": "Geben Sie einen Wert von 0 bis 100 ein.",
+        "windows": {
+          "daily": "Täglich",
+          "monthly": "Monatlich",
+          "weekly": "Wöchentlich"
+        }
+      },
+      "noPermission": "Bitten Sie einen Administrator mit Berechtigung zur Organisationsverwaltung, eine SLA-Definition zu erstellen.",
+      "title": "Noch keine SLA-Definition"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtern",

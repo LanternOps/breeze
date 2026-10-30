@@ -3,10 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rec = vi.hoisted(() => ({ events: [] as unknown[] }));
 vi.mock('../../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: (e: unknown) => rec.events.push(e) }));
+const sentry = vi.hoisted(() => ({ exceptions: [] as Array<{ err: unknown; options?: { fingerprint?: readonly string[] } }> }));
+vi.mock('../../sentry', () => ({
+  captureException: (err: unknown, _c?: unknown, _tags?: unknown, options?: { fingerprint?: readonly string[] }) => {
+    sentry.exceptions.push({ err, options });
+  },
+}));
 
 import { __resetGatewayAdaptersForTests, assertBoundModel, registerGatewayAdapter } from './adapter';
 import { closeModelGateway, getModelGateway, startModelGateway, type ModelGateway } from './server';
 import { createGrantStore, type GrantStore } from './grants';
+import { __resetGatewayFailureNotesForTests, takeGatewayFailureNote } from './failureNotes';
+import { translateChatStream } from './openai/translateStream';
 import { GATEWAY_MAX_REQUEST_BYTES } from './limits';
 import { GatewayError, type GatewayGrantInput } from './types';
 
@@ -251,6 +259,53 @@ describe('model gateway server', () => {
       await waitFor(() => grantRec.inFlight.size === 0);
     });
 
+    it('the idle cut is logged with connection, model, elapsed time and bytes streamed, and noted for the turn (#10591)', async () => {
+      stallingStream();
+      __resetGatewayFailureNotesForTests();
+      const warns: string[] = [];
+      vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+      store = createGrantStore();
+      gw2 = await startModelGateway(store, { idleTimeoutMs: 100 });
+      const { token } = gw2.grant({ ...grantInput, aiSessionId: 'sess-idle' });
+      const grantRec = store.lookup(token)!;
+      const res = await fetch(`http://127.0.0.1:${gw2.port()}/g/${token}/v1/messages`, { method: 'POST', body: JSON.stringify({ model: 'bound-model', messages: [{ role: 'user', content: 'PROMPT-CANARY' }] }) });
+      await expect(res.text()).rejects.toThrow();
+      await waitFor(() => grantRec.inFlight.size === 0);
+      const line = warns.find((w) => w.includes('idle timeout'));
+      expect(line).toBeDefined();
+      expect(line).toContain(`grant ${grantRec.id}, connection c1`);
+      expect(line).toContain('model "bound-model"');
+      expect(line).toMatch(/idle_ms 100\b/);
+      expect(line).toMatch(/elapsed_ms \d+/);
+      expect(line).toContain('bytes_streamed 22');
+      expect(line).toContain('waiting_on upstream');
+      expect(line).not.toContain('PROMPT-CANARY');
+      expect(takeGatewayFailureNote('sess-idle')).toMatch(/sent nothing for/);
+    });
+
+    it('a stream that only sends reasoning_content for longer than the idle window is not cut (#10591)', async () => {
+      const enc = new TextEncoder();
+      registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+        async handle() {
+          async function* upstream() {
+            for (let i = 0; i < 8; i += 1) {
+              await new Promise((r) => setTimeout(r, 50));
+              yield enc.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: 'hmm' }, finish_reason: null }] })}\n\n`);
+            }
+            yield enc.encode(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'answer' }, finish_reason: 'stop' }] })}\n\n`);
+            yield enc.encode('data: [DONE]\n\n');
+          }
+          const body = translateChatStream(upstream(), { model: 'bound-model', tools: { toOai: new Map(), fromOai: new Map(), schemas: new Map() },
+            messageId: 'msg_1', estimatedInputTokens: 1, keepaliveMs: 20 });
+          return { status: 200, headers: { 'content-type': 'text/event-stream' }, body };
+        } });
+      const { at } = await start({ idleTimeoutMs: 150 });
+      const res = await fetch(at('/v1/x'), { method: 'POST', body: '{}' });
+      const text = await res.text();
+      expect(text).toContain('"text":"answer"');
+      expect(text).toContain('event: message_stop');
+    });
+
     it('a client disconnect aborts the adapter signal and frees the slot', async () => {
       let signal: AbortSignal | null = null;
       registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
@@ -265,6 +320,24 @@ describe('model gateway server', () => {
       await waitFor(() => signal!.aborted);
       await waitFor(() => grantRec.inFlight.size === 0);
     });
+  });
+
+  it('an unhandled adapter error is reported to Sentry with the credential scrubbed (#10591)', async () => {
+    sentry.exceptions.length = 0;
+    __resetGatewayAdaptersForTests();
+    registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+      async handle() { throw new TypeError('boom with sk-secret-abcdef inside'); } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { token } = gw.grant(grantInput);
+    const res = await fetch(url(token, '/v1/x'), { method: 'POST', body: '{}' });
+    expect(res.status).toBe(502);
+    expect(sentry.exceptions).toHaveLength(1);
+    const reported = sentry.exceptions[0]!;
+    expect(String((reported.err as Error).message)).toContain('boom with');
+    expect(String((reported.err as Error).message)).not.toContain('sk-secret-abcdef');
+    expect(String((reported.err as Error).stack)).toContain('server.test.ts');
+    expect(String((reported.err as Error).stack)).not.toContain('sk-secret-abcdef');
+    expect(reported.options?.fingerprint).toEqual(['ai_model_gateway', 'unhandled_adapter_error']);
   });
 
   it('getModelGateway is a lazy singleton and closeModelGateway resets it', async () => {

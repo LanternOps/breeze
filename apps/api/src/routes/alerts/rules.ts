@@ -31,7 +31,7 @@ type RuleTargetAuth = {
   allowedSiteIds?: string[];
 };
 
-type RuleTargetRow = { id: string; orgId: string; siteId?: string | null };
+type RuleTargetRow = { id: string; orgId: string | null; siteId?: string | null };
 
 function persistedRuleTargets(rule: {
   targetType: string;

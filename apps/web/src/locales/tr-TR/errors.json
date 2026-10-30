@@ -30,5 +30,8 @@
   "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor",
   "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor.",
   "ACCESS_REVIEW_SELF_DECISION": "Kendi erişiminiz hakkında karar veremezsiniz — bu öğeyi başka bir yönetici incelemelidir",
-  "NO_UPDATES_PROVIDED": "Hiçbir değişiklik sağlanmadı"
+  "NO_UPDATES_PROVIDED": "Hiçbir değişiklik sağlanmadı",
+  "PARTNER_GROUP_TARGET_UNSUPPORTED": "İş ortağı çapındaki cihaz grupları yalnızca iş ortağı yapılandırma ilkeleri tarafından hedeflenebilir",
+  "PARTNER_GROUP_READ_ONLY": "İş ortağı çapındaki bu cihaz grubu burada değiştirilemez",
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "İş ortağı genelindeki cihaz grupları grup filtrelerinde kullanılamaz ve bu grupların filtreleri gruplara veya kuruluşlara başvuramaz"
 }

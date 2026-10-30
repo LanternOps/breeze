@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
+  buildScheduledRedriveScope,
+  SCHEDULED_REDRIVE_GRACE_MS,
   buildLeaseHeldCas,
   buildRecoveryClaimCas,
   buildUnresolvedScope,
@@ -33,6 +35,13 @@ describe('webhook delivery recovery predicates (compiled SQL)', () => {
   const now = new Date('2026-09-11T12:00:00.000Z');
 
   const atMs = (param: unknown) => new Date(param as string | number | Date).getTime();
+
+  it('scheduled scope is literal, grace-delayed and admits null due times', () => {
+    const { sql, params } = dialect.sqlToQuery(buildScheduledRedriveScope(now));
+    expect(sql).toBe(`("webhook_deliveries"."status" = 'scheduled' and ("webhook_deliveries"."next_retry_at" is null or "webhook_deliveries"."next_retry_at" <= $1))`);
+    expect(params).toHaveLength(1);
+    expect(atMs(params[0])).toBe(now.getTime() - SCHEDULED_REDRIVE_GRACE_MS);
+  });
 
   it('scopes candidates to unresolved, aged out, and not currently leased', () => {
     const { sql, params } = dialect.sqlToQuery(buildUnresolvedScope(now));

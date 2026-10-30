@@ -320,6 +320,16 @@ describe('contract line writers lock the contract row first (#3774)', () => {
     expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
   });
 
+  it('characterization: a group outside the contract org yields 400 without inserting', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([]);
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device_group', description: 'Servers', unitPrice: '10.00', taxable: false,
+      deviceGroupId: '11111111-1111-4111-8111-111111111111',
+    } as never, actor)).rejects.toMatchObject({ code: 'GROUP_NOT_IN_ORG', status: 400 });
+    expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
+  });
+
   it('maps the device-group composite FK violation through nested causes', async () => {
     queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
     queueResult([{ id: 'group-1', name: 'Servers', type: 'static', siteId: null }]);

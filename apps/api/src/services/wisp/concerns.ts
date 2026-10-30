@@ -535,3 +535,28 @@ export async function getConcernForCeiling(ceiling: GrantCeiling, id: string): P
   const [concern] = await selectWithRecipient(ceiling, and(visible, eq(wispConcerns.id, id))!, 1);
   return concern ?? null;
 }
+
+/**
+ * #10392: true only when the concern is visible to this ceiling, still live,
+ * and was raised by THIS grant (a chat raise_concern or this grant's own
+ * assessment). The chat gate uses it to let a snooze of Wisp's own loose ends
+ * run without an approval card; a concern raised by a person, another grant,
+ * or nobody (grant deleted → NULL) keeps the card, because parking it changes
+ * state other people see. (Resolve always keeps its card: it writes shared
+ * concern_outcome memory — wisp/selfStateTools.ts.)
+ */
+export async function isLiveConcernRaisedByGrant(ceiling: GrantCeiling, id: string): Promise<boolean> {
+  const visible = visibilityWhere(ceiling);
+  if (!visible) return false;
+  const [row] = await inSystemContext(() => db
+    .select({ id: wispConcerns.id })
+    .from(wispConcerns)
+    .where(and(
+      visible,
+      eq(wispConcerns.id, id),
+      eq(wispConcerns.raisedByGrantId, ceiling.grantId),
+      inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
+    ))
+    .limit(1));
+  return row !== undefined;
+}

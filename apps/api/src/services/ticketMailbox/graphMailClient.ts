@@ -48,6 +48,8 @@ export interface DeltaPage {
    * a large mailbox's first sync, advances across sweeps (#8400).
    */
   resumeLink?: string;
+  /** Why the round stopped early when `resumeLink` is set: the deadline passed, or the page cap was reached (#8308). */
+  resumeReason?: 'deadline' | 'page_cap';
 }
 
 function sleep(ms: number): Promise<void> {
@@ -66,12 +68,14 @@ function sleep(ms: number): Promise<void> {
 export const GRAPH_POLL_TIMEOUT_MS = 60_000;
 
 /**
- * Total time one mailbox's Graph work may take in one sweep: the delta read
- * across every page, 429 Retry-After sleep and retry, then the mark-read calls
- * (#8308). GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but
- * responsive Graph could otherwise hold the concurrency-1 sweep for many minutes.
- * The sweep computes one deadline from this and passes it to listInboxDelta and
- * markRead. When it is spent during the delta read after at least one page,
+ * Default deadline for listInboxDelta when the caller passes none: the delta read
+ * across every page plus 429 Retry-After sleep and retry (#8308).
+ * GRAPH_POLL_TIMEOUT_MS only bounds a single request, so a slow but responsive
+ * Graph could otherwise hold the concurrency-1 sweep for many minutes. The
+ * mailbox poll sweep does not use this value: it always passes its own shared
+ * pass deadline (GRAPH_POLL_PASS_BUDGET_MS in ticketMailboxPollWorker) to
+ * listInboxDelta and markRead, so changing this does not change production
+ * polling. Whichever deadline applies, when it is spent during the delta read after at least one page,
  * listInboxDelta returns the pages it read with a resumeLink (the next page's
  * URL); the caller processes them and stores the resumeLink as the cursor, so the
  * next sweep continues the round. A large first sync therefore finishes over
@@ -232,7 +236,7 @@ export async function listInboxDelta(
       // Budget spent after at least one page: hand back what was read and where
       // to continue (#8400). Before the first page there is nothing to keep.
       if (err instanceof GraphSweepBudgetError && pageNo > 0) {
-        return { messages, deltaLink: null, resumeLink: url };
+        return { messages, deltaLink: null, resumeLink: url, resumeReason: 'deadline' };
       }
       throw err;
     }
@@ -250,7 +254,7 @@ export async function listInboxDelta(
   }
 
   // Per-sweep page cap reached: continue the round next sweep, like a spent budget.
-  return { messages, deltaLink: null, resumeLink: url };
+  return { messages, deltaLink: null, resumeLink: url, resumeReason: 'page_cap' };
 }
 
 /**

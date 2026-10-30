@@ -76,6 +76,12 @@ async function renderLoaded(assetOverrides: Record<string, unknown> = {}) {
     if (url === `/discovery/assets/${ASSET_ID}`) {
       return Promise.resolve(makeJsonResponse({ data: { ...baseAsset, ...assetOverrides } }));
     }
+    if (url === `/monitoring/assets/${ASSET_ID}`) {
+      return Promise.resolve(makeJsonResponse({ collection: {
+        templateId: 'tpl-1', lastPolledAt: new Date(Date.now() - 120_000).toISOString(), pollingInterval: 300,
+        status: 'ok', consecutiveFailures: 0, oids: [],
+      }, snmpDevice: null }));
+    }
     return Promise.resolve(makeJsonResponse({ data: [] }));
   });
   render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
@@ -116,9 +122,9 @@ describe('NetworkDeviceDetailPage accessibility', () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('network-detail-ports')));
   });
 
-  it('moves focus to the Monitoring panel when the Last poll stat is used', async () => {
+  it('moves focus to the Monitoring panel when View OIDs is used', async () => {
     await renderLoaded();
-    await userEvent.click(screen.getByTestId('network-detail-stat-last-poll'));
+    await userEvent.click(await screen.findByTestId('network-detail-view-oids'));
     const panel = await screen.findByTestId('network-detail-monitoring');
     await waitFor(() => expect(document.activeElement).toBe(panel));
   });

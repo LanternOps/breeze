@@ -71,8 +71,8 @@ test.describe('network device page truth', () => {
     await expect(badge).not.toHaveText('Online');
     await expect(badge).not.toHaveText('Offline');
 
-    // The strip repeats the same sourced string, not a second phrasing.
-    await expect(page.statReachability()).toContainText('·');
+    // The verdict is stated once: the stat strip below the header does not repeat it.
+    await expect(authedPage.getByTestId('network-detail-stat-reachability')).toHaveCount(0);
   });
 
   test('Check now produces an inline result line, never a toast alone', async ({ authedPage }) => {

@@ -288,6 +288,7 @@ export default function WispThreadHeader({
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
           resetsAt={wisp.budgetResetsAt}
+          budgetMax={budgetMax}
           onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
       )}

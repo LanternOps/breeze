@@ -84,16 +84,23 @@ export type OpenSessionResult = 'focused' | 'opened' | 'tab_cap' | 'not_found' |
 
 function contextLabelOf(context: AiPageContext | null): string | null {
   if (!context) return null;
-  return context.type === 'device' ? context.hostname
-    : context.type === 'alert' ? context.title
-    : context.type === 'dashboard' ? (context.orgName ?? 'Dashboard')
-    : context.type === 'custom' ? context.label
-    : null;
+  switch (context.type) {
+    case 'device': return context.hostname;
+    case 'alert': return context.title;
+    case 'dashboard': return context.orgName ?? 'Dashboard';
+    case 'record': return context.label ?? i18n.t('ai:aiContextBadge.record');
+    case 'custom': return context.label;
+    case 'topology': return null;
+    default:
+      context satisfies never;
+      return null;
+  }
 }
 
 /** Chip fields and flags a tab takes from a hydrated session. */
 function sessionFieldsOf(view: AiSessionView): Partial<TabState> {
   return {
+    contextLabel: contextLabelOf(view.pageContext),
     orgId: view.orgId || null,
     deviceId: view.deviceId,
     deviceLabel: view.pageContext?.type === 'device' ? view.pageContext.hostname : null,
@@ -590,7 +597,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             ...createEmptyTab(view.title ?? undefined),
             sessionId,
             pageContext: view.pageContext,
-            contextLabel: contextLabelOf(view.pageContext),
             messages: result.messages,
             composerDraft: draft ?? '',
             ...sessionFieldsOf(view),
@@ -1150,7 +1156,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 void resolveTabWisp(tab.id);
                 return;
               }
-              updateTab(tab.id, { messages: result.messages, ...sessionFieldsOf(result.view) });
+              updateTab(tab.id, {
+                messages: result.messages,
+                ...sessionFieldsOf(result.view),
+                contextLabel: result.view.pageContext
+                  ? contextLabelOf(result.view.pageContext)
+                  : getTab(tab.id)?.contextLabel ?? null,
+              });
               await startTabAttach(tab.id).ready;
             })
           );

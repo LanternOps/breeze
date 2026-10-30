@@ -141,7 +141,11 @@ async function readAudit(id: string) {
 function withdraw(
   a: Agent,
   requestId: string,
-  opts: { reason?: 'user_denied' | 'user_timeout' | 'dialog_error'; ctxAgent?: Agent; deviceId?: string; declinedAt?: Date | null } = {},
+  opts: {
+    reason?: 'user_denied' | 'user_timeout' | 'dialog_error' | 'user_cancelled';
+    ctxAgent?: Agent; deviceId?: string; declinedAt?: Date | null;
+    renderer?: 'assist' | 'native' | 'headless' | null;
+  } = {},
 ) {
   const ctxAgent = opts.ctxAgent ?? a;
   return withDbAccessContext(agentContext(ctxAgent), () =>
@@ -151,6 +155,7 @@ function withdraw(
       requestId,
       reason: opts.reason ?? 'user_denied',
       agentDeclinedAt: opts.declinedAt === undefined ? new Date('2027-01-10T10:00:00.000Z') : opts.declinedAt,
+      ...(opts.renderer !== undefined ? { renderer: opts.renderer } : {}),
     }),
   );
 }
@@ -193,7 +198,19 @@ describe('withdrawElevationRequest (#8971)', () => {
     expect(row.withdrawnAt).toBeInstanceOf(Date);
     expect(result.kind === 'withdrawn' && result.withdrawnAt.getTime()).toBe(row.withdrawnAt!.getTime());
     expect(await readAudit(id)).toEqual([
-      { eventType: 'withdrawn', actor: 'end_user', details: { cause: 'user_denied', agent_declined_at: '2027-01-10T10:00:00.000Z' } },
+      { eventType: 'withdrawn', actor: 'end_user', details: { cause: 'user_denied', agent_declined_at: '2027-01-10T10:00:00.000Z', renderer: null } },
+    ]);
+  });
+
+  it('#10190 W07: user_cancelled is stored, and the renderer is recorded in the audit details', async () => {
+    const id = await seedRequest(agent);
+
+    const result = await withdraw(agent, id, { reason: 'user_cancelled', renderer: 'assist' });
+
+    expect(result).toMatchObject({ kind: 'withdrawn', replay: false });
+    expect((await readRequest(id)).withdrawnReason).toBe('user_cancelled');
+    expect(await readAudit(id)).toEqual([
+      { eventType: 'withdrawn', actor: 'end_user', details: { cause: 'user_cancelled', agent_declined_at: '2027-01-10T10:00:00.000Z', renderer: 'assist' } },
     ]);
   });
 
@@ -205,7 +222,7 @@ describe('withdrawElevationRequest (#8971)', () => {
     await withdraw(agent, error, { reason: 'dialog_error' });
 
     expect((await readRequest(timeout)).withdrawnReason).toBe('user_timeout');
-    expect((await readAudit(timeout))[0]?.details).toEqual({ cause: 'user_timeout', agent_declined_at: null });
+    expect((await readAudit(timeout))[0]?.details).toEqual({ cause: 'user_timeout', agent_declined_at: null, renderer: null });
     expect((await readRequest(error)).withdrawnReason).toBe('dialog_error');
   });
 

@@ -4282,7 +4282,7 @@
   {
     "path": "/features/warranty-tracking/",
     "title": "Warranty Tracking",
-    "description": "Configure warning and critical warranty expiry thresholds on configuration policies so Breeze raises alerts before device manufacturer warranties lapse.",
+    "description": "Configure warning and urgent warranty expiry thresholds on configuration policies so Breeze raises low-severity lifecycle alerts before device manufacturer warranties lapse.",
     "headings": [
       "Where warranty dates come from",
       "Configure in a policy",
