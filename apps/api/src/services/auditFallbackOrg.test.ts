@@ -210,3 +210,9 @@ describe('resolveFallbackOrgId — org owning a resource in the path', () => {
     error.mockRestore();
   });
 });
+
+
+it('a /devices/groups/<partnerGroupId> path resolves to null', async () => {
+  limit.mockResolvedValueOnce([{ orgId: null }]);
+  await expect(resolve(`/api/v1/devices/groups/${RESOURCE_ID}`, { auth: partnerAuth([ORG_A, ORG_B]) })).resolves.toBeNull();
+});

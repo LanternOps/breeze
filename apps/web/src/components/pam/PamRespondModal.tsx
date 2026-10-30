@@ -12,6 +12,12 @@ import { type ElevationRequest, FLOW_ICONS, FLOW_LABELS, requestTarget } from '.
 import { DialogHeader, ErrorAlert, btnGhostClass, inputClass } from './ui';
 import { RegisterApproverDeviceLink } from '../approvals/RegisterApproverDeviceLink';
 
+/** `currentStatus` from the respond route's 409 body (`{ success, error, currentStatus }`). */
+function conflictStatus(body: unknown): string | undefined {
+  const b = body as { currentStatus?: unknown } | null | undefined;
+  return typeof b?.currentStatus === 'string' ? b.currentStatus : undefined;
+}
+
 /**
  * True when the assertion ceremony failed because the technician has no
  * registered approver device (the challenge carried no allowCredentials), which
@@ -117,6 +123,10 @@ export default function PamRespondModal({
   const [settledOtherwise, setSettledOtherwise] = useState(false);
   const dismiss = settledOtherwise ? onActioned : onClose;
   const reasonId = useId();
+  const reasonHintId = `${reasonId}-hint`;
+  // The end user is told the deny reason only for a uac_intercept request (the
+  // server's pam_request_notify, #8928); for the other flows it is audit-only.
+  const reasonShownToUser = decision === 'deny' && request.flowType === 'uac_intercept';
   const durationId = useId();
   const titleId = useId();
   const reauthId = useId();
@@ -228,6 +238,10 @@ export default function PamRespondModal({
           defaultValue: 'Failed to {{decision}} request',
           decision,
         }),
+        // #8971: a withdrawn 409 gets its own inline message below; the
+        // server's generic "not pending" toast on top would say it twice.
+        suppressErrorToast: (status, _code, data) =>
+          status === 409 && conflictStatus(data) === 'withdrawn',
         // No success toast for a 200 that recorded a different outcome — the
         // error for it is raised below, once runAction has returned.
         successMessage: (data) =>
@@ -288,6 +302,17 @@ export default function PamRespondModal({
           if (!isFactorRejection(err.body)) return;
           if (rejectionToken(err.body) === 'reauth_required') setReauthRequested(true);
           setError(err.message);
+          return;
+        }
+        if (err.status === 409 && conflictStatus(err.body) === 'withdrawn') {
+          // #8971: the device user declined (or did not answer) and the agent
+          // withdrew the request first. Nothing is pending any more, so say so
+          // and keep submit disabled; dismissing refreshes the list.
+          const message = t('pamRespond.withdrawnConflict', {
+            defaultValue: 'The user withdrew this request on the device.',
+          });
+          setSettledOtherwise(true);
+          setError(message);
           return;
         }
         if (err.status === 409) {
@@ -492,14 +517,15 @@ export default function PamRespondModal({
 
         <div>
           <label htmlFor={reasonId} className="mb-1 block text-sm font-medium">
-            {decision === 'deny'
-              ? t('pamPamRespondModal.form.reasonRecommended', {
-                  defaultValue: 'Reason (recommended)',
+            {reasonShownToUser
+              ? t('pamPamRespondModal.form.reasonShownToUser', {
+                  defaultValue: 'Reason (shown to the user)',
                 })
               : t('pamPamRespondModal.form.reasonOptional', { defaultValue: 'Reason (optional)' })}
           </label>
           <textarea
             id={reasonId}
+            aria-describedby={reasonShownToUser ? reasonHintId : undefined}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             maxLength={2000}
@@ -510,6 +536,18 @@ export default function PamRespondModal({
               defaultValue: 'Recorded in the audit trail',
             })}
           />
+          {reasonShownToUser && (
+            <p
+              id={reasonHintId}
+              data-testid="pam-respond-reason-hint"
+              className="mt-1 text-xs text-muted-foreground"
+            >
+              {t('pamPamRespondModal.form.reasonShownToUserHint', {
+                defaultValue:
+                  'The end user sees this in their notification (first 500 characters).',
+              })}
+            </p>
+          )}
         </div>
 
         {error && (

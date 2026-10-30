@@ -258,6 +258,14 @@ describe('generateBackupStatusReport', () => {
     expect(vi.mocked(listBackupHealthRows).mock.calls[0]![0]).toEqual({ orgIds: [ORG_ID] });
   });
 
+  it.each(['m365', 'gws'] as const)('exports %s as SaaS with a workload label', async (accountType) => {
+    queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
+    vi.mocked(listBackupHealthRows).mockResolvedValueOnce({ rows: [row({ accountType, osType: 'unknown', dataSources: [accountType === 'm365' ? 'm365_mail' : 'gws_drive'] })], nextCursor: null });
+    vi.mocked(summarizeBackupHealth).mockResolvedValue(summary());
+    const result = await generateBackupStatusReport(ORG_ID, {}, authority());
+    expect(result.rows).toEqual([expect.objectContaining({ deviceType: 'saas', workload: accountType === 'm365' ? 'Microsoft 365 mail' : 'Google Drive' })]);
+  });
+
   it('projects a flat, spreadsheet-safe row for ReportResult.rows — dataSources joined, history28d omitted', async () => {
     queueOrgSelect([{ id: ORG_ID, name: 'Acme Legal' }]);
     const r = row({ key: 'a', dataSources: ['files', 'mssql'], history28d: [{ day: '2026-09-14', status: 'completed' }] });

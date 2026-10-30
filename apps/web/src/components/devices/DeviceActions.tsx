@@ -153,6 +153,10 @@ type DeviceActionsProps = {
   device: Device;
   onAction?: (action: string, device: Device, opts?: DeviceActionOptions) => void | Promise<void>;
   compact?: boolean;
+  /** Page-level secondary actions (e.g. the Wisp link) rendered in the same
+   *  wrapping row as the device actions, so they never sit in a separate column
+   *  that squeezes into a two-line button. */
+  extraActions?: ReactNode;
 };
 
 type ModalType =
@@ -414,6 +418,7 @@ export default function DeviceActions({
   device,
   onAction,
   compact = false,
+  extraActions,
 }: DeviceActionsProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
@@ -1078,15 +1083,21 @@ export default function DeviceActions({
             {offlineTitle}
           </p>
         )}
+        {/* Secondary page actions come after the primary + menu pair so the
+            primary keeps the first row to itself. */}
+        {extraActions}
       </div>
     );
   };
 
   return (
     <>
+      {/* Desktop row is right-aligned so a second row of buttons ends flush
+          with the first instead of leaving a ragged right edge beside the title. */}
       {isPhone ? renderPhoneRow() : (
-      <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2">
+      <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2 2xl:justify-end">
         {reasonSpans}
+        {extraActions}
         {/* When the device is offline, Wake is the one action that matters —
             promote it to the primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
