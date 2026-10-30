@@ -2748,6 +2748,38 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(getCaptured().settings.security.sessionTimeout).toBe(720);
     });
+
+    // #10081: the bounds come from @breeze/shared (securityLimits.ts), which the
+    // partner settings form validates with; the web maps these field paths back
+    // onto the form, so the path is part of the contract.
+    it.each([
+      ['minLength', 5],
+      ['minLength', 129],
+      ['sessionTimeout', 721],
+      ['maxSessions', 0],
+      ['expirationDays', -1],
+    ])('rejects security.%s = %s outside the shared bounds, keyed by its field path', async (key, value) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: {} });
+      mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { [key]: value } } });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(Object.keys(body.details.fieldErrors)).toEqual([`settings.security.${key}`]);
+    });
+
+    it('accepts the shared bounds themselves', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ security: {} });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { security: { minLength: 6, sessionTimeout: 720, maxSessions: 1, expirationDays: 0 } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.security).toMatchObject({ minLength: 6, sessionTimeout: 720, maxSessions: 1, expirationDays: 0 });
+    });
   });
 
   describe('PATCH /orgs/partners/me — emailSignature', () => {

@@ -936,7 +936,11 @@
     "allowlistPlaceholder": "Geben Sie pro Zeile eine IP oder einen CIDR-Bereich ein. Lassen Sie das Feld leer, damit jede Organisation entscheiden kann.",
     "allowlistHelp": "Lassen Sie das Feld leer, damit jede Organisation individuell konfigurieren kann. Verwenden Sie die CIDR-Notation für Bereiche. Erfordert einen konfigurierten Reverse-Proxy, damit der API echte Client-IPs sehen kann.",
     "ipListed": "Ihre IP ({{ip}}) wird aufgelistet",
-    "addCurrentIp": "Meine aktuelle IP hinzufügen ({{ip}})"
+    "addCurrentIp": "Meine aktuelle IP hinzufügen ({{ip}})",
+    "errors": {
+      "range": "Geben Sie eine ganze Zahl von {{min}} bis {{max}} ein.",
+      "atLeast": "Geben Sie eine ganze Zahl ab {{min}} ein."
+    }
   },
   "partnerNotifications": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -1116,6 +1120,7 @@
     },
     "saved": "Partnereinstellungen gespeichert",
     "saveFailed": "Einstellungen konnten nicht gespeichert werden",
+    "fieldRejected": "Einstellungen nicht gespeichert. Korrigieren Sie das markierte Feld und speichern Sie erneut.",
     "permissionDenied": "Sie sind nicht berechtigt, die Partnereinstellungen anzuzeigen",
     "fetchFailed": "Partnereinstellungen konnten nicht abgerufen werden",
     "genericError": "Es ist ein Fehler aufgetreten",

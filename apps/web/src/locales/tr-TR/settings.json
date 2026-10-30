@@ -936,7 +936,11 @@
     "allowlistPlaceholder": "Her satıra bir IP veya CIDR aralığı girin. Her kuruluşun karar vermesine izin vermek için boş bırakın.",
     "allowlistHelp": "Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için boş bırakın. Aralıklar için CIDR gösterimini kullanın. API'nin gerçek istemci IP'lerini görebilmesi için yapılandırılmış bir ters proxy gerektirir.",
     "ipListed": "IP ({{ip}}) numaranız listelendi",
-    "addCurrentIp": "Mevcut IP ({{ip}}) numaramı ekle"
+    "addCurrentIp": "Mevcut IP ({{ip}}) numaramı ekle",
+    "errors": {
+      "range": "{{min}} ile {{max}} arasında bir tam sayı girin.",
+      "atLeast": "{{min}} veya daha büyük bir tam sayı girin."
+    }
   },
   "partnerNotifications": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
@@ -1116,6 +1120,7 @@
     },
     "saved": "İş ortağı ayarları kaydedildi",
     "saveFailed": "Ayarlar kaydedilemedi",
+    "fieldRejected": "Ayarlar kaydedilmedi. Vurgulanan alanı düzeltip yeniden kaydedin.",
     "permissionDenied": "İş ortağı ayarlarını görüntüleme izniniz yok",
     "fetchFailed": "İş ortağı ayarları getirilemedi",
     "genericError": "Bir hata oluştu",

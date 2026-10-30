@@ -936,7 +936,11 @@
     "allowlistPlaceholder": "Digite um IP ou intervalo CIDR por linha. Deixe em branco para cada organização decidir.",
     "allowlistHelp": "Deixe em branco para cada organização configurar individualmente. Use a notação CIDR para intervalos. Requer um proxy reverso configurado para a API ver os IPs reais dos clientes.",
     "ipListed": "Seu IP ({{ip}}) está na lista",
-    "addCurrentIp": "Adicionar meu IP atual ({{ip}})"
+    "addCurrentIp": "Adicionar meu IP atual ({{ip}})",
+    "errors": {
+      "range": "Insira um número inteiro de {{min}} a {{max}}.",
+      "atLeast": "Insira um número inteiro igual ou maior que {{min}}."
+    }
   },
   "partnerNotifications": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -1116,6 +1120,7 @@
     },
     "saved": "Configurações do parceiro salvas",
     "saveFailed": "Falha ao salvar as configurações",
+    "fieldRejected": "Configurações não salvas. Corrija o campo destacado e salve novamente.",
     "permissionDenied": "Você não tem permissão para ver as configurações do parceiro",
     "fetchFailed": "Falha ao buscar as configurações do parceiro",
     "genericError": "Ocorreu um erro",

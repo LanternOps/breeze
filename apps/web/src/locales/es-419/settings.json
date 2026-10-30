@@ -936,7 +936,11 @@
     "allowlistPlaceholder": "Ingrese un rango IP o CIDR por línea. Déjelo en blanco para que cada organización decida.",
     "allowlistHelp": "Déjelo en blanco para permitir que cada organización configure individualmente. Utilice la notación CIDR para rangos. Requiere un proxy inverso configurado para que API pueda ver las IP de los clientes reales.",
     "ipListed": "Su IP ({{ip}}) está en la lista",
-    "addCurrentIp": "Agregar mi IP actual ({{ip}})"
+    "addCurrentIp": "Agregar mi IP actual ({{ip}})",
+    "errors": {
+      "range": "Ingresa un número entero de {{min}} a {{max}}.",
+      "atLeast": "Ingresa un número entero de {{min}} o más."
+    }
   },
   "partnerNotifications": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
@@ -1116,6 +1120,7 @@
     },
     "saved": "Configuración de socio guardada",
     "saveFailed": "No se pudo guardar la configuración",
+    "fieldRejected": "No se guardó la configuración. Corrige el campo resaltado y vuelve a guardar.",
     "permissionDenied": "No tiene permiso para ver la configuración de socios",
     "fetchFailed": "No se pudo recuperar la configuración del socio",
     "genericError": "Se produjo un error",
