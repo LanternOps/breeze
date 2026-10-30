@@ -705,12 +705,13 @@ export async function updateContact(
   // Legacy compatibility adapter (spec §7.4/§8.3): either half of the legacy
   // shape (`siteId` + `roles`) is applied to `contact_roles` in this same
   // transaction. A re-pin re-scopes the legacy-derived assignments to the new
-  // Site; it must run before the billing re-projection below, which reads them.
+  // Site and an un-pin widens them back to Organization; it must run before the billing re-projection below, which reads them.
   if (patch.roles !== undefined || patch.siteId !== undefined) {
     await syncLegacyContactRoles(exec, {
       contactId,
       orgId,
       siteId: updated.siteId,
+      previousSiteId: current.siteId,
       roles: updated.roles,
     });
   }

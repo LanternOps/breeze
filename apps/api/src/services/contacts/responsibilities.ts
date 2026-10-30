@@ -95,8 +95,9 @@ async function replaceCanonicalSet(
  *   - Device Group  => never touched by a re-pin; a legacy writer has no
  *                      authority over them (§8.4).
  *
- * Un-pinning (site_id back to NULL) deliberately does not widen anything yet:
- * it is held for an explicit decision, see the PR discussion.
+ * Un-pinning (site_id back to NULL) is the inverse derivation (§7.4): the
+ * kept roles held at the previously pinned Site (`previousSiteId`) move back to
+ * Organization scope. Rows at other Sites and Device Group rows are never touched.
  *
  * `contacts.roles[]` is then re-projected from the resulting canonical set.
  */
@@ -106,6 +107,8 @@ export async function syncLegacyContactRoles(
     contactId: string;
     orgId: string;
     siteId: string | null;
+    /** The pin before this write; only an un-pin reads it. */
+    previousSiteId?: string | null;
     roles: readonly ContactRole[] | readonly string[] | null | undefined;
   },
 ): Promise<void> {
@@ -158,6 +161,31 @@ export async function syncLegacyContactRoles(
       for (const role of staleRoles) {
         if (atPinnedSite.has(role)) continue;
         inserts.push({ role, isPrimary: stale.some((row) => row.role === role && row.isPrimary) });
+      }
+    }
+  }
+
+  if (input.siteId === null && input.previousSiteId) {
+    // Un-pin: kept roles the pin scoped to the previous Site go back to
+    // Organization. A role already held at Organization is deduplicated (the
+    // Site row is dropped) rather than violating the unique scope index.
+    const previous = input.previousSiteId;
+    const atPreviousSite = existing.filter((row) =>
+      desired.has(row.role) && row.deviceGroupId === null && row.siteId === previous);
+    const widenRoles = [...new Set(atPreviousSite.map((row) => row.role))];
+    if (widenRoles.length > 0) {
+      await exec.delete(contactRoles).where(and(
+        owned,
+        inArray(contactRoles.role, widenRoles),
+        isNull(contactRoles.deviceGroupId),
+        eq(contactRoles.siteId, previous),
+      ));
+      const atOrganization = new Set(existing
+        .filter((row) => row.siteId === null && row.deviceGroupId === null)
+        .map((row) => row.role));
+      for (const role of widenRoles) {
+        if (atOrganization.has(role)) continue;
+        inserts.push({ role, isPrimary: atPreviousSite.some((row) => row.role === role && row.isPrimary) });
       }
     }
   }

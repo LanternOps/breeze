@@ -101,8 +101,8 @@ function assignment(input: Partial<{
 }
 
 describe('syncLegacyContactRoles', () => {
-  const sync = (f: ReturnType<typeof makeExec>, siteId: string | null, roles: string[]) =>
-    syncLegacyContactRoles(f.exec, { contactId: CONTACT, orgId: ORG, siteId, roles });
+  const sync = (f: ReturnType<typeof makeExec>, siteId: string | null, roles: string[], previousSiteId?: string | null) =>
+    syncLegacyContactRoles(f.exec, { contactId: CONTACT, orgId: ORG, siteId, previousSiteId, roles });
 
   it('create: adds each distinct role at Organization scope for an unpinned contact', async () => {
     const f = makeExec([[]]);
@@ -180,7 +180,37 @@ describe('syncLegacyContactRoles', () => {
     expect(where.params).toEqual(expect.arrayContaining([SITE]));
   });
 
-  it('un-pin does not widen existing Site-scoped assignments', async () => {
+  it('un-pin: moves roles at the previous Site back to Organization and keeps their primacy', async () => {
+    const f = makeExec([[{ role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: true }]]);
+    await sync(f, null, ['billing'], SITE);
+    expect(f.deletes).toHaveLength(1);
+    const where = compile(f.deletes[0]!.where);
+    expect(where.sql).toMatch(/"device_group_id" is null/);
+    expect(where.params).toEqual(expect.arrayContaining([CONTACT, ORG, 'billing', SITE]));
+    expect(f.inserts[0]!.values).toEqual([
+      { contactId: CONTACT, orgId: ORG, role: 'billing', isPrimary: true, siteId: null, deviceGroupId: null },
+    ]);
+    expect(f.updates.at(-1)!.values.roles).toEqual(['billing']);
+  });
+
+  it('un-pin: leaves other Sites and Device Group rows alone and deduplicates a role already at Organization', async () => {
+    const OTHER = '88888888-8888-4888-8888-888888888888';
+    const f = makeExec([[
+      { role: 'admin', siteId: OTHER, deviceGroupId: null, isPrimary: false },
+      { role: 'technical', siteId: null, deviceGroupId: GROUP, isPrimary: false },
+      { role: 'technical', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'billing', siteId: SITE, deviceGroupId: null, isPrimary: false },
+      { role: 'billing', siteId: null, deviceGroupId: null, isPrimary: false },
+    ]]);
+    await sync(f, null, ['admin', 'technical', 'billing'], SITE);
+    expect(f.inserts[0]!.values.map((v) => [v.role, v.siteId])).toEqual([['technical', null]]);
+    const where = compile(f.deletes.at(-1)!.where);
+    expect(where.params).toEqual(expect.arrayContaining([SITE]));
+    expect(where.params).not.toContain(OTHER);
+    expect(where.params).not.toContain('admin');
+  });
+
+  it('un-pin without a previous Site does not touch Site-scoped assignments', async () => {
     const f = makeExec([[{ role: 'admin', siteId: SITE, deviceGroupId: null, isPrimary: false }]]);
     await sync(f, null, ['admin']);
     expect(f.deletes).toHaveLength(0);

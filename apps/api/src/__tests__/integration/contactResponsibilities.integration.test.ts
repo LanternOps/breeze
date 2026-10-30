@@ -177,6 +177,48 @@ describe('contact_roles migration and tenancy contracts (#8087)', () => {
     expect(await billingEmail()).toBeNull();
   });
 
+  runDb('legacy un-pin widens the previous Site roles back to Organization and restores organizations.billing_contact', async () => {
+    const testDb = getTestDb();
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const otherSite = await createSite({ orgId: org.id });
+    const [group] = await testDb.insert(deviceGroups).values({ orgId: org.id, name: `G-${randomUUID()}`, type: 'static' }).returning();
+    const [contact] = await testDb.insert(contacts).values({
+      orgId: org.id, name: 'Billing', email: 'bill@example.test', siteId: site.id, roles: ['billing', 'technical', 'admin'], isPrimary: false,
+    }).returning();
+    await testDb.insert(contactRoles).values([
+      { contactId: contact!.id, orgId: org.id, role: 'billing', siteId: site.id },
+      { contactId: contact!.id, orgId: org.id, role: 'technical', siteId: site.id },
+      // already at Organization: the Site row must be dropped, not duplicated
+      { contactId: contact!.id, orgId: org.id, role: 'admin', siteId: site.id },
+      { contactId: contact!.id, orgId: org.id, role: 'admin', siteId: null },
+      // not the previous pin / not Site-derived: untouched
+      { contactId: contact!.id, orgId: org.id, role: 'technical', siteId: otherSite.id },
+      { contactId: contact!.id, orgId: org.id, role: 'technical', deviceGroupId: group!.id },
+    ]);
+    const ctx = orgContext(org.id, partner.id);
+    const billingEmail = async () =>
+      ((await testDb.select().from(organizations).where(eq(organizations.id, org.id)))[0]!.billingContact as { email?: string } | null)?.email ?? null;
+    expect(await billingEmail()).toBeNull();
+
+    await withDbAccessContext(ctx, () =>
+      updateContact(db, contact!.id, org.id, { siteId: null }, { userId: null }));
+
+    const rows = await testDb.select().from(contactRoles).where(eq(contactRoles.contactId, contact!.id));
+    expect(rows).toHaveLength(5);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'billing', siteId: null, deviceGroupId: null }),
+      expect.objectContaining({ role: 'technical', siteId: null, deviceGroupId: null }),
+      expect.objectContaining({ role: 'admin', siteId: null, deviceGroupId: null }),
+      expect.objectContaining({ role: 'technical', siteId: otherSite.id, deviceGroupId: null }),
+      expect.objectContaining({ role: 'technical', siteId: null, deviceGroupId: group!.id }),
+    ]));
+    expect(rows.filter((row) => row.role === 'admin')).toHaveLength(1);
+    // billingContactWhere (contact_roles) and holdsOrgBillingRole (contacts) agree again.
+    expect(await billingEmail()).toBe('bill@example.test');
+  });
+
   runDb('legacy roles patch preserves a Device Group assignment and adds new roles at the pin-derived scope', async () => {
     const testDb = getTestDb();
     const f = await seedTwoOrgs();

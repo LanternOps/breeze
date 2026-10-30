@@ -695,7 +695,21 @@ describe('updateContact writes only what the patch names', () => {
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
     // legacy re-pin: the adapter re-derives scope from the new pin (spec §7.4/§8.3)
     expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(expect.anything(), {
-      contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'],
+      contactId: CONTACT, orgId: ORG, siteId: SITE, previousSiteId: null, roles: ['admin'],
+    });
+  });
+
+  it('passes the previous pin to the adapter when a legacy siteId patch un-pins the contact', async () => {
+    const stored = { ...PLAIN_ORG_ROW, siteId: SITE, isPrimary: false, roles: ['billing'] };
+    const updated = { ...stored, siteId: null };
+    const { exec } = makeExec([
+      [stored],          // getContact
+      [],                // organization pre-lock
+      [stored],          // locked target re-read
+    ], { updateReturns: [[updated]] });
+    await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(expect.anything(), {
+      contactId: CONTACT, orgId: ORG, siteId: null, previousSiteId: SITE, roles: ['billing'],
     });
   });
 
@@ -705,7 +719,7 @@ describe('updateContact writes only what the patch names', () => {
     await updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR);
     expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(
       exec,
-      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, previousSiteId: SITE, roles: ['admin'] },
     );
   });
 
