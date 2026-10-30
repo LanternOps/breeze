@@ -10,7 +10,7 @@ import {
   type PortalSectionKey,
 } from '../../routes/portal/featureFlags';
 import { portalDashboardTicketScope } from '../../routes/portal/ticketReadAccess';
-import { backupOverview } from './backupReadModel';
+import { backupOverview, backupSaasWorkloads } from './backupReadModel';
 import { dashboardForOrg } from './dashboard';
 import { documentsForOrg } from './documentsReadModel';
 import { listPortalRuns } from './reportsSelfService';
@@ -136,9 +136,13 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
   security: async ({ orgId, timezone, now }) => ({
     data: await securityOverview(orgId, { days: 30, timezone, now }),
   }),
-  backups: async ({ orgId, timezone, now }) => ({
-    data: await backupOverview(orgId, { timezone, now }),
-  }),
+  backups: async ({ orgId, timezone, now }) => {
+    const [overview, saasWorkloads] = await Promise.all([
+      backupOverview(orgId, { timezone, now }),
+      backupSaasWorkloads(orgId, { now }),
+    ]);
+    return { data: { ...overview, saasWorkloads } };
+  },
   reports: async ({ orgId, timezone }) => ({
     data: await listPortalRuns(orgId, timezone, { page: 1, limit: 20 }),
   }),

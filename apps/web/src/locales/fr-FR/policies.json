@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "minimumLevel",
         "collectionIntervalMinutes2": "collectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Fournisseurs d’applications (Avertissement et Information)",
+        "applicationProvidersHelp": "Les événements d’application de niveau Erreur et Critique sont collectés auprès de tous les fournisseurs ; ceux de niveau Avertissement et Information, uniquement auprès des fournisseurs intégrés ({{providers}}) et de ceux indiqués ici. Utilisez le nom exact du fournisseur affiché dans la colonne « Source » de l’Observateur d’événements ou dans Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Seule la stratégie de journaux d’événements prioritaire pour un appareil s’applique. Les listes de fournisseurs des différentes stratégies ne sont pas combinées.",
+        "providerNameLabel": "Nom du fournisseur d’événements d’application",
+        "addProvider": "Ajouter un fournisseur",
+        "removeProvider": "Supprimer",
+        "removeProviderNamed": "Supprimer {{provider}}",
+        "providerNameInvalid": "Utilisez de 1 à {{max}} caractères, en commençant par une lettre ou un chiffre. Caractères autorisés : lettres, chiffres, espaces, points, traits de soulignement, signes dollar, parenthèses et traits d’union.",
+        "providerLimitReached": "Vous pouvez ajouter jusqu’à {{max}} fournisseurs supplémentaires. Supprimez-en un pour en ajouter un autre.",
+        "providerAlreadyListed": "Ce fournisseur figure déjà dans la liste.",
+        "providerLimit": "{{total}} sur {{max}} fournisseurs supplémentaires"
       },
       "featureTabShell": {
         "override": "Outremise",
@@ -1219,6 +1230,20 @@
         "title": "Les appareils de cette politique alerteront deux fois",
         "body": "Ces conditions existent à la fois comme moniteur attaché et comme règle ou surveillance héritée : {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Groupes d’appareils (toutes les org.)",
+      "description": "Ciblez un groupe d’appareils à l’échelle du partenaire. Une affectation de groupe s’applique au niveau du groupe d’appareils et est donc prioritaire sur les affectations d’autres politiques au niveau de l’organisation et du site.",
+      "selectGroup": "Sélectionner un groupe d’appareils",
+      "assign": "Affecter",
+      "remove": "Retirer",
+      "assigned": "Groupe d’appareils affecté",
+      "removed": "Affectation du groupe d’appareils retirée",
+      "failedToLoad": "Impossible de charger les groupes d’appareils",
+      "failedToAssign": "Impossible d’affecter le groupe d’appareils",
+      "failedToRemove": "Impossible de retirer l’affectation du groupe d’appareils",
+      "empty": "Aucun groupe d’appareils à l’échelle du partenaire pour le moment. Créez-en un sous Groupes d’appareils → Toutes les org.",
+      "loading": "Chargement des groupes d’appareils…"
     }
   },
   "software": {

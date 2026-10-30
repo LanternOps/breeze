@@ -12,9 +12,10 @@
  * phase, but the subscriber lookup itself must exist before any event can
  * reach the registry.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { webhooks as webhooksTable } from '../db/schema';
+import { organizations, webhooks as webhooksTable } from '../db/schema';
+import { partnerFanoutOrgCondition } from './partnerFanoutOrgs';
 import { recordWebhookDelivery } from './webhookDeliveryRecord';
 import type { WebhookFanoutDeps } from '../workers/webhookDelivery';
 
@@ -32,22 +33,33 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
           .select({
             id: webhooksTable.id,
             orgId: webhooksTable.orgId,
+            partnerId: webhooksTable.partnerId,
             approvalGeneration: webhooksTable.approvalGeneration,
             events: webhooksTable.events,
+            payloadVersion: webhooksTable.payloadVersion,
           })
           .from(webhooksTable)
           .where(
             and(
-              eq(webhooksTable.orgId, orgId),
+              or(
+                eq(webhooksTable.orgId, orgId),
+                and(
+                  isNull(webhooksTable.orgId),
+                  sql`${webhooksTable.partnerId} IN (
+                    SELECT ${organizations.partnerId} FROM ${organizations}
+                    WHERE ${organizations.id} = ${orgId} AND ${partnerFanoutOrgCondition()}
+                  )`,
+                ),
+              ),
               eq(webhooksTable.status, 'active')
             )
           );
 
         // Site-ceiling gate contract §7E: no decryption here. `events` is a
         // plain (non-encrypted) column, and the fan-out/dedupe path never
-        // needed url/secret/headers — only `queueDelivery` and
-        // `recordWebhookDelivery` consume this, and both only ever read
-        // `.id`/`.orgId`/`.approvalGeneration`. Decryption now happens
+        // needed url/secret/headers — only `enqueueWebhookAttempt` and
+        // `recordWebhookDelivery` consume this, and use only the
+        // identity, approval generation and payload version. Decryption now happens
         // exactly once, inside the delivery worker at send time
         // (resolveDeliveryWebhookConfig), which is what closes the window
         // where a decrypted secret used to sit in the Redis queue payload.
@@ -59,7 +71,9 @@ export function buildWebhookFanoutDeps(): WebhookFanoutDeps {
           .map((row) => ({
             id: row.id,
             orgId: row.orgId,
+            partnerId: row.partnerId,
             approvalGeneration: row.approvalGeneration,
+            payloadVersion: row.payloadVersion === 2 ? 2 as const : 1 as const,
           }));
       });
     },

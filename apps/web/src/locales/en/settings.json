@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
       "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
       "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "alerts_write": "Acknowledge and resolve alerts in every org the principal can reach. Does not grant reading alert details (alerts:read), suppress, dismiss or delete.",
       "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
       "ai_write": "MCP tools that change data.",
       "ai_execute": "MCP tools that run actions on devices.",
