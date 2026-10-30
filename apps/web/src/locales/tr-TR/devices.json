@@ -4701,6 +4701,48 @@
       "mfaRequired": "Fiziksel konumu değiştirmek için çok faktörlü kimlik doğrulama gerekir."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN ve devre",
+    "loadFailed": "WAN ve devre bilgileri yüklenemedi.",
+    "empty": "Bu varlık için kayıtlı veya size görünen bir devre yok.",
+    "provider": "Sağlayıcı",
+    "cid": "Devre kimliği",
+    "bandwidth": "Bant genişliği",
+    "serviceType": "Hizmet türü",
+    "administrativeStatus": "Yönetim durumu",
+    "sitesServed": "Bu devrenin hizmet verdiği siteler",
+    "terminationSite": "Sonlandırma sitesi: {{site}} ({{asset}} / {{iface}} üzerinden)",
+    "terminationSiteBare": "Sonlandırma sitesi: {{site}}",
+    "terminationUnassigned": "Sonlandırma atanmadı",
+    "terminationNeedsReassociation": "Sonlandırmanın yeniden ilişkilendirilmesi gerekiyor",
+    "interfaces": "Arayüzler",
+    "noInterfaces": "Kayıtlı arayüz yok.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Kullanımdan kaldırıldı",
+    "markWan": "WAN olarak işaretle",
+    "unmarkWan": "WAN'ı kaldır",
+    "truncated": "Yalnızca bazı arayüzler gösteriliyor.",
+    "unmarkConfirm": {
+      "title": "WAN rolü kaldırılsın mı?",
+      "message": "{{name}} artık WAN arayüzü olarak değerlendirilmeyecek."
+    },
+    "status": {
+      "active": "Etkin",
+      "planned": "Planlandı",
+      "suspended": "Askıya alındı",
+      "disconnected": "Bağlantı kesildi"
+    },
+    "toasts": {
+      "marked": "Arayüz WAN olarak işaretlendi",
+      "unmarked": "WAN rolü kaldırıldı",
+      "failed": "WAN rolü güncellenemedi",
+      "mfaRequired": "WAN rolünü değiştirmek için çok faktörlü kimlik doğrulama gerekir.",
+      "hasTermination": "Bu arayüzün etkin bir devre sonlandırması var. Önce sonlandırmayı taşıyın veya kaldırın.",
+      "retired": "Bu arayüz kullanımdan kaldırıldı ve artık değiştirilemez.",
+      "notFound": "Arayüz bulunamadı. Liste yeniden yüklendi.",
+      "permissionDenied": "Topolojiyi değiştirme izniniz yok."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Grup sahibi",
     "organization": "Bu kuruluş",

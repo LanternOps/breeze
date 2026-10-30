@@ -4701,6 +4701,48 @@
       "mfaRequired": "Zum Ändern des physischen Standorts ist eine Multi-Faktor-Authentifizierung erforderlich."
     }
   },
+  "assetCircuitCard": {
+    "title": "WAN und Leitung",
+    "loadFailed": "WAN- und Leitungsinformationen konnten nicht geladen werden.",
+    "empty": "Für dieses Asset ist keine Leitung erfasst oder für Sie sichtbar.",
+    "provider": "Anbieter",
+    "cid": "Leitungs-ID",
+    "bandwidth": "Bandbreite",
+    "serviceType": "Diensttyp",
+    "administrativeStatus": "Administrativer Status",
+    "sitesServed": "Von dieser Leitung versorgte Standorte",
+    "terminationSite": "Abschlussstandort: {{site}} (von {{asset}} / {{iface}})",
+    "terminationSiteBare": "Abschlussstandort: {{site}}",
+    "terminationUnassigned": "Abschluss nicht zugewiesen",
+    "terminationNeedsReassociation": "Abschluss muss neu zugeordnet werden",
+    "interfaces": "Schnittstellen",
+    "noInterfaces": "Keine Schnittstellen erfasst.",
+    "wanBadge": "WAN",
+    "retiredBadge": "Außer Betrieb",
+    "markWan": "Als WAN markieren",
+    "unmarkWan": "WAN entfernen",
+    "truncated": "Es werden nur einige Schnittstellen angezeigt.",
+    "unmarkConfirm": {
+      "title": "WAN-Rolle entfernen?",
+      "message": "{{name}} wird nicht mehr als WAN-Schnittstelle behandelt."
+    },
+    "status": {
+      "active": "Aktiv",
+      "planned": "Geplant",
+      "suspended": "Ausgesetzt",
+      "disconnected": "Getrennt"
+    },
+    "toasts": {
+      "marked": "Schnittstelle als WAN markiert",
+      "unmarked": "WAN-Rolle entfernt",
+      "failed": "WAN-Rolle konnte nicht aktualisiert werden",
+      "mfaRequired": "Zum Ändern der WAN-Rolle ist eine Multi-Faktor-Authentifizierung erforderlich.",
+      "hasTermination": "Diese Schnittstelle hat einen aktiven Leitungsabschluss. Verschieben oder entfernen Sie zuerst den Abschluss.",
+      "retired": "Diese Schnittstelle ist außer Betrieb und kann nicht mehr geändert werden.",
+      "notFound": "Schnittstelle nicht gefunden. Die Liste wurde neu geladen.",
+      "permissionDenied": "Sie haben keine Berechtigung, die Topologie zu ändern."
+    }
+  },
   "partnerGroups": {
     "ownerScope": "Gruppeneigentümer",
     "organization": "Diese Organisation",

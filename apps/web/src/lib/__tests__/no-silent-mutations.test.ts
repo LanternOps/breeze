@@ -242,6 +242,8 @@ const TARGET_GLOBS = [
   'src/components/devices/DeviceWarrantyCard.tsx',
   // Physical placement W1-D1 (#8134): the placement PUT is its own file.
   'src/components/devices/PhysicalPlacementCard.tsx',
+  // Physical placement W1-D2 (#8134): the WAN role PATCH is its own file.
+  'src/components/devices/AssetCircuitCard.tsx',
   'src/components/devices/PossibleReplacementBanner.tsx',
   'src/components/pam/PamRespondModal.tsx',
   'src/components/pam/PamRevokeModal.tsx',
@@ -1033,7 +1035,8 @@ describe('no silent mutations in targeted set', () => {
     // Tool Catalog W4 flows/api.ts: 282 → 283.
     // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
     // Partner-wide groups W4 adds creation and partner group assignments: 284 → 286.
-    expect(absoluteFiles.length).toBe(286);
+    // Physical placement W1-D2 (#8134) adds devices/AssetCircuitCard.tsx: 286 → 287.
+    expect(absoluteFiles.length).toBe(287);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

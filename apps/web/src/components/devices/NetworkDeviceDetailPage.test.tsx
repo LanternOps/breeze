@@ -9,14 +9,15 @@ import { showToast } from '../shared/Toast';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from '../topology/topologyFixtures';
 
 // Keep legacy discovery/action queues separate from the new parallel reads.
-const { fetchWithAuthMock, monitoringFetchMock, placementFetchMock } = vi.hoisted(() => ({
-  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(), placementFetchMock: vi.fn(),
+const { fetchWithAuthMock, monitoringFetchMock, placementFetchMock, circuitsFetchMock } = vi.hoisted(() => ({
+  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(), placementFetchMock: vi.fn(), circuitsFetchMock: vi.fn(),
 }));
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
-  // PhysicalPlacementCard's GET is routed away so it doesn't shift the Once queues or call counts.
+  // PhysicalPlacementCard's and AssetCircuitCard's GETs are routed away so it doesn't shift the Once queues or call counts.
   fetchWithAuth: (url: string, init?: RequestInit) =>
     url.endsWith('/placement') ? placementFetchMock(url, init)
+    : url.endsWith('/circuits') ? circuitsFetchMock(url, init)
     : url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
       ? monitoringFetchMock(url, init) : init === undefined ? fetchWithAuthMock(url) : fetchWithAuthMock(url, init),
 }));
@@ -44,6 +45,8 @@ placementFetchMock.mockImplementation(async () => ({
     placement: null,
   }),
 }));
+
+circuitsFetchMock.mockImplementation(async () => ({ ok: false, status: 500, json: async () => ({}) }));
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({

@@ -149,6 +149,10 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
             body: JSON.stringify(body),
           }),
         errorFallback: t('physicalPlacementCard.toasts.saveFailed'),
+        parseSuccess: (json) => {
+          if (!isPlacementResponse(json)) throw new Error('Malformed placement response');
+          return json;
+        },
         successMessage: removing ? t('physicalPlacementCard.toasts.removed') : t('physicalPlacementCard.toasts.saved'),
         friendly,
         onUnauthorized: UNAUTHORIZED,
@@ -161,7 +165,11 @@ export default function PhysicalPlacementCard({ subject, id, linkedDeviceName }:
       handleActionError(err, t('physicalPlacementCard.toasts.saveFailed'));
       // Stale view (lost a race, or the asset was linked meanwhile): re-read the truth.
       if (err instanceof ActionError && err.status === 409) {
-        if (mountedRef.current) setEditing(false);
+        if (mountedRef.current) {
+          setEditing(false);
+          // Drop the stale view so a failed re-read lands on the load-error + Retry branch.
+          setData(null);
+        }
         await load();
       }
     } finally {
