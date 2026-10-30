@@ -30,7 +30,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
       await loginAndSaveState(browser, baseURL, statePath);
       await use(statePath);
     },
-    { scope: 'worker', timeout: 90_000 },
+    { scope: 'worker' },
   ],
 
   // Fresh BrowserContext seeded from this worker's storageState. The cookies
