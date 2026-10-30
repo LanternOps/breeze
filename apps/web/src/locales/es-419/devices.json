@@ -4338,6 +4338,7 @@
       "pending": "Aún sin verificar",
       "private": "Registro privado: se requieren credenciales",
       "unsupported_registry": "Registro no compatible",
+      "provenance_unknown": "Origen desconocido: el nombre de la imagen no se envía a ningún registro",
       "error": "Falló la verificación del registro; se reintentará",
       "behind": "Hay una imagen más reciente publicada para esta etiqueta",
       "current": "Coincide con el registro",

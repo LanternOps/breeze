@@ -795,6 +795,10 @@
       "watchdog": "Destino do watchdog"
     },
     "inheritDefault": "Herdar padrão do parceiro ({{version}})",
+    "inheritDefaultLatest": "Herdar padrão do parceiro (última promovida)",
+    "latestOverride": "Sempre a última promovida, ignorar a fixação do parceiro",
+    "latestOverrideVersion": "Sempre a última promovida ({{version}}), ignorar a fixação do parceiro",
+    "latestOrganization": "Definido para esta organização: sempre a última promovida",
     "latestVersion": "Última promovida ({{version}})",
     "latest": "Última promovida",
     "pinnedAll": "Fixada para todas as organizações",

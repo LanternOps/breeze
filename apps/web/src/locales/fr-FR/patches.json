@@ -420,6 +420,7 @@
     "emptyRingSeverityNotice": "Aucun appareil dans cet anneau pour l’instant. La gravité signalée par les appareils apparaît une fois des appareils affectés ; d’ici là, la plupart des correctifs sont Non évalués.",
     "shiftedNotice": "Affichage de {{shown}} correctifs sur {{total}} — le catalogue a changé pendant le chargement. Rechargez pour voir le reste.",
     "ringDelete": {
+      "messageNone": "Aucune politique n’utilise cet anneau. Ses règles d’approbation et ses paramètres de planification seront supprimés et ne pourront pas être restaurés.",
       "title": "Supprimer {{name}} ?",
       "messageOne": "1 politique cessera d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",
       "messageMany": "{{count}} politiques cesseront d’appliquer les correctifs planifiés jusqu’à ce que vous choisissiez un autre anneau.",

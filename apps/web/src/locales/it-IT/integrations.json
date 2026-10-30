@@ -603,6 +603,7 @@
     "cove": "Cove Data Protection",
     "nameLabel": "Nome della connessione",
     "namePlaceholder": "Account Cove principale",
+    "namePlaceholderDropsuite": "Account principale di NinjaOne SaaS Backup",
     "partnerNameLabel": "Nome partner Cove",
     "usernameLabel": "Nome di accesso dell'utente API",
     "passwordLabel": "Token dell'utente API",

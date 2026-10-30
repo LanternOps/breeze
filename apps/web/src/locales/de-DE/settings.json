@@ -795,6 +795,10 @@
       "watchdog": "Watchdog-Ziel"
     },
     "inheritDefault": "Partnerstandard übernehmen ({{version}})",
+    "inheritDefaultLatest": "Partnerstandard übernehmen (neueste freigegebene)",
+    "latestOverride": "Immer neueste freigegebene, Partner-Pin ignorieren",
+    "latestOverrideVersion": "Immer neueste freigegebene ({{version}}), Partner-Pin ignorieren",
+    "latestOrganization": "Für diese Organisation festgelegt: immer neueste freigegebene",
     "latestVersion": "Zuletzt befördert ({{version}})",
     "latest": "Zuletzt befördert",
     "pinnedAll": "Für alle Organisationen angepinnt",

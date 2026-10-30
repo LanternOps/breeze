@@ -795,6 +795,10 @@
       "watchdog": "Bekçi köpeği hedefi"
     },
     "inheritDefault": "İş ortağı varsayılanını devral ({{version}})",
+    "inheritDefaultLatest": "İş ortağı varsayılanını devral (en son tanıtılan)",
+    "latestOverride": "Her zaman en son tanıtılan, iş ortağı sabitlemesini yoksay",
+    "latestOverrideVersion": "Her zaman en son tanıtılan ({{version}}), iş ortağı sabitlemesini yoksay",
+    "latestOrganization": "Bu kuruluş için ayarlandı: her zaman en son tanıtılan",
     "latestVersion": "En son tanıtılan ({{version}})",
     "latest": "En son tanıtılanlar",
     "pinnedAll": "Tüm kuruluşlar için sabitlendi",
