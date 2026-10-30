@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@breeze/shared';
-import { and, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceGroupMemberships, deviceGroups, organizations } from '../db/schema';
 
@@ -86,6 +86,18 @@ export const PARTNER_GROUP_READ_ONLY_BODY = {
   code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
 };
 
+/**
+ * The AI assistant's refusal for any mutation of a partner-wide group. Unlike
+ * the REST body it names where the change CAN be made, so the model can relay
+ * a next step instead of a dead end: a partner admin with access to all
+ * organizations edits or deletes the group on the Device Groups page (All orgs
+ * filter); membership is filter-driven and never changed by hand.
+ */
+export const PARTNER_GROUP_AI_READ_ONLY_BODY = {
+  error: 'Partner-wide device groups are read-only for the AI assistant. A partner administrator with access to all organizations can rename, change the filter of, or delete this group in Device Groups → All orgs. Its members come from its filter and cannot be added or removed by hand.',
+  code: ERROR_CODES.PARTNER_GROUP_READ_ONLY,
+};
+
 export interface GroupOrgMembershipPair {
   groupId: string;
   orgId: string;
@@ -132,4 +144,30 @@ export async function acquireGroupOrgMembershipLocks(
 /** Match org-move/merge order: export admission must precede membership rows. */
 export async function acquireMembershipExportOrgLock(orgId: string): Promise<void> {
   await db.execute(sql`SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY[${orgId}]::uuid[])`);
+}
+
+/** Resolve only the caller's own organization under its existing RLS context. */
+export async function resolveOrgSessionPartnerId(orgId: string): Promise<string | null> {
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, orgId)).limit(1);
+  return org?.partnerId ?? null;
+}
+
+export type OrgSessionPartnerGroupRow = Pick<typeof deviceGroups.$inferSelect,
+  'id' | 'partnerId' | 'name' | 'type' | 'createdAt' | 'updatedAt'>;
+
+/**
+ * OD5 read view only. Callers resolve partnerId from their own org first.
+ * Filters and evaluation metadata never leave the database in this projection.
+ */
+export async function readPartnerGroupsForOrgSession(
+  partnerId: string, opts: { groupId?: string },
+): Promise<OrgSessionPartnerGroupRow[]> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(() => db.select({
+    id: deviceGroups.id, partnerId: deviceGroups.partnerId, name: deviceGroups.name,
+    type: deviceGroups.type, createdAt: deviceGroups.createdAt, updatedAt: deviceGroups.updatedAt,
+  }).from(deviceGroups).where(and(
+    isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId),
+    opts.groupId ? eq(deviceGroups.id, opts.groupId) : undefined,
+  ))));
 }

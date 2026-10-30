@@ -11,7 +11,7 @@
  * exclusive holders prevent advisory cycles. KEY SHARE protects deletion/key
  * changes without conflicting with non-key filter revision updates.
  *
- * Export locks precede membership row locks, matching orgMerge.ts:1308 and
+ * Export locks precede membership row locks, matching executeOrgMerge's Phase B (orgMerge.ts) and
  * moveDeviceOrgInTransaction's breeze_rehome_device_custom_field_values call.
  * Those lifecycle writers can therefore finish while an evaluator waits on
  * export admission: it holds no membership/device row locks yet. A moved

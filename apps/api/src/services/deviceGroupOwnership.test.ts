@@ -142,3 +142,25 @@ it('takes the existing export org lock before membership mutations', async () =>
   expect(query.sql).toContain('::uuid[]');
   expect(query.params).toEqual(['org-id']);
 });
+
+describe('org-session safe partner read view', () => {
+  it('resolves own org partner under request context', async () => {
+    const { resolveOrgSessionPartnerId } = await import('./deviceGroupOwnership');
+    const limit = vi.fn().mockResolvedValue([{partnerId:'partner-a'}]);
+    const where = vi.fn().mockReturnValue({limit});
+    vi.mocked(db.select).mockReturnValue({from:vi.fn().mockReturnValue({where})} as never);
+    expect(await resolveOrgSessionPartnerId('org-a')).toBe('partner-a');
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+    expect(dialect.sqlToQuery(where.mock.calls[0]?.[0]).params).toEqual(['org-a']);
+  });
+  it('projects only safe columns in partner-pinned system context', async () => {
+    const { readPartnerGroupsForOrgSession } = await import('./deviceGroupOwnership');
+    const where = vi.fn().mockResolvedValue([]);
+    vi.mocked(db.select).mockReturnValue({from:vi.fn().mockReturnValue({where})} as never);
+    await readPartnerGroupsForOrgSession('partner-a',{groupId:'group-a'});
+    expect(Object.keys(vi.mocked(db.select).mock.calls[0]?.[0] ?? {}).sort()).toEqual(['id','partnerId','name','type','createdAt','updatedAt'].sort());
+    expect(dialect.sqlToQuery(where.mock.calls[0]?.[0]).params).toEqual(['partner-a','group-a']);
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
+    expect(runOutsideDbContext).toHaveBeenCalledOnce();
+  });
+});
