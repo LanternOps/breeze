@@ -2560,7 +2560,7 @@ export async function createActionIntent(
       // A tool whose pin is MANDATORY (effectDigest.ts's
       // requiresPinnedEffectDigest) never stores a NULL digest: refuse the
       // proposal instead of inheriting the legacy "nothing to check" fallback.
-      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName)) {
+      if (effectDigestOutcome.kind !== 'pinned' && requiresPinnedEffectDigest(input.toolName, input.input)) {
         throw new EffectDigestUnresolvableError(
           input.toolName,
           effectDigestOutcome.kind === 'unresolved' ? effectDigestOutcome.reason : 'no resolver',

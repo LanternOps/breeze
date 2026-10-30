@@ -1,4 +1,5 @@
 import { db } from '../db';
+import { SOFTWARE_GROUP_FILTER_FIELDS } from '../services/softwareGroupFilterFields';
 import { deviceGroups, organizations } from '../db/schema';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
@@ -262,7 +263,7 @@ export function initializeDeviceEventHandlers(): void {
     await updateDeviceMemberships(
       event.deviceId,
       event.orgId,
-      ['software.installed', 'software.notInstalled']
+      [...SOFTWARE_GROUP_FILTER_FIELDS]
     );
   });
 

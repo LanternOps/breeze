@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import PartnerGroupAssignmentSection from "./PartnerGroupAssignmentSection";
 import { Search } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { extractApiError } from "@/lib/apiError";
@@ -40,7 +41,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 // (a single partner-level assignment) and a subset (N organization-level
 // assignments) are mutually exclusive: turning on All orgs removes per-org
 // rows; checking any org removes the partner row. Role/OS filters ride on
-// those assignment rows. Site/group/device levels stay API-only.
+// those assignment rows. Device groups are assigned separately below.
 //
 // This panel fetches its OWN paginated, server-searched org list (never the
 // nav org store, which silently truncates at 50) — see #2285 review: a
@@ -528,6 +529,14 @@ export default function OrganizationScopePanel({ policyId, partnerId }: Props) {
           </p>
         )}
       </div>
+      <PartnerGroupAssignmentSection
+        policyId={policyId}
+        assignments={assignments}
+        roleFilter={roleFilter}
+        osFilter={osFilter}
+        disabled={rowsDisabled}
+        onChanged={fetchAssignments}
+      />
     </div>
   );
 }

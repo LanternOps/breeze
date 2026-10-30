@@ -4539,6 +4539,43 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(mockTransitionIntent).toHaveBeenCalledWith('intent-topology-unpinned', 'executing', 'failed', { errorCode: 'digest_required' });
   });
 
+  it('CASes to failed:digest_required when manage_accounting_sync push carries no digest', async () => {
+    for (const [args, expectRefusal] of [
+      [{ action: 'push', provider: 'xero', invoiceId: 'inv-1' }, true],
+    ] as const) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Accounting push',
+      } as any);
+      mockInsertReturning({ id: 'exec-acct-unpinned' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-acct-unpinned', approvalRequestIds: ['appr-acct-unpinned'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      const selectChain: Record<string, unknown> = {
+        from: vi.fn(() => selectChain),
+        where: vi.fn(() => selectChain),
+        limit: vi.fn(async () => [{
+          id: 'intent-acct-unpinned', boundArgumentDigest: 'digest', actionName: 'manage_accounting_sync',
+          arguments: args, effectDigest: null,
+        }]),
+      };
+      vi.mocked(db.select).mockReturnValue(selectChain as any);
+      mockComputeEffectDigest.mockClear();
+
+      await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' }).catch(() => undefined);
+
+      const refused = mockTransitionIntent.mock.calls.some(
+        (c) => c[3] && (c[3] as { errorCode?: string }).errorCode === 'digest_required',
+      );
+      expect(refused).toBe(expectRefusal);
+      if (expectRefusal) {
+        expect(mockTransitionIntent).toHaveBeenCalledWith('intent-acct-unpinned', 'executing', 'failed', { errorCode: 'digest_required' });
+        expect(mockComputeEffectDigest).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   // #5232, `executed: false` branch. The other half of `reportLostTerminalCas`:
   // a CAS lost BEFORE the tool ran is the mutual exclusion working, not a lost
   // outcome — nothing executed, so there is no result to strand and no reason

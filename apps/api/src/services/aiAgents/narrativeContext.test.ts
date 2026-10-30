@@ -167,6 +167,7 @@ function rawInputs(overrides: Partial<RawNarrativeInputs> = {}): RawNarrativeInp
     backups: { ok: 18, withErrors: 0, failed: 2, partial: 0, devicesFailed: 1 },
     backupProviders: {
       devices: 0,
+      saasWorkloads: 0,
       devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [],
       unlinkedDevices: 0,
@@ -254,7 +255,7 @@ describe('assembleNarrativeContext', () => {
     const criticalDevices = Array.from({ length: NARRATIVE_TOP_N + 1 }, (_, i) => ({ name: `CRIT-${i}\n- forged line` }));
     const ctx = assembleNarrativeContext(rawInputs({
       backupProviders: {
-        devices: 20, devicesByHealth: { healthy: 9, warning: 0, critical: 11, unknown: 0 },
+        devices: 20, saasWorkloads: 0, devicesByHealth: { healthy: 9, warning: 0, critical: 11, unknown: 0 },
         criticalDevices, unlinkedDevices: 2, lastSyncAgeMinutes: 12,
       },
     }));
@@ -267,7 +268,7 @@ describe('assembleNarrativeContext', () => {
     const tight = assembleNarrativeContext(rawInputs({
       tickets: { ...rawInputs().tickets!, byCategory },
       backupProviders: {
-        devices: 3, devicesByHealth: { healthy: 0, warning: 0, critical: 3, unknown: 0 },
+        devices: 3, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 3, unknown: 0 },
         criticalDevices: [{ name: longName(1) }, { name: longName(2) }, { name: longName(3) }],
         unlinkedDevices: 0, lastSyncAgeMinutes: 5,
       },
@@ -280,7 +281,7 @@ describe('assembleNarrativeContext', () => {
   it('marks the third-party block unavailable, zeroed, when its loader failed', () => {
     const ctx = assembleNarrativeContext(rawInputs({ backupProviders: null }));
     expect(ctx.backupProviders).toEqual({
-      available: false, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+      available: false, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
       criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
     });
     expect(ctx.unavailable).toContain('backupProviders');
@@ -691,12 +692,14 @@ describe('loadNarrativeContext', () => {
         providerRow({ name: 'BACKUP-SVR', status: 'failed', last_success_at: null, breeze_device_id: null }),
         providerRow({ name: 'OLD-PC', status: 'no_backups', last_success_at: null, breeze_device_id: 'd-3' }),
         providerRow({ name: 'mail@acme.test', account_type: 'm365', breeze_device_id: null }),
+        providerRow({ name: 'drive@acme.test', account_type: 'gws', status: 'failed', breeze_device_id: null }),
       ] });
       const ctx = await loadNarrativeContext(ORG);
 
       expect(ctx.backupProviders.available).toBe(true);
-      expect(ctx.backupProviders.devices).toBe(4);
-      expect(ctx.backupProviders.devicesByHealth).toEqual({ healthy: 2, warning: 0, critical: 2, unknown: 0 });
+      expect(ctx.backupProviders.devices).toBe(3);
+      expect(ctx.backupProviders.saasWorkloads).toBe(2);
+      expect(ctx.backupProviders.devicesByHealth).toEqual({ healthy: 1, warning: 0, critical: 2, unknown: 0 });
       expect(ctx.backupProviders.criticalDevices.map((d) => d.name)).toEqual(['BACKUP-SVR', 'OLD-PC']);
       // Mailbox accounts are never linked to a device, so they are not "unlinked devices".
       expect(ctx.backupProviders.unlinkedDevices).toBe(1);
@@ -746,7 +749,7 @@ describe('loadNarrativeContext', () => {
     it('reports an org with no third-party backup as measured and empty', async () => {
       const ctx = await loadNarrativeContext(ORG);
       expect(ctx.backupProviders).toEqual({
-        available: true, devices: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
+        available: true, devices: 0, saasWorkloads: 0, devicesByHealth: { healthy: 0, warning: 0, critical: 0, unknown: 0 },
         criticalDevices: [], criticalDevicesTruncated: false, unlinkedDevices: 0, lastSyncAgeMinutes: null,
       });
     });
