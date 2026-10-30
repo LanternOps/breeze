@@ -24,6 +24,7 @@ import { createOrRotateWebhookSecret } from '../services/flows/webhook/secret';
 import { listWebhookDeliveries } from '../services/flows/webhook/deliveries';
 import { runBodiesRestricted } from '../services/flows/runBodyAccess';
 import { registerFlowLimitsRoutes } from './flowLimits';
+import { flowConversionRoutes } from './flowConversions';
 
 export const flowsRoutes = new Hono();
 
@@ -40,6 +41,10 @@ flowsRoutes.use('*', requirePermission('automations', 'read'));
 // W05 (#5220): GET/PUT /limits. Registered before `/:id` so the literal path
 // never reaches the uuid param schema.
 registerFlowLimitsRoutes(flowsRoutes);
+
+// W06 (#5221): legacy Job → flow conversions. Mounted before `/:id` for the
+// same reason; inherits the auth, kill switch and automations.read above.
+flowsRoutes.route('/conversions', flowConversionRoutes);
 
 const listQuerySchema = z.object({
   orgId: z.string().uuid().optional(),
@@ -102,11 +107,15 @@ const ENABLE_STATUS: Record<string, Status> = {
   webhook_secret_missing: 422,
   // W5 PR B (#5220, Decision 13): an org flow's ai step needs an AI budget that can be spent.
   ai_budget_unavailable: 422,
+  // W06 (#5221) B3: a shadow conversion's draft goes live only through POST /conversions/:id/switch.
+  flow_conversion_not_switched: 409,
 };
 const DISABLE_STATUS: Record<string, Status> = { flow_not_found: 404, not_enabled: 409, partner_wide_forbidden: 403 };
 const RUN_STATUS: Record<string, Status> = {
   flow_not_found: 404,
   not_enabled: 409,
+  // W06 (#5221) B4: the flow's conversion was reverted; it admits nothing new.
+  flow_conversion_reverted: 409,
   not_manual: 409,
   org_required: 422,
   org_forbidden: 403,

@@ -58,6 +58,9 @@ export const MFA_GATED_TOOL_ACTIONS: Readonly<Record<string, '*' | readonly stri
     'set_org_profile', 'clear_org_profile',
   ]),
   manage_billing_settings: Object.freeze(['update_partner', 'update_org']),
+  // Full-control W14 PR B (#6784): every interactive accounting write carries requireMfa() at REST. (POST
+  // /contracts/:id/generate carries none, so generate_invoice is not listed; it is four-eyes.)
+  manage_accounting_sync: Object.freeze(['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk']),
   manage_pam_rules: Object.freeze([
     'create_rule', 'update_rule', 'delete_rule', 'set_config',
     'create_signer_group', 'update_signer_group', 'delete_signer_group',

@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../services/deviceGroupOwnership';
+vi.mock('../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
@@ -145,6 +150,21 @@ const basePolicy = {
 };
 
 describe('peripheralControl routes', () => {
+  it.each(['create', 'update'])('refuses partner group peripheral targets without persisting (%s)', async (method) => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+
+    const res = await app.request('/peripherals/policies', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({...(method === 'update' ? {id:groupId}:{}),name:'Policy',deviceClass:'storage',action:'block',targetType:'group',targetIds:{groupIds:[groupId]}}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', groupIds: [groupId] });
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   let app: Hono;
 
   beforeEach(() => {

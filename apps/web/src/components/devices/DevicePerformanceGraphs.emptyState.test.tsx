@@ -28,7 +28,7 @@ describe('DevicePerformanceGraphs empty state (#9029)', () => {
     render(<DevicePerformanceGraphs deviceId="dev-1" compact />);
     const empty = await screen.findByTestId('device-performance-empty');
     expect(empty).toHaveTextContent('No samples in the last 24h');
-    expect(empty.className).toContain('h-56');
+    expect(empty.className).toContain('h-36');
     expect(document.querySelector('.recharts-responsive-container')).toBeNull();
   });
 

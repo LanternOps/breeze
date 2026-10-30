@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 // #5645: every inline release hands the handler the released intent's decision
 // record (`approvalScope` + `decidedVia`) on the execution context — the same
@@ -217,6 +217,22 @@ vi.mock('./actionIntents/durableRelease', () => ({
 // schema mock in this file.
 vi.mock('./actionIntents/laneCheckpoint', () => ({
   ensureLaneCheckpointBeforeRelease: vi.fn(async () => ({ ok: true, checkpointRef: null })),
+}));
+
+// #10384: the chat gate resolves a run_script proposal within the caller's
+// reach and keys the intent, card and terminal outbox on the proposal's org.
+// Spread the real module; only the reach lookup and the card summary are
+// controllable. Default: no proposal (every other test is unaffected).
+const mockProposalInReach = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({
+  context: undefined as unknown, proposalOrgId: null as string | null,
+})));
+vi.mock('./scriptProposals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./scriptProposals')>()),
+  loadProposalGuardrailContextInReach: (...args: unknown[]) => mockProposalInReach(...args),
+}));
+const mockProposalApprovalSummary = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
+vi.mock('./scriptProposals/approvalSummary', () => ({
+  loadProposalApprovalSummary: (...args: unknown[]) => mockProposalApprovalSummary(...args),
 }));
 
 vi.mock('./actionIntents/revalidateRelease', () => ({
@@ -2090,6 +2106,130 @@ describe('createSessionPreToolUse', () => {
         { id: 'intent-6', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
         'intent_completed',
       );
+    });
+
+    // #10384: a partner-scope session bound to org-1 runs a reviewed proposal
+    // that propose_script filed under org-2 (its target device's org). The
+    // proposal is resolved within the call's reach, and the intent, the
+    // approval card and the terminal outbox all follow the PROPOSAL's org,
+    // which is the org consumeProposalForIntent / loadProposalForRelease and
+    // the release ceiling key on.
+    describe('run_script on a proposal outside the session org (#10384)', () => {
+      const reachOf = (...orgIds: string[]) => makeAuth({
+        scope: 'partner',
+        orgId: null,
+        accessibleOrgIds: orgIds,
+        canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+      });
+      const reviewed = { proposal: { riskTier: 'medium', strictHits: [] } };
+
+      beforeEach(() => {
+        mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null });
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true, tier: 3, requiresApproval: true, description: 'Run reviewed proposal',
+        } as any);
+        mockResolveScriptRunContext.mockResolvedValue(null);
+        mockInsertReturning({ id: 'exec-x' });
+        mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-x', approvalRequestIds: ['appr-x'] }));
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+      });
+
+      it('looks the proposal up within the session tool reach and files the intent + card in the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('rejected');
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(mockProposalInReach).toHaveBeenCalledWith({ proposalId: 'p-x', deviceIds: ['d-2'] }, expect.any(Function));
+        const canAccessOrg = mockProposalInReach.mock.calls[0]![1] as (orgId: string) => boolean;
+        expect(canAccessOrg('org-2')).toBe(true);
+        expect(canAccessOrg('org-9')).toBe(false);
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-2' });
+        expect(mockProposalApprovalSummary).toHaveBeenCalledWith(expect.objectContaining({ proposalId: 'p-x' }), 'org-2');
+      });
+
+      it('publishes the inline completion under the proposal org, and records the tier from the reviewed context', async () => {
+        mockProposalInReach.mockResolvedValue({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const pre = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+        expect(pre).toMatchObject({ allowed: true, intentId: 'intent-x' });
+        vi.mocked(checkGuardrails).mockClear();
+        await createSessionPostToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+        // The post hook's audit tier comes from the SAME reach-resolved
+        // context: a session-org lookup would hand checkGuardrails
+        // proposal_not_found, which fails closed to tier 4.
+        expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining(reviewed));
+      });
+
+      afterAll(() => { mockProposalInReach.mockResolvedValue({ context: undefined, proposalOrgId: null }); });
+
+      it('fails a cross-org intent whose release revalidation fails under the proposal org', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: reviewed, proposalOrgId: 'org-2' });
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        mockRevalidateApprovedIntentForRelease.mockResolvedValueOnce({ ok: false, errorCode: 'actor_inactive' } as IntentReleaseRevalidation);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-x', deviceIds: ['d-2'] });
+
+        expect(res).toMatchObject({ allowed: false });
+        expect(mockTransitionIntent).toHaveBeenCalledWith('intent-x', 'executing', 'failed', expect.objectContaining({ errorCode: 'actor_inactive' }));
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-2', taskId: null, requestingFlowRunId: null },
+          'intent_failed',
+        );
+      });
+
+      it('keeps the session org for a library run_script (no proposal)', async () => {
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(true);
+        const auth = reachOf('org-1', 'org-2');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        await createSessionPreToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] });
+        await createSessionPostToolUse(session)('run_script', { scriptId: 'abcd1234-0000-0000-0000-000000000000', deviceIds: ['d-1'] }, JSON.stringify({ results: {} }), false, 10);
+
+        expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ toolName: 'run_script', orgId: 'org-1' });
+        expect(mockPublishIntentTerminalOutbox).toHaveBeenCalledWith(
+          expect.anything(),
+          { id: 'intent-x', orgId: 'org-1', taskId: null, requestingFlowRunId: null },
+          'intent_completed',
+        );
+      });
+
+      // Wiring only: the reach logic itself is exercised against the real
+      // loader in aiAgentSdk.wispCeiling.test.ts and guardrailContext.test.ts.
+      it('hands an out-of-reach lookup (proposal_not_found) straight to the guardrail and raises no intent', async () => {
+        mockProposalInReach.mockResolvedValueOnce({ context: { proposalDenyReason: 'proposal_not_found' }, proposalOrgId: null });
+        vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, reason: 'proposal_not_found' } as any);
+        const auth = reachOf('org-1');
+        const session = makeActiveSession({ auth, toolAuth: auth });
+
+        const res = await createSessionPreToolUse(session)('run_script', { proposalId: 'p-far', deviceIds: ['d-9'] });
+
+        expect(res).toEqual({ allowed: false, error: 'proposal_not_found' });
+        expect(checkGuardrails).toHaveBeenCalledWith(
+          'run_script', expect.anything(), expect.objectContaining({ proposalDenyReason: 'proposal_not_found' }),
+        );
+        expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      });
     });
 
     it('terminalizes a handler-thrown caller refusal as caller_verification_required with the typed result', async () => {
@@ -4522,6 +4662,43 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
     expect(result).toEqual({ allowed: false, error: 'This action requires a pinned effect and could not be verified; it was not executed.' });
     expect(mockComputeEffectDigest).not.toHaveBeenCalled();
     expect(mockTransitionIntent).toHaveBeenCalledWith('intent-topology-unpinned', 'executing', 'failed', { errorCode: 'digest_required' });
+  });
+
+  it('CASes to failed:digest_required when manage_accounting_sync push carries no digest', async () => {
+    for (const [args, expectRefusal] of [
+      [{ action: 'push', provider: 'xero', invoiceId: 'inv-1' }, true],
+    ] as const) {
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true, tier: 3, requiresApproval: true, description: 'Accounting push',
+      } as any);
+      mockInsertReturning({ id: 'exec-acct-unpinned' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-acct-unpinned', approvalRequestIds: ['appr-acct-unpinned'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(true);
+      const selectChain: Record<string, unknown> = {
+        from: vi.fn(() => selectChain),
+        where: vi.fn(() => selectChain),
+        limit: vi.fn(async () => [{
+          id: 'intent-acct-unpinned', boundArgumentDigest: 'digest', actionName: 'manage_accounting_sync',
+          arguments: args, effectDigest: null,
+        }]),
+      };
+      vi.mocked(db.select).mockReturnValue(selectChain as any);
+      mockComputeEffectDigest.mockClear();
+
+      await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' }).catch(() => undefined);
+
+      const refused = mockTransitionIntent.mock.calls.some(
+        (c) => c[3] && (c[3] as { errorCode?: string }).errorCode === 'digest_required',
+      );
+      expect(refused).toBe(expectRefusal);
+      if (expectRefusal) {
+        expect(mockTransitionIntent).toHaveBeenCalledWith('intent-acct-unpinned', 'executing', 'failed', { errorCode: 'digest_required' });
+        expect(mockComputeEffectDigest).not.toHaveBeenCalled();
+      }
+    }
   });
 
   // #5232, `executed: false` branch. The other half of `reportLostTerminalCas`:

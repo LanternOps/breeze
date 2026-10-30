@@ -1,3 +1,8 @@
+import { findPartnerOwnedGroupIds } from '../../services/deviceGroupOwnership';
+vi.mock('../../services/deviceGroupOwnership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/deviceGroupOwnership')>()),
+  findPartnerOwnedGroupIds: vi.fn(async () => [] as string[]),
+}));
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
@@ -138,6 +143,18 @@ async function post(body: unknown) {
 }
 
 describe('POST /endpoint-messages (#8741)', () => {
+  it('refuses partner group endpoint message targets before persistence or idempotency', async () => {
+    const groupId = '77777777-7777-4777-8777-777777777777';
+    vi.mocked(findPartnerOwnedGroupIds).mockResolvedValueOnce([groupId]);
+    const {res,json} = await post(baseBody({targets:{deviceGroupIds:[groupId]}}));
+    expect(res.status).toBe(400);
+    expect(json).toMatchObject({code:'PARTNER_GROUP_TARGET_UNSUPPORTED',groupIds:[groupId]});
+    expect(h.persist).not.toHaveBeenCalled();
+    expect(h.claimIdem).not.toHaveBeenCalled();
+    expect(h.resolveTargetsDetailed).not.toHaveBeenCalled();
+    expect(findPartnerOwnedGroupIds).toHaveBeenCalledWith([groupId]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     h.auth = { user: { id: USER, email: 'tech@example.com' }, scope: 'partner', partnerId: PARTNER, orgId: null, accessibleOrgIds: [ORG_A, ORG_B] };

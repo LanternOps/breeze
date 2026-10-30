@@ -42,7 +42,55 @@ export async function loadProposalGuardrailContext(
 ): Promise<GuardrailContext | undefined> {
   const proposalId = input.proposalId;
   if (typeof proposalId !== 'string' || proposalId.length === 0) return undefined;
+  const row = await loadGuardrailRow(proposalId);
+  return classifyProposalRow(row && row.orgId === orgId ? row : undefined);
+}
 
+/**
+ * #10384: the same verdict as `loadProposalGuardrailContext`, but the proposal
+ * is looked up within the caller's org REACH instead of pinned to one org, and
+ * the proposal's own org is handed back.
+ *
+ * For the interactive chat gate. A chat session is bound to one org, yet
+ * `propose_script` files the proposal under the TARGET DEVICE's org
+ * (aiToolsScriptProposals.ts `resolveProposalOrgId`). Under a partner-scope
+ * login (a Wisp session on a partner-wide grant, or a partner tech's ordinary
+ * chat) those differ whenever the device sits outside the bound org, and an
+ * exact-org lookup refused every such proposal as `proposal_not_found`.
+ *
+ * `canAccessOrg` is the caller's reach for THIS call: the session's tool auth,
+ * cut to the Wisp ceiling when a grant governs the session. Nothing is widened:
+ * the device gate, `assertProposalRunnable` and the action intent all still
+ * require the same access. A proposal outside that reach collapses into
+ * `proposal_not_found` with no org, indistinguishable from a missing id, so
+ * the no-cross-tenant-existence-signal property above holds per reach.
+ */
+export async function loadProposalGuardrailContextInReach(
+  input: Record<string, unknown>,
+  canAccessOrg: (orgId: string) => boolean,
+): Promise<{ context: GuardrailContext | undefined; proposalOrgId: string | null }> {
+  const proposalId = input.proposalId;
+  if (typeof proposalId !== 'string' || proposalId.length === 0) return { context: undefined, proposalOrgId: null };
+  const row = await loadGuardrailRow(proposalId);
+  const inReach = row && canAccessOrg(row.orgId) ? row : undefined;
+  return { context: classifyProposalRow(inReach), proposalOrgId: inReach?.orgId ?? null };
+}
+
+/**
+ * #10384: the org a proposal lives in, when the caller can reach it; null for
+ * a missing id and for one outside `canAccessOrg` alike. For the chat
+ * attribution back-fill (aiAgentSdk.ts `attachChatProposalToSession`), which
+ * must write under the proposal's org, not the session's.
+ */
+export async function resolveProposalOrgInReach(
+  proposalId: string,
+  canAccessOrg: (orgId: string) => boolean,
+): Promise<string | null> {
+  const row = await loadGuardrailRow(proposalId);
+  return row && canAccessOrg(row.orgId) ? row.orgId : null;
+}
+
+async function loadGuardrailRow(proposalId: string) {
   const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({
       orgId: scriptProposals.orgId,
@@ -53,8 +101,12 @@ export async function loadProposalGuardrailContext(
       .from(scriptProposals)
       .where(eq(scriptProposals.id, proposalId))
       .limit(1)));
+  return row;
+}
 
-  if (!row || row.orgId !== orgId) return { proposalDenyReason: 'proposal_not_found' };
+/** `row` is undefined both for a missing id and for one outside the caller's scope. */
+function classifyProposalRow(row: Awaited<ReturnType<typeof loadGuardrailRow>>): GuardrailContext {
+  if (!row) return { proposalDenyReason: 'proposal_not_found' };
   if (row.riskTier) return { proposal: { riskTier: row.riskTier, strictHits: row.strictHits ?? [] } };
   if (row.status === 'proposed') return { proposalDenyReason: 'proposal_review_pending' };
   if (row.status === 'scan_rejected' || row.status === 'review_failed') {

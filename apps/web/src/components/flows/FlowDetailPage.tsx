@@ -128,6 +128,17 @@ export default function FlowDetailPage({ flowId }: { flowId: string }) {
           <span>{formatDateTime(flow.updatedAt)}</span>
           {flow.aiSessionId && <span>{t('detail.createdInChat')}</span>}
         </div>
+        {flow.convertedFrom && (
+          <p className="text-sm text-muted-foreground" data-testid="flow-moved-from">
+            {t('detail.movedFromJob')}{' '}
+            <a href={`/jobs#convert-${flow.convertedFrom.automationId}`} className="font-medium text-primary hover:underline">
+              {flow.convertedFrom.name}
+            </a>
+            {flow.convertedFrom.state === 'reverted' && (
+              <span className="ml-2 text-xs" data-testid="flow-moved-from-reverted">{t('detail.movedFromJobReverted')}</span>
+            )}
+          </p>
+        )}
         {flow.status === 'paused' && flow.pausedReason && (
           <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="flow-paused-reason">
             {t(/* i18n-dynamic */ `status.pausedReason.${flow.pausedReason}`)}

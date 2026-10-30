@@ -569,7 +569,9 @@
       "after": "peşinde",
       "between": "arasındadır",
       "withinLast": "sonuncu içinde",
-      "notWithinLast": "sonuncusu içinde değil"
+      "notWithinLast": "sonuncusu içinde değil",
+      "below": "daha düşük",
+      "atLeast": "en az"
     },
     "value": {
       "noValue": "Değere gerek yok",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Çıkarıldı"
-      }
+      },
+      "softwareName": "Yazılım adı",
+      "softwareVersion": "Yazılım sürümü"
     }
   },
   "account": {
@@ -1297,6 +1301,14 @@
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Sahiplik",
+        "allOrganizations": "Tüm kuruluşlar",
+        "thisOrganizationOnly": "Yalnızca bu kuruluş",
+        "all": "Tümü",
+        "organization": "Kuruluş",
+        "test": "Test gönderimi"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} teslimat denemeleri",
         "empty": "Henüz teslimat girişimi yok.",
