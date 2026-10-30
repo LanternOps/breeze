@@ -13,12 +13,12 @@ interface LogEntry {
   id: string;
   timestamp: string;
   tool: string;
-  status: "failed" | "rejected" | "denied";
+  status: "failed" | "rejected" | "refused" | "denied";
   errorMessage: string | null;
   sessionId: string | null;
   source: "execution" | "security";
 }
-type StatusFilter = "all" | "failed" | "rejected" | "denied";
+type StatusFilter = "all" | "failed" | "rejected" | "refused" | "denied";
 export function RejectionDenialLog({
   executions,
   securityEvents,
@@ -29,14 +29,16 @@ export function RejectionDenialLog({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const entries = useMemo(() => {
     const result: LogEntry[] = [];
-    // Failed/rejected from tool executions
+    // Failed/rejected/refused from tool executions. `refused` is the
+    // platform refusing a call before it ran (guardrail, RBAC, rate limit,
+    // validation; #10411), apart from an approval `rejected`.
     for (const exec of executions) {
-      if (exec.status === "failed" || exec.status === "rejected") {
+      if (exec.status === "failed" || exec.status === "rejected" || exec.status === "refused") {
         result.push({
           id: exec.id,
           timestamp: exec.createdAt,
           tool: exec.toolName,
-          status: exec.status as "failed" | "rejected",
+          status: exec.status,
           errorMessage: exec.errorMessage,
           sessionId: exec.sessionId,
           source: "execution",
@@ -86,6 +88,7 @@ export function RejectionDenialLog({
   const statusBadge: Record<string, string> = {
     failed: "bg-red-500/15 text-red-700 border-red-500/30",
     rejected: "bg-amber-500/15 text-amber-700 border-amber-500/30",
+    refused: "bg-slate-500/15 text-slate-700 border-slate-500/30",
     denied: "bg-red-500/15 text-red-700 border-red-500/30",
   };
   // #10198: `rejected` is a person's Deny on an AI action (label "Denied");
@@ -93,6 +96,7 @@ export function RejectionDenialLog({
   const statusLabel: Record<LogEntry["status"], string> = {
     failed: t("aiRiskRejectionDenialLog.failed"),
     rejected: t("aiRiskRejectionDenialLog.rejected"),
+    refused: t("aiRiskRejectionDenialLog.refused"),
     denied: t("aiRiskRejectionDenialLog.denied"),
   };
   const filters: {
@@ -102,6 +106,7 @@ export function RejectionDenialLog({
     { label: t("aiRiskRejectionDenialLog.all2"), value: "all" },
     { label: statusLabel.failed, value: "failed" },
     { label: statusLabel.rejected, value: "rejected" },
+    { label: statusLabel.refused, value: "refused" },
     { label: statusLabel.denied, value: "denied" },
   ];
   return (

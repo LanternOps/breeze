@@ -602,7 +602,8 @@ function seedRows(options: {
 const hooks: Hooks = {};
 
 interface QueryScript {
-  toolCalls?: Array<{ tool: string; input: Record<string, unknown> }>;
+  /** `result`: what an ALLOWED call's tool returned (default `{"ok":true}`, not an error). */
+  toolCalls?: Array<{ tool: string; input: Record<string, unknown>; result?: { output: string; isError: boolean } }>;
   assistantText?: string;
   results?: Array<Record<string, unknown>>;
   hangUntilAbort?: boolean;
@@ -671,7 +672,7 @@ function scriptQuery(script: QueryScript) {
         const verdict = await hooks.pre!(call.tool, call.input);
         preVerdicts.push(verdict);
         if (verdict.allowed) {
-          await hooks.post!(call.tool, call.input, '{"ok":true}', false, 5);
+          await hooks.post!(call.tool, call.input, call.result?.output ?? '{"ok":true}', call.result?.isError ?? false, 5);
         } else {
           await hooks.post!(call.tool, call.input, JSON.stringify({ error: verdict.error }), true, 0);
         }
@@ -3133,6 +3134,28 @@ describe('executeAgentRun', () => {
     const final = finalTransition()!;
     const outcome = final.patch.outcome as { executedActions: Array<{ executionId: string }> };
     expect(outcome.executedActions[0]!.executionId).toBe('exec-1');
+  });
+
+  // #10411: a failed run tool call kept only status 'failed' — the reason
+  // survived only in the model's prose.
+  it('a failed allowed tool call hands its result to the ledger row for the error text', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{
+        tool: 'query_devices',
+        input: { status: 'online' },
+        result: { output: JSON.stringify({ error: 'Device is offline' }), isError: true },
+      }],
+      assistantText: 'done',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(completeToolExecution).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-1',
+      isError: true,
+      output: JSON.stringify({ error: 'Device is offline' }),
+    }));
   });
 
   it('a ledger write failure never blocks the tool call — falls back to (inline)', async () => {

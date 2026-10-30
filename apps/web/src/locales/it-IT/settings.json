@@ -69,7 +69,8 @@
           "executing": "In esecuzione",
           "completed": "Completato",
           "failed": "Non riuscito",
-          "rejected": "Negato"
+          "rejected": "Negato",
+          "refused": "Bloccato"
         }
       },
       "intents": {

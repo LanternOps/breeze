@@ -350,6 +350,7 @@
       "pending": "in sospeso",
       "approved": "approvato",
       "rejected": "negato",
+      "refused": "bloccato",
       "completed": "completato",
       "failed": "non riuscito"
     },
@@ -392,6 +393,7 @@
     "requestedAt": "richiesto {{time}}",
     "approvedAt": "approvato {{time}}",
     "rejectedAt": "negato {{time}}",
+    "refusedAt": "bloccato {{time}}",
     "appliedAt": "applicato {{time}}",
     "flagDialog": {
       "title": "Segnala sessione",
