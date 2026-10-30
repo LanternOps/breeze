@@ -8,7 +8,7 @@
  * admission is refused instead of starting a second, concurrent offboarding
  * of the same account.
  *
- * LIFECYCLE (read the migration header, 2027-01-15-130000, for the SQL):
+ * LIFECYCLE (read the migration header, 2027-01-17-170000, for the SQL):
  *  - written by `reserveTaskAccount`, which `freezeTargetAccount` calls, so an
  *    account is never frozen onto a task without being reserved;
  *  - held while the task is live, and while it is terminal with outcome
