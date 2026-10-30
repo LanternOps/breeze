@@ -143,6 +143,8 @@ export const GATED_COMMAND_TYPES = [
   'notify_user',
   'pam_apply_v2',
   'pam_reconcile_v2',
+  // #8928: carries the technician's deny reason to the end user's screen.
+  'pam_request_notify',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',

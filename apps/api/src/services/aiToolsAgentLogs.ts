@@ -273,7 +273,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         if (conditions === null) {
           return JSON.stringify({
             ...keysetEnvelope<{ createdAtText: string; id: string }>({
-              key: 'logs', items: [], limit, fingerprint,
+              key: 'logs', items: [], limit, fingerprint, after,
               keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
             }),
             count: 0,
@@ -327,7 +327,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
         });
 
         const envelope = keysetEnvelope({
-          key: 'logs', items, limit, fingerprint,
+          key: 'logs', items, limit, fingerprint, after,
           keyOf: (r) => ({ t: r.createdAtText, i: r.id }),
         });
         const outLogs = (envelope.logs as Array<Record<string, unknown>>).map(

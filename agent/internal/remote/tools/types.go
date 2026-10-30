@@ -292,6 +292,11 @@ const (
 	CmdPamApplyV2       = "pam_apply_v2"
 	CmdPamCleanupV2     = "pam_cleanup_v2"
 	CmdPamReconcileV2   = "pam_reconcile_v2"
+
+	// #8928: fire-and-forget outcome notice (denied / expired) for an
+	// elevation request the user handed to IT. Claimable only by agents that
+	// report pamUserNotifyProtocolVersion 1.
+	CmdPamRequestNotify = "pam_request_notify"
 )
 
 // CommandResult represents the result of a command execution

@@ -36,6 +36,9 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: deleteSpy, transaction: vi.fn() },
 }));
+// Tool Catalog W06 (#5221): list/get/history carry each automation's conversion summary;
+// covered in aiToolsFleet.test.ts. No conversions here.
+vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: vi.fn(async () => new Map()) }));
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
 }));

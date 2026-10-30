@@ -24,6 +24,7 @@ import type { AiTool } from './aiTools';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { siteAllowlistOf } from './aiToolsSiteScope';
 import { createUnifiClient, UnifiApiError } from './unifi/unifiClient';
+import { buildMappingHostList } from './unifi/unifiMappingHosts';
 import { getConnection, getDecryptedApiKey } from './unifi/unifiConnectionService';
 import { listCollectors } from './unifi/unifiCollectorService';
 import { listControllerSitesForIntegration } from './unifi/unifiControllerSiteService';
@@ -110,18 +111,8 @@ export function registerUnifiTools(aiTools: Map<string, AiTool>): void {
             try {
               const client = createUnifiClient({ baseUrl: conn.baseUrl, apiKey });
               const [hosts, allSites] = await runOutsideDbContext(() => Promise.all([client.listHosts(), client.listSites()]));
-              const sitesByHost = new Map<string, Array<{ id: string; name: string }>>();
-              for (const s of allSites) {
-                const list = sitesByHost.get(s.hostId) ?? [];
-                list.push({ id: s.id, name: s.name });
-                sitesByHost.set(s.hostId, list);
-              }
-              // Only mappable consoles, exactly as the route lists them for the mapping UI.
-              return bounded({
-                hosts: hosts
-                  .filter((h) => (h.type ?? 'console') === 'console' && (sitesByHost.get(h.id)?.length ?? 0) > 0)
-                  .map((h) => ({ id: h.id, name: h.name, model: h.model, sites: sitesByHost.get(h.id) ?? [] })),
-              });
+              const list = buildMappingHostList(hosts, allSites);
+              return bounded({ hosts: list.hosts, omitted: list.omitted });
             } catch (error) {
               // Only a vendor API error is an upstream failure; anything else is ours and goes to thrown() (logged in full).
               if (!(error instanceof UnifiApiError)) throw error;

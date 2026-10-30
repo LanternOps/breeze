@@ -487,6 +487,7 @@ export function ApprovalScreen() {
             inFlight={inFlight}
             approveLabel={copy.approveLabel}
             holdLabel={copy.holdLabel}
+            denyShownToEndUser={flowType === 'uac_intercept'}
             onApprove={handleApprove}
             onDeny={handleDeny}
             approveDisabled={
