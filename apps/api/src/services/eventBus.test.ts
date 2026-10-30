@@ -22,7 +22,7 @@ vi.mock('../db', () => {
   };
 });
 
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 
 // eventDispatchQueue (wave 3.5c, #4085) is mocked wholesale so publish()'s
 // wiring can be asserted (called / not called, with what args) without
@@ -77,6 +77,24 @@ describe('eventBus service', () => {
     expect(entries[0].id).toBe(eventId);
     expect(entries[1]).toEqual(entries[0]);
     expect(entries[0].metadata.timestamp).toBe(occurredAt);
+  });
+
+  it('future occurredAt is reported', async () => {
+    // #5221 Decision 6 residual (b): a publisher-supplied instant more than 60 s
+    // ahead can land after a conversion's switch_at. Reported, never refused or altered.
+    const { captureMessage } = await import('./sentry');
+    vi.mocked(captureMessage).mockClear();
+    const occurredAt = new Date(Date.now() + 61_000).toISOString();
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', { occurredAt });
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(captureMessage).mock.calls[0]![1]).toMatchObject({ eventCode: 'event_occurred_at_future' });
+    const entry = JSON.parse(vi.mocked(mockRedis.xadd!).mock.calls.at(-1)!.at(-1) as string);
+    expect(entry.metadata.timestamp).toBe(occurredAt);
+
+    // Within the 60 s allowance (and the default "now") nothing is reported.
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test', { occurredAt: new Date(Date.now() + 30_000).toISOString() });
+    await eventBusModule.publishEvent('device.offline', 'org-1', { deviceId: 'd1' }, 'test');
+    expect(captureMessage).toHaveBeenCalledTimes(1);
   });
 
   describe('publishUserEvent — addressed to one user', () => {

@@ -233,6 +233,8 @@ describe('flows routes', () => {
       ['flow_not_found', 404], ['version_conflict', 409], ['already_enabled', 409], ['slug_unavailable', 409],
       ['partner_wide_forbidden', 403], ['interactive_session_required', 403], ['delegation_scope_restricted', 403],
       ['event_dispatch_not_durable', 422], ['foreach_concurrency_not_available', 422], ['webhook_secret_missing', 422],
+      // W06 (#5221) B3: a shadow conversion's draft is enabled only by the switch.
+      ['flow_conversion_not_switched', 409],
     ])('enable maps %s to %i', async (error, status) => {
       vi.mocked(enableFlow).mockResolvedValue({ ok: false, error } as never);
       const res = await post(`/${FLOW_ID}/enable`, { expectedVersion: 1 });

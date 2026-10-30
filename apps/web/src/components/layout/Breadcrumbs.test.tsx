@@ -1,7 +1,7 @@
 import '../../lib/i18n';
 
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import Breadcrumbs from './Breadcrumbs';
 
@@ -77,3 +77,28 @@ describe('Breadcrumbs shrink priority', () => {
   });
 });
 
+
+// A crumb with `onClick` handles a plain click itself (e.g. pops history so a
+// list's filters survive) but stays a real link for modifier/middle clicks.
+describe('Breadcrumbs onClick', () => {
+  it('runs onClick and suppresses navigation on a plain left click', () => {
+    const onClick = vi.fn();
+    render(<Breadcrumbs items={[{ label: 'Devices', href: '/devices', onClick }, { label: 'Edge 01' }]} />);
+    const link = screen.getByRole('link', { name: 'Devices' });
+    expect(link).toHaveAttribute('href', '/devices');
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(event);
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('leaves a cmd/ctrl-click to the browser so the href opens in a new tab', () => {
+    const onClick = vi.fn();
+    render(<Breadcrumbs items={[{ label: 'Devices', href: '/devices', onClick }, { label: 'Edge 01' }]} />);
+    const link = screen.getByRole('link', { name: 'Devices' });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, metaKey: true });
+    link.dispatchEvent(event);
+    expect(onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+});

@@ -65,11 +65,22 @@ export const elevationStatusEnum = pgEnum('elevation_status', [
 
 /**
  * #8971: why the end user's device withdrew a pending request. Byte-identical
- * to elevation_requests_withdrawn_reason_chk (2027-01-10-100100 migration) and
- * the agent's pamdecline Reason constants.
+ * to elevation_requests_withdrawn_reason_chk (last widened by
+ * 2027-01-15-100000-pam-withdrawn-reason-user-cancelled.sql) and the agent's
+ * pamdecline Reason constants. Append only: the CHECK lists the same values.
+ *   user_cancelled — #10190 W07: the person chose "Cancel request" on the
+ *                    waiting card after handing the request to IT.
  */
-export const PAM_WITHDRAW_REASONS = ['user_denied', 'user_timeout', 'dialog_error'] as const;
+export const PAM_WITHDRAW_REASONS = ['user_denied', 'user_timeout', 'dialog_error', 'user_cancelled'] as const;
 export type PamWithdrawReason = (typeof PAM_WITHDRAW_REASONS)[number];
+
+/**
+ * #10190: which on-device renderer carried an end-user elevation decision
+ * (plan Global Constraints "Audit": assist | native | headless). Audit detail
+ * only; never a column.
+ */
+export const PAM_PROMPT_RENDERERS = ['assist', 'native', 'headless'] as const;
+export type PamPromptRenderer = (typeof PAM_PROMPT_RENDERERS)[number];
 
 export const elevationAuditEventTypeEnum = pgEnum('elevation_audit_event_type', [
   'requested',
