@@ -635,6 +635,47 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect((wisp.enforceWispCeiling.mock.calls[0]![0] as { input: object }).input).toEqual({});
   });
 
+  // #10384: a run_script proposal is resolved within the call's reach, and
+  // under a grant that reach is the CEILING-NARROWED tool auth, never the
+  // session's wider login auth. The real reach loader runs against a stubbed
+  // proposal row filed under org-2 (its target device's org).
+  describe('run_script proposal lookup (#10384)', () => {
+    const narrowedTo = (...orgIds: string[]) => (base: Record<string, unknown>) => ({
+      ...base, accessibleOrgIds: orgIds, canAccessOrg: (orgId: string) => orgIds.includes(orgId),
+    });
+
+    beforeEach(() => {
+      const row = { orgId: 'org-2', status: 'reviewed', riskTier: 'medium', strictHits: [] };
+      const selectChain: Record<string, unknown> = {
+        from: vi.fn(() => selectChain),
+        where: vi.fn(() => selectChain),
+        limit: vi.fn(async () => [row]),
+      };
+      vi.mocked(db.select).mockReturnValue(selectChain as any);
+      // Stop at the guardrail: what is under test is the context it is handed.
+      vi.mocked(checkGuardrails).mockReturnValue({ allowed: false, tier: 3, reason: 'stop' } as any);
+    });
+
+    it('admits a proposal in another org the CEILING reaches', async () => {
+      wisp.narrowAuthToCeiling.mockImplementation(narrowedTo('org-1', 'org-2'));
+      await createSessionPreToolUse(wispSession())('run_script', { proposalId: 'p-2', deviceIds: ['d-2'] });
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining({
+        proposal: { riskTier: 'medium', strictHits: [] },
+      }));
+    });
+
+    it('refuses as proposal_not_found a proposal the session reaches but the ceiling does not', async () => {
+      // The session's login auth reaches org-1 AND org-2 (wispSession), the
+      // grant only org-1: the lookup must follow the grant.
+      wisp.narrowAuthToCeiling.mockImplementation(narrowedTo('org-1'));
+      await createSessionPreToolUse(wispSession())('run_script', { proposalId: 'p-2', deviceIds: ['d-2'] });
+      expect(checkGuardrails).toHaveBeenCalledWith('run_script', expect.anything(), expect.objectContaining({
+        proposalDenyReason: 'proposal_not_found',
+      }));
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('tier-3 inline release', () => {
     beforeEach(() => {
       const selectChain: Record<string, unknown> = {

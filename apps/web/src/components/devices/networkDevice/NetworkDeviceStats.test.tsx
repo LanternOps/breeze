@@ -64,38 +64,27 @@ const supplyCollection: Collection = {
   ],
 };
 
-const probeState = { checking: false, pending: false, errorCode: null, checkNow: vi.fn() };
-
 function renderStrip(overrides: Partial<Parameters<typeof NetworkDeviceStats>[0]> = {}) {
   return render(
     <NetworkDeviceStats
       asset={asset}
       reachability={reachability}
       collection={supplyCollection}
-      timezone="UTC"
-      probeState={probeState}
       onViewPorts={vi.fn()}
-      onViewMonitoring={vi.fn()}
       {...overrides}
     />,
   );
 }
 
 describe('NetworkDeviceStats', () => {
-  it('names the reachability source and age, never a bare state', () => {
+  it('does not restate the reachability verdict or the poll age — the header badge and the card own those', () => {
+    // The strip used to carry "Responding · SNMP 2 min ago" and "Polling ·
+    // 3 min ago" directly under a header badge that said the same thing, and
+    // above a card that said it twice more.
     renderStrip();
-    const cell = screen.getByTestId('network-detail-stat-reachability').textContent ?? '';
-    expect(cell).toContain('Responding');
-    expect(cell).toContain('SNMP');
-    expect(cell).toMatch(/2\s*min/);
-  });
-
-  it('shows the last poll with its status word and links to the Monitoring tab', async () => {
-    const onViewMonitoring = vi.fn();
-    renderStrip({ onViewMonitoring });
-    expect(screen.getByTestId('network-detail-stat-last-poll').textContent).toContain('Polling');
-    await userEvent.click(screen.getByTestId('network-detail-stat-last-poll'));
-    expect(onViewMonitoring).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('network-detail-stat-reachability')).toBeNull();
+    expect(screen.queryByTestId('network-detail-stat-last-poll')).toBeNull();
+    expect(screen.getByTestId('network-detail-stats').textContent).not.toMatch(/\bmin\b/);
   });
 
   it('fills the printer type slot with the lowest supply', () => {
@@ -106,28 +95,17 @@ describe('NetworkDeviceStats', () => {
     expect(slot).not.toContain('78'); // the lowest supply, not the first one
   });
 
-  it('calls the probe and renders a pending line while it is in flight', async () => {
-    const checkNow = vi.fn().mockResolvedValue(undefined);
-    const view = renderStrip({ probeState: { checking: false, pending: false, errorCode: null, checkNow } });
-    await userEvent.click(screen.getByTestId('network-detail-check-now'));
-    expect(checkNow).toHaveBeenCalledTimes(1);
-    view.unmount();
-    renderStrip({ probeState: { checking: false, pending: true, errorCode: null, checkNow } });
-    expect(screen.getByTestId('network-detail-check-now')).toBeDisabled();
-    expect(screen.getByTestId('network-detail-probe-status').textContent).toContain('Checking');
-  });
-
-  it('renders a probe failure as an inline line under the reachability cell', () => {
-    renderStrip({ probeState: { checking: false, pending: false, errorCode: 'NO_AGENT_IN_SITE', checkNow: vi.fn() } });
-    const line = screen.getByTestId('network-detail-probe-error');
-    expect(line).toHaveAttribute('role', 'status');
-    expect(line.textContent).toContain('No online agent');
+  it('links the open-port count through to the ports view', async () => {
+    const onViewPorts = vi.fn();
+    renderStrip({ onViewPorts });
+    expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
+    await userEvent.click(screen.getByTestId('network-detail-stat-ports'));
+    expect(onViewPorts).toHaveBeenCalledTimes(1);
   });
 
   it('still renders every cell when the API sent no reachability and no collection', () => {
     renderStrip({ reachability: null, collection: null });
-    expect(screen.getByTestId('network-detail-stat-reachability').textContent).toContain('Unverified');
-    expect(screen.getByTestId('network-detail-stat-last-poll').textContent).toContain('Not configured');
+    expect(screen.getByTestId('network-detail-stat-type')).toBeInTheDocument();
     expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
   });
 });

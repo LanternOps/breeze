@@ -40,7 +40,8 @@ export interface FilterSentenceBuilderProps {
 function defaultConditionForField(field: FilterFieldDefinition): FilterCondition {
   const op = field.operators[0];
   let value: FilterValue = '';
-  if (op === 'in' || op === 'notIn' || op === 'hasAny' || op === 'hasAll') value = [];
+  if (field.key === 'software.version') value = { name: '', version: '' };
+  else if (op === 'in' || op === 'notIn' || op === 'hasAny' || op === 'hasAll') value = [];
   else if (op === 'withinLast' || op === 'notWithinLast') value = { amount: 7, unit: 'days' };
   else if (field.type === 'number') value = 0;
   else if (field.type === 'enum' && field.enumValues?.length) value = field.enumValues[0];

@@ -135,6 +135,27 @@ describe('manage_alerts list output shape (A-W05 keyset)', () => {
     expect(out._chat?.nextStep).toBe(SENTINEL_HINTS.cursor);
   });
 
+  it('#10385: on a later page, compaction resumes after the last KEPT row, and a digest resumes at the cursor that page started from', async () => {
+    dbMock.setRows(Array.from({ length: 16 }, (_, i) => alertRow(i)));
+    dbMock.setTotal(200);
+    const first = JSON.parse(await tool.handler({ action: 'list', severity: 'high' }, auth())) as { nextCursor: string };
+
+    const rows = Array.from({ length: 100 }, (_, i) => alertRow(i + 20, { message: 'm'.repeat(900) }));
+    dbMock.setRows(rows);
+    const raw = await tool.handler({ action: 'list', severity: 'high', limit: 100, cursor: first.nextCursor }, auth());
+
+    const out = JSON.parse(compactToolResultForChat('manage_alerts', raw)) as { alerts: unknown[]; showing: number; nextCursor: string };
+    const kept = out.alerts.filter((a) => typeof a !== 'string').length;
+    expect(kept).toBeLessThan(100);
+    expect(out.showing).toBe(kept);
+    const resumed = JSON.parse(Buffer.from(out.nextCursor, 'base64url').toString('utf8')) as { t: string; i: string };
+    expect(resumed.t).toBe(rows[kept - 1]!.triggeredAtText);
+
+    const digest = JSON.parse(compactToolResultForChat('manage_alerts', raw, 600)) as { summarized?: boolean; nextCursor: string };
+    expect(digest.summarized).toBe(true);
+    expect(digest.nextCursor).toBe(first.nextCursor);
+  });
+
   it('a nextCursor carries the exact microsecond-precision triggeredAt text (no Date round-trip) and turns into a (triggeredAt, id) < (t, i) predicate on the next call', async () => {
     const rows = Array.from({ length: 16 }, (_, i) => alertRow(i));
     dbMock.setRows(rows);

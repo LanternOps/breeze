@@ -172,10 +172,6 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
   ['services/aiToolsBrowser.ts:611', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
-  // object handed to the webhook worker's queueDelivery; the actual
-  // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:342', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
   ['services/aiToolsScripts.ts:877', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
@@ -378,8 +374,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
 
     const integrationsSrc = readFileSync(join(API_SRC, 'services/aiToolsIntegrations.ts'), 'utf8');
     expect(integrationsSrc).toMatch(/insert\(webhookDeliveries\)/);
-    // The DB insert values block must NOT mention userId — only the
-    // in-memory `event.metadata` a few lines below does.
+    // Delivery rows and ids-only jobs carry no user-owned foreign key.
     const deliveryInsert = /insert\(webhookDeliveries\)[\s\S]*?\.returning/.exec(integrationsSrc);
     expect(deliveryInsert, 'webhookDeliveries insert moved').not.toBeNull();
     expect(deliveryInsert![0]).not.toMatch(/userId/);

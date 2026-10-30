@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}} % confiance"
   },
   "alertDetailPage": {
+    "externalTickets": "Tickets externes",
+    "externalTicketsFailedToLoad": "Impossible de charger les tickets externes.",
     "loadingAlert": "Alerte chargement...",
     "backToAlerts": "Retour aux alertes",
     "goBack": "Retourne",

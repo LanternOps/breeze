@@ -66,7 +66,7 @@ describe('connection health source index contract (spec §1.3)', () => {
     ['m365_connection', 'm365_connections_unhealthy_idx'],
     ['m365_sync', 'm365_sync_state_unhealthy_idx'],
     ['oauth_grant', 'oauth_grants_auto_revoked_idx'],
-    ['webhook', 'webhook_deliveries_failed_recent_idx'],
+    ['webhook', 'webhook_deliveries_failed_at_recent_idx'],
     ['google_workspace', 'google_workspace_connections_probe_failed_idx'],
   ])('%s uses %s', async (kind, index) => {
     const source = HEALTH_SOURCES.find((s) => s.kind === kind)!;

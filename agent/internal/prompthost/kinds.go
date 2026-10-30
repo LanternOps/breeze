@@ -44,6 +44,12 @@ func (h *Host) KindLive(kind string, version int) bool {
 // server enables it, and a live renderer serving o advertised it. When it is
 // false the caller takes its exact legacy call.
 func (h *Host) PromptPathAvailable(kind string, version int, o Owner) bool {
+	return h.PromptPathAvailableVia(kind, version, o, nil)
+}
+
+// PromptPathAvailableVia is PromptPathAvailable for a prompt restricted to
+// roles (Prompt.Roles; nil = the default Assist, then native).
+func (h *Host) PromptPathAvailableVia(kind string, version int, o Owner, roles []ipc.HelperRole) bool {
 	h.mu.Lock()
 	_, speaks := h.kinds[kind][version]
 	enabled := h.enabled
@@ -51,7 +57,7 @@ func (h *Host) PromptPathAvailable(kind string, version int, o Owner) bool {
 	if !speaks {
 		return false
 	}
-	c := selectRenderer(kind, []int{version}, h.dir.Renderers(o), enabled, nil, false, false)
+	c := selectRendererVia(kind, []int{version}, roles, h.dir.Renderers(o), enabled, nil, false, false)
 	return c.Path == PathPrompt
 }
 

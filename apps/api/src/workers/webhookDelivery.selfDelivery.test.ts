@@ -10,16 +10,13 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
-vi.mock('../services/redis', () => ({
-  createBlockingRedisConnection: () => ({}),
-  getRedisConnection: () => ({}),
-}));
+vi.mock('../jobs/webhookDeliveryQueue', () => ({ enqueueWebhookAttempt: queueDeliveryMock }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 
-import { configureWebhookFanout, handleWebhookFanoutEvent, getWebhookWorker } from './webhookDelivery';
+import { configureWebhookFanout, handleWebhookFanoutEvent } from './webhookDelivery';
 
-const SELF = { id: '7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 as const };
-const OTHER = { id: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', orgId: 'org-1', approvalGeneration: 1, payloadVersion: 1 as const };
+const SELF = { id: '7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 as const };
+const OTHER = { id: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', orgId: 'org-1', partnerId: null, approvalGeneration: 1, payloadVersion: 1 as const };
 
 const event = (type: string, payload: Record<string, unknown>) => ({
   id: 'event-1',
@@ -37,13 +34,12 @@ describe('webhook fan-out: connection health self-delivery exclusion', () => {
   beforeEach(() => {
     queueDeliveryMock.mockReset();
     createDeliveryRecord.mockClear();
-    vi.spyOn(getWebhookWorker(), 'queueDelivery').mockImplementation(queueDeliveryMock);
     vi.spyOn(console, 'log').mockImplementation(() => {});
     configureWebhookFanout({ getWebhooksForEvent: async () => [SELF, OTHER], createDeliveryRecord });
   });
   afterEach(() => vi.restoreAllMocks());
 
-  const queuedTo = () => queueDeliveryMock.mock.calls.map((c) => c[0]);
+  const queuedTo = () => queueDeliveryMock.mock.calls.map((c) => c[0].webhookId);
 
   it.each(['integration.health_opened', 'integration.health_resolved'])(
     '%s about a webhook skips that webhook before any delivery row, and still reaches the others',

@@ -5,9 +5,12 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '../../stores/auth';
+import { useJwtClaims } from '../../lib/authScope';
 
 const createWebhookSchema = (t: (key: string) => string) => z
   .object({
+    ownerScope: z.enum(['organization', 'partner']).optional(),
     name: z.string().min(1, t('longTail.webhooks.WebhookForm.validation.nameRequired')),
     url: z.string().url(t('longTail.webhooks.WebhookForm.validation.invalidUrl')).min(1, t('longTail.webhooks.WebhookForm.validation.urlRequired')),
     // At-least-one is enforced on submit against checked boxes + preserved
@@ -53,6 +56,7 @@ type WebhookFormProps = {
   defaultValues?: Partial<WebhookFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  isEditing?: boolean;
 };
 
 export const webhookEventOptions = [
@@ -97,9 +101,14 @@ export default function WebhookForm({
   onCancel,
   defaultValues,
   submitLabel,
-  loading
+  loading,
+  isEditing = false
 }: WebhookFormProps) {
   const { t } = useTranslation('common');
+  const claims = useJwtClaims();
+  const canManagePartnerWide = useAuthStore(state => state.user?.canManagePartnerWide === true);
+  const showOwnerScope = !isEditing && canManagePartnerWide
+    && claims.status === 'resolved' && claims.claims.scope === 'partner';
   const resolvedSubmitLabel = submitLabel ?? t('longTail.webhooks.WebhookForm.defaultSubmitLabel');
   const webhookSchema = useMemo(() => createWebhookSchema(t), [t]);
   const {
@@ -114,6 +123,7 @@ export default function WebhookForm({
   } = useForm<WebhookFormValues>({
     resolver: zodResolver(webhookSchema),
     defaultValues: {
+      ownerScope: 'organization',
       name: '',
       url: '',
       events: [],
@@ -202,6 +212,20 @@ export default function WebhookForm({
           {enabled ? t('common:states.enabled') : t('common:states.disabled')}
         </button>
       </div>
+
+      {showOwnerScope && (
+        <fieldset className="space-y-2 rounded-md border p-4" data-testid="webhook-owner" disabled={isLoading}>
+          <legend className="px-1 text-sm font-medium">{t('longTail.webhooks.ownership.label')}</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" value="partner" {...register('ownerScope')} data-testid="webhook-owner-partner" />
+            {t('longTail.webhooks.ownership.allOrganizations')}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="radio" value="organization" {...register('ownerScope')} data-testid="webhook-owner-org" />
+            {t('longTail.webhooks.ownership.thisOrganizationOnly')}
+          </label>
+        </fieldset>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2">
         <div className="space-y-2">

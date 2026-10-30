@@ -251,3 +251,16 @@ describe('reviewed secret:false vars', () => {
     expect(actual).toEqual([...REVIEWED_PUBLIC_VARS].sort());
   });
 });
+
+describe('flows entry follows the FLOWS_ENABLED default (on since #5221 R1)', () => {
+  const flows = CONNECTION_REGISTRY.find((entry) => entry.id === 'flows')!;
+  it.each([
+    [{}, 'enabled'],
+    [{ FLOWS_ENABLED: '' }, 'enabled'],
+    [{ FLOWS_ENABLED: 'true' }, 'enabled'],
+    [{ FLOWS_ENABLED: 'false' }, 'disabled'],
+    [{ FLOWS_ENABLED: '0' }, 'disabled'],
+  ] as const)('%j is %s', (env, expected) => {
+    expect(flows.status(env as Record<string, string>).status).toBe(expected);
+  });
+});
