@@ -1135,6 +1135,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // #10383: get_fleet_findings returns the same cached finding title (a log-correlation
   // finding's title echoes the matched rule name or event pattern).
   get_fleet_findings: new Set(['title']),
+  // #10383: generate_report device_inventory data returns the device-reported osVersion
+  // (fenced as for manage_software_inventory). hostname/agentVersion stay verbatim, per the
+  // hostname rule and query_agent_versions.
+  generate_report: new Set(['osVersion']),
   manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
   // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
   // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
