@@ -101,7 +101,8 @@ const EE_FILES = existsSync(EE) ? walk(EE).map((f) => `ee/${relative(EE, f).repl
 
 /** Every background/service module that reads devices or carries a Quick Support/ephemeral exclusion. */
 function discovered(): string[] {
-  const hits = new Set<string>();
+  // This wrapper delegates device reads to filterEngine, so SQL discovery cannot see it.
+  const hits = new Set<string>(['services/partnerGroupPreview.ts']);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
     if (DEVICE_READ.test(code) || EXCLUSION_MARKERS.test(code)) hits.add(file);
@@ -112,6 +113,7 @@ function discovered(): string[] {
 
 /** What a human sees (listings, reports, read models, billing counts). */
 const VISIBILITY_MODULES: Record<string, string> = {
+  'services/partnerGroupPreview.ts': 'read-only partner-group preview; eligible org discovery excludes Quick Support/holding orgs and evaluation intersects the caller accessible orgs',
   'services/accounting/accountingMappingService.ts': 'billing: accounting device counts',
   'services/archivedOrgReads.ts': 'listing: archived org reads',
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',

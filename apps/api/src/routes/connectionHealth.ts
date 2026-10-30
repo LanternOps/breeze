@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { and, desc, gt, inArray, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, gt, inArray, isNotNull, isNull, ne, or, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { connectionHealthIncidents as chi } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
@@ -8,6 +8,7 @@ import { zValidator } from '../lib/validation';
 import { PERMISSIONS, hasPermission } from '../services/permissions';
 import { permissionFromText } from '../services/connectionHealth/store';
 import { remedyFor } from '../services/connectionHealth/remedy';
+import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { registerConnectionHealthSettingsRoutes } from './connectionHealthSettings';
 
 // Read-only view of connection health incidents (spec 2026-10-15). Only the
@@ -40,20 +41,26 @@ connectionHealthRoutes.get(
           gt(chi.resolvedAt, new Date(Date.now() - RECENT_MS)),
         )) as SQL;
 
-    let where: SQL = statusWhere;
+    // Partner webhook plumbing, including its incidents, is private to full
+    // partner administrators (OD1). RLS alone admits selected-org partners.
+    const canViewPartnerWebhooks = canManagePartnerWidePolicies(auth);
+    const visibleWhere = canViewPartnerWebhooks
+      ? statusWhere
+      : and(statusWhere, or(ne(chi.sourceKind, 'webhook'), isNotNull(chi.orgId))) as SQL;
+    let where: SQL = visibleWhere;
     if (auth.scope !== 'system') {
       // The distinct view permissions present under the same filter (RLS-narrowed,
       // a handful of values), kept to those the caller holds.
       const present = await db
         .selectDistinct({ viewPermission: chi.viewPermission })
         .from(chi)
-        .where(statusWhere);
+        .where(visibleWhere);
       const allowed = present.map((p) => p.viewPermission).filter((text) => {
         const p = permissionFromText(text);
         return !!perms && hasPermission(perms, p.resource, p.action);
       });
       if (allowed.length === 0) return c.json({ data: [], truncated: false });
-      where = and(statusWhere, inArray(chi.viewPermission, allowed)) as SQL;
+      where = and(visibleWhere, inArray(chi.viewPermission, allowed)) as SQL;
     }
 
     // id breaks ties, so rows written in the same reconcile keep a stable order.
@@ -62,15 +69,17 @@ connectionHealthRoutes.get(
       : [desc(chi.resolvedAt), desc(chi.id)];
     const rows = await db.select().from(chi).where(where).orderBy(...order).limit(MAX_ROWS + 1);
 
-    const truncated = rows.length > MAX_ROWS;
-    const data = rows
-      .slice(0, MAX_ROWS)
+    const visibleRows = rows
       // Defense in depth: the WHERE already holds only permitted values.
       .filter((r) => {
+        if (!canViewPartnerWebhooks && r.sourceKind === 'webhook' && r.orgId === null) return false;
         if (auth.scope === 'system') return true;
         const p = permissionFromText(r.viewPermission);
         return !!perms && hasPermission(perms, p.resource, p.action);
-      })
+      });
+    const truncated = visibleRows.length > MAX_ROWS;
+    const data = visibleRows
+      .slice(0, MAX_ROWS)
       .map((r) => ({
         id: r.id,
         sourceKind: r.sourceKind,

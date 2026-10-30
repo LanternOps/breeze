@@ -30,5 +30,8 @@
   "tool_source_unavailable": "This tool's source is currently unavailable",
   "ai_not_configured": "AI isn't configured on this server. An administrator needs to add a model provider key.",
   "ACCESS_REVIEW_SELF_DECISION": "You can't decide on your own access — another administrator must review this item",
-  "NO_UPDATES_PROVIDED": "No changes were provided"
+  "NO_UPDATES_PROVIDED": "No changes were provided",
+  "PARTNER_GROUP_TARGET_UNSUPPORTED": "Partner-wide device groups can only be targeted by partner configuration policies",
+  "PARTNER_GROUP_READ_ONLY": "This partner-wide device group can't be changed here",
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Partner-wide device groups cannot be used in group filters, and their filters cannot reference groups or organizations"
 }

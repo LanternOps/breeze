@@ -240,6 +240,34 @@ describe('configurationPolicies assignment routes', () => {
     });
   });
 
+  it.each([
+    'Partner-wide device groups can only be targeted by partner-wide policies',
+    'Use a partner-owned policy to assign this group',
+  ])('uses the structured partner-group refusal regardless of error wording: %s', async (error) => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    validateAssignmentTargetMock.mockResolvedValue({ valid: false, error, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED', status: 400 });
+    const res = await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'device_group', targetId: DEVICE_ID }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error, code: 'PARTNER_GROUP_TARGET_UNSUPPORTED' });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps generic assignment validation failures at 403 even when error wording matches', async () => {
+    getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
+    const error = 'Partner-wide device groups can only be targeted by partner-wide policies';
+    validateAssignmentTargetMock.mockResolvedValue({ valid: false, error });
+    const res = await app.request(`/${POLICY_ID}/assignments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: 'device_group', targetId: DEVICE_ID }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error });
+    expect(assignPolicyMock).not.toHaveBeenCalled();
+  });
+
   it('denies cross-org assignment targets before inserting the assignment', async () => {
     getConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, orgId: ORG_ID, partnerId: null, name: 'Policy 1' });
     validateAssignmentTargetMock.mockResolvedValue({

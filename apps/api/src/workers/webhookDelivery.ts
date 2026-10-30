@@ -1,9 +1,12 @@
-import { createHmac, randomUUID } from 'crypto';
-import { EventEmitter } from 'node:events';
-import type { Worker } from 'bullmq';
-import { eq } from 'drizzle-orm';
-import { createBlockingRedisConnection, getRedisConnection } from '../services/redis';
-import type Redis from 'ioredis';
+import { createHmac } from 'crypto';
+import { DelayedError, type Job, Worker } from 'bullmq';
+import { eq, sql } from 'drizzle-orm';
+import { getBullMQConnection } from '../services/redis';
+import { parseQueueJobData } from '../services/bullmqValidation';
+import { webhookAttemptJobDataSchema, type WebhookAttemptJobData } from '../jobs/queueSchemas';
+import { WEBHOOK_DELIVERY_QUEUE, enqueueWebhookAttempt, closeWebhookDeliveryQueue } from '../jobs/webhookDeliveryQueue';
+import { attachWorkerObservability } from '../jobs/workerObservability';
+import { nextWebhookRetryAt } from '../services/webhookRetrySchedule';
 import type { BreezeEvent } from '../services/eventBus';
 import { safeFetch, SsrfBlockedError } from '../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../config/env';
@@ -12,9 +15,9 @@ import { formatHttpFailure } from '../services/httpFailureMessage';
 import { collectChannelSecretStrings } from '../services/notificationChannelSecrets';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
-import { webhooks as webhooksTable } from '../db/schema';
+import { organizations, webhooks as webhooksTable, webhookDeliveryStatusEnum } from '../db/schema';
+import { partnerFanoutOrgCondition } from '../services/partnerFanoutOrgs';
 import { toWebhookConfig } from '../services/webhookConfig';
-import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
 import { scrubUrlsInText } from '../utils/endpointDisplay';
 import { isSelfDeliveryOfHealthEvent } from '../services/connectionHealth/eventPayload';
 import { buildWebhookEnvelope } from '../services/webhookPayload/envelope';
@@ -30,18 +33,13 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 // Webhook delivery configuration
 const WEBHOOK_TIMEOUT_MS = 30000;
-const MAX_RETRIES = 5;
-const INITIAL_DELAY_MS = 1000;
-const MAX_DELAY_MS = 300000; // 5 minutes
-const BACKOFF_MULTIPLIER = 2;
-
-// Queue names
-const WEBHOOK_QUEUE = 'breeze:webhooks:delivery';
-const WEBHOOK_DLQ = 'breeze:webhooks:dlq';
+export const WEBHOOK_DELIVERY_CONCURRENCY = 10;
+const MIN_REDELAY_MS = 1000;
 
 export interface WebhookConfig {
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   name: string;
   url: string;
   secret?: string;
@@ -56,46 +54,14 @@ export interface WebhookConfig {
 }
 
 export interface WebhookDeliveryJob {
-  /** Absent on jobs queued before payload versioning: those stay v1. */
-  payloadVersion?: 1 | 2;
-  replayOf?: string | null;
+  orgId: string | null;
   id: string;
   webhookId: string;
-  /**
-   * Site-ceiling gate contract §7E: the config's approval_generation at
-   * enqueue time. `resolveDeliveryWebhookConfig` compares this against the
-   * freshly-reloaded row at send time and drops the delivery (superseded,
-   * not failed/retried) on mismatch or if the webhook is no longer active.
-   * `undefined` opts out of the comparison (legacy jobs, and any producer
-   * that predates this field).
-   */
-  generation?: number;
-  /**
-   * LEGACY SHAPE ONLY. Producers before this deploy embedded the full
-   * decrypted config in the queue payload — a decrypted secret then sat in
-   * the Redis LIST at rest. No current producer sets this; it exists so a
-   * job already queued at deploy time still delivers correctly for one
-   * release. `resolveDeliveryWebhookConfig` logs `legacy_webhook_payload`,
-   * delivers using this embedded config once, and NEVER re-serializes it —
-   * a retry always converts to the current shape, carrying `webhookId`,
-   * `generation`, `payloadVersion` and `replayOf`, so the plaintext cannot
-   * re-enter the queue on a retry/DLQ replay.
-   */
-  webhook?: WebhookConfig;
-  event: BreezeEvent;
+  generation: number;
+  payloadVersion: 1 | 2;
+  replayOf?: string | null;
   attempts: number;
-  nextRetryAt?: string;
-  createdAt: string;
-  /**
-   * Skip the execution claim for this job.
-   *
-   * Set ONLY by `retryFromDLQ`, which mints a fresh delivery id with no
-   * `webhook_deliveries` row behind it. The claim CAS matches on
-   * `id = ? AND status = 'pending'`, so without this an operator-triggered DLQ
-   * replay would match zero rows, be dropped, and be reported as a "duplicate"
-   * — eating the retry and naming the wrong cause.
-   */
-  skipExecutionClaim?: boolean;
+  event: { id: string; type: string; timestamp: string; payload: unknown };
 }
 
 /**
@@ -110,29 +76,34 @@ export interface WebhookDeliveryJob {
 export interface WebhookFanoutTarget {
   payloadVersion: 1 | 2;
   id: string;
-  orgId: string;
+  orgId: string | null;
+  partnerId: string | null;
   approvalGeneration: number;
 }
 
-/**
- * Why a popped job did NOT win its execution claim. The three cases are
- * operationally different and the log has to name the right one — see
- * `claimDeliveryForExecution`.
- */
+export interface ClaimedWebhookDelivery {
+  orgId: string | null;
+  webhookGeneration: number | null;
+  id: string;
+  webhookId: string;
+  eventId: string;
+  eventType: string;
+  payload: unknown;
+  payloadVersion: 1 | 2;
+  eventTimestamp: Date | null;
+  createdAt: Date;
+  replayRootEventId: string | null;
+  attempts: number;
+}
+
 export type DeliveryClaimOutcome =
-  | { claimed: true }
-  | { claimed: false; observedStatus: string | null };
+  | { claimed: true; delivery: ClaimedWebhookDelivery }
+  | { claimed: false; observedStatus: typeof webhookDeliveryStatusEnum.enumValues[number] | null; observedAttempts: number | null; dueInMs: number | null };
+
+export type WebhookDeliverySupersededReason = 'not_found' | 'superseded' | 'decrypt_failed' | 'org_departed' | 'org_inactive';
 
 export interface WebhookDeliveryResult {
   deliveryId: string;
-  /**
-   * `false` when no `webhook_deliveries` row exists under `deliveryId` — only
-   * ever a DLQ replay, which mints a fresh id (`retryFromDLQ`). The outcome
-   * writer skips the row UPDATE in that case; without this it would match zero
-   * rows and fire the zero-row warning on every routine replay, voiding that
-   * warning for the real race it exists to catch.
-   */
-  hasDeliveryRow?: boolean;
   webhookId: string;
   eventId: string;
   eventType: string;
@@ -143,22 +114,10 @@ export interface WebhookDeliveryResult {
   responseTimeMs?: number;
   errorMessage?: string;
   deliveredAt?: string;
-  /**
-   * Site-ceiling gate contract §7E: true when the delivery was dropped
-   * without an HTTP attempt because the webhook was edited (approval_
-   * generation mismatch) or disabled after this job was queued — never a
-   * network/endpoint failure, so `processNextJob` skips the retry/DLQ ladder
-   * entirely rather than retrying stale config. The delivery row is still
-   * recorded (as `failed`, the closest existing status — there is no
-   * separate `superseded` enum value) with a distinguishing errorMessage.
-   */
+  /** Lifecycle changes invalidate the queued premise, so they never schedule a retry. */
   superseded?: boolean;
-  /**
-   * The resolved config's retry policy, needed by `processNextJob`'s
-   * retry/backoff scheduling now that `job.webhook` is not always present
-   * (new-shape jobs only carry `webhookId`/`generation`).
-   */
-  retryPolicy?: WebhookConfig['retryPolicy'];
+  supersededReason?: WebhookDeliverySupersededReason;
+  nextAttemptAt?: Date | null;
 }
 
 /**
@@ -172,43 +131,20 @@ function generateSignature(payload: string, secret: string, timestamp: number): 
   return createHmac('sha256', secret).update(signaturePayload).digest('hex');
 }
 
-/** One-time-per-process warning so a long-lived legacy job backlog does not spam the log on every attempt. */
-let legacyWebhookPayloadWarned = false;
-
 export type ResolveDeliveryWebhookConfigOutcome =
-  | { status: 'ok'; webhook: WebhookConfig; legacy: boolean }
-  | { status: 'not_found' }
-  | { status: 'superseded' }
-  | { status: 'decrypt_failed' };
+  | { status: 'ok'; webhook: WebhookConfig }
+  | { status: WebhookDeliverySupersededReason };
 
-/**
- * Resolve the decrypted `WebhookConfig` to deliver against, for either job
- * shape (site-ceiling gate contract §7E).
- *
- * NEW SHAPE (`job.webhook` absent): reloads the row by `job.webhookId` in
- * system context — decryption happens HERE, at send time, and nowhere
- * earlier in the pipeline. `superseded` covers both an edit since enqueue
- * (approval_generation mismatch) and the webhook having been disabled —
- * either way the job's premise no longer holds and it must not retry.
- *
- * LEGACY SHAPE (`job.webhook` present): delivers using the embedded config
- * exactly once, for jobs already queued when this deploy lands. No current
- * producer sets this field.
- */
+const SUPERSEDED_MESSAGES: Record<WebhookDeliverySupersededReason, string> = {
+  not_found: 'Webhook not found (deleted after this delivery was queued)',
+  superseded: 'superseded_by_edit: webhook was edited or disabled after this delivery was queued',
+  decrypt_failed: 'superseded_by_edit: webhook credentials could not be decrypted',
+  org_departed: "superseded_by_edit: organization no longer belongs to this webhook's partner",
+  org_inactive: 'superseded_by_edit: organization is not active for partner-wide delivery',
+};
+
+/** Reload and decrypt at send time so queued jobs never store credentials. */
 async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<ResolveDeliveryWebhookConfigOutcome> {
-  if (job.webhook) {
-    if (!legacyWebhookPayloadWarned) {
-      legacyWebhookPayloadWarned = true;
-      console.warn(`[WebhookWorker] legacy_webhook_payload ${JSON.stringify({
-        errorId: 'WEBHOOK_DELIVERY_LEGACY_PAYLOAD',
-        deliveryId: job.id,
-        webhookId: job.webhookId,
-        note: 'delivering from an embedded pre-deploy job payload; will not be re-queued in this shape'
-      })}`);
-    }
-    return { status: 'ok', webhook: job.webhook, legacy: true };
-  }
-
   const [row] = await runWithSystemDbAccess(() =>
     db.select().from(webhooksTable).where(eq(webhooksTable.id, job.webhookId)).limit(1)
   );
@@ -219,12 +155,26 @@ async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<Re
   if (row.status !== 'active') {
     return { status: 'superseded' };
   }
-  if (job.generation !== undefined && row.approvalGeneration !== job.generation) {
+  if (row.approvalGeneration !== job.generation) {
     return { status: 'superseded' };
   }
 
+  // A queued event remains tied to its original org, even after that org moves
+  // or stops being eligible for partner-wide fan-out. Tests have no event org.
+  if (row.partnerId && job.orgId != null) {
+    const [org] = await runWithSystemDbAccess(() => db.select({
+      partnerId: organizations.partnerId,
+      live: sql<boolean>`${partnerFanoutOrgCondition()}`,
+    })
+      .from(organizations)
+      .where(eq(organizations.id, job.orgId!))
+      .limit(1));
+    if (!org || org.partnerId !== row.partnerId) return { status: 'org_departed' };
+    if (org.live !== true) return { status: 'org_inactive' };
+  }
+
   try {
-    return { status: 'ok', webhook: toWebhookConfig(row), legacy: false };
+    return { status: 'ok', webhook: toWebhookConfig(row) };
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)));
     console.error(`[WebhookWorker] decrypt-failed ${JSON.stringify({
@@ -237,7 +187,8 @@ async function resolveDeliveryWebhookConfig(job: WebhookDeliveryJob): Promise<Re
 }
 
 /**
- * Deliver a webhook with retry logic and HMAC signing
+ * Make ONE signed delivery attempt. Retry scheduling is the caller's job
+ * (`processWebhookAttemptJob`), which persists it on the delivery row.
  */
 async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryResult> {
   const { event } = job;
@@ -246,11 +197,6 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   const resolved = await resolveDeliveryWebhookConfig(job);
   if (resolved.status !== 'ok') {
-    const errorMessage = resolved.status === 'not_found'
-      ? 'Webhook not found (deleted after this delivery was queued)'
-      : resolved.status === 'decrypt_failed'
-        ? 'superseded_by_edit: webhook credentials could not be decrypted'
-        : 'superseded_by_edit: webhook was edited or disabled after this delivery was queued';
     return {
       deliveryId,
       webhookId: job.webhookId,
@@ -258,8 +204,9 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
       eventType: event.type,
       success: false,
       superseded: true,
+      supersededReason: resolved.status,
       attempts: job.attempts + 1,
-      errorMessage
+      errorMessage: SUPERSEDED_MESSAGES[resolved.status],
     };
   }
   const { webhook } = resolved;
@@ -275,11 +222,11 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
 
   // Prepare payload
   const payload = buildWebhookEnvelope({
-    version: job.payloadVersion ?? 1,
+    version: job.payloadVersion,
     id: event.id,
     type: event.type,
-    timestamp: event.metadata.timestamp,
-    orgId: event.orgId,
+    timestamp: event.timestamp,
+    orgId: job.orgId ?? webhook.orgId,
     data: event.payload,
     replayOf: job.replayOf ?? null
   });
@@ -346,8 +293,7 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
         responseStatus,
         responseBody: responseBody?.slice(0, 1000), // Truncate large responses
         responseTimeMs: Date.now() - startTime,
-        deliveredAt: new Date().toISOString(),
-        retryPolicy: webhook.retryPolicy
+        deliveredAt: new Date().toISOString()
       };
     }
 
@@ -395,397 +341,139 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     responseStatus,
     responseBody: responseBody?.slice(0, 1000),
     responseTimeMs: Date.now() - startTime,
-    errorMessage,
-    retryPolicy: webhook.retryPolicy
+    errorMessage
   };
 }
 
-/**
- * Calculate next retry delay using exponential backoff
- */
-function calculateRetryDelay(
-  attempt: number,
-  policy: WebhookConfig['retryPolicy']
-): number {
-  const {
-    initialDelayMs = INITIAL_DELAY_MS,
-    backoffMultiplier = BACKOFF_MULTIPLIER,
-    maxDelayMs = MAX_DELAY_MS
-  } = policy || {};
+interface WebhookDeliveryExecution {
+  claim: (input: { deliveryId: string; attemptsMade: number }) => Promise<DeliveryClaimOutcome>;
+  recordOutcome: (result: WebhookDeliveryResult) => Promise<boolean>;
+  releaseClaim: (input: { deliveryId: string; attemptsMade: number }) => Promise<boolean>;
+  sleep?: (ms: number) => Promise<void>;
+}
+let execution: WebhookDeliveryExecution | null = null;
 
-  const delay = initialDelayMs * Math.pow(backoffMultiplier, attempt);
-  return Math.min(delay, maxDelayMs);
+export function configureWebhookDeliveryExecution(callbacks: WebhookDeliveryExecution): void {
+  execution = callbacks;
 }
 
-/**
- * WebhookDeliveryWorker - Processes webhook delivery jobs from Redis
- */
-class WebhookDeliveryWorker extends EventEmitter {
-  private running = false;
-  private onDeliveryComplete?: (result: WebhookDeliveryResult) => Promise<void>;
-  private onClaimDelivery?: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>;
-  /**
-   * Dedicated connection for the `BRPOP` in `processNextJob` — see
-   * `createBlockingRedisConnection`. Lazily created (never at import time) and
-   * cached for the worker's lifetime; a new connection per loop iteration
-   * would churn a TCP connect + AUTH every 5 seconds forever.
-   */
-  private blockingRedis: Redis | null = null;
-
-  constructor() {
-    super();
-    // An EventEmitter with no `error` listener THROWS on emit('error'). The
-    // readiness registry installs its own listener only once this worker is
-    // started through initializeWebhookDelivery(); every other role reaches
-    // this instance via getWebhookWorker() without ever attaching, so the
-    // instance must be safe to emit on regardless of attach state.
-    this.on('error', () => {});
-  }
-
-  get client(): Promise<Redis> {
-    return Promise.resolve(this.getBlockingRedis());
-  }
-
-  isRunning(): boolean {
-    return this.running;
-  }
-
-  private getBlockingRedis(): Redis {
-    if (!this.blockingRedis || this.blockingRedis.status === 'end') {
-      this.blockingRedis = createBlockingRedisConnection('breeze:webhook-delivery:brpop');
+export async function processWebhookAttemptJob(job: Job<WebhookAttemptJobData>, token?: string): Promise<void> {
+  if (!execution) throw new Error('processWebhookAttemptJob invoked before configureWebhookDeliveryExecution()');
+  const { deliveryId, webhookId, generation: jobGeneration, attemptsMade } = parseQueueJobData(
+    WEBHOOK_DELIVERY_QUEUE, job, webhookAttemptJobDataSchema
+  );
+  const outcome = await execution.claim({ deliveryId, attemptsMade });
+  if (!outcome.claimed) {
+    const { observedStatus, observedAttempts, dueInMs } = outcome;
+    if (observedStatus === null) {
+      console.log(`[WebhookWorker] delivery-row-gone ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_ROW_GONE', deliveryId, webhookId, attemptsMade
+      })}`);
+      return;
     }
-    return this.blockingRedis;
-  }
-
-  /**
-   * Set callback for delivery completion (for updating database)
-   */
-  setDeliveryCallback(callback: (result: WebhookDeliveryResult) => Promise<void>): void {
-    this.onDeliveryComplete = callback;
-  }
-
-  /**
-   * Set the EXECUTION CLAIM: the gate a popped job must win before its POST.
-   *
-   * The queue is a plain Redis list with no job identity, so nothing stops the
-   * same delivery being enqueued twice — the recovery sweep (#4095) does
-   * exactly that whenever a job turns out to have been merely backlogged
-   * rather than lost. The claim is a CAS on the delivery row, so of N copies of
-   * one job exactly one ever reaches the customer's endpoint and the rest are
-   * dropped here.
-   *
-   * Return `{ claimed: false, observedStatus }` to mean "someone else owns this
-   * delivery"; the status is what lets the drop name its real cause. With no
-   * claim callback configured the worker delivers unguarded, which is the
-   * pre-existing behaviour.
-   */
-  setDeliveryClaimCallback(
-    callback: (job: WebhookDeliveryJob) => Promise<DeliveryClaimOutcome>
-  ): void {
-    this.onClaimDelivery = callback;
-  }
-
-  /**
-   * Queue a webhook for delivery.
-   *
-   * Site-ceiling gate contract §7E: the payload carries only the webhook's
-   * IDENTITY and a generation snapshot — never its decrypted url/secret/
-   * headers. `resolveDeliveryWebhookConfig` reloads and decrypts the row at
-   * send time, inside the worker, which is the only place a secret is ever
-   * in plaintext on this path. `generation` is `undefined` for callers that
-   * don't have a fresh row to hand (rare; the comparison is then skipped).
-   */
-  async queueDelivery(webhookId: string, generation: number | undefined, event: BreezeEvent, deliveryId?: string, wire?: { payloadVersion?: 1 | 2; replayOf?: string | null }): Promise<string> {
-    const redis = getRedisConnection();
-    const nextDeliveryId = deliveryId ?? randomUUID();
-
-    const job: WebhookDeliveryJob = {
-      id: nextDeliveryId,
-      webhookId,
-      generation,
-      payloadVersion: wire?.payloadVersion,
-      replayOf: wire?.replayOf,
-      event,
-      attempts: 0,
-      createdAt: new Date().toISOString()
-    };
-
-    // Add to Redis list queue
-    await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(job));
-
-    console.log(`[WebhookWorker] Queued delivery ${nextDeliveryId} for webhook ${webhookId}`);
-
-    return nextDeliveryId;
-  }
-
-  /**
-   * Start processing webhook deliveries
-   */
-  async start(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    this.emit('ready');
-
-    console.log('[WebhookWorker] Starting webhook delivery worker');
-
-    while (this.running) {
-      await this.processNextJob();
+    if (observedStatus === 'scheduled' && observedAttempts === attemptsMade) {
+      const delayMs = Math.max(dueInMs ?? 0, MIN_REDELAY_MS);
+      console.warn(`[WebhookWorker] delivery-early-wake ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_EARLY_WAKE', deliveryId, attemptsMade, delayMs
+      })}`);
+      // Moving this same job preserves its identity and leaves no wake-up gap.
+      if (!token) throw new Error('Webhook early wake requires a job lock token');
+      await job.moveToDelayed(Date.now() + delayMs, token);
+      throw new DelayedError();
     }
-    this.emit('closed');
+    console.warn(`[WebhookWorker] duplicate-job-skipped ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_DUPLICATE_JOB_SKIPPED', deliveryId, webhookId,
+      observedStatus, observedAttempts, attemptsMade,
+      cause: observedStatus === 'retrying' ? 'already-claimed'
+        : observedStatus === 'pending' || observedStatus === 'scheduled' ? 'stale-attempt' : 'already-resolved'
+    })}`);
+    return;
   }
 
-  /**
-   * Stop the worker
-   */
-  stop(): void {
-    if (!this.running) return;
-    this.emit('closing');
-    this.running = false;
-    console.log('[WebhookWorker] Stopping webhook delivery worker');
-  }
-
-  /**
-   * Process the next job from the queue
-   */
-  private async processNextJob(): Promise<void> {
-    const redis = getRedisConnection();
-
+  const row = outcome.delivery;
+  const generation = row.webhookGeneration ?? jobGeneration;
+  let result: WebhookDeliveryResult;
+  try {
+    result = await deliverWebhook({
+      id: row.id, webhookId: row.webhookId, orgId: row.orgId, generation,
+      payloadVersion: row.payloadVersion, replayOf: row.replayRootEventId, attempts: row.attempts,
+      event: { id: row.eventId, type: row.eventType, payload: row.payload,
+        timestamp: (row.eventTimestamp ?? row.createdAt).toISOString() }
+    });
+  } catch (err) {
+    // deliverWebhook catches transport errors; a throw here preceded any POST.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    console.error(`[WebhookWorker] pre-send-failed ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_PRE_SEND_FAILED', deliveryId, attemptsMade,
+      error: err instanceof Error ? err.message : String(err)
+    })}`);
     try {
-      // Blocking pop with 5 second timeout. This MUST run on its own
-      // connection: Redis serves one command at a time per connection, so a
-      // BRPOP here on the shared connection stalls every other command on it
-      // — including the BullMQ `Queue` writes that HTTP handlers await — by
-      // up to the full 5s block. Non-blocking commands below stay on the
-      // shared connection.
-      const result = await this.getBlockingRedis().brpop(WEBHOOK_QUEUE, 5);
-      // A successful blocking read (including a timeout with no job) proves
-      // the consumer connection recovered after any earlier disconnect.
-      this.emit('ready');
-
-      if (!result) return; // Timeout, no jobs
-
-      const [, jobJson] = result;
-      const job: WebhookDeliveryJob = JSON.parse(jobJson);
-
-      // Check if scheduled for later
-      if (job.nextRetryAt && new Date(job.nextRetryAt) > new Date()) {
-        // Re-queue for later processing
-        await redis.lpush(WEBHOOK_QUEUE, jobJson);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return;
+      await execution.releaseClaim({ deliveryId, attemptsMade });
+    } catch (releaseError) {
+      captureException(releaseError instanceof Error ? releaseError : new Error(String(releaseError)));
+      console.error(`[WebhookWorker] claim-release-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_CLAIM_RELEASE_FAILED', deliveryId, attemptsMade,
+        error: releaseError instanceof Error ? releaseError.message : String(releaseError)
+      })}`);
+    }
+    throw err;
+  }
+  const nextAttemptAt = result.success || result.superseded ? null : nextWebhookRetryAt(result.attempts, new Date());
+  result.nextAttemptAt = nextAttemptAt;
+  let recorded = false;
+  try {
+    const sleep = execution.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+    for (let writeAttempt = 0; writeAttempt < 3; writeAttempt++) {
+      try {
+        recorded = await execution.recordOutcome(result);
+        break;
+      } catch (err) {
+        if (writeAttempt === 2) throw err;
+        await sleep(writeAttempt === 0 ? 250 : 1000);
       }
-
-      console.log(`[WebhookWorker] Processing delivery ${job.id} (attempt ${job.attempts + 1})`);
-
-      // Win the row before POSTing. Only the FIRST attempt claims: a retry job
-      // carries attempts > 0 and its row has already been moved out of
-      // `pending` by the previous attempt's callback, so re-claiming it would
-      // reject every legitimate retry.
-      if (this.onClaimDelivery && job.attempts === 0 && !job.skipExecutionClaim) {
-        const outcome = await this.onClaimDelivery(job);
-        if (!outcome.claimed) {
-          // Another copy of this job is already delivering it, or it has
-          // already resolved, or there is no row at all. Dropping the duplicate
-          // here is the whole point; it is logged because a silent drop is what
-          // #4095 is about — and `observedStatus` is what stops the log from
-          // calling all three "duplicate".
-          console.warn(`[WebhookWorker] duplicate-job-skipped ${JSON.stringify({
-            errorId: 'WEBHOOK_DELIVERY_DUPLICATE_JOB_SKIPPED',
-            deliveryId: job.id,
-            webhookId: job.webhookId,
-            orgId: job.event.orgId,
-            eventId: job.event.id,
-            observedStatus: outcome.observedStatus,
-            cause: outcome.observedStatus === null
-              ? 'no-delivery-row'
-              : outcome.observedStatus === 'retrying'
-                ? 'already-claimed'
-                : 'already-resolved'
-          })}`);
-          return;
-        }
-      }
-
-      // Attempt delivery
-      const result2 = await deliverWebhook(job);
-      // A DLQ replay has no backing row; the outcome writer needs to know.
-      result2.hasDeliveryRow = !job.skipExecutionClaim;
-
-      // Persist the outcome. This is split out of the outer catch because the
-      // two sides of the POST are NOT equally recoverable: anything that throws
-      // BEFORE `deliverWebhook` leaves the row untouched for the recovery sweep
-      // to reclaim, whereas a throw HERE means the customer's endpoint was
-      // already called and that fact is now unrecorded. The sweep cannot repair
-      // that — it will later see an abandoned `retrying` row and resolve it as
-      // "outcome unknown" — so it has to page rather than scroll past.
-      if (this.onDeliveryComplete) {
-        try {
-          await this.onDeliveryComplete(result2);
-        } catch (persistError) {
-          captureException(
-            persistError instanceof Error ? persistError : new Error(String(persistError))
-          );
-          console.error(`[WebhookWorker] delivery-outcome-unrecorded ${JSON.stringify({
-            errorId: 'WEBHOOK_DELIVERY_OUTCOME_UNRECORDED',
-            deliveryId: job.id,
-            webhookId: job.webhookId,
-            orgId: job.event.orgId,
-            eventId: job.event.id,
-            delivered: result2.success,
-            responseStatus: result2.responseStatus ?? null,
-            error: persistError instanceof Error ? persistError.message : String(persistError)
-          })}`);
-          // Deliberately rethrown into the outer catch: continuing would run the
-          // retry/DLQ ladder below against an outcome we failed to record.
-          throw persistError;
-        }
-      }
-
-      if (result2.success) {
-        console.log(`[WebhookWorker] Delivered ${job.id} successfully`);
-        return;
-      }
-
-      // Site-ceiling gate contract §7E: a superseded delivery (webhook edited
-      // or disabled since enqueue) was never attempted over the network —
-      // retrying or DLQ'ing it would just re-check the same now-stale premise.
-      // The outcome is already recorded (above); nothing more to do.
-      if (result2.superseded) {
-        console.warn(`[WebhookWorker] delivery-superseded ${JSON.stringify({
-          errorId: 'WEBHOOK_DELIVERY_SUPERSEDED',
-          deliveryId: job.id,
-          webhookId: job.webhookId,
-          eventId: job.event.id
-        })}`);
-        return;
-      }
-
-      // Handle failure. `result2.retryPolicy` (resolved inside deliverWebhook)
-      // replaces `job.webhook.retryPolicy` — new-shape jobs don't carry an
-      // embedded config to read it from.
-      const maxRetries = result2.retryPolicy?.maxRetries ?? MAX_RETRIES;
-
-      if (job.attempts + 1 >= maxRetries) {
-        // Move to dead letter queue
-        console.log(`[WebhookWorker] Max retries reached for ${job.id}, moving to DLQ`);
-        // Site-ceiling gate contract §7E: a legacy job (embedded `webhook`)
-        // must not carry its decrypted url/secret/headers into the DLQ —
-        // same rationale as the retry path below. Strip it before
-        // re-serializing.
-        const { webhook: _legacy, ...dlqJob } = job;
-        await redis.lpush(WEBHOOK_DLQ, JSON.stringify({
-          job: dlqJob,
-          lastResult: result2,
-          movedAt: new Date().toISOString()
-        }));
-        return;
-      }
-
-      // Schedule retry
-      const retryDelay = calculateRetryDelay(job.attempts, result2.retryPolicy);
-      const nextRetryAt = new Date(Date.now() + retryDelay).toISOString();
-
-      // `webhook` deliberately dropped, not spread from `job` (contract §7E):
-      // a legacy job (embedded `webhook`) converts to the current shape on
-      // retry — the worker reloads and decrypts by id next attempt — so a
-      // decrypted secret already in memory here never re-enters the queue.
-      const retryJob: WebhookDeliveryJob = {
-        id: job.id,
-        webhookId: job.webhookId,
-        generation: job.generation,
-        payloadVersion: job.payloadVersion,
-        replayOf: job.replayOf,
-        event: job.event,
-        attempts: job.attempts + 1,
-        nextRetryAt,
-        createdAt: job.createdAt,
-        skipExecutionClaim: job.skipExecutionClaim
-      };
-
-      console.log(`[WebhookWorker] Scheduling retry for ${job.id} at ${nextRetryAt}`);
-      await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
-
+    }
+  } catch (persistError) {
+    // The POST may already have happened. Do not persist its result on the job:
+    // after a DB outage longer than ~1.3s, recovery's documented "outcome unknown"
+    // handling owns resolution, without trusting a separately persisted result.
+    captureException(persistError instanceof Error ? persistError : new Error(String(persistError)));
+    console.error(`[WebhookWorker] delivery-outcome-unrecorded ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_OUTCOME_UNRECORDED', deliveryId, webhookId,
+      eventId: row.eventId, delivered: result.success, responseStatus: result.responseStatus ?? null,
+      error: persistError instanceof Error ? persistError.message : String(persistError)
+    })}`);
+    throw persistError;
+  }
+  if (nextAttemptAt && recorded) {
+    try {
+      await enqueueWebhookAttempt({ deliveryId, webhookId, generation, attemptsMade: result.attempts }, nextAttemptAt);
     } catch (err) {
-      if (this.blockingRedis?.status === 'ready') {
-        // Delivery/callback failures are job-level failures; the loop remains
-        // runnable and will take the next item.
-        this.emit('failed', undefined, err);
-      } else {
-        this.emit('error', err);
-      }
-      // The job was already popped by BRPOP and is gone from Redis. When the
-      // failure happened before the POST the delivery row is untouched and the
-      // recovery sweep reclaims it; that is the designed path, but it is still
-      // worth a Sentry event, because a claim or parse that fails on EVERY job
-      // silently converts the whole worker into a 15-minute-latency system.
+      // Postgres retains the schedule; recovery replaces a missing wake-up.
       captureException(err instanceof Error ? err : new Error(String(err)));
-      console.error('[WebhookWorker] Error processing job:', err);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.error(`[WebhookWorker] retry-enqueue-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_RETRY_ENQUEUE_FAILED', deliveryId, webhookId,
+        error: err instanceof Error ? err.message : String(err)
+      })}`);
     }
   }
-
-  /**
-   * Get dead letter queue entries
-   */
-  async getDeadLetterQueue(start = 0, count = 100): Promise<unknown[]> {
-    const redis = getRedisConnection();
-    const entries = await redis.lrange(WEBHOOK_DLQ, start, start + count - 1);
-    return entries.map(e => JSON.parse(e));
-  }
-
-  /**
-   * Retry a dead letter queue entry
-   */
-  async retryFromDLQ(index: number): Promise<void> {
-    const redis = getRedisConnection();
-    const entry = await redis.lindex(WEBHOOK_DLQ, index);
-    if (!entry) return;
-
-    const { job } = JSON.parse(entry) as { job: WebhookDeliveryJob };
-
-    // Reset attempts and re-queue. `webhook` deliberately dropped (contract
-    // §7E): a legacy DLQ entry converts to the current shape on replay — the
-    // worker reloads and decrypts by id — so a decrypted secret from an old
-    // entry never re-enters the queue via a DLQ replay either.
-    const retryJob: WebhookDeliveryJob = {
-      id: randomUUID(), // New delivery ID
-      webhookId: job.webhookId,
-      generation: job.generation,
-      payloadVersion: job.payloadVersion,
-      replayOf: job.replayOf,
-      event: job.event,
-      attempts: 0,
-      nextRetryAt: undefined,
-      createdAt: new Date().toISOString(),
-      // No delivery row exists under the new id, so there is nothing to claim.
-      skipExecutionClaim: true
-    };
-
-    await redis.lpush(WEBHOOK_QUEUE, JSON.stringify(retryJob));
-    await redis.lrem(WEBHOOK_DLQ, 1, entry);
-
-    console.log(`[WebhookWorker] Retried DLQ entry, new delivery: ${retryJob.id}`);
-  }
-
-  /**
-   * Clear dead letter queue
-   */
-  async clearDLQ(): Promise<number> {
-    const redis = getRedisConnection();
-    const count = await redis.llen(WEBHOOK_DLQ);
-    await redis.del(WEBHOOK_DLQ);
-    return count;
+  if (result.superseded) {
+    console.warn(`[WebhookWorker] delivery-superseded ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_SUPERSEDED', deliveryId, webhookId, eventId: row.eventId,
+      cause: result.supersededReason, orgId: row.orgId,
+    })}`);
+  } else if (!nextAttemptAt && !result.success) {
+    console.warn(`[WebhookWorker] retries-exhausted ${JSON.stringify({
+      errorId: 'WEBHOOK_DELIVERY_RETRIES_EXHAUSTED', deliveryId, webhookId, attempts: result.attempts
+    })}`);
   }
 }
 
-// Singleton instance
-let workerInstance: WebhookDeliveryWorker | null = null;
+let workerInstance: Worker<WebhookAttemptJobData> | null = null;
 
-export function getWebhookWorker(): WebhookDeliveryWorker {
-  if (!workerInstance) {
-    workerInstance = new WebhookDeliveryWorker();
-  }
-  return workerInstance;
+export function createWebhookDeliveryWorker(): Worker<WebhookAttemptJobData> {
+  return new Worker<WebhookAttemptJobData>(WEBHOOK_DELIVERY_QUEUE,
+    (job, token) => processWebhookAttemptJob(job, token),
+    { connection: getBullMQConnection(), concurrency: WEBHOOK_DELIVERY_CONCURRENCY });
 }
 
 /**
@@ -821,7 +509,7 @@ export type CreateWebhookDeliveryRecord = (
 /**
  * Statuses whose skip is routine. Anything else is reported at warn.
  *
- * `retrying` is deliberately NOT here: it is one of the two statuses the
+ * `retrying` is deliberately NOT here: it is one of the three statuses the
  * recovery sweep treats as UNRESOLVED (`jobs/webhookDeliveryRecovery.ts`), so a
  * duplicate deferring to a `retrying` row is deferring to a delivery that may
  * itself be stuck — exactly the case #4095 exists to surface, and logging it at
@@ -855,8 +543,8 @@ function reportDuplicateSkip(
   // A still-`pending` original may never have been enqueued at all, and a row
   // we cannot read back tells us nothing — both deserve more than an info line.
   // Neither is re-queued here: the recovery sweep (jobs/webhookDeliveryRecovery)
-  // is the single owner of re-queueing, so that a redelivered event and the
-  // sweep cannot both drive the same row and POST twice.
+  // and legacy cut-over own re-queueing. Execution claims prevent duplicate
+  // wake-ups from POSTing the same attempt twice.
   if (existing && BENIGN_DUPLICATE_STATUSES.has(existing.status)) {
     console.log(line);
   } else {
@@ -866,7 +554,7 @@ function reportDuplicateSkip(
 
 export interface WebhookFanoutDeps {
   getWebhooksForEvent: (orgId: string, eventType: string) => Promise<WebhookFanoutTarget[]>;
-  createDeliveryRecord?: CreateWebhookDeliveryRecord;
+  createDeliveryRecord: CreateWebhookDeliveryRecord;
 }
 
 let webhookFanoutDeps: WebhookFanoutDeps | null = null;
@@ -923,7 +611,7 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
 
   // Queue delivery for each webhook. The delivery record is created in
   // its own short DB context right before its enqueue ("mark-attempted
-  // before send"); `queueDelivery` itself is a Redis LPUSH and runs
+  // before send"); `enqueueWebhookAttempt` itself runs
   // OUTSIDE any DB context (#1105) — looping Redis calls while a pooled
   // Postgres connection sits idle-in-transaction is exactly the hold
   // pattern that exhausts the pool under load, and this handler fires
@@ -949,30 +637,18 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
       let data = event.payload;
       if (version === 2 && isAlertV2EventType(event.type)) {
         projections ??= buildAlertWebhookProjections(event);
-        // Partner-owned webhooks arrive in a later wave and take .partner.
-        data = (await projections).org;
+        data = webhook.partnerId != null ? (await projections).partner : (await projections).org;
       }
       const deliveryEvent = data === event.payload ? event : { ...event, payload: data };
-      let deliveryId: string | undefined;
-
-      if (createDeliveryRecord) {
-        const outcome = await runWithSystemDbAccess(() => createDeliveryRecord({ ...webhook, payloadVersion: version }, deliveryEvent));
-        // `created: false` means the (webhook, event) pair is already
-        // recorded, so the ORIGINAL delivery owns this event's outcome.
-        // Queueing again would POST to the customer's endpoint twice for one
-        // event. A recorded-but-never-enqueued original is NOT rescued here —
-        // see reportDuplicateSkip.
-        if (!outcome.created) {
-          reportDuplicateSkip(webhook, event, outcome.existing);
-          continue;
-        }
-        deliveryId = outcome.deliveryId;
+      const outcome = await runWithSystemDbAccess(() => createDeliveryRecord({ ...webhook, payloadVersion: version }, deliveryEvent));
+      // The original row owns this event. Recovery, not another fan-out,
+      // rescues a recorded delivery whose wake-up was lost.
+      if (!outcome.created) {
+        reportDuplicateSkip(webhook, event, outcome.existing);
+        continue;
       }
-      // With no creator there is no dedupe surface at all, so this queues
-      // blind rather than skipping — a skip there would drop the delivery
-      // outright rather than de-duplicate it.
-
-      await getWebhookWorker().queueDelivery(webhook.id, webhook.approvalGeneration, deliveryEvent, deliveryId, { payloadVersion: version, replayOf: null });
+      await enqueueWebhookAttempt({ deliveryId: outcome.deliveryId, webhookId: webhook.id,
+        generation: webhook.approvalGeneration, attemptsMade: 0 }, new Date());
     } catch (err) {
       // Recorded-but-not-enqueued is exactly the orphan the recovery sweep
       // reclaims, so this is loud but not fatal to the rest of the fan-out.
@@ -1004,22 +680,21 @@ export async function handleWebhookFanoutEvent(event: BreezeEvent): Promise<void
  * queue-mode dispatch (#4085).
  */
 export async function initializeWebhookDelivery(): Promise<void> {
-  const worker = getWebhookWorker();
-
-  // Readiness attach lives HERE, not in getWebhookWorker(): the getter is
-  // reached in every role (the durable fan-out subscriber, routes/webhooks.ts,
-  // services/aiToolsIntegrations.ts, index.ts's shutdown preamble), but only
-  // the `webhookDelivery` registry entry — placement `global`, never started
-  // under BREEZE_ROLE=api — reaches this start path. Attaching at construction
-  // would auto-expect a REQUIRED consumer an api-role process never runs and
-  // pin it not-ready from the first webhook event (spec section 2, C2).
-  workerReadinessRegistry.attach('webhookDeliveryWorker', worker as unknown as Worker);
-
-  void worker.start().catch((err) => {
-    console.error('[WebhookDelivery] Worker failed:', err);
-  });
-
+  if (workerInstance) return;
+  // API-role producers import this module too; only the registry's global
+  // initialization path owns a worker and declares its readiness consumer.
+  workerInstance = createWebhookDeliveryWorker();
+  attachWorkerObservability(workerInstance, 'webhookDeliveryWorker');
+  workerInstance.on('error', (err) => console.error('[WebhookDelivery] Worker failed:', err));
   console.log('[WebhookDelivery] Initialized webhook delivery worker');
+}
+
+export async function shutdownWebhookDelivery(): Promise<void> {
+  if (workerInstance) {
+    await workerInstance.close();
+    workerInstance = null;
+  }
+  await closeWebhookDeliveryQueue();
 }
 
 // Export signature generation for webhook verification endpoint

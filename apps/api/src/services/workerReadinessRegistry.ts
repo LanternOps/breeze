@@ -240,8 +240,8 @@ export function createWorkerReadinessRegistry(options: {
       let resolvedClients = 0;
       let shuttingDown = false;
       // BullMQ's public waitUntilReady() returns its BLOCKING client, whereas
-      // client returns the command client. The webhook adapter exposes its
-      // blocking client directly and does not implement waitUntilReady().
+      // client returns the command client. Custom adapters may expose their
+      // blocking client directly without implementing waitUntilReady().
       const expectedClients = runtime.waitUntilReady ? 2 : 1;
       const reconcile = (): void => {
         if (shuttingDown || terminallyFailed.has(name) || resolvedClients < expectedClients) return;
@@ -253,8 +253,8 @@ export function createWorkerReadinessRegistry(options: {
 
       worker.on('ready', () => {
         if (!runtime.waitUntilReady) {
-          // The webhook adapter replaces an ended blocking connection. Its
-          // successful BRPOP reports ready on the new client, so follow it.
+          // A custom adapter may replace an ended blocking connection. Follow
+          // its current client when the adapter reports ready again.
           observeClient(runtime.client!, true);
         }
         reconcile();
