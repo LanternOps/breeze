@@ -1346,7 +1346,14 @@
     "assignAPolicyTo": "Assegna un criterio a",
     "policy2": "Criterio",
     "selectAPolicy": "Seleziona un criterio",
-    "applying": "Applicazione..."
+    "applying": "Applicazione...",
+    "ownerFilterAll": "Tutti i gruppi",
+    "ownerFilterOrganization": "Gruppi dell’organizzazione",
+    "ownerFilterPartner": "Tutte le org.",
+    "noGroupsMatchFilter": "Nessun gruppo corrisponde a questo filtro.",
+    "managedByPartner": "Gestito dal tuo fornitore di servizi. Le regole di appartenenza non sono mostrate; vedi i dispositivi della tua organizzazione.",
+    "partnerDynamicType": "Dinamico · Tutte le org.",
+    "partnerDeleteWarning": "Questa operazione rimuove il gruppo da ogni organizzazione ed elimina le relative assegnazioni dei criteri."
   },
   "deviceHardwareInventory": {
     "failedToFetchHardwareInventory": "Impossibile recuperare l'inventario hardware",
@@ -2847,7 +2854,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }
@@ -2917,7 +2926,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }
@@ -3004,7 +3015,9 @@
       },
       "software": {
         "installed": "Software installato",
-        "notInstalled": "Software mancante"
+        "notInstalled": "Software mancante",
+        "version": "Versione del software",
+        "vendor": "Fornitore del software"
       },
       "logShippingFailing": "Invio dei log non riuscito"
     }
@@ -4651,5 +4664,28 @@
       "authorityDevice": "Questo asset è ora collegato a un dispositivo gestito. Modifica la posizione sul dispositivo.",
       "mfaRequired": "Per modificare la posizione fisica è richiesta l'autenticazione a più fattori."
     }
+  },
+  "partnerGroups": {
+    "ownerScope": "Proprietario del gruppo",
+    "organization": "Questa organizzazione",
+    "partner": "Tutte le organizzazioni",
+    "dynamicOnly": "a livello di partner, solo dinamici",
+    "scopeHint": "L’appartenenza viene valutata in ogni organizzazione gestita; appartenenza statica, siti e condizioni di filtro per gruppo o organizzazione non sono disponibili.",
+    "allOrgs": "Tutte le org.",
+    "pending": "Aggiornamento dei membri…",
+    "current": "Ultima valutazione: {{time}}",
+    "notEvaluated": "Non ancora valutato",
+    "partial_one": "{{count}} organizzazione non valutata · ultima valutazione riuscita {{time}}",
+    "partial_other": "{{count}} organizzazioni non valutate · ultima valutazione riuscita {{time}}",
+    "retryHint": "Breeze riprova automaticamente per queste organizzazioni. Salvando il filtro del gruppo si avvia una nuova valutazione.",
+    "showMembers": "Mostra membri",
+    "hideMembers": "Nascondi membri",
+    "device": "Dispositivo",
+    "organizationColumn": "Organizzazione",
+    "status": "Stato",
+    "loading": "Caricamento membri…",
+    "membersError": "Impossibile caricare i membri del gruppo.",
+    "retry": "Riprova",
+    "emptyMembers": "Nessun dispositivo in questo gruppo."
   }
 }

@@ -32,6 +32,8 @@ interface Props {
   /** W03: the script-proposal card blocks Approve until every STRICT pattern
    *  is acknowledged by a permitted approver. Deny stays available. */
   approveDisabled?: boolean;
+  /** The deny reason is relayed to the end user (uac_intercept / PAM). */
+  denyShownToEndUser?: boolean;
 }
 
 const PASSCODE_FALLBACK_CODES = new Set(['not_enrolled', 'passcode_not_set']);
@@ -45,6 +47,7 @@ export function ApprovalButtons({
   onApprove,
   onDeny,
   approveDisabled = false,
+  denyShownToEndUser = false,
 }: Props) {
   const theme = useApprovalTheme('dark');
   const [denyOpen, setDenyOpen] = useState(false);
@@ -234,6 +237,7 @@ export function ApprovalButtons({
 
       <DenyReasonSheet
         visible={denyOpen}
+        showsToEndUser={denyShownToEndUser}
         onCancel={() => setDenyOpen(false)}
         onSubmit={(reason) => { setDenyOpen(false); onDeny(denyTargetRef.current, reason); }}
       />

@@ -77,10 +77,11 @@ describe('advanceOutcome pending → the sweeper tells an undelivered script fro
 });
 
 describe('readingFromAlert (Review Focus 2)', () => {
-  const base = { resolvedAt: at(2), resolvedBy: null, resolutionReason: 'condition_cleared' };
+  const base = { resolvedAt: at(2), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' };
   it.each([
     [{ status: 'resolved', ...base }, { kind: 'recovered', at: at(2) }],
     [{ status: 'resolved', ...base, resolvedBy: 'user-1' }, { kind: 'cleared_other', reason: 'human_resolved' }],
+    [{ status: 'resolved', ...base, resolvedByPrincipalId: '11111111-1111-4111-8111-111111111111' }, { kind: 'cleared_other', reason: 'human_resolved' }],
     [{ status: 'resolved', ...base, resolutionReason: 'source_retired' }, { kind: 'cleared_other', reason: 'resolved_source_retired' }],
     [{ status: 'resolved', ...base, resolutionReason: 'expired' }, { kind: 'cleared_other', reason: 'resolved_expired' }],
     [{ status: 'resolved', ...base, resolutionReason: null }, { kind: 'cleared_other', reason: 'resolved_unspecified' }],
@@ -182,8 +183,18 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     scriptExecutionId: 'e-1', deadlineAt: at(24), createdAt: at(0),
   };
   const evt = { id: 'ev', type: 'alert.resolved', orgId: 'org-1', source: 's', priority: 'normal',
-    payload: { alertId: 'a-1', resolvedAt: at(2).toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
+    payload: { alertId: 'a-1', resolvedAt: at(2).toISOString(), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' },
     metadata: { timestamp: '' } } as unknown as BreezeEvent;
+
+  it('treats a principal resolve payload as human_resolved, never objective recovery', async () => {
+    rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
+    await handleFixOutcomeEvent({
+      ...evt,
+      payload: { ...evt.payload, resolvedByPrincipalId: '11111111-1111-4111-8111-111111111111' },
+    });
+    expect(transitionMock).toHaveBeenCalledTimes(1);
+    expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'human_resolved' });
+  });
 
   it('duplicate alert.resolved delivery transitions once', async () => {
     // delivery 1: lookup ids -> outcome row -> device org
@@ -208,7 +219,7 @@ describe('handleFixOutcomeEvent (Review Focus 1)', () => {
     rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
     await handleFixOutcomeEvent({
       ...evt, type: 'script.failed',
-      payload: { alertId: 'a-1', executionId: 'e-1', status: 'failed', resolvedAt: at(2).toISOString(), resolvedBy: null, resolutionReason: 'condition_cleared' },
+      payload: { alertId: 'a-1', executionId: 'e-1', status: 'failed', resolvedAt: at(2).toISOString(), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' },
     } as unknown as BreezeEvent);
 
     rows.push([{ id: 'o-1' }], [awaiting], [{ orgId: 'org-1' }]);
@@ -237,14 +248,14 @@ describe('advanceOutcome awaiting_recovery reads the execution start time (I3)',
   };
 
   it('an alert that cleared after dispatch but before the script started is inconclusive cleared_before_fix', async () => {
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(0.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(0.5), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
     rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
     expect(await advanceOutcome('o-a', { now: at(2) })).toBe('inconclusive');
     expect(transitionMock.mock.calls[0]![1]).toEqual({ to: 'inconclusive', reason: 'cleared_before_fix' });
   });
 
   it('an alert that cleared after the script started starts the hold', async () => {
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(1.5), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(1.5), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
     rows.push([awaitingRow], [{ orgId: 'org-1' }], [{ startedAt: at(1) }]);
     expect(await advanceOutcome('o-a', { now: at(2) })).toBe('holding');
     expect(transitionMock.mock.calls[0]![1]).toMatchObject({ to: 'holding', recoveredAt: at(1.5) });
@@ -292,7 +303,7 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
     // fixOutcomes lookup, device-org lookup, empty recurrence-scan alert batch.
     rows.push([holdingRow('o-3', 'a-3')], [{ orgId: 'org-1' }], []);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolutionReason: null });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'active', resolvedAt: null, resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: null });
 
     const result = await advanceOutcome('o-3', { now: at(30) });
 
@@ -303,7 +314,7 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
   it('a source that is now closed some OTHER way (human resolve, dismiss) no longer confirms the hold (M1)', async () => {
     rows.push([holdingRow('o-5', 'a-5')], [{ orgId: 'org-1' }], []);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(20), resolvedBy: 'user-1', resolutionReason: 'manual' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(20), resolvedBy: 'user-1', resolvedByPrincipalId: null, resolutionReason: 'manual' });
 
     const result = await advanceOutcome('o-5', { now: at(30) });
 
@@ -314,7 +325,7 @@ describe('holding -> verified re-checks the source (Review Focus 3 — fix round
   it('verifies normally once the source re-check confirms it is still resolved', async () => {
     rows.push([holdingRow('o-4', 'a-4')], [{ orgId: 'org-1' }], []);
     vi.mocked(probeTelemetryFreshness).mockResolvedValueOnce({ fresh: true, reason: 'ok', coverage: 0.9 });
-    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(2), resolvedBy: null, resolutionReason: 'condition_cleared' });
+    vi.mocked(readAlertRecovery).mockResolvedValueOnce({ status: 'resolved', resolvedAt: at(2), resolvedBy: null, resolvedByPrincipalId: null, resolutionReason: 'condition_cleared' });
 
     const result = await advanceOutcome('o-4', { now: at(30) });
 

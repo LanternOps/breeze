@@ -58,6 +58,8 @@ import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
 import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../permissions';
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
+import { enqueuePamRequestNotify } from '../pamRequestNotify';
+import { resolvePamTechnicianName } from '../pamTechnicianName';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
 import { loadFlowIntentPeople } from '../flows/intentRun';
 import { PERMISSION_GRANTS, requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
@@ -1614,6 +1616,7 @@ export async function decideApprovalRequest(
                 targetExecutablePath: elevationRequests.targetExecutablePath,
                 targetExecutableHash: elevationRequests.targetExecutableHash,
                 subjectUsername: elevationRequests.subjectUsername,
+                flowType: elevationRequests.flowType,
               });
 
             const elevation = elevationRows[0];
@@ -1656,6 +1659,13 @@ export async function decideApprovalRequest(
               decision: status,
               expiresAt,
             });
+            // #8928: tell the end user who handed this request to IT that it
+            // was denied. Savepointed and best-effort: it never rolls back the
+            // deny. The raw reason, not the stored placeholder.
+            if (status === 'denied' && elevation.flowType === 'uac_intercept') {
+              await enqueuePamRequestNotify(tx, { id: elevation.id, deviceId: elevation.deviceId }, 'denied', reason,
+                () => resolvePamTechnicianName(elevation.deviceId, { userId }));
+            }
             enforcementStatus = actuation.refusalReason
               ? 'refused'
               : actuation.desiredState === 'active'

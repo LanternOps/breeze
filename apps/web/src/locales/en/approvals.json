@@ -43,6 +43,7 @@
   },
   "denyPrompt": "Why are you denying this request? A reason is optional.",
   "denyReasonPlaceholder": "Optional — shared with the requester",
+  "denyReasonShownToUserHint": "The end user sees this in their notification (first 500 characters).",
   "confirmDeny": "Confirm denial",
   "cancel": "Cancel",
   "deny": "Deny",

@@ -104,13 +104,48 @@ func TestEnsureTrustedDirChainRefusesNonEmptyForeignOwnedDir(t *testing.T) {
 }
 
 // TestEnsureTrustedDirChainRepairsEmptyForeignOwnedDir proves the one safe
-// repair case: an EMPTY directory with the wrong ownership/mode is removed
-// and recreated correctly rather than refused.
+// repair case: an EMPTY directory with the wrong ownership/mode is repaired in
+// place — reopened, then chowned and chmodded through its descriptor — rather
+// than refused.
 func TestEnsureTrustedDirChainRepairsEmptyForeignOwnedDir(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "Breeze", "bin")
-	if err := os.MkdirAll(dir, 0o777); err != nil {
+	parent := filepath.Join(root, "Breeze")
+	dir := filepath.Join(parent, "bin")
+	// Both modes are set explicitly, because Mkdir's mode is clipped by the
+	// process umask and the repair path needs an exact pre-state: a SAFE
+	// parent holding an UNSAFE, EMPTY leaf. MkdirAll(dir, 0o777) gave neither
+	// reliably (#10068) — under 0022 both components came out 0755, which
+	// EnsureTrustedDirChain treats as already safe, so the repair branch this
+	// test is named for never ran and the 0755 assertion passed trivially;
+	// under 0002 the parent came out 0775 — unsafe and non-empty — and the
+	// call was refused before the leaf was ever reached.
+	if err := os.Mkdir(parent, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// Assert those two modes rather than assuming them, so a later setup
+	// change that reintroduces umask sensitivity fails here instead of
+	// passing vacuously. (Type and emptiness come from the Mkdir calls above
+	// having succeeded; this loop covers mode drift only.)
+	for _, want := range []struct {
+		path string
+		mode os.FileMode
+	}{{parent, 0o755}, {dir, 0o777}} {
+		info, err := os.Lstat(want.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want.mode {
+			t.Fatalf("setup: %s mode = %o, want %o", want.path, info.Mode().Perm(), want.mode)
+		}
 	}
 	uid, gid := os.Getuid(), os.Getgid()
 

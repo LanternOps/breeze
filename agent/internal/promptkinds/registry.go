@@ -30,10 +30,11 @@ var NoticeInfo = prompthost.KindSpec{
 func Specs() []prompthost.KindSpec {
 	return []prompthost.KindSpec{
 		NoticeInfo,
-		RestartPromptKind, // W05 (restart.go)
-		RestartFinalKind,  // W05 (restart.go)
-		RemoteConsentKind, // W06 (remote.go)
-		RemoteSessionKind, // W06 (remote.go)
+		RestartPromptKind,    // W05 (restart.go)
+		RestartFinalKind,     // W05 (restart.go)
+		RemoteConsentKind,    // W06 (remote.go)
+		RemoteSessionKind,    // W06 (remote.go)
+		ElevationRequestKind, // W07 (elevation.go)
 	}
 }
 

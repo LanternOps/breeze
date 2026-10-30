@@ -2168,6 +2168,7 @@ export interface EventLogSettings {
   minimumLevel: EventLogLevel;
   collectionIntervalMinutes: number;
   rateLimitPerHour: number;
+  applicationProviders: string[];
 }
 
 export const EVENT_LOG_DEFAULTS: EventLogSettings = {
@@ -2180,6 +2181,7 @@ export const EVENT_LOG_DEFAULTS: EventLogSettings = {
   // NewEventLogCollector default.
   collectionIntervalMinutes: 15,
   rateLimitPerHour: 12000,
+  applicationProviders: [],
 };
 
 const LEVEL_PRIORITY: Record<string, number> = {
@@ -2196,7 +2198,7 @@ const EVENT_LOG_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', 
 type EventLogRankRow = {
   level: string; assignmentPriority: number; roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
   retentionDays: number; maxEventsPerCycle: number; collectCategories: string[]; minimumLevel: string;
-  collectionIntervalMinutes: number; rateLimitPerHour: number;
+  collectionIntervalMinutes: number; rateLimitPerHour: number; applicationProviders: string[];
 };
 
 function eventLogSettingsFromRows(rows: EventLogRankRow[], device: { deviceRole: string; osType: string }): EventLogSettings {
@@ -2212,6 +2214,7 @@ function eventLogSettingsFromRows(rows: EventLogRankRow[], device: { deviceRole:
     minimumLevel: winner.minimumLevel as EventLogLevel,
     collectionIntervalMinutes: winner.collectionIntervalMinutes,
     rateLimitPerHour: winner.rateLimitPerHour,
+    applicationProviders: winner.applicationProviders ?? [],
   };
 }
 
@@ -2226,6 +2229,7 @@ async function resolveDeviceEventLogSettings(deviceId: string, opts?: DevicePoli
           roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
           retentionDays: link.eventLog.retentionDays, maxEventsPerCycle: link.eventLog.maxEventsPerCycle,
           collectCategories: link.eventLog.collectCategories, minimumLevel: link.eventLog.minimumLevel,
+          applicationProviders: link.eventLog.applicationProviders,
           collectionIntervalMinutes: link.eventLog.collectionIntervalMinutes, rateLimitPerHour: link.eventLog.rateLimitPerHour,
         }]
         : []), set.hierarchy);
@@ -2293,6 +2297,7 @@ async function resolveDeviceEventLogSettings(deviceId: string, opts?: DevicePoli
       minimumLevel: configPolicyEventLogSettings.minimumLevel,
       collectionIntervalMinutes: configPolicyEventLogSettings.collectionIntervalMinutes,
       rateLimitPerHour: configPolicyEventLogSettings.rateLimitPerHour,
+      applicationProviders: configPolicyEventLogSettings.applicationProviders,
     })
     .from(configPolicyAssignments)
     .innerJoin(configurationPolicies, eq(configPolicyAssignments.configPolicyId, configurationPolicies.id))
@@ -2342,6 +2347,7 @@ export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceP
   collect_categories: string[];
   minimum_level: string;
   collection_interval_minutes: number;
+  application_providers: string[];
 }> {
   const settings = await getDeviceEventLogSettings(deviceId, opts);
 
@@ -2350,6 +2356,8 @@ export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceP
     collect_categories: settings.collectCategories,
     minimum_level: settings.minimumLevel,
     collection_interval_minutes: settings.collectionIntervalMinutes,
+    // Cached settings from the previous release do not yet carry this field.
+    application_providers: settings.applicationProviders ?? [],
   };
 }
 
