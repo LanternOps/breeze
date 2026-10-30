@@ -21,11 +21,12 @@
 import { inArray } from 'drizzle-orm';
 import { automationTargetConfigSchema } from '@breeze/shared';
 import { db } from '../db';
+import { findPartnerOwnedGroupIds, partnerGroupTargetRefusal } from './deviceGroupOwnership';
 import { deviceGroups, devices } from '../db/schema';
 
 export type AutomationTargetValidationResult =
   | { ok: true }
-  | { ok: false; error: string; code: 'INVALID_TARGET'; groupIds?: string[]; deviceIds?: string[] };
+  | { ok: false; error: string; code: 'INVALID_TARGET' | ReturnType<typeof partnerGroupTargetRefusal>['code']; groupIds?: string[]; deviceIds?: string[] };
 
 export const PARTNER_WIDE_ID_TARGET_ERROR =
   'Partner-wide automations cannot target specific device groups or devices, because each group or device belongs to a single organization. Use "all devices" or a filter target instead.';
@@ -38,7 +39,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function idsOutsideOwnerOrg(requested: string[], rows: { id: string; orgId: string }[], ownerOrgId: string): string[] {
+function idsOutsideOwnerOrg(requested: string[], rows: { id: string; orgId: string | null }[], ownerOrgId: string): string[] {
   const orgById = new Map(rows.map((row) => [row.id, row.orgId]));
   return [...new Set(requested)].filter((id) => orgById.get(id) !== ownerOrgId);
 }
@@ -64,6 +65,11 @@ export async function validateAutomationTargetConditions(input: {
   const target = parsed.data;
 
   if (target.type !== 'groups' && target.type !== 'devices') return { ok: true };
+
+  if (target.type === 'groups') {
+    const partnerGroupIds = await findPartnerOwnedGroupIds(target.groupIds ?? []);
+    if (partnerGroupIds.length > 0) return { ok: false, ...partnerGroupTargetRefusal(partnerGroupIds) };
+  }
 
   if (!owner.orgId) return invalid(PARTNER_WIDE_ID_TARGET_ERROR);
 

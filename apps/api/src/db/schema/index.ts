@@ -136,6 +136,7 @@ export * from './businessCalendars';
 export * from './ticketAttachments';
 export * from './ticketEmailLinks';
 export * from './ticketExternalRefs';
+export * from './alertExternalRefs';
 export * from './ticketLinks';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';

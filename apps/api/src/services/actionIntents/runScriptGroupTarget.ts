@@ -41,6 +41,7 @@ export type RunScriptGroupTargetErrorCode =
   | 'group_target_invalid'
   | 'group_target_not_found'
   | 'group_target_no_targets'
+  | 'group_target_partner_unsupported'
   | 'group_target_too_large'
   | 'group_target_out_of_scope';
 
@@ -110,6 +111,8 @@ export async function normalizeRunScriptGroupTarget(
 
   if (!resolution.ok) {
     switch (resolution.code) {
+      case 'PARTNER_GROUP_TARGET_UNSUPPORTED':
+        throw new RunScriptGroupTargetError(resolution.error, 'group_target_partner_unsupported');
       case 'GROUP_NOT_FOUND':
         throw new RunScriptGroupTargetError(groupNotFoundMessage(groupId), 'group_target_not_found');
       case 'TOO_MANY_TARGETS':
