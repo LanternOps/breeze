@@ -176,11 +176,17 @@ export const dnsSecurityEvents = pgTable('dns_security_events', {
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   orgTimestampIdx: index('dns_security_events_org_ts_idx').on(table.orgId, table.timestamp),
+  // Blocked-only Events tab list, keyset-paged on (timestamp, id) (#10054,
+  // migration 2027-01-17-150000-dns-security-events-blocked-index.sql).
+  orgBlockedTimestampIdx: index('dns_security_events_org_blocked_ts_idx')
+    .on(table.orgId, table.timestamp, table.id)
+    .where(sql`${table.action} = 'blocked'`),
   integrationIdIdx: index('dns_security_events_integration_id_idx').on(table.integrationId),
   deviceIdIdx: index('dns_security_events_device_id_idx').on(table.deviceId),
   domainIdx: index('dns_security_events_domain_idx').on(table.domain),
   actionCategoryIdx: index('dns_security_events_action_cat_idx').on(table.action, table.category),
-  providerEventIdIdx: index('dns_security_events_provider_id_idx').on(table.integrationId, table.providerEventId),
+  // (integration_id, provider_event_id) is served by the unique index below;
+  // the non-unique copy dns_security_events_provider_id_idx was dropped (#10054).
   providerEventIdUnique: uniqueIndex('dns_security_events_provider_evt_uniq').on(table.integrationId, table.providerEventId)
 }));
 

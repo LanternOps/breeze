@@ -1869,10 +1869,20 @@
       "loadFailed": "Etkinlikler yüklenemedi"
     },
     "loading": "Yükleniyor…",
-    "eventCount_one": "{{shown}} / {{total}} etkinliği (en son 100)",
-    "eventCount_other": "{{shown}} / {{total}} olay (en son 100)",
-    "blockedEventCount_one": "{{shown}} / {{total}} engellenen etkinlik (en son 100)",
-    "blockedEventCount_other": "{{shown}} / {{total}} engellenen etkinlikler (en son 100)",
+    "eventCount_one": "{{shown}} / {{total}} olay",
+    "eventCount_other": "{{shown}} / {{total}} olay",
+    "blockedEventCount_one": "{{shown}} / {{total}} engellenen olay",
+    "blockedEventCount_other": "{{shown}} / {{total}} engellenen olay",
+    "eventCountCapped": "{{shown}} / {{total}}+ olay",
+    "blockedEventCountCapped": "{{shown}} / {{total}}+ engellenen olay",
+    "loadMore": "Daha fazla yükle",
+    "window": {
+      "label": "Zaman aralığı",
+      "last24h": "Son 24 saat",
+      "last7d": "Son 7 gün",
+      "last30d": "Son 30 gün",
+      "last90d": "Son 90 gün"
+    },
     "showAll": "Tümünü göster (yalnızca engellenenleri değil)",
     "actions": {
       "refresh": "Yenile",
