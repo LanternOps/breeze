@@ -21,7 +21,7 @@ import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { createOrganization, createPartner } from './db-utils';
 
-const MIGRATION = '2027-01-17-112500-contract-documents-template-name-snapshot.sql';
+const MIGRATION = '2027-01-17-181000-contract-documents-template-name-snapshot.sql';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 type Row = Record<string, unknown>;
