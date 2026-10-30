@@ -983,9 +983,9 @@ export default function DevicesPage() {
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
 
-  const handleGroupCreated = useCallback(async (newGroupId: string) => {
+  const handleGroupCreated = useCallback(async (newGroupId: string, ownerScope: 'organization' | 'partner') => {
     setShowCreateGroup(false);
-    setAutoSelectGroupId(newGroupId);
+    if (ownerScope === 'organization') setAutoSelectGroupId(newGroupId);
     await refreshDevices();
   }, [refreshDevices]);
 

@@ -1,12 +1,12 @@
 import { Queue, Worker, type Job } from 'bullmq';
-import { and, asc, eq, inArray, isNull, lt, lte, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { webhookDeliveries, webhooks } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
-import { getWebhookWorker } from '../workers/webhookDelivery';
+import { enqueueWebhookAttempt } from './webhookDeliveryQueue';
+import { drainLegacyWebhookQueues, legacyWebhookQueuesPending } from './webhookLegacyQueueCutover';
 import { attachWorkerObservability } from './workerObservability';
-import type { BreezeEvent, EventType } from '../services/eventBus';
 
 const { db } = dbModule;
 
@@ -20,15 +20,17 @@ const QUEUE_NAME = 'webhook-delivery-recovery';
 /**
  * How long an unresolved row may sit before the sweep considers it.
  *
- * This threshold is a COST control, not the correctness boundary. Re-queueing a
- * delivery that was merely backlogged is harmless because the worker's
- * execution claim lets only one copy of a job POST (see
- * `setDeliveryClaimCallback`); without that claim no threshold would be safe,
- * since BRPOP's 5s is only its empty-queue wait and the FIFO backlog ahead of a
- * job is unbounded. Fifteen minutes simply keeps the sweep from manufacturing
- * duplicate queue entries during an ordinary traffic spike.
+ * This threshold limits duplicate wake-ups during traffic spikes. The worker's
+ * execution claim, not the age threshold, ensures only one copy can POST.
  */
 export const STALE_PENDING_MS = 15 * 60 * 1000;
+/**
+ * How overdue a `scheduled` row must be before the sweep re-drives it. Its own
+ * BullMQ delayed job normally wakes it on time; the sweep only replaces a wake
+ * lost to a Redis restart or a failed enqueue, so it waits out the grace
+ * rather than racing every on-time wake.
+ */
+export const SCHEDULED_REDRIVE_GRACE_MS = 15 * 60 * 1000;
 
 /**
  * Gap enforced between recovery attempts on one row. Doubles as the sweep's
@@ -44,10 +46,9 @@ export const RECOVERY_COOLDOWN_MS = 15 * 60 * 1000;
 export const MAX_RECOVERY_ATTEMPTS = 5;
 
 /**
- * Rows examined per sweep. Bounded on purpose: `webhook_deliveries` has no
- * retention job anywhere, so the table grows without limit, and a backlog after
- * a long Redis outage must not turn one tick into an unbounded fan-out of
- * outbound POSTs.
+ * Rows examined per sweep, per arm (pending/retrying, and scheduled). Bounded
+ * on purpose: a backlog after a long Redis outage must not turn one tick into
+ * an unbounded fan-out of outbound POSTs.
  */
 export const RECOVERY_BATCH_SIZE = 200;
 
@@ -75,7 +76,8 @@ export const MAX_RECOVERABLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * The two unresolved statuses, and why they are handled differently.
+ * Unresolved statuses are handled differently. This list is only the
+ * lease-based arm; scheduled rows use their own due-time query below.
  *
  * `pending`  — recorded, never claimed by any delivery worker. Nothing was
  *              sent, so re-driving it cannot duplicate a POST.
@@ -106,6 +108,20 @@ export function buildUnresolvedScope(now: Date): SQL {
 }
 
 /**
+ * `scheduled` — a failed attempt waiting for a safe re-drive at its due time.
+ * No in-flight request exists; never stamp a lease on its due time.
+ */
+export function buildScheduledRedriveScope(now: Date): SQL {
+  return and(
+    eq(webhookDeliveries.status, sql.raw("'scheduled'")),
+    or(
+      isNull(webhookDeliveries.nextRetryAt),
+      lte(webhookDeliveries.nextRetryAt, new Date(now.getTime() - SCHEDULED_REDRIVE_GRACE_MS))
+    )
+  )!;
+}
+
+/**
  * Compare-and-swap that claims one row for the sweep.
  *
  * Re-asserts the ENTIRE candidate scope against this id rather than trusting
@@ -115,7 +131,7 @@ export function buildUnresolvedScope(now: Date): SQL {
  * returns a row proceeds.
  *
  * Note WHICH conjunct defends WHICH race. Against another SWEEPER, the status
- * test does nothing — it admits both unresolved statuses, and a rival sweeper
+ * test does nothing — it admits both lease-arm statuses, and a rival sweeper
  * leaves the row unresolved too. It is the LEASE predicate that serialises
  * them: the winner stamps `next_retry_at = now + RECOVERY_COOLDOWN_MS`, which
  * is in the future relative to every concurrent sweeper's `now`.
@@ -157,6 +173,14 @@ export function buildLeaseHeldCas(deliveryId: string, leaseUntil: Date): SQL {
 
 export interface WebhookRecoverySweepSummary {
   scanned: number;
+  scheduledScanned: number;
+  scheduledRedriven: number;
+  /** Scheduled rows older than MAX_RECOVERABLE_AGE_MS, resolved terminally. */
+  scheduledTooOld: number;
+  /** Scheduled re-drive could not enqueue; the row remains due. */
+  scheduledEnqueueFailed: number;
+  /** Scheduled terminal CAS lost to a worker or another sweep. */
+  scheduledTerminalWriteLost: number;
   requeued: number;
   /** `pending` rows abandoned after MAX_RECOVERY_ATTEMPTS. */
   exhausted: number;
@@ -164,15 +188,15 @@ export interface WebhookRecoverySweepSummary {
   abandonedInFlight: number;
   /** Lost the CAS to another instance, or the row moved on mid-sweep. */
   raced: number;
-  /** Webhook no longer active, or its credentials would not decrypt. */
+  /** Pending row whose webhook is no longer active. */
   undeliverable: number;
-  /** Claimed but the enqueue still failed — stays unresolved for the next window. */
+  /** Lease-arm pending enqueue failed — stays unresolved for the next window. */
   enqueueFailed: number;
-  /** Older than MAX_RECOVERABLE_AGE_MS — resolved terminally, never sent. */
+  /** Lease-arm pending row older than MAX_RECOVERABLE_AGE_MS, resolved terminally. */
   tooOld: number;
   /**
-   * A terminal write that matched no row: the lease was lost between the claim
-   * and the write (a delivery worker's execution claim only tests `status`, so
+   * A lease-arm terminal write that matched no row: the lease was lost between the claim
+   * and the write (a delivery worker ignores the recovery lease on a pending row, so
    * it can still take a row this sweep has leased). Counted separately because
    * folding it into `exhausted`/`undeliverable` would report a resolution that
    * never happened.
@@ -191,11 +215,12 @@ export interface WebhookRecoverySweepSummary {
 async function markUnrecoverable(
   deliveryId: string,
   leaseUntil: Date,
-  errorMessage: string
+  errorMessage: string,
+  now: Date
 ): Promise<boolean> {
   const rows = await db
     .update(webhookDeliveries)
-    .set({ status: 'failed', errorMessage, nextRetryAt: null })
+    .set({ status: 'failed', failedAt: now, errorMessage, nextRetryAt: null })
     .where(buildLeaseHeldCas(deliveryId, leaseUntil))
     .returning({ id: webhookDeliveries.id });
 
@@ -207,7 +232,7 @@ async function markUnrecoverable(
  *
  * `markUnrecoverable` matches the EXACT lease instant, so it writes nothing if
  * the row was re-leased in between — which a delivery worker's execution claim
- * can do, since that CAS only tests `status`. Swallowing the `false` would log
+ * can do for pending rows regardless of their lease. Swallowing `false` would log
  * "abandoned" and increment a resolution counter for a row that is still
  * unresolved: precisely the kind of quiet miscount #4095 is about.
  */
@@ -216,10 +241,11 @@ async function resolveTerminally(
   candidate: { id: string; webhookId: string },
   leaseUntil: Date,
   errorMessage: string,
-  onLanded: () => void
+  onLanded: () => void,
+  now: Date
 ): Promise<void> {
   const landed = await runWithSystemDbAccess(() =>
-    markUnrecoverable(candidate.id, leaseUntil, errorMessage)
+    markUnrecoverable(candidate.id, leaseUntil, errorMessage, now)
   );
 
   if (!landed) {
@@ -239,12 +265,10 @@ async function resolveTerminally(
 /**
  * Reclaim `webhook_deliveries` rows that were committed but never delivered.
  *
- * The row is written to Postgres BEFORE `queueDelivery`, which is a bare
- * `redis.lpush` onto a non-durable list. If that LPUSH throws, or the process
- * dies between the commit and the LPUSH, the row sits at `status = 'pending'`
- * with no job anywhere and nothing ever looks at it again (#4095).
+ * Postgres owns delivery state; a missing BullMQ wake-up after an enqueue
+ * failure or Redis restart must not leave a pending or scheduled row stranded.
  *
- * This sweep is the SINGLE owner of re-queueing. The '*' subscriber only
+ * This sweep and the legacy queue cut-over re-drive persisted rows. The '*' subscriber only
  * reports its dedupe skips: if it also re-queued stale rows, a redelivered
  * event and this sweep could both drive the same row.
  */
@@ -253,6 +277,11 @@ export async function runWebhookDeliveryRecoverySweep(
 ): Promise<WebhookRecoverySweepSummary> {
   const summary: WebhookRecoverySweepSummary = {
     scanned: 0,
+    scheduledScanned: 0,
+    scheduledRedriven: 0,
+    scheduledTooOld: 0,
+    scheduledEnqueueFailed: 0,
+    scheduledTerminalWriteLost: 0,
     requeued: 0,
     exhausted: 0,
     abandonedInFlight: 0,
@@ -270,15 +299,13 @@ export async function runWebhookDeliveryRecoverySweep(
         webhookId: webhookDeliveries.webhookId,
         eventId: webhookDeliveries.eventId,
         eventType: webhookDeliveries.eventType,
-        payload: webhookDeliveries.payload,
         status: webhookDeliveries.status,
         recoveryAttempts: webhookDeliveries.recoveryAttempts,
+        attempts: webhookDeliveries.attempts,
         createdAt: webhookDeliveries.createdAt,
-        payloadVersion: webhookDeliveries.payloadVersion,
-        eventTimestamp: webhookDeliveries.eventTimestamp,
-        replayRootEventId: webhookDeliveries.replayRootEventId,
-        webhookOrgId: webhooks.orgId,
+        deliveryOrgId: webhookDeliveries.orgId,
         webhookStatus: webhooks.status,
+        webhookGeneration: webhookDeliveries.webhookGeneration,
         webhookApprovalGeneration: webhooks.approvalGeneration
       })
       .from(webhookDeliveries)
@@ -330,11 +357,12 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               eventType: candidate.eventType
             })}`);
-          }
+          },
+          now
         );
         continue;
       }
@@ -351,11 +379,12 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               ageMs: now.getTime() - candidate.createdAt.getTime()
             })}`);
-          }
+          },
+          now
         );
         continue;
       }
@@ -372,12 +401,13 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_EXHAUSTED',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               eventId: candidate.eventId,
               eventType: candidate.eventType,
               recoveryAttempts: claimed.recoveryAttempts
             })}`);
-          }
+          },
+          now
         );
         continue;
       }
@@ -391,7 +421,7 @@ export async function runWebhookDeliveryRecoverySweep(
           candidate,
           leaseUntil,
           // "Never CLAIMED", not "never enqueued": an unclaimed row proves only
-          // that no worker took it. It may well have been LPUSHed and then sat
+          // that no worker took it. It may well have been queued and then sat
           // in a backlog, or been lost by a Redis restart. Naming the wrong
           // subsystem sends the on-call engineer to the wrong place.
           `Never claimed by a delivery worker; webhook is ${candidate.webhookStatus}`,
@@ -401,45 +431,27 @@ export async function runWebhookDeliveryRecoverySweep(
               errorId: 'WEBHOOK_DELIVERY_RECOVERY_WEBHOOK_INACTIVE',
               deliveryId: candidate.id,
               webhookId: candidate.webhookId,
-              orgId: candidate.webhookOrgId,
+              orgId: candidate.deliveryOrgId,
               webhookStatus: candidate.webhookStatus
             })}`);
-          }
+          },
+          now
         );
         continue;
       }
 
-      // Site-ceiling gate contract §7E: no decryption here. The recovery
-      // sweep enqueues by webhookId + the row's CURRENT approval_generation
-      // — the worker reloads and decrypts at send time (the sole point of
-      // decryption on this path). A decrypt failure there is recorded as a
-      // superseded/failed delivery (never retried), which is the same
-      // terminal outcome this sweep used to resolve directly; it now
-      // surfaces one hop later, inside the worker, rather than here.
-
-      // The original event, reconstructed from the row. `id` MUST stay the
-      // original `event_id`: it goes out as `X-Breeze-Event-Id`, which is the
-      // customer's own idempotency key, and it is what the unique index dedupes
-      // on. Restore the stored event timestamp. NULL event_timestamp means a
-      // legacy row or an event whose timestamp was missing/unparseable; use
-      // created_at as the closest recorded approximation in those cases.
-      const event: BreezeEvent = {
-        id: candidate.eventId,
-        type: candidate.eventType as EventType,
-        orgId: candidate.webhookOrgId,
-        source: 'webhook.recovery',
-        priority: 'normal',
-        payload: (candidate.payload ?? {}) as Record<string, unknown>,
-        metadata: { timestamp: (candidate.eventTimestamp ?? candidate.createdAt).toISOString() }
-      };
+      // Reload and decrypt only in the worker. Preserve the generation recorded
+      // on the delivery; legacy NULL rows fall back to the webhook's current
+      // generation (the old behaviour).
 
       try {
-        // Outside any DB context: this is a Redis LPUSH, and holding a pooled
-        // Postgres connection across it is the pattern that exhausts the pool.
-        await getWebhookWorker().queueDelivery(candidate.webhookId, candidate.webhookApprovalGeneration, event, candidate.id, {
-          payloadVersion: candidate.payloadVersion === 2 ? 2 : 1,
-          replayOf: candidate.replayRootEventId ?? null
-        });
+        // Do not hold a pooled Postgres connection while awaiting Redis.
+        await enqueueWebhookAttempt({
+          deliveryId: candidate.id,
+          webhookId: candidate.webhookId,
+          generation: candidate.webhookGeneration ?? candidate.webhookApprovalGeneration,
+          attemptsMade: candidate.attempts
+        }, now);
       } catch (enqueueError) {
         // Still no job. Hand the attempt BACK: the claim charged one before the
         // enqueue, but this enqueue never used it. Without the refund a Redis
@@ -462,7 +474,7 @@ export async function runWebhookDeliveryRecoverySweep(
           errorId: 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED',
           deliveryId: candidate.id,
           webhookId: candidate.webhookId,
-          orgId: candidate.webhookOrgId,
+          orgId: candidate.deliveryOrgId,
           error: enqueueError instanceof Error ? enqueueError.message : String(enqueueError)
         })}`);
         continue;
@@ -473,7 +485,7 @@ export async function runWebhookDeliveryRecoverySweep(
         errorId: 'WEBHOOK_DELIVERY_RECOVERED',
         deliveryId: candidate.id,
         webhookId: candidate.webhookId,
-        orgId: candidate.webhookOrgId,
+        orgId: candidate.deliveryOrgId,
         eventId: candidate.eventId,
         eventType: candidate.eventType,
         recoveryAttempt: claimed.recoveryAttempts,
@@ -492,10 +504,92 @@ export async function runWebhookDeliveryRecoverySweep(
     }
   }
 
-  if (summary.scanned > 0) {
+  const scheduled = await runWithSystemDbAccess(async () =>
+    db.select({
+      id: webhookDeliveries.id,
+      webhookId: webhookDeliveries.webhookId,
+      attempts: webhookDeliveries.attempts,
+      createdAt: webhookDeliveries.createdAt,
+      webhookGeneration: webhookDeliveries.webhookGeneration,
+      webhookApprovalGeneration: webhooks.approvalGeneration
+    })
+      .from(webhookDeliveries)
+      .innerJoin(webhooks, eq(webhooks.id, webhookDeliveries.webhookId))
+      .where(buildScheduledRedriveScope(now))
+      .orderBy(sql`${webhookDeliveries.nextRetryAt} ASC NULLS FIRST`)
+      .limit(RECOVERY_BATCH_SIZE)
+  );
+  summary.scheduledScanned = scheduled.length;
+  for (const candidate of scheduled) {
+    try {
+      if (now.getTime() - candidate.createdAt.getTime() > MAX_RECOVERABLE_AGE_MS) {
+        const errorMessage = 'Retry was not sent before the delivery became too old; abandoned without delivery';
+        const written = await runWithSystemDbAccess(() => db.update(webhookDeliveries)
+          .set({ status: 'failed', failedAt: now, nextRetryAt: null, errorMessage })
+          .where(and(
+            eq(webhookDeliveries.id, candidate.id),
+            eq(webhookDeliveries.status, 'scheduled'),
+            eq(webhookDeliveries.attempts, candidate.attempts)
+          ))
+          .returning({ id: webhookDeliveries.id }));
+        if (written.length === 0) {
+          summary.scheduledTerminalWriteLost += 1;
+          console.warn(`[WebhookDeliveryRecovery] terminal-write-lost ${JSON.stringify({
+            errorId: 'WEBHOOK_DELIVERY_RECOVERY_TERMINAL_WRITE_LOST',
+            deliveryId: candidate.id, webhookId: candidate.webhookId, intendedMessage: errorMessage
+          })}`);
+        } else {
+          summary.scheduledTooOld += 1;
+          console.warn(`[WebhookDeliveryRecovery] too-old-to-deliver ${JSON.stringify({
+            errorId: 'WEBHOOK_DELIVERY_RECOVERY_TOO_OLD',
+            deliveryId: candidate.id, webhookId: candidate.webhookId,
+            ageMs: now.getTime() - candidate.createdAt.getTime()
+          })}`);
+        }
+        continue;
+      }
+      try {
+        // The deterministic job id collapses concurrent sweeps without delaying
+        // the row itself; inactive webhooks are superseded by the worker.
+        // Legacy NULL generations fall back to the current generation (old behaviour).
+        await enqueueWebhookAttempt({
+          deliveryId: candidate.id, webhookId: candidate.webhookId,
+          generation: candidate.webhookGeneration ?? candidate.webhookApprovalGeneration, attemptsMade: candidate.attempts
+        }, now);
+        summary.scheduledRedriven += 1;
+      } catch (error) {
+        summary.scheduledEnqueueFailed += 1;
+        captureException(error instanceof Error ? error : new Error(String(error)));
+        console.error(`[WebhookDeliveryRecovery] requeue-failed ${JSON.stringify({
+          errorId: 'WEBHOOK_DELIVERY_RECOVERY_REQUEUE_FAILED',
+          deliveryId: candidate.id, webhookId: candidate.webhookId,
+          error: error instanceof Error ? error.message : String(error)
+        })}`);
+      }
+    } catch (error) {
+      captureException(error instanceof Error ? error : new Error(String(error)));
+      console.error(`[WebhookDeliveryRecovery] candidate-failed ${JSON.stringify({
+        errorId: 'WEBHOOK_DELIVERY_RECOVERY_CANDIDATE_FAILED',
+        deliveryId: candidate.id, webhookId: candidate.webhookId,
+        error: error instanceof Error ? error.message : String(error)
+      })}`);
+    }
+  }
+
+  if (summary.scanned > 0 || summary.scheduledScanned > 0) {
     console.warn(`[WebhookDeliveryRecovery] sweep-complete ${JSON.stringify({
       errorId: 'WEBHOOK_DELIVERY_RECOVERY_SWEEP',
       ...summary
+    })}`);
+  }
+
+  try {
+    if (await legacyWebhookQueuesPending()) await drainLegacyWebhookQueues();
+  } catch (error) {
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    console.error(`[WebhookDeliveryRecovery] legacy-cutover-failed ${JSON.stringify({
+      errorId: 'WEBHOOK_LEGACY_QUEUE_CUTOVER_FAILED',
+      error: error instanceof Error ? error.message : String(error)
     })}`);
   }
 

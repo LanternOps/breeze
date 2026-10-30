@@ -357,7 +357,7 @@ func (h *Host) RendererDisconnected(sessionKey string) {
 			if pl.path != PathPrompt || pl.renderer != sessionKey {
 				continue
 			}
-			if rec.p.Kind.NeverReask {
+			if rec.neverReask() {
 				h.lose(rec, pl, now, ob, "renderer_gone")
 				break
 			}
@@ -396,8 +396,11 @@ func (h *Host) place(rec *record, pl *placement, now time.Time, ob *outbox, from
 }
 
 func (h *Host) choose(rec *record, pl *placement) Choice {
-	return selectRenderer(rec.p.Kind.Name, []int{rec.p.Kind.Version}, h.dir.Renderers(pl.owner), h.enabled, pl.tried, rec.p.Legacy != nil, rec.p.Headless != nil)
+	return selectRendererVia(rec.p.Kind.Name, []int{rec.p.Kind.Version}, rec.p.Roles, h.dir.Renderers(pl.owner), h.enabled, pl.tried, rec.p.Legacy != nil, rec.p.Headless != nil)
 }
+
+// neverReask: the kind or this prompt is never moved to another renderer.
+func (r *record) neverReask() bool { return r.p.Kind.NeverReask || r.p.NeverReask }
 
 func (h *Host) modalBusy(rec *record, o Owner) bool {
 	for _, other := range h.prompts {
@@ -532,7 +535,7 @@ func (h *Host) fence(rec *record, pl *placement, ob *outbox) {
 // fallback moves a placement off a renderer that failed it (render_failed,
 // a missed present budget, a failed send, or a renderer gone past its grace).
 func (h *Host) fallback(rec *record, pl *placement, now time.Time, ob *outbox, why string) {
-	if rec.p.Kind.NeverReask {
+	if rec.neverReask() {
 		h.lose(rec, pl, now, ob, why)
 		return
 	}
@@ -614,10 +617,43 @@ func (h *Host) applyPatch(rec *record, patch Patch, now time.Time, ob *outbox) e
 	if err != nil {
 		return fmt.Errorf("prompthost: %w", err)
 	}
+	replace := patch.Presentation != nil || patch.Focus != nil || patch.Roles != nil
+	if patch.Presentation != nil {
+		merged.Presentation = *patch.Presentation
+	}
+	if patch.Focus != nil {
+		merged.Focus = *patch.Focus
+	}
+	if replace {
+		if err := ipc.ValidatePromptShow(merged); err != nil {
+			return fmt.Errorf("prompthost: %w", err)
+		}
+	}
 	merged.Lease = rec.show.Lease
 	rec.show = merged
+	if patch.NeverReask != nil {
+		rec.p.NeverReask = *patch.NeverReask
+	}
+	if patch.Roles != nil {
+		rec.p.Roles = append([]ipc.HelperRole{}, (*patch.Roles)...)
+	}
+	if replace {
+		// Placed again: fence every copy first (the old renderer must never
+		// see the new state), then the selector chooses under the new roles.
+		// Each placement gets a new lease and a full prompt_show.
+		for _, pl := range rec.placements {
+			h.fence(rec, pl, ob)
+			pl.tried = map[string]bool{}
+			pl.legacyDone = false
+		}
+		for _, pl := range rec.placements {
+			if pl.deferred == deferNone {
+				h.assign(rec, pl, h.choose(rec, pl), now, ob, false)
+			}
+		}
+	}
 	for _, pl := range rec.placements {
-		if pl.path != PathPrompt || pl.renderer == "" {
+		if replace || pl.path != PathPrompt || pl.renderer == "" {
 			continue
 		}
 		wu := u

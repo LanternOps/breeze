@@ -31,6 +31,8 @@
     "confidenceValue": "{{confidence}}% de confiança"
   },
   "alertDetailPage": {
+    "externalTickets": "Chamados externos",
+    "externalTicketsFailedToLoad": "Não foi possível carregar os chamados externos.",
     "loadingAlert": "Carregando alerta...",
     "backToAlerts": "Voltar para alertas",
     "goBack": "Voltar",
