@@ -103,6 +103,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
   // (FLOW_EXCLUDED_CORE_TOOLS). Same for the W08 link tools (link_entity.id /
   // link_entity.orgId are id-typed, but link_entity never runs in a flow).
+  // #10396 added search_agent_logs.orgId: resolveReadableToolOrgScope re-checks
+  // it against auth.canAccessOrg at run time and refuses an org outside reach.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -450,6 +452,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "run_script.proposalId",
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",
+        "search_agent_logs.orgId",
         "search_logs.siteIds",
         "sync_edr_data.connectionId",
         "sync_edr_data.orgId",
