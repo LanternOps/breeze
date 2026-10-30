@@ -84,7 +84,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml, portalCustomCssSchema } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -919,7 +919,9 @@ const partnerSettingsSchema = z.object({
     primaryColor: z.string().optional(),
     secondaryColor: z.string().optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
-    customCss: z.string().optional(),
+    // #9674: layered ahead of each child org's own CSS on the portal
+    // (routes/portal/portalCustomCss.ts), so it gets the org path's rules.
+    customCss: portalCustomCssSchema,
   }).optional(),
   aiBudgets: z.object({
     enabled: z.boolean().optional(),

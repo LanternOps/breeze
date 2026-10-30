@@ -906,12 +906,12 @@
     "logoPreview": "Logo-Vorschau",
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
-    "imageHelp": "PNG, JPEG oder WebP · max. 400 KB nach der Kodierung · Größe angepasst an 256×256",
+    "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",
     "customCssPlaceholder": "/* Benutzerdefiniertes CSS wird auf alle untergeordneten Organisationen angewendet */",
-    "customCssHelp": "CSS Überschreibungen wurden auf das Portal für alle untergeordneten Organisationen angewendet."
+    "customCssHelp": "Wird im Portal jedes Kunden eingebunden, vor dem eigenen benutzerdefinierten CSS der Organisation, das es überschreiben kann. @import und url() ohne HTTPS sind nicht erlaubt."
   },
   "partnerSecurity": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -1844,7 +1844,11 @@
     },
     "colors": {
       "primary": "Primärfarbe",
-      "secondary": "Sekundärfarbe"
+      "secondary": "Sekundärfarbe",
+      "primaryInheritedSource": "Markenfarbe des Partners",
+      "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
+      "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "theme": {
       "title": "Thema",
@@ -3091,6 +3095,7 @@
           "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
+          "unsupported_user_scope": "Installation pro Benutzer, die Breeze noch nicht anwenden kann",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
         },
         "failureClasses": {
@@ -6377,7 +6382,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Rolle auswählen"
     },
     "orgAccess": {
       "title": "Organisationszugriff",

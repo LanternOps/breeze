@@ -1124,7 +1124,9 @@
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
         "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
         "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen."
+        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen.",
+        "saveExpiry": "Das Ablaufdatum konnte nicht gespeichert werden.",
+        "saveIntroNotes": "Die Einleitung konnte nicht gespeichert werden."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -1348,6 +1350,14 @@
       },
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Rich-Text unterstützt Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      },
+      "intro": {
+        "expiryLabel": "Gültig bis",
+        "expiryHelper": "Wird auf das Angebot gedruckt. Der Kunde kann bis zum Ende dieses Tages annehmen. Leer lassen für kein Ablaufdatum.",
+        "expiryPast": "Dieses Datum liegt in der Vergangenheit — ein abgelaufenes Angebot kann der Kunde nicht annehmen.",
+        "notesLabel": "Einleitung",
+        "notesHelper": "Wird über dem ersten Abschnitt des Angebots gedruckt.",
+        "notesPlaceholder": "Eine kurze Nachricht an den Kunden, z. B. worum es in diesem Angebot geht."
       }
     },
     "actions": {

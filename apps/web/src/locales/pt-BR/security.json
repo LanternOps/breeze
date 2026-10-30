@@ -38,8 +38,8 @@
     "title": "Propostas de script",
     "proposalsPerDay": "Propostas por dia",
     "reviewerDisagreements": "Divergências do revisor",
-    "humanRejectedAfterApprove": "Rejeitado por humano após aprovação da IA",
-    "humanApprovedAfterReject": "Aprovado por humano após rejeição da IA",
+    "humanRejectedAfterApprove": "Negado por humano, IA recomendou aprovar",
+    "humanApprovedAfterReject": "Aprovado por humano, IA recomendou rejeitar",
     "unattendedRuns": "Execuções não supervisionadas",
     "laneState": "Faixa não supervisionada",
     "laneOpen": "Aberta (pausada após falhas repetidas de verificação)",
@@ -54,7 +54,15 @@
     "exec": "Execução: {{duration}}ms",
     "noTier3ToolExecutionsFound": "Nenhuma execução de ferramenta de Camada 3 encontrada.",
     "pending": "Pendente",
-    "rejected": "Rejeitado",
+    "rejected": "Negado",
+    "status": {
+      "pending": "Pendente",
+      "approved": "Aprovado",
+      "executing": "Em execução",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "rejected": "Negado"
+    },
     "session": "Sessão: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "A senha temporária já foi revelada.",
     "tempPasswordCopied": "Copiado",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Todos",
-    "denied": "Negado",
+    "denied": "Bloqueado",
     "error": "Erro",
     "failed": "Falhou",
-    "noRejectionsOrDenialsFound": "Nenhuma rejeição ou negação encontrada.",
-    "rejected": "Rejeitado",
-    "rejectionsAndDenials": "Rejeições e negações",
+    "noRejectionsOrDenialsFound": "Nenhuma ação negada, bloqueada ou com falha encontrada.",
+    "rejected": "Negado",
+    "rejectionsAndDenials": "Negados e bloqueados",
     "search": "Pesquisar...",
     "session": "Sessão",
     "status": "Status",
@@ -1772,7 +1780,8 @@
       "syncQueued": "Sincronização enfileirada para {{name}}",
       "deleteConfirm": "Excluir {{name}}? Suas políticas, eventos e estatísticas são removidos em segundo plano.",
       "deleteFailed": "Falha ao excluir {{name}}",
-      "deleteSuccess": "Excluindo {{name}} em segundo plano"
+      "deleteSuccess": "Excluindo {{name}} em segundo plano",
+      "deleteComplete": "Exclusão de {{name}} concluída"
     },
     "loading": "Carregando integrações…",
     "empty": {
@@ -1788,6 +1797,7 @@
     },
     "lastSyncFailedSuffix": " — falhou",
     "lastSyncPartialSuffix": " — recuperando atraso",
+    "lastSyncTruncatedSuffix": " — alguns eventos não obtidos",
     "never": "Nunca",
     "deletingInBackground": "Excluindo…"
   },
@@ -2429,9 +2439,12 @@
       "rateLimited": "Muitas varreduras foram iniciadas recentemente. Tente novamente mais tarde."
     },
     "skipReasons": {
-      "agent_too_old": "dispositivos com agente desatualizado demais",
-      "busy_same_sweep": "dispositivos que já executam esta varredura",
-      "rule_set_not_eligible": "dispositivos aos quais os conjuntos de regras não se aplicam"
+      "agent_too_old_one": "{{count}} dispositivo com agente desatualizado demais",
+      "agent_too_old_other": "{{count}} dispositivos com agente desatualizado demais",
+      "busy_same_sweep_one": "{{count}} dispositivo que já executa esta varredura",
+      "busy_same_sweep_other": "{{count}} dispositivos que já executam esta varredura",
+      "rule_set_not_eligible_one": "{{count}} dispositivo ao qual os conjuntos de regras não se aplicam",
+      "rule_set_not_eligible_other": "{{count}} dispositivos aos quais os conjuntos de regras não se aplicam"
     },
     "skipExplain": {
       "agent_too_old": "O agente precisa ser atualizado antes de poder executar conjuntos de regras YARA.",
@@ -2445,9 +2458,17 @@
       "back": "Voltar",
       "next": "Avançar",
       "previewAction": "Pré-visualizar",
-      "confirm": "Varrer {{targeted}} dispositivos",
+      "confirm_one": "Varrer {{count}} dispositivo",
+      "confirm_other": "Varrer {{count}} dispositivos",
       "viewRunning": "Ver a varredura em andamento",
-      "confirmSummary": "{{targeted}} dispositivos em {{orgs}} organizações serão verificados com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado nos dispositivos.",
+      "confirmSummary_one": "{{devices}} em {{orgs}} será verificado com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado no dispositivo.",
+      "confirmSummary_other": "{{devices}} em {{orgs}} serão verificados com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado nos dispositivos.",
+      "counts": {
+        "devices_one": "{{count}} dispositivo",
+        "devices_other": "{{count}} dispositivos",
+        "orgs_one": "{{count}} organização",
+        "orgs_other": "{{count}} organizações"
+      },
       "steps": {
         "scope": "Escopo",
         "type": "Tipo de verificação",
@@ -2476,15 +2497,19 @@
         "full": "Completa",
         "custom": "Caminhos personalizados",
         "paths": "Caminhos, um por linha",
-        "pathsHelp": "Até {{max}} caminhos, com {{chars}} caracteres cada."
+        "pathsHelp": "Até {{max}} caminhos, com {{chars}} caracteres cada.",
+        "pathsCount": "{{paths}} de {{max}} caminhos",
+        "pathsTooMany": "{{paths}} de {{max}} caminhos: remova {{remove}}.",
+        "pathTooLong": "A linha {{line}} tem mais de {{chars}} caracteres."
       },
       "duration": {
         "label": "Executar por (horas)",
-        "help": "Dispositivos offline executam a verificação quando voltam dentro deste prazo. Entre 1 e {{max}} horas."
+        "help": "Dispositivos offline executam a verificação quando voltam dentro deste prazo. Entre 1 e {{max}} horas.",
+        "invalid": "Informe um número inteiro de horas entre 1 e {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} dispositivos em {{orgs}} organizações",
-        "org": "{{org}}: {{devices}} dispositivos",
+        "targeted": "{{devices}} em {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Conjuntos de regras",
         "skipped": "Ignorados",
         "scopeChanged": "Os dispositivos ou conjuntos de regras mudaram desde a pré-visualização. Confira os novos números e confirme novamente."

@@ -69,7 +69,7 @@
           "executing": "Ejecutando",
           "completed": "Completado",
           "failed": "Fallido",
-          "rejected": "Rechazado"
+          "rejected": "Denegado"
         }
       },
       "intents": {
@@ -906,12 +906,12 @@
     "logoPreview": "Vista previa del logotipo",
     "noLogo": "Sin logotipo",
     "uploadImage": "Subir imagen",
-    "imageHelp": "PNG, JPEG o WebP · máximo 400 KB después de la codificación · redimensionado para ajustarse a 256×256",
+    "imageHelp": "PNG, JPEG o WebP, hasta 400 KB después de la codificación; las imágenes grandes se reducen a 800 px.",
     "invalidSavedLogo": "Los datos del logotipo guardado no son válidos. Elimínelos o suba uno nuevo.",
     "pasteUrl": "O pegar una imagen URL",
     "customCss": "Personalizado CSS",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas las organizaciones secundarias */",
-    "customCssHelp": "Las anulaciones de CSS se aplicaron al portal para todas las organizaciones secundarias."
+    "customCssHelp": "Se agrega al portal de cada cliente, antes del CSS personalizado propio de la organización, que puede anularlo. No se permiten @import ni url() sin HTTPS."
   },
   "partnerSecurity": {
     "notSet": "No configurado: las organizaciones se configuran individualmente",
@@ -1844,7 +1844,11 @@
     },
     "colors": {
       "primary": "color primario",
-      "secondary": "color secundario"
+      "secondary": "color secundario",
+      "primaryInheritedSource": "Color de marca del socio",
+      "primaryHelp": "Color de acento en las cotizaciones, facturas y otros documentos para clientes de esta organización. Déjelo en blanco para usar el color de marca del socio.",
+      "primaryInvalid": "Ingrese un color hexadecimal, como #2563eb.",
+      "primaryLoadError": "No se pudo cargar el color primario guardado. La edición está deshabilitada hasta que se cargue."
     },
     "theme": {
       "title": "Tema",
@@ -2549,7 +2553,7 @@
     "failedToLoadData": "No se pudieron cargar los datos",
     "failedToSaveBudget": "No se pudo guardar el presupuesto",
     "failedToSave": "No se pudo guardar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la rechaza.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada herramienta que requiere aprobación se bloquea hasta que el usuario la aprueba o la deniega.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI propone un plan de varios pasos. El usuario aprueba todo el plan a la vez y luego los pasos se ejecutan automáticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Las herramientas de nivel 2 se ejecutan automáticamente con registro de auditoría. Las herramientas de nivel 3 aún requieren aprobación.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
@@ -3091,6 +3095,7 @@
           "explicitly_declined": "Rechazado explícitamente",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
           "ring_reference_invalid": "El anillo de actualización de la directiva no es válido",
+          "unsupported_user_scope": "Instalación por usuario que Breeze aún no puede aplicar",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
         },
         "failureClasses": {
@@ -6377,7 +6382,8 @@
     },
     "placeholders": {
       "name": "fulana",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Elija un rol"
     },
     "orgAccess": {
       "title": "Acceso a la organización",

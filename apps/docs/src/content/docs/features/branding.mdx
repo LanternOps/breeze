@@ -146,10 +146,10 @@ The partner-level editor provides:
 - **Logo** -- upload an image (stored inline, capped at roughly 400 KB) or paste a hosted image URL
 - **Primary and secondary colors**
 - **Theme** -- `light`, `dark`, or `system`
-- **Custom CSS**
+- **Custom CSS** -- added to the end-user portal of every organization under the partner (see [Custom CSS](#custom-css))
 
 <Aside type="caution">
-  Neither the org-level nor partner-level cascade of these appearance preferences down to the organizations they manage is implemented today -- each level's settings are stored independently, and as covered above neither currently changes what renders on the end-user portal, quotes, or invoices.
+  Apart from Custom CSS, neither the org-level nor partner-level cascade of these appearance preferences down to the organizations they manage is implemented today -- each level's settings are stored independently, and as covered above neither currently changes what renders on the end-user portal, quotes, or invoices.
 </Aside>
 
 ---
@@ -174,11 +174,16 @@ Custom portal domains (e.g., `support.acmecorp.com`) are not configurable yet --
 
 | Asset | Minimum | Recommended | Maximum |
 |-------|---------|-------------|---------|
-| Logo | 64 x 64 px | 512 x 512 px | Uploaded images are resized client-side to a 256 px box before saving (partner-level editor) |
+| Logo | 64 x 64 px | 512 x 512 px | Uploaded images are scaled down client-side to 800 px on the long side (smaller if needed to stay under 400 KB after encoding) |
 
 ### Custom CSS
 
-Custom CSS is injected after the base stylesheet. Use it for fine-grained control over portal appearance:
+Custom CSS is injected after the base stylesheet. It can be set at two levels, and both apply:
+
+1. **Partner** (**Settings > Partner > Branding**) -- added to the portal of every organization under the partner.
+2. **Organization** (the org's portal settings) -- added after the partner's CSS, so an organization rule overrides a partner rule for the same selector.
+
+Use it for fine-grained control over portal appearance:
 
 ```css
 /* Adjust portal header spacing */
@@ -198,7 +203,7 @@ body {
 ```
 
 <Aside type="caution">
-  Custom CSS is injected as-is with no sanitization beyond length limits. Avoid CSS that breaks layout or hides critical UI elements. Test changes using the live preview before saving.
+  Saving is refused when the CSS is longer than 65,536 characters or contains `@import`, `expression(`, `behavior:`, `-moz-binding`, or a `url()` that is not `https:` or `data:`. Otherwise the CSS is injected as written. Avoid CSS that breaks layout or hides critical UI elements.
 </Aside>
 
 ---

@@ -906,12 +906,12 @@
     "logoPreview": "Logo önizlemesi",
     "noLogo": "Logo yok",
     "uploadImage": "Resim yükle",
-    "imageHelp": "PNG, JPEG veya WebP · kodlamadan sonra maksimum 400 KB · 256×256'ya sığacak şekilde yeniden boyutlandırıldı",
+    "imageHelp": "PNG, JPEG veya WebP, kodlamadan sonra en fazla 400 KB; büyük görseller 800 piksele küçültülür.",
     "invalidSavedLogo": "Kaydedilen logo verileri geçersiz. Kaldırın veya yenisini yükleyin.",
     "pasteUrl": "Veya bir resim URL'si yapıştırın",
     "customCss": "Özel CSS",
     "customCssPlaceholder": "/* Tüm alt kuruluşlara uygulanan özel CSS */",
-    "customCssHelp": "CSS geçersiz kılmaları portala tüm alt kuruluşlar için uygulandı."
+    "customCssHelp": "Her müşterinin portalına, kuruluşun kendi Özel CSS'inden önce eklenir; kuruluşun CSS'i bunu geçersiz kılabilir. @import ve HTTPS olmayan url() kullanılamaz."
   },
   "partnerSecurity": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
@@ -1844,7 +1844,11 @@
     },
     "colors": {
       "primary": "Ana renk",
-      "secondary": "İkincil renk"
+      "secondary": "İkincil renk",
+      "primaryInheritedSource": "İş ortağı marka rengi",
+      "primaryHelp": "Bu kuruluşun tekliflerinde, faturalarında ve diğer müşteri belgelerinde kullanılan vurgu rengi. İş ortağının marka rengini kullanmak için boş bırakın.",
+      "primaryInvalid": "#2563eb gibi bir onaltılık renk girin.",
+      "primaryLoadError": "Kaydedilen ana renk yüklenemedi. Yüklenene kadar düzenleme devre dışı."
     },
     "theme": {
       "title": "Tema",
@@ -3091,6 +3095,7 @@
           "explicitly_declined": "Açıkça reddedildi",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
+          "unsupported_user_scope": "Breeze'in henüz uygulayamadığı kullanıcı başına yükleme",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
         },
         "failureClasses": {
@@ -6430,7 +6435,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "isim@şirket.com"
+      "email": "isim@şirket.com",
+      "role": "Bir rol seçin"
     },
     "orgAccess": {
       "title": "Kuruluş erişimi",

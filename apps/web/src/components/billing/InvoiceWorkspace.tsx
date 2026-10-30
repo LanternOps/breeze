@@ -1,3 +1,4 @@
+import { useRecordPageContext } from '@/hooks/useRecordPageContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -53,6 +54,7 @@ export default function InvoiceWorkspace({ id }: Props) {
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [detail, setDetail] = useState<InvoiceDetailData | null>(null);
   usePageItemName(detail?.invoice.invoiceNumber);
+  useRecordPageContext(detail ? { kind: 'invoice', id: detail.invoice.id, orgId: detail.invoice.orgId, label: detail.invoice.invoiceNumber ?? t('invoiceWorkspace.draftTitle') } : null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [tab, setTab] = useState<Tab>('editor');

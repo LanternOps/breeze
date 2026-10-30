@@ -12,7 +12,7 @@ const res = (payload: unknown, status = 200): Response =>
 const row = (over: Record<string, unknown> = {}) => ({
   id: 's1', title: 'T', status: 'active', orgId: 'org-1', type: 'general', deviceId: 'dev-1',
   flaggedAt: null, flagReason: null, delegantM365ConnectionId: 'm365-1',
-  contextSnapshot: { type: 'device', hostname: 'h', orgAnchor: 'page_context' },
+  contextSnapshot: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h', orgAnchor: 'page_context' },
   topologySiteId: null, lastTurnModel: null, ...over,
 });
 
@@ -31,7 +31,7 @@ describe('openAiSession', () => {
     expect(r.view).toMatchObject({
       id: 's1', orgId: 'org-1', type: 'general', deviceId: 'dev-1', status: 'active',
       m365ConnectionId: 'm365-1', isFlagged: true, flagReason: 'x', topologySiteId: null,
-      pageContext: { type: 'device', hostname: 'h' },
+      pageContext: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h' },
     });
     expect(r.view.pageContext).not.toHaveProperty('orgAnchor');
     expect(r.view.raw.id).toBe('s1');
@@ -67,9 +67,17 @@ describe('pageContextFromSnapshot', () => {
     expect(pageContextFromSnapshot('x')).toBeNull();
     expect(pageContextFromSnapshot({ hostname: 'h' })).toBeNull();
   });
+  it('round-trips a record and drops the server org anchor', () => {
+    const context = { type: 'record', kind: 'ticket', id: 'dddddddd-1111-4222-8333-444455556666', label: 'T-1' };
+    expect(pageContextFromSnapshot({ ...context, orgAnchor: 'page_context' })).toEqual(context);
+  });
+  it('rejects invalid record snapshots', () => {
+    expect(pageContextFromSnapshot({ type: 'record', kind: 'ticket', id: 'invalid' })).toBeNull();
+    expect(pageContextFromSnapshot({ type: 'unknown' })).toBeNull();
+  });
   it('drops orgAnchor', () => {
-    expect(pageContextFromSnapshot({ type: 'device', hostname: 'h', orgAnchor: 'page_context' }))
-      .toEqual({ type: 'device', hostname: 'h' });
+    expect(pageContextFromSnapshot({ type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h', orgAnchor: 'page_context' }))
+      .toEqual({ type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'h' });
   });
 });
 

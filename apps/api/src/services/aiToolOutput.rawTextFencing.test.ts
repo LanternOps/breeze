@@ -38,6 +38,25 @@ describe('compactToolResultForChat raw-text field fencing', () => {
     expect(parsed.incidents[0]!.description).toContain('[filtered]');
   });
 
+  it('neutralizes instruction-like text in a registered field (get_huntress_agents hostname/deviceHostname/platform/status)', () => {
+    const raw = JSON.stringify({
+      agents: [{
+        hostname: instructionLike, deviceHostname: instructionLike, platform: instructionLike,
+        status: instructionLike, mapped: true, deviceId: 'd-1',
+      }],
+      total: 1,
+    });
+
+    const parsed = JSON.parse(compactToolResultForChat('get_huntress_agents', raw)) as {
+      agents: Array<Record<'hostname' | 'deviceHostname' | 'platform' | 'status', string>>;
+    };
+
+    for (const field of ['hostname', 'deviceHostname', 'platform', 'status'] as const) {
+      expect(parsed.agents[0]![field], field).not.toContain('ignore previous instructions');
+      expect(parsed.agents[0]![field], field).toContain('[filtered]');
+    }
+  });
+
   it('neutralizes instruction-like text in a registered field (manage_tickets ticket.description)', () => {
     const raw = JSON.stringify({ ticket: { id: 't-1', subject: 'ok', description: instructionLike } });
 
@@ -149,7 +168,7 @@ describe('compactToolResultForChat raw-text field fencing', () => {
  */
 const KNOWN_RAW_TEXT_TOOLS_BY_FAMILY: Readonly<Record<string, readonly string[]>> = {
   'aiToolsEventLogs.ts': ['search_logs', 'get_log_trends', 'detect_log_correlations'],
-  'aiToolsHuntress.ts': ['get_huntress_incidents'],
+  'aiToolsHuntress.ts': ['get_huntress_incidents', 'get_huntress_agents'],
   'aiToolsEdr.ts': ['list_edr_detections'],
   'aiToolsTicketing.ts': ['manage_tickets'],
   'aiToolsAgentLogs.ts': ['search_agent_logs'],

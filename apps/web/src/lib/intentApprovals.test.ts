@@ -401,7 +401,7 @@ describe('decideIntentApproval — an approve the server refused', () => {
     expect(showToast).toHaveBeenCalledTimes(1);
     const toasted = showToast.mock.calls[0][0] as { type: string; message: string; detail?: string };
     expect(toasted.type).toBe('error');
-    expect(toasted.message).toMatch(/refused/i);
+    expect(toasted.message).toMatch(/your approval was blocked/i);
     expect(toasted.message).not.toMatch(/^action approved$/i);
     expect(toasted.detail).toBe(REFUSAL);
   });
@@ -420,7 +420,7 @@ describe('decideIntentApproval — an approve the server refused', () => {
     expect(showToast).toHaveBeenCalledTimes(1);
     const toasted = showToast.mock.calls[0][0] as { type: string; message: string; detail?: string };
     expect(toasted.type).toBe('error');
-    expect(toasted.message).toMatch(/refused/i);
+    expect(toasted.message).toMatch(/your approval was blocked/i);
     expect(toasted.detail).toBeUndefined();
   });
 

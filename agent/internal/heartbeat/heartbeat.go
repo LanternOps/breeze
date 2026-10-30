@@ -7979,29 +7979,13 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 
 	// Post-install rescan: trigger an immediate patch inventory so the
 	// dashboard reflects the new state without waiting up to 15 minutes.
-	// A skipped item also means the inventory is stale (the update was
-	// superseded, or the package is already current), so it rescans too.
-	if successCount > 0 || skippedCount > 0 {
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("post-install patch rescan panicked", "recover", r)
-				}
-			}()
-			// Wait for macOS to finish installing before rescanning
-			select {
-			case <-time.After(60 * time.Second):
-				log.Info("post-install patch rescan triggered", "successCount", successCount)
-				h.sendPatchInventory()
-				// Reset the daily gate so the scheduler doesn't re-scan immediately.
-				h.mu.Lock()
-				h.lastPatchUpdate = time.Now()
-				h.mu.Unlock()
-			case <-h.stopChan:
-				log.Info("post-install patch rescan cancelled — agent shutting down")
-			}
-		}()
-	}
+	// Every outcome rescans (#10250): an install or skip means the inventory
+	// is stale, and a failure can be too (the update was superseded or the
+	// package already moved on), so a failed run must not leave the device on
+	// the last scheduled scan. refs is non-empty here, so something was tried.
+	log.Info("post-install patch rescan scheduled",
+		"installedCount", successCount, "skippedCount", skippedCount, "failedCount", failedCount)
+	schedulePostInstallRescan(h, postInstallRescanDelay(runtime.GOOS))
 
 	durationMs := time.Since(start).Milliseconds()
 	if failedCount > 0 {
@@ -8016,6 +8000,46 @@ func (h *Heartbeat) executePatchInstall(payload map[string]any, rollback bool, b
 	}
 
 	return tools.NewSuccessResult(summary, durationMs)
+}
+
+// postInstallRescanDelay is how long to wait after a patch command before the
+// follow-up inventory scan. macOS softwareupdate keeps working after the
+// install call returns, so it gets a full minute; Windows (WUA, winget) and
+// Linux installs are synchronous and only need a short settle (#10250).
+func postInstallRescanDelay(goos string) time.Duration {
+	if goos == "darwin" {
+		return 60 * time.Second
+	}
+	return 5 * time.Second
+}
+
+// schedulePostInstallRescan starts the post-install rescan in the background.
+// A variable so tests can observe scheduling without running a real scan.
+var schedulePostInstallRescan = func(h *Heartbeat, delay time.Duration) {
+	go h.runPostInstallRescan(delay)
+}
+
+// runPostInstallRescan waits delay (or until shutdown), then sends a fresh
+// patch inventory and resets the scheduler's gate.
+func (h *Heartbeat) runPostInstallRescan(delay time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("post-install patch rescan panicked", "recover", r)
+		}
+	}()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		log.Info("post-install patch rescan triggered", "delay", delay.String())
+		h.sendPatchInventory()
+		// Reset the daily gate so the scheduler doesn't re-scan immediately.
+		h.mu.Lock()
+		h.lastPatchUpdate = time.Now()
+		h.mu.Unlock()
+	case <-h.stopChan:
+		log.Info("post-install patch rescan cancelled — agent shutting down")
+	}
 }
 
 func patchCommandResultFields(ref patchCommandRef, installID string) map[string]any {

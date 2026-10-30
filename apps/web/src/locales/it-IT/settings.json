@@ -69,7 +69,7 @@
           "executing": "In esecuzione",
           "completed": "Completato",
           "failed": "Non riuscito",
-          "rejected": "Rifiutato"
+          "rejected": "Negato"
         }
       },
       "intents": {
@@ -906,12 +906,12 @@
     "logoPreview": "Anteprima logo",
     "noLogo": "Nessun logo",
     "uploadImage": "Carica immagine",
-    "imageHelp": "PNG, JPEG o WebP · max 400 KB dopo la codifica · ridimensionata per adattarsi a 256x256",
+    "imageHelp": "PNG, JPEG o WebP, fino a 400 KB dopo la codifica; le immagini grandi vengono ridotte a 800 px.",
     "invalidSavedLogo": "I dati del logo salvato non sono validi. Rimuovilo o caricane uno nuovo.",
     "pasteUrl": "Oppure incolla un URL immagine",
     "customCss": "CSS personalizzato",
     "customCssPlaceholder": "/* CSS personalizzato applicato a tutte le organizzazioni figlie */",
-    "customCssHelp": "Override CSS applicati al portale per tutte le organizzazioni figlie."
+    "customCssHelp": "Aggiunto al portale di ogni cliente, prima del CSS personalizzato dell’organizzazione, che può sovrascriverlo. @import e url() non HTTPS non sono consentiti."
   },
   "partnerSecurity": {
     "notSet": "Non impostato — le org si configurano singolarmente",
@@ -1844,7 +1844,11 @@
     },
     "colors": {
       "primary": "Colore primario",
-      "secondary": "Colore secondario"
+      "secondary": "Colore secondario",
+      "primaryInheritedSource": "Colore del brand del partner",
+      "primaryHelp": "Colore di accento su preventivi, fatture e altri documenti per i clienti di questa organizzazione. Lascia vuoto per usare il colore del brand del partner.",
+      "primaryInvalid": "Inserisci un colore esadecimale, ad esempio #2563eb.",
+      "primaryLoadError": "Impossibile caricare il colore primario salvato. La modifica è disabilitata finché non viene caricato."
     },
     "theme": {
       "title": "Tema",
@@ -3091,6 +3095,7 @@
           "explicitly_declined": "Rifiutato esplicitamente",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
           "ring_reference_invalid": "L'anello di aggiornamento del criterio non è valido",
+          "unsupported_user_scope": "Installazione per utente che Breeze non può ancora applicare",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         },
         "failureClasses": {
@@ -6425,7 +6430,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Scegli un ruolo"
     },
     "orgAccess": {
       "title": "Accesso organizzazioni",

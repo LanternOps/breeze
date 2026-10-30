@@ -2076,11 +2076,14 @@
     "loading": "Yama durumu yükleniyor...",
     "notDownloadedTitle": "Henüz indirilmedi; yükleme işlemi daha uzun sürecektir",
     "notices": {
+      "installCommandEnded": "Yükleme komutu, cihaz bir sonuç bildirmeden önce sona erdi ({{status}}). Ayrıntılar için cihazın komut geçmişine bakın.",
+      "installFinishedWithIssues": "Yükleme tamamlandı: {{installed}} yüklendi, {{failed}} başarısız, {{awaitingRestart}} yeniden başlatma bekliyor, {{unresolved}} henüz doğrulanmadı. Ayrıntılar için yama satırlarına bakın.",
       "installLongerThanExpected": "Kurulum beklenenden uzun sürüyor. macOS güncellemeleri 30+ dakika sürebilir. Durumu kontrol etmek için sayfayı daha sonra yenileyin.",
       "installPatchFailed": "{{name}} yüklenemedi",
       "installPatchQueued": "Kurulum \"{{name}}\" için sıraya alındı",
       "installPatchQueuedDetail": "Kurulum \"{{name}}\"{{dispatchSuffix}} için sıraya alındı.",
       "installQueuedForPatches": "{{label}} {{count}} yamaları için sıraya girdi{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Yükleme durumu denetlenemedi: yama listesi yüklenemedi. En son durumu görmek için sayfayı yenileyin.",
       "installedSuccessfully": "{{installed}} yama(lar)ı başarıyla yüklendi. {{pending}} hâlâ beklemede.",
       "installingPolling": "Yamalar yükleniyor... Güncellemeler için oylama.",
       "noPendingForLabel": "{{label}} için bekleyen yama yok.",
@@ -2126,6 +2129,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedUserScopeTitle": "Yüklenemez: bu, Breeze'in henüz uygulayamadığı kullanıcı başına bir yükleme olduğundan hiçbir yama çalıştırması onu yüklemez.",
       "excludedFeatureUpdateTitle": "{{ring}} güncelleme halkası bu Windows özellik sürümünü engelliyor (veya cihazları başka bir sürüme sabitliyor), bu nedenle zamanlanmış yama çalıştırmaları bunu atlar.",
       "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",
@@ -2617,9 +2621,18 @@
       "refreshFailed": "Garanti yenileme başarısız oldu: {{error}}",
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
-      "updated": "Garanti bilgileri güncellendi."
+      "updated": "Garanti bilgileri güncellendi.",
+      "agentCollected": "Bu cihazın garantisi Breeze ajanı tarafından toplanıyor, bu nedenle üretici sorgusu daha yeni bir bilgi sağlayamaz.",
+      "noVendorLookupKept": "Bu üretici için garanti sorgusu kullanılamıyor. Mevcut garanti verileri korundu."
     },
-    "lookUp": "Sorgula"
+    "lookUp": "Sorgula",
+    "sources": {
+      "agentCmsl": "Ajan (HP CMSL)",
+      "agentPlist": "Ajan (macOS plist)",
+      "import": "İçe aktarıldı",
+      "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
+      "provider": "Üretici API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -2758,6 +2771,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
       "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
       "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (liste yüklendikten sonra sitesi değişti; liste yenilendi, yeniden deneyin)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
     },
     "tryAgain": "Tekrar deneyin",

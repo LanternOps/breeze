@@ -69,7 +69,7 @@
           "executing": "Em execução",
           "completed": "Concluído",
           "failed": "Falhou",
-          "rejected": "Rejeitado"
+          "rejected": "Negado"
         }
       },
       "intents": {
@@ -906,12 +906,12 @@
     "logoPreview": "Prévia do logotipo",
     "noLogo": "Sem logotipo",
     "uploadImage": "Enviar imagem",
-    "imageHelp": "PNG, JPEG ou WebP · máx. 400 KB após codificação · redimensionada para caber em 256×256",
+    "imageHelp": "PNG, JPEG ou WebP, até 400 KB após a codificação; imagens grandes são reduzidas para 800 px.",
     "invalidSavedLogo": "Os dados salvos do logotipo são inválidos. Remova-os ou envie uma nova imagem.",
     "pasteUrl": "Ou cole a URL de uma imagem",
     "customCss": "CSS personalizado",
     "customCssPlaceholder": "/* CSS personalizado aplicado a todas as organizações filhas */",
-    "customCssHelp": "Substituições de CSS aplicadas ao portal de todas as organizações filhas."
+    "customCssHelp": "Adicionado ao portal de cada cliente, antes do CSS personalizado da própria organização, que pode substituí-lo. @import e url() sem HTTPS não são permitidos."
   },
   "partnerSecurity": {
     "notSet": "Não definido — as organizações configuram individualmente",
@@ -1844,7 +1844,11 @@
     },
     "colors": {
       "primary": "Cor primária",
-      "secondary": "Cor secundária"
+      "secondary": "Cor secundária",
+      "primaryInheritedSource": "Cor da marca do parceiro",
+      "primaryHelp": "Cor de destaque nos orçamentos, faturas e outros documentos para clientes desta organização. Deixe em branco para usar a cor da marca do parceiro.",
+      "primaryInvalid": "Insira uma cor hexadecimal, como #2563eb.",
+      "primaryLoadError": "Não foi possível carregar a cor primária salva. A edição fica desativada até que ela seja carregada."
     },
     "theme": {
       "title": "Tema",
@@ -2549,7 +2553,7 @@
     "failedToLoadData": "Falha ao carregar dados",
     "failedToSaveBudget": "Falha ao salvar o orçamento",
     "failedToSave": "Falha ao salvar",
-    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou rejeite.",
+    "eachToolRequiringApprovalBlocksUntilTheUserApprovesOrRej": "Cada ferramenta que requer aprovação é bloqueada até que o usuário aprove ou negue.",
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "A IA propõe um plano de várias etapas. O usuário aprova o plano inteiro de uma só vez; depois, as etapas são executadas automaticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "As ferramentas de nível 2 são executadas automaticamente com registro de auditoria. As ferramentas de nível 3 ainda exigem aprovação.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
@@ -3091,6 +3095,7 @@
           "explicitly_declined": "Recusado explicitamente",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "ring_reference_invalid": "O anel de atualização da política é inválido",
+          "unsupported_user_scope": "Instalação por usuário que o Breeze ainda não consegue aplicar",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
         },
         "failureClasses": {
@@ -6430,7 +6435,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Escolha uma função"
     },
     "orgAccess": {
       "title": "Acesso à organização",

@@ -31,6 +31,11 @@ import { AGENT_PROMPT_AUTHORITY_DISCLAIMER, sanitizeSweepText, type AgentRunProm
  * `watchPromptLines` so this module stays free of the DB-bound watches module.
  */
 export interface AgentRunAssessmentPromptContext {
+  /**
+   * The run's org (#10387): `id` is `run.orgId`, the only id an `org` subject
+   * may carry; `name` is tenant-authored, so it is rendered fenced.
+   */
+  org: { id: string; name: string | null };
   reason: AssessmentReason;
   threadSummary: string;
   openConcerns: Concern[];
@@ -40,11 +45,26 @@ export interface AgentRunAssessmentPromptContext {
   watchLines: string[] | null;
   readiness: OrgReadiness | null;
   nudgeFeedback: string[];
+  /** #10389: no earlier assessment of this org — `digest.alerts` holds its open alerts. */
+  firstLook: boolean;
 }
 
 export const ASSESSMENT_NO_CHANGES_LINE = 'No changes since the last assessment.';
+export const ASSESSMENT_FIRST_LOOK_EMPTY_LINE =
+  'No open alerts and nothing else changed recently in this digest — check the current state with your tools.';
+
+/**
+ * #10389: the first look has nothing to diff against, so the general "call
+ * nothing when nothing changed" rule must not end it with zero tool calls.
+ */
+const FIRST_LOOK_LINE =
+  'First look: there is no completed earlier assessment of this org, so judge its current state, not what changed — '
+  + '"call nothing when nothing changed" does not apply. Read what is open now with your tools (the open alerts '
+  + 'below, failed patches, pending reboots, backups, security findings) before you choose an outcome; stay quiet '
+  + 'only once you have looked and found nothing worth tracking.';
 
 const SUMMARY_MAX = 300;
+const ORG_NAME_MAX = 200;
 const TITLE_MAX = 160;
 
 function reasonLine(reason: AssessmentReason): string {
@@ -116,6 +136,16 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
     + 'fits what changed: stay quiet | update a concern | nudge | propose an action | request a specialist — '
     + 'call the matching tool; call nothing when nothing changed.',
   );
+  // #10387: without this the model sent org-level concerns with the nil UUID
+  // and the finalizer dropped them. The id is server-generated (trusted); the
+  // name is tenant-authored and goes in its own fence.
+  if (a) {
+    lines.push(
+      `Organization id: ${a.org.id}. A concern about the organization as a whole uses `
+      + `subject { kind: 'org', id: '${a.org.id}' } — never another id.`,
+    );
+    lines.push(wrapUntrustedData('wisp-org-name', sanitizeSweepText(a.org.name ?? '', ORG_NAME_MAX) || '(no name)'));
+  }
   lines.push('- New problem worth tracking → record_concern (one subject per call, at most 10 per run).');
   lines.push('- Known concern changed or is fixed → update_concern (resolve it with an outcome when it is fixed).');
   lines.push('- The person should act now → nudge (one concern, one next step).');
@@ -123,6 +153,7 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- Needs a specialist → request_specialist (recorded now; Wisp\'s coordinator handles it after this '
     + 'assessment, and kinds that ask first become an approval card; at most 3 per assessment).');
   lines.push(`Why this assessment: ${a ? reasonLine(a.reason) : 'unknown'}.`);
+  if (a?.firstLook) lines.push(FIRST_LOOK_LINE);
   lines.push('');
 
   // (2) Authority disclaimer.
@@ -142,12 +173,18 @@ export function buildAssessmentTaskPrompt(ctx: AgentRunPromptContext): string {
   ));
   lines.push('');
 
-  // (5) What changed since the watermark.
+  // (5) What changed since the watermark — on a first look, the org's open
+  // alerts plus the other sections' recent window (#10389).
   const changes = a ? digestLines(a.digest) : [];
-  lines.push(`What changed since ${a?.changedSince ?? 'the last assessment'}:`);
+  const since = a?.changedSince ?? 'the last assessment';
+  lines.push(a?.firstLook
+    ? `Open alerts now (worst first, at most 25) and other changes since ${since}:`
+    : `What changed since ${since}:`);
   lines.push(wrapUntrustedData(
     'wisp-changes-since-watermark',
-    changes.length > 0 ? changes.join('\n') : ASSESSMENT_NO_CHANGES_LINE,
+    changes.length > 0
+      ? changes.join('\n')
+      : a?.firstLook ? ASSESSMENT_FIRST_LOOK_EMPTY_LINE : ASSESSMENT_NO_CHANGES_LINE,
   ));
 
   // Amendments (w00 A33/A34): readiness, then the person's nudge feedback.

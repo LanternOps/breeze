@@ -54,6 +54,22 @@ describe('updatePortalSettingsSchema', () => {
     expect(updatePortalSettingsSchema.safeParse({ domainVerified: true }).success).toBe(false);
   });
 
+  // #9962: portal_branding.primary_color is the org level of the one
+  // document-accent chain (partner Branding → org override), written by the
+  // org Branding tab. It reaches a <style> element on customer documents, so
+  // only a strict #rgb / #rrggbb hex is accepted.
+  it('accepts a hex primaryColor and null (inherit the partner colour)', () => {
+    expect(updatePortalSettingsSchema.parse({ primaryColor: '#c2410c' })).toEqual({ primaryColor: '#c2410c' });
+    expect(updatePortalSettingsSchema.parse({ primaryColor: '#ABC' })).toEqual({ primaryColor: '#ABC' });
+    expect(updatePortalSettingsSchema.parse({ primaryColor: null })).toEqual({ primaryColor: null });
+  });
+
+  it('rejects a primaryColor that is not a #rgb / #rrggbb hex', () => {
+    for (const bad of ['red', '#12345', 'c2410c', '#c2410c;}', 'url(x)', '', '#gggggg']) {
+      expect(updatePortalSettingsSchema.safeParse({ primaryColor: bad }).success, bad).toBe(false);
+    }
+  });
+
   it('rejects an invalid support email', () => {
     expect(updatePortalSettingsSchema.safeParse({ supportEmail: 'not-an-email' }).success).toBe(false);
   });
