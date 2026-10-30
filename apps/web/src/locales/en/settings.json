@@ -3679,6 +3679,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Acknowledge a network change",
         "analyze_boot_performance": "Boot performance analysis",
         "analyze_disk_usage": "Disk usage analysis",
         "analyze_fleet_metrics": "Fleet metrics analysis",
@@ -3686,55 +3687,151 @@
         "analyze_screen": "Screen analysis",
         "apply_cis_remediation": "CIS remediation",
         "apply_configuration_policy": "Apply a configuration policy",
+        "assign_security_training": "Assign security training",
+        "browse_device_event_log": "Browse a device's event log",
+        "browse_snapshots": "Backup snapshots",
         "cancel_script_execution": "Cancel a script run",
         "capture_agent_pprof": "Capture agent diagnostics",
+        "collect_evidence": "Collect incident evidence",
         "computer_control": "Remote control",
         "configuration_policy_compliance": "Configuration policy compliance",
+        "configure_backup_sla": "Configure backup SLAs",
+        "configure_network_baseline": "Configure a network baseline",
+        "configure_vault": "Configure local vaults",
+        "create_incident": "Create a security incident",
+        "create_remote_session": "Start a remote session",
+        "create_watch": "Create a Wisp watch",
         "delete_tenant": "Delete an organization",
         "detect_log_correlations": "Detect log correlations",
+        "diagnose_connectivity": "Run a connectivity check",
         "disk_cleanup": "Disk cleanup",
         "edr_endpoint_action": "EDR: isolate, release or scan a device",
         "execute_command": "Run a system command",
+        "execute_containment": "Contain a device",
+        "execute_dr_plan": "Run a DR plan",
         "execute_playbook": "Run a playbook",
+        "export_dataset": "Export a dataset",
         "file_operations": "File operations",
+        "find_proven_fixes": "Find proven fixes",
+        "generate_incident_report": "Incident report",
         "generate_report": "Reports",
         "get_active_users": "Active users",
+        "get_ai_agent_run": "AI agent run details",
+        "get_alert_correlations": "Alert correlations",
+        "get_backup_status": "Backup status",
+        "get_browser_security": "Browser security",
         "get_catalog_item": "Catalog item lookup",
         "get_cis_compliance": "CIS compliance report",
         "get_cis_device_report": "CIS device report",
+        "get_compliance_status": "Device compliance status",
         "get_configuration_policy": "Configuration policy details",
         "get_contract": "Contract details",
+        "get_device_ai_activity": "AI activity on a device",
+        "get_device_billing": "Device billing lines",
         "get_device_context": "Device context",
         "get_device_details": "Device details",
+        "get_device_events": "Device activity timeline",
+        "get_device_hardware_health": "Hardware health",
+        "get_device_health": "Agent-reported device health",
+        "get_device_software": "Installed software",
+        "get_device_time_status": "Time sync status",
         "get_device_vulnerabilities": "Device vulnerabilities",
+        "get_diagnostic_run": "Topology diagnostic run",
         "get_dns_security": "DNS security activity",
+        "get_dr_execution_status": "DR execution status",
+        "get_dr_plan_details": "DR plan details",
+        "get_edr_status": "EDR status",
         "get_effective_configuration": "Effective configuration",
+        "get_elevation_history": "Elevation request history",
+        "get_executive_summary": "Executive summary",
+        "get_fleet_design": "Fleet Design report",
+        "get_fleet_device_stats": "Fleet device counts",
         "get_fleet_findings": "Fleet findings",
         "get_fleet_health": "Fleet health",
+        "get_flow": "Flow details",
+        "get_flow_run": "Flow run details",
         "get_huntress_incidents": "Huntress incidents",
         "get_huntress_status": "Huntress status",
+        "get_hyperv_vm_details": "Hyper-V VM details",
+        "get_incident_timeline": "Incident timeline",
+        "get_interface_history": "Network interface history",
         "get_invite_funnel": "Deployment invite funnel",
         "get_invoice": "Invoice details",
+        "get_ip_history": "IP address history",
+        "get_link_evidence": "Network link evidence",
+        "get_link_health": "Network link health",
         "get_log_trends": "Log trends",
+        "get_management_posture": "Management tool coverage",
+        "get_monitor": "Monitor details",
+        "get_monitor_activity": "Monitor breach activity",
+        "get_mssql_backup_status": "MSSQL backup status",
+        "get_network_asset": "Network asset details",
+        "get_network_asset_reachability": "Network asset reachability",
+        "get_network_changes": "Network changes",
+        "get_peripheral_activity": "USB and peripheral activity",
         "get_playbook_history": "Playbook run history",
+        "get_process_samples": "Process snapshot",
         "get_quote": "Quote details",
+        "get_recent_network_changes": "Recent topology changes",
+        "get_running_timer": "Running timer",
         "get_s1_status": "SentinelOne status",
         "get_s1_threats": "SentinelOne threats",
         "get_script_details": "Script details",
         "get_script_execution": "Script run details",
         "get_script_execution_history": "Script run history",
+        "get_script_proposal": "Script proposal details",
+        "get_security_compliance": "Security compliance views",
         "get_security_posture": "Security posture",
         "get_service_monitoring_status": "Service monitoring status",
+        "get_site": "Site details",
+        "get_sla_breaches": "Backup SLA breaches",
+        "get_sla_compliance_report": "Backup SLA compliance report",
+        "get_snmp_metrics": "SNMP metrics",
+        "get_software_compliance": "Software compliance",
+        "get_ticket_approval_status": "Ticket approval status",
+        "get_timesheet": "Timesheet",
+        "get_topology": "Network topology",
+        "get_topology_impact": "Topology failure impact",
+        "get_topology_monitoring_status": "Topology monitoring status",
+        "get_trust_page_status": "Trust page status",
         "get_user_experience_metrics": "User experience metrics",
+        "get_vault_status": "Vault status",
+        "get_vm_restore_estimate": "VM restore estimate",
         "get_vulnerability_report": "Vulnerability report",
+        "instant_boot_vm": "Instant-boot a backup as a VM",
+        "link_entity": "Link an item to a Wisp thread",
+        "list_ai_agent_runs": "AI agent runs",
+        "list_ai_agent_schedules": "AI agent schedules",
+        "list_ai_agents": "AI agents list",
+        "list_business_calendars": "Business-hours calendars",
+        "list_concerns": "Wisp concerns",
         "list_configuration_policies": "Configuration policies list",
         "list_contracts": "Contracts list",
+        "list_deliverable_templates": "Deliverable templates",
+        "list_deliverables": "Service deliverables",
+        "list_device_restore_point_attempts": "Restore point attempts",
+        "list_edr_detections": "EDR detections",
+        "list_fleet_designs": "Fleet Design reports",
+        "list_flow_runs": "Flow runs",
+        "list_flows": "Flows list",
+        "list_incidents": "Security incidents",
         "list_invoices": "Invoices list",
+        "list_links": "Wisp thread links",
+        "list_monitors": "Monitors list",
+        "list_network_assets": "Network assets",
+        "list_org_contacts": "Organization contacts",
+        "list_org_documents": "Organization documents",
         "list_organizations": "Organizations list",
         "list_playbooks": "Playbooks list",
         "list_quotes": "Quotes list",
+        "list_remediation_suggestions": "Remediation suggestions",
+        "list_remote_sessions": "Remote sessions",
         "list_script_templates": "Script templates list",
         "list_scripts": "Scripts list",
+        "list_sites": "Sites list",
+        "list_ticket_routing_rules": "Ticket routing rules",
+        "list_time_entries": "Time entries",
+        "list_time_sync_issues": "Time sync issues",
         "lookup_distributor_product": "Distributor product lookup",
         "m365_query_groups": "Microsoft 365 groups",
         "m365_query_intune_devices": "Microsoft Intune devices",
@@ -3742,54 +3839,163 @@
         "m365_query_signins": "Microsoft 365 sign-ins",
         "m365_query_sites": "Microsoft 365 sites",
         "m365_query_users": "Microsoft 365 users",
+        "manage_accounting_sync": "Manage accounting sync",
         "manage_alert_rules": "Manage alert rules",
         "manage_alerts": "Manage alerts",
+        "manage_audit_baselines": "Manage audit baselines",
         "manage_automations": "Manage automations",
         "manage_backup_configs": "Manage backup configurations",
+        "manage_backup_profiles": "Manage backup profiles",
+        "manage_billing_catalog": "Manage the billing price book",
+        "manage_billing_profiles": "Manage billing rate cards",
+        "manage_billing_settings": "Manage billing settings",
+        "manage_browser_policy": "Manage browser policies",
+        "manage_compliance_policies": "Manage compliance policies",
         "manage_configuration_policy": "Manage configuration policies",
+        "manage_contract_documents": "Manage signed agreements",
+        "manage_contract_templates": "Manage agreement templates",
         "manage_contracts": "Manage contracts",
+        "manage_deliverables": "Manage service deliverables",
+        "manage_delivery": "Manage alert delivery",
         "manage_deployments": "Manage deployments",
+        "manage_device_anomalies": "Manage device anomalies",
+        "manage_device_function": "Manage a device's function",
+        "manage_device_links": "Manage linked device records",
+        "manage_device_software": "Manage installed software",
+        "manage_device_warranty": "Manage device warranty",
         "manage_dns_policy": "Manage DNS policy",
+        "manage_dr_plan": "Manage DR plans",
+        "manage_fleet_findings": "Manage fleet findings",
         "manage_groups": "Manage device groups",
+        "manage_hyperv_checkpoints": "Manage Hyper-V checkpoints",
+        "manage_hyperv_vm": "Manage Hyper-V VMs",
         "manage_invoices": "Manage invoices",
+        "manage_key_dates": "Manage key dates",
         "manage_maintenance_windows": "Manage maintenance windows",
+        "manage_manual_assets": "Manage manual assets",
+        "manage_monitor_definitions": "Manage monitor definitions",
         "manage_monitors": "Manage uptime monitors",
+        "manage_notification_channels": "Manage notification channels",
+        "manage_org_documents": "Manage organization documents",
         "manage_organizations": "Manage organizations",
         "manage_patches": "Manage patches",
         "manage_peripheral_policies": "Manage peripheral policies",
+        "manage_peripheral_policy": "Edit peripheral policies and exceptions",
         "manage_policy_feature_link": "Link a policy to a feature",
+        "manage_processes": "Manage processes",
+        "manage_quotes": "Manage quotes",
+        "manage_recovery_keys": "Manage recovery keys",
+        "manage_saved_filters": "Manage saved filters",
+        "manage_scheduled_tasks": "Manage scheduled tasks",
+        "manage_security_policies": "Manage security policies",
+        "manage_security_recommendations": "Manage security recommendations",
         "manage_service_monitors": "Manage service monitors",
         "manage_services": "Manage services",
+        "manage_snmp_templates": "Manage SNMP templates",
+        "manage_software_catalog": "Manage the software catalog",
+        "manage_software_deployments": "Manage software deployments",
+        "manage_software_inventory": "Manage software inventory",
         "manage_software_policies": "Manage software policies",
+        "manage_software_policy": "Manage software allow and block lists",
         "manage_startup_items": "Manage startup items",
+        "manage_support_sessions": "Manage Quick Support sessions",
+        "manage_tags": "Manage device tags",
+        "manage_tenant_variables": "Manage script variables",
+        "manage_ticket_attachments": "Manage ticket attachments",
+        "manage_ticket_checklist": "Manage ticket checklists",
+        "manage_ticket_checklist_templates": "Manage checklist templates for tickets",
+        "manage_ticket_config": "Manage ticket settings",
+        "manage_ticket_forms": "Manage ticket forms",
+        "manage_ticket_inbox": "Manage the ticket mailbox",
+        "manage_ticket_response_templates": "Manage ticket reply templates",
+        "manage_ticket_routing_rules": "Manage routing rules for tickets",
+        "manage_tickets": "Manage tickets",
+        "manage_time_suggestions": "Manage time suggestions",
         "manage_update_rings": "Manage update rings",
         "network_discovery": "Network discovery",
         "preview_configuration_change": "Preview a configuration change",
+        "probe_network_asset": "Ping a network asset",
+        "propose_script": "Propose a script",
+        "query_agent_versions": "Agent versions",
+        "query_analytics": "Analytics",
         "query_audit_log": "Query the audit log",
+        "query_backup_sla": "Backup SLA configurations",
+        "query_backups": "Backups",
+        "query_c2c_connections": "Cloud-to-cloud connections",
         "query_change_log": "Query the change log",
+        "query_compliance_policies": "Compliance policies",
+        "query_custom_fields": "Custom fields",
+        "query_device_workloads": "Containers and VMs on a device",
         "query_devices": "Query devices",
+        "query_dr_plans": "DR plans list",
+        "query_hyperv_vms": "Hyper-V VMs list",
         "query_monitors": "Query monitors",
+        "query_mssql_instances": "MSSQL instances",
+        "query_psa_status": "PSA connection status",
+        "query_vaults": "Local vaults",
+        "query_webhooks": "Webhooks list",
+        "raise_concern": "Raise a Wisp concern",
+        "read_artifact": "Read a stored result",
+        "recall": "Wisp memory",
+        "registry_operations": "Windows registry",
+        "reliability_feedback": "Reliability score feedback",
+        "remediate_sensitive_data": "Remediate sensitive data",
+        "remediate_software_violation": "Remediate a software violation",
         "remediate_vulnerability": "Remediate a vulnerability",
+        "remember": "Save a Wisp memory",
         "remove_configuration_policy_assignment": "Remove a configuration policy assignment",
+        "request_elevation": "Request PAM elevation",
+        "reset_monitor_escalation": "Reset monitor escalation",
+        "resolve_concern": "Resolve a Wisp concern",
         "resolve_device_context": "Resolve a device",
+        "restore_as_vm": "Restore a snapshot as a VM",
+        "restore_c2c_items": "Restore cloud-to-cloud items",
+        "restore_hyperv_vm": "Restore a Hyper-V VM",
+        "restore_mssql_database": "Restore an MSSQL database",
+        "restore_snapshot": "Restore a snapshot",
+        "revoke_elevation": "Revoke PAM elevation",
         "run_script": "Run a script",
         "s1_isolate_device": "SentinelOne: isolate device",
         "s1_threat_action": "SentinelOne threat actions",
         "search_agent_logs": "Search agent logs",
         "search_catalog": "Search the product catalog",
+        "search_documentation": "Search documentation",
         "search_logs": "Search device logs",
+        "search_packages": "Search software packages",
+        "search_script_library": "Search the script library",
         "security_scan": "Security scan",
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
+        "snooze_concern": "Snooze a Wisp concern",
         "sync_edr_data": "Sync EDR data",
         "sync_huntress_data": "Sync Huntress data",
         "system_cleanup": "System cleanup",
-        "take_screenshot": "Take a screenshot"
+        "take_screenshot": "Take a screenshot",
+        "test_ticket_routing_rule": "Test a ticket routing rule",
+        "test_webhook": "Send a test webhook",
+        "trigger_agent_restart": "Restart an agent",
+        "trigger_agent_upgrade": "Upgrade an agent",
+        "trigger_backup": "Run a backup",
+        "trigger_c2c_sync": "Run a cloud-to-cloud sync",
+        "trigger_hyperv_backup": "Back up a Hyper-V VM",
+        "trigger_mssql_backup": "Back up an MSSQL database",
+        "trigger_vault_sync": "Sync a local vault",
+        "validate_flow": "Validate a flow",
+        "verify_mssql_backup": "Verify an MSSQL backup",
+        "workspace_cancel": "Cancel the analysis sandbox",
+        "workspace_collect": "Collect sandbox files",
+        "workspace_run": "Run a sandbox script",
+        "workspace_stage": "Stage files in the sandbox"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "Apply CIS remediation",
           "rollback": "Roll back CIS remediation"
+        },
+        "browse_device_event_log": {
+          "get_event": "Event details",
+          "list_logs": "List event logs",
+          "query": "Query event log entries"
         },
         "computer_control": {
           "double_click": "Double-click",
@@ -3806,9 +4012,22 @@
           "status": "Compliance status",
           "summary": "Compliance summary"
         },
+        "configure_backup_sla": {
+          "create": "Create a backup SLA",
+          "update": "Update a backup SLA"
+        },
+        "configure_vault": {
+          "create": "Create a local vault",
+          "update": "Update a local vault"
+        },
         "disk_cleanup": {
           "execute": "Run disk cleanup",
           "preview": "Preview disk cleanup"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Isolate a device",
+          "scan": "Run an EDR scan",
+          "unisolate": "Release a device from isolation"
         },
         "execute_command": {
           "event_logs_list": "List event logs",
@@ -3840,16 +4059,44 @@
           "list": "List reports",
           "update": "Update a report"
         },
+        "get_alert_correlations": {
+          "analyze": "Analyze alerts for correlation",
+          "by_alert": "Correlations for an alert",
+          "evaluation": "Correlation quality",
+          "explain": "Explain a correlation group",
+          "get": "Correlation group details",
+          "groups": "List correlation groups",
+          "links": "Correlation links"
+        },
         "get_dns_security": {
           "allowed": "Allowed DNS activity",
           "blocked": "Blocked DNS activity",
           "redirected": "Redirected DNS activity"
+        },
+        "get_fleet_health": {
+          "evaluation": "Reliability evaluation",
+          "history": "Reliability history",
+          "list": "List device reliability scores",
+          "offenders": "Reliability offenders",
+          "org_summary": "Organization reliability summary"
         },
         "get_service_monitoring_status": {
           "known_services": "Known services",
           "results": "Monitoring results",
           "status": "Monitoring status",
           "summary": "Monitoring summary"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "SNMP dashboard",
+          "history": "SNMP metric history"
+        },
+        "manage_accounting_sync": {
+          "customers": "List accounting customers",
+          "income_accounts": "List income accounts",
+          "mappings": "List accounting mappings",
+          "owed_operations": "List pending sync operations",
+          "remote_candidates": "Search provider records to link",
+          "status": "Show accounting sync status"
         },
         "manage_alert_rules": {
           "alert_summary": "Alert summary",
@@ -3869,6 +4116,11 @@
           "resolve": "Resolve an alert",
           "suppress": "Suppress an alert"
         },
+        "manage_audit_baselines": {
+          "compliance": "Audit baseline compliance",
+          "device_results": "Device audit results",
+          "list": "List audit baselines"
+        },
         "manage_automations": {
           "create": "Create an automation",
           "delete": "Delete an automation",
@@ -3886,12 +4138,70 @@
           "list": "List backup configurations",
           "update": "Update a backup configuration"
         },
+        "manage_backup_profiles": {
+          "create": "Create a backup profile",
+          "delete": "Delete a backup profile",
+          "get": "Backup profile details",
+          "list": "List backup profiles",
+          "update": "Update a backup profile"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Archive a price book item",
+          "create_item": "Create a price book item",
+          "remove_org_price": "Remove an organization price",
+          "remove_price": "Remove a price",
+          "set_bundle_components": "Set bundle components",
+          "set_org_price": "Set an organization price",
+          "set_price": "Set a price",
+          "update_item": "Update a price book item"
+        },
+        "manage_billing_profiles": {
+          "archive": "Archive a rate card",
+          "clear_org_profile": "Clear an organization's rate card",
+          "clone": "Clone a rate card",
+          "create": "Create a rate card",
+          "create_work_type": "Create a work type",
+          "get": "Rate card details",
+          "get_org_profile": "Organization rate card",
+          "list": "List rate cards",
+          "list_work_types": "List work types",
+          "set_org_profile": "Set an organization's rate card",
+          "set_rows": "Set rate card rows",
+          "update": "Update a rate card",
+          "update_work_type": "Update a work type"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Preview a currency change",
+          "get_org": "Organization billing settings",
+          "get_partner": "Partner billing settings",
+          "reporting_totals": "Billing reporting totals",
+          "update_org": "Update organization billing settings",
+          "update_partner": "Update partner billing settings"
+        },
+        "manage_browser_policy": {
+          "apply": "Apply a browser policy",
+          "create": "Create a browser policy",
+          "list": "List browser policies",
+          "update": "Update a browser policy"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Deactivate a compliance policy"
+        },
         "manage_configuration_policy": {
           "activate": "Activate a configuration policy",
           "create": "Create a configuration policy",
           "deactivate": "Deactivate a configuration policy",
           "delete": "Delete a configuration policy",
           "update": "Update a configuration policy"
+        },
+        "manage_contract_documents": {
+          "list": "List signed agreements"
+        },
+        "manage_contract_templates": {
+          "get": "Agreement template details",
+          "get_version": "Agreement template version",
+          "list": "List agreement templates",
+          "usage": "Agreement template usage"
         },
         "manage_contracts": {
           "activate": "Activate a contract",
@@ -3900,10 +4210,34 @@
           "create_draft": "Create a draft contract",
           "delete_draft": "Delete a draft contract",
           "pause": "Pause a contract",
+          "preview_invoice": "Preview the next contract invoice",
           "remove_line": "Remove a contract line",
           "resume": "Resume a contract",
           "update": "Update a contract",
           "update_line": "Update a contract line"
+        },
+        "manage_deliverables": {
+          "apply_template": "Apply a deliverable template",
+          "create": "Create a deliverable",
+          "deactivate": "Deactivate a deliverable",
+          "deliver": "Mark a deliverable delivered",
+          "link_evidence": "Link delivery evidence",
+          "reopen": "Reopen a deliverable",
+          "reschedule": "Reschedule a deliverable",
+          "update": "Update a deliverable",
+          "waive": "Waive a deliverable"
+        },
+        "manage_delivery": {
+          "create_escalation": "Create an escalation rule",
+          "create_routing": "Create a delivery route",
+          "delete_escalation": "Delete an escalation rule",
+          "delete_routing": "Delete a delivery route",
+          "list_escalation": "List escalation rules",
+          "list_routing": "List delivery routes",
+          "resolve": "Resolve alert delivery",
+          "set_default": "Set the default delivery route",
+          "update_escalation": "Update an escalation rule",
+          "update_routing": "Update a delivery route"
         },
         "manage_deployments": {
           "cancel": "Cancel a deployment",
@@ -3915,11 +4249,48 @@
           "resume": "Resume a deployment",
           "start": "Start a deployment"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Dismiss an anomaly",
+          "list": "List anomalies",
+          "promote": "Promote an anomaly to an alert",
+          "resolve": "Resolve an anomaly"
+        },
+        "manage_device_function": {
+          "get": "Device function"
+        },
+        "manage_device_links": {
+          "create": "Link device records",
+          "dissolve": "Dissolve a device link",
+          "for_device": "Links for a device",
+          "get": "Device link details",
+          "list": "List device links",
+          "update": "Update a device link"
+        },
+        "manage_device_software": {
+          "update": "Update an application"
+        },
+        "manage_device_warranty": {
+          "expiring": "List expiring warranties",
+          "get": "Device warranty",
+          "refresh": "Refresh a device warranty"
+        },
         "manage_dns_policy": {
           "add_allow": "Allow a domain",
           "add_block": "Block a domain",
           "remove_allow": "Remove an allowed domain",
           "remove_block": "Remove a blocked domain"
+        },
+        "manage_dr_plan": {
+          "add_group": "Add a plan group",
+          "create_plan": "Create a DR plan",
+          "delete_group": "Delete a plan group",
+          "update_group": "Update a plan group",
+          "update_plan": "Update a DR plan"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Acknowledge a fleet finding",
+          "dismiss": "Dismiss a fleet finding",
+          "reopen": "Reopen a fleet finding"
         },
         "manage_groups": {
           "add_devices": "Add devices to a group",
@@ -3931,6 +4302,19 @@
           "preview": "Preview group membership",
           "remove_devices": "Remove devices from a group",
           "update": "Update a device group"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Apply a checkpoint",
+          "create": "Create a checkpoint",
+          "delete": "Delete a checkpoint"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Force-stop a VM",
+          "pause": "Pause a VM",
+          "resume": "Resume a VM",
+          "save": "Save a VM's state",
+          "start": "Start a VM",
+          "stop": "Stop a VM"
         },
         "manage_invoices": {
           "add_bundle_line": "Add a bundle line",
@@ -3944,11 +4328,18 @@
           "delete_draft": "Delete a draft invoice",
           "issue": "Issue an invoice",
           "record_payment": "Record a payment",
+          "refresh_time_lines": "Refresh time lines",
           "remove_line": "Remove an invoice line",
           "update_header": "Update invoice details",
           "update_line": "Update an invoice line",
           "void": "Void an invoice",
           "void_payment": "Void a payment"
+        },
+        "manage_key_dates": {
+          "create": "Create a key date",
+          "delete": "Delete a key date",
+          "list": "List key dates",
+          "update": "Update a key date"
         },
         "manage_maintenance_windows": {
           "active_now": "Active maintenance windows",
@@ -3958,11 +4349,41 @@
           "list": "List maintenance windows",
           "update": "Update a maintenance window"
         },
+        "manage_manual_assets": {
+          "create": "Create a manual asset",
+          "delete": "Delete a manual asset",
+          "link": "Link a manual asset",
+          "list": "List manual assets",
+          "unlink": "Unlink a manual asset",
+          "update": "Update a manual asset"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Attach a monitor definition",
+          "create": "Create a monitor definition",
+          "delete": "Delete a monitor definition",
+          "describe": "Describe monitor definition options",
+          "detach": "Detach a monitor definition",
+          "disable": "Disable a monitor definition",
+          "enable": "Enable a monitor definition",
+          "update": "Update a monitor definition"
+        },
         "manage_monitors": {
           "create": "Create a monitor",
           "delete": "Delete a monitor",
           "get": "Monitor details",
           "update": "Update a monitor"
+        },
+        "manage_notification_channels": {
+          "create": "Create a notification channel",
+          "delete": "Delete a notification channel",
+          "list": "List notification channels",
+          "test": "Test a notification channel",
+          "update": "Update a notification channel"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Set portal visibility",
+          "supersede": "Supersede a document",
+          "update_metadata": "Update document details"
         },
         "manage_organizations": {
           "add_contact": "Add an organization contact",
@@ -3976,6 +4397,7 @@
           "compliance": "Patch compliance",
           "decline": "Decline a patch",
           "defer": "Defer a patch",
+          "device_history": "Device patch history",
           "install": "Install a patch",
           "list": "List patches",
           "rollback": "Roll back a patch",
@@ -3988,11 +4410,68 @@
           "list": "List peripheral policies",
           "update": "Update a peripheral policy"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Add a peripheral exception",
+          "create": "Create a peripheral policy",
+          "disable": "Disable a peripheral policy",
+          "remove_exception": "Remove a peripheral exception",
+          "update": "Update a peripheral policy"
+        },
         "manage_policy_feature_link": {
           "add": "Link a policy to a feature",
+          "describe": "Describe policy feature links",
           "list": "List policy feature links",
           "remove": "Remove a policy feature link",
           "update": "Update a policy feature link"
+        },
+        "manage_processes": {
+          "kill": "Kill a process",
+          "list": "List processes"
+        },
+        "manage_quotes": {
+          "add_block": "Add a quote block",
+          "add_catalog_line": "Add a catalog line",
+          "add_manual_line": "Add a manual line",
+          "create_draft": "Create a draft quote",
+          "create_pay_link": "Create a payment link",
+          "decline": "Decline a quote",
+          "delete_block": "Delete a quote block",
+          "delete_draft": "Delete a draft quote",
+          "move_line": "Move a quote line",
+          "remove_line": "Remove a quote line",
+          "reorder_blocks": "Reorder quote blocks",
+          "reorder_lines": "Reorder quote lines",
+          "send": "Send a quote",
+          "update": "Update a quote",
+          "update_block": "Update a quote block",
+          "update_line": "Update a quote line"
+        },
+        "manage_recovery_keys": {
+          "collect": "Collect recovery keys",
+          "list": "List recovery keys",
+          "rotate": "Rotate a recovery key"
+        },
+        "manage_saved_filters": {
+          "create": "Create a saved filter",
+          "delete": "Delete a saved filter",
+          "get": "Saved filter details",
+          "list": "List saved filters"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Disable a scheduled task",
+          "enable": "Enable a scheduled task",
+          "list": "List scheduled tasks",
+          "run": "Run a scheduled task"
+        },
+        "manage_security_policies": {
+          "create": "Create a security policy",
+          "list": "List security policies",
+          "update": "Update a security policy"
+        },
+        "manage_security_recommendations": {
+          "complete": "Complete a recommendation",
+          "dismiss": "Dismiss a recommendation",
+          "list": "List recommendations"
         },
         "manage_service_monitors": {
           "list": "List service monitors"
@@ -4003,8 +4482,55 @@
           "start": "Start a service",
           "stop": "Stop a service"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "Browse SNMP OIDs",
+          "create": "Create an SNMP template",
+          "delete": "Delete an SNMP template",
+          "get": "SNMP template details",
+          "list": "List SNMP templates",
+          "update": "Update an SNMP template",
+          "validate_oids": "Validate SNMP OIDs"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Add an install method",
+          "add_version": "Add a version",
+          "archive": "Archive a catalog item",
+          "create": "Create a catalog item",
+          "delete_install_method": "Delete an install method",
+          "get": "Catalog item details",
+          "import_package": "Import a package",
+          "list": "List catalog items",
+          "promote_version": "Promote a version",
+          "update": "Update a catalog item",
+          "update_install_method": "Update an install method",
+          "update_version": "Update a version"
+        },
+        "manage_software_deployments": {
+          "cancel": "Cancel a software deployment",
+          "create": "Create a software deployment",
+          "get": "Software deployment details",
+          "list": "List software deployments",
+          "results": "Software deployment results",
+          "retry": "Retry a software deployment",
+          "summary": "Software deployment summary"
+        },
+        "manage_software_inventory": {
+          "approve": "Approve software",
+          "clear": "Clear a software decision",
+          "deny": "Block software",
+          "devices": "Devices with software",
+          "list": "List software inventory",
+          "names": "Search software names"
+        },
         "manage_software_policies": {
           "create": "Create a software policy",
+          "get": "Software policy details",
+          "list": "List software policies",
+          "update": "Update a software policy"
+        },
+        "manage_software_policy": {
+          "create": "Create a software policy",
+          "delete": "Delete a software policy",
           "get": "Software policy details",
           "list": "List software policies",
           "update": "Update a software policy"
@@ -4013,11 +4539,160 @@
           "disable": "Disable a startup item",
           "enable": "Enable a startup item"
         },
+        "manage_support_sessions": {
+          "end": "End a support session",
+          "get": "Support session details",
+          "list": "List support sessions"
+        },
+        "manage_tags": {
+          "list": "List device tags"
+        },
+        "manage_tenant_variables": {
+          "list": "List script variables"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Attach a stored result",
+          "delete": "Delete an attachment",
+          "list": "List attachments",
+          "read_content": "Read an attachment"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Add a checklist item",
+          "apply_template": "Apply a checklist template",
+          "delete_item": "Delete a checklist item",
+          "duplicate_template": "Duplicate a checklist template",
+          "get_template": "Checklist template details",
+          "list": "List checklist items",
+          "list_templates": "List checklist templates",
+          "reorder": "Reorder checklist items",
+          "save_as_template": "Save as a checklist template",
+          "update_item": "Update a checklist item"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Add a template item",
+          "create": "Create a checklist template",
+          "delete": "Delete a checklist template",
+          "get": "Checklist template details",
+          "list": "List checklist templates",
+          "remove_item": "Remove a template item",
+          "reorder_items": "Reorder template items",
+          "update": "Update a checklist template",
+          "update_item": "Update a template item"
+        },
+        "manage_ticket_config": {
+          "create_category": "Create a ticket category",
+          "create_domain": "Create a ticket domain",
+          "create_status": "Create a ticket status",
+          "delete_category": "Delete a ticket category",
+          "delete_domain": "Delete a ticket domain",
+          "get_config": "Ticket configuration",
+          "get_org_settings": "Organization ticket settings",
+          "list_categories": "List ticket categories",
+          "list_domains": "List ticket domains",
+          "reorder_categories": "Reorder ticket categories",
+          "reorder_statuses": "Reorder ticket statuses",
+          "set_priorities": "Set ticket priorities",
+          "update_category": "Update a ticket category",
+          "update_domain": "Update a ticket domain",
+          "update_org_settings": "Update organization ticket settings",
+          "update_status": "Update a ticket status"
+        },
+        "manage_ticket_forms": {
+          "available": "Available ticket forms",
+          "create": "Create a ticket form",
+          "delete": "Delete a ticket form",
+          "list": "List ticket forms",
+          "update": "Update a ticket form"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Convert an email to a ticket",
+          "dismiss": "Dismiss an email",
+          "list": "List unplaced emails"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Create a reply template",
+          "delete": "Delete a reply template",
+          "list": "List reply templates",
+          "update": "Update a reply template"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Create a routing rule",
+          "delete": "Delete a routing rule",
+          "reorder": "Reorder routing rules",
+          "update": "Update a routing rule"
+        },
+        "manage_tickets": {
+          "assign": "Assign a ticket",
+          "bulk_update": "Update tickets in bulk",
+          "comment": "Comment on a ticket",
+          "create": "Create a ticket",
+          "create_from_alert": "Create a ticket from an alert",
+          "delete_comment": "Delete a ticket comment",
+          "draft": "Draft a ticket",
+          "edit_comment": "Edit a ticket comment",
+          "get": "Ticket details",
+          "link_alert": "Link an alert to a ticket",
+          "link_device": "Link a device to a ticket",
+          "link_ticket": "Link related tickets",
+          "list": "List tickets",
+          "list_links": "List ticket links",
+          "list_work_types": "List work types",
+          "log_time_entry": "Log a time entry",
+          "merge": "Merge tickets",
+          "merge_preview": "Preview a ticket merge",
+          "move_org": "Move a ticket to another organization",
+          "start_timer": "Start a ticket timer",
+          "stop_timer": "Stop a ticket timer",
+          "unlink_alert": "Unlink an alert from a ticket",
+          "unlink_ticket": "Unlink related tickets",
+          "update_fields": "Update ticket fields",
+          "update_status": "Update ticket status",
+          "update_time_entry": "Update a time entry"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Confirm a time suggestion",
+          "dismiss": "Dismiss a time suggestion",
+          "list": "List time suggestions",
+          "undo": "Restore a dismissed suggestion"
+        },
         "manage_update_rings": {
           "create": "Create an update ring",
           "get": "Update ring details",
           "list": "List update rings",
           "update": "Update an update ring"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Check devices for upgrades",
+          "list_versions": "List agent versions"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Capacity predictions",
+          "sla_compliance": "SLA compliance",
+          "sla_definitions": "SLA definitions"
+        },
+        "query_backups": {
+          "list_configs": "List backup configurations",
+          "list_jobs": "List backup jobs",
+          "list_policies": "List backup policies"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Custom field values for a device",
+          "list_definitions": "List custom field definitions"
+        },
+        "registry_operations": {
+          "create_key": "Create a registry key",
+          "delete_key": "Delete a registry key",
+          "get_value": "Read a registry value",
+          "read_key": "Read a registry key",
+          "set_value": "Set a registry value"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Accept the risk",
+          "encrypt": "Encrypt a file",
+          "false_positive": "Mark as false positive",
+          "mark_remediated": "Mark as remediated",
+          "quarantine": "Quarantine a file",
+          "secure_delete": "Securely delete a file"
         },
         "s1_threat_action": {
           "kill": "Kill a threat process",

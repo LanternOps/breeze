@@ -15,6 +15,12 @@ import {
   type AgentModeLike,
 } from './capabilityModel';
 import OperationRow from './OperationRow';
+import {
+  catalogActionLabel,
+  catalogCapabilityDescription,
+  catalogCapabilityLabel,
+  catalogToolLabel,
+} from './catalogLabels';
 
 export interface CapabilityPickerProps {
   catalog: AgentToolCatalogDto;
@@ -31,15 +37,6 @@ export interface CapabilityPickerProps {
    *  script-gated `run_script` shown as the approval request the run loop
    *  would actually produce, not an unattended run it never would (#5048 QA). */
   authorizedScriptCount?: number;
-}
-
-/** `manage_startup_items` -> "Manage startup items". Last-resort label for a
- *  tool/action/capability this catalog has no translation for yet — mirrors
- *  AiAgentForm.tsx's `sentenceCase` so a server-shipped-ahead-of-web-catalog
- *  name still reads as words. */
-function sentenceCase(token: string): string {
-  const words = token.replace(/[_:-]+/g, ' ').trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** `manage_services:restart` -> `manage_services-restart`, safe to splice into a data-testid/DOM id. */
@@ -97,16 +94,10 @@ export default function CapabilityPicker({
 
   const { selected, unrecognised } = useMemo(() => entriesToSelection(entries, catalog), [entries, catalog]);
 
-  const toolLabel = (name: string) =>
-    t(/* i18n-dynamic */ `aiAgentsPage.catalog.tools.${name}`, { defaultValue: sentenceCase(name) });
-  const actionLabel = (toolName: string, action: string | null) =>
-    action === null
-      ? toolLabel(toolName)
-      : t(/* i18n-dynamic */ `aiAgentsPage.catalog.actions.${toolName}.${action}`, { defaultValue: sentenceCase(action) });
-  const capabilityLabel = (id: string) =>
-    t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.label`, { defaultValue: sentenceCase(id) });
-  const capabilityDescription = (id: string) =>
-    t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.description`, { defaultValue: '' });
+  const toolLabel = (name: string) => catalogToolLabel(t, name);
+  const actionLabel = (toolName: string, action: string | null) => catalogActionLabel(t, toolName, action);
+  const capabilityLabel = (id: string) => catalogCapabilityLabel(t, id);
+  const capabilityDescription = (id: string) => catalogCapabilityDescription(t, id);
 
   /**
    * Persistence rule (spec §4.3): every change is written through the
@@ -150,16 +141,12 @@ export default function CapabilityPicker({
   // so the memo's inputs are exactly the search term, the catalog and `t`.
   const visibleOpKeysByCapability = useMemo(() => {
     const matches = (text: string) => text.toLowerCase().includes(searchLower);
-    const tl = (name: string) => t(/* i18n-dynamic */ `aiAgentsPage.catalog.tools.${name}`, { defaultValue: sentenceCase(name) });
-    const al = (toolName: string, action: string | null) =>
-      action === null
-        ? tl(toolName)
-        : t(/* i18n-dynamic */ `aiAgentsPage.catalog.actions.${toolName}.${action}`, { defaultValue: sentenceCase(action) });
+    const tl = (name: string) => catalogToolLabel(t, name);
+    const al = (toolName: string, action: string | null) => catalogActionLabel(t, toolName, action);
     const operationMatches = (tool: CatalogTool, op: CatalogOperation): boolean =>
       matches(tool.name) || matches(tl(tool.name)) || matches(op.key) || matches(al(tool.name, op.action));
     const capabilityItselfMatches = (id: string): boolean =>
-      matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.label`, { defaultValue: sentenceCase(id) }))
-      || matches(t(/* i18n-dynamic */ `aiAgentsPage.catalog.capabilities.${id}.description`, { defaultValue: '' }));
+      matches(catalogCapabilityLabel(t, id)) || matches(catalogCapabilityDescription(t, id));
 
     const map = new Map<string, ReadonlySet<string> | null>();
     for (const cap of catalog.capabilities) {
