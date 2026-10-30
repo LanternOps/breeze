@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { decide, goRetryArgs, mergeCoverProfiles, parseFailures } from './retry-shard.mjs';
+import { decide, goRetryArgs, ledgerRunner, mergeCoverProfiles, parseFailures, unattributedFailure } from './retry-shard.mjs';
 
 // Whole-shard retry (W1, #10744). The merge queue has no retry, so one flaky
 // test ejects the PR and rebuilds every entry behind it. The wrapper re-runs a
@@ -57,6 +57,13 @@ test('vitest: splits file on the first " > " only, dedupes, and reads failed sui
     'src/b.test.ts > top-level test',
   ]);
   assert.deepEqual(r.failures.map((f) => f.file), ['src/broken.test.ts', 'src/a.test.ts', 'src/b.test.ts']);
+});
+
+test('unattributedFailure: vitest Unhandled Errors section → true; plain failures and go → false', () => {
+  assert.equal(unattributedFailure('vitest', '\x1b[31m⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯\x1b[39m\nError: boom\n'), true);
+  assert.equal(unattributedFailure('vitest', 'Unhandled Rejection\nError: boom\n'), true);
+  assert.equal(unattributedFailure('vitest', fixture('vitest-two-failures.txt')), false);
+  assert.equal(unattributedFailure('go', fixture('go-test-failures.jsonl')), false);
 });
 
 test('vitest: no summary section → no failures (setup/infra failure)', () => {
@@ -173,6 +180,100 @@ test('decide: build failure → first code, no retry', () => {
     flaky: [],
     quarantined: [],
   });
+});
+
+// ── decide: quarantine (Task 3) ──────────────────────────────────────────
+// A quarantined test may fail both attempts only when the PR touched neither
+// it nor its sibling source, and only when the changed-file list is known.
+
+const QF = { id: 'src/services/foo.test.ts > foo > flaky', file: 'src/services/foo.test.ts', pkg: null };
+const OTHER = { id: 'src/services/bar.test.ts > bar > real', file: 'src/services/bar.test.ts', pkg: null };
+const Q = new Set([QF.id]);
+const API_PATHS = { prefix: 'apps/api/' };
+const twice = (failures, ctx, second = {}) =>
+  decide({
+    first: { code: 1, failures, buildFailed: false, raceDetected: false },
+    second: { code: 1, failures, buildFailed: false, raceDetected: false, ...second },
+    paths: API_PATHS,
+    ...ctx,
+  });
+
+test('decide: quarantined test fails twice, its file untouched → exit 0, quarantined=[id]', () => {
+  assert.deepEqual(twice([QF], { quarantine: Q, changedFiles: new Set(['apps/api/src/other.ts']) }), {
+    exitCode: 0,
+    retry: true,
+    flaky: [],
+    quarantined: [QF.id],
+  });
+});
+
+test('decide: quarantined test whose file the PR touched → exit 1 (Review Focus 3)', () => {
+  const d = twice([QF], { quarantine: Q, changedFiles: new Set(['apps/api/src/services/foo.test.ts']) });
+  assert.equal(d.exitCode, 1);
+  assert.deepEqual(d.quarantined, []);
+});
+
+test('decide: quarantined test whose sibling source the PR touched → exit 1', () => {
+  assert.equal(twice([QF], { quarantine: Q, changedFiles: new Set(['apps/api/src/services/foo.ts']) }).exitCode, 1);
+});
+
+test('decide: changedFiles unknown (null) → no quarantine, exit 1 (Review Focus 4)', () => {
+  const d = twice([QF], { quarantine: Q, changedFiles: null });
+  assert.equal(d.exitCode, 1);
+  assert.deepEqual(d.quarantined, []);
+});
+
+test('decide: quarantined + one non-quarantined failure → exit 1', () => {
+  const d = twice([QF, OTHER], { quarantine: Q, changedFiles: new Set() });
+  assert.equal(d.exitCode, 1);
+  assert.deepEqual(d.quarantined, []);
+});
+
+test('decide: quarantine never applies without a real failing second attempt', () => {
+  // Second attempt: signal-killed, build failure, data race, unattributed
+  // failure (e.g. vitest Unhandled Errors), or no parsed failures.
+  for (const second of [
+    { code: null },
+    { buildFailed: true },
+    { raceDetected: true },
+    { unattributed: true },
+    { failures: [] },
+  ]) {
+    const d = twice([QF], { quarantine: Q, changedFiles: new Set() }, second);
+    assert.notEqual(d.exitCode, 0, JSON.stringify(second));
+    assert.deepEqual(d.quarantined, [], JSON.stringify(second));
+  }
+});
+
+test('decide: quarantine never stops a no-retry first attempt from failing', () => {
+  for (const first of [{ buildFailed: true }, { raceDetected: true }, { code: null }]) {
+    const d = decide({
+      first: { code: 1, failures: [QF], buildFailed: false, raceDetected: false, ...first },
+      second: null,
+      quarantine: Q,
+      changedFiles: new Set(),
+      paths: API_PATHS,
+    });
+    assert.deepEqual({ retry: d.retry, quarantined: d.quarantined }, { retry: false, quarantined: [] });
+    assert.notEqual(d.exitCode, 0);
+  }
+});
+
+test('decide (go): a quarantined top-level test covers its failing subtest; a package failure never', () => {
+  const pkg = `${AGENT}/internal/x`;
+  const sub = { id: `${pkg}.TestX/sub`, file: null, pkg };
+  const paths = { goModule: AGENT, goDir: 'agent' };
+  const go = (failures, changedFiles) =>
+    decide({
+      first: { code: 1, failures, buildFailed: false, raceDetected: false },
+      second: { code: 1, failures, buildFailed: false, raceDetected: false },
+      quarantine: new Set([`${pkg}.TestX`, pkg]),
+      changedFiles,
+      paths,
+    });
+  assert.deepEqual(go([sub], new Set(['apps/api/x.ts'])).quarantined, [sub.id]);
+  assert.equal(go([sub], new Set(['agent/internal/x/x.go'])).exitCode, 1);
+  assert.equal(go([{ id: pkg, file: null, pkg }], new Set()).exitCode, 1);
 });
 
 // ── Go retry command + coverage merge ────────────────────────────────────
@@ -382,4 +483,123 @@ test('CLI: rejects a missing --label or a non-`go test` command for the go runne
   const cwd = mkdtempSync(join(tmpdir(), 'retry-shard-'));
   assert.equal(cli(['--runner', 'vitest', '--', 'true'], { cwd }).status, 2);
   assert.equal(cli(['--runner', 'go', '--label', 'x', '--', 'gofmt', '-l', '.'], { cwd }).status, 2);
+});
+
+// ── CLI: flaky ledger (Task 3) ───────────────────────────────────────────
+
+test('ledgerRunner: --runner + --label prefix → ledger runner; anything else → null (no quarantine)', () => {
+  assert.equal(ledgerRunner('vitest', 'api-3'), 'vitest-api');
+  assert.equal(ledgerRunner('vitest', 'web-1'), 'vitest-web');
+  assert.equal(ledgerRunner('vitest', 'integration-16'), 'vitest-integration');
+  assert.equal(ledgerRunner('go', 'agent'), 'go');
+  assert.equal(ledgerRunner('go', 'agent-race'), 'go');
+  assert.equal(ledgerRunner('vitest', 'portal-1'), null);
+  assert.equal(ledgerRunner('vitest', 'apix-1'), null);
+});
+
+const git = (cwd, ...args) => spawnSync('git', args, { cwd, encoding: 'utf8' }).stdout.trim();
+const today = () => new Date().toISOString().slice(0, 10);
+const plusDays = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+
+// A repo whose BASE commit quarantines `entries`; HEAD then touches `touched`.
+function ledgerRepo(entries, touched) {
+  const root = mkdtempSync(join(tmpdir(), 'retry-shard-ledger-'));
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'config', 'user.email', 'ci@example.com');
+  git(root, 'config', 'user.name', 'ci');
+  spawnSync('mkdir', ['-p', join(root, '.github'), join(root, 'agent/internal/x'), join(root, 'apps/api/src')]);
+  writeFileSync(join(root, '.github/flaky-tests.json'), JSON.stringify(entries));
+  writeFileSync(join(root, 'agent/go.mod'), 'module github.com/breeze-rmm/agent\n\ngo 1.25\n');
+  writeFileSync(join(root, 'README.md'), 'base\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'base');
+  const baseSha = git(root, 'rev-parse', 'HEAD');
+  for (const f of touched) writeFileSync(join(root, f), 'changed\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'head');
+  return { root, baseSha };
+}
+
+const vitestEntry = {
+  id: 'src/a.test.ts > suite > flaky one',
+  runner: 'vitest-api',
+  file: 'apps/api/src/a.test.ts',
+  issue: 10744,
+  added: today(),
+  expires: plusDays(7),
+};
+const ALWAYS_FAILS = `console.log('⎯ Failed Tests 1 ⎯\\n FAIL  src/a.test.ts > suite > flaky one');process.exit(1)`;
+
+test('CLI vitest: a base-ledger test failing twice, untouched → exit 0, quarantined in report + annotation', () => {
+  const { root, baseSha } = ledgerRepo([vitestEntry], ['README.md']);
+  const r = cli(['--runner', 'vitest', '--label', 'api-2', '--', process.execPath, '-e', ALWAYS_FAILS], {
+    cwd: root,
+    env: { CI_BASE_SHA: baseSha },
+  });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const report = JSON.parse(readFileSync(join(root, 'flake-report-api-2.json'), 'utf8'));
+  assert.deepEqual(report, { label: 'api-2', attempts: 2, flaky: [], quarantined: [vitestEntry.id], exitCode: 0 });
+  assert.match(r.stdout, /^::warning title=Quarantined test::src\/a\.test\.ts > suite > flaky one$/m);
+});
+
+test('CLI vitest: the PR touched the sibling source → exit 1', () => {
+  const { root, baseSha } = ledgerRepo([vitestEntry], ['apps/api/src/a.ts']);
+  const r = cli(['--runner', 'vitest', '--label', 'api-2', '--', process.execPath, '-e', ALWAYS_FAILS], {
+    cwd: root,
+    env: { CI_BASE_SHA: baseSha },
+  });
+  assert.equal(r.status, 1);
+});
+
+test('CLI vitest: no CI_BASE_SHA → no quarantine, exit 1', () => {
+  const { root } = ledgerRepo([vitestEntry], ['README.md']);
+  const r = cli(['--runner', 'vitest', '--label', 'api-2', '--', process.execPath, '-e', ALWAYS_FAILS], {
+    cwd: root,
+    env: { CI_BASE_SHA: '' },
+  });
+  assert.equal(r.status, 1);
+});
+
+test('CLI vitest: a ledger entry added only on HEAD is ignored → exit 1', () => {
+  const { root, baseSha } = ledgerRepo([], ['README.md']);
+  writeFileSync(join(root, '.github/flaky-tests.json'), JSON.stringify([vitestEntry]));
+  git(root, 'commit', '-q', '-am', 'head quarantines its own failure');
+  const r = cli(['--runner', 'vitest', '--label', 'api-2', '--', process.execPath, '-e', ALWAYS_FAILS], {
+    cwd: root,
+    env: { CI_BASE_SHA: baseSha },
+  });
+  assert.equal(r.status, 1);
+});
+
+test('CLI vitest: a ledger entry for another runner does not apply (web label) → exit 1', () => {
+  const { root, baseSha } = ledgerRepo([vitestEntry], ['README.md']);
+  const r = cli(['--runner', 'vitest', '--label', 'web-2', '--', process.execPath, '-e', ALWAYS_FAILS], {
+    cwd: root,
+    env: { CI_BASE_SHA: baseSha },
+  });
+  assert.equal(r.status, 1);
+});
+
+test('CLI go: a quarantined test failing twice in an untouched package → exit 0; module path from go.mod', () => {
+  const pkg = `${AGENT}/internal/x`;
+  const goEntry = { ...vitestEntry, id: `${pkg}.TestFlaky`, runner: 'go', file: 'agent/internal/x/x_test.go' };
+  const { root, baseSha } = ledgerRepo([goEntry], ['README.md']);
+  const bin = mkdtempSync(join(tmpdir(), 'retry-shard-bin-'));
+  const events = [
+    { Action: 'output', Package: pkg, Test: 'TestFlaky', Output: '--- FAIL: TestFlaky (0.01s)\n' },
+    { Action: 'fail', Package: pkg, Test: 'TestFlaky' },
+    { Action: 'fail', Package: pkg },
+  ];
+  writeFileSync(join(bin, 'go'), `#!/usr/bin/env node\n${events.map((e) => `console.log(${JSON.stringify(JSON.stringify(e))});`).join('\n')}\nprocess.exit(1);\n`);
+  chmodSync(join(bin, 'go'), 0o755);
+  const args = ['--runner', 'go', '--go-dir', 'agent', '--label', 'agent', '--', 'go', 'test', './...'];
+  const env = { PATH: `${bin}:${process.env.PATH}`, CI_BASE_SHA: baseSha };
+  const r = cli(args, { cwd: root, env });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'flake-report-agent.json'), 'utf8')).quarantined, [`${pkg}.TestFlaky`]);
+
+  writeFileSync(join(root, 'agent/internal/x/x.go'), 'package x\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'touch the package');
+  assert.equal(cli(args, { cwd: root, env }).status, 1);
 });

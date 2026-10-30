@@ -15,6 +15,11 @@
 //   node .github/scripts/retry-shard.mjs --runner vitest|go --label <name> \
 //     [--go-dir <dir>] -- <command...>
 //
+// A test that fails both attempts may still pass the job when it is in the
+// flaky ledger (.github/flaky-tests.json) AT THE BASE COMMIT ($CI_BASE_SHA)
+// and the change touched neither it nor its sibling source — see
+// flaky-ledger.mjs. No $CI_BASE_SHA → no quarantine.
+//
 // When the first attempt fails it writes flake-report-<label>.json
 // ({label, attempts, flaky, quarantined, exitCode}) in the working directory,
 // appends a table to $GITHUB_STEP_SUMMARY and prints a `::warning` per flaky
@@ -23,8 +28,10 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { activeQuarantine, changedFiles, failureTouched, isQuarantined, loadBaseLedger } from './flaky-ledger.mjs';
 
 const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 
@@ -113,6 +120,17 @@ function parseGo(output) {
   return { failures, buildFailed, raceDetected };
 }
 
+// A failure the per-test parse cannot attribute to a test: vitest's
+// `Unhandled Errors` section (exit 1 even when every test passed). It never
+// blocks a retry — it only stops quarantine from excusing the attempt, since
+// the parsed failures would not explain the whole exit code.
+const VITEST_UNHANDLED = /Unhandled (?:Errors?|Rejection)/;
+
+export function unattributedFailure(runner, output) {
+  if (runner !== 'vitest') return false;
+  return output.split('\n').some((raw) => VITEST_UNHANDLED.test(raw.replace(ANSI, '')));
+}
+
 export function parseFailures(runner, output) {
   if (runner === 'vitest') return parseVitest(output);
   if (runner === 'go') return parseGo(output);
@@ -122,10 +140,15 @@ export function parseFailures(runner, output) {
 // ── Decision ─────────────────────────────────────────────────────────────
 
 // Pure: called with `second: null` to ask whether to retry, then again with
-// the second attempt's result for the final verdict. `quarantine` and
-// `changedFiles` feed the Task 3 rule (a quarantined test whose file the PR
-// did not touch may fail twice); in this wave quarantine is always empty.
-export function decide({ first, second, quarantine, changedFiles }) {
+// the second attempt's result for the final verdict.
+//
+// Quarantine applies only after a real second attempt failed with parsed
+// failures and nothing else (no signal, build failure, data race or
+// unattributed failure), and only when `changedFiles` is known: every failure
+// must be in `quarantine` (see isQuarantined) with its file/package untouched
+// (failureTouched, `paths` maps it to a repo-relative path). Otherwise the
+// second attempt's exit code stands.
+export function decide({ first, second, quarantine = new Set(), changedFiles = null, paths = {} }) {
   const none = { flaky: [], quarantined: [] };
   if (first.code === 0) return { exitCode: 0, retry: false, ...none };
   if (first.code === null || first.buildFailed || first.raceDetected || first.failures.length === 0) {
@@ -135,9 +158,60 @@ export function decide({ first, second, quarantine, changedFiles }) {
   if (second.code === 0) {
     return { exitCode: 0, retry: true, flaky: [...new Set(first.failures.map((f) => f.id))], quarantined: [] };
   }
-  void quarantine;
-  void changedFiles;
-  return { exitCode: second.code ?? 1, retry: true, ...none };
+  const failed = { exitCode: second.code ?? 1, retry: true, ...none };
+  if (second.code === null || second.buildFailed || second.raceDetected || second.unattributed) return failed;
+  if (changedFiles === null || quarantine.size === 0 || second.failures.length === 0) return failed;
+  const blocking = second.failures.filter((f) => !isQuarantined(f, quarantine) || failureTouched(f, changedFiles, paths));
+  if (blocking.length) return failed;
+  return { exitCode: 0, retry: true, flaky: [], quarantined: [...new Set(second.failures.map((f) => f.id))] };
+}
+
+// ── Ledger context ───────────────────────────────────────────────────────
+
+// The ledger runner for a wrapped step: vitest by its label's job prefix
+// (`api-3` → vitest-api), go always `go`. Unknown → null → nothing quarantined.
+const VITEST_LABELS = { api: 'vitest-api', web: 'vitest-web', integration: 'vitest-integration' };
+
+export function ledgerRunner(runner, label) {
+  if (runner === 'go') return 'go';
+  if (runner !== 'vitest') return null;
+  const m = /^([a-z]+)-/.exec(label);
+  return (m && VITEST_LABELS[m[1]]) || null;
+}
+
+// Repo-relative path mapping for failureTouched: vitest files are relative to
+// the package (vitest-api/-integration run in apps/api, vitest-web in
+// apps/web); go packages map through the module path in <go-dir>/go.mod.
+function ledgerPaths(ledger, { repoRoot, goDir }) {
+  if (ledger === 'vitest-api' || ledger === 'vitest-integration') return { prefix: 'apps/api/' };
+  if (ledger === 'vitest-web') return { prefix: 'apps/web/' };
+  if (ledger !== 'go') return null;
+  try {
+    const mod = /^module\s+(\S+)/m.exec(readFileSync(join(goDir, 'go.mod'), 'utf8'));
+    const dir = relative(repoRoot, goDir).split('\\').join('/');
+    if (!mod || dir.startsWith('..')) return null;
+    return { goModule: mod[1], goDir: dir };
+  } catch {
+    return null;
+  }
+}
+
+function quarantineContext({ runner, label, goDir }) {
+  const none = { quarantine: new Set(), changedFiles: null, paths: {} };
+  const ledger = ledgerRunner(runner, label);
+  const baseSha = process.env.CI_BASE_SHA ?? '';
+  if (!ledger || !baseSha) return none;
+  const repoRoot = process.cwd();
+  const paths = ledgerPaths(ledger, { repoRoot, goDir });
+  if (!paths) return none;
+  const today = new Date().toISOString().slice(0, 10);
+  const quarantine = activeQuarantine(loadBaseLedger({ baseSha, repoRoot }), ledger, today);
+  if (quarantine.size === 0) return none;
+  const changed = changedFiles({ baseSha, repoRoot });
+  if (changed === null) {
+    process.stdout.write(`::notice title=Quarantine disabled::${escapeData(`${label}: cannot diff ${baseSha}..HEAD, so no test is quarantined`)}\n`);
+  }
+  return { quarantine, changedFiles: changed, paths };
 }
 
 // ── Go command rewriting + coverage merge ────────────────────────────────
@@ -380,8 +454,7 @@ async function main(argv) {
       `::error title=Data race::${escapeData(`${label}: the race detector reported a data race; not retrying (a clean re-run would hide it)`)}\n`,
     );
   }
-  const ctx = { quarantine: new Set(), changedFiles: null };
-  let verdict = decide({ first: firstResult, second: null, ...ctx });
+  let verdict = decide({ first: firstResult, second: null });
   let attempts = 1;
 
   if (verdict.retry) {
@@ -402,7 +475,16 @@ async function main(argv) {
     const second = await runAttempt(retryCommand, { cwd, runner });
     attempts = 2;
     const p2 = parseFailures(runner, second.output);
-    verdict = decide({ first: firstResult, second: { code: second.code, failures: p2.failures }, ...ctx });
+    const secondResult = {
+      code: second.code,
+      failures: p2.failures,
+      buildFailed: p2.buildFailed,
+      raceDetected: p2.raceDetected,
+      unattributed: unattributedFailure(runner, second.output),
+    };
+    // The ledger is consulted only when the second attempt failed too.
+    const ctx = second.code === 0 ? {} : quarantineContext({ runner, label, goDir: cwd });
+    verdict = decide({ first: firstResult, second: secondResult, ...ctx });
     if (coverProfile) {
       const basePath = resolve(cwd, coverProfile);
       const retryPath = `${basePath}.retry`;
@@ -416,6 +498,7 @@ async function main(argv) {
 
   if (first.code !== 0) writeReport({ label, attempts, verdict, firstFailures: p1.failures });
   for (const id of verdict.flaky) process.stdout.write(`::warning title=Flaky test::${escapeData(id)}\n`);
+  for (const id of verdict.quarantined) process.stdout.write(`::warning title=Quarantined test::${escapeData(id)}\n`);
   return verdict.exitCode;
 }
 

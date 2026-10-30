@@ -328,6 +328,10 @@ jobs:
       - name: Test shard retry wrapper
         run: node --test .github/scripts/retry-shard.test.mjs
 
+      # Also validates the committed .github/flaky-tests.json (W1, #10744).
+      - name: Test flaky-test ledger
+        run: node --test .github/scripts/flaky-ledger.test.mjs
+
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
       # release.yml only runs for releases, so this is the PR-time check.
@@ -430,11 +434,34 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     timeout-minutes: 30
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -834,11 +861,34 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -2023,11 +2073,34 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -3114,11 +3187,34 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
     timeout-minutes: 35
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -3594,11 +3690,34 @@ jobs:
     # instead of raising it.
     timeout-minutes: 40
 
+    # The flaky ledger is read from the BASE commit, never the PR head
+    # (retry-shard + flaky-ledger.mjs, W1 #10744). Empty for other events →
+    # nothing quarantined.
+    env:
+      CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      # The depth-1 checkout lacks the base commit that retry-shard reads the
+      # flaky ledger from and diffs against (W1, #10744). Bounded retry; a
+      # failed fetch only disables quarantine (fail closed), never the job.
+      - name: Fetch base commit for the flaky ledger
+        if: env.CI_BASE_SHA != ''
+        run: |
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --depth=1 origin "${CI_BASE_SHA}"; then
+              exit 0
+            fi
+            echo "git fetch of the base commit failed (attempt ${attempt}/3)" >&2
+            # No sleep after the final attempt — there is no fourth.
+            if [ "${attempt}" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
+          done
+          echo "::warning title=Quarantine disabled::Could not fetch base ${CI_BASE_SHA}; no flaky-ledger test is quarantined in this job."
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
