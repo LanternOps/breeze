@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { is, SQL } from 'drizzle-orm';
 
@@ -75,6 +75,7 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }))
 import { DelayedError } from 'bullmq';
 import { db } from '../db';
 import { isCronDue } from '../services/cronDue';
+import { resolveAllSecurityScanScheduledDevices } from '../services/featureConfigResolver';
 import {
   buildSecurityScanPayload,
   enqueueSweepDispatches,
@@ -244,6 +245,63 @@ describe('sweep pump wiring (#6263 W05)', () => {
       expect.objectContaining({ repeat: { every: 30_000 } }),
     );
     await shutdownSecurityScanWorkers();
+  });
+});
+
+describe('schedule-policies repeatable tick evaluates cron on the wall clock (#10031)', () => {
+  // BullMQ hands every repeat of a repeatable job the data it was registered
+  // with, so `scanAt` is boot time forever. Due-ness must follow the clock.
+  const REGISTERED = { type: 'schedule-policies', scanAt: '2026-09-18T01:58:00.000Z' } as const;
+  const entry = {
+    configPolicyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    orgId: null,
+    partnerId: 'pppppppp-pppp-4ppp-8ppp-pppppppppppp',
+    settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS }, // cron '0 2 * * *', UTC (partner-wide)
+    deviceIds: ['d1'],
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import('../services/cronDue')>('../services/cronDue');
+    vi.mocked(isCronDue).mockImplementation(actual.isCronDue);
+    vi.mocked(resolveAllSecurityScanScheduledDevices).mockResolvedValue([entry] as never);
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.insert).mockReset();
+    addBulkMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(isCronDue).mockReset();
+  });
+
+  it('two ticks of the same registration across the 02:00 boundary: the second one schedules', async () => {
+    const { createSecurityScanWorker } = await import('./securityScanJobs');
+    const processor = (createSecurityScanWorker() as unknown as {
+      __processor: (job: unknown, token?: string) => Promise<unknown>;
+    }).__processor;
+    const tick = () => processor({ name: 'schedule-policies', data: REGISTERED, id: 'repeat:1' }, 'tok');
+
+    vi.setSystemTime(new Date('2026-09-18T01:59:30.000Z'));
+    await expect(tick()).resolves.toEqual({ scheduledPolicies: 0, scansQueued: 0 });
+    expect(vi.mocked(isCronDue).mock.calls[0]![2]).toEqual(new Date('2026-09-18T01:59:30.000Z'));
+    expect(db.select).not.toHaveBeenCalled();
+
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue(chain([{ id: SCAN }])) } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([{ id: 'd1', orgId: 'org-1' }])) // device rows
+      .mockReturnValueOnce(chain([{ count: 0 }])) // getOrgQueuedScans
+      .mockReturnValueOnce(chain([])); // busy query
+
+    vi.setSystemTime(new Date('2026-09-18T02:00:30.000Z'));
+    await expect(tick()).resolves.toEqual({ scheduledPolicies: 1, scansQueued: 1 });
+    expect(vi.mocked(isCronDue).mock.calls[1]![2]).toEqual(new Date('2026-09-18T02:00:30.000Z'));
+    expect(addBulkMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        data: expect.objectContaining({ origin: 'policy_scheduler', occurrenceIso: '2026-09-18T02:00:00.000Z' }),
+      }),
+    ]);
   });
 });
 
