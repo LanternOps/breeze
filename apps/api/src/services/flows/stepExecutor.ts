@@ -52,6 +52,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { FlowRunRow, FlowVersionRow } from '../../db/schema/flowRuns';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { aiTools, executeTool, toolManagesDbContext } from '../aiTools';
+import { stripPageResumeJson } from '../aiToolPageResume';
 import { createActionIntent } from '../actionIntents/intentService';
 import { buildRunScriptSnapshot } from '../actionIntents/runScriptSnapshot';
 import { flowPreApprovalBindingSchema, revalidateRenderedStep, type FlowStepPin } from '../flowValidator';
@@ -203,10 +204,14 @@ function messageOf(value: unknown): string {
 /** The step's output as stored (storedOutput.ts; the runner's approval wake shares it). */
 const storedOutput = toStoredFlowOutput;
 
-/** A tool's string result as a FlowValue: JSON when it parses, else `{ text }`. */
+/**
+ * A tool's string result as a FlowValue: JSON when it parses, else `{ text }`.
+ * A paged tool's `_pageResume` descriptor (#10385) is chat-compaction input,
+ * not output — flows use the page as-is, so it never reaches step outputs.
+ */
 function parseToolText(text: string): FlowValue {
   try {
-    return JSON.parse(text) as FlowValue;
+    return JSON.parse(stripPageResumeJson(text)) as FlowValue;
   } catch {
     return { text };
   }

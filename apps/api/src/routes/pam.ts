@@ -84,6 +84,7 @@ import {
   type PamActuationRef,
 } from '../services/pamActuationLifecycle';
 import { enqueuePamRequestNotify } from '../services/pamRequestNotify';
+import { resolvePamTechnicianName } from '../services/pamTechnicianName';
 
 import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
@@ -767,7 +768,8 @@ pamRoutes.post(
         // The raw body reason, not the stored placeholder, so a reason-less
         // deny shows no "Reason:" line.
         if (!approve && row.flowType === 'uac_intercept') {
-          await enqueuePamRequestNotify(tx, { id: row.id, deviceId: row.deviceId }, 'denied', body.reason);
+          await enqueuePamRequestNotify(tx, { id: row.id, deviceId: row.deviceId }, 'denied', body.reason,
+            () => resolvePamTechnicianName(row.deviceId, { name: auth.user.name ?? null, userId: auth.user.id }));
         }
 
         const newStatus = actuation.refusalReason ? 'denied' : updated[0]!.status;
