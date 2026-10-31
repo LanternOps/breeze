@@ -18,21 +18,28 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { HttpBindings } from '@hono/node-server';
+import type { AddressInfo } from 'node:net';
 
 const SHOULD_RUN = Boolean(process.env.DATABASE_URL);
 
 type LiveServer = { server: ServerType; url: string };
 
-function randomPort(): number {
-  return 35000 + Math.floor(Math.random() * 2000);
-}
-
-async function startApi(port: number): Promise<LiveServer> {
-  const { oauthRoutes } = await import('../../routes/oauth');
+// Listens on port 0 before the oauth routes are imported: OAUTH_ISSUER embeds
+// the port and is read when those modules load, so the OS-assigned port must be
+// known first. A port picked by the test can collide with an ephemeral port
+// already in use on the runner (EADDRINUSE).
+async function startApi(configureEnv: (url: string) => void): Promise<LiveServer> {
   const app = new Hono<{ Bindings: HttpBindings }>();
+  const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
+  await new Promise<void>((resolve) => {
+    if ((server.address() as AddressInfo | null)?.port) return resolve();
+    server.once('listening', () => resolve());
+  });
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  configureEnv(url);
+  const { oauthRoutes } = await import('../../routes/oauth');
   app.route('/oauth', oauthRoutes);
-  const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' });
-  return { server, url: `http://127.0.0.1:${port}` };
+  return { server, url };
 }
 
 async function stopApi(s: LiveServer): Promise<void> {
@@ -59,12 +66,12 @@ describe.skipIf(!SHOULD_RUN)('DCR redirect-URI transport policy (live)', () => {
   let live: LiveServer;
 
   beforeAll(async () => {
-    const port = randomPort();
-    process.env.OAUTH_ISSUER = `http://127.0.0.1:${port}`;
-    process.env.OAUTH_RESOURCE_URL = `${process.env.OAUTH_ISSUER}/api/v1/mcp/message`;
-    process.env.OAUTH_DCR_ENABLED = 'true';
-    vi.resetModules();
-    live = await startApi(port);
+    live = await startApi((url) => {
+      process.env.OAUTH_ISSUER = url;
+      process.env.OAUTH_RESOURCE_URL = `${url}/api/v1/mcp/message`;
+      process.env.OAUTH_DCR_ENABLED = 'true';
+      vi.resetModules();
+    });
     await new Promise((r) => setTimeout(r, 100));
   }, 30_000);
 

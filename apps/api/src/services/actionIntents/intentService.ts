@@ -1,5 +1,5 @@
 import { flowBuiltinTierFor, isFlowBuiltin, isTenantToolName, remediationTriggerSchema, type RemediationTrigger, AI_APPROVAL_TIMEOUT_MAX_MINUTES, AI_APPROVAL_TIMEOUT_MIN_MINUTES } from '@breeze/shared';
-import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
+import { buildActionLabel, describePax8Action, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -640,6 +640,8 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
   },
   manage_quotes: (input) =>
     nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
+  manage_pax8_subscriptions: (input) => describePax8Action('manage_pax8_subscriptions', nonEmptyString(input.action)),
+  manage_pax8_orders: (input) => describePax8Action('manage_pax8_orders', nonEmptyString(input.action)),
   manage_contracts: (input) => {
     switch (nonEmptyString(input.action)) {
       case 'activate': return 'Activates the contract so billing starts.';

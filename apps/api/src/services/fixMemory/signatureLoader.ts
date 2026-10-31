@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../alertOwner';
 /**
  * Source row -> fix-memory signature. Reads only; runs on the ambient db, so
  * the CALLER chooses the context. The outcome watcher and memory attach run it
@@ -79,6 +80,10 @@ export async function alertSignature(alertId: string, family: 'alert' | 'correla
     .select({ id: alerts.id, deviceId: alerts.deviceId, ruleId: alerts.ruleId, context: alerts.context, requiresHuman: alerts.requiresHuman })
     .from(alerts).where(eq(alerts.id, alertId)).limit(1);
   if (!alert) return null;
+  if (!isDeviceOwned(alert)) {
+    console.info('[signatureLoader] skipping alert', { alertId, reason: 'alert_has_no_device' });
+    return null;
+  }
   const os = await deviceOs(alert.deviceId);
   if (!os) return null;
   const context = (alert.context ?? null) as Record<string, unknown> | null;

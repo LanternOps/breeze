@@ -46,5 +46,13 @@ export const sweepRunningGraceMinutes = (): number => parsePositiveIntEnv('SECUR
 export const iocHuntFourEyesDeviceThreshold = (): number =>
   parsePositiveIntEnv('IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD', IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD);
 
+/**
+ * #10057 gap 2 — how long a caller-initiated Scan now may wait in `queued` for
+ * a free concurrency slot before it is expired. Once dispatched, the command's
+ * own offline queue (the standard 7 days) applies as before.
+ */
+export const manualScanQueueTtlMinutes = (): number =>
+  parsePositiveIntEnv('SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES', 24 * 60);
+
 /** The agent's longest scan deadline (the policy `scanTimeoutMinutes` ceiling, 720). */
 export const SECURITY_SCAN_TIMEOUT_CEILING_MINUTES = SECURITY_SCAN_TIMEOUT_MINUTES_RANGE[1];

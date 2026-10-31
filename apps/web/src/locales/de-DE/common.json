@@ -1084,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Alarm-Tickets",
+        "scopeNote": "Partnerweit; keine Überschreibung pro Organisation.",
+        "pausedBanner": "Pausiert: Das PSA hat die Zugangsdaten abgelehnt. Führen Sie „Verbindung testen“ aus, um fortzufahren.",
+        "yes": "An",
+        "no": "Aus",
+        "selectPlaceholder": "Auswählen …",
+        "priorityDefault": "PSA-Standard",
+        "closedSuffix": "{{name}} (geschlossen)",
+        "saved": "Einstellungen für Alarm-Tickets gespeichert",
+        "saving": "Wird gespeichert …",
+        "save": "Speichern",
+        "conflict": "Diese Einstellungen wurden an anderer Stelle geändert. Die aktuellen Werte wurden geladen; prüfen Sie sie und speichern Sie erneut.",
+        "errors": {
+          "save": "Einstellungen für Alarm-Tickets konnten nicht gespeichert werden"
+        },
+        "status": {
+          "active": "Alarm-Tickets sind für diese Verbindung aktiviert.",
+          "notExternal": "Binden Sie diese Verbindung als Service-Management-PSA (externer Modus), um Alarm-Tickets zu verwenden.",
+          "disabled": "Alarm-Tickets sind deaktiviert.",
+          "paused": "Alarm-Tickets sind pausiert, bis die PSA-Verbindung wieder funktioniert.",
+          "companyLinksUnverified": "Bestätigen Sie die Firmenzuordnungen für diese PSA-Instanz.",
+          "invalidConfig": "Die gespeicherten Einstellungen für Alarm-Tickets sind ungültig. Prüfen Sie sie und speichern Sie erneut.",
+          "unsupportedProvider": "Alarm-Tickets sind für diesen PSA-Anbieter nicht verfügbar.",
+          "credentialsUnusable": "Die Zugangsdaten dieser Verbindung sind unvollständig oder nicht lesbar. Bearbeiten Sie die Verbindung und geben Sie sie erneut ein."
+        },
+        "fields": {
+          "enabled": "Alarm-Tickets aktivieren",
+          "board": "Service-Board",
+          "openStatus": "Status neuer Tickets",
+          "closedStatus": "Status „Geschlossen“",
+          "priorityHeading": "PSA-Priorität nach Alarm-Schweregrad",
+          "minSeverity": "Minimaler Schweregrad",
+          "minSeverityHelp": "„Niedrig“ umfasst Monitore auf Warnstufe",
+          "closeOnResolve": "Ticket schließen, wenn der Alarm behoben ist",
+          "noteOnAcknowledge": "Notiz hinzufügen, wenn der Alarm bestätigt wird",
+          "confirmCompanyLinks": "Die Firmenzuordnungen der Organisationen stimmen mit dieser PSA-Instanz überein"
+        },
+        "severity": {
+          "critical": "Kritisch",
+          "high": "Hoch",
+          "medium": "Mittel",
+          "low": "Niedrig",
+          "info": "Information"
+        },
+        "options": {
+          "error": "Optionen konnten nicht aus dem PSA geladen werden",
+          "retry": "Erneut versuchen",
+          "truncated": "Es werden nur die ersten Ergebnisse aus dem PSA angezeigt."
+        },
+        "readOnly": {
+          "enabled": "Alarm-Tickets"
+        },
+        "loadError": {
+          "message": "Einstellungen für Alarm-Tickets konnten nicht geladen werden",
+          "retry": "Erneut versuchen"
+        },
+        "configInvalid": {
+          "warning": "Die gespeicherten Einstellungen für Alarm-Tickets konnten nicht gelesen werden. Beim Speichern werden sie ersetzt.",
+          "confirm": "Die unlesbaren Einstellungen ersetzen"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Firmen importieren",
         "subtitle": "Erstellen Sie Organisationen aus den Firmen in {{name}}.",
