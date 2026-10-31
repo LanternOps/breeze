@@ -514,9 +514,12 @@ describe('the cutover, end to end (real Postgres + Redis, #5221 B7)', () => {
       scanAt: new Date(slot.getTime() + 4_000).toISOString(), enqueuedWhileUnswitched,
     });
 
-    // The current hour is before switch_at: one legacy run (spanning the orgs), no flow run.
-    const before = new Date(Math.floor(Date.now() / HOUR) * HOUR);
+    // The hour before the first one at or after switch_at: one legacy run (spanning the orgs), no
+    // flow run. Anchored on switch_at, not the wall clock: switch_at is SWITCH_LEAD_MS after the
+    // commit, so in the last minute of an hour the next top of the hour would still be before it.
+    const before = new Date(Math.ceil(S / HOUR) * HOUR - HOUR);
     expect(before.getTime()).toBeLessThan(S);
+    expect(before.getTime() + HOUR).toBeGreaterThanOrEqual(S);
     expect(await processFlowScheduleTick(new Date(before.getTime() + 10_000))).toMatchObject({ fired: 0 });
     expect(await legacyAdmit(before, false)).toMatchObject({ runId: expect.any(String) });
 
