@@ -422,6 +422,7 @@ async function getConnectionById(
       credentials: psaConnectionsTable.credentials,
       settings: psaConnectionsTable.settings,
       syncSettings: psaConnectionsTable.syncSettings,
+      alertTicketing: psaConnectionsTable.alertTicketing,
       createdAt: psaConnectionsTable.createdAt,
       updatedAt: psaConnectionsTable.updatedAt,
       lastSyncAt: psaConnectionsTable.lastSyncAt
@@ -992,15 +993,18 @@ psaRoutes.post(
     }
 
     let warning: string | undefined;
-    try {
-      await resumeTicketingConnection(existing.id, () => writeRouteAudit(c, {
-        orgId: null, action: 'psa.alert_ticketing.resume', resourceType: 'psa_connection', resourceId: existing.id,
-        details: { reason: 'successful_connection_test', ...auditOwnerFields(existing) },
-      }));
-    } catch (error) {
-      console.error('[psa] Failed to resume alert ticketing', { connectionId: existing.id, message: error instanceof Error ? error.message : String(error) });
-      captureException(error, undefined, { psa_connection_id: existing.id });
-      warning = 'Credentials verified, but alert ticketing could not be resumed. Retry the connection test.';
+    // Org-owned and unconfigured connections have no alert ticketing to resume.
+    if (existing.orgId === null && ownerPartnerId(existing) && existing.alertTicketing != null) {
+      try {
+        await resumeTicketingConnection(existing.id, () => writeRouteAudit(c, {
+          orgId: null, action: 'psa.alert_ticketing.resume', resourceType: 'psa_connection', resourceId: existing.id,
+          details: { reason: 'successful_connection_test', ...auditOwnerFields(existing) },
+        }));
+      } catch (error) {
+        console.error('[psa] Failed to resume alert ticketing', { connectionId: existing.id, message: error instanceof Error ? error.message : String(error) });
+        captureException(error, undefined, { psa_connection_id: existing.id });
+        warning = 'Credentials verified, but alert ticketing could not be resumed. Retry the connection test.';
+      }
     }
 
     return c.json({

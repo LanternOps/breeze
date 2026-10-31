@@ -21,7 +21,13 @@ export async function pauseTicketingConnection(id: string) {
     const [row] = await db
       .update(psaConnections)
       .set({ alertTicketingPausedReason: 'auth', alertTicketingPausedAt: new Date() })
-      .where(and(eq(psaConnections.id, id), isNull(psaConnections.alertTicketingPausedReason)))
+      .where(and(
+        eq(psaConnections.id, id),
+        isNull(psaConnections.orgId),
+        isNotNull(psaConnections.partnerId),
+        isNotNull(psaConnections.alertTicketing),
+        isNull(psaConnections.alertTicketingPausedReason)
+      ))
       .returning({ id: psaConnections.id, partnerId: psaConnections.partnerId });
     if (row) await audit(row, 'psa.alert_ticketing.pause');
   });
@@ -31,7 +37,13 @@ export async function resumeTicketingConnection(id: string, auditResume?: (row: 
     const [row] = await db
       .update(psaConnections)
       .set({ alertTicketingPausedReason: null, alertTicketingPausedAt: null })
-      .where(and(eq(psaConnections.id, id), isNotNull(psaConnections.alertTicketingPausedReason)))
+      .where(and(
+        eq(psaConnections.id, id),
+        isNull(psaConnections.orgId),
+        isNotNull(psaConnections.partnerId),
+        isNotNull(psaConnections.alertTicketing),
+        isNotNull(psaConnections.alertTicketingPausedReason)
+      ))
       .returning({ id: psaConnections.id, partnerId: psaConnections.partnerId });
     if (!row) return [];
     if (auditResume) auditResume(row);

@@ -63,3 +63,13 @@ it('bounds terminal history to seven days and includes retryable infrastructure 
   expect(query).toContain("updated_at > now() - interval '7 days'");
   for (const value of ['redis_unavailable', 'redis_lease_lost', 'connection_inactive:%']) expect(query).toContain(value);
 });
+
+// Every mapping subquery needs the alert predicate: legacy device-only mappings
+// are not this ledger, and cannot use its partial connection/alert indexes.
+it('scopes every health mapping lookup to the indexed alert ledger', () => {
+  const query = new PgDialect().sqlToQuery(psaTicketingSource.brokenQuery(now).getSQL()).sql;
+  const lookups = query.match(/FROM psa_ticket_mappings m\s+WHERE [^)]*/g) ?? [];
+  expect(lookups).toHaveLength(4);
+  for (const lookup of lookups) expect(lookup).toContain('m.alert_id IS NOT NULL AND m.connection_id=c.id');
+  expect(psaTicketingSource.tables).toContain('psa_ticket_mappings');
+});

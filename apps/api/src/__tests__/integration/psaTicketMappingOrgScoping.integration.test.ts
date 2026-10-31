@@ -317,7 +317,8 @@ describe('W08 committed admission ledger', () => {
     const claims=await Promise.all(tokens.map(token=>claimTicketing(refreshed!.mapping,token,{createState:'create_in_flight',createSnapshot:refreshed!.snapshot},new Date())));
     expect(claims.filter(Boolean)).toHaveLength(1);
     expect(await saveTicketing(rows[0]!.id,randomUUID(),{createState:'failed'},new Date())).toBe(false);
-    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'native' }).where(eq(partners.id, partnerId)));
+    // The biconditional CHECK forbids retaining an external connection in native mode.
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'native', serviceManagementPsaConnectionId: null }).where(eq(partners.id, partnerId)));
     expect(await loadAdmission(alert)).toBeNull();
   });
 });
