@@ -63,6 +63,9 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
   it('pins devices/bulkSite.ts as human_only_bulk_destructive (#9796; an MFA-gated bulk write stays off the AI surface)', () => {
     expect(MCP_COVERAGE['devices/bulkSite.ts']).toMatchObject({ exempt: 'human_only_bulk_destructive' });
   });
+  it('pins partnerSettingsInheritance.ts to its read tool (#9763; the tool_in_later_wave exemption is burned down)', () => {
+    expect(MCP_COVERAGE['partnerSettingsInheritance.ts']).toEqual({ tools: ['get_partner_settings_inheritance'] });
+  });
   it('every tool named exists in the registry, and tool entries are non-empty', () => {
     const bad: string[] = [];
     for (const [k, e] of Object.entries(MCP_COVERAGE)) if ('tools' in e) {

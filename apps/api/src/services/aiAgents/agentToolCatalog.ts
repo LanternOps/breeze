@@ -485,6 +485,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_site: 'tenancy',
   list_org_contacts: 'tenancy',
   list_organizations: 'tenancy',
+  get_partner_settings_inheritance: 'tenancy', // #9763 read: which orgs override a partner setting
   delete_tenant: 'tenancy',
   test_webhook: 'tenancy',
   query_webhooks: 'tenancy',

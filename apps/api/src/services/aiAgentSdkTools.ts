@@ -1,4 +1,4 @@
-import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
+import { AI_AGENT_RUN_STATUSES, CATALOG_TAB_KEYS, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze/shared';
 /**
  * AI Agent SDK Tool Definitions
  *
@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, linkEntityShape, listConcernsShape, listLinksShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas, PARTNER_SETTINGS_INHERITANCE_BUCKETS, PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
@@ -364,6 +364,8 @@ export const TOOL_TIERS = {
   read_artifact: 1,
   // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
   get_trust_page_status: 1,
+  // #9763: read-only partner settings inheritance (counts + org drill-down).
+  get_partner_settings_inheritance: 1,
   // Tool Catalog W03 (#5218, Decision 6): draft_flow writes a row, so Tier 2
   // (ai:write over MCP, Tier-2 audit row); the reads are Tier 1. Declared to
   // chat only when FLOWS_ENABLED (flowToolDefinitions).
@@ -5497,6 +5499,20 @@ export function buildBreezeSdkTools(
         orgId: uuid.describe('Organization UUID'),
       },
       makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #9763: read-only; exactly one of tab / field (validateToolInput enforces it).
+    tool(
+      'get_partner_settings_inheritance',
+      registryDescription('get_partner_settings_inheritance'),
+      {
+        tab: z.enum(CATALOG_TAB_KEYS).optional().describe('Partner settings tab to summarize (omit when field is set)'),
+        field: z.string().max(128).optional().describe('Setting id from a tab result (omit when tab is set)'),
+        bucket: z.enum(PARTNER_SETTINGS_INHERITANCE_BUCKETS).optional().describe('field: which count to list (default ownValue)'),
+        cursor: z.string().max(2048).optional().describe('field: nextCursor from the previous page'),
+        limit: z.number().int().min(1).max(PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT).optional().describe(`Max organizations per page, with field (default ${PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT}, max ${PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT})`),
+      },
+      makeHandler('get_partner_settings_inheritance', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // #8973 W4 (spec §5.7): read-only business-hours calendars; writes stay human-only.

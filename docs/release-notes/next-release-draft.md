@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### AI: partner settings inheritance read tool (#9763)
+
+- New Tier 1 AI/MCP tool `get_partner_settings_inheritance` answers "which organizations override this partner setting, and to what?". With a settings tab it returns per-setting counts; with a setting id it lists the organizations behind one count. It uses the same gate and projection as the partner settings inheritance view: partner scope with full partner organization access only, and secret settings show set or not set only. No migration, environment variable or setting.
