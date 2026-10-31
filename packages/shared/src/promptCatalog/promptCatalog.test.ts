@@ -213,8 +213,13 @@ describe('promptIdentityBlockSchema (heartbeat contract with the Go agent)', () 
     ['a zero-byte logo', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 0 } }],
     ['logo bytes inline (the heartbeat carries metadata only)', { ...valid, logo: { sha256: 'a'.repeat(64), mime: 'image/png', bytes: 1, data: 'AA==' } }],
     ['a name that is not NFKC-folded', { ...valid, partnerName: '\uff2dicrosoft' }],
+    ['a reserved brand partner name (#10325)', { ...valid, partnerName: 'Microsoft Support' }],
   ])('refuses %s', (_label, block) => {
     expect(promptIdentityBlockSchema.safeParse(block).success).toBe(false);
+  });
+
+  it('accepts a name that mentions a brand next to the partner name (#10325)', () => {
+    expect(promptIdentityBlockSchema.safeParse({ ...valid, partnerName: 'Northwind Microsoft Partner' }).success).toBe(true);
   });
 
   it('accepts a 120-code-point astral name', () => {

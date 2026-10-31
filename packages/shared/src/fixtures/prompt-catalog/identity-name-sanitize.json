@@ -525,6 +525,66 @@
       "name": "reserved brand: stacked combining marks on Microsoft",
       "input": "M\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300\u0300icrosoft",
       "expected": null
+    },
+    {
+      "name": "reserved brand: trade mark sign (NFKC makes it TM)",
+      "input": "Microsoft\u2122",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: service mark sign (NFKC makes it SM)",
+      "input": "Microsoft Support\u2120",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: copyright sign ignored",
+      "input": "Microsoft\u00a9",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: brand alone (Azure)",
+      "input": "Azure",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: qualifier before the brand",
+      "input": "Support Microsoft",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: split must backtrack past a shorter word (tech|technician)",
+      "input": "Windows Technician",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: plural qualifier (service|services)",
+      "input": "Microsoft Services",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: run-together brand and qualifier (AppleCare)",
+      "input": "AppleCare",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: British spelling",
+      "input": "Google Centre",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: longer than the cap, cut mid-word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support",
+      "expected": null
+    },
+    {
+      "name": "reserved brand: the cap cuts off the only non-list word",
+      "input": "Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft Support Microsoft IT Northwind",
+      "expected": null
+    },
+    {
+      "name": "brand plus a word that only starts like a qualifier kept",
+      "input": "Windows Technicolor",
+      "expected": "Windows Technicolor"
     }
   ],
   "reservedBrands": {
@@ -567,7 +627,9 @@
       "corporation",
       "llc",
       "ltd",
-      "the"
+      "the",
+      "tm",
+      "sm"
     ]
   }
 }

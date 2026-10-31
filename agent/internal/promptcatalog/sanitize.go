@@ -76,7 +76,7 @@ var reservedBrandQualifiers = []string{
 	"support", "security", "help", "desk", "service", "services", "team", "tech",
 	"technical", "technician", "it", "customer", "care", "center", "centre", "update",
 	"updates", "defender", "account", "accounts", "admin", "official", "store", "365",
-	"inc", "corp", "corporation", "llc", "ltd", "the",
+	"inc", "corp", "corporation", "llc", "ltd", "the", "tm", "sm",
 }
 
 // brandKey: NFD, lower case, then only letters and digits (combining marks,
@@ -148,7 +148,8 @@ func mixesConfusableScripts(word string) bool {
 // letters and invalid UTF-8; NFKC, then strip again; at most 2 consecutive
 // combining marks; collapse whitespace and trim; a word mixing two confusable
 // scripts rejects the whole name; cap at 120 runes and trim again; a reserved
-// brand name ("Microsoft Support", #10325) returns "". The result
+// brand name ("Microsoft Support", #10325), before or after the cap, returns
+// "". The result
 // is plain text — never interpreted as markup or placeholders — and a renderer
 // embedding it in running text must bidi-isolate it.
 func SanitizeIdentityName(raw string) string {
@@ -184,10 +185,13 @@ func SanitizeIdentityName(raw string) string {
 			return ""
 		}
 	}
+	full := s
 	if runes := []rune(s); len(runes) > MaxIdentityNameRunes {
 		s = strings.TrimRight(string(runes[:MaxIdentityNameRunes]), " ")
 	}
-	if isReservedKey(brandKey(s)) {
+	// Both forms: the cap can cut a long brand-only name mid-word, or cut the
+	// only non-list word off the end and leave just brand words on screen.
+	if isReservedKey(brandKey(full)) || isReservedKey(brandKey(s)) {
 		return ""
 	}
 	return s
