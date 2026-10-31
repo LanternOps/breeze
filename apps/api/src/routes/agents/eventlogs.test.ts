@@ -278,6 +278,19 @@ describe('agent event log routes', () => {
       expect(await res.json()).toMatchObject({ success: true, count: 1, invalidDropped: 0 });
     });
 
+    it('counts astral characters once, like Postgres varchar(100) (#10731)', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+      // 100 code points = 200 UTF-16 units: fits; 101 code points does not.
+      const fits = '😀'.repeat(100);
+      const over = '😀'.repeat(101);
+      const res = await submit([makeEvent({ eventId: fits }), makeEvent({ eventId: over })]);
+      expect(res.status).toBe(200);
+      expect(values).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ eventId: fits })]);
+      expect(await res.json()).toMatchObject({ success: true, count: 1, invalidDropped: 1 });
+    });
+
     it('drops non-object rows inside a valid envelope without failing the batch', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockDeviceLookup();

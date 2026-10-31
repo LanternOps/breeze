@@ -234,6 +234,103 @@ func TestCrashReportEventID(t *testing.T) {
 	}
 }
 
+// Golden values: ids of entries already stored must not change across agent
+// releases, or every stored Linux/macOS event re-inserts as a duplicate after
+// an upgrade. A change to the hash, separator, part order or field set must
+// fail here and be made deliberately.
+func TestEventLogIDGoldenValues(t *testing.T) {
+	t.Parallel()
+	if eventLogIDHash("ab", "c") == eventLogIDHash("a", "bc") {
+		t.Fatal("hash parts must be separated")
+	}
+
+	journal := journalEntry{
+		Cursor:            "s=8e1f0b0c2d3e4f5a6b7c8d9e0f1a2b3c;i=1a2b;b=0c4b2f5d6e7a4b8c9d0e1f2a3b4c5d6e;m=3f2a1b;t=5f1e2d3c4b5a6;x=9a8b7c6d5e4f3a2b",
+		SyslogIdentifier:  "sshd",
+		PID:               "812",
+		RealtimeTimestamp: "1761800000000001",
+		Message:           "first message",
+	}
+	unified := parseUnifiedLog(t, sameProcessUnifiedLog)[0]
+
+	cases := []struct{ name, got, want string }{
+		{"hash", eventLogIDHash("a", "b"), "8fb20ef63ced4145"},
+		{"journal", journalEntryEventID("sshd:812", journal), "sshd:812:5d686e67c3b95e9c"},
+		{"unified", unifiedLogEntryEventID("com.apple.opendirectoryd:312", unified), "com.apple.opendirectoryd:312:16c454ac7a05fd97"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s id = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+func TestJournalEventIDWithoutCursor(t *testing.T) {
+	t.Parallel()
+	base := journalEntry{SyslogIdentifier: "sshd", PID: "812", BootID: "b1", RealtimeTimestamp: "1761800000000001", Message: "m"}
+	later := base
+	later.RealtimeTimestamp = "1761800000000002"
+	withCursor := base
+	withCursor.Cursor = "s=1;i=2"
+
+	a, b := journalEntryEventID("sshd:812", base), journalEntryEventID("sshd:812", later)
+	if a == b {
+		t.Fatalf("cursor-less entries at different times share id %q", a)
+	}
+	if a != journalEntryEventID("sshd:812", base) {
+		t.Fatal("cursor-less id is not stable")
+	}
+	if a == journalEntryEventID("sshd:812", withCursor) {
+		t.Fatal("cursor-less id must differ from the cursor-keyed id")
+	}
+}
+
+func TestUnifiedLogEventIDKeying(t *testing.T) {
+	t.Parallel()
+	entry := func() unifiedLogEntry { return parseUnifiedLog(t, sameProcessUnifiedLog)[0] }
+	head := "com.apple.opendirectoryd:312"
+	ref := unifiedLogEntryEventID(head, entry())
+
+	// The wall-clock string is rendered in the local zone; with a mach
+	// timestamp present a zone change must not change the id.
+	tz := entry()
+	tz.Timestamp = "2026-10-30 18:15:01.123456+0100"
+	if got := unifiedLogEntryEventID(head, tz); got != ref {
+		t.Fatalf("zone change altered the id: %q vs %q", got, ref)
+	}
+
+	// Same mach tick on another thread is another entry.
+	thread := entry()
+	thread.ThreadID = []byte("901235")
+	if unifiedLogEntryEventID(head, thread) == ref {
+		t.Fatal("entries on different threads share an id")
+	}
+
+	// Without a mach timestamp the wall-clock time keys the entry.
+	noMach := entry()
+	noMach.MachTimestamp = nil
+	noMachLater := entry()
+	noMachLater.MachTimestamp = []byte("null")
+	noMachLater.Timestamp = "2026-10-30 10:15:02.000001-0700"
+	if unifiedLogEntryEventID(head, noMach) == unifiedLogEntryEventID(head, noMachLater) {
+		t.Fatal("mach-less entries at different times share an id")
+	}
+}
+
+func TestEventIDStripsControlCharacters(t *testing.T) {
+	t.Parallel()
+	entries := parseUnifiedLog(t, sameProcessUnifiedLog)
+	entries[0].Subsystem = "com.apple.\x00opendirectoryd"
+	events := unifiedLogEvents(entries[:1], true, true)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if strings.ContainsRune(events[0].EventID, 0) {
+		t.Fatalf("event id %q carries NUL; Postgres rejects the whole insert batch", events[0].EventID)
+	}
+	assertEventIDContract(t, "NUL subsystem", events[0])
+}
+
 func TestBoundEventID(t *testing.T) {
 	t.Parallel()
 	exact := strings.Repeat("a", apiEventIDMaxLen)

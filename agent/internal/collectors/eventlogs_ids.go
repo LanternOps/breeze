@@ -48,11 +48,13 @@ func entryEventID(head string, keyParts ...string) string {
 	return boundEventID(head + ":" + eventLogIDHash(keyParts...))
 }
 
-// boundEventID returns id unchanged when it is valid UTF-8 and fits the API
-// column. Otherwise it keeps a rune-safe prefix and appends a hash of the
-// full id, so two long ids that share a prefix stay distinct and the result
-// is still deterministic.
+// boundEventID strips control characters (Postgres rejects NUL in text, and
+// a raw unified-log subsystem/image path is not pre-cleaned), then returns
+// the id unchanged when it is valid UTF-8 and fits the API column. Otherwise
+// it keeps a rune-safe prefix and appends a hash of the full id, so two long
+// ids that share a prefix stay distinct and the result is deterministic.
 func boundEventID(id string) string {
+	id = stripCollectorControlChars(id)
 	if utf8.ValidString(id) && utf8.RuneCountInString(id) <= eventLogIDMaxLen {
 		return id
 	}
