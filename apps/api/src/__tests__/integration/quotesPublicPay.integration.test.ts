@@ -194,11 +194,11 @@ describe('public accept → durable invoice link → pay', () => {
   // invoice's created_at, so the Pay replays the accept's request exactly.
   runDb('accept just before the top of the hour and Pay just after it replay ONE Checkout request', async () => {
     const { token } = await seedSentQuote();
-    // created_at comes from the DATABASE clock (~ real now) and this invoice's
-    // bucket edges sit 5 min before it, at created_at − 5 min + k·1h. The two
-    // frozen app instants below straddle a wall-clock hour by ±1 s; if real now
-    // is within ±30 s of xx:05:00 an invoice bucket edge could fall between
-    // them, so step past that window first (rare, ≤ 61 s).
+    // created_at comes from the DATABASE clock (≈ real now at accept time) and
+    // this invoice's bucket edges sit at created_at − 5 min + k·1h. The two
+    // frozen app instants below straddle a wall-clock hour by ±1 s, so an edge
+    // falls between them only if the accept lands within ~1 s of xx:05:00. The
+    // guard skips ±30 s around it as margin for DB clock skew (rare, ≤ 61 s wait).
     const HOUR_MS = 3_600_000;
     const phaseMs = Date.now() % HOUR_MS;
     if (phaseMs > 270_000 && phaseMs < 330_000) {

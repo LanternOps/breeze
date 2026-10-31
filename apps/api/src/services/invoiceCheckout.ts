@@ -16,6 +16,11 @@ import { assertNoPendingRevocation, markSessionRevocationRequestedInTx } from '.
 import { portalBase } from './portalUrl';
 import { assertNoHeldDbContextForStripe } from './stripeSettle';
 
+const HOUR_S = 3600;
+/** Buckets open this long before the anchor's phase, absorbing an app clock that
+ * trails the database clock which stamped `created_at` (#10736). */
+const ANCHOR_LEAD_S = 5 * 60;
+
 /**
  * Provider-side expiry for a new Checkout session (defence in depth).
  *
@@ -45,9 +50,6 @@ import { assertNoHeldDbContextForStripe } from './stripeSettle';
  * Yields 22h00m01s–23h ahead — comfortably inside Stripe's [30 min, 24 h] window
  * with no risk of tripping the upper bound on a slow request.
  */
-const HOUR_S = 3600;
-const ANCHOR_LEAD_S = 5 * 60;
-
 export function checkoutSessionExpiry(anchor: Date, now: Date = new Date()): { expiresAt: number; quantum: number } {
   const phase = (((Math.floor(anchor.getTime() / 1000) - ANCHOR_LEAD_S) % HOUR_S) + HOUR_S) % HOUR_S;
   const nowS = Math.floor(now.getTime() / 1000);
@@ -240,7 +242,7 @@ export async function createInvoicePayLink(
     // invoice-anchored bucket start into the key keeps the replay identical
     // within the bucket instead of erroring across one (checkoutSessionExpiry).
     // `_pd`: the request now carries a PaymentIntent description; a new key family keeps an
-    // in-hour replay of a pre-description request from failing as a parameter mismatch.
+    // in-bucket replay of a pre-description request from failing as a parameter mismatch.
     idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}_pd`,
   }));
   } catch (err) {

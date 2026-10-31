@@ -481,6 +481,13 @@ describe('checkoutSessionExpiry (#10736)', () => {
     expect(pay).toEqual(accept);
   });
 
+  it('the accept\'s bucket closes exactly 55 min after created_at (the 5-min lead)', () => {
+    const invoiceCreatedAt = at('2026-10-30T08:59:58.000Z');
+    const accept = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T08:59:59.000Z'));
+    expect(checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:54:57.999Z'))).toEqual(accept);
+    expect(checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:54:58.000Z')).quantum).toBe(accept.quantum + HOUR);
+  });
+
   it('a Pay an hour or more after the bucket opened gets a later bucket (a fresh session, as before)', () => {
     const invoiceCreatedAt = at('2026-10-30T08:59:58.000Z');
     const first = checkoutSessionExpiry(invoiceCreatedAt, at('2026-10-30T09:00:01.000Z'));
