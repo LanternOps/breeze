@@ -476,6 +476,7 @@ func (m *Manager) Apply(settings *Settings) {
 		m.clearInstallFailuresLocked()
 		for _, state := range m.sessions {
 			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
+			state.crashFailures = 0
 		}
 	}
 	if !settings.Enabled || m.isInstalled() {
@@ -800,6 +801,9 @@ func (m *Manager) ensureRunningSession(state *sessionState) error {
 	}
 	state.pid = pid
 	state.spawnedPID = pid
+	// #10302: the heartbeat relaunches Assist outside the watcher; stamping
+	// every launch keeps that relaunch from looking like a healthy run.
+	state.lastSpawnAt = m.nowTime()
 	// Watch the new process for its exit code (assist_exit.go). On the
 	// user-helper launch path Assist exists by the time the spawn returns.
 	m.trackAssistExitsLocked(state)
@@ -1181,6 +1185,7 @@ func (m *Manager) applyPendingUpdate() {
 	for i, state := range stopped {
 		state.pid = 0
 		state.watcherGaveUp = false // new binary — give it a fresh chance
+		state.crashFailures = 0
 		if err := m.ensureRunningSession(state); errors.Is(err, errWebView2Outdated) {
 			// The new build installed; this device's WebView2 runtime is what
 			// keeps it from starting, and rolling back cannot fix that. Keep

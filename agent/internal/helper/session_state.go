@@ -42,6 +42,17 @@ type sessionState struct {
 	gaveUpAt      time.Time
 	gaveUpVersion string
 
+	// crashFailures counts Assist exits since its last healthy run (#10302).
+	// It lives here rather than in the watcher goroutine so a heartbeat
+	// relaunch or a watcher restart cannot silently zero it; only
+	// noteAssistRunningLocked (after watcherHealthyUptime), a give-up, a
+	// not-a-crash watcher exit and a new Assist binary clear it.
+	crashFailures int
+	// lastSpawnAt is when ensureRunningSession last launched Assist in this
+	// session, from the watcher or from Apply. Zero when the agent has not
+	// launched the running instance.
+	lastSpawnAt time.Time
+
 	// launchIssue: the install-issue code of a pre-launch refusal in this
 	// session (webview2_outdated); "" when the last launch check passed.
 	launchIssue string

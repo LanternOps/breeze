@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Breeze Assist crash-loop detection (#10302)
+
+- **A crash-looping Breeze Assist is now reported.** The agent used to clear its count of Assist restarts whenever it found Assist running. An Assist that crashed a few seconds after each start, or that the heartbeat relaunched just before a check, was restarted forever and never reported. The count now clears only after Assist has stayed up for 60 seconds since the agent last launched it. A device whose Assist keeps closing now reaches the `crash_loop` install issue ("Unavailable: keeps closing") and the six-hour back-off from #10183. Agent-side only. No migration, environment variable or setting.
