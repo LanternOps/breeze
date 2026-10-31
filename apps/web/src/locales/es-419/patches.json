@@ -644,7 +644,11 @@
     "noMatches": "Sin coincidencias.",
     "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
     "removeRuleFor": "Eliminar regla para {{application}}",
-    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
+    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo.",
+    "linuxPackage": "Paquete de Linux",
+    "appPackage": "Paquete de app",
+    "manualRuleType": "Tipo de regla",
+    "linuxPinHint": "Ingresa la versión completa de la lista de parches, incluida la época si la hay (p. ej., 5:24.0.7-1)."
   },
   "patchDetails": {
     "unknown": "Desconocido",
