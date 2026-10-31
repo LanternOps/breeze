@@ -246,7 +246,7 @@ it.each(['new_subscription', 'change_quantity', 'cancel'])('captures and durably
   const { baseline } = prepareClaim(action);
   const verifyClaim = vi.fn(async (bundle: import('./pax8OrderSubmit').SubmitBundle) => {
     expect(mocks.events).toContain('validated');
-    expect(bundle.lines[0].authorizedBaselineQuantity).toBe('4.00');
+    expect(bundle.lines[0]!.authorizedBaselineQuantity).toBe('4.00');
     expect(baseline.returning).toHaveBeenCalled();
   });
   const bundle = await pax8OrderSubmitRepository.claimOrder({ partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1', verifyClaim });

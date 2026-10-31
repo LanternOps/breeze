@@ -27,6 +27,7 @@ const PINNED_EFFECT_DIGEST_REQUIRED: ReadonlySet<string> = new Set([
  */
 const PINNED_EFFECT_DIGEST_REQUIRED_ACTIONS: ReadonlySet<string> = new Set([
   'manage_contracts:generate_invoice',
+  'manage_pax8_orders:submit',
   'manage_accounting_sync:push',
   'manage_accounting_sync:push_bulk',
 ]);

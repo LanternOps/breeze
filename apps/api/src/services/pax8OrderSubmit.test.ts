@@ -646,3 +646,13 @@ describe('approved submit options', () => {
     expect(client.createOrder).not.toHaveBeenCalled();
   });
 });
+
+it('reopens a provably unsent quote when preflight payload construction throws', async () => {
+  const { service, repository, client } = setup([{ ...newLine, provisioningDetails: {} }], { source: 'quote' });
+  const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', onPreflightFailure: 'reopen' });
+  expect(result).toMatchObject({ status: 'draft', refusalCode: 'PREFLIGHT_FAILED' });
+  expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('invalid provisioning details'));
+  expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+  expect(repository.claimLines).not.toHaveBeenCalled();
+  expect(client.createOrder).not.toHaveBeenCalled();
+});

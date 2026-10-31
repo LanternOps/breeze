@@ -387,7 +387,15 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
         return preflightFailure(errorText(error), error instanceof Pax8IntegrationGenerationChangedError
           ? 'INTEGRATION_CHANGED' : 'PREFLIGHT_FAILED');
       }
-      const preflight = await preflightBundle(bundle, client, deps.runOutsideDbContext);
+      let preflight: PreflightResult;
+      try {
+        preflight = await preflightBundle(bundle, client, deps.runOutsideDbContext);
+      } catch (error) {
+        // Payload construction may fail locally before isMock. It is still
+        // provably unsent and must follow the AI reopen policy.
+        if (input.onPreflightFailure === 'reopen') return preflightFailure(errorText(error));
+        throw error;
+      }
       if (!preflight.ok) {
         return preflightFailure(preflight.errorBody);
       }

@@ -57,6 +57,7 @@ async function digest() {
 describe('Pax8 submit local effect material (W15 Q2/Q4/Q5/Q7)', () => {
   it.each([
     ['line quantity', 'pax8_order_lines', 'quantity', '9.00'],
+    ['staged change baseline', 'pax8_order_lines', 'authorizedBaselineQuantity', '6.00'],
     ['sortOrder / outbound lineItemNumber', 'pax8_order_lines', 'sortOrder', 1],
     ['provisioning details', 'pax8_order_lines', 'provisioningDetails', [{ key: 'domain', values: ['changed.example.test'] }]],
     ['commitmentTermId', 'pax8_order_lines', 'commitmentTermId', 'fixture-other-term'],

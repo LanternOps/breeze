@@ -3,6 +3,9 @@ import { and, eq } from 'drizzle-orm';
 import { PAX8_BILLING_TERMS, type Pax8BillingTerm, type Pax8OrderAction, type Pax8OrderStatus } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext } from '../db';
 import { contracts, contractLines, pax8CompanyMappings, pax8ProductMappings, pax8SubscriptionSnapshots } from '../db/schema';
+import { pax8OrderDigestMaterial, hashPax8OrderMaterial } from './actionIntents/pax8OrderDigest';
+import type { z } from 'zod';
+import type { pax8SubmitAssertionsSchema } from './aiToolSchemasPax8';
 import { getOrderWithLines, snapshotActiveCommitmentEvidence } from './pax8OrderService';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
@@ -49,6 +52,8 @@ export interface Pax8OrderPreview {
   totals: Array<{ currency: string; billingTerm: Pax8BillingTerm; partnerCost: string }>;
   totalsComplete: boolean;
   blocked: Pax8PreviewBlocker[];
+  previewDigest: string | null;
+  submitWith?: z.infer<typeof pax8SubmitAssertionsSchema> & { orderId: string };
 }
 
 export const MAX_PAX8_PREVIEW_LINES = 20;
@@ -107,16 +112,18 @@ export async function previewPax8Order(input: {
         eq(pax8ProductMappings.integrationId, order.integrationId),
         eq(pax8ProductMappings.pax8ProductId, productId),
       )).limit(1) : [];
+      let baseline = line.authorizedBaselineQuantity;
       let sellUnitPrice: string | null = null;
       let sellCurrency: string | null = null;
       if (line.contractLineId) {
         const [contractLine] = await db.select({
           contractId: contractLines.contractId, catalogItemId: contractLines.catalogItemId,
-          unitPrice: contractLines.unitPrice,
+          unitPrice: contractLines.unitPrice, manualQuantity: contractLines.manualQuantity,
         }).from(contractLines).where(and(
           eq(contractLines.id, line.contractLineId), eq(contractLines.orgId, order.orgId),
         )).limit(1);
         if (contractLine) {
+          baseline = contractLine.manualQuantity;
           const [contract] = await db.select({
             currencyCode: contracts.currencyCode, createdBy: contracts.createdBy,
           }).from(contracts).where(and(
@@ -140,12 +147,13 @@ export async function previewPax8Order(input: {
           }
         }
       }
-      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency });
+      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency, baseline });
     }
-    return { ...bundle, companies, evidence };
-  }));
+    const material = await pax8OrderDigestMaterial(db, order.id);
+    return { ...bundle, companies, evidence, previewDigest: material ? hashPax8OrderMaterial(material) : null };
+  }, { isolationLevel: 'repeatable read' }));
 
-  const { order } = local;
+  const { order, previewDigest } = local;
   const blocked: Pax8OrderPreview['blocked'] = [];
   const mapping = local.companies.length === 1 ? local.companies[0]! : null;
   const company = mapping && pax8CompanyOrderReadiness(mapping.status, mapping.metadata).orderReady
@@ -157,7 +165,7 @@ export async function previewPax8Order(input: {
   if (!SUBMITTABLE.has(status)) blocked.push({ code: 'NOT_PENDING' });
   const projectedOrder = { id: order.id, orgId: order.orgId, source: order.source, status };
   if (blocked.some(item => item.code === 'TOO_MANY_LINES' || item.code === 'NOT_PENDING')) {
-    return { order: projectedOrder, company, lines: [], totals: [], totalsComplete: local.lines.length === 0, blocked };
+    return { order: projectedOrder, company, lines: [], totals: [], totalsComplete: local.lines.length === 0, blocked, previewDigest };
   }
 
   // Client construction reads encrypted credentials; keep that DB read scoped,
@@ -170,7 +178,7 @@ export async function previewPax8Order(input: {
   // Cache live evidence only for this preview: repeated product lines must share one observation.
   const dependencies = new Map<string, Awaited<ReturnType<Pax8Client['getProductDependencies']>>>();
   const pricing = new Map<string, Awaited<ReturnType<Pax8Client['getProductPricing']>>>();
-  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency } of local.evidence) {
+  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency, baseline } of local.evidence) {
     if (line.submitState !== 'pending') blocked.push({ lineId: line.id, code: 'NOT_PENDING' });
     const missingSnapshot = line.action !== 'new_subscription' && !snapshot;
     if (missingSnapshot) blocked.push({ lineId: line.id, code: 'SUBSCRIPTION_NOT_FOUND' });
@@ -217,7 +225,7 @@ export async function previewPax8Order(input: {
       productName: product?.productName ?? snapshot?.productName ?? null,
       vendorSkuId: product?.vendorSkuId ?? snapshot?.vendorSkuId ?? null,
       quantity,
-      fromQuantity: line.action === 'new_subscription' ? null : line.authorizedBaselineQuantity,
+      fromQuantity: line.action === 'new_subscription' ? null : baseline,
       billingTerm, commitmentTerm: commitment?.term ?? null, unitCost, currency,
       sellUnitPrice, sellCurrency, contractLineId: line.contractLineId,
       allowForQuantityIncrease: commitment?.allowForQuantityIncrease ?? null,
@@ -242,5 +250,11 @@ export async function previewPax8Order(input: {
       lineTotal, taxable: false, customerVisible: true,
     })), null, currency).total,
   }));
-  return { order: projectedOrder, company, lines, totals, totalsComplete, blocked };
+  const submitWith = blocked.length === 0 && lines.length > 0 && company && previewDigest ? {
+    orderId: order.id, previewDigest, expectedCompany: company,
+    expectedLines: lines.map(({ lineId, action, pax8ProductId, productName, quantity, fromQuantity, unitCost, currency, billingTerm, commitmentTerm, cancellationFeeApplied }) => ({
+      lineId, action, pax8ProductId, productName, quantity, fromQuantity, unitCost, currency, billingTerm, commitmentTerm, cancellationFeeApplied,
+    })),
+  } : undefined;
+  return { order: projectedOrder, company, lines, totals, totalsComplete, blocked, previewDigest, ...(submitWith ? { submitWith } : {}) };
 }
