@@ -2,10 +2,10 @@
  * #6958 PR D: install-script awareness in the version manager.
  * - A version whose stored scripts are not enabled shows the inactive notice.
  * - A Breeze-pinned built-in opens read-only (no add/edit/promote).
- * - The add-version form offers no `zip` (it has no script fields; a zip
- *   without a post-install script is rejected by the API).
+ * (The add-version form's script fields and zip support: #10037,
+ *  SoftwareVersionManager.scriptFields.test.tsx.)
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SoftwareVersionManager from './SoftwareVersionManager';
@@ -66,16 +66,5 @@ describe('SoftwareVersionManager install scripts (#6958)', () => {
     expect(screen.getByRole('button', { name: /add version/i })).toBeInTheDocument();
     expect(screen.getByTestId('version-edit-v-active')).toBeInTheDocument();
     expect(screen.getAllByRole('checkbox').length).toBe(3);
-  });
-
-  it('the add-version file-type options exclude zip and point to Add Package', async () => {
-    serve([]);
-    await renderLoaded();
-    fireEvent.click(screen.getByRole('button', { name: /add version/i }));
-    const select = (await screen.findByTestId('version-file-type')) as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toContain('msi');
-    expect(values).not.toContain('zip');
-    expect(screen.getByText('Add zip packages from Add Package.')).toBeInTheDocument();
   });
 });

@@ -1937,7 +1937,7 @@
       "windows": "Windows",
       "macOS": "macOS",
       "linux": "Linux",
-      "noFileSelectedMsiExeDmgDeb": "Ningún archivo seleccionado (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Ningún archivo seleccionado (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "saving": "Guardando...",
       "uploadSave": "Cargar y guardar",
       "saveVersion": "Guardar versión",
@@ -1952,8 +1952,8 @@
       "failedToUpdateVersion": "No se pudo actualizar la versión",
       "replaceFileAddNewVersion": "Para reemplazar el archivo del instalador, agrega una nueva versión.",
       "inactiveStoredScripts": "Los scripts de instalación almacenados no están activos; vuelva a crear la versión para activarlos.",
-      "addZipFromAddPackage": "Agregue los paquetes zip desde Agregar paquete.",
-      "builtinVersionsReadOnly": "Administrado por Breeze. Las versiones de los paquetes incorporados no se pueden agregar ni modificar aquí."
+      "builtinVersionsReadOnly": "Administrado por Breeze. Las versiones de los paquetes incorporados no se pueden agregar ni modificar aquí.",
+      "installScriptsReadOnlyOnEdit": "Los scripts de instalación de una versión existente no se pueden cambiar y fijan su sistema operativo de destino. Para cambiarlos, agregue una versión nueva: comienza con estos scripts."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insertar una variable de tiempo de implementación",

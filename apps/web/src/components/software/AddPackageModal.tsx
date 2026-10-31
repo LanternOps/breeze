@@ -32,6 +32,7 @@ import { applyOsHint } from "@/lib/installerPackageHints";
 import { findUnknownTokens } from "@/lib/installerVariables";
 import { uploadPackageVersion } from "../../lib/softwarePackageUpload";
 import DetectionRulesEditor from "./DetectionRulesEditor";
+import InstallScriptsFields from "./InstallScriptsFields";
 import PackageManagerPicker, {
   type SelectedPackageMethod,
 } from "./PackageManagerPicker";
@@ -71,30 +72,6 @@ const CATEGORIES = [
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
 
-// Literal template tokens, rendered outside translation strings (i18next would
-// treat `{{...}}` as interpolation).
-const INSTALL_SCRIPT_TOKENS = [
-  "{{org.*}}",
-  "{{site.*}}",
-  "{{device.hostname}}",
-  "{{device.customField.<key>}}",
-  "{{var.<key>}}",
-  "{{install.dir}}",
-  "{{install.file}}",
-] as const;
-
-function installSpecIssueMessage(code: InstallSpecIssue): string {
-  switch (code) {
-    case "zip_requires_post_install_script":
-      return i18n.t("policies:software.addPackageModal.issueZipRequiresPostInstallScript");
-    case "scripts_require_single_os":
-      return i18n.t("policies:software.addPackageModal.issueScriptsRequireSingleOs");
-    case "script_too_large":
-      return i18n.t("policies:software.addPackageModal.issueScriptTooLarge");
-    case "args_unsupported_for_file_type":
-      return i18n.t("policies:software.addPackageModal.issueArgsUnsupportedForFileType");
-  }
-}
 /**
  * Server-acknowledged bytes → a percentage safe to render as a CSS width.
  *
@@ -1127,58 +1104,14 @@ export default function AddPackageModal({
             )}
 
             {!isManager && (
-              <div data-testid="install-scripts">
-                <span className={labelCls}>
-                  {i18n.t("policies:software.addPackageModal.installScripts")}
-                </span>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {i18n.t("policies:software.addPackageModal.installScriptsHelp")}
-                </p>
-                <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                  {i18n.t("policies:software.addPackageModal.availableTokens")}
-                  {INSTALL_SCRIPT_TOKENS.map((t) => (
-                    <code key={t} className="rounded bg-muted px-1 font-mono">
-                      {t}
-                    </code>
-                  ))}
-                </p>
-                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-pre-install-script">
-                  {i18n.t("policies:software.addPackageModal.preInstallScript")}
-                </label>
-                <textarea
-                  id="pkg-pre-install-script"
-                  data-testid="pre-install-script"
-                  value={form.preInstallScript}
-                  onChange={(e) => update("preInstallScript", e.target.value)}
-                  placeholder={i18n.t("policies:software.addPackageModal.preInstallScriptPlaceholder")}
-                  rows={4}
-                  spellCheck={false}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
-                />
-                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-post-install-script">
-                  {i18n.t("policies:software.addPackageModal.postInstallScript")}
-                </label>
-                <textarea
-                  id="pkg-post-install-script"
-                  data-testid="post-install-script"
-                  value={form.postInstallScript}
-                  onChange={(e) => update("postInstallScript", e.target.value)}
-                  placeholder={i18n.t("policies:software.addPackageModal.postInstallScriptPlaceholder")}
-                  rows={4}
-                  spellCheck={false}
-                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
-                />
-                {installSpecIssues.map((code) => (
-                  <p
-                    key={code}
-                    role="alert"
-                    data-testid={`install-spec-issue-${code}`}
-                    className="mt-2 text-xs text-destructive"
-                  >
-                    {installSpecIssueMessage(code)}
-                  </p>
-                ))}
-              </div>
+              <InstallScriptsFields
+                idPrefix="pkg"
+                preInstallScript={form.preInstallScript}
+                postInstallScript={form.postInstallScript}
+                onPreInstallScriptChange={(v) => update("preInstallScript", v)}
+                onPostInstallScriptChange={(v) => update("postInstallScript", v)}
+                issues={installSpecIssues}
+              />
             )}
           </section>
 
