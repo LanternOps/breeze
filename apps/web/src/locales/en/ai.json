@@ -28,6 +28,9 @@
     "deny": "Deny",
     "verificationFailed": "Verification failed. Try again.",
     "alreadyDecided": "This request was already decided.",
+    "resolvedApproved": "This request was approved.",
+    "resolvedNotApproved": "This request was not approved, so the action did not run.",
+    "resolvedEnded": "This request is no longer waiting for a decision here.",
     "contentChanged": "This request's details changed after it was created, so it can no longer be approved.",
     "expired": "This request expired before it could be decided.",
     "notSoleApprover": "Another approver is now required — you can no longer approve your own request.",
@@ -42,7 +45,7 @@
     "deniedToast": "Action denied",
     "deniedToast_one": "{{count}} action denied",
     "deniedToast_other": "{{count}} actions denied",
-    "refusedToast": "Approval refused. The request was denied.",
+    "refusedToast": "Your approval was blocked, so the request was denied.",
     "runContextLabel": "Run context:",
     "runContextChosenByAssistant": "chosen by Breeze AI",
     "runContextScriptDefault": "the script's saved default",
@@ -140,13 +143,14 @@
     "newChat": "New chat"
   },
   "aiContextBadge": {
+    "record": "Record",
     "context": "Context",
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msgs",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msgs",
+    "messageCount": "{{count}} msgs this month",
+    "messageCount_one": "{{count}} msg this month",
+    "messageCount_other": "{{count}} msgs this month",
     "thisMonth": "{{amount}} this month",
     "credits_one": "{{formatted}} credit",
     "credits_other": "{{formatted}} credits"
@@ -345,7 +349,7 @@
     "toolStatus": {
       "pending": "pending",
       "approved": "approved",
-      "rejected": "rejected",
+      "rejected": "denied",
       "completed": "completed",
       "failed": "failed"
     },
@@ -387,7 +391,7 @@
     "tokenCounts": "{{input}} in / {{output}} out",
     "requestedAt": "requested {{time}}",
     "approvedAt": "approved {{time}}",
-    "rejectedAt": "rejected {{time}}",
+    "rejectedAt": "denied {{time}}",
     "appliedAt": "applied {{time}}",
     "flagDialog": {
       "title": "Flag session",
@@ -527,6 +531,13 @@
     "verified": "Verified",
     "verificationFailed": "Verification failed",
     "verificationUnknown": "Could not be verified",
+    "notRunAwaitingReview": "Awaiting review — not run yet",
+    "notRunReviewed": "Reviewed — not run yet",
+    "notRunApproved": "Approved — not run yet",
+    "notRun": "Not run",
+    "reviewVerdictApprove": "Reviewer recommends approving",
+    "reviewVerdictChanges": "Reviewer recommends changes",
+    "reviewVerdictReject": "Reviewer recommends rejecting",
     "promoteDescription": "Description (optional)",
     "ownerScopeOrganization": "This organization only",
     "ownerScopePartner": "All organizations under this partner",
@@ -614,10 +625,16 @@
       "stepUpUnavailable": "Could not verify your factor. Try again.",
       "reverify": "Your access changed while you were confirming. Enter a new code to continue.",
       "invalidCode": "That code was not accepted. Try again.",
-      "turningOn": "Turning on Wisp…"
+      "turningOn": "Turning on Wisp…",
+      "alreadyOnOrg": "Wisp is already on for this organization.",
+      "alreadyOnPartner": "Wisp is already on for all organizations.",
+      "open": "Open",
+      "opening": "Opening…",
+      "grantEnded": "Wisp is no longer on for this scope. Confirm it is you to turn it on again."
     },
     "header": {
       "scopeAll": "All organizations",
+      "scopeFallback": "this organization",
       "status": {
         "active": "Active",
         "paused": "Paused",
@@ -627,7 +644,7 @@
       },
       "refresh": "Refresh grant",
       "revoke": "Turn off Wisp",
-      "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
+      "revokeConfirm": "Turn off Wisp for this scope? Wisp stops working for you and its threads close. Their conversations, concerns and activity are no longer shown.",
       "widening": "You can do more than this grant allows — refresh it to let Wisp keep up.",
       "refreshKeepsTerms": "This conversation keeps the previous grant terms. Start a new conversation to use the refreshed grant.",
       "startNewConversation": "Start a new conversation",
@@ -674,7 +691,7 @@
       "attachFailed": "Could not attach",
       "attachTooLarge": "That file is over 5 MB",
       "attachUnsupported": "Only text files can be attached",
-      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it.",
+      "threadFailed": "Wisp is on, but its thread could not be opened. Try again to reopen it.",
       "paused": "Wisp paused",
       "resumed": "Wisp resumed",
       "pauseFailed": "Could not pause Wisp",
@@ -684,13 +701,24 @@
       "meter": "{{spent}} of {{budget}} today",
       "resets": "resets in {{hours}} h",
       "raise": "Raise today's budget",
+      "atCeiling": "Today's budget is at your plan's limit.",
+      "seePlans": "See plans",
       "label": "Wisp spend today"
     },
     "pause": "Pause Wisp",
     "resume": "Resume",
     "paused": {
       "byYou": "You paused Wisp. It won't check in or nudge you until you resume.",
-      "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on."
+      "partnerDisabled": "Wisp is turned off for your partner. An administrator can turn it back on.",
+      "system": {
+        "budgetExhausted": "Paused by Breeze: today's budget is used up. The budget resets in {{hours}} h.",
+        "budgetExhaustedNoTime": "Paused by Breeze: today's budget is used up.",
+        "grantorAccessLost": "Paused by Breeze: your access no longer covers this grant. Wisp resumes on its own when your access is back.",
+        "grantorSuspended": "Paused by Breeze: your account is suspended. Wisp resumes on its own when the suspension is lifted.",
+        "factorExpired": "Paused by Breeze: your sign-in check for this grant expired.",
+        "entitlementLost": "Paused by Breeze: your plan no longer includes Wisp. Wisp resumes on its own when your plan includes it again.",
+        "unknown": "Paused by Breeze. You can't resume it from here."
+      }
     },
     "live": {
       "checking": "Checking {{org}}…",
@@ -795,7 +823,7 @@
     },
     "partnerSwitch": {
       "description": "Let technicians delegate work to Wisp. Turning it off pauses every running delegation at its next check and blocks new ones; nothing is deleted, and turning it back on resumes what it paused.",
-      "label": "Wisp enabled",
+      "label": "Allow Wisp",
       "savedOn": "Wisp turned on",
       "savedOff": "Wisp turned off",
       "saveFailed": "Could not change the Wisp setting.",
@@ -836,7 +864,8 @@
       "workersTitle": "Workers",
       "workersEmpty": "No specialists running.",
       "allRuns": "All runs",
-      "details": "Details"
+      "details": "Details",
+      "ended": "This delegation has ended, so its concerns, workers and activity are no longer shown."
     },
     "composer": {
       "placeholder": "Message Wisp",

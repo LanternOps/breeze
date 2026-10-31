@@ -487,14 +487,28 @@ export default function CommandPalette() {
   );
 
   // Instant local matches while the server round-trip is still in flight.
+  const matchesQuery = useCallback(
+    (item: CommandItem) => {
+      const needle = trimmedQuery.toLowerCase();
+      return (
+        item.title.toLowerCase().includes(needle) ||
+        (item.description?.toLowerCase().includes(needle) ?? false)
+      );
+    },
+    [trimmedQuery]
+  );
+
   const localRecentMatches = useMemo<CommandItem[]>(() => {
     if (!trimmedQuery) return [];
-    const needle = trimmedQuery.toLowerCase();
-    const matches = (item: CommandItem) =>
-      item.title.toLowerCase().includes(needle) ||
-      (item.description?.toLowerCase().includes(needle) ?? false);
-    return [...recentDeviceItems.filter(matches), ...recentPageItems.filter(matches)];
-  }, [recentDeviceItems, recentPageItems, trimmedQuery]);
+    return [...recentDeviceItems.filter(matchesQuery), ...recentPageItems.filter(matchesQuery)];
+  }, [matchesQuery, recentDeviceItems, recentPageItems, trimmedQuery]);
+
+  // #10196: quick actions are searchable too ("breeze ai", "open wisp"). Built
+  // from quickActionItems, so the ai_sessions:use and Wisp gates still apply.
+  const localActionMatches = useMemo<CommandItem[]>(() => {
+    if (!trimmedQuery) return [];
+    return quickActionItems.filter(matchesQuery);
+  }, [matchesQuery, quickActionItems, trimmedQuery]);
 
   // Settings results are the web's settings catalogue (#8365), gated like the
   // nav and matched instantly, so they never wait on (or depend on) the server.
@@ -587,6 +601,13 @@ export default function CommandPalette() {
     }
 
     if (showResults) {
+      // First, so typing an action's name and pressing Enter runs it.
+      pushSection({
+        id: 'quick-actions',
+        label: 'Quick actions',
+        icon: Zap,
+        items: localActionMatches
+      });
       pushSection({
         id: 'recent',
         label: 'Recent',
@@ -607,6 +628,7 @@ export default function CommandPalette() {
 
     return { sections: builtSections, selectableItems: selectable, indexByKey: indexMap };
   }, [
+    localActionMatches,
     localRecentMatches,
     quickActionItems,
     recentDeviceItems,

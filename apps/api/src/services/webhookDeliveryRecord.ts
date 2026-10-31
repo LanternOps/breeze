@@ -215,6 +215,22 @@ export async function claimDeliveryForExecution(
 }
 
 /**
+ * Count one failed delivery on its webhook (#9946).
+ *
+ * For terminal writes that move a delivery to `failed` WITHOUT an attempt
+ * outcome: the recovery sweep's abandon paths. Call it only after that write's
+ * CAS returned the row, in the same system-scope transaction, so a lost race
+ * never counts and each delivery is counted exactly once. `last_delivery_at` is
+ * left alone, because no attempt was made.
+ */
+export async function countFailedDelivery(webhookId: string): Promise<void> {
+  await db
+    .update(webhooksTable)
+    .set({ failureCount: sql`${webhooksTable.failureCount} + 1` })
+    .where(eq(webhooksTable.id, webhookId));
+}
+
+/**
  * Persist the outcome of one delivery attempt and move the webhook aggregates.
  * The attempt/status CAS above also protects against recovery racing a slow response.
  */
@@ -256,16 +272,24 @@ export async function recordDeliveryOutcome(result: WebhookDeliveryResult): Prom
       return false;
     }
 
+    // `failure_count` counts failed DELIVERIES, not attempts (#9946): only the
+    // terminal `failed` write moves it. A failed attempt with a retry scheduled
+    // moves "Last Triggered" only, so one delivery that exhausts every retry
+    // reads "1 failed" and one that fails then succeeds reads "1 success".
+    // The CAS above already ensured only the winning write reaches here.
+    const now = new Date();
     const aggregateUpdate = result.success
       ? {
         successCount: sql`${webhooksTable.successCount} + 1`,
-        lastSuccessAt: new Date(),
-        lastDeliveryAt: new Date()
+        lastSuccessAt: now,
+        lastDeliveryAt: now
       }
-      : {
-        failureCount: sql`${webhooksTable.failureCount} + 1`,
-        lastDeliveryAt: new Date()
-      };
+      : deliveryStatus === 'failed'
+        ? {
+          failureCount: sql`${webhooksTable.failureCount} + 1`,
+          lastDeliveryAt: now
+        }
+        : { lastDeliveryAt: now };
 
     await db
       .update(webhooksTable)

@@ -752,7 +752,14 @@ async function rescheduleWithin(
   const dueAt = 'dueAt' in to ? to.dueAt : addDaysISO(current.dueAt, to.shiftDays);
   // A missed occurrence pulled back inside its grace window is live again;
   // originalDueAt is never touched (spec §7: the history of the slip is kept).
-  const next: OccurrenceStatus = current.status === 'missed' && !isPastGrace(dueAt, current.graceDays, todayISO()) ? 'open' : current.status;
+  // #9959: only one that already has a ticket goes straight to `open` — its
+  // ticket is the work item. One that never got a ticket (materialized past
+  // grace, retired by the closing sweep, or opened under Service Management
+  // `off`) goes back to `scheduled`, so the nightly sweep opens it through the
+  // one path that creates the ticket, checklist and instructions, in its lead
+  // window. `open` with no ticket would sit "on track" with nothing queued.
+  const revived = current.status === 'missed' && !isPastGrace(dueAt, current.graceDays, todayISO());
+  const next: OccurrenceStatus = !revived ? current.status : current.ticketId ? 'open' : 'scheduled';
   await updateOccurrenceFrom(tx, orgId, occurrenceId, current.status, { dueAt, status: next, updatedAt: new Date() });
   if (current.ticketId) {
     await tx.update(tickets)

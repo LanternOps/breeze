@@ -74,6 +74,8 @@ export interface SweepSummary {
   orgName: string | null;
   ruleSets: Array<{ id: string; name: string | null; version: number }>;
   scanType: SecuritySweepScanType;
+  /** The custom-scan paths, so a re-sweep can carry them over; null unless `scanType` is 'custom'. */
+  paths: string[] | null;
   state: SecuritySweepState;
   /** Devices that received a scan row at create. */
   targeted: number;

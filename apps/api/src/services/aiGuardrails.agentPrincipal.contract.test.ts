@@ -234,6 +234,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
   'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
+  'get_huntress_agents', // #10393 Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -258,6 +259,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_peripheral_activity',
   'get_playbook_history',
   'get_process_samples', // Full-control W13 (#6783): tier-1 recorded process snapshot, device-scoped
@@ -392,6 +394,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
   'search_packages', // Full-control W12 (#6782): tier-1 winget/Homebrew package search, no tenant data
+  'search_pax8_products', // W15 (#6785): product metadata reads, partner scope enforced in handler
   // W01 (#6755)
   'search_script_library',
   'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)

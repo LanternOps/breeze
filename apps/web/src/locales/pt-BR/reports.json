@@ -32,7 +32,8 @@
       "subtitle": "Insights sobre sua frota e seus serviços",
       "title": "Análises",
       "trend": {
-        "operationalHealth": "Saúde operacional"
+        "operationalHealth": "Saúde operacional",
+        "weekOf": "Semana de {{date}}"
       },
       "widgets": {
         "alertTable": {
@@ -153,7 +154,16 @@
     "slaComplianceCard": {
       "defaultPeriodLabel": "Últimos 30 dias",
       "downtime": "Indisponibilidade {{value}}",
+      "exclusions": {
+        "maintenanceApplied": "Janelas de manutenção excluídas",
+        "maintenanceSkipped": "Janelas de manutenção não excluídas: dispositivos demais para verificar",
+        "maintenanceUnavailable": "Janelas de manutenção não excluídas: status indisponível",
+        "none": "Nenhuma exclusão",
+        "title": "Exclusões",
+        "weekends": "Fins de semana excluídos"
+      },
       "incidents": "{{count}} incidentes",
+      "noDevices": "Nenhum dispositivo medido ainda",
       "status": {
         "atRisk": "Em risco",
         "breach": "Violação",
@@ -161,6 +171,34 @@
       },
       "targetUptime": "Meta de {{target}}% de disponibilidade",
       "title": "Conformidade de SLA"
+    },
+    "slaEmptyState": {
+      "create": "Criar definição de SLA",
+      "created": "Definição de SLA criada",
+      "description": "Uma definição de SLA define a meta de disponibilidade usada por esta aba para medir seus dispositivos. Crie uma para começar a acompanhar a conformidade.",
+      "errors": {
+        "create": "Não foi possível criar a definição de SLA"
+      },
+      "form": {
+        "cancel": "Cancelar",
+        "excludeMaintenance": "Excluir dispositivos em janela de manutenção",
+        "excludeWeekends": "Excluir fins de semana",
+        "measurementWindow": "Período de medição",
+        "name": "Nome",
+        "organization": "Organização",
+        "scopeNote": "Mede todos os dispositivos da organização.",
+        "selectOrganization": "Selecione uma organização",
+        "submit": "Criar",
+        "uptimeTarget": "Meta de disponibilidade (%)",
+        "uptimeTargetInvalid": "Informe um valor de 0 a 100.",
+        "windows": {
+          "daily": "Diário",
+          "monthly": "Mensal",
+          "weekly": "Semanal"
+        }
+      },
+      "noPermission": "Peça a um administrador com acesso ao gerenciamento de organizações para criar uma definição de SLA.",
+      "title": "Ainda não há definição de SLA"
     },
     "tableWidget": {
       "filterPlaceholder": "Filtrar",
@@ -1096,7 +1134,7 @@
       "groups": {
         "business": "Negócio",
         "general": "Geral",
-        "businessDescription": "Números internos do MSP — cumprimento de SLA, faturabilidade dos técnicos e contas a receber — apenas para a equipe."
+        "businessDescription": "Números do próprio negócio do MSP, não dos dispositivos dos clientes — apenas para a equipe."
       },
       "delivery": {
         "contactsLoading": "Carregando os contatos da organização…",

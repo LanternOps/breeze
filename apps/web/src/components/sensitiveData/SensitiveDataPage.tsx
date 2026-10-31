@@ -1,5 +1,7 @@
 import '@/lib/i18n';
+import { useEffect } from 'react';
 import { useHashState } from '@/lib/useHashState';
+import { keepHashAcrossOrgSwitch } from '@/lib/orgSwitch';
 import { ScanSearch } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import DashboardTab from './DashboardTab';
@@ -16,11 +18,23 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'policies', label: 'Policies' },
 ];
 
+const isTab = (hash: string): hash is Tab => TABS.some((tab) => tab.id === hash);
+
 export default function SensitiveDataPage() {
   const { t } = useTranslation('security');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
-  const [activeTab, setActiveTab] = useHashState<Tab>('dashboard', (h) =>
-    TABS.some((tab) => tab.id === h) ? (h as Tab) : undefined
+  const [activeTab, setActiveTab] = useHashState<Tab>('dashboard', (h) => (isTab(h) ? h : undefined));
+
+  // #10083: a header org switch re-renders this page in place. The tab means the
+  // same thing in every org, so keep it — only an exact tab id, read at switch
+  // time; anything else in the hash is dropped.
+  useEffect(
+    () =>
+      keepHashAcrossOrgSwitch(() => {
+        const hash = window.location.hash.replace(/^#/, '');
+        return isTab(hash) ? hash : null;
+      }),
+    [],
   );
 
   const switchTab = (tab: Tab) => {
