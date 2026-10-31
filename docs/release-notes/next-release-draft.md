@@ -219,3 +219,8 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Reliability factor event-log links (#10053)
+
+- **Crashes, Application hangs and Hardware errors now link to their own events.** On a device's Reliability panel, these factor rows open the Event log filtered to every source the scored events came from ("View in event log"), over the window the API scored. Before, they opened an unfiltered window ("Open event log"). The panel now takes each factor's window from the API instead of working it out in the browser. A snapshot gets the source list when it is next scored; until then the row keeps the window-only link.
+- `GET /api/v1/reliability/:deviceId` drivers add `windowStart`, `windowEnd` and, for `crashes`, `hangs` and `hardwareErrors`, `eventLogSources`. `GET /api/v1/devices/:id/eventlogs` accepts `source` more than once (`?source=a&source=b` matches any of them, up to 25); one `source` works as before. No migration or environment variable.
