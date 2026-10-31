@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BreezeEvent } from '../eventBus';
+import { metricsRegistry } from '../metricsRegistry';
 
 /**
  * Tool catalog W04 (#5219), plan Task A9 — the durable event trigger.
@@ -118,6 +119,8 @@ describe('flowEventTriggerSubscriber', () => {
   ])('skips a %s flow for a device-less alert before target resolution', async (_name, ownership) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
+      const metric = metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total');
+      const before = (await metric?.get())?.values.find(v => v.labels.consumer === 'flow')?.value ?? 0;
       selects.push([candidate(ownership)], LIVE);
       await handle(event({ payload: {
         severity: 'critical', alertId: 'alert-1', deviceId: null,
@@ -125,8 +128,12 @@ describe('flowEventTriggerSubscriber', () => {
       } }));
       expect(createFlowRun).not.toHaveBeenCalled();
       expect(buildTriggerScope).not.toHaveBeenCalled();
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('alert_has_no_device'));
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining(FLOW_A));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(FLOW_A), expect.objectContaining({
+        reason: 'alert_has_no_device', alertId: 'alert-1', eventId: EVENT_ID, orgId: ORG,
+        owner: { kind: 'backup_workload', ref: 'workload-1' },
+      }));
+      expect((await metricsRegistry.getSingleMetric('alert_device_consumer_skipped_total')?.get())?.values
+        .find(v => v.labels.consumer === 'flow')?.value).toBe(before + 1);
     } finally {
       warn.mockRestore();
     }

@@ -48,6 +48,7 @@ import { liveOrgCondition, partnerFanoutOrgCondition } from '../partnerFanoutOrg
 import type { DurableEventSubscriber } from '../eventSubscriberRegistry';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
 import { isFlowAdmissionRefusal } from '@breeze/shared';
+import { recordAlertDeviceConsumerSkipped } from '../alertDeviceConsumerMetrics';
 import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { nullFlowInputs } from './inputDefaults';
 import { createFlowRun } from './runService';
@@ -204,7 +205,13 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
     // run before scope/admission so a missing device cannot widen its targets.
     if (String(event.type).startsWith('alert.')
         && (!isPlainContainer(event.payload) || typeof event.payload.deviceId !== 'string')) {
-      console.warn(`${LOG} Skipping flow ${flow.id}: alert_has_no_device`);
+      const payload = isPlainContainer(event.payload) ? event.payload : {};
+      console.warn(`${LOG} Skipping flow ${flow.id}: alert_has_no_device`, {
+        reason: 'alert_has_no_device', flowId: flow.id,
+        alertId: payload.alertId ?? null, eventId: event.id, orgId: event.orgId,
+        owner: payload.owner ?? { kind: payload.ownerKind ?? null, ref: payload.ownerRef ?? null },
+      });
+      recordAlertDeviceConsumerSkipped('flow');
       continue;
     }
     if (chainDepth > MAX_FLOW_CHAIN_DEPTH) {
