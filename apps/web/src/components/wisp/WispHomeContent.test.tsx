@@ -274,12 +274,24 @@ describe('WispHomeContent', () => {
     expect(h.threadProps?.wisp).toMatchObject({ status: 'paused' });
   });
 
+  it('#10104: Resume (a grant status change) refreshes the rail panes, so a pane that failed while paused reloads', async () => {
+    h.fetchWispHome.mockResolvedValue({ kind: 'ready', payload: payload(), wisp: { ...wisp, status: 'paused' } });
+    render(<WispHomeContent />);
+    await screen.findByTestId('wisp-home-thread');
+    const before = h.railProps?.activityKey;
+    act(() => (h.railProps?.onWispChange as (p: unknown) => void)({ status: 'active', pausedReason: null }));
+    await waitFor(() => expect(h.railProps?.activityKey).not.toBe(before));
+  });
+
   it('a permission refusal (Partner Viewer) says there is no access, with no retry (#10145)', async () => {
     h.fetchWispHome.mockResolvedValue({ kind: 'forbidden' });
     render(<WispHomeContent />);
     expect(await screen.findByTestId('wisp-home-forbidden')).toHaveTextContent("You don't have access to Wisp");
     expect(screen.queryByTestId('wisp-home-retry')).toBeNull();
     expect(screen.queryByTestId('wisp-home-load-error')).toBeNull();
+    // #10200: no links into surfaces the viewer cannot use either (chats, Wisp memory).
+    expect(screen.queryByTestId('wisp-home-chats')).toBeNull();
+    expect(screen.queryByTestId('wisp-home-memory')).toBeNull();
   });
 
   it('a broken read is an error with retry, never a guessed state', async () => {

@@ -225,6 +225,7 @@ async function moveWithStepData(args: {
   const { task, leaseEpoch, recipe } = a;
   return leasedWrite({
     orgId: task.orgId, taskId: task.id, revision: task.revision, leaseEpoch,
+    observedState: task.state as string,
     patch: {
       currentStepKey: toStepKey,
       phase: recipe.steps[toStepKey]?.phase ?? 'investigate',
@@ -472,6 +473,7 @@ export async function advanceConfirmDetails(a: StepAdvancerArgs): Promise<string
   let itemId: string | null = null;
   const committed = await leasedWrite({
     orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+    observedState: a.task.state as string,
     patch: {
       state: nextTaskState(a.task.state as string, 'wait'),
       waitReason: 'information', waitDependencyKind: null, waitDependencyId: null,
@@ -726,6 +728,7 @@ export async function advanceManualCreateGoogle(a: StepAdvancerArgs): Promise<st
   let itemId: string | null = null;
   const committed = await leasedWrite({
     orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+    observedState: a.task.state as string,
     patch: {
       state: nextTaskState(a.task.state as string, 'wait'),
       waitReason: 'information', waitDependencyKind: null, waitDependencyId: null,
@@ -833,6 +836,7 @@ export async function advanceResolveAccounts(a: StepAdvancerArgs): Promise<strin
       // The CAS at r with an EMPTY patch: the step, checkpoint and revision
       // are written below, after the in-transaction bump, never ahead of it.
       orgId: a.task.orgId, taskId: a.task.id, revision: r, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {},
       alsoInTransaction: async () => {
         const out = await o.commitOnboardingStageTransition(db, {
@@ -958,6 +962,7 @@ export async function advanceOnboardingManualWork(a: StepAdvancerArgs): Promise<
     let waitOn: string | null = null;
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {
         state: nextTaskState(a.task.state as string, 'wait'),
         waitReason: 'information', waitDependencyKind: null, waitDependencyId: null,
@@ -1001,6 +1006,7 @@ export async function advanceOnboardingManualWork(a: StepAdvancerArgs): Promise<
   if (open) {
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {
         state: nextTaskState(a.task.state as string, 'wait'),
         waitReason: 'information', waitDependencyKind: 'user_answer', waitDependencyId: open.itemId,
@@ -1183,6 +1189,7 @@ export async function advanceOnboardingDocument(a: StepAdvancerArgs): Promise<st
   try {
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
+      observedState: a.task.state as string,
       patch: {},
       alsoInTransaction: async () => {
         const stepId = await stepRowId(o, a, a.task.currentStepKey ?? 'document', await ordinalZeroTargetId(a.task.orgId, a.task.id));

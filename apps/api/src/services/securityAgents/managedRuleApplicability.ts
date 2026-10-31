@@ -28,11 +28,11 @@ import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors'
  *
  * Every violation a managed rule can carry is filtered: `missing` (#6960 W02)
  * and the `service_running` bridge's `not_running` / `service_unverified`
- * (#6958 D5 obligation). In today's compliance pass the filter runs before the
- * bridge, and the bridge only converts a surviving `missing` or adds a
- * violation for an inventory-matched rule (which a DNS rule, named after its
- * pinned package, never is), so a not-ready device gets no service violation;
- * filtering the service types as well keeps that true whatever the order.
+ * (#6958 D5 obligation). The compliance pass runs this filter AFTER the bridge
+ * (#10126), so a service violation the bridge adds for an inventory-matched
+ * rule — one with no `missing` to drop — is filtered like any other. The pass
+ * also derives service watches only for rules `isRuleApplicable` accepts, so a
+ * not-ready device is never asked to monitor the vendor's service.
  *
  * Fail-closed: a rule whose catalog row is not a known vendor package, or a
  * device the pass did not describe, is not applicable. A managed policy only
@@ -56,6 +56,12 @@ export interface ManagedRuleApplicability {
   evaluateDevice(deviceId: string): DeviceVendorReadiness[];
   /** Vendors this policy's rules resolve to, in rule order. */
   vendors(): VendorKey[];
+  /**
+   * Whether the rule pointing at `catalogId` applies to this device: the same
+   * readiness `filterViolations` keeps a violation on (#10126: gates the
+   * device's derived service watches). Fail-closed, as everywhere here.
+   */
+  isRuleApplicable(deviceId: string, catalogId: string): boolean;
   filterViolations(
     deviceId: string,
     violations: SoftwarePolicyViolation[],
@@ -174,6 +180,9 @@ export async function loadManagedRuleApplicability(
     },
     vendors() {
       return vendorRules.map((rule) => rule.vendor);
+    },
+    isRuleApplicable(deviceId, catalogId) {
+      return readiness(deviceId, catalogId).result.ok;
     },
     filterViolations(deviceId, violations) {
       const kept: SoftwarePolicyViolation[] = [];

@@ -75,6 +75,21 @@ const (
 	MaxPayloadBytes = 1_750_000
 )
 
+// Image provenance (wire values, #9067): what the engine itself says about
+// where a container's image came from. The server never asks a registry about
+// an image whose provenance is unknown, so internal image names stay local.
+const (
+	// ProvenanceConfirmed: the reported digest is a registry digest the engine
+	// vouches for (classic store manifest digest, or an engine-recorded pull).
+	ProvenanceConfirmed = "confirmed"
+	// ProvenanceLocal: the engine says the image was never pulled from this
+	// repository (a local build, a load, or a retag).
+	ProvenanceLocal = "local"
+	// ProvenanceUnknown: the engine cannot say (Docker's containerd image
+	// store before Engine API 1.54 reports "name@<image id>" for every image).
+	ProvenanceUnknown = "unknown"
+)
+
 // Detection is the cheap, always-run answer to "does this host run runtime X".
 // It never lists workloads.
 type Detection struct {
@@ -126,6 +141,10 @@ type Workload struct {
 	MemoryMB          *int    `json:"memoryMb"`
 	StartedAt         *string `json:"startedAt"`
 	RuntimeCreatedAt  *string `json:"runtimeCreatedAt"`
+	// ImageProvenance is the one optional key: a server that predates it
+	// rejects the report if the key is present at all, so it is omitted unless
+	// Settings.AcceptsImageProvenance (and then only when there is evidence).
+	ImageProvenance *string `json:"imageProvenance,omitempty"`
 }
 
 // RuntimeReport is one entry of Report.Runtimes.
@@ -155,6 +174,10 @@ type Settings struct {
 	HyperV          bool
 	Proxmox         bool
 	IntervalMinutes int
+	// AcceptsImageProvenance is the server's statement that its ingest schema
+	// knows Workload.ImageProvenance. False (the default, and what a server
+	// that predates #9067 implies by omission) keeps the key off the wire.
+	AcceptsImageProvenance bool
 }
 
 // RuntimeEnabled reports whether the driver for r may run Collect. containerd
@@ -233,4 +256,12 @@ func (w *Workload) Bound() {
 	w.ComposeService = clipPtr(w.ComposeService, 128)
 	w.ComposeWorkingDir = clipPtr(w.ComposeWorkingDir, 512)
 	w.RestartPolicy = clipPtr(w.RestartPolicy, 30)
+	if w.ImageProvenance != nil {
+		switch *w.ImageProvenance {
+		case ProvenanceConfirmed, ProvenanceLocal, ProvenanceUnknown:
+		default:
+			// The server's enum would reject the whole report.
+			w.ImageProvenance = nil
+		}
+	}
 }

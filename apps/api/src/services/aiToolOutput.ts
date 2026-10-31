@@ -2,6 +2,13 @@ import { redactLogFields, redactLogMessage, redactToolOutputFields } from './log
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText, sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+import {
+  PAGE_RESUME_KEY,
+  pageResumeRowCount,
+  readPageResume,
+  resumePointAfter,
+  type PageResume,
+} from './aiToolPageResume';
 
 // Re-exported for existing importers; the rule set lives in ./redactionPatterns.
 export { BARE_SECRET_PATTERNS };
@@ -954,6 +961,61 @@ function extractPagingEnvelope(value: unknown): Record<string, unknown> {
   return out;
 }
 
+/**
+ * #10385: split the page-resume descriptor (aiToolPageResume.ts) off a tool
+ * result. It is ALWAYS removed — it is compaction input, never model output —
+ * and returned only when well-formed.
+ */
+function takePageResume(value: unknown): { payload: unknown; resume: PageResume | null; malformed: boolean } {
+  if (!isRecord(value) || !(PAGE_RESUME_KEY in value)) return { payload: value, resume: null, malformed: false };
+  const { [PAGE_RESUME_KEY]: descriptor, ...payload } = value;
+  const resume = readPageResume(descriptor);
+  return { payload, resume, malformed: resume === null };
+}
+
+/** Row count of the page the tool built, or null if it no longer matches the descriptor. */
+function pagedRowCount(source: unknown, resume: PageResume): number | null {
+  if (!isRecord(source)) return null;
+  const rows = source[resume.key];
+  if (!Array.isArray(rows) || rows.length !== pageResumeRowCount(resume)) return null;
+  return rows.length;
+}
+
+/**
+ * #10385: compaction cut the paged row array, so the tool's `nextCursor` /
+ * `showing` / `hasMore` describe rows the model never received — following the
+ * cursor would skip them, and a `hasMore: false` page offered no cursor at all.
+ * Rewrite the envelope to describe what was actually kept: `nextCursor`
+ * resumes right after the last kept row. `total` is the size of the whole
+ * result set and stays as the tool reported it.
+ */
+function applyPageResume(compacted: unknown, original: number, resume: PageResume): unknown {
+  if (!isRecord(compacted)) return compacted;
+  const rows = compacted[resume.key];
+  if (!Array.isArray(rows)) return compacted;
+  const hasSentinel = rows.length > 0 && priorArrayOmitted(rows[rows.length - 1]) !== null;
+  const kept = rows.length - (hasSentinel ? 1 : 0);
+  if (kept >= original) return compacted;
+  const counts = { showing: kept, ...(compacted.count === original ? { count: kept } : {}) };
+  const next = resumePointAfter(resume, kept);
+  // Past the tool's offset ceiling no cursor can reach the dropped rows (the
+  // tool would clamp it back onto rows already shown). Correct the counts and
+  // leave the tool's own continuation as it wrote it.
+  if (next.kind === 'unreachable') return { ...compacted, ...counts };
+  return { ...compacted, ...counts, hasMore: true, nextCursor: next.kind === 'cursor' ? next.cursor : null };
+}
+
+function warnUnusablePageResume(toolName: string, reason: 'malformed' | 'row_count_mismatch'): void {
+  // Tool name and reason only. A tool that reshapes its rows after building
+  // the envelope loses the cursor fix; this is how that gets noticed.
+  console.warn('[AI] page-resume descriptor unusable; envelope left as the tool wrote it:', reason, 'tool:', toolName);
+}
+
+// #10385: a digest carries no rows, so the only lossless continuation is this
+// same page position again, with fewer rows per call.
+const DIGEST_RESUME_HINT = 'Call again with the nextCursor value and a smaller limit';
+const DIGEST_RESTART_HINT = 'Call again with a smaller limit';
+
 function asCaptureEnvelope(value: unknown): { artifact: Record<string, unknown>; compacted: string } | null {
   if (!isRecord(value)) return null;
   const { artifact, compacted } = value as Record<string, unknown>;
@@ -990,6 +1052,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Huntress incident text: vendor-authored, but routinely echoes
   // endpoint-chosen artifact names (filenames, process names, paths).
   get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // Huntress agent rows (#10393): hostname is chosen on the endpoint, and
+  // platform/status are vendor-reported strings; deviceHostname is the
+  // Breeze device's agent-reported hostname.
+  get_huntress_agents: new Set(['hostname', 'deviceHostname', 'platform', 'status']),
   // EDR-framework detection rows: vendor-authored strings that routinely echo
   // endpoint-chosen artifact names (threat/file/process names). get_edr_status
   // is deliberately absent: it carries Breeze-generated labels and notes only.
@@ -1070,6 +1136,13 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_device_software: new Set(['name', 'version']),
   manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
   manage_fleet_findings: new Set(['title']),
+  // #10383: get_fleet_findings returns the same cached finding title (a log-correlation
+  // finding's title echoes the matched rule name or event pattern).
+  get_fleet_findings: new Set(['title']),
+  // #10383: generate_report device_inventory data returns the device-reported osVersion
+  // (fenced as for manage_software_inventory). hostname/agentVersion stay verbatim, per the
+  // hostname rule and query_agent_versions.
+  generate_report: new Set(['osVersion']),
   manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
   // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
   // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
@@ -1102,6 +1175,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
   manage_alerts: new Set(['title', 'message']),
+  // #10383: manage_alert_rules get_rule returns the rule's recentAlerts[].title, the same
+  // device-derived alert title manage_alerts fences.
+  manage_alert_rules: new Set(['title']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
   query_devices: new Set(['hostname', 'displayName']),
@@ -1335,6 +1411,12 @@ export function compactToolResultForChat(
     });
   }
 
+  // #10385: the page-resume descriptor is compaction input — strip it before
+  // anything else sees the payload, and keep it to fix the envelope below.
+  const taken = takePageResume(parsed);
+  const { payload } = taken;
+  if (taken.malformed) warnUnusablePageResume(toolName, 'malformed');
+
   const stats = emptyStats();
   // A-W05 (D12): resolved once per call — every tier's stats copy carries it
   // (object spread), so the sentinel and _chat.nextStep always agree.
@@ -1344,7 +1426,7 @@ export function compactToolResultForChat(
   // cannot survive into a truncated `preview` further down (#2603). This is the
   // single chokepoint every aiTools*.ts result passes through, which is why the
   // fix does not need a catch-block edit in each of the ~19 leaking handlers.
-  const errorScrubbed = scrubErrorFieldsDeep(parsed, 0, false, { toolName });
+  const errorScrubbed = scrubErrorFieldsDeep(payload, 0, false, { toolName });
 
   // Neutralize injection-shaped text in fields that carry raw, endpoint- or
   // vendor-sourced content before it is measured/compacted. Same chokepoint
@@ -1357,6 +1439,12 @@ export function compactToolResultForChat(
   const redacted = redactToolOutputFields(minimized, redactAiToolOutputText);
   const sanitized = sanitizeToolPayloadValue(toolName, redacted, stats);
 
+  // #10385: the descriptor is only usable while its row count still matches
+  // the page — row N must be position N for a re-minted cursor to be right.
+  const pagedRows = taken.resume ? pagedRowCount(sanitized, taken.resume) : null;
+  if (taken.resume && pagedRows === null) warnUnusablePageResume(toolName, 'row_count_mismatch');
+  const resume = pagedRows !== null && pagedRows > 0 ? taken.resume : null;
+
   // Try each tier from `sanitized`, not from the previous tier's output: a
   // tighter tier that re-compacted already-compacted data would report drop
   // counts relative to the prior tier (e.g. "30 dropped" when 180 of 200 are
@@ -1368,25 +1456,44 @@ export function compactToolResultForChat(
     const tierStats: CompactStats = { ...baseStats };
     const toolSpecific = applyToolSpecificCompaction(toolName, sanitized, tierStats, tier);
     const compacted = compactValue(toolSpecific, tierStats, tier);
-    const withMeta = appendChatMeta(compacted, tierStats, rawResult.length);
+    const resumed = resume && pagedRows !== null ? applyPageResume(compacted, pagedRows, resume) : compacted;
+    const withMeta = appendChatMeta(resumed, tierStats, rawResult.length);
     serialized = safeStringify(withMeta);
     if (serialized.length <= maxChars) {
       return serialized;
     }
   }
 
+  // #10385: the digest drops EVERY row, so the tool's nextCursor (which points
+  // past this page) would skip all of them. Point back at the start of this
+  // page instead, and ask for a smaller one.
+  const pagingEnvelope = extractPagingEnvelope(sanitized);
+  let nextStep = SENTINEL_HINTS[resolvePaginationHint(toolName)];
+  if (resume && pagedRows !== null) {
+    // The start of this page is always reachable — the tool just served it.
+    const start = resumePointAfter(resume, 0);
+    const cursor = start.kind === 'cursor' ? start.cursor : null;
+    Object.assign(pagingEnvelope, {
+      showing: 0,
+      ...(pagingEnvelope.count === pagedRows ? { count: 0 } : {}),
+      hasMore: true,
+      nextCursor: cursor,
+    });
+    nextStep = cursor ? DIGEST_RESUME_HINT : DIGEST_RESTART_HINT;
+  }
+
   return JSON.stringify({
-    ...extractPagingEnvelope(sanitized),
+    ...pagingEnvelope,
     summarized: true,
     _chat: {
       outputCompacted: true,
       originalChars: rawResult.length,
       reason: 'max_output_chars_exceeded',
-      nextStep: SENTINEL_HINTS[resolvePaginationHint(toolName)],
+      nextStep,
     },
     summary: {
       toolName,
-      keys: isRecord(parsed) ? Object.keys(parsed).slice(0, 20) : [],
+      keys: isRecord(payload) ? Object.keys(payload).slice(0, 20) : [],
     },
     preview: serialized.slice(0, RAW_PREVIEW_CHARS),
   });

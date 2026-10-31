@@ -536,7 +536,7 @@ const SECURE_HEADERS_OPTIONS = {
 // `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
 // It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
 // overwrite a handler's CORP.
-// #10192: the two token-gated public PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
+// #10192/#10290: the PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
 // X-Frame-Options: SAMEORIGIN here and CSP `frame-ancestors 'self'` from securityMiddleware below — chosen by
 // path for the same reason. Every other route keeps DENY / 'none'.
 app.use(

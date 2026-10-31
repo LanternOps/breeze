@@ -112,7 +112,7 @@ import { deleteDeviceCascade, type DeviceDeletionTx } from '../../services/devic
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { getTestDb } from './setup';
 import { remapEdrTenant } from '../../services/edrProviders/mapping';
-import { persistDetections } from '../../services/edrProviders/persist';
+import { applyDetectionStatusUpdates, loadOpenDetectionRefs, persistDetections, persistInventory } from '../../services/edrProviders/persist';
 import { evaluateEdrAlerts, evaluateEdrEndpointHealth } from '../../services/edrProviders/alerts';
 import type { VendorEdrDetection } from '../../services/edrProviders/types';
 
@@ -835,5 +835,268 @@ describe('edr push hints — durable marker against Postgres (W03 PR-B)', () => 
     await admin().execute(sql`UPDATE edr_connections SET is_active = false WHERE id = ${fx.connectionId}::uuid`);
     expect(await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null)).toBe(false);
     expect(await marker(fx.connectionId)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// W04 PR-A (#8168): Emsisoft-shaped matching, attribution and re-read on REAL rows.
+// The unit suites pin the SQL text; these pin what Postgres actually does.
+// ===========================================================================
+
+describe('edr sync — Emsisoft-shaped framework behaviour on real rows (W04 PR-A)', () => {
+  async function seedEmsisoft() {
+    const partner = await withSystemDbAccessContext(() => createPartner());
+    const { orgA, siteA, orgB, siteB } = await withSystemDbAccessContext(async () => {
+      const a = await createOrganization({ partnerId: partner.id });
+      const b = await createOrganization({ partnerId: partner.id });
+      return { orgA: a, siteA: (await createSite({ orgId: a.id }))!, orgB: b, siteB: (await createSite({ orgId: b.id }))! };
+    });
+    const mkDevice = async (orgId: string, siteId: string, hostname: string) => {
+      const [d] = await admin().insert(devices).values({
+        orgId, siteId, agentId: randomUUID(), hostname, osType: 'windows', osVersion: '11',
+        architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online',
+      }).returning({ id: devices.id });
+      return d!.id;
+    };
+    const connectionId = randomUUID();
+    await withSystemDbAccessContext(() => db.insert(edrConnections).values({
+      id: connectionId, partnerId: partner.id, provider: 'emsisoft', name: `Emsisoft ${sfx()}`,
+      credentialsEncrypted: 'enc:test', vendorRootId: 'root-emsi', vendorRootType: 'partner',
+    }));
+    const conn = { id: connectionId, partnerId: partner.id, provider: 'emsisoft' };
+    const addTenant = (orgId: string) => withSystemDbAccessContext(async () => {
+      const [t] = await db.insert(edrTenants).values({
+        connectionId, partnerId: partner.id, vendorTenantId: randomUUID(), vendorTenantName: `WS ${sfx()}`,
+        vendorTenantType: 'workspace', orgId, mappingSource: 'manual',
+      }).returning({ id: edrTenants.id, vendorTenantId: edrTenants.vendorTenantId });
+      return t!;
+    });
+    const addEndpoint = (tenantId: string, orgId: string, vendorEndpointId: string, hostname: string, over: Partial<typeof edrEndpoints.$inferInsert> = {}) =>
+      withSystemDbAccessContext(async () => {
+        const [e] = await db.insert(edrEndpoints).values({
+          connectionId, partnerId: partner.id, orgId, tenantId, provider: 'emsisoft', vendorEndpointId, hostname, ...over,
+        }).returning({ id: edrEndpoints.id });
+        return e!.id;
+      });
+    return { partner, orgA, siteA, orgB, siteB, mkDevice, connectionId, conn, addTenant, addEndpoint };
+  }
+  const link = (id: string) => adminRows<{ breeze_device_id: string | null; device_match_source: string | null }>(sql`
+    SELECT breeze_device_id, device_match_source FROM edr_endpoints WHERE id = ${id}::uuid`).then((r) => r[0]!);
+
+  runDb('(a) strict-unique matching: duplicates stay ambiguous, a manual link on one twin never auto-links the other, org B is never a candidate', async () => {
+    const fx = await seedEmsisoft();
+    const d01 = await fx.mkDevice(fx.orgA.id, fx.siteA.id, 'PC01');
+    const d04a = await fx.mkDevice(fx.orgA.id, fx.siteA.id, 'PC04');
+    const d04b = await fx.mkDevice(fx.orgA.id, fx.siteA.id, 'PC04');
+    await fx.mkDevice(fx.orgB.id, fx.siteB.id, 'PC03');
+    const tenant = await fx.addTenant(fx.orgA.id);
+    const e01 = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-01', 'pc01');
+    const e03 = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-03', 'pc03');
+    const e04 = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-04', 'pc04');
+
+    const first = await withSystemDbAccessContext(() => matchEdrEndpoints(db as never, fx.connectionId, { strictUnique: true }));
+    expect(first).toEqual({ linked: 1, ambiguous: 1 });
+    expect(await link(e01)).toEqual({ breeze_device_id: d01, device_match_source: 'auto_hostname' });
+    expect((await link(e03)).breeze_device_id).toBeNull(); // PC03 lives in org B: never a candidate
+    expect((await link(e04)).breeze_device_id).toBeNull(); // two PC04s in org A: ambiguous
+
+    // Link ONE twin by hand. The other device is still free, and a second EMC record carries the same name.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE edr_endpoints SET breeze_device_id = ${d04a}::uuid, device_match_source = 'manual' WHERE id = ${e04}::uuid`));
+    const e04dup = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-04-dup', 'pc04');
+
+    const strict = await withSystemDbAccessContext(() => matchEdrEndpoints(db as never, fx.connectionId, { strictUnique: true }));
+    expect(strict.ambiguous).toBe(1);
+    expect((await link(e04dup)).breeze_device_id).toBeNull(); // NOT linked to the other twin by elimination
+    expect((await link(e04)).breeze_device_id).toBe(d04a); // the manual link is untouched
+
+    // Discriminating control: WITHOUT strictUnique (the pre-A3 behaviour) the leftover twin IS handed to the duplicate record.
+    await withSystemDbAccessContext(() => matchEdrEndpoints(db as never, fx.connectionId));
+    expect(await link(e04dup)).toEqual({ breeze_device_id: d04b, device_match_source: 'auto_hostname' });
+  });
+
+  runDb('(b) a detection\'s vendor endpoint is sticky: a later attribution never re-binds it, a null never erases it, a first null is filled', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    const e1 = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-e1', 'pc01');
+    const e2 = await fx.addEndpoint(tenant.id, fx.orgA.id, 'em-e2', 'pc02');
+    const persist = (id: string, vendorEndpointId: string | null, at: string) => withSystemDbAccessContext(() => persistDetections(
+      db as never, fx.conn,
+      [{ vendorTenantId: tenant.vendorTenantId, ok: true, value: { detections: [vendorDetection(tenant.vendorTenantId, id, { vendorEndpointId })], cursor: null, warnings: [] } }],
+      new Date(at),
+    ));
+    const row = async (id: string) => (await adminRows<{ vendor_endpoint_id: string | null; endpoint_id: string | null }>(sql`
+      SELECT vendor_endpoint_id, endpoint_id FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = ${id}`))[0]!;
+
+    await persist('inc-1:pc01', 'em-e1', '2026-12-16T10:00:00Z');
+    await persist('inc-1:pc01', 'em-e2', '2026-12-16T11:00:00Z');
+    expect(await row('inc-1:pc01')).toEqual({ vendor_endpoint_id: 'em-e1', endpoint_id: e1 }); // re-attribution ignored
+
+    await persist('inc-2:pc02', null, '2026-12-16T10:00:00Z');
+    expect(await row('inc-2:pc02')).toEqual({ vendor_endpoint_id: null, endpoint_id: null });
+    await persist('inc-2:pc02', 'em-e2', '2026-12-16T11:00:00Z');
+    expect(await row('inc-2:pc02')).toEqual({ vendor_endpoint_id: 'em-e2', endpoint_id: e2 }); // first null is filled
+
+    await persist('inc-2:pc02', null, '2026-12-16T12:00:00Z');
+    expect(await row('inc-2:pc02')).toEqual({ vendor_endpoint_id: 'em-e2', endpoint_id: e2 }); // a later null keeps the link
+
+    // No split attribution: the original endpoint row is pruned (FK nulls endpoint_id) and the name is re-used by
+    // another machine. The row keeps its vendor id AND does not get linked to the new machine's endpoint row.
+    await persist('inc-3:pc01', 'em-e1', '2026-12-16T10:00:00Z');
+    await withSystemDbAccessContext(() => db.execute(sql`DELETE FROM edr_endpoints WHERE id = ${e1}::uuid`));
+    expect(await row('inc-3:pc01')).toEqual({ vendor_endpoint_id: 'em-e1', endpoint_id: null });
+    await persist('inc-3:pc01', 'em-e2', '2026-12-16T13:00:00Z');
+    expect(await row('inc-3:pc01')).toEqual({ vendor_endpoint_id: 'em-e1', endpoint_id: null });
+  });
+
+  runDb('(b2) details._breeze holds the vendor locator + group key; an adapter-supplied _breeze is overwritten', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    await withSystemDbAccessContext(() => persistDetections(db as never, fx.conn, [{
+      vendorTenantId: tenant.vendorTenantId, ok: true,
+      value: {
+        detections: [vendorDetection(tenant.vendorTenantId, 'inc-3:pc01', {
+          vendorRef: 'a'.repeat(40), groupKey: 'inc-3', details: { _breeze: { vendorRef: 'forged' }, k: 1 },
+        })],
+        cursor: null, warnings: [],
+      },
+    }], new Date('2026-12-16T10:00:00Z')));
+    const [r] = await adminRows<{ details: Record<string, unknown> }>(sql`
+      SELECT details FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'inc-3:pc01'`);
+    expect(r!.details).toEqual({ k: 1, _breeze: { vendorRef: 'a'.repeat(40), groupKey: 'inc-3' } });
+  });
+
+  runDb('(c) re-read rotation: the cap of 1 re-reads each open row once, omitted rows rotate without closing, updates leave notified_severity alone', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    const persist = (ids: string[], at: string) => withSystemDbAccessContext(() => persistDetections(db as never, fx.conn, [{
+      vendorTenantId: tenant.vendorTenantId, ok: true,
+      value: { detections: ids.map((id) => vendorDetection(tenant.vendorTenantId, id, { vendorRef: `ref-${id}`, groupKey: `g-${id}` })), cursor: null, warnings: [] },
+    }], new Date(at)));
+    // Seeded in the PAST: the rotation bump uses the database's now().
+    await persist(['older'], '2026-10-01T08:00:00Z');
+    await persist(['newer'], '2026-10-01T09:00:00Z');
+
+    const load = () => withSystemDbAccessContext(() => loadOpenDetectionRefs(db as never, fx.connectionId, [tenant.id], 1));
+    const ids = (m: Map<string, Array<{ vendorDetectionId: string }>>) => (m.get(tenant.id) ?? []).map((r) => r.vendorDetectionId);
+
+    // Run 1: the stalest row is re-read; the vendor no longer knows it (omitted) -> it rotates, status untouched.
+    const run1 = await load();
+    expect(ids(run1)).toEqual(['older']);
+    expect(run1.get(tenant.id)![0]).toMatchObject({ vendorRef: 'ref-older', groupKey: 'g-older', vendorKind: 'incident' });
+    await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
+      connectionId: fx.connectionId, tenantId: tenant.id, orgId: fx.orgA.id, updates: [],
+      attempted: [{ vendorDetectionId: 'older', vendorKind: 'incident' }],
+    }));
+    const [older] = await adminRows<{ status: string; updated_at: Date }>(sql`
+      SELECT status, updated_at FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'older'`);
+    expect(older!.status).toBe('open');
+    expect(new Date(older!.updated_at).getTime()).toBeGreaterThan(new Date('2026-10-01T09:00:00Z').getTime());
+
+    // Run 2: the OTHER row reaches the front.
+    const run2 = await load();
+    expect(ids(run2)).toEqual(['newer']);
+
+    // The vendor now says benign: applied in place, notified_severity (Phase 4 state) untouched, open count recomputed.
+    const before = await adminRows<{ notified_severity: string | null; org_id: string; tenant_id: string }>(sql`
+      SELECT notified_severity, org_id, tenant_id FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'newer'`);
+    const applied = await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
+      connectionId: fx.connectionId, tenantId: tenant.id, orgId: fx.orgA.id,
+      updates: [{
+        vendorDetectionId: 'newer', vendorKind: 'incident', status: 'false_positive', vendorStatus: 'ConfirmedBenign/None',
+        severity: 'low', vendorSeverity: 'Unwanted', resolvedAt: new Date('2026-12-17T00:00:00Z'), lastVendorUpdateAt: new Date('2026-12-17T00:00:00Z'),
+      }],
+      attempted: [{ vendorDetectionId: 'newer', vendorKind: 'incident' }],
+    }));
+    expect(applied).toBe(1);
+    const [after] = await adminRows<{ status: string; severity: string; vendor_status: string; notified_severity: string | null; org_id: string; tenant_id: string; resolved_at: Date | null }>(sql`
+      SELECT status, severity, vendor_status, notified_severity, org_id, tenant_id, resolved_at FROM edr_detections
+      WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'newer'`);
+    expect(after).toMatchObject({ status: 'false_positive', severity: 'low', vendor_status: 'ConfirmedBenign/None', org_id: fx.orgA.id, tenant_id: tenant.id });
+    expect(after!.notified_severity).toBe(before[0]!.notified_severity);
+    expect(after!.resolved_at).not.toBeNull();
+    const [t] = await adminRows<{ open_detection_count: number }>(sql`SELECT open_detection_count FROM edr_tenants WHERE id = ${tenant.id}::uuid`);
+    expect(t!.open_detection_count).toBe(1);
+
+    // Only the remaining open row is ever loaded now; closed rows are never re-read.
+    expect(ids(await load())).toEqual(['older']);
+  });
+
+  runDb('(c2) a re-read for another org/tenant\'s ids changes nothing (scoped by connection + tenant + org)', async () => {
+    const fx = await seedEmsisoft();
+    const t1 = await fx.addTenant(fx.orgA.id);
+    const t2 = await fx.addTenant(fx.orgB.id);
+    await withSystemDbAccessContext(() => persistDetections(db as never, fx.conn, [{
+      vendorTenantId: t1.vendorTenantId, ok: true, value: { detections: [vendorDetection(t1.vendorTenantId, 'mine')], cursor: null, warnings: [] },
+    }], new Date('2026-12-16T08:00:00Z')));
+    const n = await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
+      connectionId: fx.connectionId, tenantId: t2.id, orgId: fx.orgB.id,
+      updates: [{ vendorDetectionId: 'mine', vendorKind: 'incident', status: 'false_positive', vendorStatus: 'x', severity: 'low', vendorSeverity: null, resolvedAt: null, lastVendorUpdateAt: null }],
+      attempted: [],
+    }));
+    expect(n).toBe(0);
+    const [r] = await adminRows<{ status: string }>(sql`
+      SELECT status FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'mine'`);
+    expect(r!.status).toBe('open');
+  });
+
+  runDb('(c3) closed and tombstoned rows are never loaded for re-read and never rewritten by an update', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    await withSystemDbAccessContext(() => persistDetections(db as never, fx.conn, [{
+      vendorTenantId: tenant.vendorTenantId, ok: true,
+      value: { detections: ['live', 'closed', 'tomb'].map((id) => vendorDetection(tenant.vendorTenantId, id)), cursor: null, warnings: [] },
+    }], new Date('2026-10-01T08:00:00Z')));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE edr_detections SET status = 'false_positive' WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'closed'`));
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE edr_detections SET detached_at = now(), tenant_id = NULL WHERE connection_id = ${fx.connectionId}::uuid AND vendor_detection_id = 'tomb'`));
+    const loaded = await withSystemDbAccessContext(() => loadOpenDetectionRefs(db as never, fx.connectionId, [tenant.id], 10));
+    expect((loaded.get(tenant.id) ?? []).map((r) => r.vendorDetectionId)).toEqual(['live']);
+    const mk = (id: string) => ({ vendorDetectionId: id, vendorKind: 'incident' as const, status: 'mitigated' as const, vendorStatus: 'x', severity: 'low' as const, vendorSeverity: null, resolvedAt: null, lastVendorUpdateAt: null });
+    const n = await withSystemDbAccessContext(() => applyDetectionStatusUpdates(db as never, {
+      connectionId: fx.connectionId, tenantId: tenant.id, orgId: fx.orgA.id, updates: [mk('closed'), mk('tomb')], attempted: [],
+    }));
+    expect(n).toBe(0);
+    const rows = await adminRows<{ vendor_detection_id: string; status: string }>(sql`
+      SELECT vendor_detection_id, status FROM edr_detections WHERE connection_id = ${fx.connectionId}::uuid ORDER BY vendor_detection_id`);
+    expect(rows).toEqual([
+      { vendor_detection_id: 'closed', status: 'false_positive' },
+      { vendor_detection_id: 'live', status: 'open' },
+      { vendor_detection_id: 'tomb', status: 'open' },
+    ]);
+  });
+
+  runDb('(d) detail-owned fields survive a list-only inventory run; an explicit null clears; hostname/policy still overwrite', async () => {
+    const fx = await seedEmsisoft();
+    const tenant = await fx.addTenant(fx.orgA.id);
+    const listItem = (hostname: string, policy: string) => ({
+      vendorEndpointId: 'em-d1', vendorTenantId: tenant.vendorTenantId, hostname, fqdn: null, serialNumber: null, macAddresses: [], ipAddresses: [],
+      osPlatform: 'other' as const, osName: null, endpointType: 'unknown' as const, agentVersion: null, health: 'unknown' as const, online: null,
+      isolationState: 'unknown' as const, tamperProtection: null, policyName: policy, lastSeenAt: null, raw: {},
+    });
+    const run = (value: { endpoints: unknown[]; details: unknown[] }, at: string) => withSystemDbAccessContext(() => persistInventory(
+      db as never, fx.conn, [{ vendorTenantId: tenant.vendorTenantId, ok: true, value: value as never }], new Date(at)));
+    const row = async () => (await adminRows<Row>(sql`
+      SELECT hostname, policy_name, fqdn, os_name, os_platform, endpoint_type, online, health, agent_version, ip_addresses
+      FROM edr_endpoints WHERE connection_id = ${fx.connectionId}::uuid AND vendor_endpoint_id = 'em-d1'`))[0]!;
+
+    // Run 1: first insert takes the list values; the detail then fills the detail-owned columns.
+    await run({
+      endpoints: [listItem('PC01', 'Default')],
+      details: [{ vendorEndpointId: 'em-d1', fqdn: 'pc01.corp.example.test', ipAddresses: ['192.0.2.10'], osName: 'Windows 11 Pro', osPlatform: 'windows', endpointType: 'workstation', online: true, health: 'healthy', agentVersion: '2026.9' }],
+    }, '2026-12-16T10:00:00Z');
+    expect(await row()).toMatchObject({ hostname: 'PC01', fqdn: 'pc01.corp.example.test', os_name: 'Windows 11 Pro', os_platform: 'windows', online: true, health: 'healthy', ip_addresses: ['192.0.2.10'] });
+
+    // Run 2: list-only (the list says unknown/null for everything detail-owned) -> they SURVIVE; hostname/policy overwrite.
+    await run({ endpoints: [listItem('PC01-renamed', 'Servers')], details: [] }, '2026-12-16T11:00:00Z');
+    expect(await row()).toMatchObject({
+      hostname: 'PC01-renamed', policy_name: 'Servers', fqdn: 'pc01.corp.example.test', os_name: 'Windows 11 Pro', os_platform: 'windows',
+      endpoint_type: 'workstation', online: true, health: 'healthy', agent_version: '2026.9', ip_addresses: ['192.0.2.10'],
+    });
+
+    // Run 3: the detail says the device left its domain (explicit null) but has no OS key -> fqdn clears, osName stays.
+    await run({ endpoints: [listItem('PC01-renamed', 'Servers')], details: [{ vendorEndpointId: 'em-d1', fqdn: null }] }, '2026-12-16T12:00:00Z');
+    expect(await row()).toMatchObject({ fqdn: null, os_name: 'Windows 11 Pro', online: true });
   });
 });

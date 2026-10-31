@@ -2367,6 +2367,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   apply_cis_remediation: { resource: 'devices', action: 'execute' },
   get_huntress_status: { resource: 'devices', action: 'read' },
   get_huntress_incidents: { resource: 'devices', action: 'read' },
+  get_huntress_agents: { resource: 'devices', action: 'read' },
   sync_huntress_data: { resource: 'organizations', action: 'write' },
   // User risk scoring tools
   get_user_risk_scores: { resource: 'users', action: 'read' },
@@ -3049,6 +3050,23 @@ export function isReadOnlyResolution(
   if (TIER1_NON_READONLY_TOOLS.has(toolName)) return false;
   return check.tier === 1
     || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
+}
+
+/**
+ * #10027: true for a call to a registry-Tier-3 tool whose action a per-action
+ * table rates below Tier 3 but which is NOT read-only by `isReadOnlyResolution`
+ * (today only `edr_endpoint_action` `scan`: Tier 2 by #8167, starts an EDR
+ * scan). With MCP_TIER3_INTENTS_ENABLED on, the MCP gate runs a below-Tier-3
+ * action on a Tier-3 tool directly only when it is read-only; this is every
+ * other one, filed for approval at the tool's Tier 3. Read-only needs an
+ * explicit opt-in (TIER2_READONLY_ACTIONS / TIER2_READONLY_TOOLS) at Tier 2,
+ * so a new Tier-2 action lands here, approval-gated, by default.
+ */
+export function needsRegistryTier3Approval(
+  toolName: string,
+  check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
+): boolean {
+  return getToolTier(toolName) === 3 && check.tier < 3 && !isReadOnlyResolution(toolName, check);
 }
 
 /**

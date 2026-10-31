@@ -1179,5 +1179,10 @@
     "checking": "Comprobando",
     "unverified": "Sin verificar",
     "failed": "Falló la comprobación de integridad"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "Se omitió {{count}} punto de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "summary_other": "Se omitieron {{count}} puntos de reanálisis: las uniones y los puntos de montaje no se siguen ni se restauran. Es lo esperado, no es un error.",
+    "showDetails": "Mostrar rutas omitidas"
   }
 }

@@ -26,6 +26,7 @@ import { launchSpecialistInputSchema, launchSpecialistShape, wispSpecialistReque
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { RequestSpecialistResult } from './wisp/coordinator';
 import { WISP_SPECIALIST_REQUEST_TOOL } from './wisp/specialistPolicy';
+import { specialistRefusalMessage } from './wisp/specialistRefusalMessages';
 
 import { loadReleasableCarrierIntent } from './wisp/specialistCarrier';
 import { z } from 'zod';
@@ -44,6 +45,9 @@ function render(result: RequestSpecialistResult): string {
     return JSON.stringify({
       error: result.refused,
       ...(result.detail ? { detail: result.detail } : {}),
+      // #10193: the sentence the model reads back — the launcher's own (it can
+      // name the agent) or one derived from the code and detail.
+      message: result.message ?? specialistRefusalMessage(result.refused, result.detail),
       // bulk_reply_incomplete: what was and was not sent, stored on the intent.
       ...(result.report ? { report: result.report } : {}),
     });

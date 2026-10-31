@@ -7,7 +7,12 @@ import GaugeWidget from './GaugeWidget';
 import { formatAxisLabel } from './ChartWidget';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  // The SLA empty state (#9940) reads the caller's grants.
+  useAuthStore: (selector: (state: unknown) => unknown) => selector({ user: { permissions: [] } })
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -67,13 +72,14 @@ describe('Analytics papercuts (#9650)', () => {
     expect(formatAxisLabel('Week 3')).toBe('Week 3');
   });
 
-  it('hides the SLA card until a definition exists', async () => {
+  it('hides the SLA card until a definition exists, showing the empty state instead (#9940)', async () => {
     window.location.hash = 'sla';
     routes['/analytics/sla'] = { data: [] };
     render(<AnalyticsPage />);
     // "Updated <time>" is set only after every request (incl. SLA) has settled.
     await screen.findByText(/^Updated /);
     expect(screen.queryByText('SLA Compliance', { selector: 'p' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('analytics-sla-empty')).toBeInTheDocument();
   });
 
   it('sends the selected range to /metrics so sessions follow it', async () => {

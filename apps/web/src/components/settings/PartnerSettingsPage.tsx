@@ -86,11 +86,20 @@ export default function PartnerSettingsPage() {
   useUnsavedGuard(isDirty, t('partnerSettingsPage.unsavedConfirm'));
 
   const { load, markNoPartner } = me;
+  // The partner this page last loaded. `contextLoading` flips with every org
+  // store fetch (partners, orgs, sites) while the partner id stays the same;
+  // reloading on each flip re-read partners/me and every side read, and wiped
+  // the form mid-edit (#9949). Only a partner change reloads; Retry calls
+  // `load` directly.
+  const loadedPartnerRef = useRef<string | null>(null);
   useEffect(() => {
     if (currentPartnerId) {
+      if (loadedPartnerRef.current === currentPartnerId) return;
+      loadedPartnerRef.current = currentPartnerId;
       void load();
       return;
     }
+    loadedPartnerRef.current = null;
     if (contextLoading) return;
     // No partner context in store yet. Seed it from the JWT (handles
     // first-login and cleared-storage cases where currentPartnerId is null).
@@ -362,7 +371,7 @@ export default function PartnerSettingsPage() {
             )}
 
             {activeTab === 'security' && card(
-              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} />
+              <PartnerSecurityTab data={state.security} onChange={v => update('security', v)} status={me.ipStatus} statusUnavailable={me.ipStatusUnavailable} serverErrors={me.securityServerErrors} />
             )}
             {/* Caller verification (#6354): partner baseline; the rail hides the
                 tab (and the form renders nothing) unless the server flag is on. */}
