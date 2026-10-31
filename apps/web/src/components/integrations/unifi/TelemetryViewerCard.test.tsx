@@ -80,6 +80,7 @@ describe("TelemetryViewerCard", () => {
   it("renders measured zeros as 0 and the exact 'wireless clients' label", () => {
     renderCard({
       online: true,
+      wifiCapable: true,
       controllerState: "ONLINE",
       cpuPct: 0,
       memPct: 0,
@@ -114,6 +115,58 @@ describe("TelemetryViewerCard", () => {
 
   it("no stale label when offline with zero/absent uplink or when online", () => {
     renderCard({ online: false, uplinkRxRateBps: 0, uplinkTxRateBps: null });
+    expect(screen.queryByTestId("unifi-telemetry-stale-uplink")).toBeNull();
+  });
+
+  const radioFixture = {
+    radioOverview: [{ frequencyGHz: 5, channel: 36, channelWidthMHz: 80, wlanStandard: "ax" }],
+    radioStatistics: [{ frequencyGHz: 5, txRetriesPct: 0 }],
+  };
+
+  it("hides the radio line for non wifi-capable devices (false/undefined)", () => {
+    const a = renderCard({ wifiCapable: false, ...radioFixture });
+    expect(screen.queryByTestId("unifi-telemetry-radios")).toBeNull();
+    a.unmount();
+    renderCard({ ...radioFixture });
+    expect(screen.queryByTestId("unifi-telemetry-radios")).toBeNull();
+  });
+
+  it("shows the radio line for wifi-capable AP with radios", () => {
+    renderCard({ wifiCapable: true, ...radioFixture });
+    expect(screen.getByTestId("unifi-telemetry-radios")).toBeTruthy();
+  });
+
+  it("shows 'As of' + time when the row is stale and not the offline-uplink case", () => {
+    renderCard({
+      online: true,
+      isStale: true,
+      wifiStatisticsObservedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    });
+    const asOf = screen.getByTestId("unifi-telemetry-as-of");
+    expect(asOf).toHaveTextContent(/^As of\s+\S+/);
+    expect(screen.queryByTestId("unifi-telemetry-stale-uplink")).toBeNull();
+  });
+
+  it("offline + positive uplink keeps lastReportedStale and not the as-of label", () => {
+    renderCard({
+      online: false,
+      isStale: true,
+      uplinkRxRateBps: 1_000_000,
+      wifiStatisticsObservedAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    expect(screen.getByTestId("unifi-telemetry-stale-uplink")).toHaveTextContent(
+      "Last reported / stale",
+    );
+    expect(screen.queryByTestId("unifi-telemetry-as-of")).toBeNull();
+  });
+
+  it("shows neither label when not stale", () => {
+    renderCard({
+      online: true,
+      isStale: false,
+      wifiStatisticsObservedAt: new Date().toISOString(),
+    });
+    expect(screen.queryByTestId("unifi-telemetry-as-of")).toBeNull();
     expect(screen.queryByTestId("unifi-telemetry-stale-uplink")).toBeNull();
   });
 

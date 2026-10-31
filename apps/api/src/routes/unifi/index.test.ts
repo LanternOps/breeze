@@ -83,9 +83,11 @@ vi.mock('../../db/schema', () => ({
   },
   unifiDeviceTelemetry: {
     siteId: 'unifi_device_telemetry.site_id',
+    orgId: 'unifi_device_telemetry.org_id',
   },
   unifiClients: {
     siteId: 'unifi_clients.site_id',
+    orgId: 'unifi_clients.org_id',
   },
   sites: {
     id: 'sites.id',
@@ -983,6 +985,22 @@ describe('unifi routes', () => {
     const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ devices: [{ id: 'dt1' }], clients: [{ id: 'cl1' }] });
+  });
+
+  it('GET /telemetry scopes both reads by the site org as well as the site id', async () => {
+    const devWhere = vi.fn(async () => [] as any[]);
+    const cliWhere = vi.fn(async () => [] as any[]);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => [{ id: SITE_ID, orgId: ORG_ID }]) })) })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: devWhere })) } as any)
+      .mockReturnValueOnce({ from: vi.fn(() => ({ where: cliWhere })) } as any);
+    const res = await unifiRoutes.request(`/telemetry?siteId=${SITE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const dump = (fn: typeof devWhere) => JSON.stringify((fn.mock.calls[0] as unknown[])[0]);
+    expect(dump(devWhere)).toContain('unifi_device_telemetry.org_id');
+    expect(dump(devWhere)).toContain(ORG_ID);
+    expect(dump(cliWhere)).toContain('unifi_clients.org_id');
+    expect(dump(cliWhere)).toContain(ORG_ID);
   });
 
   it('GET /telemetry keeps the raw columns and adds the Wi-Fi read model fields', async () => {

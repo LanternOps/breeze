@@ -120,6 +120,23 @@ describe('UniFi Wi-Fi current-state materializer', () => {
     expect(ap1).toMatchObject({ org_id: f.scope.orgId, site_id: f.scope.siteId });
   });
 
+  it('confirms an AP from non-empty device_details radios when the list carries no wifi signal', async () => {
+    const f = await fixture();
+    const unknownRow = { ...apRow('ap-1'), features: null, interfaces: null };
+    const poll = await f.report([
+      f.resource('device_list', [unknownRow, switchRow('sw-1')]),
+      f.resource('client_list', [clientRow('c1', 'ap-1')]),
+      f.resource('device_details', [detailRow('ap-1', OVERVIEW), detailRow('sw-1', [])]),
+      f.resource('statistics', [statRow('ap-1'), statRow('sw-1')]),
+    ], -30_000);
+    expect((await f.adapt(poll)).accepted).toBe(true);
+    const rows = await f.rows();
+    expect(rows.get('ap-1')).toMatchObject({ num_clients: 1 });
+    expect(rows.get('ap-1')!.wifi_statistics_observed_at).not.toBeNull();
+    expect(rows.get('ap-1')!.wifi_radio_statistics).toEqual([{ frequencyGHz: 5, txRetriesPct: 0 }]);
+    expect(rows.get('sw-1')).toMatchObject({ wifi_statistics_observed_at: null, num_clients: null });
+  });
+
   it('ignores statistics reported for a non-AP: its statistics columns stay null while the AP still writes', async () => {
     const f = await fixture();
     const poll = await f.report([

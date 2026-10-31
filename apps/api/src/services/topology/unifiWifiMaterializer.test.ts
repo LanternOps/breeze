@@ -104,6 +104,28 @@ describe('buildUnifiWifiRows (real-evidence fixture)', () => {
     expect(rows.get('ap-u6lr-online')!.statisticsObservedAt).toEqual(capturedAt); // APs still write
   });
 
+  it('confirms an AP from a non-empty device_details radios list even without a wifi feature/interface in the list', () => {
+    const resources = fixtureResources();
+    const list = resourceOf(resources, 'device_list');
+    const e7 = (list.rows as { deviceId: string; features: string[] | null; interfaces: string[] | null }[]).find(r => r.deviceId === 'ap-e7-online')!;
+    e7.features = null;
+    e7.interfaces = null;
+    const rows = byDevice(build(resources));
+    const row = rows.get('ap-e7-online')!;
+    expect(row.wifiCapable).toBeNull(); // the list itself stays unknown; radios only confirm for statistics/counts
+    expect(row.radioStatistics).not.toBeNull();
+    expect(row.statisticsObservedAt).toEqual(capturedAt);
+    expect(row.numClients).toBe(5);
+    expect(row.clientsObservedAt).toEqual(capturedAt);
+  });
+
+  it('keeps a non-AP without radios (switch) at null statistics and null count', () => {
+    const sw = byDevice(build(fixtureResources())).get('sw-1')!;
+    expect(sw.radioStatistics).toBeNull();
+    expect(sw.statisticsObservedAt).toBeNull();
+    expect(sw.numClients).toBeNull();
+  });
+
   it('carries the radio overview, the raw controller state and the heartbeat metadata', () => {
     const rows = byDevice(build(fixtureResources()));
     expect(rows.get('ap-e7-online')!.radioOverview).toHaveLength(3);

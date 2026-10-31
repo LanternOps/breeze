@@ -469,8 +469,8 @@ unifiRoutes.get('/telemetry', partnerScopes, readPerm, async (c) => {
   // site outside their allowlist even within an org they can access. Unrestricted
   // (partner-wide) callers have canAccessSite undefined → no-op.
   if (auth.canAccessSite && !auth.canAccessSite(siteId)) return c.json({ error: 'Access to this site denied' }, 403);
-  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(eq(unifiDeviceTelemetry.siteId, siteId));
-  const clientsOut = await db.select().from(unifiClients).where(eq(unifiClients.siteId, siteId));
+  const devicesOut = await db.select().from(unifiDeviceTelemetry).where(and(eq(unifiDeviceTelemetry.siteId, siteId), eq(unifiDeviceTelemetry.orgId, site.orgId)));
+  const clientsOut = await db.select().from(unifiClients).where(and(eq(unifiClients.siteId, siteId), eq(unifiClients.orgId, site.orgId)));
   return c.json({ devices: devicesOut.map(toUnifiTelemetryDevice), clients: clientsOut });
 });
 

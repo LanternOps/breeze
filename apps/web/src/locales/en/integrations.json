@@ -1150,6 +1150,7 @@
     "uplinkRx": "Uplink RX",
     "uplinkTx": "Uplink TX",
     "lastReportedStale": "Last reported / stale",
+    "asOf": "As of",
     "channel": "Channel",
     "width": "Width",
     "wlanStandard": "WLAN standard",

@@ -194,7 +194,12 @@ export default function TelemetryViewerCard({
                               {staleAt ? ` · ${formatLastSeen(staleAt)}` : ""}
                             </p>
                           )}
-                          {radios.length > 0 && (
+                          {!showStale && d.isStale === true && staleAt && (
+                            <p className="mt-1" data-testid="unifi-telemetry-as-of">
+                              {t("unifiIntegration.asOf")} {formatLastSeen(staleAt)}
+                            </p>
+                          )}
+                          {d.wifiCapable === true && radios.length > 0 && (
                             <ul className="mt-1 space-y-0.5" data-testid="unifi-telemetry-radios">
                               {radios.map((r, i) => (
                                 <li key={`${r.frequencyGHz}-${i}`} data-testid="unifi-telemetry-radio">

@@ -1171,6 +1171,7 @@
     "uplinkRx": "Liaison montante RX",
     "uplinkTx": "Liaison montante TX",
     "lastReportedStale": "Dernier rapport / périmé",
+    "asOf": "En date du",
     "channel": "Canal",
     "width": "Largeur",
     "wlanStandard": "Norme WLAN",

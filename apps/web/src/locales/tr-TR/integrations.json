@@ -1171,6 +1171,7 @@
     "uplinkRx": "Uplink RX",
     "uplinkTx": "Uplink TX",
     "lastReportedStale": "Son bildirilen / eski",
+    "asOf": "Tarih:",
     "channel": "Kanal",
     "width": "Genişlik",
     "wlanStandard": "WLAN standardı",
