@@ -1407,7 +1407,11 @@
           },
           "alertSuppressed": {
             "label": "Alerte mise en sourdine",
-            "description": "Déclenché lorsque Breeze AI met une alerte en sourdine. La mise en sourdine depuis le tableau de bord n’envoie pas encore cet événement."
+            "description": "Déclenché lorsqu’une alerte est mise en sourdine."
+          },
+          "alertEscalated": {
+            "label": "Alerte escaladée",
+            "description": "Déclenché lorsqu’une étape d’une politique d’escalade s’exécute pour une alerte toujours active."
           }
         },
         "fields": {

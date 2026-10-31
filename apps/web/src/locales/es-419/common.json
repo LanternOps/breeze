@@ -1407,7 +1407,11 @@
           },
           "alertSuppressed": {
             "label": "Alerta suprimida",
-            "description": "Se activa cuando Breeze AI suprime una alerta. Suprimirla desde el panel todavía no envía este evento."
+            "description": "Se activa cuando se suprime una alerta."
+          },
+          "alertEscalated": {
+            "label": "Alerta escalada",
+            "description": "Se activa cuando se ejecuta un paso de una política de escalamiento para una alerta que sigue activa."
           }
         },
         "fields": {

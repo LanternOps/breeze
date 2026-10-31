@@ -42,7 +42,14 @@ const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted
   };
   const dbMock = {
     select: () => ({
-      from: () => ({ where: () => ({ limit: () => Promise.resolve(selectRows.shift() ?? []) }) }),
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(selectRows.shift() ?? []),
+          // POST /alerts/bulk awaits the `.where()` directly (no `.limit()`).
+          then: (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) =>
+            Promise.resolve(selectRows.shift() ?? []).then(ok, bad),
+        }),
+      }),
     }),
     update: () => ({
       set: () => ({
@@ -98,6 +105,20 @@ vi.mock('../../services/mlFeedbackEmitters', () => ({
 vi.mock('../../services/ticketService', () => ({
   createTicketFromAlert: vi.fn(),
   TicketServiceError: class TicketServiceError extends Error { status = 400; },
+}));
+// POST /alerts/bulk resolves permissions inside the handler (needs `action`).
+vi.mock('../../services/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/permissions')>();
+  return {
+    ...actual,
+    getUserPermissions: async () => ({ granted: new Set(['alerts:write']) }),
+    hasPermission: (perms: { granted?: Set<string> } | null, resource: string, action: string) =>
+      perms?.granted?.has(`${resource}:${action}`) ?? false,
+  };
+});
+vi.mock('../tickets/siteScope', () => ({
+  filterAlertsBySiteScope: async (_auth: unknown, rows: unknown[]) => rows,
+  deviceInSiteScope: async () => true,
 }));
 vi.mock('./helpers', () => ({
   getPagination: () => ({ page: 1, limit: 50, offset: 0 }),
@@ -233,6 +254,7 @@ describe('POST /alerts/:id/suppress — the losing caller', () => {
 
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toEqual({ error: SUPPRESS_CAS_LOST });
+    expect(publishEvent).not.toHaveBeenCalled();
     expect(emitAlertStateFeedback).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
@@ -247,6 +269,56 @@ describe('POST /alerts/:id/suppress — the winning caller', () => {
     expect(res.status).toBe(200);
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+  });
+
+  // #10573: only the AI tool used to publish alert.suppressed, so a webhook or
+  // flow subscribed to it never fired for a dashboard/API suppress.
+  it('publishes alert.suppressed once, with the shared payload shape', async () => {
+    updateReturns.push([{ ...alertRow, status: 'suppressed' }]);
+    vi.useFakeTimers({ now: new Date('2098-12-31T22:00:00.000Z'), toFake: ['Date'] });
+    try {
+      expect((await suppressRequest()).status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(publishEvent.mock.calls[0]).toEqual([
+      'alert.suppressed',
+      alertRow.orgId,
+      {
+        alertId: alertRow.id,
+        ruleId: null,
+        deviceId: alertRow.deviceId,
+        suppressedBy: 'user-1',
+        suppressedUntil: suppressUntil,
+        durationHours: 2,
+      },
+      'alerts-route',
+      { userId: 'user-1' },
+    ]);
+  });
+
+  it('publishes an indefinite suppression with null until and null duration', async () => {
+    updateReturns.push([{ ...alertRow, status: 'suppressed' }]);
+
+    expect((await suppressRequest({})).status).toBe(200);
+
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(publishEvent.mock.calls[0]?.[2]).toMatchObject({ suppressedUntil: null, durationHours: null });
+  });
+
+  it('still answers 200 when the event bus is down — the suppression already landed', async () => {
+    updateReturns.push([{ ...alertRow, status: 'suppressed' }]);
+    publishEvent.mockRejectedValueOnce(new Error('redis down'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await suppressRequest()).status).toBe(200);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('alert.suppressed'), expect.anything());
+    } finally {
+      error.mockRestore();
+    }
+    expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a dismissed alert a 400', async () => {
@@ -281,5 +353,44 @@ describe('POST /alerts/:id/suppress — the shipped predicate (compiled SQL)', (
     const res = await suppressRequest();
 
     expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /alerts/bulk suppress — alert.suppressed (#10573)', () => {
+  const bulkSuppress = (body: Record<string, unknown>) =>
+    app.request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'suppress', ...body }),
+    });
+  const second = { ...alertRow, id: '44444444-4444-4444-8444-444444444444', ruleId: 'rule-2', deviceId: 'device-2' };
+
+  it('publishes once per alert whose CAS won, and not for the loser', async () => {
+    selectRows.push([alertRow, second]);
+    updateReturns.push([{ id: alertRow.id }], []); // second alert lost the race
+
+    const res = await bulkSuppress({ alertIds: [alertRow.id, second.id], until: suppressUntil });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ updated: 1, skipped: 1 });
+    expect(publishEvent).toHaveBeenCalledTimes(1);
+    expect(publishEvent.mock.calls[0]?.[0]).toBe('alert.suppressed');
+    expect(publishEvent.mock.calls[0]?.[2]).toMatchObject({
+      alertId: alertRow.id,
+      ruleId: null,
+      deviceId: alertRow.deviceId,
+      suppressedBy: 'user-1',
+      suppressedUntil: suppressUntil,
+    });
+    expect(publishEvent.mock.calls[0]?.[3]).toBe('alerts-route');
+  });
+
+  it('skips terminal alerts without publishing', async () => {
+    selectRows.push([{ ...alertRow, status: 'resolved' }]);
+
+    const res = await bulkSuppress({ alertIds: [alertRow.id] });
+
+    expect(res.status).toBe(200);
+    expect(publishEvent).not.toHaveBeenCalled();
   });
 });

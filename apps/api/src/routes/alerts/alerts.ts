@@ -30,6 +30,7 @@ import {
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  publishAlertSuppressed,
   buildUnsuppressAlertCas,
 } from '../../services/alertService';
 import { acknowledgeAlert } from '../../services/alertActions';
@@ -808,9 +809,14 @@ alertsRoutes.post(
         results.updated++;
         updatedIds.push(alert.id);
 
-        // The single suppress/dismiss endpoints don't publish an event-bus event,
-        // only ML feedback — mirror that here and keep publishEvent for ack/resolve.
-        if (action === 'acknowledge' || action === 'resolve') {
+        // Dismiss publishes no event-bus event, only ML feedback (no
+        // `alert.dismissed` event type exists). Suppress goes through the shared
+        // producer so its payload matches the single route and the AI tool.
+        if (action === 'suppress') {
+          await publishAlertSuppressed({
+            alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route', now,
+          });
+        } else if (action === 'acknowledge' || action === 'resolve') {
           try {
             await publishEvent(
               action === 'acknowledge' ? 'alert.acknowledged' : 'alert.resolved',
@@ -1138,6 +1144,10 @@ alertsRoutes.post(
     if (!updated) {
       return c.json({ error: ALERT_SUPPRESS_CAS_LOST_MESSAGE }, 409);
     }
+
+    await publishAlertSuppressed({
+      alert, suppressedBy: auth.user.id, suppressedUntil, source: 'alerts-route',
+    });
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
