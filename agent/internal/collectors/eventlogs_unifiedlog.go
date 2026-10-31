@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,13 @@ type unifiedLogEntry struct {
 	MessageType      string `json:"messageType"` // Default, Info, Debug, Error, Fault
 	ProcessImagePath string `json:"processImagePath"`
 	ProcessID        int    `json:"processID"`
+
+	// Per-entry identity for unifiedLogEntryEventID. Captured raw so an
+	// unexpected JSON type can never fail the whole `log show` parse.
+	MachTimestamp json.RawMessage `json:"machTimestamp"`
+	BootUUID      json.RawMessage `json:"bootUUID"`
+	ThreadID      json.RawMessage `json:"threadID"`
+	TraceID       json.RawMessage `json:"traceID"`
 }
 
 // unifiedLogEvents converts parsed `log show` entries to events, keeping only
@@ -124,7 +132,7 @@ func unifiedLogEvents(entries []unifiedLogEntry, securityEnabled, hardwareEnable
 			Level:     level,
 			Category:  classifyUnifiedLogCategory(e.Subsystem, e.EventMessage, securityEnabled, hardwareEnabled),
 			Source:    truncateCollectorString(source),
-			EventID:   truncateCollectorString(fmt.Sprintf("%s:%d", source, e.ProcessID)),
+			EventID:   unifiedLogEntryEventID(fmt.Sprintf("%s:%d", source, e.ProcessID), e),
 			Message:   truncateString(e.EventMessage, 500),
 			Details: map[string]any{
 				"subsystem":   truncateCollectorString(e.Subsystem),

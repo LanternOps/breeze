@@ -2,7 +2,6 @@ package collectors
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -14,6 +13,7 @@ import (
 
 // journalEntry matches the JSON output of journalctl --output=json
 type journalEntry struct {
+	Cursor            string `json:"__CURSOR"`             // stable per-entry identity; see journalEntryEventID
 	RealtimeTimestamp string `json:"__REALTIME_TIMESTAMP"` // microseconds since epoch
 	SyslogIdentifier  string `json:"SYSLOG_IDENTIFIER"`
 	Unit              string `json:"_SYSTEMD_UNIT"`
@@ -41,7 +41,7 @@ func journalSecurityEvents(entries []journalEntry) []EventLogEntry {
 			Level:     level,
 			Category:  "security",
 			Source:    truncateCollectorString(e.SyslogIdentifier),
-			EventID:   truncateCollectorString(fmt.Sprintf("%s:%s", e.SyslogIdentifier, e.PID)),
+			EventID:   journalEntryEventID(e.SyslogIdentifier+":"+e.PID, e),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"unit": truncateCollectorString(e.Unit),
@@ -75,7 +75,7 @@ func journalKernelEvents(entries []journalEntry) []EventLogEntry {
 			Level:     level,
 			Category:  "hardware",
 			Source:    "kernel",
-			EventID:   truncateCollectorString(fmt.Sprintf("kernel:%s", e.PID)),
+			EventID:   journalEntryEventID("kernel:"+e.PID, e),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"pid": truncateCollectorString(e.PID),
@@ -104,7 +104,7 @@ func journalServiceFailureEvents(entries []journalEntry) []EventLogEntry {
 			Level:     level,
 			Category:  "application",
 			Source:    source,
-			EventID:   truncateCollectorString(fmt.Sprintf("%s:%s", source, e.PID)),
+			EventID:   journalEntryEventID(source+":"+e.PID, e),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"unit": truncateCollectorString(e.Unit),
@@ -147,7 +147,7 @@ func journalSystemEvents(entries []journalEntry) []EventLogEntry {
 			Level:     level,
 			Category:  "system",
 			Source:    "systemd",
-			EventID:   truncateCollectorString(fmt.Sprintf("systemd:%s:%s", e.BootID, e.PID)),
+			EventID:   journalEntryEventID("systemd:"+e.PID, e),
 			Message:   truncateString(e.Message, 500),
 			Details: map[string]any{
 				"unit":   truncateCollectorString(e.Unit),
@@ -214,6 +214,7 @@ func parseJournalJSONLines(output []byte) []journalEntry {
 		entry.Priority = truncateCollectorString(entry.Priority)
 		entry.PID = truncateCollectorString(entry.PID)
 		entry.BootID = truncateCollectorString(entry.BootID)
+		entry.Cursor = truncateCollectorString(entry.Cursor)
 		entries = append(entries, entry)
 		if len(entries) >= collectorResultLimit {
 			break

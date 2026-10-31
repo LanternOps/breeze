@@ -237,6 +237,10 @@ describe('agent event log routes', () => {
       ['missing message', { message: undefined }],
       ['null message', { message: null }],
       ['non-string message', { message: 42 }],
+      // device_event_logs.event_id is varchar(100): an over-long id used to
+      // pass validation and fail the whole insert batch (#10731).
+      ['event id longer than the varchar(100) column', { eventId: 'x'.repeat(101) }],
+      ['non-string event id', { eventId: 42 }],
     ])('drops a row with %s and preserves valid row identities', async (_label, invalid) => {
       mockDeviceLookup();
       const values = mockInsertSuccess();
@@ -261,6 +265,17 @@ describe('agent event log routes', () => {
           expect.objectContaining({ message: 'last' }),
         ],
       }));
+    });
+
+    it('accepts an event id of exactly 100 characters, counted as characters not bytes (#10731)', async () => {
+      mockDeviceLookup();
+      const values = mockInsertSuccess();
+      // 100 two-byte characters: 200 UTF-8 bytes, still fits varchar(100).
+      const id = 'ä'.repeat(100);
+      const res = await submit([makeEvent({ eventId: id })]);
+      expect(res.status).toBe(200);
+      expect(values).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ eventId: id })]);
+      expect(await res.json()).toMatchObject({ success: true, count: 1, invalidDropped: 0 });
     });
 
     it('drops non-object rows inside a valid envelope without failing the batch', async () => {

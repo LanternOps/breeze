@@ -152,7 +152,7 @@ func (c *EventLogCollector) collectCrashReports(since time.Time) ([]EventLogEntr
 				Level:     "error",
 				Category:  "application",
 				Source:    crashData.processName,
-				EventID:   fmt.Sprintf("crash:%s", name),
+				EventID:   crashReportEventID(name),
 				Message:   fmt.Sprintf("%s: %s (%s)", kind, crashData.processName, crashData.exceptionType),
 				Details: map[string]any{
 					"file":          name,
