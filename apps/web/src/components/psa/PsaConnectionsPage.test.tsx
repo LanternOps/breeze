@@ -40,6 +40,13 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: unknown) => unknown) => selector(orgStoreState),
 }));
 
+// The card has its own suite; here we only assert when the page mounts it.
+vi.mock('./PsaAlertTicketingCard', () => ({
+  default: ({ connectionId }: { connectionId: string }) => (
+    <div data-testid={`alert-ticketing-card-${connectionId}`} />
+  ),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
@@ -581,5 +588,35 @@ describe('PsaConnectionsPage round-trip contract', () => {
 
     expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
     expect(screen.queryByText(/synced tickets/i)).toBeNull();
+  });
+});
+
+describe('PsaConnectionsPage alert ticketing card mount', () => {
+  afterEach(() => {
+    ownerScopeState.isPartnerScope = false;
+  });
+
+  const connections = [
+    { id: 'cw-partner', provider: 'connectwise', name: 'MSP CW', status: 'active', ownerScope: 'partner' },
+    { id: 'cw-org', provider: 'connectwise', name: 'Org CW', status: 'active', ownerScope: 'organization' },
+    { id: 'jira-partner', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' },
+  ];
+
+  it('mounts only for a partner-owned, capable provider in a partner session', async () => {
+    ownerScopeState.isPartnerScope = true;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.getByTestId('alert-ticketing-card-cw-partner')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-ticketing-card-cw-org')).toBeNull();
+    expect(screen.queryByTestId('alert-ticketing-card-jira-partner')).toBeNull();
+  });
+
+  it('does not mount in an org-scope session', async () => {
+    ownerScopeState.isPartnerScope = false;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.queryByTestId('alert-ticketing-card-cw-partner')).toBeNull();
   });
 });

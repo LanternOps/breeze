@@ -773,6 +773,12 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     [{ ok: false, refused: 'invalid_params', detail: 'Unrecognized key: "goal"' }, { allowed: false, error: 'invalid_params', detail: 'Unrecognized key: "goal"' }],
     [{ ok: false, refused: 'no_sweep_schedule' }, { allowed: false, error: 'no_sweep_schedule' }],
     [{ ok: false, refused: 'no_effective_agent' }, { allowed: false, error: 'no_effective_agent' }],
+    // #10193: a disabled effective agent never reaches the card, and the
+    // coordinator's sentence (naming the agent) travels with the code.
+    [
+      { ok: false, refused: 'agent_disabled', detail: 'disabled', message: 'The agent "QA Patching agent" is switched off.' },
+      { allowed: false, error: 'agent_disabled', detail: 'disabled', message: 'The agent "QA Patching agent" is switched off.' },
+    ],
   ])('a deterministic refusal (%j) is returned with the coordinator\'s code and no approval is minted', async (precheck, expected) => {
     mockPrecheckSpecialistRequest.mockResolvedValue(precheck);
     const session = wispSession();
@@ -824,6 +830,33 @@ describe('createSessionPreToolUse — launch_specialist pre-approval gates (#101
     expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({
       reason: 'Wisp wants to run a health sweep at Default Organization',
     });
+  });
+
+  // #10193: the approval a Wisp session raises is attributed to Wisp, not "Breeze AI".
+  it('attributes the approval to Wisp on both the Tier-3 intent and the Tier-2 approval row + push', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-ls', actionName: 'launch_specialist' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    await createSessionPreToolUse(wispSession())('launch_specialist', { ...SWEEP, kind: 'patch_plan' });
+    expect(mockCreateActionIntent.mock.calls[0]![1]).toMatchObject({ requestingClientLabel: 'Wisp' });
+
+    allowTier(2);
+    const { values } = mockInsertReturning({ id: 'exec-1' });
+    await createSessionPreToolUse(wispSession())('launch_specialist', SWEEP);
+    const labels = values.mock.calls
+      .map((c) => (c[0] as { requestingClientLabel?: string }).requestingClientLabel)
+      .filter(Boolean);
+    expect(labels).toEqual(['Wisp']);
+    expect(mockDispatchApprovalPushToTokens).toHaveBeenCalledWith([], expect.objectContaining({ requestingClientLabel: 'Wisp' }));
+  });
+
+  it('a chat session without a Wisp grant keeps the "Breeze AI" label', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({ allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'x' } as any);
+    mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-x', actionName: 'm365_reset_password' }));
+    mockWaitForIntentDecision.mockResolvedValue('rejected');
+    await createSessionPreToolUse(makeActiveSession())('m365_reset_password', { userPrincipalName: 'a@b.test' });
+    expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateActionIntent.mock.calls[0]![1]).not.toHaveProperty('requestingClientLabel');
   });
 
   it('a precheck that cannot run falls through to the normal approval (the coordinator still gates at launch)', async () => {

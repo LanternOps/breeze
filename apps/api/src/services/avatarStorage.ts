@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
@@ -140,7 +140,7 @@ export async function writeAvatar(
   data: Buffer
 ): Promise<WriteAvatarResult | null> {
   const now = new Date();
-  const avatarUrl = avatarUrlFor(userId);
+  const avatarUrl = `${avatarUrlFor(userId)}?v=${randomUUID()}`;
 
   const [updated] = await db
     .update(users)
