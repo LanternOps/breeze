@@ -481,6 +481,19 @@ describe('compareLinuxPackageVersions — dpkg/rpm ordering for linux pins (#937
     // rpm-style release strings
     ['24.0.7-1.el9', '24.0.9-1.el9', -1],
     ['3.0.7-27.el9_4', '3.0.7-27.el9', 1],
+    // shapes distro packages hit constantly
+    ['3.0.2-0ubuntu1.10', '3.0.2-0ubuntu1.20', -1],
+    ['2.0-1ubuntu1', '2.0-1', 1],
+    ['1.0-1~bpo11+1', '1.0-1', -1],
+    // symbols sort above the end of the string; letters below other symbols
+    ['1.0+dfsg', '1.0', 1],
+    ['1.0a', '1.0', 1],
+    ['1.0a', '1.0+', -1],
+    // leading zeros are ignored; an extra component is newer (dpkg: 1.0.0 > 1.0)
+    ['1.01', '1.1', 0],
+    ['1.0.0', '1.0', 1],
+    // a candidate revision against a revision-less pin is newer (held)
+    ['5:24.0.7-1', '5:24.0.7', 1],
   ])('%s vs %s → %i', (a, b, expected) => {
     expect(compareLinuxPackageVersions(a, b)).toBe(expected);
   });
@@ -520,6 +533,31 @@ describe('linux package app rules (#9370)', () => {
     expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '5:9.0.0~rc1-1' }, rules)).toBe('allowed');
     // Unknown candidate version cannot be proven within the pin.
     expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: null }, rules)).toBe('held');
+  });
+
+  it('an unparseable linux pin holds every candidate (fail-closed)', () => {
+    const rules = buildAppRuleMap([{ source: 'linux', packageId: 'x', action: 'pin', pinnedVersion: 'x:1' }]);
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:x', version: '0.1' }, rules)).toBe('held');
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:x', version: '1' }, rules)).toBe('held');
+  });
+
+  it('a ring linux pin drops a candidate above the pin, keeps one at the pin, and beats a manual approval', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'linux', packageId: 'apt:docker-ce', version: '5:24.0.9-1' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'linux', packageId: 'apt:docker-ce', version: '5:24.0.7-1' }),
+      ],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      sources: ['os'],
+      ringAppRules: [{ source: 'linux', packageId: 'docker-ce', action: 'pin', pinnedVersion: '5:24.0.7-1' }],
+    });
+
+    expect(result.map((r) => r.patchId)).toEqual([P2]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
   });
 
   it('a ring linux block rule keeps the package out even though ring auto-approve would approve it', async () => {

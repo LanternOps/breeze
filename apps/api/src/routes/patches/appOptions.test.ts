@@ -187,6 +187,20 @@ describe('GET /app-options', () => {
     }));
   });
 
+  it('lists applications before Linux packages so OS packages cannot crowd them off the first page', async () => {
+    selectMock.mockReturnValue(selectRows([]));
+    selectDistinctMock.mockReturnValue(selectDistinctRows([
+      { source: 'linux', packageId: 'apt:adduser', vendor: null, displayName: 'adduser' },
+      { source: 'third_party', packageId: 'Zoom.Zoom', vendor: 'Zoom', displayName: 'Zoom' },
+    ]));
+
+    const res = await appOptionsRoutes.request('/app-options?limit=1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.map((option: any) => option.packageId)).toEqual(['Zoom.Zoom']);
+  });
+
   it('filters by search across name, vendor, and packageId', async () => {
     selectMock.mockReturnValue(selectRows([
       { source: 'third_party', packageId: 'Mozilla.Firefox', vendor: 'Mozilla', displayName: 'Firefox' },

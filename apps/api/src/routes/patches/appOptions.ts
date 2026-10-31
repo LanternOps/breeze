@@ -146,7 +146,11 @@ appOptionsRoutes.get(
       );
     }
 
-    options.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    // Applications first, then Linux packages: a Linux fleet reports hundreds
+    // of upgradable packages, which would otherwise crowd applications off an
+    // unsearched first page.
+    const isLinux = (option: AppOption) => (option.source === 'linux' ? 1 : 0);
+    options.sort((a, b) => isLinux(a) - isLinux(b) || a.displayName.localeCompare(b.displayName));
 
     return c.json({ data: options.slice(0, limit) });
   }
