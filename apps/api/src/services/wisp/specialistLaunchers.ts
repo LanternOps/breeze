@@ -15,9 +15,10 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { AI_SWEEP_KINDS, bulkTicketReplyParamsSchema } from '@breeze/shared';
+import { AI_SWEEP_KINDS, bulkTicketReplyParamsSchema, type AiAgentKind } from '@breeze/shared';
+import { envFlag } from '../../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiAgentRuns } from '../../db/schema/aiAgents';
+import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
 import { getAiAgentSweepQueue, getSweepOccurrenceJobId } from '../../jobs/aiAgentSweepScheduler';
@@ -33,6 +34,7 @@ import { admitTask } from '../aiOperator/taskService';
 import type { GrantCeiling } from './grantAuthority';
 import type { SpecialistKind } from './specialistPolicy';
 import { executeBulkTicketReply, type BulkTicketReplyReport } from './specialists/bulkTicketReply';
+import { agentOffMessage, type AgentOffReason } from './specialistRefusalMessages';
 
 // ---------------------------------------------------------------------------
 // Contract
@@ -42,6 +44,9 @@ export type SpecialistRefusal =
   | 'wisp_disabled' | 'not_entitled' | 'grant_inactive' | 'org_out_of_ceiling' | 'depth_exceeded'
   | 'budget_exhausted' | 'permission_missing' | 'workspace_execute_required' | 'unknown_kind'
   | 'invalid_params' | 'device_not_in_org' | 'no_sweep_schedule' | 'no_effective_agent'
+  // #10193: the effective agent exists but cannot accept a run (switched off,
+  // mode Off, or the server's agent kill switch); detail is the AgentOffReason.
+  | 'agent_disabled'
   | 'admission_skipped' | 'too_many_requests'
   // bulk_ticket_reply: the batch stopped part-way, or sent nothing at all —
   // never reported as a success (the report travels with the refusal).
@@ -49,7 +54,7 @@ export type SpecialistRefusal =
 
 export type LaunchResult =
   | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport }
-  | { refused: SpecialistRefusal; detail?: string; report?: BulkTicketReplyReport };
+  | { refused: SpecialistRefusal; detail?: string; message?: string; report?: BulkTicketReplyReport };
 
 export interface LaunchContext {
   orgId: string;
@@ -196,7 +201,12 @@ function triggerRefFor(ctx: LaunchContext, extra: Record<string, unknown> = {}):
 // Prerequisites (#10144)
 // ---------------------------------------------------------------------------
 
-export type PrerequisiteRefusal = { refused: SpecialistRefusal; detail?: string };
+/**
+ * `message`, when set, is the person-facing sentence for THIS refusal (it can
+ * name the agent); otherwise the caller derives one from the code
+ * (specialistRefusalMessages).
+ */
+export type PrerequisiteRefusal = { refused: SpecialistRefusal; detail?: string; message?: string };
 
 export interface PrerequisiteArgs {
   orgId: string;
@@ -221,6 +231,75 @@ async function findSweepSchedule(partnerId: string, orgId: string, sweepKinds: z
   }) ?? null;
 }
 
+type ResolvedAgent = NonNullable<Awaited<ReturnType<typeof resolveEffectiveAgentSystem>>>;
+
+/**
+ * Run admission rule 1 (runService): with the server's agent kill switch off,
+ * every run is skipped `kill_switch_off` before any agent is resolved. Checked
+ * first here too, so a missing agent reads as the server flag (not "create
+ * one") and an agent provisioned at launch is not assumed to run.
+ */
+const KILL_SWITCH_REFUSAL: PrerequisiteRefusal = Object.freeze({
+  refused: 'agent_disabled',
+  detail: 'kill_switch_off',
+  message: agentOffMessage('kill_switch_off', null),
+});
+
+function agentsKillSwitchOff(): boolean {
+  return !envFlag('BREEZE_AI_AGENTS_ENABLED', false);
+}
+
+/**
+ * Why an existing effective agent would be skipped at run admission (rule 2:
+ * `agent_disabled`, `mode_off`), or null when it can accept a run. Reads the
+ * merged effective policy, so an org override that switches the partner's
+ * agent off counts. The resolver also folds the kill switch into
+ * `enabled: false`; callers check the switch first.
+ */
+function agentOffReason(resolved: ResolvedAgent): AgentOffReason | null {
+  if (!resolved.effective.enabled) return agentsKillSwitchOff() ? 'kill_switch_off' : 'disabled';
+  return resolved.effective.mode === 'off' ? 'mode_off' : null;
+}
+
+/** The agent's configured name for the refusal sentence; null when it cannot be read (the sentence goes generic). */
+async function agentName(agentId: string): Promise<string | null> {
+  try {
+    const [row] = await systemRead(() => db
+      .select({ name: aiAgents.name })
+      .from(aiAgents)
+      .where(eq(aiAgents.id, agentId))
+      .limit(1));
+    return row?.name ?? null;
+  } catch (err) {
+    console.error('[wispSpecialistLaunchers] agent name lookup failed; refusing with a generic sentence', { agentId, err });
+    return null;
+  }
+}
+
+/**
+ * #10193 — `agent_disabled` for an existing agent that cannot accept a run,
+ * naming it and where to turn it on; null when it can. Every agent is created
+ * disabled (the wizard says "Created disabled"), so "an effective agent
+ * exists" is not "a run would be admitted".
+ */
+async function agentOffRefusal(resolved: ResolvedAgent): Promise<PrerequisiteRefusal | null> {
+  const reason = agentOffReason(resolved);
+  if (!reason) return null;
+  if (reason === 'kill_switch_off') return { ...KILL_SWITCH_REFUSAL };
+  return { refused: 'agent_disabled', detail: reason, message: agentOffMessage(reason, await agentName(resolved.agentId)) };
+}
+
+type LaunchableAgent = { ok: true; agentId: string } | { ok: false; refusal: PrerequisiteRefusal };
+
+/** The org's effective agent of `kind`, if one exists AND would be admitted. */
+async function resolveLaunchableAgent(orgId: string, kind: AiAgentKind): Promise<LaunchableAgent> {
+  if (agentsKillSwitchOff()) return { ok: false, refusal: { ...KILL_SWITCH_REFUSAL } };
+  const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+  if (!resolved) return { ok: false, refusal: { refused: 'no_effective_agent' } };
+  const off = await agentOffRefusal(resolved);
+  return off ? { ok: false, refusal: off } : { ok: true, agentId: resolved.agentId };
+}
+
 type ResolvedRecipeAgent =
   | { ok: true; recipe: NonNullable<ReturnType<typeof getRecipe>>; agentId: string }
   | { ok: false; refusal: PrerequisiteRefusal };
@@ -231,9 +310,9 @@ async function resolveRecipeAgent(orgId: string, params: z.infer<typeof operator
   if (!recipe) return { ok: false, refusal: { refused: 'invalid_params', detail: 'unknown_recipe' } };
   const agentKind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key] : undefined;
   if (!agentKind) return { ok: false, refusal: { refused: 'no_effective_agent' } };
-  const resolved = await resolveEffectiveAgentSystem(orgId, agentKind);
-  if (!resolved || !resolved.effective.enabled) return { ok: false, refusal: { refused: 'no_effective_agent' } };
-  return { ok: true, recipe, agentId: resolved.agentId };
+  const agent = await resolveLaunchableAgent(orgId, agentKind);
+  if (!agent.ok) return agent;
+  return { ok: true, recipe, agentId: agent.agentId };
 }
 
 async function deviceInOrg(orgId: string, deviceId: string): Promise<boolean> {
@@ -264,11 +343,19 @@ export const SPECIALIST_PREREQUISITES: Readonly<Record<SpecialistKind, (args: Pr
     const resolved = await resolveRecipeAgent(orgId, operatorRecipeParamsSchema.parse(params));
     return resolved.ok ? null : resolved.refusal;
   },
-  patch_plan: async ({ orgId }) => ((await resolveEffectiveAgentSystem(orgId, 'patch')) ? null : { refused: 'no_effective_agent' }),
-  // The research agent is provisioned at launch (ensureResearchAgent writes),
-  // so only the device is checked here.
-  remediation_research: async ({ orgId, params }) =>
-    ((await deviceInOrg(orgId, researchParamsSchema.parse(params).deviceId)) ? null : { refused: 'device_not_in_org' }),
+  patch_plan: async ({ orgId }) => {
+    const agent = await resolveLaunchableAgent(orgId, 'patch');
+    return agent.ok ? null : agent.refusal;
+  },
+  // The research agent is provisioned at launch (ensureResearchAgent writes
+  // it enabled), so a missing one passes; the kill switch, or an existing one
+  // that is switched off, is doomed.
+  remediation_research: async ({ orgId, params }) => {
+    if (!(await deviceInOrg(orgId, researchParamsSchema.parse(params).deviceId))) return { refused: 'device_not_in_org' };
+    if (agentsKillSwitchOff()) return { ...KILL_SWITCH_REFUSAL };
+    const resolved = await resolveEffectiveAgentSystem(orgId, 'research');
+    return resolved ? agentOffRefusal(resolved) : null;
+  },
   // Deterministic and agent-less: it checks every ticket when it runs.
   bulk_ticket_reply: async () => null,
 });
@@ -370,8 +457,8 @@ export async function launchOperatorRecipe(ctx: LaunchContext): Promise<LaunchRe
 /** A device-less patch-plan run (same shape as `routes/patchPlan.ts`). */
 export async function launchPatchPlan(ctx: LaunchContext): Promise<LaunchResult> {
   patchPlanParamsSchema.parse(ctx.params);
-  const resolved = await resolveEffectiveAgentSystem(ctx.orgId, 'patch');
-  if (!resolved) return { refused: 'no_effective_agent' };
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'patch');
+  if (!agent.ok) return agent.refusal;
   return admitRun(ctx, {
     orgId: ctx.orgId,
     kind: 'patch',
@@ -379,7 +466,7 @@ export async function launchPatchPlan(ctx: LaunchContext): Promise<LaunchResult>
     deviceId: null,
     profile: 'patch',
     dedupeKey: specialistDedupeKey(ctx.requestId),
-    triggerRef: triggerRefFor(ctx, { agentId: resolved.agentId }),
+    triggerRef: triggerRefFor(ctx, { agentId: agent.agentId }),
     grant: { ...ctx.grant },
   });
 }
@@ -391,8 +478,8 @@ export async function launchRemediationResearch(ctx: LaunchContext): Promise<Lau
   // The research policy does not exist until the partner baseline does
   // (fixMemory/research.ts). Opens and commits its own system transaction.
   await runOutsideDbContext(() => ensureResearchAgent(ctx.partnerId));
-  const resolved = await resolveEffectiveAgentSystem(ctx.orgId, 'research');
-  if (!resolved) return { refused: 'no_effective_agent' };
+  const agent = await resolveLaunchableAgent(ctx.orgId, 'research');
+  if (!agent.ok) return agent.refusal;
   return admitRun(ctx, {
     orgId: ctx.orgId,
     kind: 'research',

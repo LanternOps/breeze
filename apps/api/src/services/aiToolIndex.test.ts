@@ -421,14 +421,14 @@ describe('W19 lazy chat tool index (#10065)', () => {
   // always-on index or any domain block. With FLOWS_ENABLED=true the
   // always-on index stays at W04's measured 2,494 B and the scripts block is
   // unchanged by any number of flow tools.
-  it('flow tools never enter the index: always-on 2,494 B with flows on, blocks unchanged', () => {
+  it('flow tools never enter the index: always-on 2,507 B with flows on, blocks unchanged', () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       const flagOnNames = listChatSurfaceToolNames();
       expect(flagOnNames.some((n) => n.startsWith('flow__'))).toBe(false);
       const flowNames = ['flow__disk_cleanup', 'flow__sweep_offline', 'flow__weekly_report'];
       const withFlows = [...flagOnNames, ...flowNames];
-      expect(bytes(renderAlwaysOnIndex(flagOnNames))).toBe(2494);
+      expect(bytes(renderAlwaysOnIndex(flagOnNames))).toBe(2507);
       expect(renderAlwaysOnIndex(withFlows)).toBe(renderAlwaysOnIndex(flagOnNames));
       expect(renderDomainBlock('scripts', withFlows)).toBe(renderDomainBlock('scripts', flagOnNames));
       expect(renderToolIndexByDomain(withFlows)).not.toMatch(/flow__/);

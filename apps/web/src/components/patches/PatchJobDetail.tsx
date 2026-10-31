@@ -10,6 +10,12 @@ import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import type { PatchJobStatus } from './PatchJobsList';
 
+/**
+ * Skip reasons the API records when an update ring is deleted or disabled
+ * under a queued job (#8909). Other skip codes are internal and stay unshown.
+ */
+const RING_SKIP_REASONS: ReadonlySet<string> = new Set(['ring_deleted', 'ring_disabled', 'ring_unavailable']);
+
 type PatchJobResultRow = {
   id: string;
   deviceId: string;
@@ -179,6 +185,11 @@ export default function PatchJobDetail({ jobId, onClose }: PatchJobDetailProps) 
                       {result.status === 'failed' && result.errorMessage && (
                         <span data-testid={`patch-job-result-error-${result.id}`} className="break-words text-xs text-red-600 dark:text-red-400">
                           {result.errorMessage}
+                        </span>
+                      )}
+                      {result.status === 'skipped' && result.errorMessage && RING_SKIP_REASONS.has(result.errorMessage) && (
+                        <span data-testid={`patch-job-result-skip-reason-${result.id}`} className="break-words text-xs text-muted-foreground">
+                          {t(/* i18n-dynamic */ `patchJobDetail.skipReasons.${result.errorMessage}`)}
                         </span>
                       )}
                       <div className="flex flex-wrap gap-x-4 text-xs text-muted-foreground">

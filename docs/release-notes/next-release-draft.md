@@ -220,6 +220,12 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+
 ### AI assistant — ticket merge and cleanup cancel in chat (#10161)
 
 - **Merging tickets works from chat.** `manage_tickets` `merge_preview` and `merge` (with `intoTicketId` and `notifyRequester`) were offered to the model but rejected or stripped by chat's input check; chat now accepts them. MCP behaviour is unchanged. `merge` still needs approval.

@@ -147,6 +147,9 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // Full-control W14 PR B (#6784): generate an invoice (preview first, then a four-eyes generate) and a Xero push (four-eyes).
   { id: 'g112', prompt: "Generate this month's invoice for the Contoso managed services contract.", expect: [{ tool: 'manage_contracts', action: 'preview_invoice' }, { tool: 'manage_contracts', action: 'generate_invoice' }, { tool: 'list_contracts' }] },
   { id: 'g113', prompt: 'Push invoice INV-1042 to Xero.', expect: [{ tool: 'manage_accounting_sync', action: 'push' }, { tool: 'manage_accounting_sync', action: 'status' }, { tool: 'list_invoices' }] },
+  // Full-control W15 PR A (#6785): seat drift and local order staging.
+  { id: 'g114', prompt: "Which Pax8 seat counts don't match what we bill?", expect: [{ tool: 'manage_pax8_subscriptions', action: 'drift' }] },
+  { id: 'g115', prompt: 'Stage 5 more Microsoft 365 Business Premium seats for Contoso in Pax8.', expect: [{ tool: 'search_pax8_products', action: 'search' }, { tool: 'manage_pax8_orders', action: 'create_draft' }, { tool: 'manage_pax8_orders', action: 'add_line' }] },
   // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
-  { id: 'g114', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
+  { id: 'g117', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
 ];

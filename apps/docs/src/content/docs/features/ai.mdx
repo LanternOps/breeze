@@ -745,6 +745,13 @@ These tools read and change how your organizations are billed: rate cards and wo
 
 | Tool | Tier | Description |
 |------|------|-------------|
+| `get_pax8_status` | 1 | Pax8 integration health and company readiness. Full partner access required |
+| `search_pax8_products` (search/provision_details/dependencies/pricing) | 1 | Mapped products, provisioning requirements, commitments and live vendor cost |
+| `manage_pax8_subscriptions` (list/drift) | 1 | Subscription seat counts and differences from billed quantities. Full partner access required |
+| `manage_pax8_subscriptions` (sync/link/unlink) | 3 | Supervised: sync every organization's snapshots or link/unlink a subscription's billing contract line. A link decides which contract line later Pax8 orders bill; unlink means staged changes on the subscription will be refused |
+| `manage_pax8_orders` (list/get/preview) | 1 | Orders and read-only previews with live cost evidence, customer price and active commitment rules |
+| `manage_pax8_orders` (create_draft/add_line/update_line/remove_line) | 2 | Stage and edit order drafts; nothing is purchased |
+| `manage_pax8_orders` (preflight) | 3 | Supervised: send staged content to Pax8 for an isMock dry run. Nothing is purchased |
 | `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
 | `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
 | `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |

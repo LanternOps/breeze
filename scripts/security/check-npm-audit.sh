@@ -44,19 +44,83 @@ set -euo pipefail
 #   - a missing or malformed file fails the run (it never means "no rules").
 # Do not lower AUDIT_THRESHOLD to get past a single advisory; add a reviewed
 # entry instead. AUDIT_THRESHOLD=CRITICAL remains for a declared emergency only.
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
-
-THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
-LOCKFILE="pnpm-lock.yaml"
-EXCEPTIONS_FILE="scripts/security/npm-audit-exceptions.json"
-MAX_EXCEPTION_DAYS=30
+#
+# Options (all optional; with none the gate is exactly the above):
+#   --lockfile <path>       scan this lockfile instead of pnpm-lock.yaml. Its
+#                           basename must stay pnpm-lock.yaml so osv-scanner
+#                           recognises the format (else the scan fails closed).
+#   --exceptions <path>     read reviewed exceptions from this file instead.
+#   --findings-json <path>  also write the gate's classification of every
+#                           finding (schema below). Written only once the scan
+#                           has passed every integrity check and the blocking
+#                           count is known; a path left over from an earlier run
+#                           is deleted first, so the file's existence means
+#                           "the scan was sound", and a missing file means an
+#                           integrity or tooling failure. The exit status is
+#                           unchanged by this flag.
+# Relative paths resolve against the caller's working directory.
+#
+# CI's security-audit job runs the gate on the PR's base (via --lockfile and
+# --exceptions pointing at `git show <base>:…` copies) and on its head, and
+# .github/scripts/new-findings.mjs blocks only on blocking findings the head
+# adds (W1, #10744). --findings-json schema 1:
+#   { schema: 1, tool: "osv-scanner", lockfile, exceptionsFile, threshold,
+#     today, scannedPackages, lockfilePackages,
+#     findings: [{ package, version, ecosystem, id, severity, excepted,
+#                  blocking }],          # blocking = would fail this run
+#     exceptionProblems: [{ id, package, expires, status }] }  # EXPIRED|TOO_FAR
 
 fail() {
   echo "ERROR: $*" >&2
   exit 1
 }
+
+usage() {
+  echo "ERROR: $*" >&2
+  echo "usage: check-npm-audit.sh [--lockfile <path>] [--exceptions <path>] [--findings-json <path>]" >&2
+  exit 1
+}
+
+abs_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$PWD" "$1" ;;
+  esac
+}
+
+LOCKFILE="pnpm-lock.yaml"
+EXCEPTIONS_FILE="scripts/security/npm-audit-exceptions.json"
+FINDINGS_JSON=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lockfile | --exceptions | --findings-json)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage "$1 requires a value"
+      case "$1" in
+        --lockfile) LOCKFILE="$(abs_path "$2")" ;;
+        --exceptions) EXCEPTIONS_FILE="$(abs_path "$2")" ;;
+        # Removed as soon as it is named, before any later usage error can
+        # exit: a findings file from an earlier run must never be mistaken
+        # for this run's.
+        # Its directory is created here too: callers (security.yml) name a
+        # path under a directory nothing has made yet.
+        --findings-json)
+          FINDINGS_JSON="$(abs_path "$2")"
+          rm -f "$FINDINGS_JSON"
+          mkdir -p "$(dirname "$FINDINGS_JSON")" || fail "cannot create the directory for --findings-json $FINDINGS_JSON"
+          ;;
+      esac
+      shift 2
+      ;;
+    *) usage "unknown option: $1" ;;
+  esac
+done
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT_DIR"
+
+THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
+MAX_EXCEPTION_DAYS=30
+
 
 command -v osv-scanner >/dev/null 2>&1 || fail "osv-scanner not found on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq not found on PATH"
@@ -175,7 +239,7 @@ echo "osv-scanner: scanned ${scanned_count} package(s) from $LOCKFILE (lockfile 
 findings="$(jq -c --argjson active "$active_json" '
   [.results[]?.packages[]? as $p
    | $p.vulnerabilities[]?
-   | {package: $p.package.name, version: $p.package.version, id: .id,
+   | {package: $p.package.name, version: $p.package.version, ecosystem: ($p.package.ecosystem // "npm"), id: .id,
       severity: (
         def known: ["CRITICAL","HIGH","MODERATE","LOW"];
         def band: (tonumber? // 0) | if . >= 9 then "CRITICAL" elif . >= 7 then "HIGH" elif . >= 4 then "MODERATE" elif . > 0 then "LOW" else "UNSPECIFIED" end;
@@ -230,6 +294,32 @@ read -r blocking suppressed < <(jq -r --argjson min "$threshold_rank" '
   | "\(map(select(.excepted | not)) | length) \(map(select(.excepted)) | length)"
 ' <<<"$findings") || true
 [ -n "$blocking" ] && [ -n "$suppressed" ] || fail "could not compute the blocking advisory count — treating as audit failure"
+
+# Everything past this point is policy (blocking advisories, expired or
+# out-of-policy exceptions), never scan integrity — so this is where the
+# findings document may be written. Written to a temp file and moved into
+# place, so a half-written document can never be read as a sound scan.
+if [ -n "$FINDINGS_JSON" ]; then
+  findings_tmp="$(mktemp "${FINDINGS_JSON}.XXXXXX")" || fail "cannot create $FINDINGS_JSON"
+  if ! jq -n \
+    --argjson min "$threshold_rank" \
+    --argjson problems "$(jq -c '[.[] | select(.status != "ACTIVE") | {id, package, expires, status}]' <<<"$exceptions_status")" \
+    --arg lockfile "$LOCKFILE" --arg exceptions "$EXCEPTIONS_FILE" --arg threshold "$THRESHOLD" --arg today "$today" \
+    --argjson scanned "$scanned_count" --argjson locked "$lock_count" '
+      input as $findings
+      | {schema: 1, tool: "osv-scanner", lockfile: $lockfile, exceptionsFile: $exceptions,
+         threshold: $threshold, today: $today, scannedPackages: $scanned, lockfilePackages: $locked,
+         findings: [$findings[]
+           | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"LOW":1}[.severity] // 0) as $r
+           | {package, version, ecosystem, id, severity, excepted,
+              blocking: (($r >= $min or .severity == "UNSPECIFIED" or .severity == "MALICIOUS") and (.excepted | not))}],
+         exceptionProblems: $problems}
+    ' <<<"$findings" >"$findings_tmp"; then
+    rm -f "$findings_tmp"
+    fail "could not write $FINDINGS_JSON"
+  fi
+  mv -f "$findings_tmp" "$FINDINGS_JSON" || { rm -f "$findings_tmp"; fail "could not write $FINDINGS_JSON"; }
+fi
 
 if [ "$exceptions_failed" -gt 0 ] && [ "$blocking" -gt 0 ]; then
   fail "${exceptions_failed} exception(s) in $EXCEPTIONS_FILE expired or out of policy, and found ${blocking} unexcepted advisory/advisories at or above ${THRESHOLD} — see above"
