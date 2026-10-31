@@ -17,8 +17,8 @@ const watcherMaxRetries = 5
 // before a running tick clears the watcher's failure count (#10302). Resetting
 // on any running tick let an Assist that lived a few seconds, or that the
 // heartbeat relaunched just before a tick, restart forever without reaching
-// watcherMaxRetries. At the 30 s base interval, the second running tick after a
-// launch is the first that can clear it.
+// watcherMaxRetries. Only a running tick at least this long after the launch
+// clears it; earlier ticks (the short backoff after a crash) leave it alone.
 const watcherHealthyUptime = 60 * time.Second
 
 // watcherGiveUpRetry is how long a session whose watcher gave up stays given
@@ -68,12 +68,11 @@ func (w *watcher) run() {
 		if running {
 			w.mgr.reapDuplicateHelpersLocked(w.state)
 			w.mgr.trackAssistExitsLocked(w.state)
-			if w.mgr.noteAssistRunningLocked(w.state) {
-				interval = watcherBaseInterval
-			}
-			// Not yet healthy: keep the failure count and the current backoff,
-			// so a crash shortly after this tick is still counted against it.
+			// Not yet healthy: the failure count stands, so a crash after this
+			// tick is still counted against it (#10302).
+			w.mgr.noteAssistRunningLocked(w.state)
 			w.mgr.mu.Unlock()
+			interval = watcherBaseInterval
 			timer.Reset(interval)
 			continue
 		}
@@ -148,10 +147,10 @@ func (w *watcher) run() {
 
 // noteAssistRunningLocked records a tick that found Assist running. The
 // failure count is cleared only once Assist has stayed up watcherHealthyUptime
-// since its last launch by the agent (watcher or heartbeat). With no agent
-// launch recorded (Assist was already running when the agent started) the run
-// counts as healthy. Reports
-// whether the run is healthy. Must be called with m.mu held.
+// since its last launch by the agent (any ensureRunningSession caller). With
+// no agent launch recorded (Assist was already running when the agent started)
+// the run counts as healthy. Reports whether the run is healthy. Must be
+// called with m.mu held.
 func (m *Manager) noteAssistRunningLocked(state *sessionState) bool {
 	if !state.lastSpawnAt.IsZero() && m.nowTime().Sub(state.lastSpawnAt) < watcherHealthyUptime {
 		return false

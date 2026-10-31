@@ -475,8 +475,7 @@ func (m *Manager) Apply(settings *Settings) {
 		}
 		m.clearInstallFailuresLocked()
 		for _, state := range m.sessions {
-			state.watcherGaveUp = false // new binary — give it a fresh chance (#6872)
-			state.crashFailures = 0
+			state.freshCrashTracking() // new binary — give it a fresh chance (#6872)
 		}
 	}
 	if !settings.Enabled || m.isInstalled() {
@@ -1184,8 +1183,7 @@ func (m *Manager) applyPendingUpdate() {
 
 	for i, state := range stopped {
 		state.pid = 0
-		state.watcherGaveUp = false // new binary — give it a fresh chance
-		state.crashFailures = 0
+		state.freshCrashTracking() // new binary — give it a fresh chance
 		if err := m.ensureRunningSession(state); errors.Is(err, errWebView2Outdated) {
 			// The new build installed; this device's WebView2 runtime is what
 			// keeps it from starting, and rolling back cannot fix that. Keep

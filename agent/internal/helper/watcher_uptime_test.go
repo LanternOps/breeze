@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"context"
 	"os"
 	"sync"
 	"testing"
@@ -171,8 +172,8 @@ func TestHeartbeatRelaunchDoesNotLookHealthy(t *testing.T) {
 	}
 }
 
-// An Assist the agent did not launch (already running when the agent started,
-// or relaunched by the user) has no launch time and counts as healthy.
+// An Assist that was already running when the agent started has no agent
+// launch time and counts as healthy.
 func TestUnlaunchedAssistCountsAsHealthy(t *testing.T) {
 	mgr, _ := newNotInstalledManager(t)
 	mgr.now = func() time.Time { return time.Date(2026, 10, 30, 6, 0, 0, 0, time.UTC) }
@@ -180,5 +181,87 @@ func TestUnlaunchedAssistCountsAsHealthy(t *testing.T) {
 	state.crashFailures = 3
 	if !mgr.noteAssistRunningLocked(state) || state.crashFailures != 0 {
 		t.Fatalf("an Assist with no agent launch time kept failures=%d", state.crashFailures)
+	}
+}
+
+// The count now outlives the watcher goroutine, so a give-up must clear it:
+// otherwise the retry after watcherGiveUpRetry would give up on its first
+// crash instead of getting watcherMaxRetries restarts again.
+func TestCrashLoopRetryGetsAFreshCount(t *testing.T) {
+	fastWatcher(t)
+	mgr, _ := newNotInstalledManager(t)
+	clock := time.Date(2026, 10, 30, 6, 0, 0, 0, time.UTC)
+	mgr.now = func() time.Time { return clock }
+	spawns, _ := shortLivedAssist(t, mgr, 1<<30, nil)
+	t.Cleanup(mgr.Shutdown)
+	perRound := 1 + watcherMaxRetries
+
+	mgr.Apply(&Settings{Enabled: true})
+	waitWatcherDone(t, mgr)
+	mgr.mu.Lock()
+	first, left := *spawns, mgr.sessions["1"].crashFailures
+	clock = clock.Add(watcherGiveUpRetry) // the six-hour retry is due
+	mgr.mu.Unlock()
+	if first != perRound || left != 0 {
+		t.Fatalf("first round: spawns=%d crashFailures=%d, want %d and 0", first, left, perRound)
+	}
+
+	mgr.Apply(&Settings{Enabled: true})
+	waitWatcherDone(t, mgr)
+	mgr.mu.Lock()
+	total := *spawns
+	mgr.mu.Unlock()
+	if total != 2*perRound {
+		t.Fatalf("retry round spawned %d times, want %d (a full set of restarts)", total-first, perRound)
+	}
+	if issue := mgr.InstallIssue(); issue != InstallIssueCrashLoop {
+		t.Fatalf("InstallIssue() after the retry gave up = %q, want %q", issue, InstallIssueCrashLoop)
+	}
+}
+
+// #6872 path: a watcher that exits because Assist is not installed drops the
+// failure it just counted, as the goroutine-local count used to.
+func TestNotInstalledWatcherExitClearsCount(t *testing.T) {
+	mgr, _ := newNotInstalledManager(t) // binary never written
+	fastWatcher(t)
+	state := newSessionState("1", mgr.baseDir)
+	state.crashFailures = 3
+	mgr.sessions["1"] = state
+	w := newSessionWatcher(context.Background(), mgr, state)
+	t.Cleanup(func() { w.cancel(); <-w.done })
+	go w.run()
+
+	select {
+	case <-w.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not exit with the binary missing")
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if state.crashFailures != 0 || state.watcherGaveUp {
+		t.Fatalf("after a not-installed exit: crashFailures=%d watcherGaveUp=%v, want 0 and false",
+			state.crashFailures, state.watcherGaveUp)
+	}
+}
+
+// A rollback restart is a deliberate stop, not a crash: it starts the count
+// over along with leaving the give-up state.
+func TestRollbackRestartClearsCount(t *testing.T) {
+	slowWatcher(t) // registered first: restored only after Shutdown joins the watcher
+	mgr, _ := newNotInstalledManager(t)
+	mgr.now = func() time.Time { return time.Date(2026, 10, 30, 6, 0, 0, 0, time.UTC) }
+	shortLivedAssist(t, mgr, 1<<30, nil)
+	t.Cleanup(mgr.Shutdown)
+	state := newSessionState("1", mgr.baseDir)
+	state.crashFailures = 5
+	state.watcherGaveUp = true
+	mgr.sessions["1"] = state
+
+	mgr.mu.Lock()
+	mgr.restartSessionsLocked([]*sessionState{state})
+	failures, gaveUp := state.crashFailures, state.watcherGaveUp
+	mgr.mu.Unlock()
+	if failures != 0 || gaveUp {
+		t.Fatalf("after a rollback restart: crashFailures=%d watcherGaveUp=%v, want 0 and false", failures, gaveUp)
 	}
 }

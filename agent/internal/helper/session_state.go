@@ -44,13 +44,15 @@ type sessionState struct {
 
 	// crashFailures counts Assist exits since its last healthy run (#10302).
 	// It lives here rather than in the watcher goroutine so a heartbeat
-	// relaunch or a watcher restart cannot silently zero it; only
-	// noteAssistRunningLocked (after watcherHealthyUptime), a give-up, a
-	// not-a-crash watcher exit and a new Assist binary clear it.
+	// relaunch or a watcher restart cannot silently zero it. Cleared by
+	// noteAssistRunningLocked (after watcherHealthyUptime), on give-up, on a
+	// not-a-crash watcher exit, and by freshCrashTracking (new binary, rollback
+	// restart). Dropped with the state when the session goes away.
 	crashFailures int
 	// lastSpawnAt is when ensureRunningSession last launched Assist in this
-	// session, from the watcher or from Apply. Zero when the agent has not
-	// launched the running instance.
+	// session, from any caller (watcher, Apply, update, rollback). Zero only
+	// while the agent has not launched Assist in this session since it started;
+	// never cleared on exit.
 	lastSpawnAt time.Time
 
 	// launchIssue: the install-issue code of a pre-launch refusal in this
@@ -81,6 +83,14 @@ func newSessionState(key, baseDir string) *sessionState {
 		configPath: filepath.Join(sessionDir, "helper_config.yaml"),
 		statusPath: filepath.Join(sessionDir, "helper_status.yaml"),
 	}
+}
+
+// freshCrashTracking gives Assist a fresh chance after a deliberate change
+// (new binary, rollback restart): it leaves the give-up state and starts the
+// crash count over.
+func (s *sessionState) freshCrashTracking() {
+	s.watcherGaveUp = false
+	s.crashFailures = 0
 }
 
 func (s *sessionState) configUnchanged(cfg *Config) bool {
