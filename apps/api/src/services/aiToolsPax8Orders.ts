@@ -36,7 +36,7 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
   aiTools.set(TOOL, {
     tier: 1, deviceArgs: [], domain: 'billing', searchHint: 'Pax8 drafts, seat changes, cancellations, preview, submit and reconcile',
     selfManagedDbContext: ['add_line', 'preview', 'preflight', 'submit', 'reconcile'],
-    definition: { name: TOOL, description: 'Pax8 orders: drafts, preview, preflight, submit and reconcile. Submit copies preview.submitWith: four-eyes, estimated cost, terminal cancellations. Never retry unknown writes; reconcile them.', input_schema: pax8InputSchema(pax8ToolSchemas.manage_pax8_orders) },
+    definition: { name: TOOL, description: 'Pax8 orders: list, get, create_draft, add_line, update_line, remove_line, preview, preflight, submit, reconcile. Submit uses preview.submitWith: four-eyes, estimated cost, terminal cancellations. Reconcile unknown writes; never retry them.', input_schema: pax8InputSchema(pax8ToolSchemas.manage_pax8_orders) },
     handler: async (input, auth) => {
       const partner = pax8Partner(auth, input.partnerId); if ('refusal' in partner) return partner.refusal;
       const partnerId = partner.partnerId, action = String(input.action);

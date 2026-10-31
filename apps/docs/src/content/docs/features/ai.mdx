@@ -752,6 +752,8 @@ These tools read and change how your organizations are billed: rate cards and wo
 | `manage_pax8_orders` (list/get/preview) | 1 | Orders and read-only previews with live cost evidence, customer price and active commitment rules |
 | `manage_pax8_orders` (create_draft/add_line/update_line/remove_line) | 2 | Stage and edit order drafts; nothing is purchased |
 | `manage_pax8_orders` (preflight) | 3 | Supervised: send staged content to Pax8 for an isMock dry run. Nothing is purchased |
+| `manage_pax8_orders` (submit) | 3 | Four-eyes: two people approve a billable order estimated at Pax8's current rate. Changed inputs, prices or commitments refuse submission. Every CANCEL is terminal; its commitment term appears on the approval card. Not offered to AI agents |
+| `manage_pax8_orders` (reconcile) | 3 | Supervised: record an approved attempt from vendor evidence without sending another write. Ambiguous outcomes stay unknown; a concurrent billing edit is preserved and flagged as `billing_conflict` |
 | `manage_billing_profiles` (list/get/list_work_types/get_org_profile) | 1 | Rate cards with their hourly rates per work type, work types, and the card an organization is billed by |
 | `manage_billing_profiles` (create/update/archive/set_rows/clone/create_work_type/update_work_type) | 3 | Change rate cards or work types. They price every organization of the partner, so every change is approved and needs full partner access. The previous values come back with the result. Archiving a work type, and AI price-list edits after a card is created, are done in the web app |
 | `manage_billing_profiles` (set_org_profile/clear_org_profile) | 3 | Choose, or clear, the rate card one organization is billed by |
