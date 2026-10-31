@@ -37,14 +37,25 @@ vi.mock('../db', () => {
   };
 });
 
+const workerProcessorRef = vi.hoisted(() => ({ current: null as null | ((job: unknown) => Promise<unknown>) }));
 vi.mock('bullmq', () => ({
   Queue: class {
     addBulk = queueAddBulkMock;
     add = queueAddMock;
     getDelayed = queueDelayedMock;
   },
-  Worker: class {},
-  Job: class {}
+  // Captures the processor so the worker's job-type switch can be driven.
+  Worker: class {
+    constructor(_name: string, processor: (job: unknown) => Promise<unknown>) { workerProcessorRef.current = processor; }
+  },
+  Job: class {},
+  UnrecoverableError: class extends Error {}
+}));
+
+const publishEventMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'evt'));
+vi.mock('./eventBus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./eventBus')>()),
+  publishEvent: (...args: unknown[]) => publishEventMock(...args),
 }));
 
 vi.mock('./redis', () => ({
@@ -90,7 +101,8 @@ vi.mock('./notificationSenders/smsSender', () => ({
   sendSmsNotification: vi.fn()
 }));
 
-import { processAlertNotifications, cancelAlertEscalations } from './notificationDispatcher';
+import { processAlertNotifications, cancelAlertEscalations, createNotificationWorker } from './notificationDispatcher';
+import * as dbModule from '../db';
 
 function makeAlert(overrides: Record<string, unknown> = {}) {
   return {
@@ -119,6 +131,10 @@ function makeAlert(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
+
+/** queue.add calls minus the per-occurrence alert.escalated jobs (#10565). */
+const deliveryAddCalls = () => queueAddMock.mock.calls.filter(([name]) => name !== 'escalation-event');
+const eventAddCalls = () => queueAddMock.mock.calls.filter(([name]) => name === 'escalation-event');
 
 function makeJobStub(id: string, state: string = 'waiting') {
   return { id, getState: vi.fn().mockResolvedValue(state), retry: vi.fn().mockResolvedValue(undefined) };
@@ -161,8 +177,9 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     expect(result.queued).toBe(1);
     const bulkJobs = queueAddBulkMock.mock.calls[0]![0] as Array<{ data: { channelId: string } }>;
     expect(bulkJobs.map((j) => j.data.channelId)).toEqual(['aaaaaaaa-0000-4000-8000-000000000011']);
-    expect(queueAddMock).toHaveBeenCalledTimes(1);
-    expect(queueAddMock.mock.calls[0]![1]).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'aaaaaaaa-0000-4000-8000-000000000011', escalationStep: 1 });
+    expect(deliveryAddCalls()).toHaveLength(1);
+    expect(deliveryAddCalls()[0]![1]).toEqual({ type: 'send', alertId: 'alert-1', channelId: 'aaaaaaaa-0000-4000-8000-000000000011', escalationStep: 1 });
+    expect(eventAddCalls()).toHaveLength(1);
   });
 
   it('delivery_mode none is inbox only: no channel send, no routing lookup, no escalation', async () => {
@@ -227,7 +244,8 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(result.queued).toBe(0);
     expect(queueAddBulkMock).not.toHaveBeenCalled();
-    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(deliveryAddCalls()).toHaveLength(1);
+    expect(eventAddCalls()).toHaveLength(1);
   });
 
   it('an alert with both ruleId and monitorId resolves from the MONITOR, not the compiled rule\'s overrideSettings', async () => {
@@ -288,7 +306,8 @@ describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery 
     const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
     expect(result.queued).toBe(0);
     expect(queueAddBulkMock).not.toHaveBeenCalled();
-    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(deliveryAddCalls()).toHaveLength(1);
+    expect(eventAddCalls()).toHaveLength(1);
   });
 });
 
@@ -297,10 +316,14 @@ it('cancels channel and user repetitions but leaves baseline jobs alone', async 
     { type: 'send', alertId: 'alert-1', channelId: 'c', escalationStep: 11 },
     { type: 'escalation-user', alertId: 'alert-1', userId: 'u', escalationStep: 21 },
     { type: 'send', alertId: 'alert-1', channelId: 'c' },
+    { type: 'escalation-event', alertId: 'alert-1', escalationStep: 11, escalationPolicyId: 'ep1' },
+    { type: 'escalation-event', alertId: 'alert-2', escalationStep: 11, escalationPolicyId: 'ep1' },
   ].map(data => ({ data, remove: vi.fn(async () => {}) }));
   queueDelayedMock.mockResolvedValue(jobs);
-  expect(await cancelAlertEscalations('alert-1')).toBe(2);
+  expect(await cancelAlertEscalations('alert-1')).toBe(3);
   expect(jobs[2]!.remove).not.toHaveBeenCalled();
+  expect(jobs[3]!.remove).toHaveBeenCalledTimes(1);
+  expect(jobs[4]!.remove).not.toHaveBeenCalled();
 });
 
 const REVIEW_CHANNEL = 'aaaaaaaa-0000-4000-8000-000000000011';
@@ -329,7 +352,8 @@ describe('legacy escalation policy recovery (F1)', () => {
       expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('alert-1'));
       expect(warn.mock.calls[0]![0]).toEqual(expect.stringContaining('ep1'));
       expect(warn.mock.calls[0]![0]).toContain('first issue=');
-      expect(queueAddMock).toHaveBeenCalledTimes(_name === 'eleven steps' ? 10 : 0);
+      expect(deliveryAddCalls()).toHaveLength(_name === 'eleven steps' ? 10 : 0);
+      expect(eventAddCalls()).toHaveLength(_name === 'eleven steps' ? 10 : 0);
     } finally { warn.mockRestore(); }
   });
   it('salvages mixed steps with original occurrence ids', async () => {
@@ -337,10 +361,11 @@ describe('legacy escalation policy recovery (F1)', () => {
     queueReviewPolicy([{ delayMinutes: 0 }, { ...REVIEW_STEP, renotify: { everyMinutes: 5, maxTimes: 1 } }]);
     try {
       await expect(processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' })).resolves.toMatchObject({ queued: 1 });
-      expect(queueAddMock.mock.calls.map(call => call[1].escalationStep)).toEqual([2, 12]);
-      expect(queueAddMock.mock.calls.map(call => call[2].jobId)).toEqual([
+      expect(deliveryAddCalls().map(call => call[1].escalationStep)).toEqual([2, 12]);
+      expect(deliveryAddCalls().map(call => call[2].jobId)).toEqual([
         `escalation-alert-1-step2-${REVIEW_CHANNEL}`, `escalation-alert-1-step12-${REVIEW_CHANNEL}`,
       ]);
+      expect(eventAddCalls().map(call => call[2].jobId)).toEqual(['escalation-alert-1-step2-event', 'escalation-alert-1-step12-event']);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]![0]).toContain('dropped indexes=[0]');
     } finally { warn.mockRestore(); }
@@ -386,14 +411,14 @@ it('enqueues channel and user occurrences as one-shot jobs without domain repeat
   queueReviewPolicy([{ ...REVIEW_STEP, userIds: [userId], renotify: { everyMinutes: 10, maxTimes: 2 } }]);
   selectQueue.push(ORG_LOOKUP, [{ id: userId, name: 'Alex' }]);
   await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
-  expect(queueAddMock).toHaveBeenCalledTimes(6);
-  expect(queueAddMock.mock.calls.map(([name]) => name)).toEqual([
+  expect(deliveryAddCalls()).toHaveLength(6);
+  expect(deliveryAddCalls().map(([name]) => name)).toEqual([
     'send', 'escalation-user', 'send', 'escalation-user', 'send', 'escalation-user',
   ]);
-  expect(queueAddMock.mock.calls.map(([, , options]) => options.delay)).toEqual([
+  expect(deliveryAddCalls().map(([, , options]) => options.delay)).toEqual([
     300000, 300000, 900000, 900000, 1500000, 1500000,
   ]);
-  for (const [name, data, options] of queueAddMock.mock.calls) {
+  for (const [name, data, options] of deliveryAddCalls()) {
     expect(options).not.toHaveProperty('repeat');
     expect(data).not.toHaveProperty('repeat');
     expect(data).not.toHaveProperty('renotify');
@@ -402,4 +427,75 @@ it('enqueues channel and user occurrences as one-shot jobs without domain repeat
       ...(name === 'send' ? { channelId: REVIEW_CHANNEL } : { userId }),
     });
   }
+});
+
+// #10565: one alert.escalated job per escalation OCCURRENCE, enqueued beside the
+// occurrence's channel/user jobs with the same delay and a stable job id, so a
+// step that pages three channels and two users still publishes ONE event.
+describe('alert.escalated scheduling (#10565)', () => {
+  it('enqueues one escalation-event job per occurrence, not per channel or user', async () => {
+    const userId = 'aaaaaaaa-0000-4000-8000-000000000021';
+    const second = 'aaaaaaaa-0000-4000-8000-000000000012';
+    selectQueue.push(
+      [makeAlert({ monitorId: 'monitor-1' })], [{ id: 'device-1' }], ORG_LOOKUP, ORG_LOOKUP,
+      [{ kind: 'cpu', deliveryMode: 'channels', deliveryChannelIds: [REVIEW_CHANNEL], escalationPolicyId: 'ep1' }],
+      [{ id: REVIEW_CHANNEL }],
+      [{ id: 'ep1', steps: [{ delayMinutes: 5, channelIds: [REVIEW_CHANNEL, second], userIds: [userId], renotify: { everyMinutes: 10, maxTimes: 1 } }] }],
+      [{ id: REVIEW_CHANNEL }, { id: second }],
+      ORG_LOOKUP, [{ id: userId, name: 'Alex' }],
+    );
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(deliveryAddCalls()).toHaveLength(6); // 2 occurrences x (2 channels + 1 user)
+    expect(eventAddCalls()).toEqual([
+      ['escalation-event', { type: 'escalation-event', alertId: 'alert-1', escalationStep: 1, escalationPolicyId: 'ep1' },
+        expect.objectContaining({ delay: 300000, jobId: 'escalation-alert-1-step1-event' })],
+      ['escalation-event', { type: 'escalation-event', alertId: 'alert-1', escalationStep: 11, escalationPolicyId: 'ep1' },
+        expect.objectContaining({ delay: 900000, jobId: 'escalation-alert-1-step11-event' })],
+    ]);
+  });
+
+  it('enqueues no event for an occurrence none of whose targets survived validation', async () => {
+    queueReviewPolicy([REVIEW_STEP]);
+    selectQueue.pop(); // the escalation validChannels read: the policy's only channel is gone
+    selectQueue.push([]);
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(deliveryAddCalls()).toHaveLength(0);
+    expect(eventAddCalls()).toHaveLength(0);
+  });
+});
+
+describe('alert.escalated delivery path (#10565)', () => {
+  const eventJob = { type: 'escalation-event', alertId: 'alert-1', escalationStep: 1, escalationPolicyId: 'ep1' };
+
+  it('the worker dispatches escalation-event to the publisher inside system DB access', async () => {
+    createNotificationWorker();
+    vi.mocked(dbModule.withSystemDbAccessContext).mockClear();
+    publishEventMock.mockClear().mockResolvedValue('evt');
+    selectQueue.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status: 'active' }]);
+    await workerProcessorRef.current!({ name: 'escalation-event', data: eventJob });
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(publishEventMock.mock.calls[0]![0]).toBe('alert.escalated');
+  });
+
+  it('the worker propagates a publish failure so BullMQ retries the job', async () => {
+    createNotificationWorker();
+    publishEventMock.mockClear().mockRejectedValueOnce(new Error('redis down'));
+    selectQueue.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status: 'active' }]);
+    await expect(workerProcessorRef.current!({ name: 'escalation-event', data: eventJob })).rejects.toThrow('redis down');
+  });
+
+  it('a failed event enqueue does not stop later occurrences from scheduling their sends', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    queueReviewPolicy([{ ...REVIEW_STEP, renotify: { everyMinutes: 10, maxTimes: 1 } }]);
+    queueAddMock.mockImplementation(async (name: string) => {
+      if (name === 'escalation-event') throw new Error('redis blip');
+      return makeJobStub('job-1');
+    });
+    try {
+      await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+      expect(deliveryAddCalls().map(([, data]) => data.escalationStep)).toEqual([1, 11]);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('alert.escalated for alert alert-1 step 1'), expect.any(Error));
+    } finally { error.mockRestore(); }
+  });
 });

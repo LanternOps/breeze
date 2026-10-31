@@ -758,6 +758,59 @@ export function buildSuppressAlertCas(alertId: string) {
   return buildAlertStatusCas(alertId, SUPPRESSIBLE_ALERT_STATUSES);
 }
 
+/**
+ * The one producer of `alert.suppressed` (#10573). Every suppress path — the
+ * `manage_alerts` AI tool, `POST /alerts/:id/suppress` and the bulk action —
+ * calls this AFTER its suppress CAS (`buildSuppressAlertCas` or the bulk
+ * snapshot CAS) returned a row, so a lost race never publishes, and so every
+ * producer emits the same v1 payload.
+ *
+ * `durationHours` is the requested mute length: the AI tool passes the duration
+ * it was given; an end-time suppress derives it from `suppressedUntil`
+ * (2 decimals). It is null exactly when the suppression is indefinite.
+ *
+ * Never throws: the suppression is already written, so a publish failure is
+ * logged and reported as `false` for callers that surface a warning.
+ */
+export async function publishAlertSuppressed(input: {
+  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string };
+  suppressedBy: string;
+  suppressedUntil: Date | null;
+  durationHours?: number | null;
+  source: string;
+  now?: Date;
+}): Promise<boolean> {
+  const { alert, suppressedBy, suppressedUntil, source } = input;
+  const durationHours = suppressedUntil === null
+    ? null
+    : input.durationHours
+      ?? Math.round(((suppressedUntil.getTime() - (input.now ?? new Date()).getTime()) / 3_600_000) * 100) / 100;
+  try {
+    await publishEvent(
+      'alert.suppressed',
+      alert.orgId,
+      {
+        alertId: alert.id,
+        ruleId: alert.ruleId,
+        deviceId: alert.deviceId,
+        suppressedBy,
+        suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
+        durationHours,
+      },
+      source,
+      { userId: suppressedBy }
+    );
+    return true;
+  } catch (error) {
+    console.error(
+      `[AlertService] Failed to publish alert.suppressed for alert ${alert.id} (org ${alert.orgId}, source ${source}) — `
+      + 'the suppression is saved; the event is not retried:',
+      error
+    );
+    return false;
+  }
+}
+
 /** The only status an alert can be un-suppressed (restored) FROM (#8966). */
 export const UNSUPPRESSIBLE_ALERT_STATUSES = ['suppressed'] as const;
 
