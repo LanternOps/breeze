@@ -43,6 +43,7 @@ import {
   alerts,
   devices,
   partnerUsers,
+  partners,
   psaConnections,
   psaTicketMappings,
 } from '../../db/schema';
@@ -266,5 +267,37 @@ describe('GET /psa/tickets — org scoping of partner-wide connection data', () 
     const res = await client.get('/psa/tickets?limit=50');
     expect(res.status).toBe(200);
     expect(ticketIds(await res.json())).not.toContain('OTHER-ORG-SECRET');
+  });
+});
+
+// W08 admission guard: the actual partial unique index and binding resolver,
+// without a Redis wake-up (the reconciler repairs a lost enqueue).
+import { loadAdmission, insertAdmission } from '../../services/psaAlertTicketing/storage';
+import { encryptCredentials } from '../../services/psa/credentials';
+import { psaInstanceKey } from '../../services/psaAlertTicketing/config';
+describe('W08 committed admission ledger', () => {
+  it('dedupes concurrent admissions and rejects a non-external binding', async () => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const org = client.env.organization;
+    const partnerId = client.env.partner.id;
+    const credentials = { baseUrl: 'https://example-psa.test', companyId: 'example', publicKey: 'public', privateKey: 'private' };
+    const [connection] = await withDbAccessContext(SYSTEM_CTX, () => db.insert(psaConnections).values({
+      name: 'Example PSA', provider: 'connectwise', partnerId, orgId: null,
+      credentials: encryptCredentials(credentials), alertTicketingRev: 1, alertTicketingEnabledAt: new Date(),
+      alertTicketing: { enabled: true, boardId: 1, openStatusId: 2, closedStatusId: 3,
+        companyLinksConfirmedFor: psaInstanceKey('connectwise', credentials) },
+    }).returning());
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'external',
+      serviceManagementPsaConnectionId: connection!.id }).where(eq(partners.id, partnerId)));
+    const device = await seedDevice(org.id, 'admission-host');
+    const alert = await seedAlert(org.id, device, 'Admission alert');
+    const loaded = await loadAdmission(alert);
+    expect(loaded).not.toBeNull();
+    const results = await Promise.all([insertAdmission(loaded!.alert, loaded!.target, 'auto'), insertAdmission(loaded!.alert, loaded!.target, 'auto')]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const rows = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(psaTicketMappings).where(eq(psaTicketMappings.alertId, alert)));
+    expect(rows).toHaveLength(1);
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(partners).set({ serviceManagementMode: 'native' }).where(eq(partners.id, partnerId)));
+    expect(await loadAdmission(alert)).toBeNull();
   });
 });
