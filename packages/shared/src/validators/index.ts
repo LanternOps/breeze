@@ -56,6 +56,7 @@ export * from './softwareDownloadPolicy';
 export * from './softwareVersionInstallSpec';
 export * from './systemCleanup';
 export * from './psa';
+export * from './psaAlertTicketing';
 export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
