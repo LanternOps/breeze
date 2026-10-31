@@ -223,3 +223,9 @@ Update agents to a release containing this change before relying on the provider
 ### Agreements — signed copy from a reopened link (#10695)
 
 - A customer who reopens their agreement link after signing can download the certified signed copy from that page (`GET /api/v1/agreements/public/<token>/signed-copy`). Only the link that signed the agreement offers it. An agreement signed in the portal, or recorded on behalf of the customer, still says to contact the provider. Voiding or revoking the link turns the download off. The certificate shows what the emailed copy shows: the signer's name, email, IP and browser. No migration, no new environment variable.
+
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

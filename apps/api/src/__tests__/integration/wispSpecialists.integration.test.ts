@@ -217,7 +217,7 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
     const out = JSON.parse(await wispSpecialistRequestHandler(
       intent!.arguments as Record<string, unknown>, {} as AuthContext, { actionIntentId: card.intentId },
     ));
-    expect(out).toEqual({ error: 'grant_inactive' });
+    expect(out).toEqual({ error: 'grant_inactive', message: expect.stringContaining('paused, revoked or expired') });
     const children = await sys(() => db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
       .where(eq(aiAgentRuns.requestedByRunId, runId)));
     expect(children).toEqual([]);

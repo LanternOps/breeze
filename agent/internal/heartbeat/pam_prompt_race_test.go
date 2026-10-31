@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/pamdecline"
@@ -64,6 +65,28 @@ func TestCancelAfterUnprovenDismissRetriesTheUACPrompt(t *testing.T) {
 	}
 	if _, ok := r.h.pamPendingConsents.peek(elevReq); ok {
 		t.Fatal("a proven dismissal clears the record")
+	}
+}
+
+// #10734: RunPamFlow can reach its waiting card before the host has applied
+// Send request's own patch (which fences the first question's renderer). The
+// waiting card must survive that: still on Assist, its Cancel request live.
+func TestWaitingCardSurvivesAFlowThatOutrunsTheSendRequestPatch(t *testing.T) {
+	r := newElevRig(t, true, elevEnabled, elevAssist("assist-1"), elevSystem("system-1"))
+	// Hold the goroutine that handed the answer over until RunPamFlow has
+	// placed the waiting card: the interleaving that flaked ~1/300.
+	r.h.elevationAfterSettle = func() {
+		select {
+		case <-r.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	_, waiting := r.sendRequest("system-1")
+	if c := rcCloses(r.dir.take(), "assist-1"); len(c) != 0 {
+		t.Fatalf("the waiting card was taken down after it was shown: %+v", c)
+	}
+	if res := r.act("assist-1", waiting, promptkinds.ActionCancelRequest); res.Result != ipc.PromptActionAccepted {
+		t.Fatalf("cancel = %s, want Cancel request on the waiting card to work", res.Result)
 	}
 }
 

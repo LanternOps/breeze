@@ -207,6 +207,7 @@ export async function seedE2eFixtures(
           .limit(1),
       () =>
         db.insert(alerts).values({
+          ownerKind: 'device',
           orgId,
           deviceId: E2E_MACOS_DEVICE_ID,
           severity: 'medium',
@@ -224,6 +225,7 @@ export async function seedE2eFixtures(
           .limit(1),
       () =>
         db.insert(alerts).values({
+          ownerKind: 'device',
           orgId,
           deviceId: E2E_WINDOWS_DEVICE_ID,
           severity: 'critical',
