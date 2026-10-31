@@ -220,6 +220,12 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+
 ### AI: partner settings inheritance read tool (#9763)
 
 - New Tier 1 AI/MCP tool `get_partner_settings_inheritance` answers "which organizations override this partner setting, and to what?". With a settings tab it returns per-setting counts; with a setting id it lists the organizations behind one count. It uses the same gate and projection as the partner settings inheritance view: partner scope with full partner organization access only, and secret settings show set or not set only. No migration, environment variable or setting.

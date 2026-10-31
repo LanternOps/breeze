@@ -259,6 +259,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_partner_settings_inheritance', // #9763 Tier-1 read: partner settings inheritance counts + org drill-down
   'get_peripheral_activity',
   'get_playbook_history',
@@ -394,6 +395,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_documentation', // A-W02 Task 5 declared it on the chat server (Tier 1 read)
   'search_logs',
   'search_packages', // Full-control W12 (#6782): tier-1 winget/Homebrew package search, no tenant data
+  'search_pax8_products', // W15 (#6785): product metadata reads, partner scope enforced in handler
   // W01 (#6755)
   'search_script_library',
   'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)

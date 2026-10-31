@@ -38,8 +38,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'orgPortalUsers.ts',
   'orgSummary.ts',
   'patchPlan.ts',
-  'pax8.ts',
-  'pax8Orders.ts',
   'reports/recipients.ts',
   'roles.ts',
   'tickets/export.ts',
@@ -99,4 +97,10 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
       expect.arrayContaining(['list_flows', 'get_flow', 'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run']),
     );
   });
+});
+
+
+it('W15 burns down both Pax8 route gaps with the PR A surface', () => {
+  expect(MCP_COVERAGE['pax8.ts']).toEqual({ tools: ['get_pax8_status', 'manage_pax8_subscriptions'] });
+  expect(MCP_COVERAGE['pax8Orders.ts']).toEqual({ tools: ['manage_pax8_orders', 'search_pax8_products', 'manage_pax8_subscriptions'] });
 });

@@ -102,7 +102,11 @@ const EE_FILES = existsSync(EE) ? walk(EE).map((f) => `ee/${relative(EE, f).repl
 /** Every background/service module that reads devices or carries a Quick Support/ephemeral exclusion. */
 function discovered(): string[] {
   // This wrapper delegates device reads to filterEngine, so SQL discovery cannot see it.
-  const hits = new Set<string>(['services/partnerGroupPreview.ts']);
+  const hits = new Set<string>([
+    'services/partnerGroupPreview.ts',
+    // W15 (#6785): explicitly classify this billing-only service as required by the wave contract.
+    'services/pax8OrderPreview.ts',
+  ]);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
     if (DEVICE_READ.test(code) || EXCLUSION_MARKERS.test(code)) hits.add(file);
@@ -180,6 +184,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/patchSeveritySource.ts': 'provenance (vendor/derived) of device-reported severities for the patch catalog read path (#9387 gap 2); RLS + resolveOutstandingDeviceScope-scoped read, selects no targets',
   'services/scriptProposals/queries.ts': 'Proposal detail read model for the UI; device ids derived from an org-scoped proposal row',
   'services/softwarePolicyInstallPreview.ts': 'Dry-run device count shown to the operator before confirming a fleet install',
+  'services/softwarePolicyCoverage.ts': 'request path (#9635): counts which devices a software policy governs for the coverage indicator, and checks an org default list would govern any of the (already holding-org-refused) write org\'s devices; selects nothing to act on',
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',
   'services/topology/monitorOverlays.ts': 'Topology map health overlays for a human-scoped graph read',
   'services/topology/presentationGroups.ts': 'Grouped-overview read model for a human-scoped topology graph read: reads device status only to hide decommissioned agents; selects nothing to act on',
@@ -207,6 +212,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
@@ -403,6 +409,7 @@ const EXEMPT: Record<string, string> = {
   'services/partnerTrustPromotion.ts': 'reads one partner\'s device IP classes for a trust decision; no per-device action',
   'services/patchAlerts.ts': 'derived: emitters take deviceId/orgId chosen by upstream job-finalizer/reboot-worker callers',
   'services/patchEligibility.ts': 'derived: takes deviceId/orgId from job executor, AI patch plan, or release effect digest callers',
+  'services/updateRingQueuedWork.ts': 'derived: only CANCELS work already queued from a deleted ring; its device read is an existence check on the cancelled jobs\' own targets, and nothing is dispatched (#8909)',
   'services/peripheralEffectivePolicy.ts': 'derived: resolves policy for one caller-supplied deviceId; not an enumerator',
   'services/psa/ticketScope.ts': 'request path: SQL condition restricts ticket-mapping rows to the request\'s accessibleOrgIds',
   'services/quickSupportEnd.ts': 'lifecycle: Decommissions the one device tied to a caller-given session id; not fan-out',
@@ -479,6 +486,12 @@ const EXEMPT: Record<string, string> = {
 
 describe('contract: background selectors leave parked devices out', () => {
   const found = discovered();
+
+  it('W15 classifies the new Pax8 preview service as billing evidence with no device fan-out', () => {
+    expect(found).toContain('services/pax8OrderPreview.ts');
+    expect(EXEMPT['services/pax8OrderPreview.ts']).toContain('no device');
+    expect(DEVICE_READ.test(read('services/pax8OrderPreview.ts'))).toBe(false);
+  });
 
   it('discovers the expected shape of the tree (not vacuous)', () => {
     expect(found.length).toBeGreaterThan(60);

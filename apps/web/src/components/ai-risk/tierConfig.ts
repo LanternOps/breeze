@@ -284,6 +284,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_tenant_variables (list)', description: 'Tenant variables scripts receive as {{var.key}} (secret values are never shown)', category: 'Scripts & Automation' },
       { name: 'manage_support_sessions (list/get)', description: 'Quick Support sessions and whether their temporary client is online', category: 'Remote Access & Control' },
       // Full-control W14 (#6784): billing lifecycle reads (partner-scoped sessions for rates, settings and device billing).
+      { name: 'get_pax8_status', description: 'Pax8 integration health and company readiness (full partner access)', category: 'Billing' },
+      { name: 'search_pax8_products (search/provision_details/dependencies/pricing)', description: 'Mapped Pax8 products and live product requirements, commitments and vendor cost', category: 'Billing' },
+      { name: 'manage_pax8_subscriptions (list/drift)', description: 'Subscription seat counts and billing drift (full partner access)', category: 'Billing' },
+      { name: 'manage_pax8_orders (list/get/preview)', description: 'Pax8 draft orders and read-only live cost previews', category: 'Billing' },
       { name: 'manage_billing_profiles (list/get/list_work_types/get_org_profile)', description: 'Rate cards with their hourly rates per work type, work types, and the card an organization is billed by', category: 'Billing' },
       { name: 'manage_billing_settings (get_partner/get_org/currency_impact/reporting_totals)', description: 'Invoice defaults and an organization\'s tax, terms and billing contact; preview a currency change; approximate totals across currencies', category: 'Billing' },
       { name: 'manage_contract_templates (list/get/get_version/usage)', description: 'Agreement templates customers sign, their versions, and where each is used', category: 'Billing' },
@@ -431,6 +435,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // Full-control W14 (#6784): an organization-owned agreement template (a partner-wide one needs approval every time).
       { name: 'manage_contract_templates (create/update)', description: 'Create or rename an organization\'s agreement template (nothing is sent or signable until a version is published)', category: 'Billing' },
       // Full-control W14 PR B (#6784): a read that runs without a prompt.
+      { name: 'manage_pax8_orders (create_draft/add_line/update_line/remove_line)', description: 'Stage or edit an order draft; nothing is purchased', category: 'Billing' },
       { name: 'manage_contracts (preview_invoice)', description: 'What the next billing run of a contract would invoice: lines, totals, auto-issue and recipients (nothing is created)', category: 'Billing' },
       // Wisp memory (W03 #9909): remember writes an unconfirmed block.
       { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
@@ -545,6 +550,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_quotes (send/decline/create_pay_link)', description: 'Send a quote to the customer, record a decline, or create a payment link', category: 'Billing' },
       { name: 'manage_billing_catalog (update_item/archive_item/set_price/remove_price/set_org_price/remove_org_price/set_bundle_components)', description: 'Change catalog items, prices, organization price overrides, and bundles (contract renewals bill live prices)', category: 'Billing' },
       // Full-control W14 (#6784): what every organization (or one) is billed, and the legal documents customers sign.
+      { name: 'manage_pax8_subscriptions (sync/link/unlink)', description: 'Supervised: sync every organization or change which contract line later orders bill (full partner access)', category: 'Billing' },
+      { name: 'manage_pax8_orders (preflight)', description: 'Supervised: send staged order content to Pax8 for an isMock dry run', category: 'Billing' },
       { name: 'manage_billing_profiles (create/update/archive/set_rows/clone/create_work_type/update_work_type/set_org_profile/clear_org_profile)', description: 'Change rate cards and work types (every organization of the partner) or which card bills an organization', category: 'Billing' },
       { name: 'manage_billing_settings (update_partner/update_org)', description: 'Change invoice defaults, customer-facing invoice text, or an organization\'s tax, terms and billing contact', category: 'Billing' },
       { name: 'manage_contract_templates (create_version/publish/archive)', description: 'Add a draft version, publish it for signature, or archive an organization\'s agreement template (not offered to AI agents)', category: 'Billing' },
@@ -839,6 +846,10 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'browse_device_event_log', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_tenant_variables', tier: 1, permission: 'variables.read / variables.manage', category: 'Scripts & Automation' },
   { toolName: 'manage_support_sessions', tier: 1, permission: 'remote.access', category: 'Remote Access & Control' },
+  { toolName: 'get_pax8_status', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'search_pax8_products', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'manage_pax8_subscriptions', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'manage_pax8_orders', tier: 1, permission: 'billing.manage', category: 'Billing' },
   { toolName: 'manage_billing_profiles', tier: 1, permission: 'billing_profiles.read / billing_profiles.write', category: 'Billing' },
   { toolName: 'manage_billing_settings', tier: 1, permission: 'organizations.read / invoices.read / invoices.write', category: 'Billing' },
   { toolName: 'manage_contract_templates', tier: 1, permission: 'agreements.read / agreements.write', category: 'Billing' },
@@ -964,6 +975,10 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   browse_device_event_log: 'devices.execute',
   manage_tenant_variables: { list: 'variables.read', create: 'variables.manage', update: 'variables.manage', delete: 'variables.manage' },
   manage_support_sessions: 'remote.access',
+  get_pax8_status: 'billing.manage',
+  search_pax8_products: 'billing.manage',
+  manage_pax8_subscriptions: 'billing.manage',
+  manage_pax8_orders: 'billing.manage',
   manage_billing_profiles: {
     list: 'billing_profiles.read', get: 'billing_profiles.read', list_work_types: 'billing_profiles.read', get_org_profile: 'billing_profiles.read',
     create: 'billing_profiles.write', update: 'billing_profiles.write', archive: 'billing_profiles.write', set_rows: 'billing_profiles.write',

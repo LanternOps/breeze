@@ -15,11 +15,12 @@ type SqlExecutor = { execute: (query: ReturnType<typeof sql>) => Promise<unknown
  * alerts and other sites' alerts are never touched.
  *
  * Children, mirroring the device cascade (services/deviceDeletion.ts):
- * psa_ticket_mappings is deleted and log_correlations / network_change_events
- * are detached -- the NO ACTION FKs into alerts, which must be cleared first.
- * alert_correlations / alert_notifications are also deleted explicitly here,
- * though since 2026-12-13-110200 their alert FKs are ON DELETE CASCADE and
- * Postgres would remove them anyway (kept: harmless, and order-explicit).
+ * log_correlations / network_change_events are detached -- the NO ACTION FKs
+ * into alerts, which must be cleared first. alert_correlations,
+ * alert_notifications and psa_ticket_mappings are also deleted explicitly
+ * here, though their alert FKs are ON DELETE CASCADE (2026-12-13-110200;
+ * psa_ticket_mappings since 2027-01-17-210000) and Postgres would remove them
+ * anyway (kept: harmless, and order-explicit).
  * Other ON DELETE CASCADE (ticket_alert_links, alert_correlation_members,
  * ai_alert_verdicts) and SET NULL children are left to Postgres.
  *

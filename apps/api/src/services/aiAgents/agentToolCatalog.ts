@@ -322,6 +322,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_device_billing: 'business',
   // W14 PR B (#6784): accounting sync beside the invoice tools (partner-only handler; every write agent-human-only).
   manage_accounting_sync: 'business',
+  // W15 PR A (#6785): reads reachable, writes require explicit grants; handler scope gates still apply.
+  get_pax8_status: 'business',
+  search_pax8_products: 'business',
+  manage_pax8_subscriptions: 'business',
+  manage_pax8_orders: 'business',
   get_user_risk_scores: 'security_response',
   get_user_risk_detail: 'security_response',
   assign_security_training: 'security_response',
