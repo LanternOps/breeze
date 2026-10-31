@@ -106,6 +106,8 @@ type EpisodeRecord struct {
 	// Resolved is the last-known-good address set per allowlist host (and
 	// the proxy host), as installed.
 	Resolved map[string][]string `json:"resolved,omitempty"`
+	// Proxy is the permit added for the transport's effective proxy, if any.
+	Proxy *AllowEntry `json:"proxy,omitempty"`
 	// RuleDigest is the digest the isolator returned for the installed rules.
 	RuleDigest     string    `json:"ruleDigest,omitempty"`
 	Mechanism      string    `json:"mechanism,omitempty"`

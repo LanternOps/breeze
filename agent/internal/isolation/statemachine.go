@@ -397,10 +397,14 @@ func stepRelease(cur LocalState, ev Event) (LocalState, []Effect) {
 	// a system release with no episode id may clean them up.
 	if cur.Phase == journal.PhaseNone || cur.Phase == journal.PhaseReleased || cur.Phase == journal.PhaseRolledBack {
 		if cur.RulesMayExist && ev.IsolationID == "" && ev.ReleaseKind == ReleaseSystem {
-			next := cur
-			next.Phase = journal.PhaseReleasing
-			next.Release = ReleaseIntent{Kind: ReleaseSystem}
-			next.clearAttempt()
+			// The rules belong to no journalled episode: clean them up without
+			// rewriting the outcome of whatever episode the journal last held.
+			next := LocalState{
+				Phase:         journal.PhaseReleasing,
+				RulesMayExist: true,
+				Release:       ReleaseIntent{Kind: ReleaseSystem},
+				HighWaterWall: cur.HighWaterWall,
+			}
 			return next, removal
 		}
 	}
@@ -462,7 +466,11 @@ func stepAbsent(cur LocalState) (LocalState, []Effect) {
 func stepTick(cur LocalState, c Clock) (LocalState, []Effect) {
 	now := c.Now()
 	next := cur
-	next.HighWaterWall = laterOf(cur.HighWaterWall, now)
+	switch cur.Phase {
+	case journal.PhaseProvisional, journal.PhaseCommitted, journal.PhaseReleasing:
+		// The high-water mark only matters while an episode can expire.
+		next.HighWaterWall = laterOf(cur.HighWaterWall, now)
+	}
 
 	switch cur.Phase {
 	case journal.PhaseProvisional:
