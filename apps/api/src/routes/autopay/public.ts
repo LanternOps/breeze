@@ -117,6 +117,8 @@ publicAutopayRoutes.post('/:token/confirm',boundary('confirm_payment'),publicJso
     try{return c.json(await confirmInvoicePayment(c.req.param('token')));}
     catch(error){
       if(error instanceof InvoiceServiceError&&error.status===404&&error.code!=='BILLING_DISABLED')return c.json({error:'Link unavailable'},404);
+      // Expected state with billing off: answer without a log line or Sentry event.
+      if(error instanceof InvoiceServiceError&&error.code==='BILLING_DISABLED')return c.json({error:error.message,code:error.code},error.status);
       console.error('[autopay] Public confirmation failed',error);
       captureException(error,undefined,{autopay_phase:'confirm'});
       // R5: code and reason let the page tell "under review" from "still processing".

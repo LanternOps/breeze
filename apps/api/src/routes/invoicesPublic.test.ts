@@ -625,7 +625,7 @@ it('public invoice pay forwards only explicit card authorization', async () => {
   expect(res.status).toBe(200);
   expect(payLinkMock).toHaveBeenCalledWith(INV_ID, expect.anything(), expect.objectContaining({
     saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
-  }));
+  }), { billingGate: false });
 });
 it('public invoice pay refuses an unaccepted save request before Checkout', async () => {
   resolveMock.mockResolvedValue(invoice());

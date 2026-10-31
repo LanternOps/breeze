@@ -275,7 +275,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
       // family, so the two never mint competing sessions for the same charge.
       ...publicInvoiceCheckoutUrls(),
       ...body, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
-    });
+    }, { billingGate: false });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {

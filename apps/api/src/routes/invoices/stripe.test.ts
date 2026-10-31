@@ -14,15 +14,15 @@ vi.mock('../../services/stripeSessionRevocation', () => ({
 }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.9' }));
-vi.mock('../../services/invoiceBillingGate', () => ({ assertInvoiceBillingEnabled: vi.fn() }));
 vi.mock('../../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }),
+    select: (...args: unknown[]) => { selectSpy(...args); return { from: () => ({ where: () => ({ limit: async () => selectRows.value }) }) }; },
   },
 }));
 
 const selectRows: { value: unknown[] } = { value: [] };
+const selectSpy = vi.hoisted(() => vi.fn());
 vi.mock('../../services/invoiceTypes', () => ({
   InvoiceServiceError: class InvoiceServiceError extends Error {
     constructor(msg: string, public status = 400, public code?: string) { super(msg); }
@@ -38,7 +38,6 @@ import * as checkout from '../../services/invoiceCheckout';
 import { abandonInvoiceSessionRevocation } from '../../services/stripeSessionRevocation';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { assertInvoiceBillingEnabled } from '../../services/invoiceBillingGate';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const payLink = vi.mocked(checkout.createInvoicePayLink);
@@ -61,23 +60,20 @@ describe('POST /invoices/:id/pay-link', () => {
     expect(payLink).toHaveBeenCalledWith(ID, expect.objectContaining({ partnerId: 'p1' }));
   });
 
-  it('answers 404 BILLING_DISABLED before minting a link when billing is off', async () => {
-    selectRows.value = [{ orgId: 'org-1' }];
-    vi.mocked(assertInvoiceBillingEnabled).mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
+  it('maps BILLING_DISABLED from the service to the unified 404 body', async () => {
+    payLink.mockRejectedValueOnce(new InvoiceServiceError('Not found', 404, 'BILLING_DISABLED'));
     const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found', code: 'BILLING_DISABLED' });
-    expect(assertInvoiceBillingEnabled).toHaveBeenCalledWith('org-1');
-    expect(payLink).not.toHaveBeenCalled();
-    selectRows.value = [];
   });
 
-  it('mints the link when billing is on', async () => {
+  it('does not read the invoice itself before the service checks access (no billing-state oracle)', async () => {
     selectRows.value = [{ orgId: 'org-1' }];
     payLink.mockResolvedValue({ url: 'https://checkout.stripe.com/c/pay/on' });
     const res = await app().request(`/${ID}/pay-link`, { method: 'POST' });
     expect(res.status).toBe(200);
-    expect(assertInvoiceBillingEnabled).toHaveBeenCalledWith('org-1');
+    expect(selectSpy).not.toHaveBeenCalled();
+    expect(payLink).toHaveBeenCalledTimes(1);
     selectRows.value = [];
   });
 
