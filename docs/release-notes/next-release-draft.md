@@ -220,6 +220,12 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+
 ### Device list warranty column (#9863)
 
 - The device list has an opt-in **Warranty Ends** column (Column chooser → Inventory) showing each device's warranty end date and status, sortable by date. The filter bar has a **Warranty Status** field (Active / Expiring / Expired / Unknown / Subscription Active); a device with no warranty record counts as unknown. `GET /devices` rows now carry `warrantyEndDate` and `warrantyStatus` (null when there is no record). No migration, no new environment variable.

@@ -2517,6 +2517,47 @@ describe('MFA enrollment session adoption', () => {
     expect(useAuthStore.getState().tokens).toEqual(tokens);
   });
 
+  it('commits the server MFA state and replacement tokens atomically', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const tokens = { accessToken: 'replacement', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: true, mfaMethod: 'totp' },
+      tokens,
+    )).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: true, mfaMethod: 'totp' });
+    expect(useAuthStore.getState().tokens).toEqual(tokens);
+  });
+
+  it('commits factor state without changing tokens when session installation failed', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'passkey' }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: false, mfaMethod: null },
+    )).toBe(true);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false, mfaMethod: null });
+    expect(useAuthStore.getState().tokens).toEqual(baseTokens);
+  });
+
+  it('does not commit factor state or tokens from a prior session', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: false }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'new-login', expiresInSeconds: 900 };
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: false }, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaStateIfCurrent(
+      generation,
+      { mfaEnabled: true, mfaMethod: 'passkey' },
+      { accessToken: 'stale', expiresInSeconds: 900 },
+    )).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user).toMatchObject({ mfaEnabled: false });
+  });
+
   it('records the factor change without replacement tokens when the issuing session cannot be installed', () => {
     useAuthStore.getState().login({ ...baseUser, mfaEnabled: true, mfaMethod: 'totp' }, baseTokens);
     const generation = useAuthStore.getState().sessionGeneration;

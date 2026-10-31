@@ -18,7 +18,7 @@ export interface InAppNotificationPayload {
   severity: AlertSeverity;
   message: string;
   orgId: string;
-  deviceId?: string;
+  deviceId?: string | null;
   deviceName?: string;
   link?: string;
 }

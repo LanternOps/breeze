@@ -85,6 +85,37 @@ describe('AiChatSidebar shadow', () => {
   });
 });
 
+// #10107: the open panel was `fixed top-0 h-full`, so it covered the right end
+// of the app header (h-16): the bell, theme and account menu sat under it and
+// a click on them landed on the panel. The panel and its small-screen backdrop
+// must start below the header so the header stays usable while the panel is open.
+describe('AiChatSidebar leaves the app header uncovered (#10107)', () => {
+  const classesOf = (testId: string) => screen.getByTestId(testId).className.split(/\s+/);
+
+  it('docks the open panel below the header, not over it', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    const classes = classesOf('ai-chat-sidebar');
+    expect(classes).toEqual(expect.arrayContaining(['fixed', 'top-16', 'bottom-0', 'right-0']));
+    expect(classes).not.toContain('top-0');
+    expect(classes).not.toContain('h-full');
+  });
+
+  it('never overflows a viewport narrower than the panel', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    expect(classesOf('ai-chat-sidebar')).toContain('max-w-full');
+  });
+
+  it('starts the small-screen backdrop below the header too', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true });
+    render(<AiChatSidebar />);
+    const classes = classesOf('ai-chat-sidebar-backdrop');
+    expect(classes).toEqual(expect.arrayContaining(['fixed', 'top-16', 'bottom-0', 'lg:hidden']));
+    expect(classes).not.toContain('inset-0');
+  });
+});
+
 describe('AiChatSidebar permission gate (#6396)', () => {
   it('renders nothing when the user lacks ai_sessions:use', () => {
     permState.canUseAi = false;

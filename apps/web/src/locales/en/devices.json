@@ -354,7 +354,7 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Move {{count}} devices",
     "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
     "failedToMoveDevices": "Couldn't move the devices. Try again."
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Failed to create group",
-    "newDeviceGroup": "New Device Group",
-    "name": "Name",
-    "eGProductionServers": "e.g. Production Servers",
-    "type": "Type",
-    "static": "Static",
-    "dynamic": "Dynamic",
-    "manuallyAddAndRemoveDevicesAfter": "Manually add and remove devices after creation.",
-    "devicesAreAutoAssignedBasedOn": "Devices are auto-assigned based on filter rules.",
-    "filterRules": "Filter Rules",
-    "cancel": "Cancel",
-    "creating": "Creating...",
-    "createGroup": "Create Group",
-    "created": "Device group created",
-    "missingGroupId": "Group created but server response was missing the group ID. Please refresh the page."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removed hidden",
@@ -2408,7 +2391,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",

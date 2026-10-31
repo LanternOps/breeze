@@ -695,44 +695,7 @@ func (h *Heartbeat) sendSessionNotifyTitled(title, body, targetWinSession string
 	return nil
 }
 
-// sendBannerShow tells the consent-UI helper (assist app, or the native
-// user-helper as fallback) to display the on-screen session indicator
-// banner. Fire-and-forget; the helper renders it. See
-// consentUISessionForTarget for the targeting semantics.
-func (h *Heartbeat) sendBannerShow(sessionID string, prompt *ipc.DesktopPrompt, targetWinSession string) {
-	if h.sessionBroker == nil {
-		return
-	}
-	session := h.consentUISessionForTarget(targetWinSession)
-	if session == nil {
-		log.Warn("no consent-ui-capable helper for session banner", "sessionId", sessionID)
-		return
-	}
-	req := ipc.BannerShowRequest{
-		SessionID:       sessionID,
-		Label:           bannerLabel(prompt),
-		StartedAtUnixMs: time.Now().UnixMilli(),
-	}
-	if err := session.SendNotify("banner-show-"+sessionID, ipc.TypeBannerShow, req); err != nil {
-		log.Warn("failed to send banner show", "sessionId", sessionID, "error", err.Error())
-	}
-}
-
-// sendBannerHide tells the consent-UI helper (assist app, or the native
-// user-helper as fallback) to remove the session banner. See
-// consentUISessionForTarget for the targeting semantics.
-func (h *Heartbeat) sendBannerHide(sessionID, targetWinSession string) {
-	if h.sessionBroker == nil {
-		return
-	}
-	session := h.consentUISessionForTarget(targetWinSession)
-	if session == nil {
-		return
-	}
-	if err := session.SendNotify("banner-hide-"+sessionID, ipc.TypeBannerHide, map[string]any{"sessionId": sessionID}); err != nil {
-		log.Warn("failed to send banner hide", "sessionId", sessionID, "error", err.Error())
-	}
-}
+// sendBannerShow and sendBannerHide live in banner_reliability.go (#10316).
 
 // handleConsentSessionEnd fires the ended notice + banner-hide for a session that
 // had a remembered prompt, then forgets the mapping. Called from the peer
