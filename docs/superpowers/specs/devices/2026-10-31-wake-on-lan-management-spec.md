@@ -371,22 +371,32 @@ Multi-wave feature; register it after the plan. **Writes reach customers only in
 | Wave | Contents | Customer-visible |
 |---|---|---|
 | W1 | Attempts table, sweep, relay handler, `TARGET_ONLINE`, MAC union, status row | Outcome recorded; wake refused on online devices |
-| W2 | Feature type, delivery, read-only collection and vendor read adapters including Surface, resolver, gating on all surfaces, status panel. API rejects `configureSettings: true` at write and leaves it out of delivery; toggle hidden | Policies can gate the button and report readiness |
+| W2 | Feature type, delivery, read-only collection and the Dell read adapter, resolver, gating on all surfaces, status panel. API rejects `configureSettings: true` at write and leaves it out of delivery; toggle hidden | Policies can gate the button and report readiness |
 | W3 | Agent Windows and NIC writes, inactive because nothing can set the flag | None |
-| W4 | Agent firmware writes per vendor, inactive likewise | None |
+| W4 | Agent firmware writes for Dell only, inactive likewise | None |
 | W5 | Mac read and `womp` write. Reports `unsupported_os` until this ships | Macs report readiness |
-| W6 | Toggle in the tab with form defaults changed for new policies, docs, release notes, staged activation: per-vendor switches on, OliveTech first | Policies can turn WOL on |
+| W6 | Toggle in the tab with form defaults changed for new policies, docs, release notes, staged activation: Dell switch on, OliveTech first | Policies can turn WOL on, with BIOS changes on Dell only |
+| W7+ | One wave per vendor as machines are found: HP, Lenovo (read and write adapters), Surface (detection) | That vendor moves from `unproven` to supported |
 
 Keeping the toggle until W6 matters, and hiding it isn't enough on its own, since the API and AI tools can also write
 policies. Rejecting `true` server-side until W6 means no stored policy can start writing to BIOS the moment an agent
 update delivers W4. Policies saved before W6 keep their explicit `false`.
 
-**Capture step before W2 (blocking):** vendor read adapters decide who gets a button, and their tests need real captured
-output. Capture settings lists from at least one recent Dell, HP, Lenovo and Surface, and confirm the name tables, before
-W2 ships.
+**Hardware (Todd, 2026-10-31):** one Dell is in the lab. HP, Lenovo and Surface machines still have to be found, so
+vendors ship one at a time and none waits on another. Confirm the lab Dell is 2019 or newer, since older Dell doesn't
+have the native WMI interface.
 
-**Lab gate before W6 (blocking):** one real Dell, HP and Lenovo. VMs can't exercise any of this. Surface and Mac get
-their own checks below. On each PC:
+**No adapter ships before its vendor's machine has been tested (my call).** A server switch can stop writes, but
+untested write code shouldn't reach customer machines at all. Until a vendor's wave lands, its devices report `unproven`:
+"Always" or a test wake still gives them a button, and under `configureSettings` they still get the Windows and NIC changes,
+just no firmware change. Those Windows changes are lab-tested on the Dell only, which is an accepted risk until more
+hardware is available.
+
+**Capture step before W2 and each W7+ wave (blocking):** vendor read adapters decide who gets a button, and their tests
+need real captured output. Capture that vendor's settings list and confirm its name table first.
+
+**Lab gate before W6 for Dell, and before each later vendor's switch turns on (blocking):** a real machine from that
+vendor. VMs can't exercise any of this. Surface and Mac get their own checks below. On each PC:
 
 1. Confirm setting names, values and password-state reads.
 2. Apply through policy, read back, reboot, then wake from S5 and sleep through a relay.
