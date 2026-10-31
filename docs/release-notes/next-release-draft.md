@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Agent helper IPC desync (#10541, #10423)
+
+- **The user helper no longer drops its agent connection when a read times out mid-message.** The helper (and `breeze-backup`) wake every few seconds to check for shutdown; if that fired while a message was half-read, the next read started inside the message and the helper logged `recv: ipc: message too large: 2065852772 > 16777216` and reconnected, which could end an active desktop session. Reads now resume the same message. Fixed in the agent; no server change, no wire-format change, no migration. A desync from any other cause now logs the raw header bytes (`(header 7b226964)`).
