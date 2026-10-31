@@ -377,23 +377,6 @@
     "bulkPolicyNote": "Durch das Verschieben ändern sich die Konfigurationsrichtlinien, Wartungsfenster, Alarmweiterleitung und Berichte des Standorts, die für diese Geräte gelten. Breeze verschiebt sie nicht automatisch zurück.",
     "failedToMoveDevices": "Geräte konnten nicht verschoben werden"
   },
-  "createGroupModal": {
-    "failedToCreateGroup": "Gruppe konnte nicht erstellt werden",
-    "newDeviceGroup": "Neue Gerätegruppe",
-    "name": "Name",
-    "eGProductionServers": "z. B. Produktionsserver",
-    "type": "Typ",
-    "static": "Statisch",
-    "dynamic": "Dynamisch",
-    "manuallyAddAndRemoveDevicesAfter": "Geräte nach der Erstellung manuell hinzufügen und entfernen.",
-    "devicesAreAutoAssignedBasedOn": "Geräte werden anhand von Filterregeln automatisch zugewiesen.",
-    "filterRules": "Filterregeln",
-    "cancel": "Abbrechen",
-    "creating": "Wird erstellt...",
-    "createGroup": "Gruppe erstellen",
-    "created": "Gerätegruppe erstellt",
-    "missingGroupId": "Die Gruppe wurde erstellt, aber die Serverantwort enthielt keine Gruppen-ID. Bitte laden Sie die Seite neu."
-  },
   "decommissionedHiddenHint": {
     "label": "{{count}} Entfernte ausgeblendet",
     "show": "anzeigen",
