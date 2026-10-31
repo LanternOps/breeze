@@ -22,6 +22,10 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Features / API
 
+### Org-subject alerts (#10725)
+
+- Deleting a topology alert’s origin device now preserves the site-owned alert, notification and correlation history, and PSA ticket mappings (#7269).
+
 ## Migrations
 
 ### Flows W05 (#5215 / #5220, PR D — web, limits and egress audit)

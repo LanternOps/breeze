@@ -107,9 +107,9 @@ export interface PurgeResult {
   linkGroupDissolved: boolean;
   /**
    * Site-owned topology alerts this device originated that the cascade
-   * removed (possibly owned by another org after a move-org). Audited.
+   * detached (possibly owned by another org after a move-org). Audited.
    */
-  removedTopologyAlerts: number;
+  detachedTopologyAlerts: number;
 }
 
 /**
@@ -409,7 +409,7 @@ export async function purgeRemovedDevice(
     throw new DeviceLifecycleError('BACKUP_PROTECTED', BACKUP_PROTECTED_MESSAGE);
   }
 
-  const { removedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
+  const { detachedTopologyAlerts } = await deleteDeviceCascade(tx, deviceId);
 
   // #2138/#2308 — the deleted device's link_group_id went with its row. If the
   // group now has a lone survivor, or a vm_host group was left headless,
@@ -443,5 +443,5 @@ export async function purgeRemovedDevice(
     }
   }
 
-  return { linkGroupId: row.link_group_id, linkGroupDissolved, removedTopologyAlerts };
+  return { linkGroupId: row.link_group_id, linkGroupDissolved, detachedTopologyAlerts };
 }

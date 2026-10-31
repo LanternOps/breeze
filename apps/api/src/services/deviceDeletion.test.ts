@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 import { deleteDeviceCascade, type DeviceDeletionTx } from './deviceDeletion';
 
@@ -72,7 +74,7 @@ function captureTx(lockedRowCount = 1) {
         Object.defineProperty(row, 'count', { value: 1, enumerable: false });
         return Promise.resolve(row);
       }
-      return Promise.resolve(undefined);
+      return Promise.resolve(pgResult(0));
     }),
     delete: vi.fn().mockImplementation(() => {
       statements.push('__DELETE_DEVICES_ROW__');
@@ -200,6 +202,9 @@ describe('deleteDeviceCascade lock ordering', () => {
         if (text.includes('pg_settings')) {
           return Promise.resolve({ unexpected: 'shape' });
         }
+        if (text.includes('UPDATE alerts SET device_id = NULL')) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
         // Other statements stay in a readable node-postgres shape: the point
         // here is one undecodable prior value, not a broken driver.
         return Promise.resolve({ rows: [{ id: 'device-1' }], rowCount: 1 });
@@ -211,7 +216,7 @@ describe('deleteDeviceCascade lock ordering', () => {
     };
 
     sentry.captureMessage.mockClear();
-    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ removedTopologyAlerts: 0 });
+    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ detachedTopologyAlerts: 0 });
 
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('lock_timeout');
@@ -544,7 +549,7 @@ describe('deleteDeviceCascade when the parent lock is not acquired', () => {
     sentry.captureMessage.mockClear();
     const { tx, statements } = captureTx(0);
 
-    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toEqual({ removedTopologyAlerts: 0 });
+    await expect(deleteDeviceCascade(tx, 'device-gone')).resolves.toEqual({ detachedTopologyAlerts: 0 });
 
     expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(String(sentry.captureMessage.mock.calls[0]?.[0])).toContain('without holding');
@@ -559,5 +564,58 @@ describe('deleteDeviceCascade when the parent lock is not acquired', () => {
     await deleteDeviceCascade(tx, 'device-1');
 
     expect(sentry.captureMessage).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('deleteDeviceCascade topology alert history (#7269)', () => {
+  it('detaches topology alerts before deleting device-owned alert children and returns the count', async () => {
+    const { tx } = captureTx();
+    const execute = tx.execute;
+    const queries: { sql: string; params: unknown[] }[] = [];
+    tx.execute = vi.fn(async (query: unknown) => {
+      if (typeof query !== 'string') {
+        const compiled = new PgDialect().sqlToQuery(query as SQL);
+        queries.push(compiled);
+        if (compiled.sql.startsWith('UPDATE alerts SET device_id = NULL')) return pgResult(2);
+      }
+      return execute(query);
+    });
+
+    await expect(deleteDeviceCascade(tx, 'device-1')).resolves.toEqual({ detachedTopologyAlerts: 2 });
+
+    const detach = queries.findIndex(q => q.sql.startsWith('UPDATE alerts SET device_id = NULL'));
+    expect(detach).toBeGreaterThan(queries.findIndex(q => q.sql.includes('FOR UPDATE')));
+    expect(queries[detach]).toMatchObject({
+      sql: "UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = $1::uuid RETURNING id",
+      params: ['device-1'],
+    });
+    for (const table of ['alert_notifications', 'alert_correlations', 'psa_ticket_mappings']) {
+      const childDelete = queries.findIndex(q => q.sql.startsWith(`DELETE FROM ${table}`));
+      expect(childDelete, table).toBeGreaterThan(detach);
+      expect(queries[childDelete]?.sql, table).toContain("owner_kind = 'device'");
+    }
+    expect(queries.some(q => q.sql.startsWith('DELETE FROM alerts'))).toBe(false);
+    expect(queries.some(q => q.sql.startsWith('DELETE FROM "alerts" WHERE device_id ='))).toBe(true);
+  });
+
+  it('detaches the device pointer on preserved PSA mappings before either device delete sweep', async () => {
+    const { tx } = captureTx();
+    const execute = tx.execute;
+    const queries: { sql: string; params: unknown[] }[] = [];
+    tx.execute = vi.fn(async (query: unknown) => {
+      if (typeof query !== 'string') queries.push(new PgDialect().sqlToQuery(query as SQL));
+      return execute(query);
+    });
+    await deleteDeviceCascade(tx, 'device-1');
+
+    const detach = queries.findIndex(q => q.sql.startsWith('UPDATE psa_ticket_mappings SET device_id = NULL'));
+    expect(detach).toBeGreaterThan(queries.findIndex(q => q.sql.includes('FOR UPDATE')));
+    expect(queries[detach]?.sql).toContain("owner_kind = 'topology_site'");
+    expect(queries[detach]?.sql).toContain('WHERE device_id =');
+    expect(queries[detach]?.params).toContain('device-1');
+    const deletes = queries.map((q, i) => /DELETE FROM "?psa_ticket_mappings/.test(q.sql) ? i : -1).filter(i => i >= 0);
+    expect(deletes).toHaveLength(2);
+    for (const index of deletes) expect(index).toBeGreaterThan(detach);
   });
 });

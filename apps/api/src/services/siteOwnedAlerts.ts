@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { extractRowCount } from '../db/rowCount';
 
 type SqlExecutor = { execute: (query: ReturnType<typeof sql>) => Promise<unknown> };
 
@@ -50,6 +51,7 @@ export async function deleteSiteOwnedTopologyAlerts(tx: SqlExecutor, orgId: stri
  * how device-bound alerts go with their device. Must run in a SYSTEM db
  * context: the alert may belong to an org the caller cannot see.
  */
+// Device deletion uses detachOriginDeviceTopologyAlerts; org erasure still deletes.
 export async function deleteOriginDeviceTopologyAlerts(
   tx: SqlExecutor,
   deviceIds: SQL,
@@ -57,6 +59,17 @@ export async function deleteOriginDeviceTopologyAlerts(
 ): Promise<number> {
   const ownerFilter = options.ownerOrgNot ? sql` AND org_id <> ${options.ownerOrgNot}::uuid` : sql``;
   return deleteTopologyAlertsWhere(tx, sql`topology_site_id IS NOT NULL AND device_id IN (${deviceIds})${ownerFilter}`);
+}
+
+/**
+ * Preserve site-owned alert history when its provenance device is deleted.
+ * The caller must hold the device row FOR UPDATE and run in a SYSTEM context:
+ * after a device org move, the alert still belongs to its site's original org.
+ * Org erasure deliberately keeps using the delete helper above.
+ */
+export async function detachOriginDeviceTopologyAlerts(tx: SqlExecutor, deviceId: string): Promise<number> {
+  const detached = await tx.execute(sql`UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = ${deviceId}::uuid RETURNING id`);
+  return extractRowCount(detached);
 }
 
 async function deleteTopologyAlertsWhere(tx: SqlExecutor, predicate: SQL): Promise<number> {

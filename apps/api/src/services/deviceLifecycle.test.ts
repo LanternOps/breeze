@@ -159,7 +159,7 @@ beforeEach(() => {
     alreadyDispatched: 0,
   });
   vi.mocked(dissolveLinkGroupIfBelowMinimum).mockResolvedValue(true);
-  vi.mocked(deleteDeviceCascade).mockResolvedValue({ removedTopologyAlerts: 0 });
+  vi.mocked(deleteDeviceCascade).mockResolvedValue({ detachedTopologyAlerts: 0 });
   vi.mocked(findPolicyBackupLegalHoldInContext).mockResolvedValue(null);
   vi.mocked(deviceTakesLicensedSlot).mockResolvedValue(true);
   vi.mocked(admitPartnerDeviceCapacity).mockResolvedValue({
@@ -479,6 +479,7 @@ describe('purgeRemovedDevice', () => {
   });
 
   it('cascades and dissolves the link group when eligible', async () => {
+    vi.mocked(deleteDeviceCascade).mockResolvedValueOnce({ detachedTopologyAlerts: 2 });
     const { tx, calls } = makeTx({
       lockRow: { id: DEV, status: 'decommissioned', link_group_id: 'lg-1' },
     });
@@ -486,6 +487,8 @@ describe('purgeRemovedDevice', () => {
     expect(deleteDeviceCascade).toHaveBeenCalledWith(tx, DEV);
     expect(dissolveLinkGroupIfBelowMinimum).toHaveBeenCalledWith(tx, 'lg-1', undefined);
     expect(r.linkGroupDissolved).toBe(true);
+    expect(r.detachedTopologyAlerts).toBe(2);
+    expect(r).not.toHaveProperty('removedTopologyAlerts');
     expect(calls.filter((c) => c !== 'tighten-lock-timeout')[0]).toBe('lock');
   });
 
