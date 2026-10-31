@@ -80,6 +80,22 @@ func systemInstallArgs(id string) []string {
 		"--accept-package-agreements", "--accept-source-agreements", "--source", "winget", "--disable-interactivity"}
 }
 
+// systemUnscopedUpgradeArgs is the #10248 fallback for an already-installed
+// package whose `install --scope machine` came back 0x8A15002B. It deliberately
+// omits --scope: on an installed package winget applies the scope as a filter
+// over the AVAILABLE manifest's installers, and many machine-wide manifests
+// (.NET runtimes, VC++ redists, burn/MSI bundles) never declare
+// `Scope: machine`, so that filter rejects every installer even when a newer
+// version exists. Unscoped, winget matches the installed package's own scope.
+// The agent runs as SYSTEM, so the only "user" profile winget can see here is
+// SYSTEM's own (S-1-5-18), never an interactive user's. --include-unknown
+// mirrors systemScanArgs so a package the scan reported (including one with an
+// unknown installed version) is one the upgrade will act on.
+func systemUnscopedUpgradeArgs(id string) []string {
+	return []string{"upgrade", "--exact", "--id", id, "--include-unknown", "--silent",
+		"--accept-package-agreements", "--accept-source-agreements", "--source", "winget", "--disable-interactivity"}
+}
+
 func systemUninstallArgs(id string) []string {
 	return []string{"uninstall", "--exact", "--id", id, "--scope", "machine", "--silent", "--disable-interactivity"}
 }
@@ -202,8 +218,10 @@ func (p *SystemWingetProvider) isUserScopeOnly(patchID string) bool {
 }
 
 // wingetExitUpdateNotApplicable is APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
-// (0x8A15002B): `winget install` found the package already installed and no
-// newer version in the configured sources.
+// (0x8A15002B): winget found the package already installed and no applicable
+// newer installer. From `install --scope machine` that is ambiguous — it also
+// means "every newer installer was filtered out by the machine scope" (#10248)
+// — so Install only trusts it after an unscoped upgrade agrees.
 const wingetExitUpdateNotApplicable uint32 = 0x8A15002B
 
 // isWingetUpdateNotApplicable reports whether a winget exit code is
@@ -227,24 +245,66 @@ func (p *SystemWingetProvider) Install(patchID string) (InstallResult, error) {
 	}
 	combined := strings.TrimSpace(stdout + "\n" + stderr)
 	if isWingetUpdateNotApplicable(code) {
-		// Already at the newest available version: nothing to do (#6910).
+		// Not proof the package is current (#10248): the machine scope filter
+		// may have rejected every installer in a manifest that omits
+		// `Scope: machine`. Ask winget again without the scope before
+		// reporting already_current.
+		return p.upgradeUnscoped(patchID, combined)
+	}
+	if code != 0 {
+		return InstallResult{}, fmt.Errorf("winget install failed (exit %d): %s", code, combined)
+	}
+	return wingetInstalledResult(patchID, combined), nil
+}
+
+// upgradeUnscoped runs the single #10248 retry. Only a second 0x8A15002B,
+// this time with no scope filter in play, is reported as already_current
+// (#6910); any other non-zero exit is a real failure carrying the exit code so
+// the server raises an install-failure badge instead of leaving the row
+// pending with no explanation. scopedOut is the machine-scope install's own
+// output: every outcome carries it so a tech can see that a retry happened and
+// what winget said the first time.
+func (p *SystemWingetProvider) upgradeUnscoped(patchID, scopedOut string) (InstallResult, error) {
+	note := scopedAttemptNote(scopedOut)
+	stdout, stderr, code, err := p.run(p.wingetPath, systemUnscopedUpgradeArgs(patchID), systemWingetInstallTimeout)
+	if err != nil {
+		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry) failed: %w\n%s", err, note)
+	}
+	combined := strings.TrimSpace(stdout + "\n" + stderr)
+	if isWingetUpdateNotApplicable(code) {
 		return InstallResult{
 			PatchID:    patchID,
 			Provider:   "winget",
-			Message:    combined,
+			Message:    combined + "\n" + note,
 			Skipped:    true,
 			SkipReason: SkipReasonAlreadyCurrent,
 		}, nil
 	}
 	if code != 0 {
-		return InstallResult{}, fmt.Errorf("winget install failed (exit %d): %s", code, combined)
+		return InstallResult{}, fmt.Errorf("winget upgrade (unscoped retry) failed (exit %d): %s\n%s", code, combined, note)
 	}
+	// Reboot detection reads only the upgrade's own output (inside
+	// wingetInstalledResult), before the note is appended.
+	res := wingetInstalledResult(patchID, combined)
+	res.Message += "\n" + note
+	return res, nil
+}
+
+// scopedAttemptNote records the machine-scope install that preceded the
+// unscoped retry. It is appended after the retry's own output so the outcome
+// that decided the result leads the message.
+func scopedAttemptNote(scopedOut string) string {
+	return "[machine-scope install exited 0x8A15002B before this unscoped upgrade: " + scopedOut + "]"
+}
+
+// wingetInstalledResult builds the result of a winget run that exited 0.
+func wingetInstalledResult(patchID, combined string) InstallResult {
 	res := InstallResult{PatchID: patchID, Provider: "winget", Message: combined}
 	low := strings.ToLower(combined)
 	if strings.Contains(low, "restart") || strings.Contains(low, "reboot") {
 		res.RebootRequired = true
 	}
-	return res, nil
+	return res
 }
 
 func (p *SystemWingetProvider) Uninstall(patchID string) error {
