@@ -174,12 +174,12 @@ vi.mock('./AddDeviceModal', () => ({
   default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
 }));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
-vi.mock('./CreateGroupModal', () => ({
-  default: ({ isOpen, onCreated }: { isOpen: boolean; onCreated: (id: string, ownerScope: 'organization' | 'partner') => void }) =>
-    isOpen ? <button data-testid="create-partner-group" onClick={() => onCreated('partner-group-1', 'partner')}>Create partner group</button> : null,
-}));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: ({ onCreateGroup }: { onCreateGroup: () => void }) => <div data-testid="device-filter-toolbar-stub"><button data-testid="open-create-group" onClick={onCreateGroup}>New group</button></div> }));
+vi.mock('./DeviceFilterToolbar', () => ({
+  DeviceFilterToolbar: ({ createGroupHref }: { createGroupHref?: string }) => (
+    <div data-testid="device-filter-toolbar-stub" data-create-group-href={createGroupHref ?? ''} />
+  ),
+}));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
@@ -410,13 +410,18 @@ beforeEach(() => {
   });
 });
 
-it('closes the create modal and refreshes devices after creating a partner group', async () => {
-  render(<DevicesPage />);
-  fireEvent.click(await screen.findByTestId('open-create-group'));
-  const initialFetches = vi.mocked(fetchAllDevices).mock.calls.length;
-  fireEvent.click(screen.getByTestId('create-partner-group'));
-  await waitFor(() => expect(fetchAllDevices).toHaveBeenCalledTimes(initialFetches + 1));
-  expect(screen.queryByTestId('create-partner-group')).not.toBeInTheDocument();
+describe('DevicesPage — Add filter "New group…" shortcut (#9865)', () => {
+  // The page's own create modal made empty static groups with no org owner;
+  // the shortcut now links to the Device Groups page, which opens its create
+  // dialog on `#create` (DeviceGroupsPage CREATE_HASH).
+  it('links the toolbar shortcut to the Device Groups create flow', async () => {
+    render(<DevicesPage />);
+
+    expect(await screen.findByTestId('device-filter-toolbar-stub')).toHaveAttribute(
+      'data-create-group-href',
+      '/devices/groups#create',
+    );
+  });
 });
 
 describe('DevicesPage — advanced filter applies to BOTH views', () => {
