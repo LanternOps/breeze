@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### IOC sweep limits in Compose (#10050)
+
+The `SECURITY_SWEEP_*` limits and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now passed to the API by both Compose files and listed, with their defaults, in `.env.example`. Set them in `.env` to tune sweeps; leaving them unset keeps the defaults. Earlier releases needed a manual edit of the `api` service to change them.

@@ -2,6 +2,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD,
+  SECURITY_SWEEP_MAX_DEVICES_DEFAULT,
+  SECURITY_SWEEP_MFA_DEVICE_THRESHOLD,
+  SECURITY_SWEEP_TTL_HOURS_DEFAULT,
+} from '@breeze/shared';
 import { ENV_SCHEMA_KEYS } from './validate';
 
 // apps/api/src/config -> repo root is 4 levels up (same as proxyTrustCompose.test.ts).
@@ -436,5 +442,43 @@ describe('E2E_MODE env plumbing (#6447)', () => {
 
   it('stays out of .env.example — it is not a self-host operator knob', () => {
     expect(documentedEnvExampleVars('.env.example')).not.toContain('E2E_MODE');
+  });
+});
+
+/**
+ * IOC sweep limits (#6263 W05, #10050). Read per call by
+ * services/securityScanSweepConfig.ts and jobs/securityScanJobs.ts, but they
+ * shipped in neither `.env.example` nor either compose file, so a self-hoster
+ * could not tune them without editing the container env by hand. Pinned on the
+ * same axes as QBO_*, plus the documented default matching the code's.
+ */
+describe('IOC sweep limits env plumbing (#10050)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const exampleText = readFileSync(path.join(REPO_ROOT, '.env.example'), 'utf8');
+  const SWEEP_DEFAULTS: Record<string, number> = {
+    SECURITY_SWEEP_MAX_DEVICES: SECURITY_SWEEP_MAX_DEVICES_DEFAULT,
+    SECURITY_SWEEP_MAX_ACTIVE_PER_ORG: 5,
+    SECURITY_SWEEP_PUMP_INTERVAL_MS: 30_000,
+    SECURITY_SWEEP_PUMP_BATCH: 100,
+    SECURITY_SWEEP_PARTNER_RUNNING_CAP: 200,
+    SECURITY_SWEEP_TTL_HOURS_DEFAULT,
+    SECURITY_SWEEP_MFA_DEVICE_THRESHOLD,
+    SECURITY_SWEEP_RUNNING_GRACE_MINUTES: 65,
+    IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD,
+  };
+  const NAMES = Object.keys(SWEEP_DEFAULTS);
+
+  it.each(NAMES)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+  it.each(NAMES)('%s documents the code default in .env.example', (name) => {
+    expect(exampleText).toMatch(new RegExp(`^#?\\s*${name}=${SWEEP_DEFAULTS[name]}\\s*$`, 'm'));
+  });
+  it.each(NAMES)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+  it.each(NAMES)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
   });
 });
