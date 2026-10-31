@@ -18,7 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -4921,6 +4921,11 @@ export function buildApprovalDescription(
     // Full-control W14 PR B (#6784): the four-eyes card states every figure the approvers sign (the assertions the
     // handler and the pinned effect digest both enforce). Ids are truncated; amounts and dates are the model's
     // assertions, refused at release when they are not the live invoice.
+    case 'manage_pax8_subscriptions':
+    case 'manage_pax8_orders':
+      parts.push(describePax8Action(toolName, action) ?? humanizeToolAction(toolName, action));
+      break;
+
     case 'manage_contracts': {
       if (action !== 'generate_invoice' || typeof input.contractId !== 'string') { parts.push(humanizeToolAction(toolName, action)); break; }
       const total = typeof input.expectedTotal === 'string' ? input.expectedTotal : '?';
