@@ -1,9 +1,10 @@
 import { and, desc, eq, gte, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { openOrJoinWakeAttempt, recordWakeRefusal, applyWakeRelayResult } from './wakeAttempts';
 import {
   auditLogs,
   deviceCommands,
+  deviceWakeAttempts,
   deviceIpHistory,
   deviceNetwork,
   devices,
@@ -34,6 +35,8 @@ export type WakeFailureCode =
 
 export interface WakeSuccess {
   ok: true;
+  /** Caller must invoke after committing its transaction, with no ambient DB context. */
+  deliver?: () => Promise<WakeResult>;
   commandId: string;
   wakeAttemptId: string;
   targetDeviceId: string;
@@ -73,6 +76,8 @@ interface RelayCandidate {
   lastSeen: Date;
 }
 
+// Two default 60-second agent heartbeats.
+const TARGET_ONLINE_FRESHNESS_MS = 120_000;
 const WOL_UDP_PORTS = [7, 9] as const;
 const FALLBACK_MASK_24 = '255.255.255.0';
 
@@ -179,31 +184,29 @@ async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise
   const newestRival = new Map<string, number>();
   if (candidates.size > 0) {
     const keys = [...candidates.keys()];
-    // One union query for both sources, never one query per MAC. Join devices
-    // to scope sightings to the rival's current organization.
+    // One indexed union query for both sources, scoped by denormalized org_id.
     const networkMac = sql<string>`lower(${deviceNetwork.macAddress})`;
     const rivals = await db
       .select({ mac: networkMac, lastSeen: sql<Date>`max(${deviceNetwork.updatedAt})`.mapWith(deviceNetwork.updatedAt) })
       .from(deviceNetwork)
-      .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
-      .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(networkMac, keys), lte(deviceNetwork.updatedAt, latestSighting)))
+      .where(and(eq(deviceNetwork.orgId, orgId), ne(deviceNetwork.deviceId, targetDeviceId), inArray(networkMac, keys), lte(deviceNetwork.updatedAt, latestSighting)))
       .groupBy(networkMac)
       .unionAll(db
         .select({ mac: historyMac, lastSeen: sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen) })
         .from(deviceIpHistory)
-        .innerJoin(devices, eq(devices.id, deviceIpHistory.deviceId))
-        .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(historyMac, keys), lte(deviceIpHistory.lastSeen, latestSighting)))
+        .where(and(eq(deviceIpHistory.orgId, orgId), ne(deviceIpHistory.deviceId, targetDeviceId), inArray(historyMac, keys), lte(deviceIpHistory.lastSeen, latestSighting)))
         .groupBy(historyMac));
     for (const row of rivals) {
       newestRival.set(row.mac, Math.max(newestRival.get(row.mac) ?? -Infinity, row.lastSeen.getTime()));
     }
   }
   for (const [key, row] of candidates) {
+    if (macs.length >= 8) break;
     if ((newestRival.get(key) ?? -Infinity) <= row.lastSeen.getTime()) {
       macs.push(row.mac!);
     }
   }
-  return macs.slice(0, 8);
+  return macs;
 }
 
 /**
@@ -334,6 +337,8 @@ async function selectRelay(
 }
 
 interface DispatchWakeOptions {
+  /** Prepare rows now; the caller commits before invoking the returned delivery continuation. */
+  deferDelivery?: boolean;
   /** Force a specific relay (must be online, same site, same subnet). For troubleshooting. */
   relayDeviceIdOverride?: string;
   /** IP address of the request (for the audit row). */
@@ -352,14 +357,15 @@ export async function dispatchWake(
   options: DispatchWakeOptions = {},
 ): Promise<WakeResult> {
   const [target] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname, status: devices.status })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname, status: devices.status, lastSeenAt: devices.lastSeenAt })
     .from(devices)
     .where(eq(devices.id, targetDeviceId))
     .limit(1);
   if (!target) {
     return { ok: false, code: 'TARGET_NOT_FOUND', message: 'Target device not found.' };
   }
-  if (target.status === 'online') {
+  if (target.status === 'online' && target.lastSeenAt !== null
+    && target.lastSeenAt.getTime() >= Date.now() - TARGET_ONLINE_FRESHNESS_MS) {
     return { ok: false, code: 'TARGET_ONLINE', message: 'Target device is already online.' };
   }
   if (await isParkedDevice(db, target.id)) {
@@ -451,7 +457,7 @@ export async function dispatchWake(
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
-  const { attemptId: wakeAttemptId } = await openOrJoinWakeAttempt({
+  const { attemptId: wakeAttemptId, joined } = await openOrJoinWakeAttempt({
     deviceId: target.id, orgId: target.orgId, relayDeviceId: relay.deviceId,
     relayHostname: relay.hostname, requestedBy: userId, bulkId: options.bulkId,
     macs, broadcast: subnet.broadcast,
@@ -480,8 +486,13 @@ export async function dispatchWake(
     .returning({ id: deviceCommands.id });
 
   if (!command) {
-    await applyWakeRelayResult(wakeAttemptId, false);
+    if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to record wake command.' };
+  }
+
+  if (!joined) {
+    await db.update(deviceWakeAttempts).set({ deviceCommandId: command.id })
+      .where(eq(deviceWakeAttempts.id, wakeAttemptId));
   }
 
   // Audit row points at the TARGET (the device the user is acting on) and
@@ -514,32 +525,7 @@ export async function dispatchWake(
   });
   markRequestAuditWritten();
 
-  const claimed = await claimPendingCommandForDelivery(command.id);
-  if (claimed.status === 'cancelled') {
-    await applyWakeRelayResult(wakeAttemptId, false);
-    return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
-  }
-  if (claimed.status !== 'claimed') {
-    await applyWakeRelayResult(wakeAttemptId, false);
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
-  }
-
-  // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
-  // relay selection read before it (a reattach or re-enroll may have
-  // committed since).
-  const sent = sendCommandToAgent(claimed.agentId, {
-    id: command.id,
-    type: CommandTypes.WAKE_ON_LAN,
-    payload,
-  });
-
-  if (!sent) {
-    await applyWakeRelayResult(wakeAttemptId, false);
-    await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
-    return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
-  }
-
-  return {
+  const success: WakeSuccess = {
     ok: true,
     commandId: command.id,
     wakeAttemptId,
@@ -552,4 +538,33 @@ export async function dispatchWake(
     maskSource: subnet.maskSource,
     macs,
   };
+  const deliver = async (): Promise<WakeResult> => {
+    const claimed = await claimPendingCommandForDelivery(command.id);
+    if (claimed.status === 'cancelled') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
+    }
+    if (claimed.status !== 'claimed') {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
+    }
+
+    // #8318 §6.4: to the relay's agent_id read IN the claim, not the one the
+    // relay selection read before it (a reattach or re-enroll may have
+    // committed since).
+    const sent = sendCommandToAgent(claimed.agentId, {
+      id: command.id,
+      type: CommandTypes.WAKE_ON_LAN,
+      payload,
+    });
+
+    if (!sent) {
+      if (!joined) await withSystemDbAccessContext(() => applyWakeRelayResult(wakeAttemptId, false));
+      await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
+      return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
+    }
+
+    return success;
+  };
+  return options.deferDelivery ? { ...success, deliver } : deliver();
 }

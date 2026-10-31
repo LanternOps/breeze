@@ -1,6 +1,6 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices, deviceCommands, deviceIpHistory, deviceNetwork } from '../../db/schema';
@@ -16,6 +16,7 @@ vi.mock('../../services/commandDispatch', () => ({
 }));
 import { sendCommandToAgent } from '../../routes/agentWs';
 import { claimPendingCommandForDelivery } from '../../services/commandDispatch';
+import { runBulkIsolated } from '../../lib/bulkOps';
 import { dispatchWake } from '../../services/wakeOnLan';
 import { applyWakeRelayResult, openOrJoinWakeAttempt, WAKE_OUTCOME_WINDOW_MS } from '../../services/wakeAttempts';
 
@@ -81,6 +82,45 @@ describe('wake attempts (real Postgres)', () => {
     expect(await rows()).toHaveLength(1);
   });
 
+  it('concurrent opens in one context join a rival uncommitted attempt', async () => {
+    let releaseRival!: () => void;
+    let rivalReady!: () => void;
+    const ready = new Promise<void>(resolve => { rivalReady = resolve; });
+    const release = new Promise<void>(resolve => { releaseRival = resolve; });
+    const rival = getTestDb().transaction(async tx => {
+      const [row] = await tx.insert(deviceWakeAttempts).values({
+        ...input(), outcome: 'pending', deadlineAt: new Date(Date.now() + WAKE_OUTCOME_WINDOW_MS),
+      }).returning();
+      rivalReady();
+      await release;
+      return row!;
+    });
+    await ready;
+    let pid: number | undefined;
+    const contenders = withSystemDbAccessContext(async () => {
+      const [backend] = await db.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+      pid = backend!.pid;
+      return Promise.all([openOrJoinWakeAttempt(input()), openOrJoinWakeAttempt(input())]);
+    });
+    // Observe an actual lock wait instead of relying on a fixed sleep to race.
+    try {
+      await vi.waitFor(async () => {
+        expect(pid).toBeDefined();
+        const [state] = await getTestDb().execute<{ waiting: boolean }>(sql`
+          SELECT cardinality(pg_blocking_pids(${pid!})) > 0 AS waiting
+        `);
+        expect(state!.waiting).toBe(true);
+      }, { timeout: 5000, interval: 20 });
+    } finally {
+      releaseRival();
+    }
+    const winner = await rival;
+    expect(await contenders).toEqual([
+      { attemptId: winner.id, joined: true }, { attemptId: winner.id, joined: true },
+    ]);
+    expect(await rows()).toEqual([{ ...winner, sendCount: 3 }]);
+  });
+
   it.each([true, false])('relay result sent=%s moves only pending', async sent => {
     const { attemptId } = await open();
     await withSystemDbAccessContext(() => applyWakeRelayResult(attemptId, sent));
@@ -115,8 +155,52 @@ describe('wake attempts (real Postgres)', () => {
       const [command] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, result.commandId));
       expect(command!.payload).toMatchObject({ wakeAttemptId: first.wakeAttemptId });
     }
-    expect(await rows()).toMatchObject([{ id: first.wakeAttemptId, sendCount: 2, outcome: 'pending' }]);
+    expect(await rows()).toMatchObject([{ id: first.wakeAttemptId, deviceCommandId: first.commandId, sendCount: 2, outcome: 'pending' }]);
     expect(sendCommandToAgent).toHaveBeenCalledTimes(2);
+  });
+
+  it('commits each bulk attempt and command before delivery and the next dispatch', async () => {
+    await seedNetwork();
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    let enterSecond!: () => void;
+    const secondEntered = new Promise<void>(resolve => { enterSecond = resolve; });
+    const observations: Promise<void>[] = [];
+    vi.mocked(sendCommandToAgent).mockImplementation((_agentId, command) => {
+      observations.push((async () => {
+        const [persistedCommand] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, command.id));
+        expect(persistedCommand).toBeDefined();
+        expect(await rows()).toMatchObject([{ deviceCommandId: command.id }]);
+      })());
+      return true;
+    });
+    const context = { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: requestedBy, currentPartnerId: partnerId };
+    const bulk = runBulkIsolated(context, [target, 'later-device'], async deviceId => {
+      if (deviceId === 'later-device') {
+        enterSecond();
+        await secondGate;
+        return undefined;
+      }
+      const result = await dispatchWake(deviceId, requestedBy, { relayDeviceIdOverride: relay, deferDelivery: true });
+      // Settle any synchronous-send observations before this transaction commits.
+      // A premature send must not pass just because the observer's query is slower.
+      await Promise.all(observations);
+      return result;
+    }, async (_deviceId, value) => {
+      if (value?.ok) await value.deliver?.();
+    });
+    try {
+      await secondEntered;
+      expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+      await Promise.all(observations);
+      const [attempt] = await rows();
+      expect(attempt!.deviceCommandId).not.toBeNull();
+      const commands = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, attempt!.deviceCommandId!));
+      expect(commands).toHaveLength(1);
+    } finally {
+      releaseSecond();
+      await bulk;
+    }
   });
 
   it.each(['NO_MACS', 'NO_SUBNET', 'NO_RELAY', 'IPV6_ONLY', 'RELAY_OVERRIDE_INVALID'] as const)('%s writes a refused row with refusal_code and null relay', async code => {
@@ -131,7 +215,7 @@ describe('wake attempts (real Postgres)', () => {
 
   it.each(['TARGET_NOT_FOUND', 'TARGET_ONLINE', 'DEVICE_PENDING_ASSIGNMENT'] as const)('%s writes no row', async code => {
     if (code === 'TARGET_NOT_FOUND') target = randomUUID();
-    if (code === 'TARGET_ONLINE') await getTestDb().update(devices).set({ status: 'online' }).where(eq(devices.id, target));
+    if (code === 'TARGET_ONLINE') await getTestDb().update(devices).set({ status: 'online', lastSeenAt: new Date() }).where(eq(devices.id, target));
     if (code === 'DEVICE_PENDING_ASSIGNMENT') {
       const holding = await seedHoldingOrg(partnerId);
       target = (await seedParkedDevice(holding.orgId, holding.siteId)).id;

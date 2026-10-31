@@ -100,6 +100,7 @@ export async function resolveOpenWakeAttempts(clock: () => Date = () => new Date
         if (finalized) resolved += 1;
       } catch (error) {
         console.error(`${LOG_PREFIX} Failed to resolve attempt ${candidate.id}:`, error);
+        captureException(error);
       }
     }
     afterId = candidates[candidates.length - 1]!.id;

@@ -1,7 +1,6 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbTransaction } from '../db';
 import { deviceWakeAttempts } from '../db/schema/deviceWake';
-import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { WakeFailureCode } from './wakeOnLan';
 
 export const WAKE_OUTCOME_WINDOW_MS = 600_000;
@@ -20,41 +19,17 @@ export async function openOrJoinWakeAttempt(input: WakeRequest & {
   macs: string[];
   broadcast: string;
 }): Promise<{ attemptId: string; joined: boolean }> {
-  const openCondition = and(
-    eq(deviceWakeAttempts.deviceId, input.deviceId),
-    eq(deviceWakeAttempts.orgId, input.orgId),
-    inArray(deviceWakeAttempts.outcome, ['pending', 'sent']),
-  );
-  // Retry if a result/sweep closes the row between finding it and joining it.
-  for (;;) {
-    const [existing] = await db.select({ id: deviceWakeAttempts.id })
-      .from(deviceWakeAttempts).where(openCondition).limit(1);
-    if (existing) {
-      const [joined] = await db.update(deviceWakeAttempts)
-        .set({ sendCount: sql`${deviceWakeAttempts.sendCount} + 1` })
-        .where(and(eq(deviceWakeAttempts.id, existing.id), openCondition))
-        .returning({ id: deviceWakeAttempts.id });
-      if (joined) return { attemptId: joined.id, joined: true };
-      continue;
-    }
-    try {
-      // A driver-owned savepoint keeps a lost unique-index race from aborting
-      // the caller's transaction. Do not open another system context here.
-      const created = await withDbTransaction(async () => {
-        const now = new Date();
-        const [row] = await db.insert(deviceWakeAttempts).values({
-          ...input, outcome: 'pending', sendCount: 1, requestedAt: now,
-          deadlineAt: new Date(now.getTime() + WAKE_OUTCOME_WINDOW_MS),
-        }).returning({ id: deviceWakeAttempts.id });
-        if (!row) throw new Error('Failed to record wake attempt');
-        return row;
-      });
-      return { attemptId: created.id, joined: false };
-    } catch (error) {
-      if (!isPgUniqueViolation(error, 'device_wake_attempts_open_uidx')) throw error;
-      // The winning transaction has committed; re-read and join its open row.
-    }
-  }
+  const now = new Date();
+  const [row] = await db.insert(deviceWakeAttempts).values({
+    ...input, outcome: 'pending', sendCount: 1, requestedAt: now,
+    deadlineAt: new Date(now.getTime() + WAKE_OUTCOME_WINDOW_MS),
+  }).onConflictDoUpdate({
+    target: deviceWakeAttempts.deviceId,
+    targetWhere: sql`${deviceWakeAttempts.outcome} IN ('pending','sent')`,
+    set: { sendCount: sql`${deviceWakeAttempts.sendCount} + 1` },
+  }).returning({ id: deviceWakeAttempts.id, joined: sql<boolean>`(xmax <> 0)` });
+  if (!row) throw new Error('Failed to record wake attempt');
+  return { attemptId: row.id, joined: row.joined };
 }
 
 const RECORDED_REFUSALS = new Set<WakeFailureCode>([

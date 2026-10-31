@@ -71,10 +71,10 @@ describe('Wake-on-LAN MAC targeting (real Postgres)', () => {
     expect(await wake()).toMatchObject({ ok: true, macs: [mac(99), ...Array.from({ length: 7 }, (_, i) => mac(i + 4))] });
   });
 
-  it('caps device_network alone at 8 MACs', async () => {
+  it('keeps every live MAC and adds no history when live inventory exceeds eight', async () => {
     for (let i = 1; i <= 10; i++) await network(target, mac(i), i);
-    await history(target, mac(1), 1);
-    expect(await wake()).toMatchObject({ ok: true, macs: Array.from({ length: 8 }, (_, i) => mac(i + 1)) });
+    await history(target, mac(20), 1);
+    expect(await wake()).toMatchObject({ ok: true, macs: Array.from({ length: 10 }, (_, i) => mac(i + 1)) });
   });
 
   it.each(['network', 'history'])('excludes a history MAC another device in the org reported more recently in %s', async source => {

@@ -192,7 +192,7 @@ vi.mock('../../services/authEpochs', () => ({
 }));
 
 import { commandsRoutes } from './commands';
-import { db, runAfterDbContextCommit } from '../../db';
+import { db, runAfterDbContextCommit, withDbAccessContext } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
@@ -730,6 +730,37 @@ describe('device commands routes', () => {
     describe('bulk-wake (type=wake)', () => {
       const onlineDevice = (id: string) =>
         ({ id, orgId: 'org-123', status: 'online', hostname: `host-${id.slice(0, 4)}` } as never);
+
+      it('commits each wake before delivery and before preparing the next device', async () => {
+        const ids = ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'];
+        const events: string[] = [];
+        vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => {
+          events.push('begin');
+          const value = await fn();
+          events.push('commit');
+          return value;
+        });
+        vi.mocked(getDeviceWithOrgCheck).mockImplementation(async id => onlineDevice(id));
+        vi.mocked(dispatchWake).mockImplementation(async (id, _user, options) => {
+          events.push(`prepare:${id}`);
+          expect(options).toMatchObject({ deferDelivery: true });
+          const result = { ok: true as const, commandId: id, wakeAttemptId: id, targetDeviceId: id,
+            targetHostname: 'target', relayDeviceId: 'relay', relayHostname: 'relay', network: '192.0.2.0',
+            broadcast: '192.0.2.255', maskSource: 'agent' as const, macs: ['02:00:00:00:00:01'] };
+          return { ...result, deliver: async () => { events.push(`send:${id}`); return result; } };
+        });
+        try {
+          const response = await app.request('/devices/bulk/commands', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceIds: ids, type: 'wake' }),
+          });
+          expect(response.status).toBe(202);
+          expect((await response.json()).succeeded).toHaveLength(2);
+          expect(events).toEqual(ids.flatMap(id => ['begin', `prepare:${id}`, 'commit', `send:${id}`]));
+        } finally {
+          vi.mocked(withDbAccessContext).mockImplementation(async (_ctx, fn) => fn());
+        }
+      });
 
       it('iterates dispatchWake per device and returns per-device outcomes with a shared bulkId', async () => {
         // 3 devices: 2 wake-able, 1 with no relay

@@ -5,7 +5,6 @@ import {
   decommissionDevice,
   executeScript,
   sendBulkCommand,
-  sendBulkWakeCommand,
   sendDeviceCommand,
   sendWakeCommand,
   summarizeBulkCommandFailures,
@@ -493,64 +492,6 @@ describe('deviceActions service', () => {
       const result = await bulkDecommissionDevices([{ id: 'dev-1', hostname: '' }], { uninstallAgent: true });
 
       expect(result.failed).toEqual([{ id: 'dev-1', hostname: 'dev-1' }]);
-    });
-  });
-
-  describe('sendBulkWakeCommand', () => {
-    it('posts a single bulk request with deviceIds + type=wake', async () => {
-      fetchWithAuthMock.mockResolvedValueOnce(
-        makeResponse({
-          bulkId: 'bulk-abc',
-          succeeded: [
-            { deviceId: 'd1', commandId: 'c1', wakeAttemptId: 'w1', relayDeviceId: 'r1', relayHostname: 'r1h', broadcast: '10.0.0.255' },
-          ],
-          failed: [],
-        }, true, 202),
-      );
-
-      const result = await sendBulkWakeCommand(['d1']);
-
-      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
-      const [url, init] = fetchWithAuthMock.mock.calls[0]!;
-      expect(url).toBe('/devices/bulk/commands');
-      expect((init as RequestInit).method).toBe('POST');
-      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-        deviceIds: ['d1'],
-        type: 'wake',
-      });
-      expect(result.bulkId).toBe('bulk-abc');
-      expect(result.succeeded).toHaveLength(1);
-      expect(result.failed).toHaveLength(0);
-    });
-
-    it('returns parsed succeeded + failed lists with original failure codes preserved', async () => {
-      fetchWithAuthMock.mockResolvedValueOnce(
-        makeResponse({
-          bulkId: 'bulk-xyz',
-          succeeded: [
-            { deviceId: 'a', commandId: 'c-a', wakeAttemptId: 'w-a', relayDeviceId: 'r1', relayHostname: 'r1h', broadcast: '10.0.0.255' },
-          ],
-          failed: [
-            { deviceId: 'b', code: 'NO_RELAY', message: 'No online peer.' },
-            { deviceId: 'c', code: 'NO_MACS', message: 'No MAC on file.' },
-            { deviceId: 'd', code: 'DECOMMISSIONED', message: 'Cannot wake a decommissioned device.' },
-          ],
-        }, true, 202),
-      );
-
-      const result = await sendBulkWakeCommand(['a', 'b', 'c', 'd']);
-
-      expect(result.succeeded.map(s => s.deviceId)).toEqual(['a']);
-      expect(result.failed.map(f => f.code)).toEqual(['NO_RELAY', 'NO_MACS', 'DECOMMISSIONED']);
-    });
-
-    it('throws on non-OK response so the caller surfaces one error toast', async () => {
-      fetchWithAuthMock.mockResolvedValueOnce(
-        makeResponse({ error: 'deviceIds exceeds max of 500' }, false, 400),
-      );
-      await expect(sendBulkWakeCommand(Array.from({ length: 501 }, (_, i) => `d${i}`))).rejects.toThrow(
-        /deviceIds exceeds max of 500/,
-      );
     });
   });
 

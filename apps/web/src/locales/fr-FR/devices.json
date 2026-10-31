@@ -2762,7 +2762,7 @@
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (introuvable ; il a peut-être été supprimé)",
       "bulkMoveSiteNotMovedError": "{{devices}} (une erreur inattendue s’est produite ; réessayez)",
       "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site",
-      "bulkWakeResult": "Envoyé à {{sent}}, ignorés : {{skipped}}"
+      "bulkWakeResult": "Envoyé à {{sent}}, {{skipped}} ignorés"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",

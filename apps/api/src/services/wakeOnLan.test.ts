@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./wakeAttempts', () => ({
   openOrJoinWakeAttempt: vi.fn(async () => ({ attemptId: '11111111-1111-4111-8111-111111111111', joined: false })),
@@ -114,8 +114,8 @@ describe('isApipaIpv4', () => {
 });
 
 
-const { selectMock, insertMock } = vi.hoisted(() => ({ selectMock: vi.fn(), insertMock: vi.fn() }));
-vi.mock('../db', () => ({ db: { select: selectMock, insert: insertMock } }));
+const { selectMock, insertMock, updateMock } = vi.hoisted(() => ({ selectMock: vi.fn(), insertMock: vi.fn(), updateMock: vi.fn() }));
+vi.mock('../db', () => ({ db: { select: selectMock, insert: insertMock, update: updateMock }, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 vi.mock('./unassignedPool/deliveryEligibility', () => ({ isParkedDevice: vi.fn(() => false) }));
 vi.mock('./commandDispatch', () => ({
   claimPendingCommandForDelivery: vi.fn(async () => ({ status: 'claimed', agentId: 'relay-agent' })),
@@ -123,6 +123,8 @@ vi.mock('./commandDispatch', () => ({
 }));
 vi.mock('../routes/agentWs', () => ({ isAgentConnected: vi.fn(() => true), sendCommandToAgent: vi.fn(() => true) }));
 vi.mock('./commandQueue', () => ({ CommandTypes: { WAKE_ON_LAN: 'wake_on_lan' } }));
+import { openOrJoinWakeAttempt, applyWakeRelayResult } from './wakeAttempts';
+import { claimPendingCommandForDelivery } from './commandDispatch';
 import { dispatchWake } from './wakeOnLan';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { deviceStatusEnum } from '../db/schema/devices';
@@ -136,9 +138,9 @@ function chain(rows: unknown[]) {
   return { from: () => ({ where: () => result }) };
 }
 
-function seedWake(status: string, network: unknown[] = [], history: unknown[] = []) {
+function seedWake(status: string, network: unknown[] = [], history: unknown[] = [], lastSeenAt: Date | null = new Date()) {
   selectMock
-    .mockReturnValueOnce(chain([{ id: 'target', orgId: 'org', siteId: 'site', hostname: 'target', status }]))
+    .mockReturnValueOnce(chain([{ id: 'target', orgId: 'org', siteId: 'site', hostname: 'target', status, lastSeenAt }]))
     .mockReturnValueOnce(chain(network))
     .mockReturnValueOnce(chain(history))
     .mockReturnValueOnce(chain([{ ip: '192.0.2.20', mask: '255.255.255.0', lastSeen: new Date() }]))
@@ -149,9 +151,11 @@ const networkMac = { mac: 'AA:BB:CC:DD:EE:01', isPrimary: true, updatedAt: new D
 const wake = () => dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
 
 describe('dispatchWake target eligibility and MAC ordering', () => {
+  afterEach(() => vi.useRealTimers());
   beforeEach(() => {
     vi.clearAllMocks();
     selectMock.mockReset();
+    updateMock.mockReturnValue({ set: () => ({ where: async () => {} }) });
     insertMock.mockReturnValue({ values: () => Object.assign(Promise.resolve(), {
       returning: async () => [{ id: 'command' }],
     }) });
@@ -163,6 +167,59 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(insertMock).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([119_999, 120_000, 120_001, null])('only refuses a recent online target (age %s)', async age => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-31T12:00:00Z'));
+    seedWake('online', [networkMac], [], age === null ? null : new Date(Date.now() - age));
+    const recent = age !== null && age <= 120_000;
+    expect(await wake()).toMatchObject(recent ? { ok: false, code: 'TARGET_ONLINE' } : { ok: true });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(recent ? 0 : 1);
+  });
+
+  it('keeps all live MACs even when there are more than eight', async () => {
+    const live = Array.from({ length: 10 }, (_, i) => ({ ...networkMac, mac: `aa:bb:cc:dd:ee:${i.toString(16).padStart(2, '0')}` }));
+    seedWake('offline', live);
+    expect(await wake()).toMatchObject({ ok: true, macs: live.map(row => row.mac) });
+  });
+
+  it.each([false, true])('preserves an existing attempt on failed WebSocket send (joined %s)', async joined => {
+    seedWake('offline', [networkMac]);
+    vi.mocked(openOrJoinWakeAttempt).mockResolvedValueOnce({ attemptId: 'attempt', joined });
+    vi.mocked(sendCommandToAgent).mockReturnValueOnce(false);
+    expect(await wake()).toMatchObject({ ok: false, code: 'WS_SEND_FAILED' });
+    expect(applyWakeRelayResult).toHaveBeenCalledTimes(joined ? 0 : 1);
+  });
+
+  it.each([false, true])('preserves an existing attempt on command cancellation (joined %s)', async joined => {
+    seedWake('offline', [networkMac]);
+    vi.mocked(openOrJoinWakeAttempt).mockResolvedValueOnce({ attemptId: 'attempt', joined });
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValueOnce({ status: 'cancelled', id: 'command', reason: 'requester_inactive' });
+    expect(await wake()).toMatchObject({ ok: false, code: 'COMMAND_CANCELLED' });
+    expect(applyWakeRelayResult).toHaveBeenCalledTimes(joined ? 0 : 1);
+  });
+
+  it('defers the claim and WebSocket send until the committed delivery continuation runs', async () => {
+    seedWake('offline', [networkMac]);
+    const result = await dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay', deferDelivery: true });
+    expect(result.ok).toBe(true);
+    expect(claimPendingCommandForDelivery).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    if (!result.ok) throw new Error('Expected prepared wake');
+    expect(result.deliver).toBeTypeOf('function');
+    expect(await result.deliver!()).toMatchObject({ ok: true, commandId: 'command' });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('records the command reference only for the first send (joined %s)', async joined => {
+    seedWake('offline', [networkMac]);
+    vi.mocked(openOrJoinWakeAttempt).mockResolvedValueOnce({ attemptId: 'attempt', joined });
+    const set = vi.fn(() => ({ where: async () => {} }));
+    updateMock.mockReturnValue({ set });
+    expect(await wake()).toMatchObject({ ok: true });
+    expect(set).toHaveBeenCalledTimes(joined ? 0 : 1);
+    if (!joined) expect(set).toHaveBeenCalledWith({ deviceCommandId: 'command' });
   });
 
   it.each(deviceStatusEnum.enumValues.filter(status => status !== 'online'))('still sends for status %s', async status => {

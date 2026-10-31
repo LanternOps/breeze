@@ -18,9 +18,11 @@ vi.mock('./unassignedPool/deliveryEligibility', async () => ({
 
 const { selectMock, insertMock } = vi.hoisted(() => ({ selectMock: vi.fn(), insertMock: vi.fn() }));
 vi.mock('../db', () => ({
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
   db: {
     select: (...a: unknown[]) => selectMock(...(a as [])),
     insert: (...a: unknown[]) => insertMock(...(a as [])),
+    update: () => ({ set: () => ({ where: async () => {} }) }),
   },
 }));
 vi.mock('./commandDispatch', () => ({

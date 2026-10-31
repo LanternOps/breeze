@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const mocks = vi.hoisted(() => ({ select: vi.fn(), insert: vi.fn(), update: vi.fn(), values: vi.fn(), set: vi.fn(), where: vi.fn(), returning: vi.fn(), limit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ select: vi.fn(), insert: vi.fn(), update: vi.fn(), values: vi.fn(), set: vi.fn(), where: vi.fn(), returning: vi.fn(), onConflictDoUpdate: vi.fn(), limit: vi.fn() }));
 vi.mock('../db', () => ({
   db: { select: mocks.select, insert: mocks.insert, update: mocks.update },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -18,8 +18,9 @@ beforeEach(() => {
   mocks.select.mockReturnValue({ from: () => ({ where: () => ({ limit: mocks.limit }) }) });
   mocks.limit.mockResolvedValue([]);
   mocks.insert.mockReturnValue({ values: mocks.values });
-  mocks.values.mockReturnValue({ returning: mocks.returning });
-  mocks.returning.mockResolvedValue([{ id }]);
+  mocks.values.mockReturnValue({ returning: mocks.returning, onConflictDoUpdate: mocks.onConflictDoUpdate });
+  mocks.onConflictDoUpdate.mockReturnValue({ returning: mocks.returning });
+  mocks.returning.mockResolvedValue([{ id, joined: false }]);
   mocks.update.mockReturnValue({ set: mocks.set });
   mocks.set.mockReturnValue({ where: mocks.where });
   mocks.where.mockReturnValue({ returning: mocks.returning });
@@ -35,17 +36,15 @@ describe('wake attempts', () => {
     expect(row.deadlineAt.getTime() - row.requestedAt.getTime()).toBe(600_000);
     expect(row.requestedAt.getTime()).toBeGreaterThanOrEqual(before);
   });
-  it('a repeat click joins and increments only send_count', async () => {
-    mocks.limit.mockResolvedValue([{ id }]);
+  it('a repeat click atomically joins and increments only send_count', async () => {
+    mocks.returning.mockResolvedValue([{ id, joined: true }]);
     expect(await openOrJoinWakeAttempt(input)).toEqual({ attemptId: id, joined: true });
-    expect(Object.keys(mocks.set.mock.calls[0]![0])).toEqual(['sendCount']);
-    expect(new PgDialect().sqlToQuery(mocks.set.mock.calls[0]![0].sendCount).sql).toContain('"send_count" + 1');
-    expect(mocks.insert).not.toHaveBeenCalled();
-  });
-  it('joins after a wrapped partial unique-index violation', async () => {
-    mocks.limit.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id }]);
-    mocks.returning.mockRejectedValueOnce({ cause: { code: '23505', constraint_name: 'device_wake_attempts_open_uidx' } }).mockResolvedValue([{ id }]);
-    expect(await openOrJoinWakeAttempt(input)).toEqual({ attemptId: id, joined: true });
+    const conflict = mocks.onConflictDoUpdate.mock.calls[0]![0];
+    expect(Object.keys(conflict.set)).toEqual(['sendCount']);
+    expect(new PgDialect().sqlToQuery(conflict.set.sendCount).sql).toContain('"send_count" + 1');
+    expect(new PgDialect().sqlToQuery(conflict.targetWhere).sql).toContain("IN ('pending','sent')");
+    expect(mocks.select).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
   });
   it('propagates unrelated insert errors', async () => {
     const error = { code: '23503' };

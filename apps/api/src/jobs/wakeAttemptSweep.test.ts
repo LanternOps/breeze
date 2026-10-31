@@ -10,7 +10,9 @@ vi.mock('../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbAcce
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn() }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: attach }));
-import { classifyWakeAttempt, WAKE_ATTEMPT_GRACE_MS, initializeWakeAttemptSweep, shutdownWakeAttemptSweep } from './wakeAttemptSweep';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { captureException } from '../services/sentry';
+import { classifyWakeAttempt, resolveOpenWakeAttempts, WAKE_ATTEMPT_GRACE_MS, initializeWakeAttemptSweep, shutdownWakeAttemptSweep } from './wakeAttemptSweep';
 import { WAKE_OUTCOME_WINDOW_MS } from '../services/wakeAttempts';
 import type { WakeAttemptOutcome } from '../db/schema/deviceWake';
 
@@ -54,5 +56,21 @@ describe('wake sweep worker lifecycle', () => {
     await shutdownWakeAttemptSweep();
     expect(closeWorker).toHaveBeenCalledTimes(1);
     expect(closeQueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('per-attempt failure observability', () => {
+  it('reports a failed attempt and continues resolving the batch', async () => {
+    const error = new Error('attempt update failed');
+    vi.mocked(runOutsideDbContext).mockImplementation(fn => fn());
+    vi.mocked(withSystemDbAccessContext)
+      .mockResolvedValueOnce([{ id: 'failed' }, { id: 'healthy' }])
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(true);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await resolveOpenWakeAttempts()).toEqual({ resolved: 1 });
+    expect(captureException).toHaveBeenCalledWith(error);
+    log.mockRestore();
   });
 });

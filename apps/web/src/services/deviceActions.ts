@@ -300,25 +300,6 @@ export function requestBulkWakeCommand(deviceIds: string[]): Promise<Response> {
 }
 
 /**
- * Bulk Wake-on-LAN — one HTTP round-trip, server iterates per-device with
- * a relay-pick per LAN. Server response includes per-device outcome with
- * the original WakeFailureCode preserved so the UI can group failures
- * by reason in the summary toast.
- *
- * 412/422 from the server (validation, decommissioned-only selection,
- * etc.) is surfaced as a thrown Error so the caller's catch path can
- * show a single error toast instead of treating the entire batch as
- * "0 succeeded."
- */
-export async function sendBulkWakeCommand(deviceIds: string[]): Promise<BulkWakeSummary> {
-  const response = await requestBulkWakeCommand(deviceIds);
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to send bulk wake command'));
-  }
-  return await response.json();
-}
-
-/**
  * Render a one-line failure-code summary suitable for the bulk-wake toast,
  * grouping by code. Returns an empty string when there are no failures.
  *

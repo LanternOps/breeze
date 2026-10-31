@@ -3700,19 +3700,19 @@ describe('DevicesPage wake refusals', () => {
     const mocked = await import('../../services/deviceActions');
     vi.mocked(mocked.requestBulkWakeCommand).mockImplementation(actual.requestBulkWakeCommand);
   });
-  it('single wake on TARGET_ONLINE shows the server message', async () => {
+  it('single wake on TARGET_ONLINE names the device and shows the server message', async () => {
     const { showToast } = await import('../shared/Toast');
     render(<DevicesPage />);
     await screen.findByTestId('device-list');
-    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ code: 'TARGET_ONLINE', error: 'This target is already online.' }, 409));
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ code: 'TARGET_ONLINE', error: 'Target device is already online.' }, 412));
     fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'This target is already online.' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'host-alpha: Target device is already online.' }));
     expect(showToast).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    [409, { code: 'TARGET_ONLINE', error: 'This target is already online.' }],
-    [200, { success: false, code: 'TARGET_ONLINE', error: 'This target is already online.' }],
+    [412, { code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
+    [200, { success: false, code: 'TARGET_ONLINE', error: 'Target device is already online.' }],
   ])('bulk refusal at HTTP %s toasts once', async (status, body) => {
     const { showToast } = await import('../shared/Toast');
     render(<DevicesPage />);
@@ -3720,12 +3720,14 @@ describe('DevicesPage wake refusals', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(body, status));
     fireEvent.click(screen.getByTestId('bulk-wake'));
     fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'This target is already online.' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Target device is already online.' }));
     expect(showToast).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     [{ succeeded: [{ deviceId: DEV_1 }], failed: [] }, 'success', 'Sent to 1, skipped 0'],
+    [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'TARGET_ONLINE' }] }, 'success', 'Sent to 0, skipped 1: 1 already online'],
+    [{ succeeded: [{ deviceId: DEV_1 }], failed: [{ deviceId: DEV_2, code: 'NO_RELAY' }] }, 'warning', 'Sent to 1, skipped 1: 1 with no online peer at their site'],
     [{ succeeded: [], failed: [{ deviceId: DEV_1, code: 'NEW_CODE', message: 'Blocked by wake policy' }] }, 'error', 'Sent to 0, skipped 1: 1 Blocked by wake policy'],
   ])('reports bulk outcomes without an extra toast', async (body, type, message) => {
     const { showToast } = await import('../shared/Toast');
@@ -3735,6 +3737,22 @@ describe('DevicesPage wake refusals', () => {
     fireEvent.click(screen.getByTestId('bulk-wake'));
     fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type, message }));
+    expect(showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('single wake success toasts and starts the outcome watcher', async () => {
+    const { showToast } = await import('../shared/Toast');
+    const { watchWakeOutcome } = await import('../../services/deviceActions');
+    vi.mocked(watchWakeOutcome).mockResolvedValue('aborted');
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({
+      commandId: 'command-1', wakeAttemptId: 'attempt-1', type: 'wake_on_lan',
+      relay: { hostname: 'relay-example' }, broadcast: '192.0.2.255',
+    }, 202));
+    fireEvent.click(screen.getByTestId(`row-wake-${DEV_1}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Wake Sent Watching' }));
+    expect(watchWakeOutcome).toHaveBeenCalledWith(DEV_1, { signal: expect.any(AbortSignal) });
     expect(showToast).toHaveBeenCalledTimes(1);
   });
 
@@ -3762,7 +3780,7 @@ describe('DevicesPage wake refusals', () => {
     }));
     fireEvent.click(screen.getByTestId('bulk-wake'));
     fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'error', message: 'Sent to 1, skipped 2: 2 already online' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Sent to 1, skipped 2: 2 already online' }));
     expect(showToast).toHaveBeenCalledTimes(1);
   });
 });

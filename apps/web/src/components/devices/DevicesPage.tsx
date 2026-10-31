@@ -1269,7 +1269,7 @@ export default function DevicesPage() {
               request: () => requestWakeCommand(device.id),
               onUnauthorized: handleSessionExpired,
               errorFallback: t('devicesPage.toasts.actionFailed', { action: 'wake', hostname: device.hostname }),
-              friendly: (code, message) => wakeFriendlyErrorMessage(code) ?? message,
+              friendly: (code, message) => `${device.hostname}: ${wakeFriendlyErrorMessage(code) ?? message}`,
             });
             const hostname = device.hostname;
             showToast({
@@ -1933,7 +1933,9 @@ export default function DevicesPage() {
               skipped: summary.failed.length,
             });
             showToast({
-              type: summary.failed.length ? 'error' : 'success',
+              type: summary.failed.some(failure => failure.code !== 'TARGET_ONLINE')
+                ? (summary.succeeded.length ? 'warning' : 'error')
+                : 'success',
               message: summary.failed.length
                 ? `${message}: ${summarizeBulkWakeFailures(summary.failed)}`
                 : message,

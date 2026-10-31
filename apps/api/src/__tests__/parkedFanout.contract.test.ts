@@ -241,6 +241,7 @@ const EXEMPT: Record<string, string> = {
   'services/timeEntryService.ts': 'request path: rejects a hidden org a caller names on a time entry (#4186); never reads devices or dispatches device work',
   'jobs/alertCorrelation.ts': 'acts only on alerts that already exist; alert creation leaves parked devices out',
   'jobs/backupRetention.ts': 'retention of existing snapshots, not target selection',
+  'jobs/wakeAttemptSweep.ts': 'ledger maintenance: reads heartbeat only to resolve an existing dispatched wake attempt; selects no targets and sends nothing',
   'jobs/backupSlaWorker.ts': 'evaluates org-owned SLA configurations; the holding org owns none',
   'jobs/deviceBulkPurge.ts': 'lifecycle removal must reach every device',
   'jobs/deviceGroupJobs.ts': 'device groups are org-owned; the holding org has none',

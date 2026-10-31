@@ -6,7 +6,7 @@ import { eq, sql, desc, and, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runAfterDbContextCommit } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
-import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
+import { authMiddleware, requireInteractiveSession, requireMfa, requireScope, requirePermission, withAuthDbAccessContext, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite, projectPublicDevice } from './helpers';
 import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
@@ -22,7 +22,8 @@ import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import { ENABLE_2FA } from '../auth/schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
-import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
+import { runBulkIsolated } from '../../lib/bulkOps';
+import { dispatchWake, type WakeFailureCode, type WakeResult } from '../../services/wakeOnLan';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import type { QueuedCommand } from '../../services/commandQueue';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
@@ -87,18 +88,13 @@ commandsRoutes.post(
       const ipAddress = getTrustedClientIpOrUndefined(c);
       const userAgent = c.req.header('user-agent');
 
-      // Inline worker pool. dispatchWake does 5-7 DB selects + 2 inserts +
-      // 1 update + 1 WS write per device (no locks/transactions per
-      // services/wakeOnLan.ts). Concurrency 8 caps overlap on the
-      // breeze_app pool (~10-20 conns) and keeps wall time on a 500-device
-      // bulk well under Cloudflare's ~100s proxy timeout. Avoided a
-      // p-limit dependency by inlining — the loop is trivial.
-      const CONCURRENCY = 8;
-      const queue = [...deviceIds];
-      async function worker(): Promise<void> {
-        for (;;) {
-          const deviceId = queue.shift();
-          if (!deviceId) return;
+      // Each authorization and preparation commits independently. Delivery runs
+      // in runBulkIsolated's post-commit hook so fast relay results can see both
+      // the command and attempt even while later devices are still preparing.
+      await runBulkIsolated<WakeResult | undefined>(
+        dbAccessContextFromAuth(auth),
+        deviceIds,
+        async (deviceId) => {
           // Per-device authorization — org filtering happens in
           // getDeviceWithOrgCheck and site filtering happens immediately
           // below. dispatchWake itself does NOT independently authorize the
@@ -106,28 +102,33 @@ commandsRoutes.post(
           const device = await getDeviceWithOrgCheck(deviceId, auth);
           if (!device) {
             failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
-            continue;
+            return;
           }
           if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
             failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
-            continue;
+            return;
           }
           if (device.status === 'decommissioned') {
             failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot wake a decommissioned device.' });
-            continue;
+            return;
           }
           try {
             await assertDeviceExecuteAllowed(deviceId, COMMAND_WAKE_ON_LAN, auth.user.id);
           } catch (error) {
             if (!(error instanceof TrustDeniedError)) throw error;
             failed.push({ deviceId, code: error.code, message: error.reason });
-            continue;
+            return;
           }
-          const result = await dispatchWake(deviceId, auth.user.id, {
+          return dispatchWake(deviceId, auth.user.id, {
             ipAddress,
             userAgent,
             bulkId,
+            deferDelivery: true,
           });
+        },
+        async (deviceId, prepared) => {
+          if (!prepared) return;
+          const result = prepared.ok && prepared.deliver ? await prepared.deliver() : prepared;
           if (result.ok) {
             succeeded.push({
               deviceId,
@@ -140,159 +141,163 @@ commandsRoutes.post(
           } else {
             failed.push({ deviceId, code: result.code, message: result.message });
           }
+        },
+      );
+      // A transaction or delivery exception must still produce one result for
+      // that device; never report an uncommitted preparation as successful.
+      for (const deviceId of deviceIds) {
+        if (!succeeded.some(item => item.deviceId === deviceId) && !failed.some(item => item.deviceId === deviceId)) {
+          failed.push({ deviceId, code: 'WS_SEND_FAILED', message: 'Failed to dispatch wake command.' });
         }
       }
-      const workers = Array.from(
-        { length: Math.min(CONCURRENCY, deviceIds.length) },
-        () => worker(),
-      );
-      await Promise.all(workers);
 
       return c.json({ bulkId, succeeded, failed }, 202);
     }
 
-    const commandList: Array<{
-      id: string;
-      deviceId: string;
-      type: string;
-      status: string;
-      createdAt: Date;
-    }> = [];
-    // Typed per-device failures so the caller can distinguish "device gone"
-    // from "site denied" from "decommissioned" from "insert failed". Matches
-    // the wake worker shape above so the UI can render one summary toast.
-    type BulkFailureCode =
-      | 'TARGET_NOT_FOUND'
-      | 'SITE_ACCESS_DENIED'
-      | 'DECOMMISSIONED'
-      | 'INSERT_FAILED'
-      // Created, then cancelled by the push's claim-time check before delivery.
-      | 'CANCELLED'
-      | TrustDenyCode;
-    const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
-    // Devices that completed successfully on a prior call and would queue
-    // a duplicate now (currently only the refresh_inventory dedup path).
-    // Surfaced separately from `failed` so the caller can say "N queued,
-    // M already pending" without misreporting deduped devices as failures.
-    const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
-    // #5128: devices that were not online, whose command is now waiting for
-    // them to reconnect. Reported separately from `failed` — the work was
-    // accepted, it just has not been delivered yet.
-    const queuedOffline: string[] = [];
+    return withAuthDbAccessContext(auth, async () => {
+      const commandList: Array<{
+        id: string;
+        deviceId: string;
+        type: string;
+        status: string;
+        createdAt: Date;
+      }> = [];
+      // Typed per-device failures so the caller can distinguish "device gone"
+      // from "site denied" from "decommissioned" from "insert failed". Matches
+      // the wake result shape above so the UI can render one summary toast.
+      type BulkFailureCode =
+        | 'TARGET_NOT_FOUND'
+        | 'SITE_ACCESS_DENIED'
+        | 'DECOMMISSIONED'
+        | 'INSERT_FAILED'
+        // Created, then cancelled by the push's claim-time check before delivery.
+        | 'CANCELLED'
+        | TrustDenyCode;
+      const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
+      // Devices that completed successfully on a prior call and would queue
+      // a duplicate now (currently only the refresh_inventory dedup path).
+      // Surfaced separately from `failed` so the caller can say "N queued,
+      // M already pending" without misreporting deduped devices as failures.
+      const skipped: Array<{ deviceId: string; code: 'ALREADY_PENDING'; commandId: string }> = [];
+      // #5128: devices that were not online, whose command is now waiting for
+      // them to reconnect. Reported separately from `failed` — the work was
+      // accepted, it just has not been delivered yet.
+      const queuedOffline: string[] = [];
 
-    for (const deviceId of deviceIds) {
-      const device = await getDeviceWithOrgCheck(deviceId, auth);
-      if (!device) {
-        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
-        continue;
-      }
-      // Site denial must win over device-state denials: returning
-      // `DECOMMISSIONED` to a site-restricted caller would confirm the
-      // device exists, is in a reachable org, and is decommissioned.
-      // Keep this in the same order as the wake/single/maintenance paths.
-      if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
-        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
-        continue;
-      }
-      if (device.status === 'decommissioned') {
-        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
-        continue;
-      }
-
-      try {
-        await assertDeviceExecuteAllowed(deviceId, data.type, auth.user.id);
-      } catch (error) {
-        if (!(error instanceof TrustDeniedError)) throw error;
-        failed.push({ deviceId, code: error.code, message: error.reason });
-        continue;
-      }
-
-      // Same dedup #856 added to /:id/commands. The bulk path was missed
-      // — caught by @xxiaoxiong on #831. Record into `skipped` (not
-      // `failed`) so the caller can show an accurate "N queued, M already
-      // pending" without misreporting it as an error.
-      if (data.type === 'refresh_inventory') {
-        const [existingPending] = await db
-          .select({ id: deviceCommands.id })
-          .from(deviceCommands)
-          .where(
-            and(
-              eq(deviceCommands.deviceId, deviceId),
-              eq(deviceCommands.type, 'refresh_inventory'),
-              eq(deviceCommands.status, 'pending'),
-            ),
-          )
-          .limit(1);
-        if (existingPending) {
-          skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+      for (const deviceId of deviceIds) {
+        const device = await getDeviceWithOrgCheck(deviceId, auth);
+        if (!device) {
+          failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found or access denied.' });
           continue;
         }
-      }
+        // Site denial must win over device-state denials: returning
+        // `DECOMMISSIONED` to a site-restricted caller would confirm the
+        // device exists, is in a reachable org, and is decommissioned.
+        // Keep this in the same order as the wake/single/maintenance paths.
+        if (!canAccessDeviceSite(device, c.get('permissions') as UserPermissions | undefined)) {
+          failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
+          continue;
+        }
+        if (device.status === 'decommissioned') {
+          failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
+          continue;
+        }
 
-      // #5128: through the one enqueue seam rather than a raw insert, so the
-      // row carries a delivery deadline and its submitting org, and an online
-      // device gets the socket push instead of waiting for the next heartbeat.
-      // Still wrapped: a constraint violation or pool exhaustion on one device
-      // records as INSERT_FAILED for that device rather than 500-ing the whole
-      // batch and losing every prior success.
-      let command: QueuedCommand | undefined;
-      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
-      try {
-        // `wake` never reaches here — it returns from its own relay path above.
-        const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
-        if (!res.ok) {
-          if (res.code === 'trust_denied' && res.trust) {
-            failed.push({ deviceId, code: res.error as TrustDenyCode, message: res.trust.reason });
-          } else {
-            failed.push({
-              deviceId,
-              code: res.code === 'device_decommissioned' ? 'DECOMMISSIONED' : 'INSERT_FAILED',
-              message: res.error,
-            });
+        try {
+          await assertDeviceExecuteAllowed(deviceId, data.type, auth.user.id);
+        } catch (error) {
+          if (!(error instanceof TrustDeniedError)) throw error;
+          failed.push({ deviceId, code: error.code, message: error.reason });
+          continue;
+        }
+
+        // Same dedup #856 added to /:id/commands. The bulk path was missed
+        // — caught by @xxiaoxiong on #831. Record into `skipped` (not
+        // `failed`) so the caller can show an accurate "N queued, M already
+        // pending" without misreporting it as an error.
+        if (data.type === 'refresh_inventory') {
+          const [existingPending] = await db
+            .select({ id: deviceCommands.id })
+            .from(deviceCommands)
+            .where(
+              and(
+                eq(deviceCommands.deviceId, deviceId),
+                eq(deviceCommands.type, 'refresh_inventory'),
+                eq(deviceCommands.status, 'pending'),
+              ),
+            )
+            .limit(1);
+          if (existingPending) {
+            skipped.push({ deviceId, code: 'ALREADY_PENDING', commandId: existingPending.id });
+            continue;
           }
+        }
+
+        // #5128: through the one enqueue seam rather than a raw insert, so the
+        // row carries a delivery deadline and its submitting org, and an online
+        // device gets the socket push instead of waiting for the next heartbeat.
+        // Still wrapped: a constraint violation or pool exhaustion on one device
+        // records as INSERT_FAILED for that device rather than 500-ing the whole
+        // batch and losing every prior success.
+        let command: QueuedCommand | undefined;
+        let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
+        try {
+          // `wake` never reaches here — it returns from its own relay path above.
+          const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
+          if (!res.ok) {
+            if (res.code === 'trust_denied' && res.trust) {
+              failed.push({ deviceId, code: res.error as TrustDenyCode, message: res.trust.reason });
+            } else {
+              failed.push({
+                deviceId,
+                code: res.code === 'device_decommissioned' ? 'DECOMMISSIONED' : 'INSERT_FAILED',
+                message: res.error,
+              });
+            }
+            continue;
+          }
+          if (res.delivery === 'cancelled') {
+            // The row exists but will never run: report it as a failure with the
+            // reason, not as a queued command.
+            failed.push({ deviceId, code: 'CANCELLED', message: cancelledCommandError(res.cancelReason) });
+            continue;
+          }
+          command = res.command;
+          delivery = res.delivery;
+        } catch (err) {
+          failed.push({
+            deviceId,
+            code: 'INSERT_FAILED',
+            message: err instanceof Error ? err.message : 'Failed to queue command.',
+          });
           continue;
         }
-        if (res.delivery === 'cancelled') {
-          // The row exists but will never run: report it as a failure with the
-          // reason, not as a queued command.
-          failed.push({ deviceId, code: 'CANCELLED', message: cancelledCommandError(res.cancelReason) });
-          continue;
-        }
-        command = res.command;
-        delivery = res.delivery;
-      } catch (err) {
-        failed.push({
-          deviceId,
-          code: 'INSERT_FAILED',
-          message: err instanceof Error ? err.message : 'Failed to queue command.',
+
+        commandList.push({
+          id: command.id,
+          deviceId: command.deviceId,
+          type: command.type,
+          status: command.status,
+          createdAt: command.createdAt
         });
-        continue;
+        if (delivery === 'queued_offline') queuedOffline.push(deviceId);
+
+        writeRouteAudit(c, {
+          orgId: device.orgId,
+          action: 'device.command.queue',
+          resourceType: 'device_command',
+          resourceId: command.id,
+          resourceName: data.type,
+          details: {
+            deviceId,
+            ...commandAuditDetails(command.id, data.type, data.payload || {}),
+            bulk: true
+          }
+        });
       }
 
-      commandList.push({
-        id: command.id,
-        deviceId: command.deviceId,
-        type: command.type,
-        status: command.status,
-        createdAt: command.createdAt
-      });
-      if (delivery === 'queued_offline') queuedOffline.push(deviceId);
-
-      writeRouteAudit(c, {
-        orgId: device.orgId,
-        action: 'device.command.queue',
-        resourceType: 'device_command',
-        resourceId: command.id,
-        resourceName: data.type,
-        details: {
-          deviceId,
-          ...commandAuditDetails(command.id, data.type, data.payload || {}),
-          bulk: true
-        }
-      });
-    }
-
-    return c.json({ commands: commandList, failed, skipped, queuedOffline }, 201);
+      return c.json({ commands: commandList, failed, skipped, queuedOffline }, 201);
+    });
   }
 );
 
