@@ -180,7 +180,7 @@ The [v0.125.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.125.0/
 | `docker/Caddyfile.prod` sends `Strict-Transport-Security` and `X-Content-Type-Options` with the `>` (replace) form so they are no longer sent twice, adds a default `Permissions-Policy`, and adds a default `Cross-Origin-Resource-Policy: same-site` on every path except the API, OAuth, health and public-badge paths. | If you maintain your own copy of `Caddyfile.prod`, carry all three over. See [Security headers](/deploy/tls/#security-headers). |
 | `.env.example` documents the Microsoft 365 Graph-read, Graph-actions and comms executor variables in one place, and shows the comms signing key as `M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_SOURCE_FILE` (a host path mounted into the container). | Nothing. Existing values keep working. |
 
-Not mapped in Compose (add them to the `api` service yourself if you need to change one): the IOC sweep limits `SECURITY_SWEEP_*` and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD`. See [IOC sweeps](/features/security/#ioc-sweeps).
+Not mapped in Compose in v0.125.0 (later releases map them, so set them in `.env`): the IOC sweep limits `SECURITY_SWEEP_*` and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD`. See [IOC sweeps](/features/security/#ioc-sweeps).
 
 ### v0.124.0 — caller verification on by default, AI retention and sweeper settings, web security contacts, Caddy tunnel host
 
@@ -360,7 +360,7 @@ No change breaks an install on default settings. Check these before you upgrade 
 - MCP: `MCP_STATELESS_ENABLED`, `MCP_HEADER_MISMATCH_ALERT_THRESHOLD`, `MCP_TIER3_INTENTS_ENABLED` and its limits, `MCP_APPROVAL_WAIT_MS`, `MCP_APPROVAL_WAITS_PER_PRINCIPAL`, `MCP_APPS_ENABLED`, `MCP_TASKS_ENABLED` and its timers, `OAUTH_CIMD_ENABLED` and `OAUTH_CIMD_ALLOWED_HOSTS`. All off or inert by default, and a non-boolean value for a switch refuses boot. See [MCP Server](/deploy/environment/#mcp-server).
 - `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` and `AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED` (both `false`).
 - `PROMPT_HOST_ENABLED_KINDS`: groundwork; nothing uses it yet.
-- IOC sweep limits (not in Compose): `SECURITY_SWEEP_MAX_DEVICES` (`10000`), `SECURITY_SWEEP_MAX_ACTIVE_PER_ORG` (`5`), `SECURITY_SWEEP_PUMP_INTERVAL_MS` (`30000`), `SECURITY_SWEEP_PUMP_BATCH` (`100`), `SECURITY_SWEEP_PARTNER_RUNNING_CAP` (`200`), `SECURITY_SWEEP_TTL_HOURS_DEFAULT` (`24`), `SECURITY_SWEEP_MFA_DEVICE_THRESHOLD` (`50`), `SECURITY_SWEEP_RUNNING_GRACE_MINUTES` (`65`) and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` (`25`).
+- IOC sweep limits (not in Compose in v0.125.0; later releases map them from `.env`): `SECURITY_SWEEP_MAX_DEVICES` (`10000`), `SECURITY_SWEEP_MAX_ACTIVE_PER_ORG` (`5`), `SECURITY_SWEEP_PUMP_INTERVAL_MS` (`30000`), `SECURITY_SWEEP_PUMP_BATCH` (`100`), `SECURITY_SWEEP_PARTNER_RUNNING_CAP` (`200`), `SECURITY_SWEEP_TTL_HOURS_DEFAULT` (`24`), `SECURITY_SWEEP_MFA_DEVICE_THRESHOLD` (`50`), `SECURITY_SWEEP_RUNNING_GRACE_MINUTES` (`65`) and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` (`25`).
 - `BREEZE_WISP_ENABLED` and `BREEZE_WISP_CONNECTOR_ENABLED`: see the Wisp note above. The connector flag is another name for `BREEZE_WORKSPACE_ENABLED`.
 - **Agent (`agent.yaml`):** `ws_first_reconnect_window_seconds` (`30`, 0–300) and `loop_retry_after` (`true`). See [Agent reconnect settings](#agent-reconnect-settings).
 
