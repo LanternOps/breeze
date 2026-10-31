@@ -23,6 +23,8 @@ import { registerPartnerSettingsInheritanceTools } from './aiToolsPartnerSetting
 import { InheritanceBadRequest, InheritanceNotFound } from './partnerSettingsInheritance/aggregate';
 import { PARTNER_WIDE_READ_DENIED_MESSAGE } from './partnerWideAccess';
 import { BUCKETS } from './partnerSettingsInheritance/bindings';
+import { TOOL_PERMISSIONS } from './aiGuardrails';
+import { PERMISSIONS } from './permissions';
 import { DRILLDOWN_MAX_LIMIT } from './partnerSettingsInheritance/drilldown';
 import {
   PARTNER_SETTINGS_INHERITANCE_BUCKETS,
@@ -73,6 +75,10 @@ describe(TOOL, () => {
     expect(PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT).toBe(DRILLDOWN_MAX_LIMIT);
   });
 
+  it('needs the routes\' permission (ORGS_READ) through TOOL_PERMISSIONS', () => {
+    expect(TOOL_PERMISSIONS[TOOL]).toEqual({ resource: PERMISSIONS.ORGS_READ.resource, action: PERMISSIONS.ORGS_READ.action });
+  });
+
   it('dispatch validation uses the same schema (validateToolInput)', () => {
     expect(validateToolInput(TOOL, { tab: 'regional' })).toEqual({ success: true });
     expect(validateToolInput(TOOL, { field: FIELD, bucket: 'overrides', limit: 5 })).toEqual({ success: true });
@@ -88,6 +94,7 @@ describe(TOOL, () => {
       ['a selected-access partner user, even one whose selection covers every org', { partnerOrgAccess: 'selected' }],
       ['an MCP key / context that never resolved a partner membership', { partnerOrgAccess: undefined }],
       ['a device-restricted run', { allowedDeviceIds: [] }],
+      ['a site-restricted session', { allowedSiteIds: [ORG_1] }],
     ])('refuses %s without reading', async (_label, over) => {
       const out = await run({ tab: 'regional' }, fullPartner(over as Partial<AuthContext>));
       expect(out.error).toBeTruthy();
@@ -109,6 +116,16 @@ describe(TOOL, () => {
       const out = await run({ tab: 'regional' });
       expect(svc.aggregateTab).toHaveBeenCalledWith('regional', { partnerId: PARTNER, accessibleOrgIds: [ORG_1, ORG_2] });
       expect(out).toEqual({ data: { tab: 'regional', orgCount: 2, fields: [] } });
+    });
+
+    it('maps the tab path\'s known and unexpected errors like the drill-down', async () => {
+      svc.aggregateTab.mockRejectedValueOnce(new InheritanceNotFound('Partner not found'));
+      expect((await run({ tab: 'regional' })).error).toBe('Partner not found');
+      expect(sentry.captureException).not.toHaveBeenCalled();
+      svc.aggregateTab.mockRejectedValueOnce(new Error('connection reset: secret detail'));
+      const out = await run({ tab: 'regional' });
+      expect(out.error).not.toMatch(/secret detail/);
+      expect(sentry.captureException).toHaveBeenCalledTimes(1);
     });
 
     it('rejects an unknown tab', async () => {
