@@ -141,6 +141,8 @@ async function publishAlertTriggeredOrRollback(opts: {
   payload: Record<string, unknown>;
   publisher: string;
   siteId: string | null | undefined;
+  ownerKind?: string;
+  ownerRef?: string | null;
 }): Promise<boolean> {
   const { alertId, orgId, deviceId, source, payload, publisher, siteId } = opts;
 
@@ -153,7 +155,8 @@ async function publishAlertTriggeredOrRollback(opts: {
       alertId,
       alertSource: source,
       orgId,
-      ...(deviceId === null ? {} : { deviceId })
+      ...(deviceId === null ? {} : { deviceId }),
+      ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
     });
     console.error(
       `[AlertService] Failed to publish alert.triggered for ${source} alert ${alertId}; rolling the alert row back:`,
@@ -173,7 +176,8 @@ async function publishAlertTriggeredOrRollback(opts: {
         alertId,
         alertSource: source,
         orgId,
-        ...(deviceId === null ? {} : { deviceId })
+        ...(deviceId === null ? {} : { deviceId }),
+        ...(opts.ownerKind ? { ownerKind: opts.ownerKind, ownerRef: opts.ownerRef ?? 'null' } : {}),
       });
       console.error(
         `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
@@ -476,22 +480,34 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       status: 'active',
       triggeredAt: triggeredAt ?? new Date()
     });
-  const [newAlert] = await (params.owner
-    ? insert.onConflictDoNothing({
-      target: [alerts.orgId, alerts.ownerKind, alerts.ownerRef],
-      where: sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`,
-    })
-    : insert).returning({ id: alerts.id });
+  let newAlert: { id: string } | undefined;
+  try {
+    [newAlert] = await (params.owner
+      ? insert.onConflictDoNothing({
+        target: [alerts.orgId, alerts.ownerKind, alerts.ownerRef],
+        where: sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`,
+      })
+      : insert).returning({ id: alerts.id });
+  } catch (error) {
+    captureException(error, undefined, {
+      alertSource: context.source, orgId, ownerKind, ownerRef: ownerRef ?? 'null',
+      ...(deviceId === null ? {} : { deviceId }),
+    });
+    throw error;
+  }
 
   const alertId = newAlert?.id;
   if (!alertId) {
     // The partial unique index arbitrates concurrent writes for an org owner.
-    if (params.owner) return null;
+    if (params.owner) {
+      console.info('[AlertService] Deduplicated open sourced alert', { orgId, ownerKind, ownerRef });
+      return null;
+    }
     const err = new Error(
       `[AlertService] Insert returned no row for ${context.source} alert (org=${orgId} device=${deviceId}); nothing published`
     );
     console.error(err.message);
-    captureException(err, undefined, { alertSource: context.source, orgId, ...(deviceId === null ? {} : { deviceId }) });
+    captureException(err, undefined, { alertSource: context.source, orgId, ownerKind, ownerRef: ownerRef ?? 'null', ...(deviceId === null ? {} : { deviceId }) });
     return null;
   }
 
@@ -503,6 +519,8 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
     orgId,
     deviceId,
     source: context.source,
+    ownerKind,
+    ownerRef,
     payload: {
       alertId,
       ruleId: null,
@@ -881,7 +899,11 @@ export async function resolveAlert(
 
   // Already resolved by someone else (or gone). Not an error — just not ours.
   if (!alert) return false;
-  if (alert.ruleId && !isDeviceOwned(alert)) throw new Error('alert_has_no_device');
+  if (alert.ruleId && !isDeviceOwned(alert)) {
+    console.warn('[AlertService] Skipping device cooldown on resolve', {
+      alertId: alert.id, orgId: alert.orgId, ownerKind: alert.ownerKind, reason: 'alert_has_no_device',
+    });
+  }
 
   // W03 — a subject recovery under the locked sweep commits its resolution and
   // pending `alert.resolved` event TOGETHER (in the SAME outer transaction as
@@ -889,7 +911,7 @@ export async function resolveAlert(
   // here. `deferSubjectEffects` defaults to false so every OTHER caller —
   // manual resolution, checkAutoResolve, the config-policy sweep — keeps
   // today's synchronous behaviour unchanged; only Tasks 9 and 12 opt in.
-  if (deferSubjectEffects && alert.subjectKey) {
+  if (deferSubjectEffects && alert.subjectKey && isDeviceOwned(alert)) {
     const [rule] = alert.ruleId
       ? await db.select().from(alertRules).where(eq(alertRules.id, alert.ruleId)).limit(1)
       : [];
@@ -963,7 +985,7 @@ export async function resolveAlert(
   // spanning the whole sweep). See `alertVerdictSubscriber.ts`'s contract
   // comment. Values come from `alert`, the RETURNING row this same UPDATE
   // just produced — never a second read.
-  const siteId = await resolveDeviceSiteId(alert.deviceId);
+  const siteId = alert.deviceId === null ? null : await resolveDeviceSiteId(alert.deviceId);
   await publishEvent(
     'alert.resolved',
     alert.orgId,
