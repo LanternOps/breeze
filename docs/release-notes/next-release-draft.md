@@ -219,3 +219,8 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### AI tools: device and alert lists name the organization (#10408)
+
+- **Partner-wide AI sessions (Wisp, partner chat, MCP) now see each row's organization.** When the caller can reach more than one organization, `query_devices` and `manage_alerts` (`list`) rows carry `orgId`, and the result adds `organizations: [{ orgId, orgName }]`, one entry per organization on the page. Single-organization callers get the same rows as before.
+- **Smaller default pages.** `query_devices` now returns 20 devices by default (was 25) and `manage_alerts` `list` 12 alerts (was 15), so a page still fits the chat budget with the organization fields. `limit` up to 100 is unchanged. No migration, no new environment variable.

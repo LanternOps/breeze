@@ -488,7 +488,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     siteId: uuid.optional(),
     search: z.string().max(200).optional(),
     tags: z.array(z.string().max(100)).max(20).optional(),
-    ...pageZodShape(25, 100),
+    ...pageZodShape(20, 100),
   }),
 
   get_device_details: z.object({

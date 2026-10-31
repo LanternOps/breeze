@@ -2170,7 +2170,7 @@ export function buildBreezeSdkTools(
         siteId: z.string().guid().optional(),
         search: z.string().max(200).optional(),
         tags: z.array(z.string().max(100)).max(20).optional(),
-        ...pageZodShape(25, 100),
+        ...pageZodShape(20, 100),
       },
       makeHandler('query_devices', getAuth, onPreToolUse, onPostToolUse)
     ),
