@@ -485,6 +485,11 @@
     "rebootRequired": "Erforderlich",
     "rebootDone": "Abgeschlossen",
     "rebootNotRequired": "—",
+    "skipReasons": {
+      "ring_deleted": "Vor der Verteilung abgebrochen: Der Update-Ring wurde gelöscht.",
+      "ring_disabled": "Vor der Verteilung abgebrochen: Der Update-Ring wurde deaktiviert.",
+      "ring_unavailable": "Übersprungen: Der Update-Ring wurde gelöscht oder deaktiviert, bevor dieses Gerät an der Reihe war."
+    },
     "errors": {
       "load": "Patch-Job konnte nicht geladen werden"
     }

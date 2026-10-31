@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Esegui l'escalation dopo",
       "recurrenceWindowDays": "episodi entro (giorni)",
       "pauseResponses": "Sospendi le risposte automatiche finché una persona non le reimposta",
-      "aiAgent": "Agente IA (abilita le risposte di triage con IA)"
+      "aiAgent": "Agente IA (abilita le risposte di triage con IA)",
+      "psaBoard": "Board PSA per i ticket di avviso"
     },
     "deliveryModes": {
       "inherit": "Usa le regole di instradamento",
@@ -170,7 +171,11 @@
       "failed": "Impossibile caricare gli asset",
       "orgRequired": "Seleziona un'organizzazione proprietaria per associare un asset.",
       "pingName": "Ping a {{label}}"
-    }
+    },
+    "psaBoardDefault": "Usa il board predefinito della connessione",
+    "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
+    "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento."
   },
   "kinds": {
     "composite": "Composito (tutte o una di più condizioni)",

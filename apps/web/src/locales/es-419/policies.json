@@ -1840,7 +1840,11 @@
       "deviceCount": "deviceCount",
       "allowed2": "permitido",
       "blocked2": "bloqueado",
-      "summary": "Mostrando {{range}} de {{total}}"
+      "summary": "Mostrando {{range}} de {{total}}",
+      "policyWouldNotApply": "\"{{policy}}\" no se aplicaría a ningún dispositivo de esta organización, así que no se cambió nada. Cada dispositivo sigue una sola política de software, y {{winners}} prevalece en todos los dispositivos. Cambie o quite la asignación de {{configPolicy}} en Políticas de configuración y vuelva a intentarlo.",
+      "policyWouldNotApplySameMode": "\"{{policy}}\" no se aplicaría a ningún dispositivo de esta organización, así que no se cambió nada. Cada dispositivo sigue una sola política de software, y {{winners}} prevalece en todos los dispositivos. En su lugar, agregue el título a {{winner}} en Políticas de software.",
+      "theWinningConfigPolicy": "la política de configuración que prevalece",
+      "nowOverridesPolicies": "\"{{policy}}\" ahora prevalece sobre {{names}} en los dispositivos de esta organización."
     },
     "softwareInventoryView": {
       "failedToFetchSoftwareInventory": "No se pudo recuperar el inventario de software",
@@ -2011,6 +2015,18 @@
       "uninstallCommandCopied": "Comando de desinstalación copiado",
       "breezeDoesNotUninstall": "Breeze no desinstala estos clientes. Ejecute el comando en el dispositivo para quitar uno.",
       "copyFailed": "No se pudo copiar. Seleccione el comando y cópielo manualmente."
+    },
+    "policyCoverage": {
+      "appliesTo_one": "Se aplica a {{count}} dispositivo",
+      "appliesTo_other": "Se aplica a {{count}} dispositivos",
+      "appliesToNone": "Se aplica a 0 dispositivos",
+      "notAssigned": "No está asignada mediante ninguna política de configuración",
+      "overriddenBy": "Reemplazada por {{names}}",
+      "overriddenHint": "Cada dispositivo sigue una sola política de software. En los dispositivos a los que está asignada esta política, prevalece {{names}}.",
+      "partlyOverriddenHint": "Cada dispositivo sigue una sola política de software. En los demás dispositivos asignados prevalece {{names}}.",
+      "anotherPolicy": "otra política de software",
+      "partnerWide": "{{name}} (de todo el partner)",
+      "unavailable": "Cobertura no disponible"
     }
   }
 }

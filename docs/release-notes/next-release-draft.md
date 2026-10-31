@@ -225,3 +225,8 @@ Update agents to a release containing this change before relying on the provider
 - **Desktop sessions now idle out after 30 minutes instead of 5** on devices with no Remote Access policy, and under any policy that does not set an idle timeout. Watching an install, a reboot prompt or a long script no longer drops the session. An idle timeout a policy sets explicitly, including a stored `5`, is unchanged, and so is max session duration (8 h).
 - **New Remote Access policies start at a 30-minute idle timeout** in the policy editor. The restrictive fallback used when policy resolution fails keeps 5 minutes.
 - No migration, environment variable or agent update.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

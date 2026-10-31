@@ -104,7 +104,7 @@ function link(over: Partial<WispThreadLink> = {}): WispThreadLink {
     label: '#1234 Printer offline',
     status: 'open',
     href: `/tickets/${TICKET}`,
-    addedBy: 'wisp',
+    source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z',
     createdAt: new Date(0).toISOString(),
     ...over,
   };
@@ -212,10 +212,10 @@ describe('wisp link tools — handlers', () => {
     expect(resolveGrantCeiling).toHaveBeenCalledWith(GRANT, REVISION);
     expect(getOrCreateThread).toHaveBeenCalledWith(GRANT);
     expect(links.addLink).toHaveBeenCalledTimes(1);
-    expect(links.addLink).toHaveBeenCalledWith({ auth: a, ceiling }, THREAD, { kind: 'ticket', id: TICKET }, { addedByGrantId: GRANT });
+    expect(links.addLink).toHaveBeenCalledWith({ auth: a, ceiling }, THREAD, { kind: 'ticket', id: TICKET }, { source: 'wisp_pin', addedByGrantId: GRANT });
     expect(fencedJson(out)).toEqual({
       linked: true,
-      link: { kind: 'ticket', id: TICKET, orgId: ORG, label: '#1234 Printer offline', status: 'open', href: `/tickets/${TICKET}` },
+      link: { kind: 'ticket', id: TICKET, orgId: ORG, label: '#1234 Printer offline', status: 'open', href: `/tickets/${TICKET}`, source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z' },
     });
     expect(out).not.toContain('Ignore me');
   });
@@ -226,7 +226,7 @@ describe('wisp link tools — handlers', () => {
     expect(links.addLink.mock.calls[0]![2]).toEqual({ kind: 'user', id: GRANTOR, orgId: null });
     expect(fencedJson(out)).toEqual({
       linked: true,
-      link: { kind: 'user', id: GRANTOR, orgId: null, label: 'Tess Tech', status: null, href: `/settings/users#${GRANTOR}` },
+      link: { kind: 'user', id: GRANTOR, orgId: null, label: 'Tess Tech', status: null, href: `/settings/users#${GRANTOR}`, source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z' },
     });
   });
 
@@ -244,7 +244,7 @@ describe('wisp link tools — handlers', () => {
     const out = JSON.parse(await run('link_entity', { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }));
 
     expect(out).toEqual({ refused: 'not_found' });
-    expect(links.addLink).toHaveBeenCalledWith(expect.anything(), THREAD, { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }, { addedByGrantId: GRANT });
+    expect(links.addLink).toHaveBeenCalledWith(expect.anything(), THREAD, { kind: 'ticket', id: TICKET, orgId: MADE_UP_ORG }, { source: 'wisp_pin', addedByGrantId: GRANT });
     expect(resolveEntityRef).toHaveBeenCalledTimes(1);
     expect(dbTransaction).not.toHaveBeenCalled();
   });
@@ -296,15 +296,15 @@ describe('wisp link tools — handlers', () => {
     const a = auth();
     links.listLinks.mockResolvedValueOnce([
       link(),
-      link({ id: 'l2', ref: { kind: 'device', id: DEVICE, orgId: ORG }, label: 'FRONT-DESK-01', status: 'online', href: `/devices/${DEVICE}`, addedBy: 'user' }),
+      link({ id: 'l2', ref: { kind: 'device', id: DEVICE, orgId: ORG }, label: 'FRONT-DESK-01', status: 'online', href: `/devices/${DEVICE}`, source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z' }),
     ]);
     const out = await run('list_links', {}, a);
     expect(getOrCreateThread).toHaveBeenLastCalledWith(GRANT);
     expect(links.listLinks).toHaveBeenLastCalledWith({ auth: a, ceiling }, THREAD);
     expect(fencedJson(out)).toEqual({
       links: [
-        { kind: 'ticket', id: TICKET, orgId: ORG, label: '#1234 Printer offline', status: 'open', href: `/tickets/${TICKET}` },
-        { kind: 'device', id: DEVICE, orgId: ORG, label: 'FRONT-DESK-01', status: 'online', href: `/devices/${DEVICE}` },
+        { kind: 'ticket', id: TICKET, orgId: ORG, label: '#1234 Printer offline', status: 'open', href: `/tickets/${TICKET}`, source: 'wisp_pin', lastTouchedAt: '2026-10-24T08:00:00Z' },
+        { kind: 'device', id: DEVICE, orgId: ORG, label: 'FRONT-DESK-01', status: 'online', href: `/devices/${DEVICE}`, source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z' },
       ],
     });
     expect(JSON.parse(await run('list_links', { orgId: ORG })).error).toBe('invalid_input');

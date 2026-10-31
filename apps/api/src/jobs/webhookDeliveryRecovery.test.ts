@@ -30,6 +30,8 @@ const state = vi.hoisted(() => ({
 const captureExceptionMock = vi.hoisted(() => vi.fn());
 const enqueueWebhookAttemptMock = vi.hoisted(() => vi.fn());
 const cutover = vi.hoisted(() => ({ pending: vi.fn(), drain: vi.fn() }));
+const countFailedDeliveryMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/webhookDeliveryRecord', () => ({ countFailedDelivery: countFailedDeliveryMock }));
 vi.mock('./webhookLegacyQueueCutover', () => ({ legacyWebhookQueuesPending: cutover.pending, drainLegacyWebhookQueues: cutover.drain }));
 
 vi.mock('../db', () => ({
@@ -141,6 +143,7 @@ describe('webhook delivery recovery sweep', () => {
     captureExceptionMock.mockReset();
     cutover.pending.mockReset().mockResolvedValue(false);
     cutover.drain.mockReset().mockResolvedValue({});
+    countFailedDeliveryMock.mockReset().mockResolvedValue(undefined);
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -471,6 +474,39 @@ describe('webhook delivery recovery sweep', () => {
     expect(payload).toMatchObject({ deliveryId: 'delivery-1' });
     expect(consoleLines(warnSpy).join(' '))
       .not.toContain('WEBHOOK_DELIVERY_RECOVERY_IN_FLIGHT_ABANDONED');
+  });
+
+  // #9946: failure_count counts a delivery once, when it reaches `failed`. A
+  // failed attempt that scheduled a retry is not counted (recordDeliveryOutcome),
+  // so a terminal write here is the ONLY time this delivery is counted. A lost
+  // CAS must not count: whoever won the row owns its outcome.
+  it.each([true, false])('counts a too-old scheduled delivery as one failed delivery only when the CAS lands (landed=%s)', async landed => {
+    state.scheduledCandidates = [orphan({ status: 'scheduled', attempts: 1, createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 1) })];
+    state.updateResults = [landed ? [{ id: 'delivery-1' }] : []];
+    await runWebhookDeliveryRecoverySweep(NOW);
+    if (landed) expect(countFailedDeliveryMock).toHaveBeenCalledExactlyOnceWith('webhook-1');
+    else expect(countFailedDeliveryMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['exhausted pending', orphan({ recoveryAttempts: MAX_RECOVERY_ATTEMPTS }), 'exhausted'],
+    ['abandoned in-flight', orphan({ status: 'retrying' }), 'abandonedInFlight'],
+    ['disabled webhook', orphan({ webhookStatus: 'disabled' }), 'undeliverable'],
+    ['too-old pending', orphan({ createdAt: new Date(NOW.getTime() - MAX_RECOVERABLE_AGE_MS - 1) }), 'tooOld']
+  ] as const)('markUnrecoverable on a leased row counts one failed delivery (%s)', async (_label, candidate, counter) => {
+    state.candidates = [candidate];
+    state.updateResults = [claimWon(candidate.recoveryAttempts + 1), [{ id: 'delivery-1' }]];
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ [counter]: 1, terminalWriteLost: 0 });
+    expect(countFailedDeliveryMock).toHaveBeenCalledExactlyOnceWith('webhook-1');
+  });
+
+  it('does not count a failed delivery when the lease-held terminal write loses', async () => {
+    state.candidates = [orphan({ status: 'retrying' })];
+    state.updateResults = [claimWon(1), []];
+    const summary = await runWebhookDeliveryRecoverySweep(NOW);
+    expect(summary).toMatchObject({ terminalWriteLost: 1, abandonedInFlight: 0 });
+    expect(countFailedDeliveryMock).not.toHaveBeenCalled();
   });
 
   it('a throwing claim does not abort the rest of the batch', async () => {
