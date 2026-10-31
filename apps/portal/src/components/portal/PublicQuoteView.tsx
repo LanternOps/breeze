@@ -1,14 +1,16 @@
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { replaceLocation } from '@/lib/replaceLocation';
 import { useMemo, useState } from 'react';
+import { Download } from 'lucide-react';
 import { QuoteDocumentView, quoteAgreementLinks, type DocumentHostComponents } from '@breeze/document-ui';
-import { portalApi, publicApiPath, type PublicQuoteAccepted, type PublicQuoteDetail, type PublicQuotePayment } from '@/lib/api';
+import { portalApi, publicApiPath, buildPortalApiUrl, type PublicQuoteAccepted, type PublicQuoteDetail, type PublicQuotePayment } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { money } from '@/lib/format';
 import { quoteModelFor } from '@/lib/quoteDocument';
 import { portalQuoteHostComponents, quoteAssetSource } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
 import { PublicQuotePaymentStep } from './PublicQuotePaymentStep';
+import { BTN_SECONDARY } from './ui';
 
 interface PublicQuoteViewProps {
   token: string;
@@ -34,6 +36,8 @@ export function PublicQuoteView({ token, initial, error, superseded, accepted, c
   const [msgError, setMsgError] = useState(false);
   // What is payable now, when this page offers the payment step (#3740).
   const [payment, setPayment] = useState<PublicQuotePayment | null>(accepted?.payment ?? null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   // The model follows the status this page moved the proposal into (accepted, declined),
   // so the header pill changes without a refetch.
   const model = useMemo(() => (initial ? quoteModelFor(initial, status) : null), [initial, status]);
@@ -183,8 +187,44 @@ export function PublicQuoteView({ token, initial, error, superseded, accepted, c
     setMsg(`Thanks — ${branding.partnerName} has been notified.`);
   };
 
+  // #9860: same fetch-then-save as the public invoice page's Download PDF, so a
+  // failed response surfaces as a message instead of saving an error body as a .pdf.
+  const downloadPdf = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const res = await fetch(buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/pdf`));
+      if (!res.ok) { setDownloadError('Could not download the proposal PDF.'); return; }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${quote.quoteNumber ?? 'proposal'}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setDownloadError('Could not download the proposal PDF.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <button type="button" onClick={() => void downloadPdf()} disabled={downloading} data-testid="public-quote-download" className={BTN_SECONDARY}>
+          <Download className="h-4 w-4" aria-hidden="true" />
+          {downloading ? 'Preparing…' : 'Download PDF'}
+        </button>
+      </div>
+      {downloadError && (
+        <div role="alert" data-testid="public-quote-download-error" className="rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
+          {downloadError}
+        </div>
+      )}
       <QuoteDocumentView
         model={model}
         components={hostComponents}

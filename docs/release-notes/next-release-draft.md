@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Public proposal Download PDF (#9860)
+
+- **The public proposal link has a Download PDF button.** A client without a portal account can save the same PDF the portal offers, from the page where they sign. The new `GET /quotes/public/:token/pdf` uses the page's token checks. It returns 404 for a replaced or revoked proposal and `no-store` / `no-referrer` headers. Each proposal allows 10 downloads a minute. No migration, setting or environment variable.

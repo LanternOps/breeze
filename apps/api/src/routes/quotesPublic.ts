@@ -22,6 +22,8 @@ import { toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
 import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl, publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
 import { assembleCustomerQuoteDocument } from '../services/customerQuoteDocument';
+import { renderCustomerQuotePdf, customerQuotePdfFilename } from '../services/customerQuotePdf';
+import { PdfMergeError } from '../services/pdfMerge';
 import { getConvertedInvoicePayment, type ConvertedQuotePayment } from '../services/quotePay';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -227,6 +229,67 @@ quotesPublicRoutes.get('/:token/contract-file/:blockId', zValidator('param', tok
   // the context.
   const bytes = new Uint8Array(renderData.fileData);
   return c.body(bytes, 200, { 'Content-Type': 'application/pdf', 'Content-Length': String(bytes.byteLength), 'Cache-Control': 'private, max-age=300' });
+});
+
+/** Same no-store / no-referrer / noindex set as the public invoice routes: the
+ *  URL is the capability, so it must never land in caches, referrer logs or
+ *  crawlers. */
+function applyPublicLinkHeaders(c: { header: (k: string, v: string) => void }): void {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive');
+}
+
+/** Per-quote cap on PDF renders from the public link (the render is the
+ *  expensive part of this unauthenticated surface). Same shape and size as the
+ *  public invoice PDF's cap. Fail-open on a Redis outage, as there: a download
+ *  is read-only, so availability wins over a strict cap. */
+async function overPublicPdfLimit(quoteId: string): Promise<boolean> {
+  const redis = getRedis();
+  if (!redis) return false;
+  try {
+    return !(await rateLimiter(redis, `quote-public:pdf:${quoteId}`, 10, 60)).allowed;
+  } catch {
+    return false;
+  }
+}
+
+// GET /:token/pdf — the proposal as a PDF download (#9860), the same document
+// the logged-in portal's Download PDF renders. Same gates as GET /:token
+// (signature + exp, revoked jti, org lifecycle, token org set, draft) and the
+// shared isPublicLinkDead predicate: a superseded or link-revoked proposal is
+// not served — 404, like the asset routes, since withdrawn prices must not
+// leave as a file either. An expired proposal is served, as the page is.
+quotesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (c) => {
+  applyPublicLinkHeaders(c);
+  const resolved = await resolve(c);
+  if (!resolved) return c.json({ error: 'This link is invalid or has expired' }, 401);
+  if (resolved.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  const { claims, orgIds } = resolved;
+  const quote = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [q] = await db.select().from(quotes).where(and(eq(quotes.id, claims.quoteId), inArray(quotes.orgId, orgIds))).limit(1);
+    if (!q || q.status === 'draft' || isPublicLinkDead(q)) return null;
+    return q;
+  }));
+  if (!quote) return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
+  if (await overPublicPdfLimit(quote.id)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
+  try {
+    // System scope: this router has no auth middleware, so the renderer's quote
+    // reads need a context or RLS returns zero rows. Its partner read opens its own.
+    const pdf = await runOutsideDbContext(() => withSystemDbAccessContext(() => renderCustomerQuotePdf(quote)));
+    const bytes = new Uint8Array(pdf);
+    // c.body, not a bare Response, so the headers set above (and middleware's
+    // prepared headers) are applied — see the contract-file route.
+    return c.body(bytes, 200, {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${customerQuotePdfFilename(quote)}"`,
+      'Content-Length': String(bytes.byteLength),
+    });
+  } catch (err) {
+    // An unreadable uploaded contract surfaces as its typed 4xx, as on the portal route.
+    if (err instanceof PdfMergeError) return c.json({ error: err.message, code: err.code }, err.status);
+    throw err;
+  }
 });
 
 // POST /:token/accept — typed signature. System-scope write, token-resolved.
@@ -451,16 +514,9 @@ async function overPublicPayLimit(invoiceId: string): Promise<boolean> {
   }
 }
 
-/** Same no-store / no-referrer / noindex set as the public invoice routes. */
-function applyPaymentRouteHeaders(c: { header: (k: string, v: string) => void }): void {
-  c.header('Cache-Control', 'no-store');
-  c.header('Referrer-Policy', 'no-referrer');
-  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive');
-}
-
 // GET /:token/payment — what the accepted quote's invoice would charge now.
 quotesPublicRoutes.get('/:token/payment', zValidator('param', tokenParam), async (c) => {
-  applyPaymentRouteHeaders(c);
+  applyPublicLinkHeaders(c);
   const access = await resolvePaymentAccess(c);
   if (!access) return c.json(invalidLink, 401);
   if (access.gate.blocked) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
@@ -483,7 +539,7 @@ quotesPublicRoutes.get('/:token/payment', zValidator('param', tokenParam), async
 // key as Sign & pay and the invoice page's own Pay, so the three never mint
 // competing sessions for one charge.
 quotesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async (c) => {
-  applyPaymentRouteHeaders(c);
+  applyPublicLinkHeaders(c);
   // Same-origin fetch shape (as /invoices/public/:token/pay): a cross-site form
   // cannot set a JSON content type, and there is no ambient credential anyway.
   if (!(c.req.header('content-type') ?? '').includes('application/json')) {

@@ -121,6 +121,32 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     expect(res.status).toBe(401);
   });
 
+  // #9860: the Download PDF behind the public link renders the real proposal
+  // under the route's system context (no auth middleware, forced RLS).
+  runDb('GET /pdf renders the proposal as a no-store PDF download', async () => {
+    const { token } = await seedQuote({ lines: [{ description: 'Public line', unitPrice: '100.00' }] });
+    const res = await app().request(`/quotes/public/${token}/pdf`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/pdf');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="quote-Q-2026-0001.pdf"');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.subarray(0, 5).toString()).toBe('%PDF-');
+  });
+
+  runDb('GET /pdf on a draft quote returns 404, and a garbage token 401', async () => {
+    const { token } = await seedQuote({ status: 'draft' });
+    expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(404);
+    expect((await app().request('/quotes/public/not-a-real-token-string/pdf')).status).toBe(401);
+  });
+
+  runDb('GET /pdf on a superseded quote returns 404 (withdrawn prices never leave as a file)', async () => {
+    const { quoteId, token } = await seedQuote();
+    await withSystemDbAccessContext(() => db.update(quotes).set({ status: 'superseded', publicLinkRevokedAt: new Date() }).where(eq(quotes.id, quoteId)));
+    expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(404);
+  });
+
   runDb('POST decline flips to declined + persists the reason, then 409 on re-decline', async () => {
     const { quoteId, token } = await seedQuote();
     const res = await postJson(`/quotes/public/${token}/decline`, { reason: 'Chose another vendor' });
