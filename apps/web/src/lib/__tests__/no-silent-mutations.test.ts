@@ -33,8 +33,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
-  // Partner-wide groups: creation and policy assignment mutations surface outcomes.
-  'src/components/devices/CreateGroupModal.tsx',
+  // Partner-wide groups: policy assignment mutations surface outcomes.
   'src/components/configurationPolicies/PartnerGroupAssignmentSection.tsx',
   // Tool Catalog W4 (#5219): flow enable/disable/run/cancel mutations go through runAction.
   'src/components/flows/api.ts',
@@ -1036,8 +1035,8 @@ describe('no silent mutations in targeted set', () => {
     // Tool Catalog W4 flows/api.ts: 282 → 283.
     // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
     // Partner-wide groups W4 adds creation and partner group assignments: 284 → 286.
-    // Alert ticketing card (#10535) adds PsaAlertTicketingCard.tsx: 286 → 287.
-    expect(absoluteFiles.length).toBe(287);
+    // #9865 deletes devices/CreateGroupModal.tsx (286 → 285); the alert ticketing card (#10535) adds PsaAlertTicketingCard.tsx: 285 → 286.
+    expect(absoluteFiles.length).toBe(286);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
