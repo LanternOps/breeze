@@ -130,6 +130,7 @@ vi.mock('../../db', async (importOriginal) => ({
 
 import {
   recordMonitorEvaluation,
+  recordRecoveryObservation,
   detachMonitorFromDevice,
   linkEpisodeAlert,
   recordEpisodeResponse,
@@ -706,5 +707,32 @@ describe('recordEpisodeResponse', () => {
     expect(sql).toMatch(/"monitor_id" = \$/);
     expect(sql).toMatch(/"device_id" = \$/);
     expect(sql).toMatch(/"ended_at" is null/);
+  });
+});
+
+describe('recordRecoveryObservation', () => {
+  it('loads the monitor and closes the breach episode with an ok observation for the device org', async () => {
+    state.selectRows = [[monitor()], [stateRow({ currentEpisodeId: EPISODE, lastState: 'breach' })]];
+
+    await recordRecoveryObservation(MONITOR, DEVICE, ORG);
+
+    expect(state.capturedSelectSql[0]).toContain('"monitor_definitions"');
+    expect(state.capturedSelectSql[0]).toContain('"monitor_definitions"."id" =');
+    expect(updateSets()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ endReason: 'recovered', endedAt: expect.any(Date) }),
+      expect.objectContaining({ lastState: 'ok', currentEpisodeId: null }),
+    ]));
+    expect(state.inserts[0]?.find(call => call.method === 'values')?.args[0]).toEqual({
+      monitorId: MONITOR, deviceId: DEVICE, orgId: ORG,
+    });
+  });
+
+  it('returns silently when the monitor is missing', async () => {
+    state.selectRows = [[]];
+
+    await expect(recordRecoveryObservation(MONITOR, DEVICE, ORG)).resolves.toBeUndefined();
+
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(state.updates).toEqual([]);
   });
 });

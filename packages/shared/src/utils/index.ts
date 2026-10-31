@@ -67,3 +67,4 @@ export * from './networkProxyOptIn';
 export * from './forceReboot';
 export * from './networkIsolation';
 export * from './businessTime';
+export * from './evidenceCursor';

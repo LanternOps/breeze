@@ -220,6 +220,17 @@ Add up to 20 Application event providers in an Event Logs configuration policy t
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
+### Alert re-arm (event-log monitors)
+
+- **Event-log alerts no longer re-open on events they already alerted on.** After an event-log alert closes (auto-resolved or resolved by hand), it opens again only when a matching event arrives that the closed alert had not already seen. Before, the old event stayed in the monitor's window, so the alert re-opened each time its cooldown ran out until the event aged out. A threshold such as "5 errors in 60 minutes" still counts every event in the window; a new alert also needs at least one event newer than the last one alerted on.
+- **Recovery conditions clear only on newer events.** A recovery event older than the alert's own trigger events (for example a "Power Restored" left over from an earlier outage) no longer resolves the new alert. When a trigger and its recovery carry the same timestamp, Windows events from the same log are ordered by their record number, and a recovery with the same timestamp otherwise clears the alert.
+- **Acknowledged and muted alerts now auto-resolve** when their monitor has auto-resolve on and the condition recovers. Recurrence-escalation alerts still never auto-resolve, and a device with no data never resolves an alert.
+- **Breach episodes for event-log monitors end when the alert resolves**, not when the event ages out of the window, so recurrence thresholds count separate outages.
+- **One cooldown fallback.** A rule or template without a cooldown now uses 5 minutes on every create and resolve path (some resolve paths used 15).
+- **Upgrade behaviour:** alerts closed before the upgrade treat events ingested up to their close time as already seen, so the upgrade causes no burst of re-opened alerts. Open alerts start tracking on the next sweep.
+- An `after_delay` re-arm option arrives in the next release for anyone who wants reminders while an old event is still in the window.
+- Migration `2027-01-18-110000-alerts-rule-device-subject-closed-idx.sql` builds one index on `alerts` concurrently (no table lock). No setting or environment variable.
+
 ### AI tools — Pax8 (#6754 W15)
 - `get_pax8_status`: inspect integration health and company readiness with full partner access.
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.

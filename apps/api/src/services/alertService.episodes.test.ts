@@ -145,6 +145,7 @@ vi.mock('./monitors/escalationLatch', () => ({
 }));
 
 vi.mock('./alertConditions', () => ({
+  evidenceLeafPaths: vi.fn(() => []),
   evaluateConditions: evaluateConditionsMock,
   evaluateAutoResolveConditions: vi.fn(),
   interpolateTemplate: vi.fn((template: string) => template),

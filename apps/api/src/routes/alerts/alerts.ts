@@ -1,3 +1,4 @@
+import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
@@ -1039,7 +1040,7 @@ alertsRoutes.post(
 
         const overrides = rule.overrideSettings as Record<string, unknown> | null;
         const cooldownMinutes = (overrides?.cooldownMinutes as number) ??
-          template?.cooldownMinutes ?? 15;
+          template?.cooldownMinutes ?? DEFAULT_ALERT_COOLDOWN_MINUTES;
         await setCooldown(alert.ruleId, alert.deviceId, cooldownMinutes, alert.subjectKey ?? undefined);
       }
     }
