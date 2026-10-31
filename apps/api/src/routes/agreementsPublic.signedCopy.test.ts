@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // #10695: a signer who reopens their answered agreement link can download the
 // certified copy of the agreement THAT LINK signed — `GET /:token/signed-copy`,
@@ -12,13 +14,15 @@ import { Hono } from 'hono';
 // the signed document row. The certificate service is mocked; the download
 // builder (services/signedAgreementDownload.ts) is real, so its headers are the
 // ones under test.
-const { dbResults, dbWhere } = vi.hoisted(() => ({ dbResults: [] as unknown[][], dbWhere: [] as unknown[] }));
+const { dbResults, dbWhere } = vi.hoisted(() => ({ dbResults: [] as Array<unknown[] | Error>, dbWhere: [] as unknown[] }));
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'limit', 'innerJoin']) chain[m] = vi.fn(() => chain);
   chain.where = vi.fn((arg: unknown) => { dbWhere.push(arg); return chain; });
-  (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) =>
-    Promise.resolve(dbResults.shift() ?? []).then(resolve);
+  (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
+    const next = dbResults.shift() ?? [];
+    return (next instanceof Error ? Promise.reject(next) : Promise.resolve(next)).then(resolve, reject);
+  };
   return {
     db: chain,
     getCurrentDbAccessContext: () => undefined,
@@ -65,6 +69,7 @@ import { loadCertifiedAgreementInput, renderCertifiedAgreementPdf } from '../ser
 import { PdfMergeError } from '../services/pdfMerge';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import { captureException } from '../services/sentry';
 import { agreementsPublicRoutes } from './agreementsPublic';
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -130,19 +135,15 @@ function expectPublicHeaders(res: Response) {
   expect(res.headers.get('x-robots-tag')).toBe('noindex, nofollow, noarchive');
 }
 
-/** Every string leaf of a drizzle SQL condition (its bound params among
- *  them); the object graph is cyclic (columns → table → columns). */
-function boundStrings(root: unknown): string[] {
-  const out: string[] = [];
-  const seen = new WeakSet<object>();
-  const walk = (v: unknown) => {
-    if (typeof v === 'string') { out.push(v); return; }
-    if (!v || typeof v !== 'object' || seen.has(v)) return;
-    seen.add(v);
-    for (const child of Object.values(v)) walk(child);
-  };
-  walk(root);
-  return out;
+/** The signed-document condition as Postgres sees it: each column paired
+ *  with its bound value, so a swapped or dropped clause fails. */
+const EXPECTED_DOC_WHERE = {
+  sql: '("contract_documents"."agreement_request_id" = $1 and "contract_documents"."org_id" = $2 and "contract_documents"."acceptance_origin" = $3)',
+  params: [REQUEST_ID, ORG_ID, 'customer'],
+};
+function renderWhere(cond: unknown) {
+  const { sql, params } = new PgDialect().sqlToQuery(cond as SQL);
+  return { sql, params };
 }
 
 function expectNoCertificateWork() {
@@ -195,12 +196,11 @@ describe('GET /:token/signed-copy (#10695)', () => {
     // One read: the signed document of THIS request in its current org. The
     // route takes no document id, so there is nothing else to scope.
     expect(dbWhere).toHaveLength(1);
-    const bound = boundStrings(dbWhere[0]);
-    expect(bound).toContain(REQUEST_ID);
-    expect(bound).toContain(ORG_ID);
-    expect(bound).toContain('customer');
+    expect(renderWhere(dbWhere[0])).toEqual(EXPECTED_DOC_WHERE);
   });
 
+  // The builder itself sends no-store on this fallback; the 200 test above is
+  // the one that proves the router middleware overrides its max-age=300.
   it('a certificate that cannot be built falls back to the original, labelled so, still no-store', async () => {
     vi.mocked(renderCertifiedAgreementPdf).mockRejectedValue(new PdfMergeError('unreadable', 422, 'CONTRACT_PDF_UNREADABLE'));
     dbResults.push([docRow()]);
@@ -273,12 +273,14 @@ describe('GET /:token/signed-copy (#10695)', () => {
     expectNoCertificateWork();
   });
 
-  it('a signed request with no signed document → 404', async () => {
+  it('a request this link signed with no signed document → 404, reported as an integrity fault', async () => {
     dbResults.push([]);
     const res = await download();
     expect(res.status).toBe(404);
     expect((await res.json()).code).toBe('NOT_FOUND');
     expectNoCertificateWork();
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(captureException).mock.calls[0]?.[0])).toContain(REQUEST_ID);
   });
 
   it.each([
@@ -310,9 +312,10 @@ describe('GET /:token/signed-copy (#10695)', () => {
     expect(verifyAgreementAcceptToken).not.toHaveBeenCalled();
     expectNoCertificateWork();
     // Keyed on a hash of the token: the bearer credential never lands in Redis.
-    const key = vi.mocked(rateLimiter).mock.calls[0]?.[1] as string;
+    const [, key, limit, windowSeconds] = vi.mocked(rateLimiter).mock.calls[0] ?? [];
     expect(key).toMatch(/^agreement-public:signed-copy:[0-9a-f]{64}$/);
     expect(key).not.toContain(TOKEN);
+    expect([limit, windowSeconds]).toEqual([10, 60]);
   });
 });
 
@@ -325,6 +328,8 @@ describe('GET /:token — signedCopyUrl (#10695)', () => {
     expect(data.signedCopyUrl).toBe(`/agreements/public/${TOKEN}/signed-copy`);
     // Never the document id or any signer evidence — the path is the token's.
     expect(JSON.stringify(data)).not.toContain(DOC_ID);
+    // The same scoped lookup as the download (the view has no row backstop).
+    expect(renderWhere(dbWhere[2])).toEqual(EXPECTED_DOC_WHERE);
   });
 
   it.each([
@@ -341,9 +346,20 @@ describe('GET /:token — signedCopyUrl (#10695)', () => {
     expect(dbWhere).toHaveLength(2);
   });
 
-  it('signed by this link but the document row is missing → null (no dead button)', async () => {
+  it('signed by this link but the document row is missing → null (no dead button), reported', async () => {
     dbResults.push([], [], []);
     const { data } = await (await view()).json();
     expect(data.signedCopyUrl).toBeNull();
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('the signed-copy lookup failing only hides the button — the page still renders', async () => {
+    dbResults.push([], [], new Error('statement timeout'));
+    const res = await view();
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.request.status).toBe('signed');
+    expect(data.signedCopyUrl).toBeNull();
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

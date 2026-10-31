@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
 import { DocumentAgreementBody, DocumentHeader, DocumentPaper } from '@breeze/document-ui';
 import type { AgreementBody, DocumentBranding, DocumentHeaderModel, SanitizedHtml } from '@breeze/shared/documents';
-import { portalApi, publicAgreementFilePath, publicAgreementSignedCopyPath, type PublicAgreementDetail } from '@/lib/api';
+import { portalApi, publicAgreementFilePath, publicApiPath, type PublicAgreementDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { portalAgreementHostComponents } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
@@ -236,7 +236,7 @@ export function PublicAgreementView({ token, initial = null }: PublicAgreementVi
               </p>
               {detail.signedCopyUrl && (
                 <a
-                  href={publicAgreementSignedCopyPath(token)}
+                  href={publicApiPath(detail.signedCopyUrl)}
                   data-testid="public-agreement-download-signed"
                   className={BTN_SECONDARY}
                 >

@@ -274,11 +274,43 @@ describe('public agreement signing (HTTP, real Postgres + Redis)', () => {
     expect((await get(unsigned.token)).status).toBe(200);
     expect((await (await get(unsigned.token)).json() as { data: { signedCopyUrl: string | null } }).data.signedCopyUrl).toBeNull();
 
+    // Two signed links in one org: each downloads ITS own document.
+    expect((await post(unsigned.token, 'accept', SIGN)).status).toBe(200);
+    const [otherDoc] = await documentsFor(unsigned.requestId);
+    const otherRes = await get(unsigned.token, '/signed-copy');
+    expect(otherRes.status).toBe(200);
+    expect(otherRes.headers.get('content-disposition')).toContain(`signed-agreement-${otherDoc!.id as string}.pdf`);
+    expect(otherRes.headers.get('content-disposition')).not.toContain(doc!.id as string);
+
     // The MSP killing the link kills the download (isAgreementLinkDead).
     await sys(() => db.execute(sql`UPDATE agreement_requests SET public_link_revoked_at = now() WHERE id = ${requestId}::uuid`));
     const revoked = await get(token, '/signed-copy');
     expect(revoked.status).toBe(410);
     expect((await revoked.json() as { code: string }).code).toBe('LINK_REVOKED');
+
+    // Tenant gate: an archived org's link serves nothing (the reopened view's rule).
+    await sys(() => db.update(organizations).set({ status: 'archived' as never }).where(eq(organizations.id, s.org.id)));
+    const archived = await get(unsigned.token, '/signed-copy');
+    expect(archived.status).toBe(410);
+    expect((await archived.json() as { code: string }).code).toBe('ORG_UNAVAILABLE');
+  });
+
+  // The link-consumption rule on real rows: a signed request with no link
+  // consumption (how a portal or on-behalf signing looks) is never served by
+  // the link, and the view offers no button. (An on-behalf document on a
+  // link-signed request cannot exist: contract_documents is append-only and
+  // its acceptance_origin frozen, so that leg is unit-tested only.)
+  runDb('reopened link never serves a copy it did not sign (#10695)', async () => {
+    const s = await seed();
+    const { requestId, token } = await createAndSend(s);
+    expect((await post(token, 'accept', SIGN)).status).toBe(200);
+    expect((await get(token, '/signed-copy')).status).toBe(200);
+    const offered = async () => (await (await get(token)).json() as { data: { signedCopyUrl: string | null } }).data.signedCopyUrl;
+    expect(await offered()).not.toBeNull();
+
+    await sys(() => db.execute(sql`UPDATE agreement_requests SET public_response_jti = NULL, public_response_outcome = NULL WHERE id = ${requestId}::uuid`));
+    expect((await get(token, '/signed-copy')).status).toBe(404);
+    expect(await offered()).toBeNull();
   });
 
   runDb('post-commit mail runs its real SQL: signed copy to signer + recipients with the stored bytes; creator told', async () => {

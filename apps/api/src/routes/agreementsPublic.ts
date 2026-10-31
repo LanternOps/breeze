@@ -214,6 +214,16 @@ function linkSignedDocumentWhere(request: AgreementRequestRow) {
 
 const SIGNED_COPY_NOT_FOUND = { error: 'Signed copy not available', code: ERROR_CODES.NOT_FOUND } as const;
 
+/** Accept signs and freezes the agreement in ONE transaction, so a request
+ *  this link signed with no customer signed document is an integrity fault —
+ *  logged + captured (the portal detail route reports the same), while the
+ *  link holder still gets the generic answer. */
+function reportSignedWithoutDocument(c: Context, requestId: string): void {
+  const msg = `[agreementsPublic] request ${requestId} was signed through its link but has no customer signed agreement row`;
+  console.error(msg);
+  captureException(new Error(msg), c, { area: 'agreements-public' });
+}
+
 // GET /:token — view. Stamps first_viewed_at + sent→viewed. A signed or
 // declined request renders read-only with its signed/declined date (#10199:
 // the signer reopening their link after answering — see the resolver's
@@ -231,15 +241,25 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
       const renderData = await loadTemplateVersionRenderData(request.templateVersionId);
       const { html } = renderRequestForClient(frozenRenderSnapshot(request, now), renderData, request.variableValues ?? {});
       const logoUrl = await loadLogoUrl(request.orgId, claims.partnerId);
-      // #10695: offer the download only when it would succeed — never a dead button.
-      let signedCopy = false;
-      if (signedByThisLink(request, claims.jti)) {
-        const [doc] = await db.select({ id: contractDocuments.id }).from(contractDocuments)
-          .where(linkSignedDocumentWhere(request)).limit(1);
-        signedCopy = Boolean(doc);
-      }
-      return { renderData, html, logoUrl, signedCopy };
+      return { renderData, html, logoUrl };
     }));
+
+    // #10695: offer the download only when it would succeed (never a dead
+    // button). Its own system transaction, after the render: a failure here
+    // only hides the button, it never fails or rolls back the view.
+    let signedCopy = false;
+    if (signedByThisLink(request, claims.jti)) {
+      try {
+        const [doc] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+          .select({ id: contractDocuments.id }).from(contractDocuments)
+          .where(linkSignedDocumentWhere(request)).limit(1)));
+        signedCopy = Boolean(doc);
+        if (!doc) reportSignedWithoutDocument(c, request.id);
+      } catch (err) {
+        console.error('[agreementsPublic] signed-copy lookup failed — view without the download', { requestId: request.id, err });
+        captureException(err instanceof Error ? err : new Error(String(err)), c, { area: 'agreements-public' });
+      }
+    }
 
     // Cosmetic stamp, after the render (a page that failed to render is not
     // recorded as viewed) and in its own system transaction so a failure here
@@ -272,7 +292,7 @@ agreementsPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c)
     });
     // Beside the allow-listed DTO, like the portal's signedAgreementId: a
     // token-scoped path, never a document id.
-    const signedCopyUrl = view.signedCopy ? `/agreements/public/${encodeURIComponent(token)}/signed-copy` : null;
+    const signedCopyUrl = signedCopy ? `/agreements/public/${encodeURIComponent(token)}/signed-copy` : null;
     return c.json({ data: { ...data, signedCopyUrl } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -382,7 +402,10 @@ agreementsPublicRoutes.get('/:token/signed-copy', zValidator('param', tokenParam
     .limit(1)));
   // The WHERE already demands a customer acceptance; the row check keeps a
   // query regression from serving an on-behalf record.
-  if (!doc || doc.acceptanceOrigin !== 'customer') return c.json(SIGNED_COPY_NOT_FOUND, 404);
+  if (!doc || doc.acceptanceOrigin !== 'customer') {
+    reportSignedWithoutDocument(c, request.id);
+    return c.json(SIGNED_COPY_NOT_FOUND, 404);
+  }
 
   // The certificate loader opens its own system context.
   const download = await buildSignedAgreementDownload(c, {

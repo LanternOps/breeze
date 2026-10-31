@@ -809,11 +809,6 @@ export function publicAgreementFilePath(token: string): PublicApiPath {
   return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/file`);
 }
 
-/** Browser-facing download URL of the certified copy this public link signed (#10695). */
-export function publicAgreementSignedCopyPath(token: string): PublicApiPath {
-  return publicApiPath(`/agreements/public/${encodeURIComponent(token)}/signed-copy`);
-}
-
 /** Browser-facing URL of an uploaded agreement's file for the signed-in portal user. */
 export function portalAgreementFilePath(id: string): PublicApiPath {
   return publicApiPath(`/portal/agreements/${encodeURIComponent(id)}/file`);
