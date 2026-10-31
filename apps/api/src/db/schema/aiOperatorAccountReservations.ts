@@ -6,7 +6,7 @@ import { aiOperatorTasks } from './aiOperatorTasks';
 import type { AiOperatorAccountProvider } from './aiOperatorTaskGraph';
 
 // AI Operator per-provider-account reservations (#9981).
-// Migration: apps/api/migrations/2027-01-17-170000-ai-operator-account-reservations.sql
+// Migration: apps/api/migrations/2027-01-18-170000-ai-operator-account-reservations.sql.sql
 // — read its header for the lifecycle; this file mirrors it.
 //
 // Tenancy Shape 1: direct, NOT NULL `org_id`, ENABLE + FORCE RLS with

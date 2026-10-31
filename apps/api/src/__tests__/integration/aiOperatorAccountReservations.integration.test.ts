@@ -386,7 +386,7 @@ describe('the migration backfill', () => {
     await settleTask(settled, 'completed', 'verified_resolved');
     await dropAll();
 
-    await replayMigration('2027-01-17-170000-ai-operator-account-reservations.sql');
+    await replayMigration('2027-01-18-170000-ai-operator-account-reservations.sql.sql');
 
     const active = await system(() => db.select().from(aiOperatorAccountReservations)
       .where(and(eq(aiOperatorAccountReservations.orgId, t.orgId), sql`released_at IS NULL`)));
@@ -398,7 +398,7 @@ describe('the migration backfill', () => {
     expect(holders(settled)).toEqual([]);
 
     // Re-applying changes nothing.
-    await replayMigration('2027-01-17-170000-ai-operator-account-reservations.sql');
+    await replayMigration('2027-01-18-170000-ai-operator-account-reservations.sql.sql');
     const again = await system(() => db.select().from(aiOperatorAccountReservations)
       .where(and(eq(aiOperatorAccountReservations.orgId, t.orgId), sql`released_at IS NULL`)));
     expect(again.map((r) => r.id).sort()).toEqual(active.map((r) => r.id).sort());
