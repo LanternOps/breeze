@@ -114,6 +114,11 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
   // Same canonicalisation createActionIntent stores as argument_digest, over
   // the input as sent (not the schema's parsed defaults).
   const argumentDigest = computeArgumentDigest(canonicalizeArguments(toolInput));
+  // #9758: the epoch the bearer middleware admitted this OAuth call at. It is
+  // recorded on the intent (release refuses once the requester's live
+  // auth_epoch has moved) and bound into the idempotency key, so a retry after
+  // a bump files a fresh intent instead of replaying the stale live one.
+  const originAuthEpoch = auth.principal.kind === 'oauth_grant' ? apiKey.oauthAuthEpoch ?? undefined : undefined;
 
   let snapshot: Awaited<ReturnType<typeof createActionIntent>>;
   try {
@@ -122,12 +127,10 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
       input: toolInput,
       source: 'mcp_api',
       orgId: input.executionOrgId,
-      idempotencyKey: mcpIntentIdempotencyKey(originRef, toolName, argumentDigest),
+      idempotencyKey: mcpIntentIdempotencyKey(originRef, toolName, argumentDigest, originAuthEpoch),
       correlationId: input.correlationRequestId,
       requestingClientLabel: input.clientLabel.slice(0, 255),
-      // #9758: the epoch the bearer middleware admitted this OAuth call at;
-      // release refuses once the requester's live auth_epoch has moved.
-      ...(auth.principal.kind === 'oauth_grant' ? { originAuthEpoch: apiKey.oauthAuthEpoch ?? undefined } : {}),
+      ...(auth.principal.kind === 'oauth_grant' ? { originAuthEpoch } : {}),
       maxLiveForOrigin: mcpIntentMaxLivePerPrincipal(),
       // #10027: the MCP gate files a non-read action rated below Tier 3 on a
       // registry-Tier-3 tool (edr_endpoint_action scan); approve it at Tier 3.

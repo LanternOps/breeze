@@ -465,7 +465,15 @@ async function loadLiveOAuthGrant(
   // verified at. A bump since (password change/reset, status change, global
   // logout…) refuses the release here rather than relying on the post-commit
   // grant sweep having landed. A missing snapshot fails closed.
-  if (intent.originAuthEpoch == null || user.authEpoch !== intent.originAuthEpoch) return REVOKED;
+  if (intent.originAuthEpoch == null || user.authEpoch !== intent.originAuthEpoch) {
+    // Same error code as any other dead origin, so log which case this was.
+    // Epoch values stay out of the log.
+    console.warn('[mcp-release] OAuth intent refused: requester auth_epoch', {
+      intentId: intent.id,
+      reason: intent.originAuthEpoch == null ? 'auth_epoch_missing' : 'auth_epoch_moved',
+    });
+    return REVOKED;
+  }
 
   const [client] = await db
     .select({ id: oauthClients.id, disabledAt: oauthClients.disabledAt })

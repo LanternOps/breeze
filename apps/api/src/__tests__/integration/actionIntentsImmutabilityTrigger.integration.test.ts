@@ -436,3 +436,57 @@ describe('action_intents external tool binding CHECK (live DB)', () => {
     await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: 'rev-1' })).resolves.toBeUndefined();
   });
 });
+
+// #9758 (2027-01-18-100000): origin_auth_epoch is recorded only for an
+// MCP-origin OAuth intent; action_intents_origin_auth_epoch_chk refuses it on
+// every other origin.
+describe('action_intents origin_auth_epoch CHECK (live DB)', () => {
+  let intentId: string;
+  beforeEach(async () => {
+    intentId = (await seedPendingIntent()).id;
+  });
+
+  async function cloneIntentWith(overrides: Partial<NewActionIntent>): Promise<void> {
+    await withSystemDbAccessContext(async () => {
+      const [row] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+      const { id: _id, createdAt: _c, ...rest } = row!;
+      await db.insert(actionIntents).values({
+        ...(rest as NewActionIntent),
+        idempotencyKey: `idem-epoch-${randomUUID().slice(0, 8)}`,
+        correlationId: randomUUID(),
+        ...overrides,
+      });
+    });
+  }
+
+  /** The seeded org's user, so an mcp_api clone has a requester (one-actor CHECK). */
+  async function seededUserId(): Promise<string> {
+    return withSystemDbAccessContext(async () => {
+      const [row] = await db.select({ orgId: actionIntents.orgId }).from(actionIntents)
+        .where(eq(actionIntents.id, intentId)).limit(1);
+      const [user] = await db.select({ id: users.id }).from(users).where(eq(users.orgId, row!.orgId)).limit(1);
+      return user!.id;
+    });
+  }
+
+  it('rejects an epoch on a non-OAuth (ai_agent) intent with 23514', async () => {
+    await expect(cloneIntentWith({ originAuthEpoch: 3 }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_origin_auth_epoch_chk' } });
+  });
+
+  it('rejects an epoch on an mcp_api api_key intent with 23514', async () => {
+    const userId = await seededUserId();
+    await expect(cloneIntentWith({
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: randomUUID(),
+      requestingAgentRunId: null, requestedByUserId: userId, originAuthEpoch: 3,
+    })).rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_origin_auth_epoch_chk' } });
+  });
+
+  it('accepts an epoch on an mcp_api oauth_grant intent', async () => {
+    const userId = await seededUserId();
+    await expect(cloneIntentWith({
+      source: 'mcp_api', originPrincipalKind: 'oauth_grant', originPrincipalId: 'grant-epoch',
+      requestingAgentRunId: null, requestedByUserId: userId, originAuthEpoch: 3,
+    })).resolves.toBeUndefined();
+  });
+});

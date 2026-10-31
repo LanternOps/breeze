@@ -135,6 +135,32 @@ describe('createMcpActionIntent', () => {
     expect(args.originAuthEpoch).toBe(4);
   });
 
+  // #9758 review: a retry after an auth_epoch bump must not replay the live
+  // intent filed at the old epoch (it can never be released) — the epoch is
+  // part of an OAuth origin's idempotency key; same epoch still converges.
+  it('an OAuth origin binds the idempotency key to the auth epoch', async () => {
+    const oauth = (epoch: number) => input({
+      auth: { principal: { kind: 'oauth_grant', grantId: 'grant-1' }, user: { id: USER } } as never,
+      apiKey: { id: 'oauth:jti', orgId: ORG, oauthGrantId: 'grant-1', oauthAuthEpoch: epoch, mcpDomains: null } as never,
+    });
+    await createMcpActionIntent(oauth(4));
+    await createMcpActionIntent(oauth(4));
+    await createMcpActionIntent(oauth(5));
+    const keys = mocks.createActionIntent.mock.calls.map(([, args]) => (args as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+    for (const k of keys) expect(k).toMatch(/^mcp:v1:[0-9a-f]{64}$/);
+  });
+
+  it('an OAuth origin with no verified epoch reaches createActionIntent without one (it refuses before insert)', async () => {
+    await createMcpActionIntent(input({
+      auth: { principal: { kind: 'oauth_grant', grantId: 'grant-1' }, user: { id: USER } } as never,
+      apiKey: { id: 'oauth:jti', orgId: ORG, oauthGrantId: 'grant-1', mcpDomains: null } as never,
+    }));
+    const [, args] = mocks.createActionIntent.mock.calls[0]!;
+    expect(args.originAuthEpoch).toBeUndefined();
+  });
+
   it('an API-key origin passes no originAuthEpoch', async () => {
     await createMcpActionIntent(input());
     const [, args] = mocks.createActionIntent.mock.calls[0]!;

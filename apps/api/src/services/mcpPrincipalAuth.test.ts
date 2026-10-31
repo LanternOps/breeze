@@ -299,12 +299,18 @@ describe('rebuildMcpOriginAuthContext — oauth_grant origin', () => {
     // The grant is still active and the Redis marker is unset: exactly the
     // state a failed post-commit OAuth sweep leaves behind.
     seedGrant(grantRow(), liveUser({ authEpoch: 8 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await rebuildMcpOriginAuthContext(oauthIntent({ originAuthEpoch: 7 }))).toEqual({ error: 'mcp_origin_revoked' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auth_epoch'), { intentId: 'intent-1', reason: 'auth_epoch_moved' });
+    warn.mockRestore();
   });
 
   it('refuses the release of an OAuth intent with no recorded auth_epoch (fails closed)', async () => {
     seedGrant(grantRow(), liveUser({ authEpoch: 1 }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(await rebuildMcpOriginAuthContext(oauthIntent({ originAuthEpoch: null }))).toEqual({ error: 'mcp_origin_revoked' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auth_epoch'), { intentId: 'intent-1', reason: 'auth_epoch_missing' });
+    warn.mockRestore();
   });
 
   it('a partner-scope OAuth context drops orgs the client is blocked in, as the bearer path does', async () => {
