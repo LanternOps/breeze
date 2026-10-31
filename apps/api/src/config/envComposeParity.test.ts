@@ -450,7 +450,9 @@ describe('E2E_MODE env plumbing (#6447)', () => {
  * services/securityScanSweepConfig.ts and jobs/securityScanJobs.ts, but they
  * shipped in neither `.env.example` nor either compose file, so a self-hoster
  * could not tune them without editing the container env by hand. Pinned on the
- * same axes as QBO_*, plus the documented default matching the code's.
+ * same axes as QBO_*, plus the documented default. Four defaults come from
+ * @breeze/shared constants (drift-checked); the other five are inline literals
+ * in the config/job files, so keep them in sync by hand.
  */
 describe('IOC sweep limits env plumbing (#10050)', () => {
   const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
