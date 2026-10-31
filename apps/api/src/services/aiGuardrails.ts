@@ -18,7 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -193,6 +193,8 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_manual_assets: ['create', 'update', 'link', 'unlink'],
   // Full-control W14 PR B (#6784): a pure read, auto-executed (TIER2_READONLY_ACTIONS).
   manage_contracts: ['preview_invoice'],
+  // W15 PR A (#6785): only local draft and line edits; sync and preflight are supervised.
+  manage_pax8_orders: ['create_draft', 'add_line', 'update_line', 'remove_line'],
   // Full-control W14 (#6784, W14 plan): an ORG-OWNED agreement template's create / rename is tenant-internal and
   // reversible (archive hides a new one) and pins nowhere until a version is published. A call that asserts
   // ownerScope 'partner' escalates to supervised (isInputAwareTier3).
@@ -460,6 +462,10 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // Full-control W14 PR B (#6784): the accounting reads. remote_candidates never sends the model's term to the
   // provider (filtered in Breeze, quorum QW8).
   manage_accounting_sync: ['status', 'owed_operations', 'customers', 'mappings', 'income_accounts', 'remote_candidates'],
+  // W15 PR A (#6785): mapped products and subscription/order evidence reads.
+  search_pax8_products: ['search', 'provision_details', 'dependencies', 'pricing'],
+  manage_pax8_subscriptions: ['list', 'drift'],
+  manage_pax8_orders: ['list', 'get', 'preview'],
   manage_delivery: ['resolve', 'list_routing', 'list_escalation'],
   manage_deployments: ['list', 'get', 'device_status'],
   manage_groups: ['list', 'get', 'preview', 'membership_log'],
@@ -671,6 +677,9 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_contract_documents: ['link'],
   // Full-control W14 PR B (#6784): see TIER3_SUPERVISED_ACTIONS / TIER3_FOUR_EYES_ACTIONS.
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'],
+  // W15 PR A (#6785, Gate B): sync calls the vendor partner-wide; preflight sends staged content.
+  manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
+  manage_pax8_orders: ['preflight'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -1061,6 +1070,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // linked one OVERWRITE the remote customer / item with Breeze's values; unlink is local. A sync that would
   // CREATE the remote record is refused in the handler (QB5), so none of these is creation-capable.
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping'],
+  // W15 PR A (#6785): local billing links, partner-wide sync and vendor isMock preflight.
+  manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
+  manage_pax8_orders: ['preflight'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -2819,6 +2831,31 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     sync_mapping: { resource: 'accounting', action: 'manage' },
     push: { resource: 'accounting', action: 'manage' },
     push_bulk: { resource: 'accounting', action: 'manage' },
+  },
+  // W15 PR A (#6785): REST requires billing:manage even for reads exposing vendor costs.
+  get_pax8_status: { resource: 'billing', action: 'manage' },
+  search_pax8_products: {
+    search: { resource: 'billing', action: 'manage' },
+    provision_details: { resource: 'billing', action: 'manage' },
+    dependencies: { resource: 'billing', action: 'manage' },
+    pricing: { resource: 'billing', action: 'manage' },
+  },
+  manage_pax8_subscriptions: {
+    list: { resource: 'billing', action: 'manage' },
+    drift: { resource: 'billing', action: 'manage' },
+    sync: { resource: 'billing', action: 'manage' },
+    link: { resource: 'billing', action: 'manage' },
+    unlink: { resource: 'billing', action: 'manage' },
+  },
+  manage_pax8_orders: {
+    list: { resource: 'billing', action: 'manage' },
+    get: { resource: 'billing', action: 'manage' },
+    create_draft: { resource: 'billing', action: 'manage' },
+    add_line: { resource: 'billing', action: 'manage' },
+    update_line: { resource: 'billing', action: 'manage' },
+    remove_line: { resource: 'billing', action: 'manage' },
+    preview: { resource: 'billing', action: 'manage' },
+    preflight: { resource: 'billing', action: 'manage' },
   },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
@@ -4881,6 +4918,11 @@ export function buildApprovalDescription(
       parts.push(`${humanizeToolAction(toolName, action)} ${subject}${details.length ? `: ${details.join(', ')}` : ''}`);
       break;
     }
+    case 'manage_pax8_subscriptions':
+    case 'manage_pax8_orders':
+      parts.push(describePax8Action(toolName, action) ?? humanizeToolAction(toolName, action));
+      break;
+
     // Full-control W14 PR B (#6784): the four-eyes card states every figure the approvers sign (the assertions the
     // handler and the pinned effect digest both enforce). Ids are truncated; amounts and dates are the model's
     // assertions, refused at release when they are not the live invoice.

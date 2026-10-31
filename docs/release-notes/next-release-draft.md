@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Breeze Assist crash-loop detection (#10302)
 
 - **A crash-looping Breeze Assist is now reported.** The agent used to clear its count of Assist restarts whenever it found Assist running. An Assist that crashed a few seconds after each start, or that the heartbeat relaunched just before a check, was restarted forever and never reported. The count now clears only after Assist has stayed up for 60 seconds since the agent last launched it. A device whose Assist keeps closing now reaches the `crash_loop` install issue ("Unavailable: keeps closing") and the six-hour back-off from #10183. Agent-side only. No migration, environment variable or setting.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
