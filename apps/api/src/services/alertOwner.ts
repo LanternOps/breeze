@@ -9,7 +9,7 @@ export interface AlertOwnerFields {
 }
 
 /** Stable identity for throttles and logs. Throws on an illegal combination. */
-export function alertOwnerKey(alert: AlertOwnerFields): string {
+export function alertOwnerKey(alert: AlertOwnerFields & { id?: string }): string {
   switch (alert.ownerKind) {
     case 'device':
       if (alert.deviceId !== null) return `device:${alert.deviceId}`;
@@ -23,7 +23,7 @@ export function alertOwnerKey(alert: AlertOwnerFields): string {
       if (alert.deviceId === null && alert.ownerRef !== null) return `backup_workload:${alert.ownerRef}`;
       break;
   }
-  throw new Error(`Invalid alert owner: ${alert.ownerKind}`);
+  throw new Error(`Invalid alert owner: ${alert.ownerKind} (alert ${alert.id ?? 'unknown'})`);
 }
 
 /** Narrows provenance too: a topology owner may still carry a device. */
