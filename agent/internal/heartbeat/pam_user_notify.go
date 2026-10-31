@@ -9,6 +9,8 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
+	"github.com/breeze-rmm/agent/internal/promptcatalog"
+	"github.com/breeze-rmm/agent/internal/promptkinds"
 )
 
 // PAM end-user outcome notices (#8928).
@@ -248,8 +250,28 @@ func pamSupportName(s string) string {
 	return pamSupportFallback
 }
 
+// pamOutcomeNotice is the title and body of one outcome notice for a tracked
+// request (#10696): the elevation prompt's catalog copy for state
+// (promptkinds.ElevationOutcomeNotice), in the locale of the request's
+// Windows session, naming the partner the way the prompt does
+// (elevationPartner). english is #8928's copy, used only if the catalog
+// cannot render (it always can; the embed is tested): a notice in English
+// beats no notice.
+func (h *Heartbeat) pamOutcomeNotice(entry pamTrackedRequest, state ipc.PromptState, technician, reason string, english func() (string, string)) (title, body string) {
+	loc := h.pamNoticeLocale(entry.WinSession)
+	title, body, err := promptkinds.ElevationOutcomeNotice(loc, state, entry.Program, h.elevationPartner(entry.SupportName), technician, reason)
+	if err != nil {
+		log.Warn("pam: outcome notice not localized; showing the English copy",
+			"state", string(state), "locale", string(loc), "error", err.Error())
+		return english()
+	}
+	return title, body
+}
+
 // Notice copy (#8928 Global Constraints). {p} and {s} are normalized here so
-// every caller gets the same fallbacks.
+// every caller gets the same fallbacks. The outcome notices render from the
+// catalog (pamOutcomeNotice); these English strings are its fallback. Offline
+// and waiting have no catalog sentence yet and stay English.
 
 // pamCopyWaiting is shown when the user hands a request to IT (PR 2).
 func pamCopyWaiting(p, s string) (title, body string) {
@@ -284,6 +306,24 @@ func pamCopyExpired(p, s string) (title, body string) {
 func pamCopyOffline(p, s string) (title, body string) {
 	p, s = pamProgramName(p), pamSupportName(s)
 	return "Couldn't reach " + s, "Breeze couldn't send the request for " + p + ". If you have administrator credentials, enter them in the Windows prompt."
+}
+
+// pamNoticeLocale is the catalog locale of a PAM outcome notice for
+// winSession (#10696), picked the way the prompt host picks it for the
+// SYSTEM helper (prompthost Host.SessionLocale): the UI language a
+// user-context helper in that Windows session reported, then the machine's UI
+// language, then en. The agent runs as SYSTEM, so its own language is the
+// machine's, not the signed-in user's.
+func (h *Heartbeat) pamNoticeLocale(winSession string) promptcatalog.Locale {
+	if h.sessionBroker != nil {
+		if tag := strings.TrimSpace(h.sessionBroker.UILocaleInWinSession(winSession)); tag != "" {
+			return promptcatalog.Negotiate(tag)
+		}
+	}
+	if tag := strings.TrimSpace(osUILocale()); tag != "" {
+		return promptcatalog.Negotiate(tag)
+	}
+	return promptcatalog.LocaleEN
 }
 
 // errPamNoticeNoTargetSession: a PAM notice with no target Windows session.
@@ -367,7 +407,9 @@ func (h *Heartbeat) notifyPamApplyOutcome(requestID string, result pamlifetime.R
 	if !ok || onAssist {
 		return
 	}
-	title, body := copyFn(entry.Program, entry.SupportName)
+	title, body := h.pamOutcomeNotice(entry, state, technician, "", func() (string, string) {
+		return copyFn(entry.Program, entry.SupportName)
+	})
 	if err := h.notifyPamUser(title, body, entry.WinSession); err != nil {
 		tracker.ReleaseNotify(requestID)
 		log.Warn("pam: "+kind+" notice not shown; a redelivered pam_apply_v2 may retry it",

@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### PAM outcome notices are localized (#10696)
+
+- **When Breeze Assist is not installed, the approved, couldn't-start, denied and expired notices for an elevation request now use the same localized sentences as the Assist elevation card.** The language is the signed-in user's UI language in that Windows session, then the machine's, then English, the same rule as on-device prompts. English wording changes too, for example "Contoso IT denied the request for mmc.exe." instead of "mmc.exe was denied by Contoso IT.", and a couldn't-start notice is titled "The program couldn't start". A multi-line deny reason is shown on one line. The "Couldn't reach IT" offline notice stays English (no catalog sentence yet). Agent-only; no migration, setting or environment variable.
