@@ -8,7 +8,9 @@
  * caller's own grants (`listGrants({ view: 'mine' })`), so another user's
  * grant id is the same 404 as a missing one. Without `grantId`, the caller's
  * usable grant: active before paused, partner-wide before org-scoped, newest
- * first; none → 404 `no_grant` (the page shows the start card).
+ * first; none → 200 `{ data: null }` (the page shows the start card). No
+ * grant is the state every new user starts in, so it is not an error status
+ * (#10200: a 404 logged a red console line on every visit).
  *
  * Payload = `GET /wisp/thread/:id`'s members (thread, focusOrgName, grant with
  * the spend meter and pausedReason, wideningAvailable) + brief, needsYou,
@@ -51,7 +53,7 @@ wispHomeRoutes.get('/', zValidator('query', wispHomeQuerySchema), async (c) => {
   if (!grant) {
     return grantId
       ? c.json({ error: 'Wisp delegation not found', code: 'not_found' }, 404)
-      : c.json({ error: 'No Wisp delegation yet', code: 'no_grant' }, 404);
+      : c.json({ data: null });
   }
 
   // Idempotent create-on-first-use of the grantor's own thread (W04), the same

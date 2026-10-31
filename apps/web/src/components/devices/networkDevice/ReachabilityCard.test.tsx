@@ -57,13 +57,11 @@ function renderCard(overrides: Partial<React.ComponentProps<typeof ReachabilityC
 }
 
 describe('ReachabilityCard', () => {
-  it('leads with the sourced headline, never a bare state word', () => {
+  it('does not repeat the header badge\'s verdict as a headline', () => {
+    // The header badge already reads "Responding · Network check 1 min ago";
+    // the card is the breakdown behind it, one line per source.
     renderCard();
-    const headline = screen.getByTestId('network-detail-reach-headline');
-    expect(headline.textContent).toContain('Responding');
-    expect(headline.textContent).toContain('Network check');
-    expect(headline.textContent).toContain('·');
-    expect(headline).toHaveAttribute('title', expect.stringContaining('20'));
+    expect(screen.queryByTestId('network-detail-reach-headline')).toBeNull();
   });
 
   it('renders one line per contributing source, each with its own age', () => {
@@ -100,6 +98,18 @@ describe('ReachabilityCard', () => {
     expect(summary.textContent).toContain('1 unsupported');
     await userEvent.click(screen.getByTestId('network-detail-view-oids'));
     expect(onViewMonitoring).toHaveBeenCalledTimes(1);
+  });
+
+  it('names a paused poller, which contributes no SNMP line of its own', () => {
+    const { snmp, ...detail } = full.detail;
+    renderCard({ reachability: { ...full, detail }, collection: { ...collection, status: 'paused' } });
+    expect(screen.queryByTestId('network-detail-reach-snmp')).toBeNull();
+    expect(screen.getByTestId('network-detail-collection-status').textContent).toContain('Paused');
+  });
+
+  it('adds no collection status line when the SNMP line already says it', () => {
+    renderCard({ collection: { ...collection, status: 'no_agent' } });
+    expect(screen.queryByTestId('network-detail-collection-status')).toBeNull();
   });
 
   it('names the agent that bridges the polls and links to it', () => {
@@ -142,7 +152,6 @@ describe('ReachabilityCard', () => {
       bridgeDeviceId: null,
       bridgeDeviceName: null,
     });
-    expect(screen.getByTestId('network-detail-reach-headline').textContent).toContain('Unverified');
     expect(screen.getByTestId('network-detail-reach-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('network-detail-collection-summary')).toBeNull();
   });

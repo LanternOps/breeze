@@ -1179,5 +1179,10 @@
     "checking": "Vérification en cours",
     "unverified": "Non vérifiée",
     "failed": "Échec du contrôle d'intégrité"
+  },
+  "reparseSkipNotice": {
+    "summary_one": "{{count}} point d'analyse ignoré : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
+    "summary_other": "{{count}} points d'analyse ignorés : les jonctions et les points de montage ne sont ni suivis ni restaurés. C'est normal, ce n'est pas une erreur.",
+    "showDetails": "Afficher les chemins ignorés"
   }
 }

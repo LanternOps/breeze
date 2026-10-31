@@ -10,6 +10,10 @@ import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 import { i18n } from './i18n';
 
+export function isPinnedLink(link: WispThreadLink): boolean {
+  return link.source === 'user_pin' || link.source === 'wisp_pin';
+}
+
 const linksPath = (threadId: string) => `/wisp/thread/${encodeURIComponent(threadId)}/links`;
 
 /** `GET /wisp/thread/:id/links` → the links the caller can still see (the server re-resolves each). */

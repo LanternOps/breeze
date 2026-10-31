@@ -28,6 +28,9 @@
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "resolvedApproved": "Diese Anfrage wurde genehmigt.",
+    "resolvedNotApproved": "Diese Anfrage wurde nicht genehmigt, daher wurde die Aktion nicht ausgeführt.",
+    "resolvedEnded": "Diese Anfrage wartet hier nicht mehr auf eine Entscheidung.",
     "contentChanged": "Die Details dieser Anfrage haben sich nach ihrer Erstellung geändert, daher kann sie nicht mehr genehmigt werden.",
     "expired": "Diese Anfrage ist abgelaufen, bevor entschieden werden konnte.",
     "notSoleApprover": "Diese Anfrage muss jetzt von einer anderen Person genehmigt werden – Sie können Ihre eigene Anfrage nicht mehr genehmigen.",
@@ -42,7 +45,7 @@
     "deniedToast": "Aktion abgelehnt",
     "deniedToast_one": "{{count}} Aktion abgelehnt",
     "deniedToast_other": "{{count}} Aktionen abgelehnt",
-    "refusedToast": "Genehmigung verweigert. Die Anfrage wurde abgelehnt.",
+    "refusedToast": "Ihre Genehmigung wurde blockiert, daher wurde die Anfrage abgelehnt.",
     "runContextLabel": "Ausführungskontext:",
     "runContextChosenByAssistant": "von Breeze AI gewählt",
     "runContextScriptDefault": "der gespeicherte Standard des Skripts",
@@ -140,13 +143,14 @@
     "newChat": "Neuer Chat"
   },
   "aiContextBadge": {
+    "record": "Datensatz",
     "context": "Kontext",
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} Nachrichten",
-    "messageCount_one": "{{count}} Nachricht",
-    "messageCount_other": "{{count}} Nachrichten",
+    "messageCount": "{{count}} Nachrichten diesen Monat",
+    "messageCount_one": "{{count}} Nachricht diesen Monat",
+    "messageCount_other": "{{count}} Nachrichten diesen Monat",
     "thisMonth": "{{amount}} diesen Monat",
     "credits_one": "{{formatted}} Credit",
     "credits_other": "{{formatted}} Credits"
@@ -527,6 +531,13 @@
     "verified": "Überprüft",
     "verificationFailed": "Überprüfung fehlgeschlagen",
     "verificationUnknown": "Konnte nicht überprüft werden",
+    "notRunAwaitingReview": "Wartet auf Prüfung — noch nicht ausgeführt",
+    "notRunReviewed": "Geprüft — noch nicht ausgeführt",
+    "notRunApproved": "Genehmigt — noch nicht ausgeführt",
+    "notRun": "Nicht ausgeführt",
+    "reviewVerdictApprove": "Prüfer empfiehlt Genehmigung",
+    "reviewVerdictChanges": "Prüfer empfiehlt Änderungen",
+    "reviewVerdictReject": "Prüfer empfiehlt Ablehnung",
     "promoteDescription": "Beschreibung (optional)",
     "ownerScopeOrganization": "Nur diese Organisation",
     "ownerScopePartner": "Alle Organisationen dieses Partners",
@@ -614,10 +625,16 @@
       "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut.",
       "reverify": "Ihre Zugriffsrechte haben sich während der Bestätigung geändert. Geben Sie einen neuen Code ein, um fortzufahren.",
       "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut.",
-      "turningOn": "Wisp wird aktiviert…"
+      "turningOn": "Wisp wird aktiviert…",
+      "alreadyOnOrg": "Wisp ist für diese Organisation bereits aktiviert.",
+      "alreadyOnPartner": "Wisp ist für alle Organisationen bereits aktiviert.",
+      "open": "Öffnen",
+      "opening": "Wird geöffnet…",
+      "grantEnded": "Wisp ist für diesen Bereich nicht mehr aktiviert. Bestätigen Sie Ihre Identität, um Wisp wieder zu aktivieren."
     },
     "header": {
       "scopeAll": "Alle Organisationen",
+      "scopeFallback": "dieser Organisation",
       "status": {
         "active": "Aktiv",
         "paused": "Pausiert",
@@ -627,7 +644,7 @@
       },
       "refresh": "Berechtigung erneuern",
       "revoke": "Wisp deaktivieren",
-      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
+      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Wisp arbeitet nicht mehr für Sie, und seine Threads werden geschlossen. Deren Unterhaltungen, Anliegen und Aktivitäten werden nicht mehr angezeigt.",
       "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann.",
       "refreshKeepsTerms": "Diese Unterhaltung behält die bisherigen Bedingungen der Berechtigung. Starten Sie eine neue Unterhaltung, um die erneuerte Berechtigung zu nutzen.",
       "startNewConversation": "Neue Unterhaltung starten",
@@ -674,7 +691,7 @@
       "attachFailed": "Anhängen fehlgeschlagen",
       "attachTooLarge": "Diese Datei ist größer als 5 MB",
       "attachUnsupported": "Es können nur Textdateien angehängt werden",
-      "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Aktivieren Sie Wisp erneut, um ihn wieder zu öffnen.",
+      "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Versuchen Sie es erneut, um ihn wieder zu öffnen.",
       "paused": "Wisp pausiert",
       "resumed": "Wisp fortgesetzt",
       "pauseFailed": "Wisp konnte nicht pausiert werden",
@@ -684,13 +701,24 @@
       "meter": "{{spent}} von {{budget}} heute",
       "resets": "wird in {{hours}} Std. zurückgesetzt",
       "raise": "Heutiges Budget erhöhen",
+      "atCeiling": "Das heutige Budget hat das Limit Ihres Tarifs erreicht.",
+      "seePlans": "Tarife ansehen",
       "label": "Wisp-Ausgaben heute"
     },
     "pause": "Wisp pausieren",
     "resume": "Fortsetzen",
     "paused": {
       "byYou": "Sie haben Wisp pausiert. Es meldet sich nicht und gibt keine Hinweise, bis Sie es fortsetzen.",
-      "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten."
+      "partnerDisabled": "Wisp ist für Ihren Partner ausgeschaltet. Ein Administrator kann es wieder einschalten.",
+      "system": {
+        "budgetExhausted": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht. Das Budget wird in {{hours}} Std. zurückgesetzt.",
+        "budgetExhaustedNoTime": "Von Breeze pausiert: Das heutige Budget ist aufgebraucht.",
+        "grantorAccessLost": "Von Breeze pausiert: Ihr Zugriff deckt diese Berechtigung nicht mehr ab. Wisp läuft automatisch weiter, sobald Ihr Zugriff wiederhergestellt ist.",
+        "grantorSuspended": "Von Breeze pausiert: Ihr Konto ist gesperrt. Wisp läuft automatisch weiter, sobald die Sperre aufgehoben ist.",
+        "factorExpired": "Von Breeze pausiert: Ihre Anmeldeprüfung für diese Berechtigung ist abgelaufen.",
+        "entitlementLost": "Von Breeze pausiert: Ihr Tarif enthält Wisp nicht mehr. Wisp läuft automatisch weiter, sobald Ihr Tarif es wieder enthält.",
+        "unknown": "Von Breeze pausiert. Sie können es hier nicht fortsetzen."
+      }
     },
     "live": {
       "checking": "{{org}} wird geprüft…",
@@ -795,7 +823,7 @@
     },
     "partnerSwitch": {
       "description": "Technikern erlauben, Arbeit an Wisp zu delegieren. Beim Ausschalten wird jede laufende Berechtigung bei der nächsten Prüfung pausiert und neue werden blockiert; nichts wird gelöscht, und beim erneuten Einschalten wird Pausiertes fortgesetzt.",
-      "label": "Wisp aktiviert",
+      "label": "Wisp zulassen",
       "savedOn": "Wisp eingeschaltet",
       "savedOff": "Wisp ausgeschaltet",
       "saveFailed": "Die Wisp-Einstellung konnte nicht geändert werden.",
@@ -836,7 +864,8 @@
       "workersTitle": "Worker",
       "workersEmpty": "Keine Spezialisten aktiv.",
       "allRuns": "Alle Läufe",
-      "details": "Einzelheiten"
+      "details": "Einzelheiten",
+      "ended": "Diese Berechtigung ist beendet, daher werden ihre Anliegen, Worker und Aktivitäten nicht mehr angezeigt."
     },
     "composer": {
       "placeholder": "Nachricht an Wisp",

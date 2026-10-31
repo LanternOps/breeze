@@ -1,26 +1,32 @@
 import type { MiddlewareHandler } from 'hono';
 
 /**
- * The token-gated public PDF responses the customer portal embeds in an `<iframe>` (#10192).
+ * The PDF responses the customer portal embeds in an `<iframe>`.
  *
- * - `/api/v1/agreements/public/<token>/file` — the uploaded agreement on the public signing page (#9075).
+ * - `/api/v1/agreements/public/<token>/file` — the uploaded agreement on the public signing page (#9075, #10192).
  * - `/api/v1/quotes/public/<token>/contract-file/<blockId>` — the uploaded contract in a public quote link's
- *   contract block.
+ *   contract block (#10192).
+ * - `/api/v1/portal/agreements/<id>/file` — the uploaded agreement on the signed-in portal's agreement detail page
+ *   (#10202, #10290). Session-authenticated; the iframe sends the portal session cookie because it is same-origin.
  *
- * Everything else forbids framing (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`). These two responses get
+ * Everything else forbids framing (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`). These responses get
  * `SAMEORIGIN` / `frame-ancestors 'self'` instead. The portal renders the iframe `src` as a relative path
  * (`publicApiPath` in apps/portal/src/lib/api.ts), so the browser fetches the PDF from the embedding page's own
  * origin; the iframe can only load where that origin routes `/api/*` to the API (docker/Caddyfile.prod serves
  * `/api/*` and `/portal*` on one host). `'self'` therefore admits the portal page and no other origin.
  *
- * Anchored patterns, exactly these two (sameOriginFrame.test.ts pins the list). The JSON views and every other asset
- * on the same token keep DENY, and so do the session-authenticated routes that serve the same bytes.
+ * Anchored patterns, exactly these three (sameOriginFrame.test.ts pins the list). The JSON views and every other
+ * asset on the same token or request keep DENY, and so does the staff web app's `/api/v1/agreements/<id>/file`.
+ * SAMEORIGIN only lets a page on the API's own origin frame the PDF, so it does not open a clickjacking surface to
+ * other origins; the route's own `Content-Disposition` and `nosniff` are untouched.
  */
 export const SAME_ORIGIN_FRAME_PATHS: readonly RegExp[] = Object.freeze([
   // routes/agreementsPublic.ts — GET /:token/file
   /^\/api\/v1\/agreements\/public\/[^/]+\/file$/,
   // routes/quotesPublic.ts — GET /:token/contract-file/:blockId
   /^\/api\/v1\/quotes\/public\/[^/]+\/contract-file\/[^/]+$/,
+  // routes/portal/agreements.ts — GET /agreements/:id/file (mounted under /portal)
+  /^\/api\/v1\/portal\/agreements\/[^/]+\/file$/,
 ]);
 
 export function isSameOriginFramePath(path: string): boolean {

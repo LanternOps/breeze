@@ -147,6 +147,11 @@ describe('syncWarrantyForSubject — manual-asset subject (#4622)', () => {
     providerMock.mockReturnValue({
       lookup: vi.fn().mockResolvedValue(new Map()),
     });
+    // A miss on a device first checks for non-vendor data to keep (#9862);
+    // no stored row here, so the unknown result is written.
+    selectMock.mockImplementation(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    }));
 
     await syncWarrantyForSubject({
       orgId: ORG_ID,

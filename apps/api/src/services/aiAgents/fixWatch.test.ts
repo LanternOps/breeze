@@ -400,6 +400,25 @@ describe('isFixWatchEligible', () => {
 // createFixWatchRow
 // ---------------------------------------------------------------------------
 describe('createFixWatchRow', () => {
+  it('skips a device-less alert with alert_has_no_device before creating a watch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.selectQueue.push(
+      [{ ruleId: null, deviceId: null, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+    try {
+      expect(await createFixWatchRow(finishedRun(), outcome())).toBeNull();
+      expect(state.insertCount).toBe(0);
+      expect(state.selectCount).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        alertId: ALERT_ID, orgId: ORG_ID, reason: 'alert_has_no_device',
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('is a no-op (no DB calls) for an ineligible run', async () => {
     const id = await createFixWatchRow(finishedRun({ alertId: null }), outcome());
     expect(id).toBeNull();
@@ -537,6 +556,25 @@ describe('createIntentFixWatchRow', () => {
       ...overrides,
     };
   }
+
+  it('skips a device-less alert with alert_has_no_device before creating a watch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.selectQueue.push(
+      [{ ruleId: null, deviceId: null, configItemName: null }],
+      [{ partnerId: PARTNER_ID }],
+    );
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+    try {
+      expect(await createIntentFixWatchRow(intentForWatch())).toBeNull();
+      expect(state.insertCount).toBe(0);
+      expect(state.selectCount).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        alertId: ALERT_ID, orgId: ORG_ID, reason: 'alert_has_no_device',
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   it("denormalizes rule_id/device_id/config_item_name from the ALERT row and writes source_kind 'intent' with the released op key", async () => {
     state.selectQueue.push(

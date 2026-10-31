@@ -38,8 +38,8 @@
     "title": "Propostas de script",
     "proposalsPerDay": "Propostas por dia",
     "reviewerDisagreements": "Divergências do revisor",
-    "humanRejectedAfterApprove": "Rejeitado por humano após aprovação da IA",
-    "humanApprovedAfterReject": "Aprovado por humano após rejeição da IA",
+    "humanRejectedAfterApprove": "Negado por humano, IA recomendou aprovar",
+    "humanApprovedAfterReject": "Aprovado por humano, IA recomendou rejeitar",
     "unattendedRuns": "Execuções não supervisionadas",
     "laneState": "Faixa não supervisionada",
     "laneOpen": "Aberta (pausada após falhas repetidas de verificação)",
@@ -54,7 +54,15 @@
     "exec": "Execução: {{duration}}ms",
     "noTier3ToolExecutionsFound": "Nenhuma execução de ferramenta de Camada 3 encontrada.",
     "pending": "Pendente",
-    "rejected": "Rejeitado",
+    "rejected": "Negado",
+    "status": {
+      "pending": "Pendente",
+      "approved": "Aprovado",
+      "executing": "Em execução",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "rejected": "Negado"
+    },
     "session": "Sessão: {{sessionId}}",
     "tempPasswordAlreadyRevealed": "A senha temporária já foi revelada.",
     "tempPasswordCopied": "Copiado",
@@ -89,12 +97,12 @@
   },
   "aiRiskRejectionDenialLog": {
     "all2": "Todos",
-    "denied": "Negado",
+    "denied": "Bloqueado",
     "error": "Erro",
     "failed": "Falhou",
-    "noRejectionsOrDenialsFound": "Nenhuma rejeição ou negação encontrada.",
-    "rejected": "Rejeitado",
-    "rejectionsAndDenials": "Rejeições e negações",
+    "noRejectionsOrDenialsFound": "Nenhuma ação negada, bloqueada ou com falha encontrada.",
+    "rejected": "Negado",
+    "rejectionsAndDenials": "Negados e bloqueados",
     "search": "Pesquisar...",
     "session": "Sessão",
     "status": "Status",
@@ -775,7 +783,6 @@
     "threatStatus": "Status da ameaça",
     "threatWasMovedToQuarantineByPolicy": "A ameaça foi movida para quarentena por política ou ação do operador.",
     "timeline": "Linha do tempo",
-    "actionFailed": "Falha na ação",
     "quarantineSucceeded": "Ameaça colocada em quarentena",
     "restoreSucceeded": "Ameaça restaurada",
     "removeSucceeded": "Ameaça removida",
@@ -1740,13 +1747,18 @@
       "totalQueries": "Total de consultas",
       "blocked": "Bloqueadas",
       "allowed": "Permitidas",
-      "redirected": "Redirecionadas"
+      "redirected": "Redirecionadas",
+      "notStored": "Não armazenado"
     },
     "topBlocked": {
       "title": "Principais domínios bloqueados",
       "empty": "Nenhum domínio bloqueado na janela atual."
     },
-    "loading": "Carregando…"
+    "loading": "Carregando…",
+    "allowedTraffic": {
+      "none": "As consultas permitidas não são armazenadas para estas integrações, então só as consultas bloqueadas e redirecionadas são contadas. Para contá-las, ative \"Armazenar tráfego permitido\" nas configurações de dados armazenados de uma integração.",
+      "some": "As consultas permitidas são armazenadas apenas para algumas integrações, então a contagem de permitidas é parcial."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Integrações configuradas",
@@ -1763,7 +1775,7 @@
       "addIntegration": "Adicionar integração",
       "syncNow": "Sincronizar agora",
       "deleteIntegration": "Excluir integração",
-      "editRetention": "Alterar período de retenção"
+      "editRetention": "Dados armazenados"
     },
     "messages": {
       "loadHttpError": "Falha ao carregar integrações (HTTP {{status}})",
@@ -1772,7 +1784,8 @@
       "syncQueued": "Sincronização enfileirada para {{name}}",
       "deleteConfirm": "Excluir {{name}}? Suas políticas, eventos e estatísticas são removidos em segundo plano.",
       "deleteFailed": "Falha ao excluir {{name}}",
-      "deleteSuccess": "Excluindo {{name}} em segundo plano"
+      "deleteSuccess": "Excluindo {{name}} em segundo plano",
+      "deleteComplete": "Exclusão de {{name}} concluída"
     },
     "loading": "Carregando integrações…",
     "empty": {
@@ -1788,12 +1801,13 @@
     },
     "lastSyncFailedSuffix": " — falhou",
     "lastSyncPartialSuffix": " — recuperando atraso",
+    "lastSyncTruncatedSuffix": " — alguns eventos não obtidos",
     "never": "Nunca",
     "deletingInBackground": "Excluindo…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Retenção de dados",
-    "description": "Eventos e estatísticas diárias mais antigos são excluídos pela limpeza noturna de retenção.",
+    "title": "Dados armazenados",
+    "description": "Escolha quais consultas DNS o Breeze armazena para esta integração e por quanto tempo as mantém.",
     "fieldLabel": "Manter eventos e estatísticas de DNS por (dias)",
     "fieldHelp": "De 1 a 365 dias. Deixe vazio para usar o padrão da instalação (90 dias, a menos que seu administrador tenha alterado).",
     "invalid": "Informe um número inteiro de dias entre 1 e 365 ou deixe vazio.",
@@ -1803,8 +1817,13 @@
       "saving": "Salvando…"
     },
     "messages": {
-      "saved": "Retenção atualizada para {{name}}",
-      "saveFailed": "Falha ao atualizar a retenção de {{name}}"
+      "saved": "Configurações de dados armazenados atualizadas para {{name}}",
+      "saveFailed": "Falha ao atualizar as configurações de dados armazenados de {{name}}"
+    },
+    "storeAllowedTraffic": {
+      "label": "Armazenar tráfego permitido",
+      "helpOff": "Somente consultas bloqueadas e redirecionadas são armazenadas. As consultas permitidas costumam ser quase todo o tráfego, e seu provedor de DNS as mantém nos próprios relatórios.",
+      "helpOn": "As consultas permitidas também são armazenadas, o que costuma significar cerca de 100 vezes mais linhas. Desativar depois não exclui as consultas permitidas já armazenadas; a retenção as remove."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2032,19 +2051,17 @@
       "statusFilterLabel": "Status da correção"
     },
     "status": {
-      "pendingApproval": "Aprovação pendente",
-      "pending_approval": "aprovação pendente",
-      "queued": "na fila",
-      "inProgress": "Em andamento",
-      "in_progress": "em andamento",
-      "completed": "concluído",
-      "failed": "falhou",
-      "cancelled": "cancelado"
+      "pending_approval": "Aprovação pendente",
+      "queued": "Na fila",
+      "in_progress": "Em andamento",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "cancelled": "Cancelado"
     },
     "approval": {
-      "pending": "pendente",
-      "approved": "aprovado",
-      "rejected": "rejeitado"
+      "pending": "Pendente",
+      "approved": "Aprovado",
+      "rejected": "Rejeitado"
     },
     "actions": {
       "apply": "aplicar",
@@ -2412,7 +2429,18 @@
     "sweepNowUnpublished": "Publique este conjunto de regras antes de usá-lo em uma varredura.",
     "sweepNowDisabled": "Ative este conjunto de regras antes de usá-lo em uma varredura.",
     "progress": {
-      "label": "{{done}} de {{total}} dispositivos concluídos"
+      "finished_one": "{{finished}} de {{count}} dispositivo finalizado",
+      "finished_other": "{{finished}} de {{count}} dispositivos finalizados",
+      "completed_one": "{{count}} concluído",
+      "completed_other": "{{count}} concluídos",
+      "timedOut_one": "{{count}} com tempo esgotado",
+      "timedOut_other": "{{count}} com tempo esgotado",
+      "failed_one": "{{count}} com falha",
+      "failed_other": "{{count}} com falha",
+      "cancelled_one": "{{count}} cancelado",
+      "cancelled_other": "{{count}} cancelados",
+      "expired_one": "{{count}} expirado",
+      "expired_other": "{{count}} expirados"
     },
     "errors": {
       "orgOutOfScope": "Uma ou mais organizações estão fora do seu acesso.",
@@ -2429,9 +2457,12 @@
       "rateLimited": "Muitas varreduras foram iniciadas recentemente. Tente novamente mais tarde."
     },
     "skipReasons": {
-      "agent_too_old": "dispositivos com agente desatualizado demais",
-      "busy_same_sweep": "dispositivos que já executam esta varredura",
-      "rule_set_not_eligible": "dispositivos aos quais os conjuntos de regras não se aplicam"
+      "agent_too_old_one": "{{count}} dispositivo com agente desatualizado demais",
+      "agent_too_old_other": "{{count}} dispositivos com agente desatualizado demais",
+      "busy_same_sweep_one": "{{count}} dispositivo que já executa esta varredura",
+      "busy_same_sweep_other": "{{count}} dispositivos que já executam esta varredura",
+      "rule_set_not_eligible_one": "{{count}} dispositivo ao qual os conjuntos de regras não se aplicam",
+      "rule_set_not_eligible_other": "{{count}} dispositivos aos quais os conjuntos de regras não se aplicam"
     },
     "skipExplain": {
       "agent_too_old": "O agente precisa ser atualizado antes de poder executar conjuntos de regras YARA.",
@@ -2441,13 +2472,21 @@
     "dialog": {
       "title": "Varrer dispositivos em busca de correspondências de IOC",
       "ruleSets": "Conjuntos de regras: {{names}}",
-      "rescopeNote": "Uma varredura não guarda seus dispositivos. Escolha o escopo novamente; os conjuntos de regras e o tipo de verificação são mantidos.",
+      "rescopeNote": "Uma varredura não guarda seus dispositivos. Escolha o escopo novamente; os conjuntos de regras, o tipo de verificação e os caminhos personalizados são mantidos.",
       "back": "Voltar",
       "next": "Avançar",
       "previewAction": "Pré-visualizar",
-      "confirm": "Varrer {{targeted}} dispositivos",
+      "confirm_one": "Varrer {{count}} dispositivo",
+      "confirm_other": "Varrer {{count}} dispositivos",
       "viewRunning": "Ver a varredura em andamento",
-      "confirmSummary": "{{targeted}} dispositivos em {{orgs}} organizações serão verificados com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado nos dispositivos.",
+      "confirmSummary_one": "{{devices}} em {{orgs}} será verificado com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado no dispositivo.",
+      "confirmSummary_other": "{{devices}} em {{orgs}} serão verificados com as versões dos conjuntos de regras exibidas na pré-visualização. As correspondências são relatadas como ameaças; nada é alterado nos dispositivos.",
+      "counts": {
+        "devices_one": "{{count}} dispositivo",
+        "devices_other": "{{count}} dispositivos",
+        "orgs_one": "{{count}} organização",
+        "orgs_other": "{{count}} organizações"
+      },
       "steps": {
         "scope": "Escopo",
         "type": "Tipo de verificação",
@@ -2476,15 +2515,19 @@
         "full": "Completa",
         "custom": "Caminhos personalizados",
         "paths": "Caminhos, um por linha",
-        "pathsHelp": "Até {{max}} caminhos, com {{chars}} caracteres cada."
+        "pathsHelp": "Até {{max}} caminhos, com {{chars}} caracteres cada.",
+        "pathsCount": "{{paths}} de {{max}} caminhos",
+        "pathsTooMany": "{{paths}} de {{max}} caminhos: remova {{remove}}.",
+        "pathTooLong": "A linha {{line}} tem mais de {{chars}} caracteres."
       },
       "duration": {
         "label": "Executar por (horas)",
-        "help": "Dispositivos offline executam a verificação quando voltam dentro deste prazo. Entre 1 e {{max}} horas."
+        "help": "Dispositivos offline executam a verificação quando voltam dentro deste prazo. Entre 1 e {{max}} horas.",
+        "invalid": "Informe um número inteiro de horas entre 1 e {{max}}."
       },
       "preview": {
-        "targeted": "{{devices}} dispositivos em {{orgs}} organizações",
-        "org": "{{org}}: {{devices}} dispositivos",
+        "targeted": "{{devices}} em {{orgs}}",
+        "org": "{{org}}: {{devices}}",
         "ruleSets": "Conjuntos de regras",
         "skipped": "Ignorados",
         "scopeChanged": "Os dispositivos ou conjuntos de regras mudaram desde a pré-visualização. Confira os novos números e confirme novamente."
@@ -2500,6 +2543,7 @@
       "resweep": "Varrer novamente com as regras atuais",
       "rulesChanged": "Regras alteradas desde o início desta varredura",
       "queued": "Na fila: {{queued}}",
+      "running": "Em execução: {{running}}",
       "columns": {
         "ruleSets": "Conjuntos de regras",
         "origin": "Iniciada por",
@@ -2556,6 +2600,7 @@
       "builtin": "Integrado",
       "allOrgs": "Todas as organizações",
       "errors": "Com erros",
+      "checkerUnavailable": "Compilador indisponível",
       "unpublished": "Não publicado",
       "disabled": "Desativado"
     },
@@ -2612,7 +2657,7 @@
       "autoQuarantineOnly": "A quarentena automática agora está desativada nos dispositivos. Suas outras alterações ainda não estão ativas.",
       "published": "Salvo e publicado como versão {{version}}",
       "savedDisabled": "Salvo. O conjunto está desativado, então os dispositivos não o usam.",
-      "checkerUnavailable": "Salvo, não publicado: o verificador de regras está indisponível. {{devices}}",
+      "checkerUnavailable": "Salvo, não publicado: o compilador YARA está indisponível neste servidor, então não foi possível verificar as regras. {{devices}}",
       "compileErrors_one": "Salvo, não publicado: {{count}} regra tem erros. {{devices}}",
       "compileErrors_other": "Salvo, não publicado: {{count}} regras têm erros. {{devices}}",
       "setErrors": "Salvo, não publicado: {{message}}. {{devices}}",
@@ -2621,7 +2666,8 @@
       "devicesKeep": "Os dispositivos mantêm a versão {{version}}.",
       "neverPublished": "Este conjunto ainda não foi publicado, então os dispositivos não o usam.",
       "setDisabled": "O conjunto está desativado, então os dispositivos não o usam.",
-      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}"
+      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}",
+      "staleCheckerUnavailable": "Não publicado: o compilador YARA está indisponível neste servidor, então as alterações nas regras não podem ser verificadas nem publicadas. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2716,5 +2762,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Você não tem acesso a esta organização"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Crítico",
+      "high": "Alto",
+      "medium": "Médio",
+      "low": "Baixo"
+    },
+    "findingStatus": {
+      "open": "Aberto",
+      "remediated": "Corrigido",
+      "accepted": "Aceito",
+      "falsePositive": "Falso positivo"
+    },
+    "scanStatus": {
+      "queued": "Na fila",
+      "running": "Em execução",
+      "completed": "Concluído",
+      "failed": "Falhou",
+      "cancelled": "Cancelado"
+    },
+    "dataType": {
+      "credential": "Credenciais",
+      "financial": "Financeiros"
+    },
+    "a11y": {
+      "editPolicy": "Editar política {{name}}",
+      "deletePolicy": "Excluir política {{name}}",
+      "togglePolicyActive": "Ativa: {{name}}"
+    }
   }
 }

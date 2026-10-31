@@ -6,7 +6,7 @@
  * filter) can name the provider keys without pulling the adapters' import
  * closure. `registry.ts` re-exports it and maps each key to its adapter.
  */
-export const EDR_PROVIDER_KEYS = ['bitdefender'] as const;
+export const EDR_PROVIDER_KEYS = ['bitdefender', 'emsisoft'] as const;
 
 export type EdrProviderKey = (typeof EDR_PROVIDER_KEYS)[number];
 
@@ -21,6 +21,7 @@ export function isEdrProviderKey(key: string): key is EdrProviderKey {
  */
 export const EDR_PROVIDER_LABELS: Record<EdrProviderKey, string> = {
   bitdefender: 'Bitdefender GravityZone',
+  emsisoft: 'Emsisoft',
 };
 
 export function edrProviderLabel(key: string): string {

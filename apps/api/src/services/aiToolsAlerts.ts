@@ -114,6 +114,7 @@ export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
     const allowedSites = siteAllowlistOf(auth);
     return allowedSites !== undefined && !allowedSites.includes(alert.topologySiteId) ? null : alert;
   }
+  if (!alert.deviceId && siteAllowlistOf(auth) !== undefined) return null;
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
@@ -161,7 +162,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         const emptyKeysetPage = (extra: Record<string, unknown> = {}) =>
           JSON.stringify({
             ...keysetEnvelope<{ triggeredAtText: string; id: string }>({
-              key: 'alerts', items: [], limit, fingerprint, total: 0,
+              key: 'alerts', items: [], limit, fingerprint, after, total: 0,
               keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
             }),
             ...extra,
@@ -262,7 +263,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         });
 
         const envelope = keysetEnvelope({
-          key: 'alerts', items, limit, fingerprint, total,
+          key: 'alerts', items, limit, fingerprint, after, total,
           keyOf: (r) => ({ t: r.triggeredAtText, i: r.id }),
         });
         const outAlerts = (envelope.alerts as Array<Record<string, unknown>>).map(
@@ -278,13 +279,13 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (!alert) return JSON.stringify({ error: 'Alert not found or access denied' });
 
         // Get device info
-        const [device] = await db
+        const [device] = alert.deviceId === null ? [] : await db
           .select({ hostname: devices.hostname, osType: devices.osType, status: devices.status })
           .from(devices)
           .where(eq(devices.id, alert.deviceId))
           .limit(1);
 
-        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device });
+        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device: device ?? null });
       }
 
       if (action === 'acknowledge') {

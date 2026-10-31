@@ -1084,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Billets d’alertes",
+        "scopeNote": "Valide pour tout le partenaire; aucune dérogation par organisation.",
+        "pausedBanner": "En pause : le PSA a refusé les identifiants. Lancez « Tester la connexion » pour reprendre.",
+        "yes": "Activés",
+        "no": "Désactivés",
+        "selectPlaceholder": "Sélectionner…",
+        "priorityDefault": "Valeur par défaut du PSA",
+        "closedSuffix": "{{name}} (fermé)",
+        "saved": "Paramètres des billets d’alertes enregistrés",
+        "saving": "Enregistrement…",
+        "save": "Enregistrer",
+        "conflict": "Ces paramètres ont été modifiés ailleurs. Les valeurs les plus récentes ont été chargées; vérifiez-les et enregistrez de nouveau.",
+        "errors": {
+          "save": "Impossible d’enregistrer les paramètres des billets d’alertes"
+        },
+        "status": {
+          "active": "Les billets d’alertes sont activés pour cette connexion.",
+          "notExternal": "Liez cette connexion comme PSA de gestion des services (mode externe) pour utiliser les billets d’alertes.",
+          "disabled": "Les billets d’alertes sont désactivés.",
+          "paused": "Les billets d’alertes sont en pause jusqu’à ce que la connexion au PSA fonctionne de nouveau.",
+          "companyLinksUnverified": "Confirmez les liens d’entreprises pour cette instance du PSA.",
+          "invalidConfig": "Les paramètres enregistrés des billets d’alertes ne sont pas valides. Vérifiez-les et enregistrez de nouveau.",
+          "unsupportedProvider": "Les billets d’alertes ne sont pas offerts pour ce fournisseur de PSA.",
+          "credentialsUnusable": "Les identifiants de cette connexion sont incomplets ou illisibles. Modifiez la connexion et saisissez-les de nouveau."
+        },
+        "fields": {
+          "enabled": "Activer les billets d’alertes",
+          "board": "Tableau",
+          "openStatus": "Statut des nouveaux billets",
+          "closedStatus": "Statut fermé",
+          "priorityHeading": "Priorité du PSA selon la gravité de l’alerte",
+          "minSeverity": "Gravité minimale",
+          "minSeverityHelp": "Faible inclut les moniteurs de niveau avertissement",
+          "closeOnResolve": "Fermer le billet lorsque l’alerte est résolue",
+          "noteOnAcknowledge": "Ajouter une note lorsque l’alerte est prise en compte",
+          "confirmCompanyLinks": "Les liens d’entreprises des organisations correspondent à cette instance du PSA"
+        },
+        "severity": {
+          "critical": "Critique",
+          "high": "Élevée",
+          "medium": "Moyenne",
+          "low": "Faible",
+          "info": "Information"
+        },
+        "options": {
+          "error": "Impossible de charger les options du PSA",
+          "retry": "Réessayer",
+          "truncated": "Seuls les premiers résultats du PSA sont affichés."
+        },
+        "readOnly": {
+          "enabled": "Billets d’alertes"
+        },
+        "loadError": {
+          "message": "Impossible de charger les paramètres des billets d’alertes",
+          "retry": "Réessayer"
+        },
+        "configInvalid": {
+          "warning": "Les paramètres enregistrés des billets d’alertes sont illisibles. L’enregistrement les remplacera.",
+          "confirm": "Remplacer les paramètres illisibles"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importer les entreprises",
         "subtitle": "Créez des organisations à partir des entreprises de {{name}}.",
@@ -1296,7 +1358,7 @@
           "waiting": "En attente"
         },
         "ticketCount": "{{filtered}} de {{total}} tickets",
-        "title": "Tickets synchronisés",
+        "title": "Tickets PSA",
         "unlinked": "Non lié"
       }
     },
@@ -1556,7 +1618,8 @@
           "enabled": "Webhook activé",
           "retryQueued": "Nouvelle tentative de livraison mise en file d’attente",
           "testQueued": "Livraison de test mise en file d’attente",
-          "updated": "Webhook mis à jour"
+          "updated": "Webhook mis à jour",
+          "deleted": "Webhook \"{{name}}\" supprimé"
         },
         "title": "Webhooks"
       }

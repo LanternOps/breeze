@@ -832,3 +832,48 @@ describe('labour rule visibility (#9561)', () => {
     expect(screen.queryByTestId('ticket-billing-labor-rule')).toBeNull();
   });
 });
+
+// #10073: a merged tombstone answers every time write with 409 TICKET_MERGED,
+// so the rail keeps its totals and entries but offers no write that would fail.
+describe('read-only (merged tombstone)', () => {
+  it('keeps totals and entries visible but disables or hides every write', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/time-entries')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          entries[0],
+          { ...entries[0], id: 'te-held', billingStatus: 'awaiting_approval' },
+        ], total: 2 }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    expect((await screen.findByTestId('ticket-billing-time-total')).textContent).toContain('1h 30m');
+    expect(await screen.findByTestId('ticket-billing-entries')).toHaveTextContent('diag');
+    expect(screen.getByTestId('ticket-billing-start-timer')).toBeDisabled();
+    expect(screen.getByTestId('ticket-billing-quick-add-toggle')).toBeDisabled();
+    expect(screen.getByTestId('timer-work-type')).toBeDisabled();
+    expect(screen.queryByTestId('ticket-billing-delete-te-1')).toBeNull();
+    expect(screen.queryByTestId('time-entry-write-off-te-held')).toBeNull();
+    fireEvent.click(screen.getByTestId('ticket-billing-start-timer'));
+    fireEvent.click(screen.getByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.queryByTestId('ticket-billing-quick-add')).toBeNull();
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
+  });
+
+  it('closes an open quick-add form when the ticket becomes read-only', async () => {
+    const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-quick-add-toggle'));
+    expect(screen.getByTestId('ticket-billing-quick-add')).toBeInTheDocument();
+    rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    expect(screen.queryByTestId('ticket-billing-quick-add')).toBeNull();
+  });
+
+  it('drops an open delete confirm when the ticket becomes read-only', async () => {
+    const { rerender } = render(<TicketTimeBilling ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-billing-delete-te-1'));
+    expect(await screen.findByTestId('ticket-billing-delete-confirm')).toBeInTheDocument();
+    rerender(<TicketTimeBilling ticketId="tk-1" readOnly />);
+    await waitFor(() => expect(screen.queryByTestId('ticket-billing-delete-confirm')).toBeNull());
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+  });
+});

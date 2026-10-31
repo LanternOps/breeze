@@ -48,6 +48,7 @@ export function WispConcernsPanel({
   crossOrg = false,
   title,
   onLoaded,
+  refreshKey = 0,
 }: {
   grantId: string;
   threadId: string;
@@ -57,6 +58,8 @@ export function WispConcernsPanel({
   title?: string;
   /** Every committed load, so a host can keep its own counts in step (W08 home "needs you"). */
   onLoaded?: (concerns: Concern[]) => void;
+  /** Bumped by the host to reload (the thread page, when the grant's status changes — #10104). */
+  refreshKey?: number;
 }) {
   const { t } = useTranslation('ai');
   const [concerns, setConcerns] = useState<Concern[]>([]);
@@ -96,7 +99,7 @@ export function WispConcernsPanel({
   useEffect(() => {
     void load();
     return () => { loadToken.current++; };
-  }, [load, threadId]);
+  }, [load, threadId, refreshKey]);
 
   useEffect(() => {
     // Adopt the deep link after mount (SSR-safe: the fragment never reaches the server; #2421).
