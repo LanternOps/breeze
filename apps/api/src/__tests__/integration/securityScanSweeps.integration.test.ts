@@ -20,7 +20,11 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { deviceCommands, securityScans, securityScanSweeps } from '../../db/schema';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { claimAndDispatchScan } from '../../jobs/securityScanClaim';
-import { pumpSweeps, type SweepDispatchJob } from '../../jobs/securityScanSweepPump';
+import { pumpSweeps, type PumpDispatchJob, type SweepDispatchJob } from '../../jobs/securityScanSweepPump';
+
+// #10057 gap 2: the pump also re-admits waiting Scan now rows; these suites look at sweep jobs only.
+const sweepJobsOf = (jobs: readonly PumpDispatchJob[]): SweepDispatchJob[] =>
+  jobs.filter((j): j is SweepDispatchJob => j.origin === 'sweep');
 import { handleSecurityCommandResult } from '../../routes/agents/helpers';
 import { agentYaraRuleSetRoutes } from '../../routes/agents/yaraRuleSets';
 import {
@@ -470,12 +474,12 @@ describe('races', () => {
   it('Redis job lost → next pump re-admits', async () => {
     const w = await seedSweepWorld({ devices: 1 });
     const lost: SweepDispatchJob[] = [];
-    const first = await pumpSweeps(new Date(), { enqueue: async (jobs) => { lost.push(...jobs); } });
+    const first = await pumpSweeps(new Date(), { enqueue: async (jobs) => { lost.push(...sweepJobsOf(jobs)); } });
     expect(first.admitted).toBe(1);
     // The job never reaches a worker: the row is still queued, so the next tick admits it again.
     expect((await scanRow(w.scanIds[0]!)).status).toBe('queued');
     const delivered: SweepDispatchJob[] = [];
-    const second = await pumpSweeps(new Date(), { enqueue: async (jobs) => { delivered.push(...jobs); } });
+    const second = await pumpSweeps(new Date(), { enqueue: async (jobs) => { delivered.push(...sweepJobsOf(jobs)); } });
     expect(second.admitted).toBe(1);
     expect(delivered).toEqual([{ type: 'dispatch-scan', scanId: w.scanIds[0], origin: 'sweep', sweepId: w.sweepId }]);
     expect((await claimAndDispatchScan(delivered[0]!)).outcome).toBe('dispatched');
@@ -682,7 +686,7 @@ describe('A9 pump and fetch', () => {
   it('pump under breeze_app system context admits and the claim stamps dispatched_rule_sets + command_id', async () => {
     const w = await seedSweepWorld({ devices: 1 });
     const jobs: SweepDispatchJob[] = [];
-    const pump = await pumpSweeps(new Date(), { enqueue: async (j) => { jobs.push(...j); } });
+    const pump = await pumpSweeps(new Date(), { enqueue: async (j) => { jobs.push(...sweepJobsOf(j)); } });
     expect(pump).toMatchObject({ skipped: false, admitted: 1 });
     const claim = await claimAndDispatchScan(jobs[0]!);
     expect(claim.outcome).toBe('dispatched');
@@ -1016,7 +1020,7 @@ describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cros
     }
   });
 
-  it('a manual startDeviceScan row (command_id stamped) with dispatched refs authorizes the agent fetch; other device / version / completed → 404', async () => {
+  it('a manual startDeviceScan row (command_id stamped by the claim) with dispatched refs authorizes the agent fetch; other device / version / completed → 404', async () => {
     const tdb = getTestDb();
     const w = await seedSweepWorld({ devices: 2, online: false });
     const auth = await platformAdminAuth(w.partnerId);
@@ -1026,6 +1030,10 @@ describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cros
       ),
     );
     if (!started.ok) throw new Error(started.error);
+    // #10057 gap 2: the Scan now waits for the capped claim, which stamps the command.
+    const [waiting] = await tdb.select().from(securityScans).where(eq(securityScans.id, started.scan.id));
+    expect(waiting!.commandId).toBeNull();
+    expect((await claimAndDispatchScan({ type: 'dispatch-scan', scanId: started.scan.id, origin: 'manual' })).outcome).toBe('dispatched');
     const [row] = await tdb.select().from(securityScans).where(eq(securityScans.id, started.scan.id));
     expect(row!.commandId).toMatch(/^[0-9a-f-]{36}$/);
     const [cmd] = await tdb.select().from(deviceCommands).where(eq(deviceCommands.id, row!.commandId!));

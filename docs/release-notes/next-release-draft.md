@@ -225,3 +225,9 @@ Update agents to a release containing this change before relying on the provider
 - Sweep summaries (`GET /security/sweeps`, `/security/sweeps/:id`, `/security/sweeps/groups/:groupId`, and the AI `ioc_hunt` sweep reads) carry `progress.ruleSetChanged`: the failed scans whose rule set was republished after the sweep was approved. It is counted under the same site and device restrictions as the rest of `progress`.
 - `GET /security/scans/:deviceId` now returns each scan's `sweepId` and `ruleSetErrors`.
 - The Sweeps tab shows **Rules changed since this sweep started** and **Sweep again** only when a scan actually failed for that reason. It no longer compares pinned and published versions, so a sweep that finished cleanly before a republish is no longer marked.
+
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
