@@ -391,7 +391,7 @@ describe('manage_groups peripheral reconciliation', () => {
       selectCall += 1;
       const rows = selectCall === 1
         ? [{ id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' }]
-        : [{ id: 'device-1', siteId: 'site-1' }, { id: 'device-2', siteId: 'site-1' }];
+        : [{ id: 'device-1', orgId: 'org-1', siteId: 'site-1' }, { id: 'device-2', orgId: 'org-1', siteId: 'site-1' }];
       return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
