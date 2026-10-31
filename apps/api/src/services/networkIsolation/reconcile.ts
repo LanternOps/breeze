@@ -1,9 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import {
   ISOLATION_FAILURE_CODES, isResolvedTerminalIsolationState, networkIsolationReportSchema,
-  type ContainmentDesiredBlock, type NetworkIsolationReport,
+  type ContainmentDesiredBlock, type NetworkIsolationReport, type IsolationFailureCode,
 } from '@breeze/shared';
-import { alerts, deviceNetworkIsolations, incidents, type DeviceNetworkIsolation } from '../../db/schema';
+import { deviceNetworkIsolations, incidents, type DeviceNetworkIsolation } from '../../db/schema';
 import { decryptSecret } from '../secretCrypto';
 import { columnAad } from '../encryptedColumnTransform';
 import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
@@ -42,26 +42,35 @@ export async function buildContainmentHeartbeatBlock(tx: EpisodeTx, device: Isol
 /** Append bounded, structured journal metadata; never copy agent prose or arbitrary JSON. */
 export async function journalIsolationEvent(tx: EpisodeTx, row: DeviceNetworkIsolation, type: string, at: Date, metadata: Record<string, unknown> = {}): Promise<void> {
   if (!row.incidentId) return;
-  const entry = { at: at.toISOString(), type, actor: null, summary: type, metadata: { isolationId: row.id, generation: row.generation, ...metadata } };
+  const entry = { at: at.toISOString(), type, actor: 'system', summary: type, metadata: { isolationId: row.id, generation: row.generation, ...metadata } };
   await tx.update(incidents).set({ timeline: sql`coalesce(${incidents.timeline}, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb`, updatedAt: at })
     .where(and(eq(incidents.id, row.incidentId), eq(incidents.orgId, row.orgId)));
 }
 
 /** Shared translation for heartbeat and command results. Ordering is enforced by the state machine. */
-export function reportEpisodeEvent(row: DeviceNetworkIsolation, report: NetworkIsolationReport, at: Date): EpisodeEvent {
+export function reportEpisodeEvent(row: DeviceNetworkIsolation, report: NetworkIsolationReport, at: Date, errorCode?: IsolationFailureCode): EpisodeEvent {
   if (!report.isolationId) return { type: 'agent_absent', generation: row.generation, journalSeq: report.journalSeq, at };
   const base = { generation: report.generation, journalSeq: report.journalSeq, at };
+  // W1d journals closed codes in event types; lastError is diagnostic prose, never a classifier.
+  const events = (report.events ?? []).filter(event => event.seq <= report.journalSeq
+    && (!event.isolationId || event.isolationId === row.id)
+    && (event.generation === undefined || event.generation === report.generation)).sort((a, b) => b.seq - a.seq);
+  const failed = events.find(event => ISOLATION_FAILURE_CODES.some(code => event.type === `failed_${code}`));
+  const reportedFailure = failed?.type.slice('failed_'.length) as IsolationFailureCode | undefined;
+  const release = events.find(event => ['released_dead_man', 'released_local_code', 'released_local_forced'].includes(event.type))?.type;
+
   switch (report.state) {
     case 'applying': return { ...base, type: 'agent_ack' };
     case 'applied': return { ...base, type: 'agent_applied' };
     case 'verified': return { ...base, type: 'agent_verified' };
     case 'released':
       if (row.desiredState === 'released') return { ...base, type: 'agent_absent' };
-      return { ...base, type: 'agent_released_locally', kind: 'local_forced' };
+      if (release === 'released_dead_man') return { ...base, type: 'agent_self_released' };
+      return { ...base, type: 'agent_released_locally', kind: release === 'released_local_code' ? 'local_code' : 'local_forced' };
     case 'expired': return { ...base, type: 'agent_expired' };
     case 'self_released': return { ...base, type: 'agent_self_released' };
-    case 'released_locally': return { ...base, type: 'agent_released_locally', kind: 'local_code' };
-    case 'failed': return { ...base, type: 'agent_failed', code: ISOLATION_FAILURE_CODES.includes(report.lastError as never) ? report.lastError as typeof ISOLATION_FAILURE_CODES[number] : 'apply_error' };
+    case 'released_locally': return { ...base, type: 'agent_released_locally', kind: release === 'released_local_code' ? 'local_code' : 'local_forced' };
+    case 'failed': return { ...base, type: 'agent_failed', code: errorCode ?? reportedFailure ?? 'apply_error' };
   }
 }
 
@@ -75,10 +84,9 @@ export async function reconcileContainmentReport(tx: EpisodeTx, device: Isolatio
   await withEpisodeLock(tx, id, async (row) => {
     if (row.deviceId !== device.id || row.orgId !== device.orgId) return;
     const prev = toEpisodeSnapshot(row);
-    // A bare absence while isolation is desired is an unexpected local release, not permission to reassert.
-    const event = !report.isolationId && row.desiredState === 'isolated'
-      ? { type: 'agent_released_locally' as const, kind: 'local_forced' as const, generation: row.generation, journalSeq: report.journalSeq ?? row.lastJournalSeq + 1, at: serverNow }
-      : reportEpisodeEvent(row, report, serverNow);
+    // Bare absence has no generation: it confirms a tombstone, but cannot cancel an isolate
+    // the agent has not received yet. A local release must name the issued generation.
+    const event = reportEpisodeEvent(row, report, serverNow);
     const transition = applyEpisodeEvent(prev, event);
     if ('ignored' in transition) {
       await journalIsolationEvent(tx, row, 'isolation_report_ignored', serverNow, { reason: transition.ignored, reportedGeneration: report.isolationId ? report.generation : null, journalSeq: report.journalSeq });
@@ -103,7 +111,6 @@ export async function reconcileContainmentReport(tx: EpisodeTx, device: Isolatio
       ...(isResolvedTerminalIsolationState(transition.next.state) ? { breakGlassSecretEnc: '' } : {}),
     }).where(eq(deviceNetworkIsolations.id, row.id));
     if (prev.state !== transition.next.state && ['released_locally', 'self_released'].includes(transition.next.state)) {
-      await tx.insert(alerts).values({ orgId: row.orgId, deviceId: row.deviceId, severity: 'critical', title: 'Network isolation released locally', message: 'Acknowledge the local release before starting a new isolation.', context: { isolationId: row.id, state: transition.next.state }, triggeredAt: serverNow });
       await journalIsolationEvent(tx, row, transition.next.state, serverNow);
     }
   });

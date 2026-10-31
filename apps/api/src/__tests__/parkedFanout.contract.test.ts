@@ -208,6 +208,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/networkIsolation/service.ts': 'Single-device service under caller RLS and site access; selects no fan-out targets. dispatchDeviceCommand refuses parked devices; heartbeat tombstones retain recovery intent.',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',

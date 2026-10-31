@@ -12,7 +12,7 @@ import { synchronizeEpisodeOutcome } from './outcome';
 type ResultArgs = Parameters<CommandResultHandler>[0];
 const resultIdentitySchema = z.object({
   isolationId: z.uuid(), generation: z.number().int().min(1), journalSeq: z.number().int().min(0),
-  state: z.string(), phase: z.string(), mechanism: z.string().nullish(),
+  state: z.string(), phase: z.string().optional(), mechanism: z.string().nullish(),
   appliedAt: z.string().datetime({ offset: true }).nullish(), verifiedAt: z.string().datetime({ offset: true }).nullish(),
   rollback: z.boolean().optional(), errorCode: z.string().max(128).regex(/^[a-z0-9_]+$/).optional(),
 });
@@ -41,7 +41,9 @@ async function finalize(args: ResultArgs, release: boolean): Promise<void> {
   if (!release && payload?.actionType !== 'network_isolation') return;
   const binding = release ? payload : payload?.parameters as Record<string, unknown> | undefined;
   if (!binding || binding.isolationId !== wire.isolationId || binding.generation !== wire.generation) return;
-  const parsedReport = networkIsolationReportSchema.safeParse({ ...wire, lastVerifiedAt: wire.verifiedAt, lastError: failureCode(wire.errorCode ?? result.errorCode) });
+  // Spec §3.3 / W1d result bodies omit the heartbeat-only phase. Accept it when present.
+  const phase = wire.phase ?? (wire.state === 'failed' ? 'rolled_back' : wire.state === 'applying' ? 'provisional' : ['applied', 'verified'].includes(wire.state) ? 'committed' : 'released');
+  const parsedReport = networkIsolationReportSchema.safeParse({ ...wire, phase, lastVerifiedAt: wire.verifiedAt });
   if (!parsedReport.success) return;
   const report = parsedReport.data;
   const at = new Date();
@@ -49,7 +51,7 @@ async function finalize(args: ResultArgs, release: boolean): Promise<void> {
     await withEpisodeLock(tx, wire.isolationId, async row => {
       if (row.deviceId !== resolvedDeviceId || (release ? row.releaseCommandId : row.commandId) !== commandId) return;
       const prev = toEpisodeSnapshot(row);
-      const transition = applyEpisodeEvent(prev, reportEpisodeEvent(row, report, at));
+      const transition = applyEpisodeEvent(prev, reportEpisodeEvent(row, report, at, failureCode(wire.errorCode ?? result.errorCode)));
       if ('ignored' in transition) {
         await journalIsolationEvent(tx, row, 'isolation_result_ignored', at, { reason: transition.ignored, journalSeq: wire.journalSeq, reportedGeneration: wire.generation });
         return;
@@ -58,7 +60,7 @@ async function finalize(args: ResultArgs, release: boolean): Promise<void> {
       await synchronizeEpisodeOutcome(tx, row, prev, transition.next, at);
       await tx.update(deviceNetworkIsolations).set({
         mechanism: report.isolationId ? report.mechanism ?? null : null,
-        lastAgentReport: { isolationId: wire.isolationId, generation: wire.generation, journalSeq: wire.journalSeq, state: wire.state, phase: wire.phase, mechanism: wire.mechanism ?? null },
+        lastAgentReport: { isolationId: wire.isolationId, generation: wire.generation, journalSeq: wire.journalSeq, state: wire.state, phase, mechanism: wire.mechanism ?? null },
       }).where(eq(deviceNetworkIsolations.id, row.id));
     });
   });

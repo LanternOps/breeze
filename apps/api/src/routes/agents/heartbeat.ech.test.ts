@@ -540,6 +540,16 @@ describe('POST /agents/:id/heartbeat — ECH (#8869)', () => {
     });
   }
 
+  it('persists all four capability fields non-sticky on consecutive heartbeats', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    await beat({ securityCapabilities: { networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true } });
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 1, networkIsolationMechanism: 'wfp', networkIsolationUnsupportedReason: 'diagnostic', networkIsolationReady: true }));
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    await beat();
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ networkIsolationVersion: 0, networkIsolationMechanism: null, networkIsolationUnsupportedReason: null, networkIsolationReady: false }));
+  });
+
   it('always returns containment at top level, tolerating a malformed report', async () => {
     const resp = await beat({ containment: { networkIsolation: { state: 'garbage' } } });
     expect(resp.status).toBe(200);

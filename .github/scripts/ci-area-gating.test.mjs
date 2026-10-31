@@ -60,6 +60,8 @@ for (const [paths, on] of [
   // api-only. apps/api/** is read by nothing outside the api area except the
   // portal's visibility-gate test (apps/api/src/routes/portal/**), below.
   [['apps/api/src/services/foo.ts'], ['api']],
+  [['apps/api/src/routes/devices/networkIsolation.ts'], ['api']],
+  [['apps/api/src/routes/agents/isolationVerify.ts'], ['api']],
   [['apps/api/migrations/2026-10-01-x.sql'], ['api']],
   [['apps/api/src/routes/devices/core.ts', 'apps/api/package.json'], ['api']],
   // web — test-api's repo-wide contract suites (exchangeRateBoundary,
@@ -742,3 +744,7 @@ test('integration gate: on a PR it is never wider than api (integration=true ⇒
     if (out.integration === 'true') assert.equal(out.api, 'true', path);
   }
 });
+
+for (const file of ['apps/api/src/routes/devices/networkIsolation.ts', 'apps/api/src/routes/agents/isolationVerify.ts']) {
+  test(`network isolation route schedules integration: ${file}`, () => { assert.equal(classify([file]).integration, 'true'); });
+}

@@ -31,7 +31,7 @@ describe('containment heartbeat persistence', () => {
     const { device, episode, context } = await fixture();
     await withDbAccessContext(context, () => db.transaction(async (tx) => {
       await reconcileContainmentReport(tx, device, { ...report(episode.id, 2), breakGlassSecret: 'NEVER-PERSIST' }, new Date());
-      await reconcileContainmentReport(tx, device, { ...report(episode.id, 1), state: 'applied' }, new Date());
+      await reconcileContainmentReport(tx, device, { ...report(episode.id, 1), state: 'released', phase: 'released' }, new Date());
       const [row] = await tx.select().from(deviceNetworkIsolations).where(eq(deviceNetworkIsolations.id, episode.id));
       expect(row).toMatchObject({ state: 'verified', lastJournalSeq: 2, breakGlassAckSeq: 2 });
       expect(JSON.stringify(row!.lastAgentReport)).not.toContain('NEVER-PERSIST');

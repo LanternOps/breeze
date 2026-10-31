@@ -438,3 +438,15 @@ describe('E2E_MODE env plumbing (#6447)', () => {
     expect(documentedEnvExampleVars('.env.example')).not.toContain('E2E_MODE');
   });
 });
+
+describe('network isolation start gates env plumbing (#10090)', () => {
+  it.each(['NETWORK_ISOLATION_ENABLED', 'NETWORK_ISOLATION_ENABLED_PARTNER_IDS'])('%s is validated, documented and passed to both api deployments', name => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+    for (const file of ['.env.example', 'deploy/.env.example']) expect(documentedEnvExampleVars(file)).toContain(name);
+    for (const file of ['docker-compose.yml', 'deploy/docker-compose.prod.yml']) {
+      const text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      expect(isReferencedInCompose(name, text)).toBe(true);
+      expect(text).toContain(name === 'NETWORK_ISOLATION_ENABLED' ? '${NETWORK_ISOLATION_ENABLED:-false}' : '${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}');
+    }
+  });
+});

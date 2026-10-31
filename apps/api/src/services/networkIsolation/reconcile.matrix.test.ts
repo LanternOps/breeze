@@ -46,12 +46,28 @@ describe('heartbeat reconcile matrix', () => {
         }
         if (desired === 'released' && ['released','none'].includes(state)) expect(store.row.releaseConfirmedAt).toEqual(now);
         if (desired === 'released' && state === 'applied') expect((await buildContainmentHeartbeatBlock(tx, device)).networkIsolation?.desired).toBe('released');
-        if (desired === 'isolated' && ['released','none'].includes(state)) {
+        if (desired === 'isolated' && state === 'released') {
           expect(store.row.state).toBe('released_locally');
           expect(tx.insert).toHaveBeenCalled();
         }
       });
     }
+  it('classifies heartbeat failure from a typed journal event, never lastError prose', async () => {
+    await reconcileContainmentReport(tx, device, { isolationId: id, generation: 2, journalSeq: 6, state: 'failed', phase: 'rolled_back', lastError: 'unsupported_platform', events: [{ seq: 6, at: now.toISOString(), type: 'failed_control_plane_unreachable', isolationId: id, generation: 2 }] }, now);
+    expect(store.row!.failureCode).toBe('control_plane_unreachable');
+  });
+  it('does not classify heartbeat failure by diagnostic text alone', async () => {
+    await reconcileContainmentReport(tx, device, { isolationId: id, generation: 2, journalSeq: 6, state: 'failed', phase: 'rolled_back', lastError: 'unsupported_platform' }, now);
+    expect(store.row!.failureCode).toBe('apply_error');
+  });
+
+  it('does not cancel a not-yet-delivered isolation when a fresh agent reports bare absence', async () => {
+    store.row!.state = 'dispatched';
+    await reconcileContainmentReport(tx, device, { isolationId: null, phase: 'none' }, now);
+    expect(store.row).toMatchObject({ state: 'dispatched', desiredState: 'isolated', lastJournalSeq: 5 });
+    expect((await buildContainmentHeartbeatBlock(tx, device)).networkIsolation?.desired).toBe('isolated');
+  });
+
   it('confirms a resolved not_delivered tombstone before removing it', async () => {
     store.row = { ...row('released'), state: 'failed', failureCode: 'not_delivered' };
     expect((await buildContainmentHeartbeatBlock(tx, device)).networkIsolation).toMatchObject({ desired: 'released', allow: [] });

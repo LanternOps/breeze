@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { isResolvedTerminalIsolationState } from '@breeze/shared';
 import { runAfterDbContextCommit } from '../../db';
-import { deviceNetworkIsolations, incidentActions, incidents, type DeviceNetworkIsolation } from '../../db/schema';
+import { alerts, deviceNetworkIsolations, incidentActions, incidents, type DeviceNetworkIsolation } from '../../db/schema';
 import type { IncidentTimelineEntry } from '../../db/schema/incidentResponse';
 import { ALLOWED_STATUS_TRANSITIONS } from '../../routes/incidents.validation';
 import { captureException } from '../sentry';
@@ -14,6 +14,9 @@ export async function synchronizeEpisodeOutcome(
 ): Promise<void> {
   if (isResolvedTerminalIsolationState(next.state)) {
     await tx.update(deviceNetworkIsolations).set({ breakGlassSecretEnc: '' }).where(eq(deviceNetworkIsolations.id, row.id));
+  }
+  if (prev.state !== next.state && ['released_locally', 'self_released'].includes(next.state)) {
+    await tx.insert(alerts).values({ orgId: row.orgId, deviceId: row.deviceId, severity: 'critical', title: 'Network isolation released locally', message: 'Acknowledge the local release before starting a new isolation.', context: { isolationId: row.id, state: next.state }, triggeredAt: at });
   }
   if (prev.state === next.state || !row.incidentId || !row.incidentActionId) return;
   const verified = next.state === 'verified';

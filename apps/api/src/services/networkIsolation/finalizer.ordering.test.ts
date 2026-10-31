@@ -9,12 +9,14 @@ vi.mock('./episodeStore', async original => ({
   withEpisodeLock: async (_tx: unknown, id: string, fn: (row: DeviceNetworkIsolation) => Promise<unknown>) => state.row?.id === id ? { found: true, value: await fn({ ...state.row }) } : { found: false },
   writeEpisodeSnapshot: async (_tx: unknown, _id: string, prev: unknown, next: unknown) => { state.snapshot(prev, next); Object.assign(state.row!, next); return true; },
 }));
-import { deviceNetworkIsolations, incidentActions, incidents } from '../../db/schema';
+import { alerts, deviceNetworkIsolations, incidentActions, incidents } from '../../db/schema';
+import { reconcileContainmentReport } from './reconcile';
 import { handleNetworkIsolationResult, handleReleaseContainmentResult } from './finalizer';
 const id = '11111111-1111-4111-8111-111111111111';
 const commandId = '22222222-2222-4222-8222-222222222222';
 const deviceId = '33333333-3333-4333-8333-333333333333';
 const tx: any = {
+  insert: (table: unknown) => ({ values: async (fields: Record<string, unknown>) => { state.writes.push({ table, fields }); } }),
   update: (table: unknown) => ({ set: (fields: Record<string, unknown>) => { state.writes.push({ table, fields }); return { where: () => ({ returning: async () => [{ id: 'action', executedBy: 'user', description: 'Network isolation' }], then: (resolve: (v: unknown) => unknown) => Promise.resolve([]).then(resolve) }) }; } }),
   select: () => { const q: any = { from: () => q, where: () => q, limit: () => q, for: () => q, then: (resolve: (v: unknown) => unknown) => Promise.resolve([{ id: 'incident', orgId: 'org', status: 'detected' }]).then(resolve) }; return q; },
 };
@@ -30,6 +32,11 @@ beforeEach(() => {
     expiresAt: new Date('2026-11-03T00:00:00Z'), releaseConfirmedAt: null, breakGlassSecretEnc: 'ciphertext' } as DeviceNetworkIsolation;
 });
 describe('ordered isolation finalizer', () => {
+  it('accepts the spec/W1d result body without a heartbeat-only phase', async () => {
+    await handleNetworkIsolationResult(input({ stdout: JSON.stringify({ isolationId: id, generation: 1, journalSeq: 2, state: 'verified', verifiedAt: '2026-10-31T12:00:00Z', rollback: false }) }));
+    expect(state.row!.state).toBe('verified');
+  });
+
   it('verifies, completes the action, and publishes incident.contained once across duplicate results', async () => {
     await handleNetworkIsolationResult(input()); await handleNetworkIsolationResult(input());
     expect(state.row!.state).toBe('verified');
@@ -62,6 +69,14 @@ describe('ordered isolation finalizer', () => {
     expect(inspect(state.writes, { depth: 12 })).toContain('containment_failed'); expect(inspect(state.writes, { depth: 12 })).not.toContain('misleading prose');
     expect(state.writes.find(x => x.table === deviceNetworkIsolations)?.fields).toMatchObject({ breakGlassSecretEnc: '' });
   });
+  it.each(['released_locally', 'self_released', 'released'])('alerts once when %s arrives through the result before the heartbeat', async reportState => {
+    const report = { isolationId: id, generation: 1, journalSeq: 2, state: reportState, phase: 'released' };
+    await handleNetworkIsolationResult(input({ stdout: JSON.stringify(report) }));
+    await handleNetworkIsolationResult(input({ stdout: JSON.stringify(report) }));
+    await reconcileContainmentReport(tx, { id: deviceId, orgId: 'org' }, report, new Date());
+    expect(state.writes.filter(x => x.table === alerts)).toHaveLength(1);
+  });
+
   it('a release reverses the action once and confirms the tombstone', async () => {
     Object.assign(state.row!, { state: 'release_requested', desiredState: 'released', generation: 2 });
     const args = input({ command: { id: commandId, deviceId, status: 'sent', payload: { isolationId: id, generation: 2, reason: 'Operator release' } }, stdout: JSON.stringify({ isolationId: id, generation: 2, journalSeq: 3, state: 'released', phase: 'released' }) });
