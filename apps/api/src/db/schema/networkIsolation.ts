@@ -6,6 +6,15 @@ import { organizations } from './orgs';
 import { devices } from './devices';
 import { incidentActions, incidents } from './incidentResponse';
 import { users } from './users';
+import type {
+  IsolationAllowEntry,
+  IsolationDesiredState,
+  IsolationFailureCode,
+  IsolationMechanism,
+  IsolationReleaseKind,
+  IsolationRequestedByKind,
+  IsolationState,
+} from '@breeze/shared';
 
 /**
  * Network-isolation containment episodes (#10089 W1a, feature #10088, spec
@@ -33,25 +42,25 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   deviceId: uuid('device_id').notNull(),
   incidentId: uuid('incident_id'),
   incidentActionId: uuid('incident_action_id'),
-  desiredState: varchar('desired_state', { length: 16 }).notNull().default('isolated'),
-  state: varchar('state', { length: 32 }).notNull().default('requested'),
+  desiredState: varchar('desired_state', { length: 16 }).$type<IsolationDesiredState>().notNull().default('isolated'),
+  state: varchar('state', { length: 32 }).$type<IsolationState>().notNull().default('requested'),
   generation: integer('generation').notNull().default(1),
   acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id, { onDelete: 'set null' }),
   /** Encrypted under APP_ENCRYPTION_KEY; zeroed when the episode resolves. Never logged or audited. */
   breakGlassSecretEnc: text('break_glass_secret_enc').notNull(),
-  requestedByKind: varchar('requested_by_kind', { length: 16 }).notNull(),
+  requestedByKind: varchar('requested_by_kind', { length: 16 }).$type<IsolationRequestedByKind>().notNull(),
   requestedByUserId: uuid('requested_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   reason: text('reason').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   deadManSeconds: integer('dead_man_seconds').notNull().default(0),
   remoteRelay: boolean('remote_relay').notNull().default(false),
-  mechanism: varchar('mechanism', { length: 16 }),
+  mechanism: varchar('mechanism', { length: 16 }).$type<IsolationMechanism>(),
   /** What was sent: hostnames only, never resolved addresses. */
-  allowSnapshot: jsonb('allow_snapshot').$type<unknown[]>().notNull().default([]),
+  allowSnapshot: jsonb('allow_snapshot').$type<IsolationAllowEntry[]>().notNull().default([]),
   lastAgentReport: jsonb('last_agent_report').$type<Record<string, unknown>>(),
-  failureCode: varchar('failure_code', { length: 48 }),
-  releaseKind: varchar('release_kind', { length: 24 }),
+  failureCode: varchar('failure_code', { length: 48 }).$type<IsolationFailureCode>(),
+  releaseKind: varchar('release_kind', { length: 24 }).$type<IsolationReleaseKind>(),
   commandId: uuid('command_id'),
   releaseCommandId: uuid('release_command_id'),
   expiryWarnedAt: timestamp('expiry_warned_at', { withTimezone: true }),

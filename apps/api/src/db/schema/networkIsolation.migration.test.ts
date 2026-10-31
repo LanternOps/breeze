@@ -1,6 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  ACTIVE_STATES,
+  ISOLATION_DESIRED_STATES,
+  ISOLATION_FAILURE_CODES,
+  ISOLATION_MECHANISMS,
+  ISOLATION_RELEASE_KINDS,
+  ISOLATION_REQUESTED_BY_KINDS,
+  ISOLATION_STATES,
+  RESOLVED_TERMINAL_STATES,
+} from '@breeze/shared';
 
 /**
  * Network-isolation containment W1a (#10089, feature #10088, plan W1a Task 1).
@@ -156,6 +166,29 @@ describe('device_network_isolations migration', () => {
     expect(sql).toContain('CREATE TRIGGER breeze_network_isolation_device_moved BEFORE UPDATE OF org_id ON public.devices');
     expect(sql).toContain("o.status::text = 'merging'");
     expect(sql).toContain('isolation_unresolved');
+  });
+
+  /**
+   * The SQL CHECKs and the shared tuples are two copies of one vocabulary; nothing else compares them, so a
+   * member added to one side only would ship as a runtime 23514 on the first row that used it.
+   */
+  it.each([
+    ['desired_state', ISOLATION_DESIRED_STATES],
+    ['state', ISOLATION_STATES],
+    ['failure_code', ISOLATION_FAILURE_CODES],
+    ['release_kind', ISOLATION_RELEASE_KINDS],
+    ['requested_by_kind', ISOLATION_REQUESTED_BY_KINDS],
+    ['mechanism', ISOLATION_MECHANISMS],
+  ] as const)('%s CHECK lists exactly the shared members', (column, members) => {
+    const match = new RegExp(`device_network_isolations_${column}_chk CHECK \\([^()]*${column} IN \\(([^)]*)\\)\\)`).exec(normalized());
+    expect(match, `no CHECK found for ${column}`).not.toBeNull();
+    const listed = (match?.[1] ?? '').split(',').map((v) => v.trim().replace(/^'|'$/g, '')).filter(Boolean).sort();
+    expect(listed).toEqual([...members].sort());
+  });
+
+  it('keeps the hard-coded index predicates in step with the shared state sets', () => {
+    expect([...RESOLVED_TERMINAL_STATES].sort()).toEqual([...RESOLVED_TERMINAL].sort());
+    expect([...ACTIVE_STATES].sort()).toEqual([...ACTIVE].sort());
   });
 
   it('never opens its own transaction', () => {
