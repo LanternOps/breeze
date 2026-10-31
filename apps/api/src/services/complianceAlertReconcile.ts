@@ -1,3 +1,4 @@
+import { isDeviceOwned } from './alertOwner';
 /**
  * Closes compliance alerts whose rule no longer applies.
  *
@@ -89,7 +90,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function toOpenAlert(row: { id: string; deviceId: string; context: unknown; overrideSettings: unknown }): OpenAlert {
+function toOpenAlert(row: { id: string; deviceId: string | null; context: unknown; overrideSettings: unknown }): OpenAlert {
+  if (!isDeviceOwned(row)) throw new Error('alert_has_no_device');
   return { id: row.id, deviceId: row.deviceId, context: asRecord(row.context), overrideSettings: asRecord(row.overrideSettings) };
 }
 
@@ -208,7 +210,9 @@ async function reconcileConfigPolicyAlerts(
       .orderBy(asc(alerts.deviceId))
       .limit(pageSize));
 
-    for (const { deviceId } of page) {
+    for (const row of page) {
+      if (!isDeviceOwned(row)) throw new Error('alert_has_no_device');
+      const { deviceId } = row;
       try {
         alertsResolved += await withSystemDbAccessContext(() => reconcileConfigDevice(deviceId, condition));
       } catch (error) {
