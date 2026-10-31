@@ -195,7 +195,7 @@ export const alerts = pgTable('alerts', {
     .on(table.suppressedUntil)
     .where(sql`status = 'suppressed' AND suppressed_until IS NOT NULL`),
   ownerCheck: check('alerts_owner_chk', sql`
-    (${table.ownerKind} = 'device' AND ${table.deviceId} IS NOT NULL)
+    (${table.ownerKind} = 'device' AND ${table.deviceId} IS NOT NULL AND ${table.topologySiteId} IS NULL)
     OR (${table.ownerKind} = 'topology_site' AND ${table.topologySiteId} IS NOT NULL)
     OR (${table.ownerKind} = 'backup_workload' AND ${table.deviceId} IS NULL AND ${table.ownerRef} IS NOT NULL)
   `),

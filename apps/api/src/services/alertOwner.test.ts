@@ -7,6 +7,10 @@ const device: AlertOwnerFields = {
 };
 
 describe('alertOwnerKey', () => {
+  it('includes the alert id when rejecting illegal ownership', () => {
+    expect(() => alertOwnerKey({ ...device, id: 'broken-alert-1', deviceId: null }))
+      .toThrow('broken-alert-1');
+  });
   it('returns device:d1 for a device owner', () => {
     expect(alertOwnerKey(device)).toBe('device:d1');
   });
