@@ -1,0 +1,106 @@
+import { describe, it, expect } from 'vitest';
+import { stripAnsi, commandOutputExcerpt, STRIP_ANSI_MAX_INPUT_CHARS } from './commandOutput';
+
+const ESC = '\u001b';
+
+describe('stripAnsi', () => {
+  it('removes SGR colour sequences (ctrld output, #10307)', () => {
+    const raw = `${ESC}[90m2026-10-26T14:03:11Z${ESC}[0m ${ESC}[31mERR${ESC}[0m failed to provision ${ESC}[1;31mInvalid provisioning code${ESC}[0m`;
+    expect(stripAnsi(raw)).toBe('2026-10-26T14:03:11Z ERR failed to provision Invalid provisioning code');
+  });
+
+  it('removes cursor/erase CSI sequences and OSC titles', () => {
+    expect(stripAnsi(`a${ESC}[2Kb${ESC}[1Ac${ESC}]0;title${ESC}\\d${ESC}]0;t2\u0007e`)).toBe('abcde');
+  });
+
+  it('removes 8-bit CSI and stray control characters but keeps newlines and tabs', () => {
+    expect(stripAnsi('x\u009b31my\u0000z\u0007\tq\r\nw')).toBe('xyz\tq\nw');
+  });
+
+  it('resolves bare \\r overwrites (progress spinners) to the final frame of each line', () => {
+    expect(stripAnsi('Downloading 10%\rDownloading 50%\rDownloading 100%\r\nERR boom\r\n')).toBe(
+      'Downloading 100%\nERR boom\n',
+    );
+  });
+
+  it('stays linear on hostile device output (no regex backtracking blow-up)', () => {
+    const hostile = [
+      `${'\r'.repeat(100_000)}x`, // long \r run not at end of line
+      `${ESC}[${'0'.repeat(100_000)}`, // unterminated CSI
+      `${ESC}]${'a'.repeat(100_000)}`, // unterminated OSC
+      `^[[${'1'.repeat(100_000)}`, // unterminated caret SGR
+      `${ESC}[`.repeat(50_000), // many CSI starts
+      `${ESC}]`.repeat(50_000), // many OSC starts
+    ];
+    for (const input of hostile) {
+      const began = performance.now();
+      stripAnsi(input);
+      commandOutputExcerpt(input);
+      expect(performance.now() - began).toBeLessThan(100);
+    }
+    expect(stripAnsi(`${'\r'.repeat(100_000)}x`)).toBe('x');
+  });
+
+  it(`caps input at ${STRIP_ANSI_MAX_INPUT_CHARS} chars, keeping the tail`, () => {
+    const input = `${'a'.repeat(STRIP_ANSI_MAX_INPUT_CHARS)}TAIL`;
+    const out = stripAnsi(input);
+    expect(out.length).toBe(STRIP_ANSI_MAX_INPUT_CHARS);
+    expect(out.endsWith('TAIL')).toBe(true);
+  });
+
+  it('removes caret-notation SGR left behind by a terminal capture', () => {
+    expect(stripAnsi('^[[90mtime^[[0m ^[[31mERR^[[0m boom')).toBe('time ERR boom');
+  });
+
+  it('leaves plain text untouched', () => {
+    expect(stripAnsi('C:\\ControlD\\ctrld.exe exited [code 33]')).toBe('C:\\ControlD\\ctrld.exe exited [code 33]');
+  });
+});
+
+describe('commandOutputExcerpt', () => {
+  it('returns null for empty, whitespace-only or escape-only output', () => {
+    expect(commandOutputExcerpt(null)).toBeNull();
+    expect(commandOutputExcerpt(undefined)).toBeNull();
+    expect(commandOutputExcerpt('  \n\n ')).toBeNull();
+    expect(commandOutputExcerpt(`${ESC}[0m\n${ESC}[31m${ESC}[0m`)).toBeNull();
+  });
+
+  it('keeps the LAST lines, where a vendor tool prints its failure', () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    const excerpt = commandOutputExcerpt(lines.join('\n'), { maxLines: 3 });
+    expect(excerpt).toEqual({ text: 'line 18\nline 19\nline 20', truncated: true });
+  });
+
+  it('drops blank lines and strips ANSI before choosing lines', () => {
+    const raw = `${ESC}[90mINF${ESC}[0m starting\n\n${ESC}[31mERR${ESC}[0m Invalid provisioning code\n\n`;
+    expect(commandOutputExcerpt(raw)).toEqual({
+      text: 'INF starting\nERR Invalid provisioning code',
+      truncated: false,
+    });
+  });
+
+  it('bounds the excerpt by characters, keeping the tail', () => {
+    const excerpt = commandOutputExcerpt(`${'a'.repeat(50)}\n${'b'.repeat(50)}`, { maxChars: 20 });
+    expect(excerpt?.truncated).toBe(true);
+    expect(excerpt?.text.length).toBeLessThanOrEqual(20);
+    expect(excerpt?.text.endsWith('b'.repeat(19))).toBe(true);
+    expect(excerpt?.text.startsWith('…')).toBe(true);
+  });
+
+  it('never starts the char-bounded tail with half a surrogate pair', () => {
+    // 'a😀😀' is 5 UTF-16 units; keeping the last 2 units after '…' would
+    // cut the first emoji's pair at a low surrogate.
+    const excerpt = commandOutputExcerpt('a😀😀😀', { maxChars: 4 });
+    const text = excerpt!.text;
+    expect(text.startsWith('…')).toBe(true);
+    const first = text.charCodeAt(1);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+    expect(text.endsWith('😀')).toBe(true);
+  });
+
+  it('applies default bounds', () => {
+    const excerpt = commandOutputExcerpt('x'.repeat(5000));
+    expect(excerpt?.truncated).toBe(true);
+    expect(excerpt!.text.length).toBeLessThanOrEqual(600);
+  });
+});

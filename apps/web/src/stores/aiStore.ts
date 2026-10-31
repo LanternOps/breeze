@@ -22,6 +22,7 @@ import {
   type PendingPlan,
   type ActivePlan,
   type ChatRunState,
+  alreadyDecidedOutcome,
 } from './processStreamEvent';
 
 interface M365Connection {
@@ -170,6 +171,12 @@ interface AiState {
    * approveExecution: it talks to no endpoint.
    */
   clearPendingApproval: () => void;
+  /**
+   * #9431: the window came back (focus / visible) with an undecided approval
+   * card up and no live stream to deliver `approval_resolved` — re-attach so
+   * the server's pending cards replace it. A no-op otherwise.
+   */
+  recheckPendingApproval: () => void;
   approvePlan: (approved: boolean) => Promise<void>;
   abortPlan: () => Promise<void>;
   pauseAi: (paused: boolean) => Promise<void>;
@@ -399,7 +406,7 @@ function abortCurrentAttach(): void {
  */
 const TOPOLOGY_TURN_EVENTS: ReadonlySet<AiStreamEvent['type']> = new Set<AiStreamEvent['type']>([
   'message_start', 'topology_progress', 'topology_explanation', 'topology_diagnostic_run',
-  'approval_required', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
+  'approval_required', 'approval_resolved', 'message_end', 'error', 'done', 'title_updated', 'approval_mode_changed',
 ]);
 
 /** IDs-only selection of a topology page context, or null for any other context. */
@@ -1060,9 +1067,19 @@ export const useAiStore = create<AiState>()(
         }
 
         // refusal === 'error': the generic failure path (#9428 slots its
-        // classifyHttpFailure in here).
-        set({ errorCode: code });
-        throw new Error(extractApiError(data, 'Failed to send message'));
+        // classifyHttpFailure in here). The server refused the turn before it
+        // ran (e.g. 503 ai_not_configured), so it never stored the message:
+        // drop the optimistic bubble and give the text back to the composer
+        // (#10108), keeping the error banner.
+        if (!ownsStream()) return;
+        set((s) => ({
+          messages: s.messages.filter((m) => m.id !== userMsgId),
+          composerDraft: trimmedContent,
+          error: extractApiError(data, 'Failed to send message'),
+          errorCode: code,
+          isStreaming: false,
+        }));
+        return;
       }
 
       const reader = res.body?.getReader();
@@ -1139,6 +1156,14 @@ export const useAiStore = create<AiState>()(
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        // #9431: decided elsewhere first — show that decision on the card.
+        const decided = alreadyDecidedOutcome(res.status, data);
+        if (decided) {
+          set((s) => (s.pendingApproval?.executionId === executionId
+            ? { pendingApproval: { ...s.pendingApproval, resolution: decided } }
+            : {}));
+          return;
+        }
         set({ error: extractApiError(data, 'Failed to process approval. It may have timed out.') });
         return;
       }
@@ -1150,6 +1175,14 @@ export const useAiStore = create<AiState>()(
   },
 
   clearPendingApproval: () => set({ pendingApproval: null }),
+
+  recheckPendingApproval: () => {
+    const { sessionId, pendingApproval } = get();
+    if (!sessionId || !pendingApproval || pendingApproval.resolution) return;
+    // A live stream delivers approval_resolved itself.
+    if (currentAttach || currentSendReader) return;
+    void get().attachCurrent();
+  },
 
   approvePlan: async (approved: boolean) => {
     const { sessionId } = get();

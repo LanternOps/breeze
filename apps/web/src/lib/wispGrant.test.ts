@@ -44,6 +44,23 @@ describe('wispGrant owns its org scoping (no ambient orgId injection)', () => {
     expect(fetchWithAuth).toHaveBeenLastCalledWith('/wisp/thread?orgId=org-1', { skipOrgIdInjection: true });
   });
 
+  it('fetchWispThread: no grant for the scope (200 { data: null }, or a pre-#10200 404 no_active_grant) rejects as isNoActiveGrant (#10200)', async () => {
+    const { fetchWithAuth } = await import('@/stores/auth');
+    const { fetchWispThread, isNoActiveGrant } = await import('./wispGrant');
+    const outcome = (p: Promise<unknown>) => p.then(() => 'resolved', (err: unknown) => (isNoActiveGrant(err) ? 'noGrant' : 'failed'));
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce(res({ data: null }));
+    expect(await outcome(fetchWispThread('org-1'))).toBe('noGrant');
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce(res({ code: 'no_active_grant', error: 'none' }, 404));
+    expect(await outcome(fetchWispThread('org-1'))).toBe('noGrant');
+    // A bare 404 (Wisp switched off at the hub), an unreadable 200 and a 500 are failures.
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce(res({ error: 'Not found' }, 404));
+    expect(await outcome(fetchWispThread('org-1'))).toBe('failed');
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce(res({ data: { thread: {} } }));
+    expect(await outcome(fetchWispThread('org-1'))).toBe('failed');
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce(res({ code: 'no_active_grant' }, 500));
+    expect(await outcome(fetchWispThread('org-1'))).toBe('failed');
+  });
+
   it('mintWispGrantStepUp({ orgId: null }) previews the partner-wide ceiling without the ambient org', async () => {
     vi.doMock('./mfaStepUp', () => ({ mintStepUpGrant: vi.fn(async () => 'su-1') }));
     vi.resetModules();

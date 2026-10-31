@@ -22,7 +22,7 @@ import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiApprovalOutcome } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, describeSpecialistRequest, type GuardrailContext } from './aiGuardrails';
 import {
@@ -110,7 +110,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
-import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
+import { approvalCardKey, publishPendingCard, resolveApprovalCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 
@@ -198,6 +198,35 @@ function beginApprovalWait(session: ActiveSession): {
       session.pendingApprovalWaits = Math.max(0, (session.pendingApprovalWaits ?? 1) - 1);
     },
   };
+}
+
+/**
+ * #9431: a legacy `waitForApproval` result as a card outcome. `false` means
+ * denied or timed out — unless the wait was settled (new message, interrupt,
+ * teardown), in which case nothing was decided.
+ */
+function approvalWaitOutcome(approved: boolean, signal: AbortSignal): AiApprovalOutcome {
+  if (approved) return 'approved';
+  return signal.aborted ? 'ended' : 'not_approved';
+}
+
+/** #9431: an intent status read by `waitForIntentDecision` as a card outcome. */
+function intentDecisionOutcome(status: Awaited<ReturnType<typeof waitForIntentDecision>>): AiApprovalOutcome {
+  switch (status) {
+    case 'approved':
+    case 'executing':
+    case 'completed':
+    case 'failed':
+      return 'approved';
+    case 'rejected':
+    case 'expired':
+    case 'cancelled':
+      return 'not_approved';
+    default:
+      // pending_approval: the chat stopped waiting, but the intent can still
+      // be decided in Approvals.
+      return 'ended';
+  }
 }
 
 /**
@@ -1046,6 +1075,15 @@ async function runWispCeilingGate(
 }
 
 /**
+ * #10193 — who an approval raised from this chat session is attributed to on
+ * the approval row, the mobile push and the intent: Wisp under a grant (the
+ * grant-driven voice, #10131), Breeze AI otherwise.
+ */
+function chatApprovalClientLabel(session: ActiveSession): string {
+  return session.wispGrant ? 'Wisp' : 'Breeze AI';
+}
+
+/**
  * The org reach of ONE tool call: the session's tool auth, cut to the Wisp
  * ceiling when a grant governs the session (the same narrowing the allowed
  * exit of `createSessionPreToolUse` hands the handler). Used to resolve a
@@ -1064,8 +1102,9 @@ function callReach(session: ActiveSession, wispState: WispCallState | null): Aut
  * `launch_specialist` call, run after RBAC and the rate limit but before any
  * approval card: a call the coordinator would refuse (`wisp_grant_required`,
  * `unknown_kind`, `invalid_params`, `no_sweep_schedule`, `no_effective_agent`,
- * …) is refused here with the SAME code the tool's handler returns, and nobody
- * is asked to approve a request that cannot run. Runs after the Wisp ceiling
+ * `agent_disabled` (#10193), …) is refused here with the SAME code (and
+ * `message`) the tool's handler returns, and nobody is asked to approve a
+ * request that cannot run. Runs after the Wisp ceiling
  * gate, so the target org is already inside the grant; on a pass it returns
  * that org's name for the card.
  *
@@ -1078,7 +1117,7 @@ async function specialistPreApprovalGate(
   session: ActiveSession,
   input: Record<string, unknown>,
   wispState: WispCallState | null,
-): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string } }> {
+): Promise<{ ok: true; orgName: string | null } | { ok: false; denial: { allowed: false; error: string; detail?: string; message?: string } }> {
   // The tool is inert without a grant (aiToolsWisp: GRANT_REQUIRED) — a plain
   // chat session must not ask for approval first.
   if (!session.wispGrant || !wispState) {
@@ -1096,7 +1135,13 @@ async function specialistPreApprovalGate(
     if (result.ok) return { ok: true, orgName: result.orgName };
     return {
       ok: false,
-      denial: { allowed: false, error: result.refused, ...(result.detail ? { detail: result.detail } : {}) },
+      denial: {
+        allowed: false,
+        error: result.refused,
+        ...(result.detail ? { detail: result.detail } : {}),
+        // #10193: the sentence the model reads back (names a switched-off agent).
+        ...(result.message ? { message: result.message } : {}),
+      },
     };
   } catch (err) {
     console.error(`[AI-SDK] launch_specialist precheck failed (session ${session.breezeSessionId}); asking for approval as before`, err);
@@ -1503,6 +1548,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
         });
 
         let approved: boolean;
+        // #9431: how the card's wait ended, for every other listener.
+        let helperOutcome: AiApprovalOutcome = 'ended';
         try {
           const decision = await decideHelperToolAction({
             orgId: session.orgId,
@@ -1515,6 +1562,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           });
 
           if (decision === 'denied') {
+            helperOutcome = 'not_approved';
             return { allowed: false, error: 'This action was denied by organization policy' };
           }
 
@@ -1530,11 +1578,12 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               helperApprovalWait.timeoutMs,
               helperApprovalWait.signal,
             );
+            helperOutcome = approvalWaitOutcome(approved, helperApprovalWait.signal);
           } finally {
             helperApprovalWait.end();
           }
         } finally {
-          resolvePendingCard(session, helperCardKey);
+          resolveApprovalCard(session, helperExec.id, helperOutcome);
         }
         if (!approved) {
           // Mirrors the tier-2/tier-3 close-out below: on an early settle
@@ -2071,6 +2120,9 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               source: 'chat',
               reason: riskSummary,
               actionLabel: riskSummary,
+              // #10193: a Wisp session's approval is Wisp's; otherwise the
+              // intent service's chat default ("Breeze AI") applies.
+              ...(session.wispGrant ? { requestingClientLabel: chatApprovalClientLabel(session) } : {}),
               orgId: flowBinding ? flowBinding.orgId : intentOrgId,
               ...(flowBinding ? { invokedFlow: flowBinding.invokedFlow } : {}),
               // #6475 — a supervised chat intent expires with the org's
@@ -2226,6 +2278,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
+          // #9431: how the card's wait ended, for every other listener.
+          let intentOutcome: AiApprovalOutcome = 'ended';
           try {
             const approvalWait = beginApprovalWait(session);
             try {
@@ -2234,12 +2288,13 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                 approvalWait.timeoutMs,
                 approvalWait.signal,
               );
+              intentOutcome = intentDecisionOutcome(decisionStatus);
             } finally {
               approvalWait.end();
             }
           } finally {
             // A no-op for the unattended-release branch, which recorded no card.
-            resolvePendingCard(session, approvalCardKey(approvalExec.id));
+            resolveApprovalCard(session, approvalExec.id, intentOutcome);
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -2807,7 +2862,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
                   .values({
                     userId: session.auth.user.id,
                     executionId: approvalExec!.id,
-                    requestingClientLabel: 'Breeze AI',
+                    requestingClientLabel: chatApprovalClientLabel(session),
                     requestingMachineLabel: null,
                     actionLabel,
                     actionToolName: stripMcpPrefix(toolName),
@@ -2852,7 +2907,7 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
               await dispatchApprovalPushToTokens(tokens, {
                 approvalId: approvalRequestId,
                 actionLabel,
-                requestingClientLabel: 'Breeze AI',
+                requestingClientLabel: chatApprovalClientLabel(session),
               });
             } catch (err) {
               console.error('[AI-SDK] Failed to dispatch approval push notification:', err);
@@ -2882,14 +2937,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           // Block until user clicks Approve/Reject, the cycle's shared approval
           // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
+          // #9431: how the card's wait ended, for every other listener.
+          let cardOutcome: AiApprovalOutcome = 'ended';
           try {
             approved = await waitForApproval(
               approvalExec.id,
               approvalWait.timeoutMs,
               approvalWait.signal,
             );
+            cardOutcome = approvalWaitOutcome(approved, approvalWait.signal);
           } finally {
-            resolvePendingCard(session, cardKey);
+            resolveApprovalCard(session, approvalExec.id, cardOutcome);
           }
         } finally {
           approvalWait.end();

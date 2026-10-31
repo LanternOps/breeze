@@ -325,6 +325,32 @@ describe('handleWispWakeEvent', () => {
     expect(assessAdds()[0]!.data).toMatchObject({ subject: { kind: 'alert', id: ALERT } });
   });
 
+  // #10388: the run must be told WHICH alert the event is about, not the bus
+  // event id (no tool can look a bus event up).
+  it('alert.resolved carries the alert and device ids in the reason; non-uuids are dropped', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: ALERT, deviceId: TASK, resolvedBy: RUN }));
+    const data = assessAdds()[0]!.data as { reason: Record<string, unknown> };
+    expect(data.reason).toEqual({
+      kind: 'event', eventType: 'alert.resolved', eventId: 'evt-alert.resolved', alertId: ALERT, deviceId: TASK,
+    });
+    // alert.resolved is not a budget-path digest event: no concern hint.
+    expect(data).not.toHaveProperty('subject');
+    h.jobs.clear();
+    h.adds = [];
+    await handleWispWakeEvent(event('alert.resolved', O1, { alertId: 'nope', deviceId: 'dev-1' }));
+    expect((assessAdds()[0]!.data as { reason: Record<string, unknown> }).reason).toEqual({
+      kind: 'event', eventType: 'alert.resolved', eventId: 'evt-alert.resolved',
+    });
+  });
+
+  it('alert.triggered carries the alert id in the reason as well as the digest hint', async () => {
+    useFixtures({ eventGrants: [{ grant_id: G1 }] });
+    await handleWispWakeEvent(event('alert.triggered', O1, { alertId: ALERT }));
+    expect(assessAdds()[0]!.data).toMatchObject({ reason: { kind: 'event', alertId: ALERT } });
+    expect((assessAdds()[0]!.data as { reason: object }).reason).not.toHaveProperty('deviceId');
+  });
+
   it('a failed operator task carries { kind: task } and failed: true', async () => {
     useFixtures({ eventGrants: [{ grant_id: G1 }] });
     await handleWispWakeEvent(event('ai.operator.task.finished', O1, { taskId: TASK, state: 'failed' }));

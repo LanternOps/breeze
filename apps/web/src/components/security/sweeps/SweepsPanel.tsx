@@ -132,8 +132,9 @@ export default function SweepsPanel({
       ruleSetIds: s.ruleSets.map((r) => r.id),
       ruleSetNames: s.ruleSets.map((r) => r.name ?? r.id),
       scanType: s.scanType,
-      // SweepSummary stores neither the scope nor custom paths, so the dialog
-      // opens at the scope step with the sets pre-selected and says why.
+      ...(s.scanType === "custom" && s.paths ? { paths: s.paths } : {}),
+      // SweepSummary does not store the scope, so the dialog opens at the
+      // scope step with the sets, scan type and custom paths pre-filled.
       rescope: true,
     });
 
@@ -258,11 +259,16 @@ export default function SweepsPanel({
                         <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                           <div className={`h-full ${TONE_BAR[progress.tone]}`} style={{ width: `${progress.percent}%` }} />
                         </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {progress.percent}% · {progress.label}
-                        </p>
-                        {s.state === "active" && s.progress.queued > 0 && (
-                          <p className="text-xs text-muted-foreground">{t("sweeps.panel.queued", { queued: s.progress.queued })}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{progress.label}</p>
+                        {s.state === "active" && s.progress.queued + s.progress.running > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            {[
+                              s.progress.queued > 0 ? t("sweeps.panel.queued", { queued: s.progress.queued }) : null,
+                              s.progress.running > 0 ? t("sweeps.panel.running", { running: s.progress.running }) : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
                         )}
                       </div>
                     </td>

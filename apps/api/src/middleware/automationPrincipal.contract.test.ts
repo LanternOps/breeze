@@ -70,6 +70,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   "services/topology/aiDiagnosticApproval.ts:if (isAutomationPrincipal(current.auth)) throw new TopologyOperationError('human_approval_required', 403);": 'automation',
   'services/topology/siteConfiguration.ts:if (isAutomationPrincipal(ctx.auth) || !hasSatisfiedMfa(ctx.auth))': 'automation',
   'routes/alerts/alerts.ts:if (isAutomationPrincipal(auth)) {': 'automation',
+  // #9528: the name-level org-list fallback for a partner caller without
+  // organizations:read is for people; a machine principal gets the strict gate.
+  "routes/orgs.ts:if (auth.scope !== 'partner' || isAutomationPrincipal(auth)) return requireOrgRead(c, next);": 'automation',
   'services/aiToolsCompliance.ts:if (isAutomationPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;': 'automation',
   'services/aiToolsRestoreAuthorization.ts:if (isAutomationPrincipal(auth)) return fallback;': 'automation',
   'services/securityScanSweepTargets.ts:if (isAutomationPrincipal(auth)) return Promise.resolve(null);': 'automation',

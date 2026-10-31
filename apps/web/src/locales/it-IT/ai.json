@@ -28,6 +28,9 @@
     "deny": "Rifiuta",
     "verificationFailed": "Verifica non riuscita. Riprova.",
     "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "resolvedApproved": "Questa richiesta è stata approvata.",
+    "resolvedNotApproved": "Questa richiesta non è stata approvata, quindi l'azione non è stata eseguita.",
+    "resolvedEnded": "Questa richiesta non è più in attesa di una decisione qui.",
     "contentChanged": "I dettagli di questa richiesta sono cambiati dopo la creazione, quindi non può più essere approvata.",
     "expired": "Questa richiesta è scaduta prima di poter essere decisa.",
     "notSoleApprover": "Ora è richiesto un altro approvatore — non puoi più approvare la tua stessa richiesta.",
@@ -145,9 +148,9 @@
     "dashboard": "Dashboard"
   },
   "aiCostIndicator": {
-    "messageCount": "{{count}} msg",
-    "messageCount_one": "{{count}} msg",
-    "messageCount_other": "{{count}} msg",
+    "messageCount": "{{count}} messaggi questo mese",
+    "messageCount_one": "{{count}} messaggio questo mese",
+    "messageCount_other": "{{count}} messaggi questo mese",
     "thisMonth": "{{amount}} questo mese",
     "credits_one": "{{formatted}} credito",
     "credits_other": "{{formatted}} crediti"
@@ -631,6 +634,7 @@
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
+      "scopeFallback": "questa organizzazione",
       "status": {
         "active": "Attivo",
         "paused": "In pausa",
@@ -640,7 +644,7 @@
       },
       "refresh": "Rinnova autorizzazione",
       "revoke": "Disattiva Wisp",
-      "revokeConfirm": "Disattivare Wisp per questo ambito? I thread aperti restano leggibili.",
+      "revokeConfirm": "Disattivare Wisp per questo ambito? Wisp smette di lavorare per te e i suoi thread vengono chiusi. Le relative conversazioni, segnalazioni e attività non vengono più mostrate.",
       "widening": "Puoi fare più di quanto consente questa autorizzazione: rinnovala perché Wisp stia al passo.",
       "refreshKeepsTerms": "Questa conversazione mantiene i termini precedenti dell’autorizzazione. Avvia una nuova conversazione per usare l’autorizzazione rinnovata.",
       "startNewConversation": "Avvia una nuova conversazione",
@@ -860,7 +864,8 @@
       "workersTitle": "Worker",
       "workersEmpty": "Nessuno specialista in esecuzione.",
       "allRuns": "Tutte le esecuzioni",
-      "details": "Dettagli"
+      "details": "Dettagli",
+      "ended": "Questa autorizzazione è terminata, quindi le sue segnalazioni, i worker e le attività non vengono più mostrati."
     },
     "composer": {
       "placeholder": "Scrivi a Wisp",

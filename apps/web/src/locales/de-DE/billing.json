@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
+        "quantityInvalid": "Geben Sie eine Menge ein (bis zu 2 Dezimalstellen).",
+        "quantityTooLarge": "Die Menge ist zu groß (höchstens 10 Stellen vor dem Dezimalkomma).",
         "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
         "allSites": "Alle Seiten",
         "linkCatalogItemOptional": "Katalogelement verlinken (optional)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
       "variables": "Angaben zur Vereinbarung",
       "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "needsSignedCopy": "Breeze kann {{names}} ohne Angebot nicht ausfüllen. Hängen Sie die unterschriebene Kopie an, um diese Vereinbarung zu erfassen.",
       "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
@@ -1294,6 +1297,7 @@
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoValueBlank": "Leer",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
         "manualVariablesTitle": "Für dieses Angebot ausfüllen",
         "labelFieldLabel": "Abschnittsbezeichnung",
@@ -1468,6 +1472,9 @@
       "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren.",
       "acceptOnBehalf": {
         "button": "Im Namen des Kunden annehmen",
+        "emptyDraftTitle": "Fügen Sie vor dem Annehmen mindestens einen Artikel hinzu.",
+        "emptySentTitle": "Dieses Angebot enthält keine Artikel. Nutzen Sie „Angebot überarbeiten“, um eine Version mit Artikeln auszustellen.",
+        "errorQuoteEmpty": "Dieses Angebot enthält keine Artikel. Schließen Sie diesen Dialog und fügen Sie einen Artikel hinzu, oder nutzen Sie „Angebot überarbeiten“, falls es bereits gesendet wurde.",
         "title": "Annahme des Kunden erfassen",
         "methodLabel": "Wie hat der Kunde zugestimmt?",
         "method": {
@@ -2103,6 +2110,7 @@
       "title": "Diese Rechnung senden?",
       "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
     },
+    "sourceHeldForHourBlock": "Ein Teil der Zeit auf diesem Entwurf ist für ein Stundenkontingent reserviert und wird beim Abschluss des Kontingentzeitraums abgerechnet. Entfernen Sie diese Positionen und stellen Sie dann aus.",
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },

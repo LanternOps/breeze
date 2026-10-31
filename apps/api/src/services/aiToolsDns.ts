@@ -28,8 +28,43 @@ import {
   runFrozenDeviceIds,
   SITE_SCOPE_EMPTY_NOTE
 } from './aiToolsSiteScope';
+import {
+  allowedTrafficCoverage,
+  allowedTrafficNote,
+  applyAllowedTrafficCoverage,
+  type DnsStatsSummary
+} from './dnsProviders/syncScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
+type DnsStatsAction = 'allowed' | 'blocked' | 'redirected' | undefined;
+
+/**
+ * #10054 — allowed DNS traffic is stored only for integrations that opted in,
+ * so the stats answer carries `allowedTraffic` (all | some | none), a plain
+ * note when the counts are partial or missing, and nulls instead of a
+ * misleading zero allowed count / ~100% blocked rate when nothing stores it.
+ */
+async function withAllowedTrafficCoverage<T extends DnsStatsSummary>(
+  auth: AuthContext,
+  integrationId: string | undefined,
+  action: DnsStatsAction,
+  summary: T
+) {
+  const conditions: SQL[] = [eq(dnsFilterIntegrations.isActive, true)];
+  const orgCondition = auth.orgCondition(dnsFilterIntegrations.orgId);
+  if (orgCondition) conditions.push(orgCondition);
+  if (integrationId) conditions.push(eq(dnsFilterIntegrations.id, integrationId));
+  const rows = await db
+    .select({ config: dnsFilterIntegrations.config })
+    .from(dnsFilterIntegrations)
+    .where(and(...conditions));
+  const allowedTraffic = allowedTrafficCoverage(rows.map((row) => row.config));
+  return {
+    summary: applyAllowedTrafficCoverage(summary, allowedTraffic, action),
+    allowedTraffic,
+    allowedTrafficNote: allowedTrafficNote(allowedTraffic)
+  };
+}
 
 /**
  * #6911: `true` when the caller is an AI-agent principal, i.e. `auth.user.id`
@@ -328,11 +363,11 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
             : 0;
 
           return JSON.stringify({
-            summary: {
+            ...await withAllowedTrafficCoverage(auth, input.integrationId as string | undefined, input.action as DnsStatsAction, {
               ...summaryRow,
               blockedRate,
               timeRange: { start: start.toISOString(), end: end.toISOString() }
-            },
+            }),
             topBlockedDomains,
             topCategories,
             topDevices,
@@ -397,11 +432,11 @@ export function registerDnsTools(aiTools: Map<string, AiTool>): void {
         : 0;
 
       return JSON.stringify({
-        summary: {
+        ...await withAllowedTrafficCoverage(auth, input.integrationId as string | undefined, input.action as DnsStatsAction, {
           ...summaryRow,
           blockedRate,
           timeRange: { start: start.toISOString(), end: end.toISOString() }
-        },
+        }),
         topBlockedDomains,
         topCategories,
         topDevices,

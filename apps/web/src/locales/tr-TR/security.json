@@ -783,7 +783,6 @@
     "threatStatus": "Tehdit durumu",
     "threatWasMovedToQuarantineByPolicy": "Tehdit, politika veya operatör eylemi nedeniyle karantinaya taşındı.",
     "timeline": "Zaman Çizelgesi",
-    "actionFailed": "İşlem başarısız oldu",
     "quarantineSucceeded": "Tehdit karantinaya alındı",
     "restoreSucceeded": "Tehdit geri yüklendi",
     "removeSucceeded": "Tehdit kaldırıldı",
@@ -1748,13 +1747,18 @@
       "totalQueries": "Toplam sorgu",
       "blocked": "Engellendi",
       "allowed": "İzin veriliyor",
-      "redirected": "Yönlendirildi"
+      "redirected": "Yönlendirildi",
+      "notStored": "Depolanmıyor"
     },
     "topBlocked": {
       "title": "En çok engellenen alan adları",
       "empty": "Geçerli pencerede engellenen alan adı yok."
     },
-    "loading": "Yükleniyor…"
+    "loading": "Yükleniyor…",
+    "allowedTraffic": {
+      "none": "Bu entegrasyonlar için izin verilen sorgular depolanmıyor, bu nedenle yalnızca engellenen ve yönlendirilen sorgular sayılır. Bunları saymak için bir entegrasyonun depolanan veri ayarlarında \"İzin verilen trafiği depola\" seçeneğini açın.",
+      "some": "İzin verilen sorgular yalnızca bazı entegrasyonlar için depolanıyor, bu nedenle izin verilen sayısı kısmidir."
+    }
   },
   "dnsSecurityDnsSecurityIntegrationsTab": {
     "title": "Yapılandırılmış entegrasyonlar",
@@ -1771,7 +1775,7 @@
       "addIntegration": "Entegrasyon ekle",
       "syncNow": "Şimdi senkronize et",
       "deleteIntegration": "Entegrasyonu sil",
-      "editRetention": "Saklama süresini değiştir"
+      "editRetention": "Depolanan veriler"
     },
     "messages": {
       "loadHttpError": "Entegrasyonlar yüklenemedi (HTTP {{status}})",
@@ -1802,8 +1806,8 @@
     "deletingInBackground": "Siliniyor…"
   },
   "dnsSecurityEditDnsRetentionModal": {
-    "title": "Veri saklama",
-    "description": "Daha eski olaylar ve günlük istatistikler gece çalışan saklama temizliğiyle silinir.",
+    "title": "Depolanan veriler",
+    "description": "Breeze'in bu entegrasyon için hangi DNS sorgularını depolayacağını ve ne kadar süre saklayacağını seçin.",
     "fieldLabel": "DNS olaylarını ve istatistiklerini sakla (gün)",
     "fieldHelp": "1–365 gün. Kurulumun varsayılanını kullanmak için boş bırakın (yöneticiniz değiştirmediyse 90 gün).",
     "invalid": "1 ile 365 arasında tam sayı bir gün değeri girin veya boş bırakın.",
@@ -1813,8 +1817,13 @@
       "saving": "Kaydediliyor…"
     },
     "messages": {
-      "saved": "{{name}} için saklama süresi güncellendi",
-      "saveFailed": "{{name}} için saklama süresi güncellenemedi"
+      "saved": "{{name}} için depolanan veri ayarları güncellendi",
+      "saveFailed": "{{name}} için depolanan veri ayarları güncellenemedi"
+    },
+    "storeAllowedTraffic": {
+      "label": "İzin verilen trafiği depola",
+      "helpOff": "Yalnızca engellenen ve yönlendirilen sorgular depolanır. İzin verilen sorgular genellikle trafiğin neredeyse tamamıdır ve DNS sağlayıcınız bunları kendi raporlarında tutar.",
+      "helpOn": "İzin verilen sorgular da depolanır; bu genellikle yaklaşık 100 kat daha fazla satır demektir. Daha sonra kapatmak, zaten depolanmış izin verilen sorguları silmez; saklama süresi bunları kaldırır."
     }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
@@ -2042,19 +2051,17 @@
       "statusFilterLabel": "Durum"
     },
     "status": {
-      "pendingApproval": "Onay Bekleniyor",
-      "pending_approval": "onay bekleniyor",
-      "queued": "sıraya alındı",
-      "inProgress": "Devam Ediyor",
-      "in_progress": "devam ediyor",
-      "completed": "tamamlandı",
-      "failed": "başarısız oldu",
-      "cancelled": "iptal edildi"
+      "pending_approval": "Onay bekleniyor",
+      "queued": "Sırada",
+      "in_progress": "Devam ediyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
     },
     "approval": {
-      "pending": "beklemede",
-      "approved": "onaylandı",
-      "rejected": "reddedildi"
+      "pending": "Beklemede",
+      "approved": "Onaylandı",
+      "rejected": "Reddedildi"
     },
     "actions": {
       "apply": "başvur",
@@ -2422,7 +2429,18 @@
     "sweepNowUnpublished": "Bu kural kümesini toplu taramada kullanmadan önce yayımlayın.",
     "sweepNowDisabled": "Bu kural kümesini toplu taramada kullanmadan önce etkinleştirin.",
     "progress": {
-      "label": "{{total}} cihazdan {{done}} tanesi tamamlandı"
+      "finished_one": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "finished_other": "{{count}} cihazdan {{finished}} tanesi bitti",
+      "completed_one": "{{count}} tamamlandı",
+      "completed_other": "{{count}} tamamlandı",
+      "timedOut_one": "{{count}} zaman aşımına uğradı",
+      "timedOut_other": "{{count}} zaman aşımına uğradı",
+      "failed_one": "{{count}} başarısız",
+      "failed_other": "{{count}} başarısız",
+      "cancelled_one": "{{count}} iptal edildi",
+      "cancelled_other": "{{count}} iptal edildi",
+      "expired_one": "{{count}} süresi doldu",
+      "expired_other": "{{count}} süresi doldu"
     },
     "errors": {
       "orgOutOfScope": "Bir veya daha fazla kuruluş erişiminizin dışında.",
@@ -2454,7 +2472,7 @@
     "dialog": {
       "title": "Cihazlarda IOC eşleşmesi tara",
       "ruleSets": "Kural kümeleri: {{names}}",
-      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri ve tarama türü korunur.",
+      "rescopeNote": "Toplu tarama cihazlarını hatırlamaz. Kapsamı yeniden seçin; kural kümeleri, tarama türü ve özel yollar korunur.",
       "back": "Geri",
       "next": "İleri",
       "previewAction": "Önizle",
@@ -2525,6 +2543,7 @@
       "resweep": "Güncel kurallarla yeniden tara",
       "rulesChanged": "Bu toplu tarama başladığından beri kurallar değişti",
       "queued": "Sırada: {{queued}}",
+      "running": "Çalışıyor: {{running}}",
       "columns": {
         "ruleSets": "Kural kümeleri",
         "origin": "Başlatıldığı yer",
@@ -2581,6 +2600,7 @@
       "builtin": "Yerleşik",
       "allOrgs": "Tüm kuruluşlar",
       "errors": "Hatalı",
+      "checkerUnavailable": "Derleyici kullanılamıyor",
       "unpublished": "Yayımlanmadı",
       "disabled": "Devre dışı"
     },
@@ -2637,7 +2657,7 @@
       "autoQuarantineOnly": "Otomatik karantina artık cihazlarda kapalı. Diğer değişiklikleriniz henüz etkin değil.",
       "published": "Kaydedildi ve {{version}} sürümü olarak yayımlandı",
       "savedDisabled": "Kaydedildi. Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "checkerUnavailable": "Kaydedildi, yayımlanmadı: kural denetleyicisi kullanılamıyor. {{devices}}",
+      "checkerUnavailable": "Kaydedildi, yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kurallar denetlenemedi. {{devices}}",
       "compileErrors_one": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "compileErrors_other": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
       "setErrors": "Kaydedildi, yayımlanmadı: {{message}}. {{devices}}",
@@ -2646,7 +2666,8 @@
       "devicesKeep": "Cihazlar {{version}} sürümünü kullanmaya devam ediyor.",
       "neverPublished": "Bu küme henüz yayımlanmadı, bu nedenle cihazlar onu kullanmıyor.",
       "setDisabled": "Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
-      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}"
+      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}",
+      "staleCheckerUnavailable": "Yayımlanmadı: YARA derleyicisi bu sunucuda kullanılamıyor, bu yüzden kural değişiklikleri denetlenemez veya yayımlanamaz. {{devices}}"
     },
     "editor": {
       "tabs": {
@@ -2741,5 +2762,35 @@
   },
   "sensitiveDataAccess": {
     "noOrgAccess": "Bu kuruluşa erişiminiz yok"
+  },
+  "sensitiveDataLabels": {
+    "risk": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük"
+    },
+    "findingStatus": {
+      "open": "Açık",
+      "remediated": "Giderildi",
+      "accepted": "Kabul edildi",
+      "falsePositive": "Yanlış pozitif"
+    },
+    "scanStatus": {
+      "queued": "Kuyrukta",
+      "running": "Çalışıyor",
+      "completed": "Tamamlandı",
+      "failed": "Başarısız",
+      "cancelled": "İptal edildi"
+    },
+    "dataType": {
+      "credential": "Kimlik bilgileri",
+      "financial": "Finansal"
+    },
+    "a11y": {
+      "editPolicy": "{{name}} ilkesini düzenle",
+      "deletePolicy": "{{name}} ilkesini sil",
+      "togglePolicyActive": "Etkin: {{name}}"
+    }
   }
 }

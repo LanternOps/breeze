@@ -354,7 +354,7 @@
     "currentSite": "Site atual",
     "newSite": "Novo site",
     "loadingSites": "Carregando sites...",
-    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites em Configurações → Organizações para permitir movimentações.",
+    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites na aba Sites da organização (Organizações → abra a organização → Sites) para permitir movimentações.",
     "current": "(atual)",
     "cancel": "Cancelar",
     "moving": "Movendo...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "Mover {{count}} dispositivos",
     "bulkPolicyNote": "Mover altera as políticas de configuração, as janelas de manutenção, o roteamento de alertas e os relatórios do site que se aplicam a esses dispositivos. O Breeze não os moverá de volta automaticamente.",
     "failedToMoveDevices": "Falha ao mover os dispositivos"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Falha ao criar o grupo",
-    "newDeviceGroup": "Novo grupo de dispositivos",
-    "name": "Nome",
-    "eGProductionServers": "ex.: Servidores de produção",
-    "type": "Tipo",
-    "static": "Estático",
-    "dynamic": "Dinâmico",
-    "manuallyAddAndRemoveDevicesAfter": "Adicione e remova dispositivos manualmente após a criação.",
-    "devicesAreAutoAssignedBasedOn": "Os dispositivos são atribuídos automaticamente com base nas regras de filtro.",
-    "filterRules": "Regras de filtro",
-    "cancel": "Cancelar",
-    "creating": "Criando...",
-    "createGroup": "Criar grupo",
-    "created": "Grupo de dispositivos criado",
-    "missingGroupId": "O grupo foi criado, mas a resposta do servidor não incluiu o ID do grupo. Atualize a página."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} removidos ocultos",
@@ -2408,7 +2391,9 @@
       "completed": "Concluída",
       "failed": "Falhou",
       "queued": "Na fila",
-      "running": "Em execução"
+      "running": "Em execução",
+      "cancelled": "Cancelada",
+      "expired": "Expirada"
     },
     "scanType": "Verificação {{type}}",
     "scanTypes": {
@@ -2430,7 +2415,13 @@
       "quarantined": "Em quarentena",
       "removed": "Removida"
     },
-    "threatsFound": "Ameaças encontradas: {{count}}"
+    "threatsFound": "Ameaças encontradas: {{count}}",
+    "waitingForSlot": "Aguardando um espaço de verificação livre. Expira em {{date}}.",
+    "cancelScan": "Cancelar verificação",
+    "scanCancelled": "Verificação cancelada",
+    "cancelScanFailed": "Não foi possível cancelar a verificação",
+    "scanAlreadyRunning": "A verificação já está em execução no dispositivo e não pode ser cancelada.",
+    "scanAlreadyQueued": "Já existe uma verificação na fila para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Adicionar uma tag...",
@@ -2980,8 +2971,10 @@
     "title": "Atalhos de filtro"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Escolha um valor para ver os dispositivos correspondentes",
     "counting": "…contando",
-    "matches": "~{{count}} dispositivos correspondem",
+    "matches_one": "~{{count}} dispositivo corresponde",
+    "matches_other": "~{{count}} dispositivos correspondem",
     "unavailable": "prévia indisponível"
   },
   "filterSentenceBuilder": {
@@ -4336,6 +4329,7 @@
       "pending": "Ainda não verificada",
       "private": "Registro privado — credenciais necessárias",
       "unsupported_registry": "Registro não suportado",
+      "provenance_unknown": "Origem desconhecida — o nome da imagem não é enviado a nenhum registro",
       "error": "Falha na verificação do registro — será repetida",
       "behind": "Uma imagem mais recente foi publicada para esta tag",
       "current": "Corresponde ao registro",

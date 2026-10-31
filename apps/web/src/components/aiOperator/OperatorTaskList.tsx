@@ -1,7 +1,8 @@
 /**
  * Org-wide Operator task list for the /operator workspace (W06 R1b). The
  * server's `GET /ai/operator/tasks` already scopes to the caller's orgs and
- * sites; this lists every task it returns, newest first, with its keyset
+ * sites, and to the switcher's org via the `?orgId=` `fetchWithAuth` injects
+ * (#10112); this lists every task it returns, newest first, with its keyset
  * cursor. Same shape as `OperatorTaskActivityFeed` without the device filter.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';

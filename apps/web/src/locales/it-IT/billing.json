@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",
+        "quantityInvalid": "Inserisci una quantità (fino a 2 decimali).",
+        "quantityTooLarge": "La quantità è troppo grande (al massimo 10 cifre prima del separatore decimale).",
         "siteOptional": "Sito (facoltativo: limita il conteggio dei dispositivi)",
         "allSites": "Tutti i siti",
         "linkCatalogItemOptional": "Collega elemento di catalogo (facoltativo)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Allega un file PDF, PNG o JPEG.",
       "variables": "Dati dell'accordo",
       "unresolved": "Indica un valore per: {{names}}",
+      "needsSignedCopy": "Breeze non può compilare {{names}} senza un preventivo. Allega la copia firmata per registrare questo accordo.",
       "consequence": "Questo archivia un accordo firmato per {{org}}. In seguito non potrà essere eliminato.",
       "submit": "Registra accordo firmato",
       "success": "Accordo firmato registrato.",
@@ -1257,6 +1260,7 @@
         "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",
+        "autoValueBlank": "Vuoto",
         "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
         "manualVariablesTitle": "Compila per questa proposta",
         "labelFieldLabel": "Etichetta sezione",
@@ -1468,6 +1472,9 @@
       "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo.",
       "acceptOnBehalf": {
         "button": "Accetta per conto del cliente",
+        "emptyDraftTitle": "Aggiungi almeno un elemento prima dell'accettazione.",
+        "emptySentTitle": "Questo preventivo non contiene elementi. Usa Rivedi preventivo per emettere una versione con elementi.",
+        "errorQuoteEmpty": "Questo preventivo non contiene elementi. Chiudi questa finestra e aggiungi un elemento, oppure usa Rivedi preventivo se è già stato inviato.",
         "title": "Registra l'accettazione del cliente",
         "methodLabel": "Come ha dato il suo assenso?",
         "method": {
@@ -2103,6 +2110,7 @@
       "title": "Inviare questa fattura?",
       "message": "La fattura da {{amount}} verrà inviata via e-mail a {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte del tempo in questa bozza è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore. Rimuovi quelle righe, poi emetti la fattura.",
     "unsavedHint": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata.",
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },

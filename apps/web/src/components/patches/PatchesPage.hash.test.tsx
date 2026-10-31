@@ -23,6 +23,7 @@ vi.mock('../../lib/authScope', () => {
 
 import PatchesPage from './PatchesPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { orgSwitchKeptHash } from '../../lib/orgSwitch';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const json = (payload: unknown, ok = true, status = ok ? 200 : 500) =>
@@ -94,6 +95,29 @@ describe('PatchesPage hash grammar (#9791 C)', () => {
     render(<PatchesPage />);
     await waitFor(() => expect(activeTabText().trim()).toMatch(label));
     expect(screen.queryByRole('combobox', { name: 'Compliance status filter' })).toBeNull();
+  });
+
+  // #10083: a header org switch re-renders the page in place. The page keeps
+  // its tab and status filter (org-agnostic) and drops a selected patch id.
+  it('offers its tab and status filter to an org switch, and withdraws on unmount (#10083)', async () => {
+    window.history.replaceState({}, '', '/patches#compliance&status=critical');
+    const { unmount } = render(<PatchesPage />);
+    await screen.findByRole('combobox', { name: 'Compliance status filter' });
+    expect(orgSwitchKeptHash()).toBe('compliance&status=critical');
+
+    // Asked at switch time: follows the URL the user has moved to since mount.
+    window.history.replaceState({}, '', '/patches#rings');
+    expect(orgSwitchKeptHash()).toBe('rings');
+
+    unmount();
+    expect(orgSwitchKeptHash()).toBeNull();
+  });
+
+  it('offers the patches tab, not the patch a details drawer selected (#10083)', async () => {
+    window.history.replaceState({}, '', '/patches#patches/abc-123');
+    render(<PatchesPage />);
+    await waitFor(() => expect(activeTabText().trim()).toMatch(/^patches$/i));
+    expect(orgSwitchKeptHash()).toBe('patches');
   });
 
   it('legacy #patches/<id> still selects the patches tab (RF4)', async () => {
