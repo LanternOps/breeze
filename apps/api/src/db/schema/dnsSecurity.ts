@@ -177,7 +177,7 @@ export const dnsSecurityEvents = pgTable('dns_security_events', {
 }, (table) => ({
   orgTimestampIdx: index('dns_security_events_org_ts_idx').on(table.orgId, table.timestamp),
   // Blocked-only Events tab list, keyset-paged on (timestamp, id) (#10054,
-  // migration 2027-01-17-150000-dns-security-events-blocked-index.sql).
+  // migration 2027-01-18-160000-dns-security-events-blocked-index.sql.sql).
   orgBlockedTimestampIdx: index('dns_security_events_org_blocked_ts_idx')
     .on(table.orgId, table.timestamp, table.id)
     .where(sql`${table.action} = 'blocked'`),
