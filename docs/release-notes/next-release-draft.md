@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### PAM deny closes the UAC prompt after a dialog timeout (#10370)
+
+- **Agent fix.** When the user did not answer the "Breeze — Elevation Request" dialog in time, the agent's deny could close its own dialog instead of the Windows UAC prompt, so the prompt stayed on screen (`deny enforcement FAILED … consent_did_not_close`). The agent now closes its dialog first (new helper verb `pam_close_dialog`, advertised as `supportsPamDialogClose`). When it knows the request's own `consent.exe`, it closes that prompt by its window, which does not depend on keyboard focus. This needs the agent and helper from this release; an older helper keeps the old behaviour. New agent log lines: `pam: closed the elevation dialog before denying` and `pam: helper cannot close its elevation dialog on request`. No server change, no migration.

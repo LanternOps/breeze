@@ -667,6 +667,10 @@ type Heartbeat struct {
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
 	pamDismissConsentInstance func(session *sessionbroker.Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamCloseDialog takes down the helper's own PAM dialog for dialogID
+	// before a deny dismisses consent.exe (#10370); nil means
+	// sessionBroker.ClosePamDialog.
+	pamCloseDialog func(session *sessionbroker.Session, id, dialogID string, timeout time.Duration) (ipc.PamCloseDialogResult, error)
 	// pamPendingConsents remembers the consent.exe each request parked for
 	// technician approval was raised from, so a verified pam_apply_v2 launch
 	// can dismiss that prompt and no other (pam_approved_consent.go).
