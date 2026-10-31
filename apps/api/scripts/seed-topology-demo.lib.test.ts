@@ -170,6 +170,9 @@ describe('seed-topology-demo synthetic VPN addresses (#9858)', () => {
 
   it('uses only RFC 5737 / RFC 3849 documentation addresses', () => {
     for (const ip of v4) expect(/^(192\.0\.2|198\.51\.100|203\.0\.113)\./.test(ip), `${ip} is not a documentation address`).toBe(true);
-    expect(/'2001:db8:[0-9a-f:]+'/i.test(block)).toBe(true);
+    // Every quoted IPv6 literal (anything with 2+ colons) must be in 2001:db8::/32.
+    const v6 = [...block.matchAll(/'([0-9a-f]*:[0-9a-f:]*:[0-9a-f:]*)'/gi)].map(m => m[1]);
+    expect(v6.length).toBeGreaterThan(0);
+    for (const ip of v6) expect(/^2001:db8:/i.test(ip), `${ip} is not in 2001:db8::/32`).toBe(true);
   });
 });
