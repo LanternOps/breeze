@@ -152,6 +152,10 @@ function makeAlert(overrides: Record<string, unknown> = {}) {
     id: 'alert-1',
     ruleId: null,
     deviceId: 'device-1',
+    ownerKind: 'device',
+    ownerRef: null,
+    topologySiteId: null,
+    topologySourceKey: null,
     orgId: 'org-1',
     configPolicyId: null,
     configItemName: null,
@@ -360,6 +364,36 @@ describe('processSendNotification send-identity state machine', () => {
     expect(result).toEqual({ success: true, channelType: 'webhook', durationMs: expect.any(Number) });
     expect(sendWebhookNotificationMock).not.toHaveBeenCalled();
     expect(updateWhereMock.mock.calls[0]![0]).toEqual(buildAlertNotificationClaimCas('notif-1'));
+  });
+
+  it('throttles device-less alerts per owner', async () => {
+    const counts = new Map<string, number>();
+    checkNotificationThrottleMock.mockImplementation(async (channelId: string, key: string, cap: number) => {
+      const bucket = `${channelId}:${key}`;
+      const count = counts.get(bucket) ?? 0;
+      if (count < cap) counts.set(bucket, count + 1);
+      return { allowed: count < cap, currentCount: count, windowExpiresAt: Date.now() + 3600000 };
+    });
+    const channel = makeChannel({ throttleMaxPerWindow: 1 });
+    sendWebhookNotificationMock.mockResolvedValue({ success: true });
+    const results = [];
+    for (const [index, ref] of ['A', 'B', 'A'].entries()) {
+      selectResults.length = 0;
+      const alert = makeAlert({ id: `workload-alert-${index}`, deviceId: null, ownerKind: 'backup_workload', ownerRef: ref });
+      queuePrepareSelects(alert, { partnerId: null }, channel);
+      queueDeviceOrgSelects();
+      const record = makeNotificationRow({ id: `notif-${index}`, alertId: alert.id });
+      insertReturningMock.mockResolvedValueOnce([record]);
+      updateReturningMock.mockResolvedValue([record]);
+      results.push(await processSendNotification({ ...baseData, alertId: alert.id }));
+    }
+    expect(results.map((result) => result.success)).toEqual([true, true, false]);
+    expect(results[2]?.error).toContain('Throttled');
+    expect(sendWebhookNotificationMock).toHaveBeenCalledTimes(2);
+    expect(checkNotificationThrottleMock.mock.calls.map((args) => args.slice(1)))
+      .toEqual([
+        ['backup_workload:A', 1, 3600], ['backup_workload:B', 1, 3600], ['backup_workload:A', 1, 3600],
+      ]);
   });
 
   it('throttle CAS: losing the race (another attempt already delivered) skips silently, no misleading audit log', async () => {

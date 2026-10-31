@@ -24,11 +24,18 @@ const {
       }),
     })),
     insert: vi.fn((table: unknown) => ({
-      values: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve(insertReturnResults.shift() ?? [])),
-      })),
+      values: vi.fn(() => {
+        const statement = {
+          returning: vi.fn(() => Promise.resolve(insertReturnResults.shift() ?? [])),
+          onConflictDoNothing: vi.fn(() => statement),
+        };
+        return statement;
+      }),
       _table: table,
     })),
+    update: vi.fn(() => ({ set: () => ({ where: () => ({
+      returning: () => Promise.resolve(selectResults.shift() ?? []),
+    }) }) })),
     execute: vi.fn(() => Promise.resolve(insertReturnResults.shift() ?? [])),
     delete: vi.fn(() => ({
       where: vi.fn(() => Promise.resolve(undefined)),
@@ -110,7 +117,8 @@ vi.mock('../jobs/alertCorrelation', () => ({ enqueueAlertCorrelation: enqueueAle
 
 import { publishEvent } from './eventBus';
 import { setCooldown } from './alertCooldown';
-import { createAlert, createSourcedAlert } from './alertService';
+import { resolveDeviceSiteId } from './deviceSiteResolver';
+import { createAlert, createSourcedAlert, checkAutoResolve, resolveAlert } from './alertService';
 
 describe('createAlert correlation enqueue boundary', () => {
   beforeEach(() => {
@@ -136,6 +144,9 @@ describe('createAlert correlation enqueue boundary', () => {
     });
 
     expect(alertId).toBe('alert-1');
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
+      owner: null, ownerKey: 'device:device-1',
+    }), 'alert-service', { siteId: 'site-1' });
     expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
     expect(dbMock.execute).toHaveBeenCalledTimes(1);
     expect(insertCalls).not.toHaveBeenCalledWith(alertCorrelationsTable);
@@ -374,5 +385,79 @@ describe('alert.triggered monitor identity and kind', () => {
       expect.objectContaining({ monitorId: null, kind: null, source: 'network_monitor' }),
       'monitor-worker', { siteId: 'site-1' });
     expect(dbMock.select).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('createSourcedAlert workload ownership', () => {
+  const input = {
+    deviceId: null, owner: { kind: 'backup_workload' as const, ref: 'workload-1' },
+    orgId: 'org-1', severity: 'high' as const, title: 'Backup failed', message: 'Backup failed',
+    context: { source: 'backup_provider' }, publisher: 'backup-sync',
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._selectResults.length = 0;
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([{ id: 'alert-workload' }]);
+  });
+  it('inserts the workload owner with a null device', async () => {
+    expect(await createSourcedAlert(input)).toBe('alert-workload');
+    expect(insertCalls.mock.results[0]?.value.values).toHaveBeenCalledWith(expect.objectContaining({
+      ownerKind: 'backup_workload', ownerRef: 'workload-1', deviceId: null,
+    }));
+  });
+  it('publishes authoritative owner identity with null device and site', async () => {
+    await createSourcedAlert({ ...input, siteId: 'wrong-site',
+      eventPayload: { deviceId: 'wrong-device', owner: null, ownerKey: 'wrong-key' } });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
+      deviceId: null, owner: input.owner, ownerKey: 'backup_workload:workload-1',
+    }), 'backup-sync', { siteId: null });
+  });
+  it('never resolves a device site or enqueues correlation for a workload', async () => {
+    await createSourcedAlert(input);
+    expect(resolveDeviceSiteId).not.toHaveBeenCalled();
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+  });
+  it('returns null without publishing or reporting a duplicate owner', async () => {
+    dbMock._insertReturnResults.length = 0;
+    dbMock._insertReturnResults.push([]);
+    expect(await createSourcedAlert(input)).toBeNull();
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+  });
+  it('keeps device owner identity and device correlation', async () => {
+    await createSourcedAlert({ ...input, deviceId: 'device-1', owner: undefined });
+    expect(publishEvent).toHaveBeenCalledWith('alert.triggered', 'org-1', expect.objectContaining({
+      owner: null, ownerKey: 'device:device-1', deviceId: 'device-1',
+    }), 'backup-sync', { siteId: 'site-1' });
+    expect(enqueueAlertCorrelationMock).toHaveBeenCalledWith({ orgId: 'org-1', deviceId: 'device-1' });
+  });
+  it('rolls back a workload alert when publish fails', async () => {
+    vi.mocked(publishEvent).mockRejectedValueOnce(new Error('redis down'));
+    expect(await createSourcedAlert(input)).toBeNull();
+    expect(deleteCalls).toHaveBeenCalledWith(alertsTable);
+    expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, {
+      errorId: 'alert-triggered-publish-failed', alertId: 'alert-workload',
+      alertSource: 'backup_provider', orgId: 'org-1',
+    });
+    expect(enqueueAlertCorrelationMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('rule-only alert device guards', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMock._selectResults.length = 0;
+    dbMock._selectResults.push([{ id: 'invalid-rule-alert', ruleId: 'rule-1', deviceId: null, status: 'active', triggeredAt: new Date(), resolvedAt: new Date() }]);
+  });
+  it('rejects a rule alert without a device before auto-resolution evaluation', async () => {
+    await expect(checkAutoResolve('invalid-rule-alert')).rejects.toThrow('alert_has_no_device');
+  });
+  it('rejects a rule alert without a device before resolution cooldowns', async () => {
+    await expect(resolveAlert('invalid-rule-alert')).rejects.toThrow('alert_has_no_device');
+    expect(setCooldown).not.toHaveBeenCalled();
   });
 });

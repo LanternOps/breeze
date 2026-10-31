@@ -747,4 +747,12 @@ test('integration gate: on a PR it is never wider than api (integration=true ⇒
 
 for (const file of ['apps/api/src/routes/devices/networkIsolation.ts', 'apps/api/src/routes/agents/isolationVerify.ts']) {
   test(`network isolation route schedules integration: ${file}`, () => { assert.equal(classify([file]).integration, 'true'); });
+// W15 PR A (#6785): new service paths stay in the API and integration gates.
+for (const file of ['pax8OrderPreview', 'aiToolSchemasPax8', 'aiToolsPax8', 'aiToolsPax8Orders']) {
+  test(`W15 ${file} runs API and integration checks`, () => {
+    const out = classify([`apps/api/src/services/${file}.ts`]);
+    assert.deepEqual(areasOf(out), expectAreas(['api']));
+    assert.equal(out.integration, 'true');
+    assert.equal(out.app, 'true');
+  });
 }

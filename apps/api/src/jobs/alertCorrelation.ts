@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../services/alertOwner';
 import { Job, Queue, Worker } from 'bullmq';
 import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
@@ -349,9 +350,13 @@ export function findAlertPairLogEvidence(options: {
 
 export async function enqueueAlertCorrelation(options: {
   orgId: string;
-  deviceId: string;
+  deviceId: string | null;
   windowMinutes?: number;
 }): Promise<string | null> {
+  if (!isDeviceOwned(options)) {
+    console.info('[alertCorrelation] skipping enqueue', { orgId: options.orgId, reason: 'alert_has_no_device' });
+    return null;
+  }
   if (!(await withSystemDbAccessContext(() => shouldProduceMlOutput(options.orgId, 'ml.alert_correlation.enabled'), 'alertCorrelation.enqueueGate'))) {
     return null;
   }
@@ -418,7 +423,7 @@ export async function runAlertCorrelationForDevice(options: {
     return { scanned: 0, created: 0, createdGroups: [] };
   }
 
-  const recentAlerts = await db
+  const candidateAlerts = await db
     .select({
       id: alerts.id,
       deviceId: alerts.deviceId,
@@ -446,6 +451,12 @@ export async function runAlertCorrelationForDevice(options: {
     )
     .orderBy(desc(alerts.triggeredAt))
     .limit(MAX_ALERTS_PER_SITE_PASS);
+
+  const recentAlerts = candidateAlerts.filter((alert): alert is typeof alert & { deviceId: string } => {
+    if (isDeviceOwned(alert)) return true;
+    console.info('[alertCorrelation] skipping candidate', { alertId: alert.id, reason: 'alert_has_no_device' });
+    return false;
+  });
 
   if (recentAlerts.length < 2) {
     return { scanned: recentAlerts.length, created: 0, createdGroups: [] };

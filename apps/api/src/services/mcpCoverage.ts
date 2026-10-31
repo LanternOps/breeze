@@ -633,8 +633,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'patches/compliance.ts': { tools: ['manage_patches'] },
   'patches/list.ts': { tools: ['manage_patches'] },
   'patches/operations.ts': { tools: ['manage_patches'] },
-  'pax8.ts': { gap: '#6785' },
-  'pax8Orders.ts': { gap: '#6785' },
+  // Credential save/test and company mapping remain human-only: no AI action is registered.
+  'pax8.ts': { tools: ['get_pax8_status', 'manage_pax8_subscriptions'] },
+  'pax8Orders.ts': { tools: ['manage_pax8_orders', 'search_pax8_products', 'manage_pax8_subscriptions'] },
   'peripheralControl.ts': { tools: ['manage_peripheral_policies', 'get_peripheral_activity', 'manage_peripheral_policy'] },
   'permissionsCatalog.ts': { exempt: 'identity' },
   'playbooks.ts': { tools: ['list_playbooks', 'execute_playbook', 'get_playbook_history'] },
