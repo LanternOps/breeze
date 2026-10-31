@@ -1408,8 +1408,15 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
-      const scriptId = typeof input.scriptId === 'string' && input.scriptId ? input.scriptId : undefined;
-      const deviceId = typeof input.deviceId === 'string' && input.deviceId ? input.deviceId : undefined;
+      // A supplied-but-malformed id is refused, never dropped: dropping a bad
+      // scriptId next to a deviceId would silently widen to every script.
+      for (const key of ['scriptId', 'deviceId'] as const) {
+        if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key] === '')) {
+          return JSON.stringify({ error: `${key} must be a non-empty UUID string`, code: 'VALIDATION_ERROR' });
+        }
+      }
+      const scriptId = input.scriptId as string | undefined;
+      const deviceId = input.deviceId as string | undefined;
       if (!scriptId && !deviceId) {
         return JSON.stringify({ error: 'Provide scriptId or deviceId', code: 'VALIDATION_ERROR' });
       }
@@ -1481,9 +1488,11 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         .leftJoin(scripts, eq(scripts.id, scriptExecutions.scriptId))
         .where(and(...executionConditions))
         .orderBy(desc(scriptExecutions.createdAt))
-        .limit(limit);
+        // One extra row tells the model more runs exist (narrow with since).
+        .limit(limit + 1);
 
-      const executions = results.map((execution) => ({
+      const hasMore = results.length > limit;
+      const executions = results.slice(0, limit).map((execution) => ({
         ...execution,
         ...(execution.stdout && execution.stdout.length > 16_384
           ? { stdout: execution.stdout.slice(0, 16_384), stdoutTruncated: true }
@@ -1492,7 +1501,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           ? { stderr: execution.stderr.slice(0, 8_192), stderrTruncated: true }
           : {}),
       }));
-      return JSON.stringify({ executions, count: executions.length });
+      return JSON.stringify({ executions, count: executions.length, hasMore });
     },
   });
 

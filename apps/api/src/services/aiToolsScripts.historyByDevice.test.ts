@@ -108,10 +108,40 @@ describe('get_script_execution_history by device (#10417)', () => {
     expect(db.select).toHaveBeenCalledTimes(1);
     expect(query.params).toEqual(expect.arrayContaining([DEVICE_ID, ORG_ID, SITE_ID]));
     expect(query.params).not.toContain(SCRIPT_ID);
+    // Bound to the right columns, not just present somewhere in the WHERE.
+    expect(query.sql).toContain('"script_executions"."device_id" = $');
+    expect(query.sql).toContain('"script_executions"."org_id" = $');
+    expect(query.sql).toContain('"devices"."site_id" in (');
+    expect(query.sql).not.toContain('"script_executions"."script_id" = $');
     expect(result.count).toBe(1);
     expect(result.executions[0]).toMatchObject({
       id: 'execution-a', scriptName: 'Install 7-Zip', status: 'failed', exitCode: 1603, deviceId: DEVICE_ID,
     });
+  });
+
+  it('keeps the exact-device allowlist on the device path, and fails closed when it is empty', async () => {
+    let q = mockExecutionsQuery([]);
+    await tool().handler({ deviceId: DEVICE_ID }, { ...auth(), allowedDeviceIds: ['device-other'] } as AuthContext);
+    let query = new PgDialect().sqlToQuery(q.where() as any);
+    expect(query.sql).toContain('"script_executions"."device_id" in (');
+    expect(query.params).toContain('device-other');
+
+    q = mockExecutionsQuery([]);
+    await tool().handler({ deviceId: DEVICE_ID }, { ...auth(), allowedDeviceIds: [] } as AuthContext);
+    query = new PgDialect().sqlToQuery(q.where() as any);
+    expect(query.sql).toContain('false');
+  });
+
+  it('reports hasMore when more runs exist than the limit', async () => {
+    mockExecutionsQuery([{ id: 'e1' }, { id: 'e2' }, { id: 'e3' }]);
+    const result = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, limit: 2 }, auth()));
+    expect(result.count).toBe(2);
+    expect(result.executions.map((e: { id: string }) => e.id)).toEqual(['e1', 'e2']);
+    expect(result.hasMore).toBe(true);
+
+    mockExecutionsQuery([{ id: 'e1' }]);
+    const short = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, limit: 2 }, auth()));
+    expect(short.hasMore).toBe(false);
   });
 
   it('applies since as a created_at lower bound', async () => {
@@ -127,6 +157,11 @@ describe('get_script_execution_history by device (#10417)', () => {
     expect(missing.error).toMatch(/scriptId or deviceId/);
     const badSince = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, since: 'last tuesday' }, auth()));
     expect(badSince.error).toMatch(/since/);
+    // A malformed scriptId next to a deviceId is refused, not dropped (which would widen the read).
+    const badScript = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, scriptId: '' }, auth()));
+    expect(badScript.code).toBe('VALIDATION_ERROR');
+    const nonString = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, scriptId: 42 }, auth()));
+    expect(nonString.code).toBe('VALIDATION_ERROR');
     expect(db.select).not.toHaveBeenCalled();
   });
 
