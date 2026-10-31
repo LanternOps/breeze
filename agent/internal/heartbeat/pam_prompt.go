@@ -407,7 +407,7 @@ func (h *Heartbeat) awaitElevationAnswer(ctx context.Context, flow *elevationFlo
 	}
 }
 
-// elevationSendRequested runs after Send request was recorded: it dismisses
+// elevationSendRequested runs after the host applied Send request: it dismisses
 // the request's own UAC prompt (#10177), then places the waiting card on
 // Assist with a new lease. An unproven dismissal says so on the card and
 // never engages the fail-closed gate.

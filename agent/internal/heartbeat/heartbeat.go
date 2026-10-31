@@ -693,8 +693,9 @@ type Heartbeat struct {
 	// elevationCancelDismissWG tracks UAC dismissals retried after Cancel
 	// request (tests wait on it).
 	elevationCancelDismissWG sync.WaitGroup
-	// elevationAfterSettle (tests) runs after each elevation answer is
-	// handed to RunPamFlow, on the goroutine that handed it over.
+	// elevationAfterSettle (tests) runs after every elevationFlow.settle
+	// (including one whose answer lost to an earlier one), on the settling
+	// goroutine.
 	elevationAfterSettle func()
 	// pamSupportNameCached is the MSP support name last returned by a
 	// successful elevation submit (pam_support_name.go), loaded from its

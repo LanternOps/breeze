@@ -52,15 +52,18 @@ func TestActionAfterRunsOnceThePatchIsAppliedAndSent(t *testing.T) {
 	}
 }
 
-func TestActionAfterRunsWhenThePromptClosedMeanwhileButNotOnRefusal(t *testing.T) {
+func TestActionAfterRunsForEveryAcceptedActionButNotADomainRefusal(t *testing.T) {
+	bogus := ipc.PromptPresentation("bogus")
 	for _, tc := range []struct {
 		name      string
 		accepted  bool
 		closeIt   bool
+		patch     *Patch
 		wantAfter int
 	}{
-		{"closed during the action", true, true, 1},
-		{"refused by the domain", false, false, 0},
+		{"closed during the action", true, true, nil, 1},
+		{"its patch refused by the host", true, false, &Patch{Presentation: &bogus}, 1},
+		{"refused by the domain", false, false, nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hh := newHarness(t, assistRenderer("assist-1", "restart.prompt@1"))
@@ -70,7 +73,7 @@ func TestActionAfterRunsWhenThePromptClosedMeanwhileButNotOnRefusal(t *testing.T
 				if tc.closeIt {
 					_ = hh.h.Close("restart:42", ipc.PromptCloseWithdrawn)
 				}
-				return ActionOutcome{Accepted: tc.accepted, After: func() { afterRuns++ }}, nil
+				return ActionOutcome{Accepted: tc.accepted, Patch: tc.patch, After: func() { afterRuns++ }}, nil
 			}
 			_ = hh.h.Show(p)
 			show := showsTo(hh.dir.take(), "assist-1")[0]

@@ -225,6 +225,7 @@ func TestFirstAnswerNotRecordedWhenItsPatchCannotRender(t *testing.T) {
 	showElevation(t, h, e)
 	first := showsIn(dir.take("system-1"))[0]
 	orig := elevationRender
+	t.Cleanup(func() { elevationRender = orig })
 	elevationRender = func(promptcatalog.Locale, string, string, map[string]string) (string, error) {
 		return "", errElevationAction
 	}
