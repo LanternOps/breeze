@@ -171,8 +171,10 @@ function fireAndForget(label: string, work: () => Promise<unknown>): void {
   })();
 }
 
-/** A portal answer ends the emailed link too: revoke its jti post-commit so a
- *  reload 401s exactly as after a public answer. The durable status already
+/** A portal answer ends the emailed link too: arm its jti marker post-commit
+ *  so the link can no longer answer, exactly as after a public answer (it
+ *  still opens read-only as signed/declined — agreementsPublic.ts, #10199).
+ *  The durable status already
  *  refuses a second answer; a lost marker only costs a DB read, but it is
  *  security-relevant, so it is captured. */
 async function revokeLinkPostCommit(revoke: AgreementResponseRevoke | null): Promise<void> {

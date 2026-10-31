@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Agent helper IPC desync (#10541, #10423)
 
 - **The user helper no longer drops its agent connection when a read times out mid-message.** The helper (and `breeze-backup`) wake every few seconds to check for shutdown; if that fired while a message was half-read, the next read started inside the message and the helper logged `recv: ipc: message too large: 2065852772 > 16777216` and reconnected, which could end an active desktop session. Reads now resume the same message. Fixed in the agent; no server change, no wire-format change, no migration. If an impossible length is still seen for any other reason, the error now includes the raw header bytes (`(header 7b226964)`).
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

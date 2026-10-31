@@ -157,6 +157,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections/conn-1/import'],
     ['POST', '/api/v1/psa/connections/conn-1/import/'],
     ['post', '/api/v1/psa/connections/conn-1/import'],
+    // Alert-ticket pickers (#10499 W2-A) list boards/statuses/priorities live.
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options'],
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options/'],
 
     // Live agent session listing — awaits a 10s agent round-trip (#1105), so it
     // must not hold a pooled connection idle-in-transaction.
@@ -436,6 +439,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
+    // Alert ticketing (#10499 W2-A): config GET/PUT are DB-only; only the live
+    // picker listing calls the PSA.
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing', 'config read is DB-only'],
+    ['PUT', '/api/v1/psa/connections/conn-1/alert-ticketing', 'config write is DB-only'],
+    ['POST', '/api/v1/psa/connections/conn-1/alert-ticketing/options', 'options is GET-only'],
+    ['GET', '/api/v1/psa/connections//alert-ticketing/options', 'empty connection id must not match'],
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options/extra', 'extra segment must not match'],
 
     // The sibling session routes do only DB work and MUST keep the ambient tx.
     ['GET', '/api/v1/devices/dev-1/sessions/active', 'active listing is DB-only'],
@@ -766,6 +776,15 @@ it('#6263 W04 self-manages only the YARA rule test upload (the scan runs outside
   expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/yara/rule-sets/${SET}/rules`)).toBe(false);
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/yara/rule-sets/not-a-uuid/test')).toBe(false);
+});
+
+it('#10057 gap 2 self-manages Scan now and the scan cancel (commit before the claim job is enqueued), not the scan reads', () => {
+  const ID = '22222222-2222-4222-8222-222222222222';
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/scan/${ID}`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/security/scans/${ID}/cancel`)).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/scans/${ID}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/security/scan/${ID}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/scan/not-a-uuid')).toBe(false);
 });
 
 it('#8973 W4 self-manages only the portal ticket create (Gate B1), not the ticket reads or comment writes', () => {

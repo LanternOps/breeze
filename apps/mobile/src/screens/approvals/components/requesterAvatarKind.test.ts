@@ -7,6 +7,12 @@ describe('isBreezeAiRequester', () => {
     expect(isBreezeAiRequester('Breeze AI')).toBe(true);
   });
 
+  // #10193: a chat session under a Wisp grant labels its approvals 'Wisp'.
+  it('is true for a Wisp session\'s label', () => {
+    expect(isBreezeAiRequester('Wisp')).toBe(true);
+    expect(isBreezeAiRequester('wisp')).toBe(false);
+  });
+
   it('is false for other agent/app labels', () => {
     expect(isBreezeAiRequester('Breeze Agent')).toBe(false);
     expect(isBreezeAiRequester('Claude Desktop')).toBe(false);
