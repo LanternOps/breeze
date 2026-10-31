@@ -65,7 +65,8 @@ vi.mock('../services/groupMembership', async () => {
     // coverage, exercised against the already-mocked `../db` / `../db/schema`.
     validateManualMembershipDevices: actual.validateManualMembershipDevices,
     addManualGroupMemberships: actual.addManualGroupMemberships,
-    removeManualGroupMemberships: actual.removeManualGroupMemberships
+    // Spied so the route tests can assert WHICH ids reach the delete (site gate).
+    removeManualGroupMemberships: vi.fn(actual.removeManualGroupMemberships)
   };
 });
 
@@ -145,6 +146,7 @@ import { db } from '../db';
 import { authMiddleware } from '../middleware/auth';
 import { validateFilter } from '../services/filterEngine';
 import { writeRouteAudit } from '../services/auditEvents';
+import { removeManualGroupMemberships } from '../services/groupMembership';
 
 function makeGroup(overrides: Record<string, unknown> = {}) {
   return {
@@ -534,9 +536,11 @@ describe('groups routes', () => {
         { deviceId: DEVICE_ID_2, outcome: 'forbidden' }
       ]);
       expect(body.data.summary).toEqual({ removed: 1, notMember: 0, forbidden: 1, total: 2 });
+      // The refused device never reaches the delete (not just reported as refused).
+      expect(removeManualGroupMemberships).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [DEVICE_ID] }));
     });
 
-    it('refuses, per device, a device the site-restricted caller cannot reach', async () => {
+    function restrictCallerToSites(allowedSiteIds: string[]) {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
@@ -546,9 +550,13 @@ describe('groups routes', () => {
           accessibleOrgIds: [ORG_ID],
           canAccessOrg: (orgId: string) => orgId === ORG_ID
         });
-        c.set('permissions', { allowedSiteIds: [SITE_ID] });
+        c.set('permissions', { allowedSiteIds });
         return next();
       });
+    }
+
+    it('refuses, per device, a device the site-restricted caller cannot reach', async () => {
+      restrictCallerToSites([SITE_ID]);
       mockGroup({ siteId: SITE_ID });
       // DEVICE_ID_2 reads back absent (another org, or deleted): refused, never removed.
       mockDeviceSites([{ id: DEVICE_ID, siteId: SITE_ID }]);
@@ -562,6 +570,27 @@ describe('groups routes', () => {
         { deviceId: DEVICE_ID, outcome: 'removed' },
         { deviceId: DEVICE_ID_2, outcome: 'forbidden' }
       ]);
+      expect(removeManualGroupMemberships).toHaveBeenCalledWith(expect.objectContaining({ deviceIds: [DEVICE_ID] }));
+    });
+
+    it('403s, without writing, a site-restricted caller on a group bound to a site outside their list', async () => {
+      restrictCallerToSites([SITE_ID]);
+      mockGroup({ siteId: OTHER_SITE });
+
+      const res = await post([DEVICE_ID]);
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('403s a site-restricted caller on an org-wide group (fails closed, like the single DELETE)', async () => {
+      restrictCallerToSites([SITE_ID]);
+      mockGroup({ siteId: null });
+
+      const res = await post([DEVICE_ID]);
+
+      expect(res.status).toBe(403);
+      expect(db.delete).not.toHaveBeenCalled();
     });
 
     it('writes nothing when no requested device is removable', async () => {
@@ -596,6 +625,15 @@ describe('groups routes', () => {
       const tooMany = Array.from({ length: 501 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
       expect((await post(tooMany)).status).toBe(400);
       expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly the cap (500 ids)', async () => {
+      mockGroup();
+      mockDelete([]);
+      const atCap = Array.from({ length: 500 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+      const res = await post(atCap);
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.summary).toEqual({ removed: 0, notMember: 500, forbidden: 0, total: 500 });
     });
   });
 

@@ -196,6 +196,46 @@ describe('BulkGroupMembershipDialog — remove', () => {
     fireEvent.change(await screen.findByTestId('bulk-group-select'), { target: { value: 'g-static' } });
     fireEvent.click(screen.getByTestId('bulk-group-submit'));
     await waitFor(() => expect(showToast).toHaveBeenCalled());
-    expect(vi.mocked(showToast).mock.calls.at(-1)![0]).toEqual(expect.objectContaining({ type: 'error' }));
+    expect(vi.mocked(showToast).mock.calls.at(-1)![0]).toEqual({
+      type: 'error',
+      message: `Finance laptops: 0 removed, 0 were not in the group. Not removed (no access to the device's site): ${devices[0]!.hostname}`,
+    });
+  });
+});
+
+describe('BulkGroupMembershipDialog — failures the user must not miss', () => {
+  it('an unreadable 2xx keeps the dialog open with the error but still refreshes the list (the write may have landed)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockApi({ data: { unexpected: true } });
+    const onDone = vi.fn();
+    const onClose = vi.fn();
+    render(<BulkGroupMembershipDialog mode="remove" devices={[device()]} onClose={onClose} onDone={onDone} />);
+    fireEvent.change(await screen.findByTestId('bulk-group-select'), { target: { value: 'g-static' } });
+    fireEvent.click(screen.getByTestId('bulk-group-submit'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to update group membership');
+    expect(onDone).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // The unexpected body is logged, not dropped.
+    expect(errorSpy.mock.calls.some((args) => args.some((a) => JSON.stringify(a ?? '').includes('unexpected')))).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it('a 401 while loading groups hands off to the session-expiry handler', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(ok({ error: 'Unauthorized' }, 401));
+    const onUnauthorized = vi.fn();
+    render(
+      <BulkGroupMembershipDialog mode="add" devices={[device()]} onClose={vi.fn()} onDone={vi.fn()} onUnauthorized={onUnauthorized} />,
+    );
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('any other failure while loading groups shows the load error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(fetchWithAuth).mockResolvedValue(ok({ error: 'boom' }, 500));
+    render(<BulkGroupMembershipDialog mode="add" devices={[device()]} onClose={vi.fn()} onDone={vi.fn()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the groups of this organization');
+    expect(screen.getByTestId('bulk-group-submit')).toBeDisabled();
   });
 });

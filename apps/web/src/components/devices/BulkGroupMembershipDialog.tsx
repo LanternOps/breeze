@@ -79,7 +79,12 @@ export default function BulkGroupMembershipDialog({ mode, devices, onClose, onDo
     const params = new URLSearchParams({ ownerScope: "organization", orgId, type: "static" });
     fetchWithAuth(`/device-groups?${params.toString()}`)
       .then(async (res) => {
-        if (!res.ok) throw new Error(t("bulkGroupMembership.failedToLoadGroups"));
+        if (res.status === 401) {
+          // Session expired: the caller's handler redirects; no inline error.
+          if (!cancelled) onUnauthorized?.();
+          return;
+        }
+        if (!res.ok) throw new Error(`GET /device-groups answered ${res.status}`);
         const body = (await res.json()) as { data?: GroupRow[] };
         if (!cancelled) setGroups(eligibleGroups(Array.isArray(body.data) ? body.data : [], orgId, siteIds));
       })
@@ -95,6 +100,8 @@ export default function BulkGroupMembershipDialog({ mode, devices, onClose, onDo
     return () => {
       cancelled = true;
     };
+    // onUnauthorized is a stable module-level handler at the only call site; keeping it out of the
+    // deps avoids refetching on every parent render if a caller passes an inline function.
   }, [orgId, siteIds, t]);
 
   const groupName = groups.find((g) => g.id === groupId)?.name ?? "";
@@ -143,6 +150,11 @@ export default function BulkGroupMembershipDialog({ mode, devices, onClose, onDo
       if (!(err instanceof ActionError)) {
         console.error("[BulkGroupMembershipDialog] membership write failed:", err);
         showToast({ type: "error", message: errorFallback });
+      }
+      // No answer (status 0) or an unreadable 2xx: the server may have applied the change, so
+      // refresh the list behind the dialog rather than leave it stale (same as ChangeSiteModal).
+      if (err instanceof ActionError && (err.status === 0 || (err.status >= 200 && err.status < 300))) {
+        onDone();
       }
       // ActionError was already toasted by runAction; keep the dialog open with the reason.
       setError(err instanceof Error ? err.message : errorFallback);

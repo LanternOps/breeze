@@ -37,7 +37,9 @@ const isCount = (value: unknown): value is number => typeof value === 'number' &
 function parseAddResponse(data: unknown): BulkGroupAddResult {
   const body = (data as { data?: Partial<BulkGroupAddResult> } | null)?.data;
   if (!body || !isCount(body.added) || !isCount(body.skipped)) {
-    // runAction turns this throw into its errorFallback toast + ActionError.
+    // runAction turns this throw into its errorFallback toast + ActionError and drops this
+    // message, so log the body here: the write itself may have landed.
+    console.error('[bulkGroupMembership] unexpected add-to-group response:', data);
     throw new Error('Unexpected add-to-group response');
   }
   return { added: body.added, skipped: body.skipped, total: isCount(body.total) ? body.total : 0 };
@@ -55,6 +57,7 @@ function parseRemoveResponse(data: unknown): BulkGroupRemoveResult {
     || !isCount(summary.forbidden)
     || !isCount(summary.total)
   ) {
+    console.error('[bulkGroupMembership] unexpected remove-from-group response:', data);
     throw new Error('Unexpected remove-from-group response');
   }
   return body as BulkGroupRemoveResult;
