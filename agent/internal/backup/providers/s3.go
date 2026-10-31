@@ -24,7 +24,7 @@ import (
 
 const multipartUploadThreshold = 100 * 1024 * 1024 // 100 MB
 
-// S3Provider is a stub for S3-compatible backup storage.
+// S3Provider stores backups in S3-compatible object storage.
 type S3Provider struct {
 	Bucket          string
 	Region          string

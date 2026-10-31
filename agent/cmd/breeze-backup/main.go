@@ -308,6 +308,9 @@ func runBackupHelper() {
 
 	// Initialize backup manager
 	mgr := initBackupManager(cfg)
+	if err := agentYAMLBackupConfigError(cfg); err != nil {
+		agentYAMLBackupDisabledReason = err.Error()
+	}
 
 	// Initialize vault if configured
 	vaultMgr := initVaultManager(cfg, mgr)
@@ -402,6 +405,27 @@ func authenticate(conn *ipc.Conn) error {
 	return nil
 }
 
+// agentYAMLBackupConfigError reports why agent.yaml configures an S3 backup
+// manager that cannot be built (#9441: an invalid backup_s3_prefix), or nil.
+// It is derived from cfg alone so every consumer — initBackupManager, the
+// vault's primary-provider choice, the "not configured" command answer —
+// reaches the same verdict, including after a config reload.
+func agentYAMLBackupConfigError(cfg *config.Config) error {
+	if cfg == nil || !cfg.BackupEnabled || len(cfg.BackupPaths) == 0 || cfg.BackupProvider != "s3" {
+		return nil
+	}
+	if _, err := providers.NormalizeKeyPrefix(cfg.BackupS3Prefix); err != nil {
+		return fmt.Errorf("agent.yaml backup manager is disabled: backup_s3_prefix: %w", err)
+	}
+	return nil
+}
+
+// agentYAMLBackupDisabledReason is agentYAMLBackupConfigError's message for
+// the startup config ("" = none), set by runBackupHelper. A command that
+// needs the agent.yaml manager answers with it instead of the generic
+// "backup not configured", which would be false.
+var agentYAMLBackupDisabledReason string
+
 func initBackupManager(cfg *config.Config) *backup.BackupManager {
 	if cfg == nil || !cfg.BackupEnabled || len(cfg.BackupPaths) == 0 {
 		return nil
@@ -422,6 +446,7 @@ func initBackupManager(cfg *config.Config) *backup.BackupManager {
 			slog.Error("agent.yaml backup manager disabled: backup_s3_prefix is invalid", "error", err.Error())
 			return nil
 		}
+		// agentYAMLBackupConfigError must agree with the check above.
 		backupProvider = s3Provider
 	default:
 		localPath := cfg.BackupLocalPath
@@ -485,6 +510,10 @@ func buildVaultManager(cfg *config.Config, mgr *backup.BackupManager) (*backup.V
 	var primary providers.BackupProvider
 	if mgr != nil {
 		primary = mgr.GetProvider()
+	} else if err := agentYAMLBackupConfigError(cfg); err != nil {
+		// The configured S3 primary was refused; a local primary would
+		// silently sync the vault from the wrong storage.
+		return nil, err
 	} else {
 		// Vault can still be initialized with a local provider for standalone use
 		localPath := cfg.BackupLocalPath
@@ -906,6 +935,9 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 		case "hyperv_vm_state":
 			return execHypervVMState(req.Payload)
 		default:
+			if agentYAMLBackupDisabledReason != "" {
+				return fail(agentYAMLBackupDisabledReason)
+			}
 			return fail("backup not configured on this device")
 		}
 	}

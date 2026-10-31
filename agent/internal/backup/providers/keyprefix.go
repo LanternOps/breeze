@@ -11,7 +11,7 @@ import (
 const KeyPrefixMaxLength = 256
 
 // KeyPrefixError reports why a key prefix is invalid. Reason is one of the
-// codes normalizeBackupDestinationPrefix reports: too_long,
+// string-input codes normalizeBackupDestinationPrefix reports: too_long,
 // empty_or_dot_segment, unsafe_characters, reserved_segment.
 type KeyPrefixError struct {
 	Reason string

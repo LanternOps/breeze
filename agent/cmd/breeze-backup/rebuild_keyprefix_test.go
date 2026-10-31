@@ -80,6 +80,22 @@ func TestProviderFromConfigFile_DestinationPrefixWarnsAndIsNotApplied(t *testing
 	}
 }
 
+// The flag itself reaches providerFromConfigFile: an invalid --key-prefix
+// fails through Execute (it would be silently ignored if unbound).
+func TestRebuildCommand_KeyPrefixFlagReachesProviderConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := writeProviderConfig(t, s3ProviderConfigJSON(""))
+	cmd := newRebuildCommand()
+	cmd.SetArgs([]string{
+		"--snapshot", "s1", "--provider-config", path, "--key-prefix", "a/snapshots",
+		"--target", "image:" + filepath.Join(dir, "t.img"), "--image-size", "1G", "--dry-run",
+	})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--key-prefix") || !strings.Contains(err.Error(), "snapshots") {
+		t.Fatalf("expected the --key-prefix reserved-segment error, got: %v", err)
+	}
+}
+
 func TestRebuildCommand_KeyPrefixRefusedInTokenMode(t *testing.T) {
 	dir := t.TempDir()
 	cmd := newRebuildCommand()
