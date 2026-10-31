@@ -16,7 +16,8 @@ const ELLIPSIS = '…';
 /** Ceiling on the alert message carried in the description, in code points. */
 export const PSA_TICKET_DESCRIPTION_MAX_MESSAGE = 4000;
 
-// C0/C1 controls except tab and newline, which `oneLine` folds anyway.
+// C0/C1 controls except tab, LF and CR. `oneLine` folds those in single-line
+// fields; the description message keeps them.
 const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
 function oneLine(value: string): string {

@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Utiliser le tableau par défaut de la connexion",
     "psaBoardHelp": "Les tickets d’alerte de ce moniteur sont créés dans ce tableau plutôt que dans celui par défaut de la connexion.",
-    "psaBoardReadOnly": "Les tickets d’alerte vont au tableau #{{id}} du PSA"
+    "psaBoardReadOnly": "Les tickets d’alerte vont au tableau #{{id}} du PSA",
+    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA ; le remplacement du tableau est donc indisponible pour le moment."
   },
   "kinds": {
     "composite": "Composite (toutes ou une parmi plusieurs)",

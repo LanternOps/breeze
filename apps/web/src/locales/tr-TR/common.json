@@ -1107,7 +1107,8 @@
           "paused": "PSA bağlantısı yeniden çalışana kadar uyarı ticket’ları duraklatıldı.",
           "companyLinksUnverified": "Bu PSA örneği için şirket bağlantılarını onaylayın.",
           "invalidConfig": "Kayıtlı uyarı ticket’ı ayarları geçerli değil. Gözden geçirip yeniden kaydedin.",
-          "unsupportedProvider": "Uyarı ticket’ları bu PSA sağlayıcısı için kullanılamıyor."
+          "unsupportedProvider": "Uyarı ticket’ları bu PSA sağlayıcısı için kullanılamıyor.",
+          "credentialsUnusable": "Bu bağlantının kimlik bilgileri eksik veya okunamıyor. Bağlantıyı düzenleyin ve bilgileri yeniden girin."
         },
         "fields": {
           "enabled": "Uyarı ticket’larını etkinleştir",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Uyarı ticket’ları"
+        },
+        "loadError": {
+          "message": "Uyarı ticket ayarları yüklenemedi",
+          "retry": "Yeniden dene"
+        },
+        "configInvalid": {
+          "warning": "Kaydedilmiş uyarı ticket ayarları okunamadı. Kaydetmek bunların yerine geçer.",
+          "confirm": "Okunamayan ayarları değiştir"
         }
       },
       "PsaCompanyImport": {

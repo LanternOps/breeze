@@ -91,7 +91,10 @@ export function connectwiseTicketUiUrl(baseUrl: string, companyId: string, ticke
 
 /** One listing page for the pickers; a full page is reported as truncated. */
 const CW_PICKER_PAGE_SIZE = 1000;
-/** Matches never exceed this many (one ticket per alert; extras are recorded for a human). */
+/**
+ * Marker search page size. One ticket per alert is expected; more than one
+ * match is a duplicate for W2-B to surface.
+ */
 const CW_MARKER_SEARCH_PAGE_SIZE = 25;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -215,7 +218,10 @@ export class ConnectWiseProvider implements PSAProvider, PSAAlertTicketing {
       if (error instanceof SsrfBlockedError) {
         throw adapterError('rejected', 'ConnectWise request blocked: the connection URL is not allowed');
       }
-      const code = (error as { code?: unknown } | null)?.code;
+      // Node puts the socket error code on the error itself or, when wrapped
+      // (`fetch failed`), on its cause.
+      const err = error as { code?: unknown; cause?: { code?: unknown } } | null;
+      const code = typeof err?.code === 'string' ? err.code : err?.cause?.code;
       const preSend = typeof code === 'string' && PRE_SEND_NETWORK_CODES.has(code);
       const errorClass: PsaAdapterErrorClass = preSend || options.idempotent ? 'transient' : 'unknown_outcome';
       throw adapterError(errorClass, `ConnectWise request failed (${typeof code === 'string' ? code : 'network error'})`);
@@ -227,7 +233,10 @@ export class ConnectWiseProvider implements PSAProvider, PSAAlertTicketing {
       let errorClass: PsaAdapterErrorClass;
       if (status === 401 || status === 403) errorClass = 'auth';
       else if (status === 429) errorClass = 'rate_limited';
-      else if (!options.idempotent && (status === 502 || status === 504)) errorClass = 'unknown_outcome';
+      // A non-idempotent call that got past the PSA's front door may have been
+      // committed (a 500 after insert, a gateway timing out on a live backend).
+      // 503 is the PSA refusing the request outright, so it stays retryable.
+      else if (!options.idempotent && (status === 500 || status === 502 || status === 504)) errorClass = 'unknown_outcome';
       else if (status >= 500) errorClass = 'transient';
       else errorClass = 'rejected';
       throw adapterError(errorClass, `ConnectWise API error (${status})`, {
@@ -421,6 +430,12 @@ export class ConnectWiseProvider implements PSAProvider, PSAAlertTicketing {
     if (Array.from(input.summary).length > this.alertTicketLimits.summaryMaxCodePoints) {
       throw adapterError('rejected', `Ticket summary exceeds ${this.alertTicketLimits.summaryMaxCodePoints} characters`);
     }
+    // Under the summary_tag strategy the marker IS the lookup key: a summary
+    // built without it would make an unknown-outcome create unfindable.
+    const requiredSuffix = this.alertTicketLimits.summaryMarkerSuffix(input.alertId);
+    if (requiredSuffix !== null && !input.summary.endsWith(requiredSuffix)) {
+      throw adapterError('rejected', 'Ticket summary is missing the alert marker');
+    }
 
     const body: Record<string, unknown> = {
       summary: input.summary,
@@ -477,20 +492,30 @@ export class ConnectWiseProvider implements PSAProvider, PSAAlertTicketing {
       orderBy: 'id asc',
       pageSize: String(CW_MARKER_SEARCH_PAGE_SIZE)
     });
-    const rows = await this.request<Array<{ id?: unknown; dateEntered?: unknown }>>(
+    const rows = await this.request<unknown>(
       'GET', `/service/tickets?${query.toString()}`, undefined, { idempotent: true }
     );
-    return (rows || [])
-      .map((row) => this.toAlertTicketRef(row))
-      .filter((ref): ref is PSAAlertTicketRef => ref !== null)
-      .sort((a, b) => Number(a.ticketId) - Number(b.ticketId));
+    // "No ticket exists" may lead the caller to create one, so only a real,
+    // empty array may mean it. Anything else is an error, never a miss.
+    if (!Array.isArray(rows)) {
+      throw adapterError('rejected', 'ConnectWise returned an unexpected ticket search response');
+    }
+    const refs = rows
+      .map((row) => this.toAlertTicketRef(row as { id?: unknown; dateEntered?: unknown }))
+      .filter((ref): ref is PSAAlertTicketRef => ref !== null);
+    if (rows.length > 0 && refs.length === 0) {
+      throw adapterError('rejected', 'ConnectWise returned ticket matches without usable ids');
+    }
+    return refs.sort((a, b) => Number(a.ticketId) - Number(b.ticketId));
   }
 
   private async listPicker<T>(path: string, params: Record<string, string>): Promise<{ rows: T[]; truncated: boolean }> {
     const query = new URLSearchParams({ ...params, pageSize: String(CW_PICKER_PAGE_SIZE), page: '1' });
-    const rows = await this.request<T[]>('GET', `${path}?${query.toString()}`, undefined, { idempotent: true });
-    const list = Array.isArray(rows) ? rows : [];
-    return { rows: list, truncated: list.length >= CW_PICKER_PAGE_SIZE };
+    const rows = await this.request<unknown>('GET', `${path}?${query.toString()}`, undefined, { idempotent: true });
+    if (!Array.isArray(rows)) {
+      throw adapterError('rejected', 'ConnectWise returned an unexpected listing response');
+    }
+    return { rows: rows as T[], truncated: rows.length >= CW_PICKER_PAGE_SIZE };
   }
 
   async listBoards(): Promise<PSAPickerList> {

@@ -127,6 +127,7 @@ export const ALERT_TICKETING_INACTIVE_REASONS = [
   'disabled',
   'invalid_config',
   'paused',
+  'credentials_unusable',
   'company_links_unverified',
 ] as const;
 export type AlertTicketingInactiveReason = (typeof ALERT_TICKETING_INACTIVE_REASONS)[number];

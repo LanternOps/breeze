@@ -311,14 +311,19 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
   const [psaBoards, setPsaBoards] = useState<Array<{ id: number; name: string }> | null>(null);
   const [psaLookupSettled, setPsaLookupSettled] = useState(false);
+  const [psaBoardsUnavailable, setPsaBoardsUnavailable] = useState(false);
   const [loadedPsaBoardId, setLoadedPsaBoardId] = useState<number | null>(null);
   const showPsaBoardSelect = psaBoards !== null;
   useEffect(() => {
     if (!isPartnerScope || !canManagePartnerWide) {
       setPsaBoards(null);
+      setPsaBoardsUnavailable(false);
       return;
     }
     let cancelled = false;
+    let bound = false;
+    let failedStatus: number | string | null = null;
+    setPsaBoardsUnavailable(false);
     (async () => {
       try {
         const meRes = await fetchWithAuth('/orgs/partners/me');
@@ -328,16 +333,28 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
           { serviceManagementMode?: unknown; serviceManagementPsaConnectionId?: unknown } | null;
         const connectionId = partner?.serviceManagementPsaConnectionId;
         if (partner?.serviceManagementMode !== 'external' || typeof connectionId !== 'string' || !connectionId) return;
+        // From here the partner IS bound: a failure means "unavailable", not "absent".
+        bound = true;
         const optRes = await fetchWithAuth(`/psa/connections/${connectionId}/alert-ticketing/options`);
-        if (!optRes?.ok) return;
+        if (!optRes?.ok) {
+          failedStatus = optRes?.status ?? 'no response';
+          return;
+        }
         const optBody = await optRes.json().catch(() => null);
         const boards = optBody?.data?.boards?.options;
         if (!cancelled && Array.isArray(boards)) {
           setPsaBoards(boards.filter((b: { id?: unknown; name?: unknown }) => typeof b?.id === 'number' && typeof b?.name === 'string'));
+        } else {
+          failedStatus = 'malformed response';
         }
       } catch {
-        // Optional control: hide it silently.
+        // Optional control: hide the select; surface a hint only when bound.
+        failedStatus = 'request failed';
       } finally {
+        if (!cancelled && bound && failedStatus !== null) {
+          console.warn('Could not load PSA boards for the monitor board override (status: %s)', String(failedStatus));
+          setPsaBoardsUnavailable(true);
+        }
         if (!cancelled) setPsaLookupSettled(true);
       }
     })();
@@ -1095,6 +1112,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 </select>
                 <p className="text-xs text-muted-foreground">{t('monitoring:editor.psaBoardHelp')}</p>
               </div>
+            )}
+            {!showPsaBoardSelect && psaBoardsUnavailable && (
+              <p className="text-xs text-muted-foreground" data-testid="monitor-editor-psa-board-unavailable">
+                {t('monitoring:editor.psaBoardUnavailable')}
+              </p>
             )}
             {!showPsaBoardSelect && loadedPsaBoardId !== null && (!isPartnerScope || !canManagePartnerWide || psaLookupSettled) && (
               <p className="text-xs text-muted-foreground" data-testid="monitor-editor-psa-board-readonly">

@@ -4,9 +4,9 @@
  * Alert tickets card all call it, so the activation rule lives in one place.
  *
  * Pure: callers load the connection row and the owning partner's
- * service-management binding, and compute the instance key from the decrypted
- * credentials (`psaInstanceKey`). Nothing here touches the database or the
- * network.
+ * service-management binding, and derive `AlertTicketingCredentialState` from
+ * the decrypted credentials (`alertTicketingCredentialState`). The resolver
+ * itself touches neither the database nor the network.
  */
 
 import {
@@ -16,6 +16,7 @@ import {
   type ConnectwiseAlertTicketingStored,
 } from '@breeze/shared';
 import { hmacFingerprint } from '../secretCrypto';
+import { validateProviderCredentials } from '../psa/credentials';
 
 export interface AlertTicketingConnectionRow {
   id: string;
@@ -23,7 +24,37 @@ export interface AlertTicketingConnectionRow {
   provider: string;
   alertTicketing: unknown;
   alertTicketingRev: number;
-  alertTicketingPausedReason: string | null;
+  alertTicketingPausedReason: 'auth' | null;
+}
+
+/**
+ * What the resolver needs to know about the connection's (decrypted)
+ * credentials, without holding them: can they authenticate at all, and which
+ * PSA instance do they point at.
+ */
+export interface AlertTicketingCredentialState {
+  usable: boolean;
+  instanceKey: string | null;
+}
+
+/**
+ * Compute the credential state from decrypted credentials. `usable` runs the
+ * provider's full credential validation (the same check createPSAProvider
+ * makes), so a connection whose secrets are missing or failed to decrypt reads
+ * `credentials_unusable` instead of passing as active and failing at create time.
+ */
+export function alertTicketingCredentialState(
+  provider: string,
+  credentials: Record<string, unknown> | null | undefined,
+): AlertTicketingCredentialState {
+  const instanceKey = psaInstanceKey(provider, credentials);
+  if (!credentials) return { usable: false, instanceKey };
+  try {
+    validateProviderCredentials(provider, credentials);
+    return { usable: true, instanceKey };
+  } catch {
+    return { usable: false, instanceKey };
+  }
 }
 
 export interface AlertTicketingPartnerBinding {
@@ -75,8 +106,9 @@ export function psaInstanceKey(provider: string, credentials: Record<string, unk
 export function resolveAlertTicketingConfig(
   connection: AlertTicketingConnectionRow,
   partner: AlertTicketingPartnerBinding,
-  instanceKey: string | null,
+  credentials: AlertTicketingCredentialState,
 ): ResolvedAlertTicketing {
+  const { instanceKey } = credentials;
   const rev = connection.alertTicketingRev;
   const provider = psaProviderIdSchema.safeParse(connection.provider);
   const storedSchema = provider.success ? alertTicketingStoredSchemaFor(provider.data) : null;
@@ -102,6 +134,7 @@ export function resolveAlertTicketingConfig(
   if (configInvalid) return inactive('invalid_config');
   if (!config || !config.enabled) return inactive('disabled');
   if (connection.alertTicketingPausedReason !== null) return inactive('paused');
+  if (!credentials.usable) return inactive('credentials_unusable');
   if (instanceKey === null || config.companyLinksConfirmedFor !== instanceKey) {
     return inactive('company_links_unverified');
   }

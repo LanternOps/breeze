@@ -1107,7 +1107,8 @@
           "paused": "Les billets d’alertes sont en pause jusqu’à ce que la connexion au PSA fonctionne de nouveau.",
           "companyLinksUnverified": "Confirmez les liens d’entreprises pour cette instance du PSA.",
           "invalidConfig": "Les paramètres enregistrés des billets d’alertes ne sont pas valides. Vérifiez-les et enregistrez de nouveau.",
-          "unsupportedProvider": "Les billets d’alertes ne sont pas offerts pour ce fournisseur de PSA."
+          "unsupportedProvider": "Les billets d’alertes ne sont pas offerts pour ce fournisseur de PSA.",
+          "credentialsUnusable": "Les identifiants de cette connexion sont incomplets ou illisibles. Modifiez la connexion et saisissez-les de nouveau."
         },
         "fields": {
           "enabled": "Activer les billets d’alertes",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Billets d’alertes"
+        },
+        "loadError": {
+          "message": "Impossible de charger les paramètres des billets d’alertes",
+          "retry": "Réessayer"
+        },
+        "configInvalid": {
+          "warning": "Les paramètres enregistrés des billets d’alertes sont illisibles. L’enregistrement les remplacera.",
+          "confirm": "Remplacer les paramètres illisibles"
         }
       },
       "PsaCompanyImport": {

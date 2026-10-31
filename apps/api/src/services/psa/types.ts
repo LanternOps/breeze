@@ -142,19 +142,26 @@ export interface PSACompanyList {
  *
  * - `auth`            401/403 — pause ticketing for the connection.
  * - `rate_limited`    429 — back off, honouring `retryAfterMs`.
- * - `transient`       5xx, or a network failure that cannot have reached the PSA,
- *                     or any failure of an idempotent call — retry with backoff.
- * - `rejected`        any other 4xx, or a URL the SSRF guard refused — terminal.
+ * - `transient`       retry with backoff: a 503, any 5xx on an idempotent call,
+ *                     a network failure that cannot have reached the PSA, or a
+ *                     network failure / unreadable body on an idempotent call.
+ * - `rejected`        terminal: any other 4xx, a URL the SSRF guard refused, or a
+ *                     response that is not the expected shape.
  * - `unknown_outcome` a non-idempotent call (create, note) whose request may have
- *                     been processed: a timeout or reset after sending, a 502/504,
- *                     or an unreadable success body. Never re-POST; look up by
- *                     marker instead.
+ *                     been processed: a timeout or reset after sending, a
+ *                     500/502/504, or a success body without a usable id. Never
+ *                     re-POST; look up by marker instead.
  *
- * `message` never contains the PSA response body (it reaches logs and Sentry);
- * `bodySnippet` is scrubbed of credential material and capped at 500 chars, for
- * display to a partner admin only.
+ * Retry-safety by call: list*, findTicketsByMarker and closeTicket (set a status
+ * id) are idempotent; createAlertTicket and addNote are not.
+ *
+ * `message` never contains the PSA response body (it reaches logs and Sentry).
+ * `bodySnippet` is for display to a partner admin only: the ADAPTER must scrub
+ * it of credential material before constructing the error; the constructor
+ * only caps its length.
  */
-export type PsaAdapterErrorClass = 'auth' | 'rate_limited' | 'transient' | 'rejected' | 'unknown_outcome';
+export const PSA_ADAPTER_ERROR_CLASSES = ['auth', 'rate_limited', 'transient', 'rejected', 'unknown_outcome'] as const;
+export type PsaAdapterErrorClass = (typeof PSA_ADAPTER_ERROR_CLASSES)[number];
 
 export const PSA_ADAPTER_ERROR_BODY_MAX = 500;
 
@@ -178,7 +185,12 @@ export class PsaAdapterError extends Error {
     this.provider = input.provider;
     this.errorClass = input.errorClass;
     this.httpStatus = input.httpStatus;
-    this.retryAfterMs = input.retryAfterMs ?? null;
+    // Meaningful only for rate_limited, and only as a finite delay: a NaN or
+    // infinite value would poison W2-B's backoff arithmetic.
+    const retryAfter = input.retryAfterMs;
+    this.retryAfterMs = input.errorClass === 'rate_limited' && typeof retryAfter === 'number' && Number.isFinite(retryAfter)
+      ? Math.max(0, retryAfter)
+      : null;
     this.bodySnippet = (input.bodySnippet ?? '').slice(0, PSA_ADAPTER_ERROR_BODY_MAX);
   }
 }

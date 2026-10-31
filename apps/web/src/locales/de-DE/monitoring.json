@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Standard-Board der Verbindung verwenden",
     "psaBoardHelp": "Alarm-Tickets für diesen Monitor werden in diesem Board statt im Standard-Board der Verbindung erstellt.",
-    "psaBoardReadOnly": "Alarm-Tickets gehen an PSA-Board #{{id}}"
+    "psaBoardReadOnly": "Alarm-Tickets gehen an PSA-Board #{{id}}",
+    "psaBoardUnavailable": "PSA-Boards konnten nicht geladen werden, daher ist die Board-Überschreibung derzeit nicht verfügbar."
   },
   "kinds": {
     "composite": "Kombiniert (alle oder eine von mehreren)",

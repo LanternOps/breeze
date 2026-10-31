@@ -912,6 +912,24 @@ describe('per-monitor PSA board override (#10528, W2-A)', () => {
       .rejects.toThrow('transaction should not be reached in these cases');
   });
 
+  it('a partner admin\'s board reaches the insert; an omitted board inserts null', async () => {
+    const compile = stubCompile();
+    try {
+      for (const [psaBoardId, expected] of [[12, 12], [undefined, null]] as const) {
+        const values = vi.fn((row: Record<string, unknown>) => ({ returning: async () => [{ ...existingRow(), ...row }] }));
+        const tx = { insert: vi.fn(() => ({ values })) };
+        const executor = { select: vi.fn(), transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+        await createMonitorDefinition(
+          input({ orgId: ORG, ...(psaBoardId !== undefined ? { psaBoardId } : {}) }),
+          fullPartner(),
+          {},
+          executor as unknown as Parameters<typeof createMonitorDefinition>[3],
+        );
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ psaBoardId: expected }));
+      }
+    } finally { compile.mockRestore(); }
+  });
+
   it('an explicit null board is allowed for anyone (it sets nothing)', async () => {
     await expect(createMonitorDefinition(input({ psaBoardId: null }), auth()))
       .rejects.toThrow('transaction should not be reached in these cases');
@@ -925,7 +943,9 @@ describe('per-monitor PSA board override (#10528, W2-A)', () => {
       await updateMonitorDefinition(row.id as string, { description: 'x' }, auth(), executor);
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ psaBoardId: 12 }));
       // Re-sending the unchanged value is not a change either.
+      set.mockClear();
       await updateMonitorDefinition(row.id as string, { psaBoardId: 12 } as UpdateMonitorDefinitionInput, auth(), executor);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ psaBoardId: 12 }));
     } finally { compile.mockRestore(); }
   });
 

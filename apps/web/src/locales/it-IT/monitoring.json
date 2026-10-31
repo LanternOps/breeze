@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Usa il board predefinito della connessione",
     "psaBoardHelp": "I ticket di avviso di questo monitor vengono creati in questo board invece che in quello predefinito della connessione.",
-    "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}"
+    "psaBoardReadOnly": "I ticket di avviso vanno al board PSA #{{id}}",
+    "psaBoardUnavailable": "Impossibile caricare le bacheche PSA, quindi la sostituzione della bacheca non è disponibile al momento."
   },
   "kinds": {
     "composite": "Composito (tutte o una di più condizioni)",

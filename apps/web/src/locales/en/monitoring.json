@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Use the connection’s default board",
     "psaBoardHelp": "Alert tickets for this monitor are created on this board instead of the connection’s default.",
-    "psaBoardReadOnly": "Alert tickets go to PSA board #{{id}}"
+    "psaBoardReadOnly": "Alert tickets go to PSA board #{{id}}",
+    "psaBoardUnavailable": "Could not load PSA boards, so the board override is unavailable right now."
   },
   "kinds": {
     "composite": "Composite (all or any of several)",

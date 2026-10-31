@@ -14,8 +14,8 @@
 -- 2. psa_ticket_mappings becomes the ticket ledger: per-operation states
 --    (text + CHECK, never enums, so a later state needs no enum split), lease,
 --    attempts and deadlines, the create snapshot. Rows that predate this file
---    (only ever written by tests) take the terminal create_state 'handled' so
---    W2-B never treats them as queued work.
+--    take the terminal create_state 'handled' so W2-B never treats them as
+--    queued work. A due-time index serves the W2-B worker and reconciler.
 -- 3. One mapping per (connection, alert): duplicates are removed (oldest
 --    kept, count reported), then a partial unique index.
 -- 4. The alert FK becomes ON DELETE CASCADE. alertService's publish rollback
@@ -33,7 +33,7 @@
 -- its connection-join policy. Export classification is in
 -- tenantExportPolicyRegistry.ts.
 --
--- Idempotent. Writes rows (steps 2-dedupe and 5), so system scope first.
+-- Idempotent. Writes rows (the step 3 dedupe and step 5), so system scope first.
 
 SELECT set_config('breeze.scope', 'system', true);
 
@@ -200,6 +200,18 @@ BEGIN
       ADD CONSTRAINT psa_ticket_mappings_lease_chk CHECK ((lease_token IS NULL) = (lease_until IS NULL));
   END IF;
 
+  -- A mapping that claims a created ticket must say which one. Pre-existing
+  -- rows are 'handled', never 'created', so this validates without a scan hit.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'psa_ticket_mappings_created_ticket_chk'
+       AND conrelid = 'public.psa_ticket_mappings'::regclass
+  ) THEN
+    ALTER TABLE public.psa_ticket_mappings
+      ADD CONSTRAINT psa_ticket_mappings_created_ticket_chk
+      CHECK (create_state <> 'created' OR external_ticket_id IS NOT NULL);
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'psa_ticket_mappings_create_snapshot_object_chk'
@@ -259,7 +271,10 @@ BEGIN
   END IF;
 END $$;
 
--- Work the W2-B worker and reconciler pick up by due time.
+-- ---------------------------------------------------------------------------
+-- 4b. Due-time index: work the W2-B worker and reconciler pick up
+-- ---------------------------------------------------------------------------
+
 CREATE INDEX IF NOT EXISTS psa_ticket_mappings_due_idx
   ON public.psa_ticket_mappings (next_attempt_at)
   WHERE create_state IN ('never_attempted', 'create_in_flight', 'create_outcome_unknown')

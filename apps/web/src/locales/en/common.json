@@ -1107,7 +1107,8 @@
           "paused": "Alert tickets are paused until the PSA connection is working again.",
           "companyLinksUnverified": "Confirm company links for this PSA instance.",
           "invalidConfig": "The saved alert ticket settings are not valid. Review and save them again.",
-          "unsupportedProvider": "Alert tickets are not available for this PSA provider."
+          "unsupportedProvider": "Alert tickets are not available for this PSA provider.",
+          "credentialsUnusable": "This connection's credentials are incomplete or unreadable. Edit the connection and re-enter them."
         },
         "fields": {
           "enabled": "Enable alert tickets",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Alert tickets"
+        },
+        "loadError": {
+          "message": "Could not load alert ticket settings",
+          "retry": "Retry"
+        },
+        "configInvalid": {
+          "warning": "The saved alert ticket settings could not be read. Saving replaces them.",
+          "confirm": "Replace the unreadable settings"
         }
       },
       "PsaCompanyImport": {

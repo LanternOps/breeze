@@ -83,6 +83,7 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
   const [options, setOptions] = useState<AlertTicketingOptions | null>(null);
   const [optionsFailure, setOptionsFailure] = useState<OptionsFailure | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Form state (strings so empty = unset).
   const [enabled, setEnabled] = useState(false);
@@ -96,6 +97,7 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
   const [closeOnResolve, setCloseOnResolve] = useState(false);
   const [noteOnAcknowledge, setNoteOnAcknowledge] = useState(false);
   const [confirmLinks, setConfirmLinks] = useState(false);
+  const [confirmReplace, setConfirmReplace] = useState(false);
 
   const hydrate = useCallback((v: AlertTicketingView) => {
     const c = v.config;
@@ -114,25 +116,35 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
     setCloseOnResolve(c?.closeOnResolve ?? false);
     setNoteOnAcknowledge(c?.noteOnAcknowledge ?? false);
     setConfirmLinks(false);
+    setConfirmReplace(false);
   }, []);
 
   const loadView = useCallback(async (): Promise<void> => {
     try {
       const res = await fetchWithAuth(base);
-      if (!res.ok) {
+      if (res.status === 401 || res.status === 403 || res.status === 404) {
+        // Not ours to show: auth redirect handles 401; 403/404 mean no access
+        // or no such connection.
+        setLoadFailed(false);
         setView(null);
+        return;
+      }
+      if (!res.ok) {
+        setLoadFailed(true);
         return;
       }
       const body = await res.json();
       const next = body?.data as AlertTicketingView | undefined;
       if (!next) {
-        setView(null);
+        setLoadFailed(true);
         return;
       }
+      setLoadFailed(false);
       setView(next);
       hydrate(next);
     } catch {
-      setView(null);
+      // Keep any previously loaded view so a failed reload never drops the form.
+      setLoadFailed(true);
     }
   }, [base, hydrate]);
 
@@ -155,6 +167,7 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
         const body = await res.json().catch(() => null);
         if (cancelled) return;
         if (!res.ok) {
+          setOptions(o => (o ? { ...o, statuses: null } : o));
           setOptionsFailure({
             error: typeof body?.error === 'string' ? body.error : tRef.current('longTail.psa.PsaAlertTicketingCard.options.error'),
             detail: typeof body?.detail === 'string' ? body.detail : undefined,
@@ -165,6 +178,7 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
         setOptions(body?.data as AlertTicketingOptions);
       } catch {
         if (!cancelled) {
+          setOptions(o => (o ? { ...o, statuses: null } : o));
           setOptionsFailure({ error: tRef.current('longTail.psa.PsaAlertTicketingCard.options.error') });
         }
       }
@@ -174,14 +188,50 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
     };
   }, [base, canManage, boardId, optionsNonce]);
 
+  const loadErrorAlert = loadFailed ? (
+    <div
+      role="alert"
+      className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+      data-testid="psa-alert-ticketing-load-error"
+    >
+      <p>{t('longTail.psa.PsaAlertTicketingCard.loadError.message')}</p>
+      <button
+        type="button"
+        className="mt-2 rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+        data-testid="psa-alert-ticketing-load-retry"
+        onClick={() => void loadView()}
+      >
+        {t('longTail.psa.PsaAlertTicketingCard.loadError.retry')}
+      </button>
+    </div>
+  ) : null;
+
+  if (!view && loadFailed) {
+    return (
+      <section
+        className="rounded-lg border bg-card p-6 shadow-xs"
+        data-testid="psa-alert-ticketing-card"
+        aria-label={t('longTail.psa.PsaAlertTicketingCard.title')}
+      >
+        <h2 className="text-base font-semibold" data-testid="psa-alert-ticketing-title">
+          {t('longTail.psa.PsaAlertTicketingCard.title')}
+          <span className="ml-2 text-sm font-normal text-muted-foreground">{connectionName}</span>
+        </h2>
+        {loadErrorAlert}
+      </section>
+    );
+  }
   if (!view || !view.capable) return null;
 
   const needsLinkConfirm = enabled && !view.companyLinksConfirmed;
   const missingIds = enabled && (!toId(boardId) || !toId(openStatusId) || !toId(closedStatusId));
-  const saveDisabled = saving || missingIds || (needsLinkConfirm && !confirmLinks);
+  const needsReplaceConfirm = view.configInvalid === true;
+  const saveDisabled = saving || missingIds || (needsLinkConfirm && !confirmLinks) || (needsReplaceConfirm && !confirmReplace);
 
   const handleBoardChange = (value: string) => {
     setBoardId(value);
+    // The old board's statuses must never be offered for the new board.
+    setOptions(o => (o ? { ...o, statuses: null } : o));
     setOpenStatusId('');
     setClosedStatusId('');
   };
@@ -251,6 +301,8 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
         return t('longTail.psa.PsaAlertTicketingCard.status.companyLinksUnverified');
       case 'invalid_config':
         return t('longTail.psa.PsaAlertTicketingCard.status.invalidConfig');
+      case 'credentials_unusable':
+        return t('longTail.psa.PsaAlertTicketingCard.status.credentialsUnusable');
       default:
         return t('longTail.psa.PsaAlertTicketingCard.status.unsupportedProvider');
     }
@@ -286,6 +338,8 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
           {t('longTail.psa.PsaAlertTicketingCard.scopeNote')}
         </p>
       </div>
+
+      {loadErrorAlert}
 
       {view.paused && (
         <div
@@ -325,6 +379,25 @@ export default function PsaAlertTicketingCard({ connectionId, connectionName }: 
             if (!saveDisabled) void handleSave();
           }}
         >
+          {needsReplaceConfirm && (
+            <div
+              role="alert"
+              className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"
+              data-testid="psa-alert-ticketing-config-invalid"
+            >
+              <p>{t('longTail.psa.PsaAlertTicketingCard.configInvalid.warning')}</p>
+              <label className="mt-2 flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={confirmReplace}
+                  onChange={e => setConfirmReplace(e.target.checked)}
+                  data-testid="psa-alert-ticketing-confirm-replace"
+                />
+                {t('longTail.psa.PsaAlertTicketingCard.configInvalid.confirm')}
+              </label>
+            </div>
+          )}
+
           {optionsFailure && (
             <div
               role="alert"

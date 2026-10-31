@@ -49,9 +49,10 @@ import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, canManagePartnerWidePolicies } from 
 import { createPSAProvider, PsaAdapterError, supportsAlertTicketing } from '../services/psa';
 import { PsaConfigError, decryptCredentials } from '../services/psa/credentials';
 import {
-  psaInstanceKey,
+  alertTicketingCredentialState,
   resolveAlertTicketingConfig,
   type AlertTicketingConnectionRow,
+  type AlertTicketingCredentialState,
   type AlertTicketingPartnerBinding,
 } from '../services/psaAlertTicketing/config';
 
@@ -128,8 +129,8 @@ function isFailure(value: Loaded | LoadFailure): value is LoadFailure {
   return 'status' in value;
 }
 
-function instanceKeyFor(row: ConnectionRow): string | null {
-  return psaInstanceKey(row.provider, decryptCredentials(row.credentials));
+function credentialStateFor(row: ConnectionRow): AlertTicketingCredentialState {
+  return alertTicketingCredentialState(row.provider, decryptCredentials(row.credentials));
 }
 
 function auditOwnerFields(row: ConnectionRow) {
@@ -143,8 +144,9 @@ function publicConfig(config: ConnectwiseAlertTicketingStored | null) {
   return rest;
 }
 
-function serialize(row: ConnectionRow, binding: AlertTicketingPartnerBinding, instanceKey: string | null, canManage: boolean) {
-  const resolved = resolveAlertTicketingConfig(row, binding, instanceKey);
+function serialize(row: ConnectionRow, binding: AlertTicketingPartnerBinding, credentials: AlertTicketingCredentialState, canManage: boolean) {
+  const resolved = resolveAlertTicketingConfig(row, binding, credentials);
+  const { instanceKey } = credentials;
   const provider = psaProviderIdSchema.safeParse(row.provider);
   const capable = provider.success && alertTicketingSchemaFor(provider.data) !== null;
   return {
@@ -180,7 +182,7 @@ psaAlertTicketingRoutes.get(
     const loaded = await loadTarget(c.req.param('id')!, auth);
     if (isFailure(loaded)) return c.json({ error: loaded.error }, loaded.status);
     const { row, binding } = loaded;
-    return c.json({ data: serialize(row, binding, instanceKeyFor(row), canManagePartnerWidePolicies(auth)) });
+    return c.json({ data: serialize(row, binding, credentialStateFor(row), canManagePartnerWidePolicies(auth)) });
   }
 );
 
@@ -220,8 +222,9 @@ psaAlertTicketingRoutes.put(
       }, 409);
     }
 
-    const instanceKey = instanceKeyFor(row);
-    const previous = resolveAlertTicketingConfig(row, binding, instanceKey).config;
+    const credentialState = credentialStateFor(row);
+    const { instanceKey } = credentialState;
+    const previous = resolveAlertTicketingConfig(row, binding, credentialState).config;
     const previousRaw = (row.alertTicketing && typeof row.alertTicketing === 'object')
       ? row.alertTicketing as Record<string, unknown>
       : null;
@@ -293,7 +296,7 @@ psaAlertTicketingRoutes.put(
       },
     });
 
-    return c.json({ data: serialize(updated as ConnectionRow, binding, instanceKey, true) });
+    return c.json({ data: serialize(updated as ConnectionRow, binding, credentialState, true) });
   }
 );
 
@@ -347,6 +350,16 @@ psaAlertTicketingRoutes.get(
       return c.json({ data: { boards, priorities, statuses } });
     } catch (error) {
       if (error instanceof PsaAdapterError) {
+        // Logged without the snippet: logs and Sentry never carry PSA bodies.
+        console.warn('[psa-alert-ticketing] PSA picker listing failed', {
+          connectionId: row.id,
+          provider: row.provider,
+          errorClass: error.errorClass,
+          httpStatus: error.httpStatus,
+        });
+        if (error.retryAfterMs !== null) {
+          c.header('Retry-After', String(Math.ceil(error.retryAfterMs / 1000)));
+        }
         // `message` never carries the PSA body; `detail` is the scrubbed,
         // capped snippet, shown only to this partner admin.
         return c.json({ error: error.message, errorClass: error.errorClass, detail: error.bodySnippet }, 502);

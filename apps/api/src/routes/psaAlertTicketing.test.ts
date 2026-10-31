@@ -70,9 +70,9 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAuditMock }));
 
-vi.mock('../services/psa/credentials', () => ({
+vi.mock('../services/psa/credentials', async () => ({
+  ...(await vi.importActual<typeof import('../services/psa/credentials')>('../services/psa/credentials')),
   decryptCredentials: h.decryptCredentialsMock,
-  PsaConfigError: class PsaConfigError extends Error {},
 }));
 
 vi.mock('../services/psa', async () => {
@@ -84,6 +84,7 @@ vi.mock('../services/secretCrypto', () => ({
   hmacFingerprint: vi.fn((value: string) => `fp1:test:${Buffer.from(value).toString('hex')}`),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { psaAlertTicketingRoutes } from './psaAlertTicketing';
 import { PsaAdapterError } from '../services/psa/types';
 import { psaInstanceKey } from '../services/psaAlertTicketing/config';
@@ -216,6 +217,13 @@ describe('GET /psa/connections/:id/alert-ticketing', () => {
     expect((await res.json()).data.canManage).toBe(false);
   });
 
+  it('reports credentials_unusable when the stored credentials cannot authenticate', async () => {
+    h.decryptCredentialsMock.mockReturnValue({ baseUrl: CREDENTIALS.baseUrl, companyId: 'mspco' });
+    mockLoad(row({ alertTicketing: { ...enabledConfig, companyLinksConfirmedFor: INSTANCE_KEY } }));
+    const { data } = await (await app.request(url)).json();
+    expect(data.status).toEqual({ active: false, reason: 'credentials_unusable' });
+  });
+
   it('marks a non-capable provider', async () => {
     mockLoad(row({ provider: 'autotask' }));
     const { data } = await (await app.request(url)).json();
@@ -338,6 +346,37 @@ describe('PUT /psa/connections/:id/alert-ticketing', () => {
     expect(values.alertTicketing.companyLinksConfirmedFor).toBe(INSTANCE_KEY);
   });
 
+  it('the CAS update is predicated on the expected rev and bumps it by one', async () => {
+    mockLoad(row());
+    const updateChain = h.chain([row({ alertTicketingRev: 4 })]);
+    h.updateMock.mockReturnValueOnce(updateChain as never);
+    expect((await put({ config: { enabled: false }, expectedRev: 3 })).status).toBe(200);
+    const dialect = new PgDialect();
+    const where = dialect.sqlToQuery(updateChain.where.mock.calls[0]![0]);
+    expect(where.sql).toContain('"alert_ticketing_rev" = $');
+    expect(where.params).toEqual(expect.arrayContaining([CONNECTION_ID, 3]));
+    const bump = dialect.sqlToQuery(updateChain.set.mock.calls[0]![0].alertTicketingRev);
+    expect(bump.sql).toBe('"psa_connections"."alert_ticketing_rev" + 1');
+  });
+
+  it('confirming company links while disabled stores the fingerprint', async () => {
+    mockLoad(row());
+    const updateChain = h.chain([row({ alertTicketingRev: 4 })]);
+    h.updateMock.mockReturnValueOnce(updateChain as never);
+    expect((await put({ config: { enabled: false, boardId: 12 }, expectedRev: 3, confirmCompanyLinks: true })).status).toBe(200);
+    const values = updateChain.set.mock.calls[0]![0];
+    expect(values.alertTicketing).toMatchObject({ enabled: false, boardId: 12, companyLinksConfirmedFor: INSTANCE_KEY });
+    expect(values.alertTicketingEnabledAt).toBeNull();
+  });
+
+  it('a prior confirmation survives a stored blob that no longer parses', async () => {
+    mockLoad(row({ alertTicketing: { enabled: true, boardId: 'corrupt', companyLinksConfirmedFor: INSTANCE_KEY } }));
+    const updateChain = h.chain([row({ alertTicketingRev: 4 })]);
+    h.updateMock.mockReturnValueOnce(updateChain as never);
+    expect((await put({ config: enabledConfig, expectedRev: 3 })).status).toBe(200);
+    expect(updateChain.set.mock.calls[0]![0].alertTicketing.companyLinksConfirmedFor).toBe(INSTANCE_KEY);
+  });
+
   it('refuses to confirm company links on a connection with no usable base URL', async () => {
     h.decryptCredentialsMock.mockReturnValue({ companyId: 'mspco' });
     mockLoad(row());
@@ -396,6 +435,19 @@ describe('GET /psa/connections/:id/alert-ticketing/options', () => {
     h.createPSAProviderMock.mockReturnValue({ testConnection: vi.fn() });
     mockLoad(row());
     expect((await app.request(optionsUrl)).status).toBe(400);
+  });
+
+  it('passes Retry-After through for a rate-limited PSA', async () => {
+    h.createPSAProviderMock.mockReturnValue(capableClient({
+      listBoards: vi.fn(async () => {
+        throw new PsaAdapterError({ provider: 'connectwise', errorClass: 'rate_limited', httpStatus: 429, retryAfterMs: 30_000, message: 'ConnectWise API error (429)' });
+      }),
+    }));
+    mockLoad(row());
+    const res = await app.request(optionsUrl);
+    expect(res.status).toBe(502);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect((await res.json()).errorClass).toBe('rate_limited');
   });
 
   it('maps an adapter error to 502 with its class and a scrubbed detail, never the raw message body', async () => {

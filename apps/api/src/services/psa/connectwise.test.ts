@@ -151,6 +151,30 @@ describe('createAlertTicket', () => {
     },
   );
 
+  it.each([
+    [500, 'unknown_outcome'],
+    [502, 'unknown_outcome'],
+    [504, 'unknown_outcome'],
+    // 503 = the PSA refused the request (maintenance); safe to retry.
+    [503, 'transient'],
+    [429, 'rate_limited'],
+    [401, 'auth'],
+    [400, 'rejected'],
+  ])('maps HTTP %i on a create (non-idempotent) to %s', async (status, errorClass) => {
+    psaFetchMock.mockResolvedValueOnce(json({ message: 'x' }, status));
+    expect((await captureError(provider().createAlertTicket(createInput))).errorClass).toBe(errorClass);
+  });
+
+  it('a 2xx create without a ticket id is unknown_outcome (the ticket may exist)', async () => {
+    psaFetchMock.mockResolvedValueOnce(json({ summary: 'no id' }, 201));
+    expect((await captureError(provider().createAlertTicket(createInput))).errorClass).toBe('unknown_outcome');
+  });
+
+  it('reads a pre-send network code from error.cause too', async () => {
+    psaFetchMock.mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { cause: netError('ECONNREFUSED') }));
+    expect((await captureError(provider().createAlertTicket(createInput))).errorClass).toBe('transient');
+  });
+
   it('classifies an SSRF-refused URL as rejected', async () => {
     psaFetchMock.mockRejectedValueOnce(new SsrfBlockedError('PSA URL rejected: private address'));
     expect((await captureError(provider().createAlertTicket(createInput))).errorClass).toBe('rejected');
@@ -245,6 +269,11 @@ describe('closeTicket and addNote', () => {
     expect((await captureError(provider().addNote('9001', 'x'))).errorClass).toBe('unknown_outcome');
   });
 
+  it('a 504 while posting a note is unknown_outcome', async () => {
+    psaFetchMock.mockResolvedValueOnce(json({}, 504));
+    expect((await captureError(provider().addNote('9001', 'x'))).errorClass).toBe('unknown_outcome');
+  });
+
   it('refuses a non-numeric ticket id without calling the PSA', async () => {
     expect((await captureError(provider().closeTicket('../system/info', 1))).errorClass).toBe('rejected');
     expect((await captureError(provider().addNote('9001/../../x', 'x'))).errorClass).toBe('rejected');
@@ -263,6 +292,18 @@ describe('findTicketsByMarker', () => {
     expect(url.pathname).toBe('/v4_6_release/apis/3.0/service/tickets');
     expect(url.searchParams.get('conditions')).toBe(`externalXRef="breeze-alert:${ALERT_ID}"`);
     expect(refs.map((ref) => ref.ticketId)).toEqual(['9001', '9005']);
+  });
+
+  it('a non-array body, or matches with no usable id, is an error, never "no ticket"', async () => {
+    psaFetchMock.mockResolvedValueOnce(json({ code: 'Unexpected' }));
+    expect((await captureError(provider().findTicketsByMarker(ALERT_ID))).errorClass).toBe('rejected');
+    psaFetchMock.mockResolvedValueOnce(json([{ id: 'x' }, { summary: 'no id' }]));
+    expect((await captureError(provider().findTicketsByMarker(ALERT_ID))).errorClass).toBe('rejected');
+  });
+
+  it('an empty array is a genuine "no match"', async () => {
+    psaFetchMock.mockResolvedValueOnce(json([]));
+    expect(await provider().findTicketsByMarker(ALERT_ID)).toEqual([]);
   });
 
   it('refuses a non-UUID alert id (no condition injection)', async () => {
@@ -303,6 +344,11 @@ describe('pickers', () => {
     expect(priorities.options).toEqual([{ id: 1, name: 'Priority 1 - Emergency' }]);
   });
 
+  it('a non-array picker body is an error, never an empty list', async () => {
+    psaFetchMock.mockResolvedValueOnce(json({ message: 'not a list' }));
+    expect((await captureError(provider().listBoards())).errorClass).toBe('rejected');
+  });
+
   it('flags a full page as truncated', async () => {
     psaFetchMock.mockResolvedValueOnce(json(Array.from({ length: 1000 }, (_, i) => ({ id: i + 1, name: `B${i}` }))));
     expect((await provider().listBoards()).truncated).toBe(true);
@@ -318,6 +364,21 @@ describe('connectwiseTicketUiUrl', () => {
 
   it('is null for an unparseable base URL', () => {
     expect(connectwiseTicketUiUrl('not a url', 'mspco', 1)).toBeNull();
+  });
+});
+
+describe('PsaAdapterError invariants', () => {
+  const base = { provider: 'connectwise', httpStatus: 429, message: 'x' };
+  it('keeps retryAfterMs only for rate_limited, finite and non-negative', () => {
+    expect(new PsaAdapterError({ ...base, errorClass: 'rate_limited', retryAfterMs: 30_000 }).retryAfterMs).toBe(30_000);
+    expect(new PsaAdapterError({ ...base, errorClass: 'rate_limited', retryAfterMs: -5 }).retryAfterMs).toBe(0);
+    expect(new PsaAdapterError({ ...base, errorClass: 'rate_limited', retryAfterMs: Number.NaN }).retryAfterMs).toBeNull();
+    expect(new PsaAdapterError({ ...base, errorClass: 'rate_limited', retryAfterMs: Number.POSITIVE_INFINITY }).retryAfterMs).toBeNull();
+    expect(new PsaAdapterError({ ...base, errorClass: 'transient', retryAfterMs: 30_000 }).retryAfterMs).toBeNull();
+  });
+
+  it('caps the snippet', () => {
+    expect(new PsaAdapterError({ ...base, errorClass: 'rejected', bodySnippet: 'y'.repeat(900) }).bodySnippet.length).toBe(PSA_ADAPTER_ERROR_BODY_MAX);
   });
 });
 

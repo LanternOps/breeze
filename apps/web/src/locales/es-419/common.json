@@ -1107,7 +1107,8 @@
           "paused": "Los tickets de alertas están en pausa hasta que la conexión con el PSA vuelva a funcionar.",
           "companyLinksUnverified": "Confirma los vínculos de empresas de esta instancia del PSA.",
           "invalidConfig": "La configuración guardada de tickets de alertas no es válida. Revísala y guárdala de nuevo.",
-          "unsupportedProvider": "Los tickets de alertas no están disponibles para este proveedor de PSA."
+          "unsupportedProvider": "Los tickets de alertas no están disponibles para este proveedor de PSA.",
+          "credentialsUnusable": "Las credenciales de esta conexión están incompletas o no se pueden leer. Edite la conexión y vuelva a ingresarlas."
         },
         "fields": {
           "enabled": "Habilitar tickets de alertas",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Tickets de alertas"
+        },
+        "loadError": {
+          "message": "No se pudo cargar la configuración de tickets de alertas",
+          "retry": "Reintentar"
+        },
+        "configInvalid": {
+          "warning": "No se pudo leer la configuración guardada de tickets de alertas. Al guardar se reemplazará.",
+          "confirm": "Reemplazar la configuración ilegible"
         }
       },
       "PsaCompanyImport": {

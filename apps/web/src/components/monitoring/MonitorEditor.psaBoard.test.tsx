@@ -130,6 +130,32 @@ describe('MonitorEditor PSA board override', () => {
     );
   });
 
+  it('bound partner with a failing options call: shows the unavailable hint, warns once with the status only, omits psaBoardId', async () => {
+    authUser.canManagePartnerWide = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    install({ options: json({ error: 'secret upstream body' }, false, 502) });
+    render(<MonitorEditor monitorId="m1" />);
+    expect(await screen.findByTestId('monitor-editor-psa-board-unavailable')).toHaveTextContent(
+      'Could not load PSA boards, so the board override is unavailable right now.',
+    );
+    const body = await saveAndGetPatchBody();
+    expect(body).not.toHaveProperty('psaBoardId');
+    expect(screen.queryByTestId('monitor-editor-psa-board')).toBeNull();
+    const psaWarns = warn.mock.calls.filter(c => String(c[0]).includes('PSA boards'));
+    expect(psaWarns).toHaveLength(1);
+    expect(JSON.stringify(psaWarns[0])).toContain('502');
+    expect(JSON.stringify(psaWarns[0])).not.toContain('secret upstream body');
+    warn.mockRestore();
+  });
+
+  it('unbound partner: no unavailable hint', async () => {
+    authUser.canManagePartnerWide = true;
+    install({ partner: json({ serviceManagementMode: 'native', serviceManagementPsaConnectionId: null }) });
+    render(<MonitorEditor monitorId="m1" />);
+    await saveAndGetPatchBody();
+    expect(screen.queryByTestId('monitor-editor-psa-board-unavailable')).toBeNull();
+  });
+
   it('admin without an external PSA bound: no select', async () => {
     authUser.canManagePartnerWide = true;
     install({ partner: json({ serviceManagementMode: 'native', serviceManagementPsaConnectionId: null }) });

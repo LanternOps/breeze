@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Usar o quadro padrão da conexão",
     "psaBoardHelp": "Os chamados de alertas deste monitor são criados neste quadro, em vez do padrão da conexão.",
-    "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA"
+    "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA",
+    "psaBoardUnavailable": "Não foi possível carregar os quadros do PSA, então a substituição do quadro está indisponível no momento."
   },
   "kinds": {
     "composite": "Composto (todas ou alguma de várias)",

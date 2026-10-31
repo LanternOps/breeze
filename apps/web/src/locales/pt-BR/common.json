@@ -1107,7 +1107,8 @@
           "paused": "Os chamados de alertas estão pausados até que a conexão com o PSA volte a funcionar.",
           "companyLinksUnverified": "Confirme os vínculos de empresas desta instância do PSA.",
           "invalidConfig": "As configurações salvas dos chamados de alertas não são válidas. Revise-as e salve novamente.",
-          "unsupportedProvider": "Os chamados de alertas não estão disponíveis para este provedor de PSA."
+          "unsupportedProvider": "Os chamados de alertas não estão disponíveis para este provedor de PSA.",
+          "credentialsUnusable": "As credenciais desta conexão estão incompletas ou ilegíveis. Edite a conexão e insira-as novamente."
         },
         "fields": {
           "enabled": "Ativar chamados de alertas",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Chamados de alertas"
+        },
+        "loadError": {
+          "message": "Não foi possível carregar as configurações de chamados de alertas",
+          "retry": "Tentar novamente"
+        },
+        "configInvalid": {
+          "warning": "Não foi possível ler as configurações salvas de chamados de alertas. Salvar as substituirá.",
+          "confirm": "Substituir as configurações ilegíveis"
         }
       },
       "PsaCompanyImport": {

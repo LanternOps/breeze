@@ -1107,7 +1107,8 @@
           "paused": "Alarm-Tickets sind pausiert, bis die PSA-Verbindung wieder funktioniert.",
           "companyLinksUnverified": "Bestätigen Sie die Firmenzuordnungen für diese PSA-Instanz.",
           "invalidConfig": "Die gespeicherten Einstellungen für Alarm-Tickets sind ungültig. Prüfen Sie sie und speichern Sie erneut.",
-          "unsupportedProvider": "Alarm-Tickets sind für diesen PSA-Anbieter nicht verfügbar."
+          "unsupportedProvider": "Alarm-Tickets sind für diesen PSA-Anbieter nicht verfügbar.",
+          "credentialsUnusable": "Die Zugangsdaten dieser Verbindung sind unvollständig oder nicht lesbar. Bearbeiten Sie die Verbindung und geben Sie sie erneut ein."
         },
         "fields": {
           "enabled": "Alarm-Tickets aktivieren",
@@ -1135,6 +1136,14 @@
         },
         "readOnly": {
           "enabled": "Alarm-Tickets"
+        },
+        "loadError": {
+          "message": "Einstellungen für Alarm-Tickets konnten nicht geladen werden",
+          "retry": "Erneut versuchen"
+        },
+        "configInvalid": {
+          "warning": "Die gespeicherten Einstellungen für Alarm-Tickets konnten nicht gelesen werden. Beim Speichern werden sie ersetzt.",
+          "confirm": "Die unlesbaren Einstellungen ersetzen"
         }
       },
       "PsaCompanyImport": {

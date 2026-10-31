@@ -55,11 +55,12 @@ const BOARD_STATUSES = {
 type Recorded = { url: string; method: string; body: any };
 
 function install(opts: {
-  view: AlertTicketingView | Response;
+  view: AlertTicketingView | Response | ((n: number) => AlertTicketingView | Response);
   put?: Response;
-  options?: Response | ((url: string) => Response);
+  options?: Response | ((url: string) => Response | Promise<Response>);
   recorded?: Recorded[];
 }) {
+  let viewCalls = 0;
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method === 'PUT') {
@@ -71,7 +72,9 @@ function install(opts: {
       return typeof o === 'function' ? o(url) : o;
     }
     if (url === BASE) {
-      return 'ok' in opts.view ? (opts.view as Response) : json({ data: opts.view });
+      viewCalls += 1;
+      const v = typeof opts.view === 'function' ? opts.view(viewCalls) : opts.view;
+      return 'ok' in v ? (v as Response) : json({ data: v });
     }
     throw new Error(`Unexpected fetch ${method} ${url}`);
   });
@@ -94,6 +97,98 @@ describe('PsaAlertTicketingCard', () => {
     const { container } = render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders nothing on 401', async () => {
+    install({ view: json({ error: 'unauthorized' }, 401) });
+    const { container } = render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows a load error with a working Retry on a 500', async () => {
+    install({ view: n => (n === 1 ? json({ error: 'boom' }, 500) : makeView({ companyLinksConfirmed: true })) });
+    const user = userEvent.setup();
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    const err = await screen.findByTestId('psa-alert-ticketing-load-error');
+    expect(err).toHaveTextContent('Could not load alert ticket settings');
+    expect(screen.getByTestId('psa-alert-ticketing-card')).toHaveTextContent('CW');
+    await user.click(screen.getByTestId('psa-alert-ticketing-load-retry'));
+    expect(await screen.findByTestId('psa-alert-ticketing-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('psa-alert-ticketing-load-error')).not.toBeInTheDocument();
+  });
+
+  it('shows the load error when the request throws', async () => {
+    fetchMock.mockRejectedValue(new Error('network'));
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    expect(await screen.findByTestId('psa-alert-ticketing-load-error')).toBeInTheDocument();
+  });
+
+  it('keeps the form when the reload after a 409 conflict fails', async () => {
+    install({
+      view: n => (n === 1 ? makeView({ companyLinksConfirmed: true, config: { ...baseConfig(), enabled: false } }) : json({ error: 'boom' }, 500)),
+      put: json({ error: 'conflict', code: 'alert_ticketing_rev_conflict', currentRev: 9 }, 409),
+    });
+    const user = userEvent.setup();
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    await user.click(await screen.findByTestId('psa-alert-ticketing-save'));
+    expect(await screen.findByTestId('psa-alert-ticketing-load-error')).toBeInTheDocument();
+    expect(screen.getByTestId('psa-alert-ticketing-form')).toBeInTheDocument();
+  });
+
+  it('requires the replace checkbox before saving an unreadable stored config', async () => {
+    const recorded: Recorded[] = [];
+    install({ view: makeView({ config: null, configInvalid: true, companyLinksConfirmed: true }), recorded });
+    const user = userEvent.setup();
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    expect(await screen.findByTestId('psa-alert-ticketing-config-invalid')).toHaveTextContent(
+      'The saved alert ticket settings could not be read. Saving replaces them.',
+    );
+    const save = screen.getByTestId('psa-alert-ticketing-save');
+    expect(save).toBeDisabled();
+    await user.click(screen.getByTestId('psa-alert-ticketing-confirm-replace'));
+    expect(save).toBeEnabled();
+    await user.click(save);
+    await waitFor(() => expect(recorded).toHaveLength(1));
+  });
+
+  it('clears the previous board statuses immediately when the board changes', async () => {
+    install({
+      view: makeView({ companyLinksConfirmed: true }),
+      options: url =>
+        url.includes('boardId=6') ? new Promise<Response>(() => {}) : json({ data: url.includes('boardId=') ? BOARD_STATUSES : OPTIONS }),
+    });
+    const user = userEvent.setup();
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Service Board' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByTestId('psa-alert-ticketing-board'), '5');
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Done (closed)' })).toHaveLength(2));
+    await user.selectOptions(screen.getByTestId('psa-alert-ticketing-board'), '6');
+    expect(screen.queryAllByRole('option', { name: 'Done (closed)' })).toHaveLength(0);
+  });
+
+  it('clears statuses when the options fetch fails', async () => {
+    install({
+      view: makeView({ companyLinksConfirmed: true }),
+      options: url =>
+        url.includes('boardId=6') ? json({ error: 'PSA unavailable' }, 502) : json({ data: url.includes('boardId=') ? BOARD_STATUSES : OPTIONS }),
+    });
+    const user = userEvent.setup();
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Service Board' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByTestId('psa-alert-ticketing-board'), '5');
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Done (closed)' })).toHaveLength(2));
+    await user.selectOptions(screen.getByTestId('psa-alert-ticketing-board'), '6');
+    await screen.findByTestId('psa-alert-ticketing-options-error');
+    expect(screen.queryAllByRole('option', { name: 'Done (closed)' })).toHaveLength(0);
+  });
+
+  it('explains credentials_unusable', async () => {
+    install({ view: makeView({ canManage: false, status: { active: false, reason: 'credentials_unusable' } }) });
+    render(<PsaAlertTicketingCard connectionId="c1" connectionName="CW" />);
+    expect(await screen.findByTestId('psa-alert-ticketing-status')).toHaveTextContent(
+      "This connection's credentials are incomplete or unreadable. Edit the connection and re-enter them.",
+    );
   });
 
   it('shows the partner-wide note, status, and paused banner', async () => {

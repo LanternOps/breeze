@@ -242,6 +242,8 @@ export const psaTicketMappings = pgTable('psa_ticket_mappings', {
   leaseToken: uuid('lease_token'),
   leaseUntil: timestamp('lease_until', { withTimezone: true }),
   lastError: text('last_error'),
+  // Same vocabulary as PsaAdapterErrorClass (services/psa/types.ts); pinned by
+  // psaTicketMappingStates.test.ts against the migration CHECK.
   lastErrorClass: text('last_error_class').$type<'auth' | 'rate_limited' | 'transient' | 'rejected' | 'unknown_outcome'>(),
   createSnapshot: jsonb('create_snapshot'),
   externalCompanyId: varchar('external_company_id', { length: 100 }),
@@ -262,5 +264,6 @@ export const psaTicketMappings = pgTable('psa_ticket_mappings', {
   lastErrorClassCheck: check('psa_ticket_mappings_last_error_class_chk', sql`${table.lastErrorClass} IS NULL OR ${table.lastErrorClass} IN ('auth', 'rate_limited', 'transient', 'rejected', 'unknown_outcome')`),
   attemptsCheck: check('psa_ticket_mappings_attempts_chk', sql`${table.attempts} >= 0`),
   leaseCheck: check('psa_ticket_mappings_lease_chk', sql`(${table.leaseToken} IS NULL) = (${table.leaseUntil} IS NULL)`),
+  createdTicketCheck: check('psa_ticket_mappings_created_ticket_chk', sql`${table.createState} <> 'created' OR ${table.externalTicketId} IS NOT NULL`),
   createSnapshotObjectCheck: check('psa_ticket_mappings_create_snapshot_object_chk', sql`${table.createSnapshot} IS NULL OR jsonb_typeof(${table.createSnapshot}) = 'object'`)
 }));

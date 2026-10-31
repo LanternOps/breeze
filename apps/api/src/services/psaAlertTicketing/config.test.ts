@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { psaInstanceKey, resolveAlertTicketingConfig, type AlertTicketingConnectionRow } from './config';
+import {
+  alertTicketingCredentialState,
+  psaInstanceKey,
+  resolveAlertTicketingConfig,
+  type AlertTicketingConnectionRow,
+} from './config';
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
@@ -28,10 +33,11 @@ function connection(overrides: Partial<AlertTicketingConnectionRow> = {}): Alert
 }
 
 const bound = { serviceManagementMode: 'external' as const, serviceManagementPsaConnectionId: CONNECTION_ID };
+const usable = (key: string | null) => ({ usable: true, instanceKey: key });
 
 describe('resolveAlertTicketingConfig', () => {
   it('is active for the bound partner connection in external mode with a confirmed instance', () => {
-    const resolved = resolveAlertTicketingConfig(connection(), bound, instanceKey);
+    const resolved = resolveAlertTicketingConfig(connection(), bound, usable(instanceKey));
     expect(resolved).toEqual({
       active: true,
       rev: 4,
@@ -54,12 +60,12 @@ describe('resolveAlertTicketingConfig', () => {
     ['company_links_unverified', connection(), bound, psaInstanceKey('connectwise', { ...credentials, baseUrl: 'https://other.example-psa.test' })],
     ['company_links_unverified', connection(), bound, null],
   ])('reports %s', (reason, row, partner, key) => {
-    const resolved = resolveAlertTicketingConfig(row, partner, key);
+    const resolved = resolveAlertTicketingConfig(row, partner, usable(key));
     expect(resolved).toMatchObject({ active: false, reason });
   });
 
   it('returns the parsed config with an inactive reason so the card can preview it', () => {
-    const resolved = resolveAlertTicketingConfig(connection({ alertTicketing: { enabled: false, boardId: 7 } }), bound, instanceKey);
+    const resolved = resolveAlertTicketingConfig(connection({ alertTicketing: { enabled: false, boardId: 7 } }), bound, usable(instanceKey));
     expect(resolved).toEqual({
       active: false,
       reason: 'disabled',
@@ -69,8 +75,23 @@ describe('resolveAlertTicketingConfig', () => {
   });
 
   it('never returns a config it could not parse', () => {
-    const resolved = resolveAlertTicketingConfig(connection({ alertTicketing: 'garbage' }), bound, instanceKey);
+    const resolved = resolveAlertTicketingConfig(connection({ alertTicketing: 'garbage' }), bound, usable(instanceKey));
     expect(resolved).toEqual({ active: false, reason: 'invalid_config', rev: 4, config: null });
+  });
+});
+
+describe('credentials', () => {
+  it('reports credentials_unusable for missing or undecryptable credentials, even with a confirmed instance', () => {
+    const resolved = resolveAlertTicketingConfig(connection(), bound, { usable: false, instanceKey });
+    expect(resolved).toMatchObject({ active: false, reason: 'credentials_unusable' });
+  });
+
+  it('alertTicketingCredentialState validates the full provider credential set', () => {
+    expect(alertTicketingCredentialState('connectwise', { ...credentials, publicKey: 'p', privateKey: 's' }))
+      .toEqual({ usable: true, instanceKey });
+    // baseUrl alone fingerprints the instance but cannot authenticate.
+    expect(alertTicketingCredentialState('connectwise', credentials)).toEqual({ usable: false, instanceKey });
+    expect(alertTicketingCredentialState('connectwise', null)).toEqual({ usable: false, instanceKey: null });
   });
 });
 

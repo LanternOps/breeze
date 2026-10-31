@@ -174,7 +174,8 @@
     },
     "psaBoardDefault": "Usar el tablero predeterminado de la conexión",
     "psaBoardHelp": "Los tickets de alertas de este monitor se crean en este tablero en lugar del predeterminado de la conexión.",
-    "psaBoardReadOnly": "Los tickets de alertas van al tablero #{{id}} del PSA"
+    "psaBoardReadOnly": "Los tickets de alertas van al tablero #{{id}} del PSA",
+    "psaBoardUnavailable": "No se pudieron cargar los tableros del PSA, por lo que la sustitución del tablero no está disponible por ahora."
   },
   "kinds": {
     "composite": "Compuesto (todas o alguna de varias)",
