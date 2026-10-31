@@ -102,7 +102,11 @@ const EE_FILES = existsSync(EE) ? walk(EE).map((f) => `ee/${relative(EE, f).repl
 /** Every background/service module that reads devices or carries a Quick Support/ephemeral exclusion. */
 function discovered(): string[] {
   // This wrapper delegates device reads to filterEngine, so SQL discovery cannot see it.
-  const hits = new Set<string>(['services/partnerGroupPreview.ts']);
+  const hits = new Set<string>([
+    'services/partnerGroupPreview.ts',
+    // W15 (#6785): explicitly classify this billing-only service as required by the wave contract.
+    'services/pax8OrderPreview.ts',
+  ]);
   for (const file of [...JOB_FILES, ...SERVICE_FILES, ...EE_FILES]) {
     const code = read(file);
     if (DEVICE_READ.test(code) || EXCLUSION_MARKERS.test(code)) hits.add(file);
@@ -208,6 +212,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/pax8OrderPreview.ts': 'W15 (#6785): read-only Pax8 order billing evidence; no device access or fan-out',
   'services/webhookPayload/alertEnrichment.ts': 'enriches the webhook payload of one already-raised alert by that alert\'s own device_id; selects no targets',
   'services/manualAssetOps.ts': 'manual (non-networked) inventory CRUD (#4622, lifted from routes/devices/manual.ts): reads agent devices only to resolve the ONE device id a link request names (same-org + same-site check); selects no fan-out targets and runs nothing',
   'services/aiToolsCustomFields.ts': 'manage_custom_fields set_values (W12, #6782): re-reads the custom-field projection of the ONE device the central deviceArgs gate and verifyDeviceAccess already resolved (verifyDeviceAccess excludes parked devices); selects no targets',
@@ -481,6 +486,12 @@ const EXEMPT: Record<string, string> = {
 
 describe('contract: background selectors leave parked devices out', () => {
   const found = discovered();
+
+  it('W15 classifies the new Pax8 preview service as billing evidence with no device fan-out', () => {
+    expect(found).toContain('services/pax8OrderPreview.ts');
+    expect(EXEMPT['services/pax8OrderPreview.ts']).toContain('no device');
+    expect(DEVICE_READ.test(read('services/pax8OrderPreview.ts'))).toBe(false);
+  });
 
   it('discovers the expected shape of the tree (not vacuous)', () => {
     expect(found.length).toBeGreaterThan(60);

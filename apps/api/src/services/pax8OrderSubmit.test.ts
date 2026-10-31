@@ -126,13 +126,25 @@ function setup(
 beforeEach(() => vi.clearAllMocks());
 
 describe('preflightOrder', () => {
+  it('marks a successful vendor dry run as sent', async () => {
+    const { service } = setup();
+    await expect(service.preflightOrder({ partnerId: 'p1', orderId: 'ord-1' }))
+      .resolves.toEqual({ ok: true, sentToPax8: true });
+  });
+  it('preserves non-validation errors for tool-layer mapping', async () => {
+    const { service, client } = setup();
+    const cause = new Pax8ApiError('unavailable', 503, 'outage');
+    client.createOrder.mockRejectedValueOnce(cause);
+    await expect(service.preflightOrder({ partnerId: 'p1', orderId: 'ord-1' }))
+      .resolves.toEqual({ ok: false, errorBody: 'outage', cause });
+  });
   it('resolves the mapping before the isMock request and returns the raw 422 body', async () => {
     const { service, repository, client, outside } = setup();
     const raw = '{"details":[{"message":"msDomain is required"}]}';
     client.createOrder.mockRejectedValueOnce(new Pax8ApiError('Pax8 API returned 422', 422, raw));
 
     await expect(service.preflightOrder({ partnerId: 'p1', orderId: 'ord-1' }))
-      .resolves.toEqual({ ok: false, errorBody: raw });
+      .resolves.toEqual({ ok: false, errorBody: raw, cause: expect.any(Pax8ApiError) });
 
     expect(repository.loadResolvedOrder).toHaveBeenCalledBefore(repository.createClient as any);
     expect(client.createOrder).toHaveBeenCalledWith(expect.objectContaining({ companyId: 'company-1' }), { isMock: true });
@@ -142,7 +154,7 @@ describe('preflightOrder', () => {
   it('skips Pax8 when there are no new subscriptions', async () => {
     const { service, client, repository } = setup([changeLine]);
     await expect(service.preflightOrder({ partnerId: 'p1', orderId: 'ord-1' }))
-      .resolves.toEqual({ ok: true });
+      .resolves.toEqual({ ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' });
     expect(client.createOrder).not.toHaveBeenCalled();
     expect(repository.createClient).not.toHaveBeenCalled();
   });

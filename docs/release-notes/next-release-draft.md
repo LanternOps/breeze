@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### PAM deny closes the UAC prompt after a dialog timeout (#10370)
 
 - **Agent fix.** When the user did not answer the "Breeze — Elevation Request" dialog in time, the agent's deny could close its own dialog instead of the Windows UAC prompt, so the prompt stayed on screen (`deny enforcement FAILED … consent_did_not_close`). The agent now closes its dialog first (new helper verb `pam_close_dialog`, advertised as `supportsPamDialogClose`). When it knows the request's own `consent.exe`, it closes that prompt by its window, which does not depend on keyboard focus. This needs the agent and helper from this release; an older helper keeps the old behaviour. New agent log lines: `pam: closed the elevation dialog before denying` and `pam: helper cannot close its elevation dialog on request`. No server change, no migration.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

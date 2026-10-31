@@ -19,7 +19,7 @@ import {
   type MonitorKind,
   type MonitorDeliveryMode,
 } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
@@ -88,6 +88,9 @@ export interface MonitorFormValues {
   recurrenceActions: Array<Record<string, unknown>>;
   pauseResponsesOnEscalation: boolean;
   aiAgentId?: string | null;
+  // Form-only: '' = the connection's default board. Sent on the wire as a number | null,
+  // and only when the board select is shown (see onSubmit).
+  psaBoardId?: string;
   ownerScope?: 'organization' | 'partner';
 }
 
@@ -126,6 +129,7 @@ const monitorFormSchema = z
     recurrenceActions: z.array(z.record(z.string(), z.unknown())),
     pauseResponsesOnEscalation: z.boolean(),
     aiAgentId: z.string().nullable().optional(),
+    psaBoardId: z.string().optional(),
     ownerScope: z.enum(['organization', 'partner']).optional(),
   })
   // Shape-only above; these two rules pull in the REAL shared per-kind
@@ -299,6 +303,65 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const watchDeliveryMode = watch('deliveryMode');
   const watchOwnerScope = watch('ownerScope');
   const watchEscalationPolicyId = watch('escalationPolicyId');
+  const watchPsaBoardId = watch('psaBoardId');
+  // Alert -> PSA ticket board override. Changing it needs partner-wide config
+  // rights (the API 403s a change otherwise), so the select only exists for
+  // those callers AND when the partner has an external PSA bound. Any lookup
+  // failure leaves `psaBoards` null and the select hidden.
+  const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+  const [psaBoards, setPsaBoards] = useState<Array<{ id: number; name: string }> | null>(null);
+  const [psaLookupSettled, setPsaLookupSettled] = useState(false);
+  const [psaBoardsUnavailable, setPsaBoardsUnavailable] = useState(false);
+  const [loadedPsaBoardId, setLoadedPsaBoardId] = useState<number | null>(null);
+  const showPsaBoardSelect = psaBoards !== null;
+  useEffect(() => {
+    if (!isPartnerScope || !canManagePartnerWide) {
+      setPsaBoards(null);
+      setPsaBoardsUnavailable(false);
+      return;
+    }
+    let cancelled = false;
+    let bound = false;
+    let failedStatus: number | string | null = null;
+    setPsaBoardsUnavailable(false);
+    (async () => {
+      try {
+        const meRes = await fetchWithAuth('/orgs/partners/me');
+        if (!meRes?.ok) return;
+        const meBody = await meRes.json().catch(() => null);
+        const partner = (meBody?.data ?? meBody) as
+          { serviceManagementMode?: unknown; serviceManagementPsaConnectionId?: unknown } | null;
+        const connectionId = partner?.serviceManagementPsaConnectionId;
+        if (partner?.serviceManagementMode !== 'external' || typeof connectionId !== 'string' || !connectionId) return;
+        // From here the partner IS bound: a failure means "unavailable", not "absent".
+        bound = true;
+        const optRes = await fetchWithAuth(`/psa/connections/${connectionId}/alert-ticketing/options`);
+        if (!optRes?.ok) {
+          failedStatus = optRes?.status ?? 'no response';
+          return;
+        }
+        const optBody = await optRes.json().catch(() => null);
+        const boards = optBody?.data?.boards?.options;
+        if (!cancelled && Array.isArray(boards)) {
+          setPsaBoards(boards.filter((b: { id?: unknown; name?: unknown }) => typeof b?.id === 'number' && typeof b?.name === 'string'));
+        } else {
+          failedStatus = 'malformed response';
+        }
+      } catch {
+        // Optional control: hide the select; surface a hint only when bound.
+        failedStatus = 'request failed';
+      } finally {
+        if (!cancelled && bound && failedStatus !== null) {
+          console.warn('Could not load PSA boards for the monitor board override (status: %s)', String(failedStatus));
+          setPsaBoardsUnavailable(true);
+        }
+        if (!cancelled) setPsaLookupSettled(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPartnerScope, canManagePartnerWide]);
   const isLoading = saving || isSubmitting;
   const isPartnerOwned = isNew ? watchOwnerScope === 'partner' : monitorPartnerId !== null;
   const ownerOrgId = isNew ? prefillOrgId ?? currentOrgId : monitorOrgId;
@@ -412,7 +475,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         recurrenceActions: monitor.recurrenceActions ?? [],
         pauseResponsesOnEscalation: monitor.pauseResponsesOnEscalation ?? true,
         aiAgentId: monitor.aiAgentId ?? null,
+        psaBoardId: typeof monitor.psaBoardId === 'number' ? String(monitor.psaBoardId) : '',
       });
+      setLoadedPsaBoardId(typeof monitor.psaBoardId === 'number' ? monitor.psaBoardId : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : stableT('monitoring:editor.errors.load'));
     } finally {
@@ -526,6 +591,12 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         pauseResponsesOnEscalation: values.pauseResponsesOnEscalation,
         aiAgentId: values.aiAgentId || null,
       };
+      // Omit the key entirely unless the select was shown: a caller who cannot manage
+      // partner-wide config must never send (or null out) the board override.
+      if (showPsaBoardSelect) {
+        const boardNumber = values.psaBoardId ? Number(values.psaBoardId) : NaN;
+        payload.psaBoardId = Number.isInteger(boardNumber) && boardNumber > 0 ? boardNumber : null;
+      }
       if (isNew && isPartnerScope && values.ownerScope) {
         payload.ownerScope = values.ownerScope;
       }
@@ -1024,6 +1095,33 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                   {compatibleEscalationPolicies.map(policy => <option key={policy.id} value={policy.id}>{policy.name}</option>)}
                 </select>
               </div>
+            )}
+            {showPsaBoardSelect && (
+              <div className="space-y-2">
+                <label htmlFor="monitor-editor-psa-board" className="text-xs font-medium text-muted-foreground">
+                  {t('monitoring:editor.fields.psaBoard')}
+                </label>
+                <select id="monitor-editor-psa-board" data-testid="monitor-editor-psa-board"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register('psaBoardId')}
+                  value={watchPsaBoardId ?? ''}>
+                  <option value="">{t('monitoring:editor.psaBoardDefault')}</option>
+                  {watchPsaBoardId && !psaBoards?.some(b => String(b.id) === watchPsaBoardId) && (
+                    <option value={watchPsaBoardId}>{`#${watchPsaBoardId}`}</option>
+                  )}
+                  {psaBoards?.map(b => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground">{t('monitoring:editor.psaBoardHelp')}</p>
+              </div>
+            )}
+            {!showPsaBoardSelect && psaBoardsUnavailable && (
+              <p className="text-xs text-muted-foreground" data-testid="monitor-editor-psa-board-unavailable">
+                {t('monitoring:editor.psaBoardUnavailable')}
+              </p>
+            )}
+            {!showPsaBoardSelect && loadedPsaBoardId !== null && (!isPartnerScope || !canManagePartnerWide || psaLookupSettled) && (
+              <p className="text-xs text-muted-foreground" data-testid="monitor-editor-psa-board-readonly">
+                {t('monitoring:editor.psaBoardReadOnly', { id: loadedPsaBoardId })}
+              </p>
             )}
             <a href="/alerts/delivery" data-testid="monitor-editor-delivery-home" className="text-sm text-primary underline">
               {t('monitoring:editor.deliveryPreview.manage')}
