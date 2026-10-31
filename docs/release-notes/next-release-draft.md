@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Windows physical-disk health (#10753)
+
+- **Agent:** `windows_physical_disk` now runs `Get-PhysicalDisk` (60 s) and `Get-StorageReliabilityCounter` (45 s, best-effort) as two separate PowerShell runs. A slow or failed reliability-counter query keeps the disk inventory, reports the source `ok` with a warning, and leaves only the unanswered disks without temperature/wear/error counters. Before, one 60 s deadline covered both, so slow counters failed the source, backed it off for 6 hours and raised **Hardware monitoring tool failing**. A `Get-PhysicalDisk` failure still fails the source and still alerts. Needs the new agent build; no server change, no migration.
