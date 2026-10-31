@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### AI per-device script history (#10417)
+
+- `get_script_execution_history` takes `deviceId` (and an optional `since`) in place of, or together with, `scriptId`, so the assistant can answer "did my script run on device X?". Each row now carries the script name, source and trigger type. Same `scripts:read` permission as the device Scripts tab. No migration, no new environment variable.

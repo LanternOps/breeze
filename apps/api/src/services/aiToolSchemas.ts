@@ -2301,10 +2301,16 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     category: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
+  // #10417: scriptId OR deviceId — "did my push run on device X" has no script id.
   get_script_execution_history: z.object({
-    scriptId: uuid,
+    scriptId: uuid.optional(),
+    deviceId: uuid.optional(),
+    since: z.string().datetime({ offset: true }).optional(),
     limit: z.number().int().min(1).max(50).optional(),
-  }),
+  }).refine(
+    (data) => Boolean(data.scriptId || data.deviceId),
+    { message: 'Either scriptId or deviceId must be provided' }
+  ),
   get_script_execution: z.object({
     executionId: uuid,
     stdoutOffset: z.number().int().min(0).optional(),
