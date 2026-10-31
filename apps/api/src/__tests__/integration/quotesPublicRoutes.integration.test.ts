@@ -10,13 +10,13 @@
  * not stubbed.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { quotes, quoteLines } from '../../db/schema/quotes';
 import { createPartner, createOrganization } from './db-utils';
-import { createQuoteAcceptToken } from '../../services/quoteAcceptToken';
+import { createQuoteAcceptToken, revokeQuoteAcceptJti } from '../../services/quoteAcceptToken';
 import { getRedis } from '../../services/redis';
 import { quotesPublicRoutes } from '../../routes/quotesPublic';
 
@@ -139,6 +139,38 @@ describe('public quote routes (HTTP, unauthenticated token)', () => {
     const { token } = await seedQuote({ status: 'draft' });
     expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(404);
     expect((await app().request('/quotes/public/not-a-real-token-string/pdf')).status).toBe(401);
+  });
+
+  runDb('GET /pdf with a validly signed token whose org does not own the quote returns 404 (org-set scoping)', async () => {
+    const victim = await seedQuote();
+    const other = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      return { orgId: org.id, partnerId: partner.id };
+    });
+    const { token } = await createQuoteAcceptToken({ quoteId: victim.quoteId, orgId: other.orgId, partnerId: other.partnerId });
+    expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(404);
+  });
+
+  runDb('GET /pdf rejects an expired, a tampered and a revoked token with 401', async () => {
+    const { token, quoteId, orgId } = await seedQuote();
+    // Tampered signature.
+    const tampered = token.slice(0, -2) + (token.endsWith('AA') ? 'BB' : 'AA');
+    expect((await app().request(`/quotes/public/${tampered}/pdf`)).status).toBe(401);
+    // Expired: the default TTL is 30 days; only Date is faked so pg/redis timers keep running.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60 * 1000);
+      expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(401);
+    } finally {
+      vi.useRealTimers();
+    }
+    // Still live before revocation, dead after (the jti is what accept/decline revoke).
+    expect((await app().request(`/quotes/public/${token}/pdf`)).status).toBe(200);
+    const [row] = await withSystemDbAccessContext(() => db.select({ partnerId: quotes.partnerId }).from(quotes).where(eq(quotes.id, quoteId)));
+    const fresh = await createQuoteAcceptToken({ quoteId, orgId, partnerId: row!.partnerId });
+    await revokeQuoteAcceptJti(fresh.jti);
+    expect((await app().request(`/quotes/public/${fresh.token}/pdf`)).status).toBe(401);
   });
 
   runDb('GET /pdf on a superseded quote returns 404 (withdrawn prices never leave as a file)', async () => {

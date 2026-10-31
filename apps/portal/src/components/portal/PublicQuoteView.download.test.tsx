@@ -81,14 +81,37 @@ describe('PublicQuoteView Download PDF', () => {
     expect(screen.queryByTestId('public-quote-download-error')).toBeNull();
   });
 
-  it('says so when the download fails instead of saving an error body as a PDF', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'Quote not found' }), { status: 404 }));
+  it.each([
+    [500, 'Could not download the proposal PDF.'],
+    [422, 'Could not download the proposal PDF.'],
+    [429, 'Too many downloads. Please try again in a minute.'],
+    [401, 'This proposal link is no longer available.'],
+    [404, 'This proposal link is no longer available.'],
+    [410, 'This proposal link is no longer available.'],
+  ])('a %i says so (with advice that fits) instead of saving an error body as a PDF', async (status, message) => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'x' }), { status }));
     render(<PublicQuoteView token={TOKEN} initial={DETAIL} />);
 
     fireEvent.click(screen.getByTestId('public-quote-download'));
 
-    expect(await screen.findByTestId('public-quote-download-error')).toHaveTextContent('Could not download the proposal PDF.');
+    expect(await screen.findByTestId('public-quote-download-error')).toHaveTextContent(message);
     expect(anchorDownloads).toEqual([]);
+  });
+
+  it('ignores a second click while the first download is still preparing', async () => {
+    let resolveFetch: (r: Response) => void = () => {};
+    fetchMock.mockReturnValue(new Promise<Response>((r) => { resolveFetch = r; }));
+    render(<PublicQuoteView token={TOKEN} initial={DETAIL} />);
+    const button = screen.getByTestId('public-quote-download') as HTMLButtonElement;
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.disabled).toBe(true));
+    expect(button).toHaveTextContent('Preparing…');
+    fireEvent.click(button);
+    resolveFetch(new Response('%PDF-1.7', { status: 200 }));
+
+    await waitFor(() => expect(anchorDownloads).toEqual(['Q-2026-0042.pdf']));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports a network failure the same way', async () => {
@@ -101,8 +124,8 @@ describe('PublicQuoteView Download PDF', () => {
     expect((screen.getByTestId('public-quote-download') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('stays available after the proposal is accepted or declined (the copy they signed)', () => {
-    render(<PublicQuoteView token={TOKEN} initial={{ ...DETAIL, quote: { ...DETAIL.quote, status: 'converted' } }} />);
+  it.each(['converted', 'declined', 'expired'] as const)('stays available on a %s proposal', (status) => {
+    render(<PublicQuoteView token={TOKEN} initial={{ ...DETAIL, quote: { ...DETAIL.quote, status } }} />);
     expect(screen.getByTestId('public-quote-download')).toBeTruthy();
   });
 

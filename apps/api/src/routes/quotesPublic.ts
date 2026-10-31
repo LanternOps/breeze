@@ -286,8 +286,15 @@ quotesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (c)
       'Content-Length': String(bytes.byteLength),
     });
   } catch (err) {
-    // An unreadable uploaded contract surfaces as its typed 4xx, as on the portal route.
-    if (err instanceof PdfMergeError) return c.json({ error: err.message, code: err.code }, err.status);
+    // An unreadable uploaded contract keeps its typed 4xx status and code, as on the portal
+    // route, but not its message: that carries the PDF parser's own text, which an
+    // unauthenticated caller has no use for. It is a fault in stored bytes that a 4xx hides
+    // from 5xx alerting, so it is logged and reported here.
+    if (err instanceof PdfMergeError) {
+      console.error('[quotesPublic] proposal PDF contract merge failed', { quoteId: quote.id, err });
+      captureException(err);
+      return c.json({ error: 'This proposal’s PDF is unavailable right now. Please contact the sender.', code: err.code }, err.status);
+    }
     throw err;
   }
 });

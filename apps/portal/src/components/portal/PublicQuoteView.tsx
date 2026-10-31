@@ -29,6 +29,15 @@ interface PublicQuoteViewProps {
   components?: DocumentHostComponents;
 }
 
+/** What the Download PDF failure notice says: retry advice for the per-proposal
+ *  rate cap, "gone" for a link the API no longer honours (bad/expired/spent token,
+ *  replaced or withdrawn proposal, archived company), else a generic failure. */
+function downloadFailureMessage(status: number): string {
+  if (status === 429) return 'Too many downloads. Please try again in a minute.';
+  if (status === 401 || status === 404 || status === 410) return 'This proposal link is no longer available.';
+  return 'Could not download the proposal PDF.';
+}
+
 export function PublicQuoteView({ token, initial, error, superseded, accepted, components }: PublicQuoteViewProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
@@ -195,7 +204,7 @@ export function PublicQuoteView({ token, initial, error, superseded, accepted, c
     setDownloadError(null);
     try {
       const res = await fetch(buildPortalApiUrl(`/quotes/public/${encodeURIComponent(token)}/pdf`));
-      if (!res.ok) { setDownloadError('Could not download the proposal PDF.'); return; }
+      if (!res.ok) { setDownloadError(downloadFailureMessage(res.status)); return; }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');

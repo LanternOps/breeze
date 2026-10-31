@@ -53,6 +53,10 @@ vi.mock('../services/redis', () => ({ getRedis: () => redisState.client }));
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: vi.fn(async () => ({ allowed: redisState.allowed, remaining: 0, resetAt: new Date() })),
 }));
+vi.mock('../services/sentry', async (importActual) => {
+  const actual = await importActual<typeof import('../services/sentry')>();
+  return { ...actual, captureException: vi.fn() };
+});
 
 import { quotesPublicRoutes } from './quotesPublic';
 import { db } from '../db';
@@ -61,6 +65,7 @@ import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../service
 import { renderCustomerQuotePdf } from '../services/customerQuotePdf';
 import { rateLimiter } from '../services/rate-limit';
 import { PdfMergeError } from '../services/pdfMerge';
+import { captureException } from '../services/sentry';
 import { bySameOriginFramePath, isSameOriginFramePath } from '../middleware/sameOriginFrame';
 import { routeReferrerPolicyWins } from '../middleware/routeReferrerPolicy';
 import { securityMiddleware } from '../middleware/security';
@@ -126,8 +131,16 @@ describe('quotesPublic GET /:token/pdf — live link', () => {
     expect(renderMock.mock.calls[0]![0]).toMatchObject({ id: QUOTE_ID, orgId: ORG_ID });
   });
 
-  it('serves an expired proposal, like the page does (the customer may still keep a copy)', async () => {
-    dbResults.push([quoteRow({ status: 'expired', expiryDate: '2026-01-01' })]);
+  // The page serves every non-draft, live-link status; so does the PDF (the
+  // customer keeps the copy they signed or let lapse).
+  it.each([
+    ['an expired proposal', { status: 'expired', expiryDate: '2026-01-01' }],
+    ['a sent proposal past its expiry date (before the sweep)', { status: 'sent', expiryDate: '2026-01-01' }],
+    ['a viewed proposal', { status: 'viewed' }],
+    ['a converted proposal (accepted on behalf, link still live)', { status: 'converted' }],
+    ['a declined proposal', { status: 'declined' }],
+  ])('serves %s, like the page does', async (_label, overrides) => {
+    dbResults.push([quoteRow(overrides)]);
 
     const res = await app().request(pdfPath);
 
@@ -143,14 +156,38 @@ describe('quotesPublic GET /:token/pdf — live link', () => {
     expect(res.headers.get('content-disposition')).toBe(`attachment; filename="quote-${QUOTE_ID}.pdf"`);
   });
 
-  it('maps an unreadable uploaded contract (PdfMergeError) to its typed 4xx, still no-store', async () => {
+  it('maps an unreadable uploaded contract (PdfMergeError) to its typed 4xx with a customer-safe message, and reports it', async () => {
     dbResults.push([quoteRow()]);
-    renderMock.mockRejectedValue(new PdfMergeError('An uploaded contract PDF could not be read', 422, 'CONTRACT_PDF_UNREADABLE'));
+    const parserDetail = 'Failed to parse PDF document (line:0 col:0 offset=0): No PDF header found';
+    const err = new PdfMergeError(`An attached contract PDF could not be read: ${parserDetail}`, 422, 'CONTRACT_PDF_UNREADABLE');
+    renderMock.mockRejectedValue(err);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const res = await app().request(pdfPath);
 
     expect(res.status).toBe(422);
-    expect(await res.json()).toMatchObject({ code: 'CONTRACT_PDF_UNREADABLE' });
+    const body = await res.json() as { error: string; code: string };
+    expect(body.code).toBe('CONTRACT_PDF_UNREADABLE');
+    // The parser's own text never reaches an unauthenticated caller.
+    expect(body.error).not.toContain(parserDetail);
+    expect(body.error).toBe('This proposal’s PDF is unavailable right now. Please contact the sender.');
+    expectCapabilityHeaders(res);
+    // A stored-bytes fault is a 4xx, so 5xx alerting never sees it: it must be reported.
+    expect(captureException).toHaveBeenCalledWith(err);
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it('keeps no-store / no-referrer on an unexpected render failure (500 through onError)', async () => {
+    dbResults.push([quoteRow()]);
+    renderMock.mockRejectedValue(new Error('pdfkit exploded'));
+    const a = new Hono();
+    a.route('/quotes/public', quotesPublicRoutes);
+    a.onError((_err, c) => c.json({ error: 'Internal server error' }, 500));
+
+    const res = await a.request(pdfPath);
+
+    expect(res.status).toBe(500);
     expectCapabilityHeaders(res);
   });
 });
@@ -224,6 +261,27 @@ describe('quotesPublic GET /:token/pdf — render budget', () => {
     expect(res.status).toBe(429);
     expect(renderMock).not.toHaveBeenCalled();
     expect(rateLimiter).toHaveBeenCalledWith(redisState.client, `quote-public:pdf:${QUOTE_ID}`, 10, 60);
+  });
+
+  it('does not spend the budget on a dead link (gates run first)', async () => {
+    redisState.client = {};
+    dbResults.push([quoteRow({ status: 'superseded' })]);
+
+    const res = await app().request(pdfPath);
+
+    expect(res.status).toBe(404);
+    expect(rateLimiter).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the limiter itself throws (renders)', async () => {
+    redisState.client = {};
+    (rateLimiter as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('redis: connection reset'));
+    dbResults.push([quoteRow()]);
+
+    const res = await app().request(pdfPath);
+
+    expect(res.status).toBe(200);
+    expect(renderMock).toHaveBeenCalledTimes(1);
   });
 
   it('fails open when Redis is unavailable (renders)', async () => {
