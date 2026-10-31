@@ -339,6 +339,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
 | `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
 | `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
+| `WAKE_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep closed Wake-on-LAN attempt history |
+| `WAKE_ATTEMPT_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
+| `WAKE_ATTEMPT_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
 | `WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Days to keep delivered and failed webhook delivery records, clamped to 1–365. Pending and retrying deliveries are never deleted. Runs daily at 22:13 UTC; the first run after upgrading to v0.124.0 removes every delivered or failed record older than the window |
 | `WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
 | `WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
