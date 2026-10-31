@@ -33,9 +33,9 @@ export default function WispLinksPanel({
   const [expanded, setExpanded] = useState(false);
   const linkedKeys = useMemo(() => new Set(links.filter((l) => l.id !== null).map((l) => linkKey(l.ref.kind, l.ref.id))), [links]);
   const groups = [
-    { id: 'pinned', title: 'groupPinned', items: links.filter(isPinnedLink) },
-    { id: 'concerns', title: 'groupConcerns', items: links.filter((l) => l.source === 'concern') },
-    { id: 'recent', title: 'groupRecent', items: links.filter((l) => l.source === 'auto') },
+    { id: 'pinned', title: t('wisp.links.groupPinned'), items: links.filter(isPinnedLink) },
+    { id: 'concerns', title: t('wisp.links.groupConcerns'), items: links.filter((l) => l.source === 'concern') },
+    { id: 'recent', title: t('wisp.links.groupRecent'), items: links.filter((l) => l.source === 'auto') },
   ];
   let remaining = expanded ? links.length : 12;
   const pinCount = links.filter(isPinnedLink).length;
@@ -110,7 +110,7 @@ export default function WispLinksPanel({
             remaining -= visible.length;
             if (!visible.length) return null;
             return <div key={group.id} data-testid={`wisp-links-group-${group.id}`}>
-              <h3 className="mb-1 text-xs font-medium text-muted-foreground">{t(`wisp.links.${group.title}`)}</h3>
+              <h3 className="mb-1 text-xs font-medium text-muted-foreground">{group.title}</h3>
               <ul className="flex flex-wrap gap-1.5">
                 {visible.map((link) => <WispLinkPill key={linkKey(link.ref.kind, link.ref.id)} threadId={threadId} link={link}
                   busy={removingId !== null} onRemove={() => void remove(link)} onDismiss={() => void remove(link)}

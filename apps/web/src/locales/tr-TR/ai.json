@@ -787,7 +787,14 @@
       "addedByWisp": "Wisp tarafından eklendi",
       "added": "Wisp’e bağlandı",
       "addFailed": "Bu öğe bağlanamadı.",
-      "count": "{{count}} / {{max}} bağlı"
+      "count": "{{count}} / {{max}} bağlı",
+      "groupPinned": "Sabitlenenler",
+      "groupConcerns": "Açık konular",
+      "groupRecent": "Son kullanılanlar",
+      "pin": "Sabitle",
+      "dismiss": "Kapat",
+      "more": "Daha fazla",
+      "neighbours": "İlgili öğeler"
     },
     "picker": {
       "title": "Wisp’e öğe bağla",
@@ -811,11 +818,6 @@
       "loadFailed": "Bu liste yüklenemedi.",
       "alreadyLinked": "Zaten bağlı",
       "close": "Kapat"
-    },
-    "linkButton": {
-      "link": "Wisp’e bağla",
-      "linked": "Wisp’te bağlı",
-      "linking": "Bağlanıyor…"
     },
     "sidebar": {
       "openHome": "Wisp’te aç",
@@ -870,6 +872,12 @@
     "composer": {
       "placeholder": "Wisp'e mesaj",
       "link": "Bir öğe bağla"
+    },
+    "talk": {
+      "button": "Wisp ile konuş",
+      "buttonPlain": "Bunu yapay zekâya sor",
+      "draft": "{{label}} hakkında: ",
+      "switchFocus": "Wisp, {{from}} üzerine odaklanmış. {{to}} odağına geçilsin mi?"
     }
   },
   "wispConcerns": {
