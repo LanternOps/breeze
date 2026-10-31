@@ -166,6 +166,14 @@ const {
   };
 });
 
+vi.mock('../../services/alertSubject', () => ({
+  enrichAlertSubjects: async (rows: Record<string, unknown>[]) => {
+    const { formatAlertSubject } = await import('@breeze/shared');
+    return rows.map(row => ({ ...row, ...formatAlertSubject(row, row.ownerKind === 'backup_workload'
+      ? { dataSources: ['m365_mail'], customerName: 'Example organization' } : undefined) }));
+  },
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   gte: (col: unknown, val: unknown) => ({ op: 'gte', col, val }),
@@ -340,6 +348,24 @@ describe('/alerts correlation routes', () => {
       user: { id: '99999999-9999-4999-8999-999999999999' },
       canAccessOrg: (orgId: string) => orgId === ORG_1,
     };
+  });
+
+  it('includes owner metadata for a non-device persisted group member', async () => {
+    seedPersistedGroup();
+    const workload = state.alerts.find(alert => alert.id === ALERT_1);
+    expect(workload).toBeDefined();
+    Object.assign(workload ?? {}, { ownerKind: 'backup_workload', ownerRef: 'workload-1', deviceId: null });
+
+    const res = await makeApp().request('/alerts/correlations');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.groups[0].rootCause).toMatchObject({
+      ownerKind: 'backup_workload', owner: { kind: 'backup_workload', ref: 'workload-1' },
+      ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example organization',
+      deviceId: null,
+    });
   });
 
   it('returns detail correlations at GET /alerts/:alertId/correlations without leaking cross-org links', async () => {

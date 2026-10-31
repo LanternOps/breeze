@@ -47,6 +47,8 @@ import { escalationStepSchema, type EscalationStep } from './delivery/escalation
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
 import { alertOwnerKey } from './alertOwner';
+import { enrichAlertSubjects } from './alertSubject';
+import type { AlertSubject } from '@breeze/shared';
 import { alertOwningSiteId } from './alertOwnership';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
@@ -383,6 +385,7 @@ type PrepareSendResult =
       notificationRecord: typeof alertNotifications.$inferSelect;
       device: typeof devices.$inferSelect | undefined;
       org: typeof organizations.$inferSelect | undefined;
+      subject: AlertSubject;
     };
 
 /**
@@ -720,14 +723,16 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       }
     }
 
-    return { send: true, alert, channel, notificationRecord, device, org } satisfies PrepareSendResult;
+    const [subject] = await enrichAlertSubjects([{ ...alert, deviceName: device?.displayName || device?.hostname, orgName: org?.name }]);
+    if (!subject) throw new Error('Alert subject missing');
+    return { send: true, alert, channel, notificationRecord, device, org, subject } satisfies PrepareSendResult;
   });
 
   if (!prepared.send) {
     return { ...prepared.result, durationMs: Date.now() - startTime };
   }
 
-  const { alert, channel, notificationRecord, device, org } = prepared;
+  const { alert, channel, notificationRecord, device, org, subject } = prepared;
 
   // Phase 4c: Per-channel notification templates (pure computation — no DB/Redis needed)
   const channelTemplates = channel.templates as Record<string, string> | null;
@@ -738,8 +743,11 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       severity: alert.severity,
       message: alert.message || '',
       deviceId: alert.deviceId,
-      device: device?.displayName || device?.hostname || '',
-      deviceName: device?.displayName || device?.hostname || '',
+      device: device?.displayName || device?.hostname || subject.subjectName,
+      deviceName: device?.displayName || device?.hostname || subject.subjectName,
+      ownerKind: subject.ownerKind,
+      ownerLabel: subject.ownerLabel,
+      subjectName: subject.subjectName,
       hostname: device?.hostname || '',
       orgName: org?.name || '',
       triggeredAt: alert.triggeredAt.toISOString(),
@@ -748,8 +756,8 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
 
   // Use the per-channel template message body if available
   const alertForSend = messageBody !== (alert.message || alert.title)
-    ? { ...alert, message: messageBody }
-    : alert;
+    ? { ...alert, ...subject, message: messageBody }
+    : { ...alert, ...subject };
 
   // Send notification based on channel type — OUTSIDE any DB context (#1105).
   let success = false;
@@ -922,7 +930,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
  */
 async function sendEmailChannelNotification(
   config: Record<string, unknown>,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -953,7 +961,7 @@ async function sendEmailChannelNotification(
  */
 async function sendWebhookChannelNotification(
   config: WebhookConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
@@ -978,6 +986,10 @@ async function sendWebhookChannelNotification(
     severity: alert.severity,
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
+    owner: alert.owner,
+    ownerKind: alert.ownerKind,
+    ownerLabel: alert.ownerLabel,
+    subjectName: alert.subjectName,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
     orgId: alert.orgId,
     orgName: org?.name,
@@ -994,7 +1006,7 @@ async function sendWebhookChannelNotification(
 async function sendChatWebhookChannelNotification(
   channelType: 'slack' | 'teams',
   config: Record<string, unknown>,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string; retryable?: boolean }> {
@@ -1039,7 +1051,7 @@ async function sendChatWebhookChannelNotification(
  */
 export async function sendSmsChannelNotification(
   config: SmsChannelConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -1068,7 +1080,7 @@ export async function sendSmsChannelNotification(
  */
 async function sendPagerDutyChannelNotification(
   config: PagerDutyConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {
@@ -1105,7 +1117,7 @@ async function sendPagerDutyChannelNotification(
  */
 export async function sendPushoverChannelNotification(
   config: PushoverConfig,
-  alert: typeof alerts.$inferSelect,
+  alert: typeof alerts.$inferSelect & Partial<AlertSubject>,
   device: typeof devices.$inferSelect | undefined,
   org: typeof organizations.$inferSelect | undefined
 ): Promise<{ success: boolean; error?: string }> {

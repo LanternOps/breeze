@@ -6,6 +6,7 @@ import type { BreezeEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { listAlertExternalTickets, type AlertExternalTicket } from '../alertExternalTickets';
 import { alertWebhookDataV2Schema, type AlertWebhookDataV2, type AlertWebhookDataV2Partner } from './alertV2';
+import { enrichAlertSubjects } from '../alertSubject';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -53,6 +54,9 @@ async function readEnrichment(event: BreezeEvent) {
     ruleId: alerts.ruleId,
     monitorId: alerts.monitorId,
     deviceId: alerts.deviceId,
+    ownerKind: alerts.ownerKind,
+    ownerRef: alerts.ownerRef,
+    topologySiteId: alerts.topologySiteId,
     episodeId: alerts.episodeId,
     severity: alerts.severity,
     title: alerts.title,
@@ -94,13 +98,31 @@ async function readEnrichment(event: BreezeEvent) {
       .where(and(eq(organizationExternalLinks.orgId, event.orgId), eq(organizationExternalLinks.partnerId, row.partnerId)))
       .orderBy(asc(organizationExternalLinks.system), asc(organizationExternalLinks.externalId))
     : [];
-  return { row, orgExternalIds };
+  const parsedOwner = alertWebhookDataV2Schema.shape.owner.safeParse(payload.owner);
+  const payloadOwner = parsedOwner.success ? parsedOwner.data : null;
+  const fallbackOwnerKind: NonNullable<typeof row>['ownerKind'] = payloadOwner?.kind ?? 'device';
+  // A triggered event can be enriched before its alert INSERT commits. Use
+  // the event's owner identity, still pinned to the event org, in that case.
+  const subjectRows = row && (row.alertId || payloadOwner || validUuid(payload.deviceId)) ? [{
+    ...row,
+    orgId: event.orgId,
+    ...(!row.alertId ? {
+      ownerKind: fallbackOwnerKind,
+      ownerRef: payloadOwner?.kind === 'backup_workload' ? payloadOwner.ref : null,
+      topologySiteId: payloadOwner?.kind === 'topology_site' ? validUuid(payloadOwner.ref) : null,
+      deviceId: validUuid(payload.deviceId),
+    } : {}),
+  }] : [];
+  const [orgSubject] = await enrichAlertSubjects(subjectRows, { portal: true });
+  const [partnerSubject] = await enrichAlertSubjects(subjectRows);
+  return { row, orgExternalIds, orgSubject, partnerSubject };
 }
 
 type EnrichmentRow = Awaited<ReturnType<typeof readEnrichment>>['row'];
+type EnrichmentSubject = Awaited<ReturnType<typeof readEnrichment>>['orgSubject'];
 const topLevelKeys = new Set(Object.keys(alertWebhookDataV2Schema.shape));
 
-function project(event: BreezeEvent, row: EnrichmentRow, incomplete: boolean): AlertWebhookDataV2 {
+function project(event: BreezeEvent, row: EnrichmentRow, subject: EnrichmentSubject, incomplete: boolean): AlertWebhookDataV2 {
   const payload = eventPayload(event);
   const text = (key: keyof AlertWebhookDataV2): string | null =>
     stringOrNull(payload[key]) ?? stringOrNull(row?.[key as keyof NonNullable<EnrichmentRow>]);
@@ -112,8 +134,13 @@ function project(event: BreezeEvent, row: EnrichmentRow, incomplete: boolean): A
     : event.type === 'alert.resolved' ? 'resolved'
       : event.type === 'alert.suppressed' ? 'suppressed' : 'active';
   const alertId = text('alertId');
+  const payloadOwner = alertWebhookDataV2Schema.shape.owner.safeParse(payload.owner);
+  const owner = subject?.owner ?? (payloadOwner.success ? payloadOwner.data : null);
   return {
     alertId, ruleId: text('ruleId'), monitorId: text('monitorId'), deviceId: text('deviceId'), episodeId: text('episodeId'),
+    owner, ownerKind: subject?.ownerKind ?? owner?.kind ?? null,
+    ownerLabel: subject?.ownerLabel ?? stringOrNull(payload.ownerLabel),
+    subjectName: subject?.subjectName ?? stringOrNull(payload.subjectName),
     status,
     severity: payloadSeverity.success && payloadSeverity.data !== null ? payloadSeverity.data : rowSeverity.success ? rowSeverity.data : null,
     title: text('title'), message: text('message'), triggeredAt: time('triggeredAt'), acknowledgedAt: time('acknowledgedAt'), resolvedAt: time('resolvedAt'),
@@ -125,7 +152,9 @@ function project(event: BreezeEvent, row: EnrichmentRow, incomplete: boolean): A
     acknowledgedBy: text('acknowledgedBy'), suppressedBy: stringOrNull(payload.suppressedBy), suppressedUntil: time('suppressedUntil'),
     responsesOwner: typeof payload.responsesOwner === 'boolean' ? payload.responsesOwner : null,
     kind: stringOrNull(payload.kind), source: stringOrNull(payload.source),
-    details: Object.fromEntries(Object.entries(payload).filter(([key]) => !topLevelKeys.has(key))),
+    // W1 owner identity already lived in details. Promoting it is additive:
+    // receivers using details.owner keep receiving the original producer key.
+    details: Object.fromEntries(Object.entries(payload).filter(([key]) => !topLevelKeys.has(key) || key === 'owner')),
   };
 }
 
@@ -147,12 +176,14 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
   partner: Readonly<AlertWebhookDataV2Partner>;
 }> {
   let row: EnrichmentRow;
+  let orgSubject: EnrichmentSubject;
+  let partnerSubject: EnrichmentSubject;
   let orgExternalIds: { system: string; externalId: string }[] = [];
   let externalTickets: AlertWebhookDataV2['externalTickets'] = [];
   let partnerExternalTickets: AlertWebhookDataV2['externalTickets'] = [];
   let readFailed = false;
   try {
-    ({ row, orgExternalIds } = await runWithSystemDbAccess(() => readEnrichment(event)));
+    ({ row, orgExternalIds, orgSubject, partnerSubject } = await runWithSystemDbAccess(() => readEnrichment(event)));
   } catch (error) {
     const context = { errorId: 'WEBHOOK_ALERT_ENRICHMENT_FAILED', eventId: event.id, orgId: event.orgId, eventType: event.type };
     readFailed = true;
@@ -197,6 +228,8 @@ export async function buildAlertWebhookProjections(event: BreezeEvent): Promise<
       errorId: 'WEBHOOK_ALERT_ENRICHMENT_INCOMPLETE', eventId: event.id, orgId: event.orgId, eventType: event.type, reason,
     })}`);
   }
-  const data = { ...project(event, row, readFailed || reason !== null), externalTickets };
-  return { org: frozenCopy(data), partner: frozenCopy({ ...data, externalTickets: partnerExternalTickets, orgExternalIds }) };
+  const incomplete = readFailed || reason !== null;
+  const data = { ...project(event, row, orgSubject, incomplete), externalTickets };
+  const partnerData = { ...project(event, row, partnerSubject, incomplete), externalTickets: partnerExternalTickets, orgExternalIds };
+  return { org: frozenCopy(data), partner: frozenCopy(partnerData) };
 }

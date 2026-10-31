@@ -12,6 +12,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../db', () => ({ db: { select: mocks.select }, withSystemDbAccessContext: mocks.withSystem }));
 vi.mock('../alertExternalTickets', () => ({ listAlertExternalTickets: mocks.listExternalTickets }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
+vi.mock('../alertSubject', () => ({
+  enrichAlertSubjects: vi.fn(async (rows: Array<Record<string, unknown>>) => rows.map(row => {
+    const ownerKind = row.ownerKind ?? 'device';
+    const ownerLabel = ownerKind === 'backup_workload' ? 'Microsoft 365 mail backup' : row.deviceHostname;
+    return { ...row, ownerKind, owner: { kind: ownerKind, ref: row.ownerRef ?? row.deviceId ?? null },
+      ownerLabel, subjectName: ownerKind === 'backup_workload' ? `${ownerLabel} · ${row.orgName}` : ownerLabel };
+  })),
+}));
 
 import { buildAlertWebhookProjections, alertWebhookUrl, __resetAlertUrlWarningForTests } from './alertEnrichment';
 
@@ -66,6 +74,51 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('alert webhook enrichment', () => {
+  it('adds a workload owner without moving existing producer keys out of details', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    const owner = { kind: 'backup_workload', ref };
+    const ownerKey = `backup_workload:${ref}`;
+    rows([{ ...row, deviceId: null, deviceHostname: null, siteId: null, siteName: null,
+      ownerKind: 'backup_workload', ownerRef: ref }]);
+    const { org, partner } = await buildAlertWebhookProjections(event('alert.triggered', {
+      deviceId: null, owner, ownerKey,
+      ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example customer',
+    }));
+    for (const projection of [org, partner]) {
+      expect(projection).toMatchObject({
+        deviceId: null, owner, ownerKind: 'backup_workload',
+        ownerLabel: 'Microsoft 365 mail backup',
+        subjectName: 'Microsoft 365 mail backup · Example customer',
+        enrichmentIncomplete: false,
+      });
+      expect(projection.details).toMatchObject({ owner, ownerKey });
+      expect(projection.subjectName).not.toContain('null');
+    }
+  });
+
+  it('recovers a workload owner from the row on resolved events with no owner payload', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    rows([{ ...row, deviceId: null, deviceHostname: null, siteId: null, siteName: null,
+      ownerKind: 'backup_workload', ownerRef: ref }]);
+    const { org } = await buildAlertWebhookProjections(event('alert.resolved', { deviceId: null }));
+    expect(org).toMatchObject({ deviceId: null, owner: { kind: 'backup_workload', ref }, ownerKind: 'backup_workload' });
+    const selection = queries[0]!.selection as Record<string, unknown>;
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(sql`${selection.ownerKind}`).sql).toBe('"alerts"."owner_kind"');
+    expect(dialect.sqlToQuery(sql`${selection.ownerRef}`).sql).toBe('"alerts"."owner_ref"');
+  });
+
+  it('enriches a workload from its payload owner before the alert row is visible', async () => {
+    const ref = '77777777-7777-4777-8777-777777777777';
+    const owner = { kind: 'backup_workload', ref };
+    rows([{ ...row, alertId: null, ownerKind: null, ownerRef: null, deviceId: null,
+      deviceHostname: null, siteId: null, siteName: null }]);
+    const { org } = await buildAlertWebhookProjections(event('alert.triggered', { deviceId: null, owner }));
+    expect(org).toMatchObject({ owner, ownerKind: 'backup_workload', ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example customer', enrichmentIncomplete: true });
+  });
+
   it.each([
     ['alert.triggered', 'active'], ['alert.acknowledged', 'acknowledged'],
     ['alert.resolved', 'resolved'], ['alert.suppressed', 'suppressed'],

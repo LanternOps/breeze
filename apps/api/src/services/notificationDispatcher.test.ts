@@ -59,6 +59,7 @@ vi.mock('../db', () => ({
           where: (w: unknown) => {
             selectWheres.push(w);
             return {
+              then: (resolve: (v: unknown) => unknown) => Promise.resolve(selectResults.shift() ?? []).then(resolve),
               orderBy: () => ({
                 $dynamic: () => ({
                   limit: () => Promise.resolve(selectResults.shift() ?? [])
@@ -247,6 +248,21 @@ beforeEach(() => {
 });
 
 describe('processSendNotification send-identity state machine', () => {
+  it('renders a workload subject in legacy device templates and webhook payloads', async () => {
+    queuePrepareSelects(makeAlert({ deviceId: null, ownerKind: 'backup_workload', ownerRef: 'workload-1' }), { partnerId: null }, makeChannel({ templates: { alert_triggered: '{{device}} / {{ownerKind}} / {{ownerLabel}} / {{subjectName}}' } }));
+    insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);
+    selectResults.push([{ id: 'org-1', name: 'Example organization' }]);
+    selectResults.push([{ id: 'workload-1', orgId: 'org-1', dataSources: ['m365_mail'], customerName: 'Example customer', provider: 'cove', portalShowProviderName: false }]);
+    sendWebhookNotificationMock.mockResolvedValue({ success: true });
+    const result = await processSendNotification(baseData);
+    expect(result.success).toBe(true);
+    const payload = sendWebhookNotificationMock.mock.calls[0]?.[1];
+    expect(payload).toMatchObject({ deviceId: null, ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example customer', owner: { kind: 'backup_workload', ref: 'workload-1' } });
+    expect(payload.summary).toContain('Microsoft 365 mail backup');
+    expect(payload.summary).not.toContain('null');
+    expect(payload.summary).not.toContain('{{');
+  });
+
   it('(a) first invocation inserts pending with escalationStep collapsed via ?? 0, even for an explicit null', async () => {
     queuePrepareSelects();
     insertReturningMock.mockResolvedValueOnce([makeNotificationRow()]);

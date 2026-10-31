@@ -6,11 +6,14 @@ import type { BreezeEvent } from '../eventBus';
 const { select } = vi.hoisted(() => ({ select: vi.fn() }));
 vi.mock('../../db', () => ({ db: { select }, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../alertSubject', () => ({ enrichAlertSubjects: vi.fn(async () => []) }));
 import { ALERT_V2_EVENT_TYPES, isAlertV2EventType, alertWebhookDataV2Schema, alertWebhookDataV2PartnerSchema } from './alertV2';
 import { buildAlertWebhookProjections } from './alertEnrichment';
 
 const FROZEN_V2_KEYS = {
   alertId: 'string|null', ruleId: 'string|null', monitorId: 'string|null', deviceId: 'string|null', episodeId: 'string|null',
+  owner: 'object{kind:enum(device,topology_site,backup_workload),ref:string|null}|null',
+  ownerKind: 'enum(device,topology_site,backup_workload)|null', ownerLabel: 'string|null', subjectName: 'string|null',
   status: 'enum(active,acknowledged,resolved,suppressed)', severity: 'enum(critical,high,medium,low,info)|null',
   title: 'string|null', message: 'string|null', triggeredAt: 'string(datetime)|null', acknowledgedAt: 'string(datetime)|null', resolvedAt: 'string(datetime)|null',
   deviceHostname: 'string|null', siteId: 'string|null', siteName: 'string|null', orgName: 'string|null', alertUrl: 'string',

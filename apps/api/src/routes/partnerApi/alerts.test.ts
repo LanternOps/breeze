@@ -110,6 +110,14 @@ describe('partner alerts feed', () => {
     expect(mocks.execute).toHaveBeenCalledTimes(1);
   });
 
+  it('exports the owner of a device-less workload alert', async () => {
+    selectResults = [[alertRow(ALERT_A, '900', { deviceId: null, deviceHostname: null, ownerKind: 'backup_workload', ownerRef: ALERT_B })]];
+    const res = await request('/alerts');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ deviceId: null, owner: { kind: 'backup_workload', ref: ALERT_B } });
+  });
+
   it('pages with a signed cursor that pins the traversal window', async () => {
     selectResults = [[alertRow(ALERT_A, '900'), alertRow(ALERT_B, '950')]];
     const first = partnerAlertFeedEnvelopeSchema.parse(await (await request('/alerts?limit=1')).json());

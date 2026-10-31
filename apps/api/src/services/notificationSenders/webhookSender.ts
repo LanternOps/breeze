@@ -1,3 +1,4 @@
+import type { AlertSubject } from '@breeze/shared';
 /**
  * Webhook Notification Sender
  *
@@ -31,7 +32,7 @@ export function redactUrlForLogs(rawUrl: string): string {
   }
 }
 
-export interface WebhookNotificationPayload {
+export interface WebhookNotificationPayload extends Partial<AlertSubject> {
   alertId: string;
   alertName: string;
   severity: string;
@@ -276,6 +277,10 @@ export async function sendWebhookNotification(
         name: payload.alertName,
         severity: payload.severity,
         summary: payload.summary,
+        owner: payload.owner,
+        ownerKind: payload.ownerKind,
+        ownerLabel: payload.ownerLabel,
+        subjectName: payload.subjectName,
         triggeredAt: payload.triggeredAt,
         ruleId: payload.ruleId,
         ruleName: payload.ruleName
@@ -392,7 +397,12 @@ function interpolatePayloadTemplate(
     severity: payload.severity,
     summary: payload.summary,
     deviceId: payload.deviceId,
-    deviceName: payload.deviceName,
+    device: payload.deviceName || payload.subjectName,
+    deviceName: payload.deviceName || payload.subjectName,
+    owner: payload.owner,
+    ownerKind: payload.ownerKind,
+    ownerLabel: payload.ownerLabel,
+    subjectName: payload.subjectName,
     orgId: payload.orgId,
     orgName: payload.orgName,
     triggeredAt: payload.triggeredAt,

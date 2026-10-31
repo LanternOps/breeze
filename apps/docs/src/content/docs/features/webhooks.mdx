@@ -342,12 +342,23 @@ same restricted view as an org-owned webhook.
 
 Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means the alert row could not be read (it was not yet committed, the id was invalid, or the enrichment query failed), so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site leaves its fields `null` without setting the flag.
 
+Alerts can belong to a device, a topology site, or a SaaS backup workload.
+Workload alerts keep `deviceId: null`; use `subjectName` for display, for example
+`Microsoft 365 mail backup · Example customer`. Organization-owned webhook
+labels honor the connection's portal provider-name setting. The owner display
+fields below are additive; existing event fields keep their previous meanings,
+and an event's `owner` and `ownerKey` extras remain available in `details`.
+
 | Field | Type | Meaning |
 |-------|------|---------|
 | `alertId` | string or null | Alert id |
 | `ruleId` | string or null | Rule id |
 | `monitorId` | string or null | Monitor id |
 | `deviceId` | string or null | Device id |
+| `owner` | object or null | `{ kind, ref }`; `kind` is `device`, `topology_site`, or `backup_workload`, and `ref` is the owner id or null when unavailable |
+| `ownerKind` | string or null | Owner kind; null when neither the row nor event identifies the owner |
+| `ownerLabel` | string or null | Display label for the owner, such as `Microsoft 365 mail backup` |
+| `subjectName` | string or null | Display subject, including the customer name for a backup workload |
 | `episodeId` | string or null | Alert episode id |
 | `status` | `active`, `acknowledged`, `resolved`, or `suppressed` | State represented by this event; `alert.triggered` means `active` |
 | `severity` | `critical`, `high`, `medium`, `low`, `info`, or null | Alert severity |
@@ -392,6 +403,13 @@ A complete v2 `alert.triggered` example:
     "ruleId": "33333333-3333-4333-8333-333333333333",
     "monitorId": "44444444-4444-4444-8444-444444444444",
     "deviceId": "55555555-5555-4555-8555-555555555555",
+    "owner": {
+      "kind": "device",
+      "ref": "55555555-5555-4555-8555-555555555555"
+    },
+    "ownerKind": "device",
+    "ownerLabel": "WORKSTATION-01",
+    "subjectName": "WORKSTATION-01",
     "episodeId": null,
     "status": "active",
     "severity": "high",
