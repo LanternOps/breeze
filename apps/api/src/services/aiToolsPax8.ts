@@ -161,6 +161,8 @@ async function subscriptionAction(input: Record<string, unknown>, auth: AuthCont
   let data: unknown;
   if (action === 'link') {
     if (typeof input.contractLineId !== 'string') return jsonError('contractLineId is required', 'VALIDATION_ERROR');
+    // contract_lines carries site_id: a caller with any site ceiling may not pick which line Pax8 bills (mirrors aiToolsBilling add_contract_line).
+    if (auth.allowedSiteIds !== undefined) return jsonError('Linking a contract line requires unrestricted organization visibility', 'FULL_PARTNER_SCOPE_REQUIRED');
     const [line] = await db.select({ orgId: contractLines.orgId }).from(contractLines).where(eq(contractLines.id, input.contractLineId)).limit(1);
     if (!line || !auth.canAccessOrg(line.orgId)) return jsonError('Access to contract line denied', 'FORBIDDEN');
     try {

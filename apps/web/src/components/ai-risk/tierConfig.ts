@@ -845,6 +845,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'browse_device_event_log', tier: 1, permission: 'devices.execute', category: 'Services & Processes' },
   { toolName: 'manage_tenant_variables', tier: 1, permission: 'variables.read / variables.manage', category: 'Scripts & Automation' },
   { toolName: 'manage_support_sessions', tier: 1, permission: 'remote.access', category: 'Remote Access & Control' },
+  { toolName: 'get_pax8_status', tier: 1, permission: 'billing.manage', category: 'Billing' },
+  { toolName: 'search_pax8_products', tier: 1, permission: 'billing.manage', category: 'Billing' },
   { toolName: 'manage_pax8_subscriptions', tier: 1, permission: 'billing.manage', category: 'Billing' },
   { toolName: 'manage_pax8_orders', tier: 1, permission: 'billing.manage', category: 'Billing' },
   { toolName: 'manage_billing_profiles', tier: 1, permission: 'billing_profiles.read / billing_profiles.write', category: 'Billing' },

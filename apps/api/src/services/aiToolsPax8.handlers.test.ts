@@ -126,6 +126,13 @@ describe('W15 Pax8 tools', () => {
       details: expect.objectContaining({ contractLineId: ID, syncEnabled: false }),
     }));
   });
+  it('link refuses a caller with a site ceiling before reading the contract line', async () => {
+    h.rows.push([{ id: ID }], [{ orgId: ORG, integrationId: ID }]);
+    const out = await run('manage_pax8_subscriptions', { action: 'link', integrationId: ID, subscriptionSnapshotId: ID, contractLineId: ID }, auth({ allowedSiteIds: ['site-1'] }));
+    expect(out.code).toBe('FULL_PARTNER_SCOPE_REQUIRED');
+    expect(h.link).not.toHaveBeenCalled();
+    expect(h.rows).toHaveLength(0);
+  });
   it('unlink refuses a foreign snapshot org before mutation', async () => {
     h.rows.push([{ id: ID }], [{ orgId: ID, integrationId: ID }]);
     expect((await run('manage_pax8_subscriptions', { action: 'unlink', integrationId: ID, subscriptionSnapshotId: ID })).code).toBe('FORBIDDEN');
