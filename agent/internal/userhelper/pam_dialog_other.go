@@ -9,7 +9,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
-func showPamDialog(req ipc.PamRequestDialog) ipc.PamDialogResult {
+func showPamDialog(context.Context, ipc.PamRequestDialog) ipc.PamDialogResult {
 	return ipc.PamDialogResult{Approved: false, DismissedByUser: true}
 }
 
