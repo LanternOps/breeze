@@ -23,7 +23,7 @@ import {
   PARTNER_SETTINGS_INHERITANCE_BUCKETS,
   PARTNER_SETTINGS_INHERITANCE_MAX_LIMIT,
   partnerSettingsInheritanceInputSchema,
-} from './aiToolSchemas';
+} from './aiToolSchemasPartnerSettingsInheritance';
 import {
   aggregateTab,
   InheritanceBadRequest,
