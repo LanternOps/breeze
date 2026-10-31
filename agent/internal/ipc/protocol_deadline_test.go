@@ -65,7 +65,7 @@ func assertTimeout(t *testing.T, err error) {
 		t.Fatal("Recv returned an envelope before the frame was complete")
 	}
 	var netErr net.Error
-	if !errors.Is(err, os.ErrDeadlineExceeded) && !(errors.As(err, &netErr) && netErr.Timeout()) {
+	if !errors.Is(err, os.ErrDeadlineExceeded) && (!errors.As(err, &netErr) || !netErr.Timeout()) {
 		t.Fatalf("Recv error = %v, want a timeout", err)
 	}
 }
