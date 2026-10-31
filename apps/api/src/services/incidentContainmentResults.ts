@@ -237,8 +237,13 @@ function parseOutput(stdout: string | undefined): Record<string, string | number
 
 /** Registry handler: both agent transports authorize the command before calling it. */
 export async function handleExecuteContainmentResult(
-  { command, commandId, result, stdout }: Parameters<CommandResultHandler>[0],
+  args: Parameters<CommandResultHandler>[0],
 ): Promise<void> {
+  const { command, commandId, result, stdout } = args;
+  if ((command.payload as Record<string, unknown> | null)?.actionType === 'network_isolation') {
+    const { handleNetworkIsolationResult } = await import('./networkIsolation/finalizer');
+    return handleNetworkIsolationResult(args);
+  }
   const completed = result.status === 'completed';
   await finalizeContainmentAction({
     // The transport-authorized id, never one read off the agent's body.

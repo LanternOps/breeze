@@ -443,6 +443,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   // Incident response
   CommandTypes.COLLECT_EVIDENCE,
   CommandTypes.EXECUTE_CONTAINMENT,
+  CommandTypes.RELEASE_CONTAINMENT,
 ]);
 
 // User-interactive command types — the UI is actively waiting on the result

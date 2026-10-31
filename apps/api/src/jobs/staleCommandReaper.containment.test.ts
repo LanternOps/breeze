@@ -73,6 +73,13 @@ describe('staleCommandReaper execute_containment follow-through (#9662)', () => 
     expect(finalizeMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not finalize network isolation on timeout or undelivered expiry', async () => {
+    for (const kind of ['timeout', 'expired']) {
+      await timedOut({ commandType: 'execute_containment', kind, payload: { ...PAYLOAD, actionType: 'network_isolation' } });
+    }
+    expect(finalizeMock).not.toHaveBeenCalled();
+  });
+
   it('leaves other command types alone', async () => {
     await timedOut({ commandType: 'collect_evidence' });
     expect(finalizeMock).not.toHaveBeenCalled();

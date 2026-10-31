@@ -350,7 +350,8 @@ export async function propagateTimedOutDeviceCommand(params: {
   // not skip the DR reconcile — and, because the manual mark-timed-out route
   // calls this inside its request transaction, it runs in a real savepoint so
   // a caught SQL fault does not leave that transaction aborted.
-  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT) {
+  // Delivery failure cannot prove the absence of firewall rules. Heartbeat intent stays live.
+  if (params.commandType === CommandTypes.EXECUTE_CONTAINMENT && payload?.actionType !== 'network_isolation') {
     const finalize = () => finalizeContainmentAction({
       commandId,
       payload,

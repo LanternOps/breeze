@@ -9,6 +9,7 @@ import { columnAad } from '../encryptedColumnTransform';
 import { buildIsolationAllowlist, IsolationAllowlistError } from './allowlist';
 import { findUnconfirmedTombstone, findUnresolvedEpisode, toEpisodeSnapshot, withEpisodeLock, writeEpisodeSnapshot, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
+import { synchronizeEpisodeOutcome } from './outcome';
 
 interface IsolationDevice { id: string; orgId: string; agentServerUrl?: string | null }
 export const ISOLATION_SECRET_COLUMN = {
@@ -84,6 +85,7 @@ export async function reconcileContainmentReport(tx: EpisodeTx, device: Isolatio
       return;
     }
     if (!await writeEpisodeSnapshot(tx, row.id, prev, transition.next, serverNow)) throw new Error('isolation_snapshot_conflict');
+    await synchronizeEpisodeOutcome(tx, row, prev, transition.next, serverNow);
     // Deliberate whitelist: no secret, resolved addresses, agent prose, or journal detail is stored.
     const safeReport = report.isolationId ? {
       isolationId: report.isolationId, generation: report.generation, journalSeq: report.journalSeq,
