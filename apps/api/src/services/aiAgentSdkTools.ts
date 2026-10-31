@@ -1006,6 +1006,8 @@ function notifyToolSuccess(
   if (!onSuccess || isToolError) return;
   // Inspect the un-compacted payload: compaction must not erase a refusal.
   // Some tools wrap their JSON in the standard untrusted-data fence.
+  // Focal tools must emit a JSON {error}/{refused} envelope on failure:
+  // plain-text refusals count as success and would trigger auto-linking.
   let payload = rawResult;
   if (payload.startsWith('<untrusted_data ')) {
     const first = payload.indexOf('{');

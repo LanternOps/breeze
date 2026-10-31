@@ -7,6 +7,14 @@ const id = '00000000-0000-4000-8000-000000000001';
 const definitions = new Map(getToolDefinitions().map((tool) => [tool.name, tool]));
 
 describe('focal tool subject manifest', () => {
+  it('pins the plan\'s fourteen focal tools by name', () => {
+    expect(Object.keys(WISP_TOOL_SUBJECTS).sort()).toEqual([
+      'get_ai_agent_run', 'get_contract', 'get_device_context', 'get_device_details',
+      'get_invoice', 'get_operator_task', 'get_quote', 'get_site', 'manage_alerts',
+      'manage_contracts', 'manage_invoices', 'manage_organizations', 'manage_quotes', 'manage_tickets',
+    ]);
+  });
+
   it('classifies every TOOL_TIERS tool exactly once, with no stale entries', () => {
     const classified = [...Object.keys(WISP_TOOL_SUBJECTS), ...WISP_NON_FOCAL_TOOLS];
     expect(classified.sort()).toEqual(Object.keys(TOOL_TIERS).sort());
@@ -37,6 +45,18 @@ describe('focal tool subject manifest', () => {
 });
 
 describe('subjectRefsOf', () => {
+  it('skips actions-bearing subjects when input.action is absent', () => {
+    for (const [toolName, subjects] of Object.entries(WISP_TOOL_SUBJECTS)) {
+      for (const subject of subjects.filter((subject) => subject.actions)) {
+        expect(subjectRefsOf(toolName, { [subject.arg]: id }), toolName).toEqual([]);
+      }
+    }
+  });
+  it('matches lowercase actions exactly without normalizing other casing', () => {
+    expect(subjectRefsOf('manage_tickets', { action: 'get', ticketId: id })).toEqual([{ kind: 'ticket', id }]);
+    expect(subjectRefsOf('manage_tickets', { action: 'GET', ticketId: id })).toEqual([]);
+    expect(subjectRefsOf('manage_tickets', { action: 'Get', ticketId: id })).toEqual([]);
+  });
   it('ignores manage_tickets list and unknown tools', () => {
     expect(subjectRefsOf('manage_tickets', { action: 'list', ticketId: id })).toEqual([]);
     expect(subjectRefsOf('unknown', { deviceId: id })).toEqual([]);

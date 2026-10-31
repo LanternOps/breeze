@@ -255,13 +255,18 @@ export async function wispSeedForSession(
   try {
     const live = ceiling ?? await resolveGrantCeiling(grant.grantId, grant.revisionId);
     let viewing: ResolvedEntity | null = null;
-    if (pageContext?.type === 'record' || pageContext?.type === 'device') {
+    if (pageContext?.type === 'record' || pageContext?.type === 'device' || pageContext?.type === 'alert') {
+      const kind = pageContext.type === 'record' ? pageContext.kind : pageContext.type;
       try {
         const resolved = await resolveEntityRef({ auth, ceiling: live }, {
-          kind: pageContext.type === 'record' ? pageContext.kind : 'device',
+          kind,
           id: pageContext.id,
         });
-        if (!isResolveFailure(resolved)) viewing = resolved;
+        if (isResolveFailure(resolved)) {
+          console.debug('[Wisp] Viewing context refused; omitting viewing from seed:', {
+            reason: resolved.reason, kind, grantId: grant.grantId,
+          });
+        } else viewing = resolved;
       } catch (err) {
         console.error('[Wisp] Viewing context lookup failed; omitting viewing from seed:', err);
         captureException(err, undefined, { grantId: grant.grantId, op: 'wisp.seed_viewing' });

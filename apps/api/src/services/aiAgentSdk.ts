@@ -1205,6 +1205,10 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     }
     const { ceiling, permissionKeys, narrow } = wispCall.current;
     const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    const autoLinkTags = {
+      op: 'wisp.auto_link', toolName, threadId: session.wispGrant.threadId,
+      grantId: ceiling.grantId, sessionId: session.breezeSessionId,
+    };
     // Load while the gate is still awaited. The detached success hook must
     // enter autoLinkFocalAct (and reserve its slots) synchronously, before the
     // tool result can reach the SDK and settlement can reset the turn count.
@@ -1213,14 +1217,19 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       ({ autoLinkFocalAct } = await import('./wisp/autoLink'));
     } catch (err) {
       console.error(`[AI-SDK] Auto-link module unavailable for ${toolName}:`, err);
-      captureException(err, undefined, { op: 'wisp.auto_link', toolName });
+      captureException(err, undefined, autoLinkTags);
       return { ...result, toolAuth };
     }
     return {
       ...result,
       toolAuth,
       onSuccess: async (callInput) => {
-        await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
+        try {
+          await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
+        } catch (err) {
+          console.error(`[AI-SDK] Auto-link failed for ${toolName}:`, err);
+          captureException(err, undefined, autoLinkTags);
+        }
       },
     };
   };

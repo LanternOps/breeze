@@ -78,6 +78,10 @@ function toLink(row: Pick<WispThreadLinkRow, 'id' | 'source' | 'lastTouchedAt' |
 
 const inPartner = <T>(partnerId: string, fn: () => Promise<T>) => readOwnPartnerAxisRows(partnerId, fn);
 
+type AddLinkRef = { kind: WispEntityKind; id: string; orgId?: string | null };
+type AddLinkOptions = { source: WispLinkSource; addedByGrantId?: string | null };
+export type AddLinkOutcome = { link: WispThreadLink; inserted: boolean };
+
 /**
  * Link `ref` to the thread. Resolves first (the org is the entity's); an
  * `orgId` hint that disagrees with the entity's org is `not_found` (a model
@@ -86,13 +90,27 @@ const inPartner = <T>(partnerId: string, fn: () => Promise<T>) => readOwnPartner
  * touches the existing row. Pins share a 50-row cap (`link_limit`); autos
  * evict the least recently touched auto at 20 rows. The thread row lock
  * serializes adds so concurrent inserts cannot pass either cap together.
+ * `reportInsertion` distinguishes insertion from a re-touch for auto-link
+ * accounting; the default return stays compatible with pin callers.
  */
+export function addLink(
+  ctx: EntityResolveContext,
+  threadId: string,
+  ref: AddLinkRef,
+  opts: AddLinkOptions & { reportInsertion: true },
+): Promise<AddLinkOutcome>;
+export function addLink(
+  ctx: EntityResolveContext,
+  threadId: string,
+  ref: AddLinkRef,
+  opts: AddLinkOptions & { reportInsertion?: false },
+): Promise<WispThreadLink>;
 export async function addLink(
   ctx: EntityResolveContext,
   threadId: string,
-  ref: { kind: WispEntityKind; id: string; orgId?: string | null },
-  opts: { source: WispLinkSource; addedByGrantId?: string | null },
-): Promise<WispThreadLink> {
+  ref: AddLinkRef,
+  opts: AddLinkOptions & { reportInsertion?: boolean },
+): Promise<WispThreadLink | AddLinkOutcome> {
   const resolved = await resolveEntityRef(ctx, { kind: ref.kind, id: ref.id });
   if (isResolveFailure(resolved)) throw new ThreadLinkError(resolved.reason);
   if (ref.orgId !== undefined && ref.orgId !== resolved.orgId) throw new ThreadLinkError('not_found');
@@ -104,7 +122,7 @@ export async function addLink(
   // the org_id NULL rows an org-scoped caller's RLS would hide (precedent:
   // concerns.ts writes on ids the caller already authorised). Every statement
   // stays pinned to (partner_id, thread_id).
-  const row = await inSystemContext(() => db.transaction(async (tx) => {
+  const outcome = await inSystemContext(() => db.transaction(async (tx) => {
     const [thread] = await tx.select({ id: wispThreads.id }).from(wispThreads)
       .where(and(eq(wispThreads.id, threadId), eq(wispThreads.partnerId, partnerId)))
       .for('update')
@@ -145,7 +163,7 @@ export async function addLink(
       })
       .where(linkScope)
       .returning();
-    if (existing) return existing;
+    if (existing) return { row: existing, inserted: false };
 
     const isAuto = opts.source === 'auto';
     const classScope = and(
@@ -177,9 +195,10 @@ export async function addLink(
       source: opts.source,
     }).returning();
     if (!inserted) throw new Error('wisp_thread_links insert returned no row');
-    return inserted;
+    return { row: inserted, inserted: true };
   }));
-  return toLink(row, resolved);
+  const link = toLink(outcome.row, resolved);
+  return opts.reportInsertion ? { link, inserted: outcome.inserted } : link;
 }
 
 /**
@@ -238,6 +257,8 @@ async function readStoredLinks(
   resolve: ReturnType<typeof createEntityResolver>,
 ): Promise<WispThreadLink[]> {
   const partnerId = ctx.ceiling.partnerId;
+  // This combined bound relies on addLink's locked auto eviction keeping at
+  // most 20 autos alongside the separately capped 50 pins.
   const rows = await inPartner(partnerId, () => db.select().from(wispThreadLinks)
     .where(and(eq(wispThreadLinks.threadId, threadId), eq(wispThreadLinks.partnerId, partnerId)))
     .orderBy(desc(wispThreadLinks.lastTouchedAt), desc(wispThreadLinks.id))

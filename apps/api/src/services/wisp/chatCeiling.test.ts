@@ -84,7 +84,9 @@ function enforce(toolName: string, input: Record<string, unknown>, toolAuth = au
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
+  shared.resolveEntityRef.mockReset();
   shared.resolveGrantCeiling.mockResolvedValue(ceiling());
   shared.selectRows = [];
   shared.selectError = null;
@@ -275,12 +277,13 @@ describe('helpers', () => {
     expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
   });
 
-  it.each(['record', 'device'] as const)('a %s page context resolves viewing with the caller and live ceiling', async (type) => {
+  it.each(['record', 'device', 'alert'] as const)('a %s page context resolves viewing with the caller and live ceiling', async (type) => {
     const live = ceiling(), caller = auth();
     const id = '00000000-0000-4000-8000-000000000123';
     const page = type === 'record' ? { type, kind: 'ticket' as const, id, label: 'Untrusted client label' }
-      : { type, id, hostname: 'Untrusted client hostname' };
-    const viewing = { ref: { kind: type === 'record' ? 'ticket' : 'device', id, orgId: ORG_A },
+      : type === 'device' ? { type, id, hostname: 'Untrusted client hostname' }
+        : { type, id, title: 'Untrusted client title' };
+    const viewing = { ref: { kind: type === 'record' ? 'ticket' : type, id, orgId: ORG_A },
       orgId: ORG_A, label: 'Server label', status: null, href: '/' };
     shared.resolveEntityRef.mockResolvedValueOnce(viewing);
     shared.seedContextForSession.mockResolvedValueOnce('seed');
@@ -291,10 +294,16 @@ describe('helpers', () => {
 
   it.each(['outside_ceiling', 'not_found', 'forbidden', 'outside_token_scope'])('a viewed record refused with %s adds no seed line', async (reason) => {
     const live = ceiling(), caller = auth();
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     shared.resolveEntityRef.mockResolvedValueOnce({ reason });
     shared.seedContextForSession.mockResolvedValueOnce('safe seed');
     expect(await wispSeedForSession(grant, caller, live, { type: 'record', kind: 'ticket', id: ORG_C, label: 'Client label' })).toBe('safe seed');
     expect(shared.seedContextForSession).toHaveBeenCalledExactlyOnceWith('t-1', live, caller);
+    expect(debug).toHaveBeenCalledExactlyOnceWith('[Wisp] Viewing context refused; omitting viewing from seed:', {
+      reason, kind: 'ticket', grantId: grant.grantId,
+    });
+    expect(JSON.stringify(debug.mock.calls)).not.toContain('Client label');
+    debug.mockRestore();
   });
 
   it('a viewing resolver failure omits viewing, captures the fault, and preserves the seed', async () => {
