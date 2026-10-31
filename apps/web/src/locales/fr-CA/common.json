@@ -1373,6 +1373,10 @@
             "description": "Déclenché lors de la création d’un ticket.",
             "label": "Ticket créé"
           },
+          "ticketMerged": {
+            "description": "Déclenché lorsqu’un ticket est fusionné avec un autre ticket.",
+            "label": "Ticket fusionné"
+          },
           "ticketCommented": {
             "description": "Déclenché lorsqu’un commentaire ou une note est ajouté à un ticket.",
             "label": "Ticket commenté"

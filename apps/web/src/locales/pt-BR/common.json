@@ -1373,6 +1373,10 @@
             "description": "Acionado quando um ticket é criado.",
             "label": "Ticket criado"
           },
+          "ticketMerged": {
+            "description": "Acionado quando um ticket é mesclado em outro ticket.",
+            "label": "Ticket mesclado"
+          },
           "ticketCommented": {
             "description": "Acionado quando um comentário ou nota é adicionado a um ticket.",
             "label": "Ticket comentado"

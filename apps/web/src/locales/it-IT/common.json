@@ -1373,6 +1373,10 @@
             "description": "Attivato quando viene creato un ticket.",
             "label": "Ticket creato"
           },
+          "ticketMerged": {
+            "description": "Attivato quando un ticket viene unito a un altro ticket.",
+            "label": "Ticket unito"
+          },
           "ticketCommented": {
             "description": "Attivato quando viene aggiunto un commento o una nota a un ticket.",
             "label": "Ticket commentato"
