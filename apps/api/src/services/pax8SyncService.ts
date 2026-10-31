@@ -31,8 +31,8 @@ function errorMessage(err: unknown): string {
 export type Pax8IntegrationSnapshot = typeof pax8Integrations.$inferSelect;
 
 export class Pax8IntegrationGenerationChangedError extends Error {
-  constructor() {
-    super('Pax8 integration configuration changed during sync');
+  constructor(context = 'during sync') {
+    super(`Pax8 integration configuration changed ${context}`);
     this.name = 'Pax8IntegrationGenerationChangedError';
   }
 }

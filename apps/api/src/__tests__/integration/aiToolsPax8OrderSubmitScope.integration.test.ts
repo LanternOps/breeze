@@ -3,7 +3,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { withDbAccessContext } from '../../db';
+import { db, withDbAccessContext } from '../../db';
 import {
   actionIntents, approvalRequests, catalogItems, contractLines, contracts,
   pax8CompanyMappings, pax8Integrations, pax8OrderLines, pax8Orders, pax8ProductMappings,
@@ -189,17 +189,22 @@ describe('Pax8 AI approved submit scope and execution binding (real PostgreSQL)'
     const verification = vi.fn();
     vi.spyOn(pax8OrderSubmitRepository, 'claimOrder').mockImplementationOnce(args => claimOrder({
       ...args,
-      verifyClaim: async (bundle, database) => {
-        // Deliberately use the claim transaction: a separate connection would
-        // wait for its parent lock and could not model this exact check/use gap.
-        await database.update(pax8OrderLines).set({ quantity: '8.00' }).where(eq(pax8OrderLines.id, f.line.id));
+      mode: { kind: 'ai', verifyClaim: async (bundle, database) => {
+        expect(Object.keys(database)).toEqual(['select']);
+        // Test-only fault injection uses the ambient claim transaction through
+        // the DB proxy; the verifier's own runtime view remains read-only.
+        // A separate connection would wait on the parent lock, so it cannot
+        // model this gap or prove that the injected edit rolls back with claim.
+        await db.update(pax8OrderLines).set({ quantity: '8.00' })
+          .where(eq(pax8OrderLines.id, f.line.id));
         const [edited] = await database.select({ quantity: pax8OrderLines.quantity }).from(pax8OrderLines)
           .where(eq(pax8OrderLines.id, f.line.id));
         expect(edited?.quantity).toBe('8.00');
         verification();
-        expect(args.verifyClaim).toBeTypeOf('function');
-        await args.verifyClaim!(bundle, database);
-      },
+        expect(args.mode.kind).toBe('ai');
+        if (args.mode.kind !== 'ai') throw new Error('AI verification hook was not supplied');
+        return args.mode.verifyClaim(bundle, database);
+      } },
     }));
     vendor.createOrder.mockClear();
     const result = await run(input, f.auth);
@@ -216,7 +221,8 @@ describe('Pax8 AI approved submit scope and execution binding (real PostgreSQL)'
   });
 
   it('an approved successful submit persists the captured baseline and linked manual billing quantity', async () => {
-    const result = await run(await approvedArguments(), f.auth);
+    const input = await approvedArguments();
+    const result = await run(input, f.auth);
     expect(result.body.status, result.raw).toBe('completed');
     expect(result.body.lines).toEqual([{ lineId: f.line.id, submitState: 'succeeded', error: null }]);
     const current = await state();
@@ -226,6 +232,39 @@ describe('Pax8 AI approved submit scope and execution binding (real PostgreSQL)'
     expect(vendor.createOrder).toHaveBeenCalledTimes(2);
     expect(vendor.createOrder.mock.calls[0]?.[1]).toEqual({ isMock: true });
     expect(vendor.createOrder.mock.calls[1]?.[1]).toBeUndefined();
+
+    const repeated = await run(input, f.auth);
+    expect(['CONFLICT', 'NOT_PENDING'], repeated.raw).toContain(repeated.body.code);
+    expect(vendor.createOrder).toHaveBeenCalledTimes(2);
+    expect(await state()).toEqual(current);
+  });
+
+  it('a successful vendor write preserves concurrent billing edits and surfaces the conflict', async () => {
+    const input = await approvedArguments();
+    vendor.createOrder.mockImplementation(async (_input, options) => {
+      if (options?.isMock) return { pax8OrderId: null, lineItems: [] };
+      await getTestDb().update(contractLines).set({ manualQuantity: '3.00' })
+        .where(eq(contractLines.id, f.billingLine.id));
+      return { pax8OrderId: REMOTE_ORDER, lineItems: [
+        { lineItemNumber: 1, productId: PRODUCT, subscriptionId: REMOTE_SUBSCRIPTION },
+      ] };
+    });
+
+    const result = await run(input, f.auth);
+
+    expect(result.body.billingConflicts, result.raw).toEqual([{ lineId: f.line.id, reason: 'baseline_changed' }]);
+    expect(result.body.nextStep).toMatch(/billing/i);
+    expect(result.body.status).toBe('partially_failed');
+    expect(result.body.lines).toEqual([expect.objectContaining({
+      lineId: f.line.id, submitState: 'succeeded', error: expect.stringContaining('billing_conflict:baseline_changed:'),
+    })]);
+    const current = await state();
+    expect(current.order.status).toBe('partially_failed');
+    expect(current.line.submitState).toBe('succeeded');
+    expect(current.line.error).toContain('billing_conflict:baseline_changed:');
+    expect(current.line.resultSubscriptionId).toBe(REMOTE_SUBSCRIPTION);
+    expect(current.billing.manualQuantity).toBe('3.00');
+    expect(vendor.createOrder).toHaveBeenCalledTimes(2);
   });
 
   it('a mocked timeout remains needs_reconcile until a unique listOrders match resolves billing without resending', async () => {
@@ -246,7 +285,7 @@ describe('Pax8 AI approved submit scope and execution binding (real PostgreSQL)'
       lineItems: [{ lineItemNumber: 1, productId: PRODUCT, quantity: '7.00', quantityKnown: true, subscriptionId: REMOTE_SUBSCRIPTION }], raw: {},
     } satisfies Awaited<ReturnType<Pax8Client['listOrders']>>[number]]);
     const reconciled = await run({ action: 'reconcile', orderId: f.order.id }, f.auth);
-    expect(reconciled.body, reconciled.raw).toEqual({ resolved: 1, stillUnknown: 0 });
+    expect(reconciled.body, reconciled.raw).toMatchObject({ resolved: 1, stillUnknown: 0, status: 'completed', billingConflicts: [] });
     const current = await state();
     expect(current.order.status).toBe('completed');
     expect(current.line.submitState).toBe('succeeded');

@@ -31,7 +31,7 @@ export function describePax8Submit(input: Record<string, unknown>): string {
   const labels: Record<string, string> = { new_subscription: 'new subscriptions', change_quantity: 'quantity changes', cancel: 'cancellations' };
   const counts = Object.entries(labels).map(([action, label]) => `${lines.filter(l => l.action === action).length} ${label}`).join(', ');
   return `Place a real, billable Pax8 order that cannot be undone for ${text(company.name)} (${text(company.pax8CompanyId)}): ${counts}. Cost is estimated at Pax8's current rate, re-checked before sending. `
-    + lines.map(line => `${line.action === 'cancel' ? 'CANCEL (terminal)' : titleCaseWords(text(line.action))} ${text(line.productName)} [${text(line.pax8ProductId)}]: ${text(line.fromQuantity)} → ${text(line.quantity)}, ${text(line.unitCost)} ${text(line.currency)} per seat / ${text(line.billingTerm)}, commitment ${text(line.commitmentTerm)}${line.cancellationFeeApplied === true ? ', cancellation fee applies' : ''}`).join('; ');
+    + lines.map(line => `${line.action === 'cancel' ? 'CANCEL (terminal)' : titleCaseWords(text(line.action))} ${text(line.productName)} [${text(line.pax8ProductId)}]: ${line.action === 'new_subscription' ? 'new' : text(line.fromQuantity)} → ${text(line.quantity)}, ${text(line.unitCost)} ${text(line.currency)} per seat / ${text(line.billingTerm)}, commitment ${text(line.commitmentTerm)}${line.cancellationFeeApplied === true ? ', cancellation fee applies' : ''}`).join('; ');
 }
 
 /**

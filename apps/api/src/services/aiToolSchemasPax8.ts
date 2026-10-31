@@ -27,9 +27,9 @@ export const pax8UpdateLineSchema = z.object(patchShape).strict().refine(
 export const pax8ExpectedLineSchema = z.object({
   lineId: uuid, action: z.enum(PAX8_ORDER_ACTIONS), pax8ProductId: productId.nullable(),
   productName: z.string().max(255).nullable(), quantity: z.string().max(40).nullable(),
-  fromQuantity: z.string().max(40).nullable().optional(), unitCost: z.string().max(40).nullable(),
+  fromQuantity: z.string().max(40).nullable(), unitCost: z.string().max(40).nullable(),
   currency: z.string().max(3).nullable(), billingTerm: z.enum(PAX8_BILLING_TERMS).nullable(),
-  commitmentTerm: z.string().max(255).nullable(), cancellationFeeApplied: z.boolean().nullable().optional(),
+  commitmentTerm: z.string().max(255).nullable(), cancellationFeeApplied: z.boolean().nullable(),
 }).strict();
 export const pax8SubmitAssertionsSchema = z.object({
   previewDigest: z.string().regex(/^[a-f0-9]{64}$/),

@@ -20,7 +20,7 @@ vi.mock('./catalogService', () => ({
   CatalogServiceError: class CatalogServiceError extends Error { constructor(message: string, public status = 400, public code?: string) { super(message); } },
 }));
 vi.mock('./actionIntents/pax8OrderDigest', () => ({ pax8OrderDigestMaterial: m.material, hashPax8OrderMaterial: () => 'a'.repeat(64) }));
-import { previewPax8Order } from './pax8OrderPreview';
+import { PREVIEW_FIELD_SOURCE, previewPax8Order } from './pax8OrderPreview';
 import { Pax8ApiError } from './pax8Client';
 import { CatalogServiceError } from './catalogService';
 
@@ -95,6 +95,18 @@ describe('previewPax8Order', () => {
     expect(result.submitWith).toMatchObject({ orderId, previewDigest: result.previewDigest, expectedCompany: result.company,
       expectedLines: [expect.objectContaining({ lineId, quantity: '5', unitCost: '8.25', commitmentTerm: 'Annual' })] });
     expect(m.material).toHaveBeenCalledTimes(1);
+  });
+  it('classifies every emitted preview field by evidence source', async () => {
+    const result = await run();
+    expect(Object.keys(PREVIEW_FIELD_SOURCE).sort()).toEqual(Object.keys(result.lines[0]!).sort());
+    expect(new Set(Object.values(PREVIEW_FIELD_SOURCE))).toEqual(new Set(['material', 'vendor-live', 'derived']));
+  });
+  it('blocks a missing linked contract line before offering submit assertions', async () => {
+    lines[0]!.contractLineId = 'missing-contract-line';
+    rows.contract_lines = [];
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'CONTRACT_LINE_MISSING' });
+    expect(result.submitWith).toBeUndefined();
   });
   it('blocked previews never offer submitWith', async () => {
     m.pricing.mockResolvedValue([]);

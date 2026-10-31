@@ -1,6 +1,6 @@
 import type { Pax8OrderStatus, Pax8SubmitState } from '@breeze/shared';
 import { runOutsideDbContext, type Database } from '../db';
-import { Pax8IntegrationGenerationChangedError, type Pax8IntegrationSnapshot } from './pax8SyncService';
+import { Pax8IntegrationGenerationChangedError } from './pax8SyncService';
 import type { Pax8OrderLineRow, Pax8OrderRow } from './pax8OrderService';
 import { Pax8OrderError } from './pax8OrderService';
 import {
@@ -11,24 +11,32 @@ import {
   type Pax8OrderResult,
   type Pax8SubscriptionRecord,
 } from './pax8Client';
+import type { SubmittableStatus } from './pax8OrderTypes';
+import type { Pax8IntegrationGeneration } from './actionIntents/pax8OrderDigest';
+import { recordExecution } from './pax8OrderObservability';
 import { pax8OrderSubmitRepository } from './pax8OrderSubmitRepository';
 
-export interface SubmitBundle {
-  order: Pax8OrderRow;
-  lines: Pax8OrderLineRow[];
-  /** Captured inside the claim transaction; never exposed in tool output. */
-  integrationGeneration?: Pax8IntegrationSnapshot;
-  preClaimStatus?: 'draft' | 'awaiting_details' | 'ready';
+export const PAX8_SUBMIT_REFUSAL_CODES = [
+  'PREVIEW_MISMATCH', 'PRICE_CHANGED', 'COMMITMENT_CHANGED', 'COST_UNKNOWN',
+  'COMMITMENT_AMBIGUOUS', 'TOO_MANY_LINES', 'NOT_PENDING', 'COMPANY_UNRESOLVED',
+  'TERM_UNKNOWN', 'QUANTITY_UNKNOWN', 'SUBSCRIPTION_NOT_FOUND', 'PRODUCT_UNKNOWN',
+  'CONTRACT_LINE_MISSING', 'CLAIM_LOST', 'INTEGRATION_UNAVAILABLE', 'BASELINE_NOT_CAPTURED',
+  'INTEGRATION_CHANGED', 'PREFLIGHT_FAILED', 'CONFLICT',
+] as const;
+export type Pax8SubmitRefusalCode = (typeof PAX8_SUBMIT_REFUSAL_CODES)[number];
+export type UnsentRefusalCode = Extract<Pax8SubmitRefusalCode, 'INTEGRATION_CHANGED' | 'PREFLIGHT_FAILED'>;
+export interface LoadedBundle { order: Pax8OrderRow; lines: Pax8OrderLineRow[] }
+export interface ClaimedBundle extends LoadedBundle {
+  /** Opaque credential generation, without encrypted credentials. */
+  integrationGeneration: Pax8IntegrationGeneration;
+  preClaimStatus: SubmittableStatus;
 }
-
-export type VerifyClaim = (bundle: SubmitBundle, database: Database) => Promise<void>;
-
+export type VerifyClaim = (bundle: ClaimedBundle, database: Pick<Database, 'select'>) => Promise<
+  { ok: true } | { ok: false; code: 'PREVIEW_MISMATCH'; message: string }
+>;
+export type SubmitMode = { kind: 'rest' } | { kind: 'ai'; verifyClaim: VerifyClaim };
 export interface SubmitOrderInput {
-  partnerId: string;
-  orderId: string;
-  actorUserId: string;
-  verifyClaim?: VerifyClaim;
-  onPreflightFailure?: 'terminal' | 'reopen';
+  partnerId: string; orderId: string; actorUserId: string; mode: SubmitMode;
 }
 
 export interface SubmitLineOutcome {
@@ -38,33 +46,30 @@ export interface SubmitLineOutcome {
   resultSubscriptionId: string | null;
 }
 
-export interface SubmitResult {
-  orderId: string;
-  status: Pax8OrderStatus;
-  refusalCode?: 'INTEGRATION_CHANGED' | 'PREFLIGHT_FAILED';
-  error?: string;
+export interface BillingConflict { lineId: string; reason: string }
+interface OrderResult {
+  orderId: string; status: Pax8OrderStatus;
   lines: Array<{ lineId: string; submitState: Pax8SubmitState; error: string | null }>;
+  billingConflicts: BillingConflict[];
 }
-
+export type SubmitResult =
+  | (OrderResult & { kind: 'refused'; refusalCode: UnsentRefusalCode; error: string })
+  | (OrderResult & { kind: 'executed' });
+export interface ReconcileResult {
+  status: Pax8OrderStatus; lines: OrderResult['lines']; billingConflicts: BillingConflict[];
+  resolved: number; stillUnknown: number;
+}
 export interface Pax8OrderSubmitRepository {
-  loadResolvedOrder(input: { partnerId: string; orderId: string }): Promise<SubmitBundle>;
-  claimOrder(input: SubmitOrderInput): Promise<SubmitBundle>;
-  createClient(bundle: SubmitBundle): Promise<Pax8Client>;
-  claimLines(bundle: SubmitBundle): Promise<void>;
-  reopenUnsentOrder(bundle: SubmitBundle, error: string): Promise<SubmitResult>;
-  persistPreflightFailure(bundle: SubmitBundle, errorBody: string): Promise<SubmitResult>;
-  persistSubmitResults(
-    bundle: SubmitBundle,
-    outcomes: SubmitLineOutcome[],
-    pax8OrderId: string | null,
-  ): Promise<SubmitResult>;
-  loadReconcileOrder(input: { partnerId: string; orderId: string }): Promise<SubmitBundle>;
-  resetUnsentOrder(bundle: SubmitBundle): Promise<{ resolved: number; stillUnknown: number }>;
-  persistReconcileResults(
-    bundle: SubmitBundle,
-    outcomes: SubmitLineOutcome[],
-    pax8OrderId: string | null,
-  ): Promise<{ resolved: number; stillUnknown: number }>;
+  loadResolvedOrder(input: { partnerId: string; orderId: string }): Promise<LoadedBundle>;
+  claimOrder(input: SubmitOrderInput): Promise<ClaimedBundle>;
+  createClient(bundle: LoadedBundle | ClaimedBundle): Promise<Pax8Client>;
+  claimLines(bundle: ClaimedBundle): Promise<void>;
+  reopenUnsentOrder(bundle: ClaimedBundle, error: string, refusalCode: UnsentRefusalCode): Promise<Extract<SubmitResult, {kind: 'refused'}>>;
+  persistPreflightFailure(bundle: ClaimedBundle, errorBody: string): Promise<SubmitResult>;
+  persistSubmitResults(bundle: ClaimedBundle, outcomes: SubmitLineOutcome[], pax8OrderId: string | null): Promise<SubmitResult>;
+  loadReconcileOrder(input: { partnerId: string; orderId: string }): Promise<LoadedBundle>;
+  resetUnsentOrder(bundle: LoadedBundle): Promise<ReconcileResult>;
+  persistReconcileResults(bundle: LoadedBundle, outcomes: SubmitLineOutcome[], pax8OrderId: string | null): Promise<ReconcileResult>;
 }
 
 /** Optional evidence lets adapters distinguish a vendor dry run from a local no-op. */
@@ -85,11 +90,11 @@ function numberQuantity(value: string | null): number {
   return quantity;
 }
 
-function newSubscriptionLines(bundle: SubmitBundle): Pax8OrderLineRow[] {
+function newSubscriptionLines(bundle: LoadedBundle): Pax8OrderLineRow[] {
   return bundle.lines.filter((line) => line.action === 'new_subscription');
 }
 
-function buildCreateOrderInput(bundle: SubmitBundle): Pax8CreateOrderInput | null {
+function buildCreateOrderInput(bundle: LoadedBundle): Pax8CreateOrderInput | null {
   const lines = newSubscriptionLines(bundle);
   if (lines.length === 0) return null;
   if (!bundle.order.pax8CompanyId) {
@@ -174,7 +179,7 @@ function createResponseAssignment(lines: Pax8OrderLineRow[], result: Pax8OrderRe
 }
 
 async function preflightBundle(
-  bundle: SubmitBundle,
+  bundle: LoadedBundle,
   client: Pax8Client,
   outside: typeof runOutsideDbContext,
 ): Promise<PreflightResult> {
@@ -189,7 +194,7 @@ async function preflightBundle(
 }
 
 async function executeWrites(
-  bundle: SubmitBundle,
+  bundle: LoadedBundle,
   client: Pax8Client,
 ): Promise<{ outcomes: SubmitLineOutcome[]; pax8OrderId: string | null }> {
   const outcomes: SubmitLineOutcome[] = [];
@@ -267,7 +272,7 @@ function sameQuantity(left: string | null, right: string): boolean {
 }
 
 function reconcileNewBatch(
-  bundle: SubmitBundle,
+  bundle: LoadedBundle,
   unknownNewLines: Pax8OrderLineRow[],
   orders: Pax8OrderRecord[],
 ): { outcomes: SubmitLineOutcome[]; pax8OrderId: string | null } {
@@ -375,10 +380,10 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
         error: string,
         refusalCode: 'INTEGRATION_CHANGED' | 'PREFLIGHT_FAILED' = 'PREFLIGHT_FAILED',
       ): Promise<SubmitResult> => {
-        if (input.onPreflightFailure !== 'reopen') return deps.repository.persistPreflightFailure(bundle, error);
+        // Generation drift is provably unsent for both REST and AI: reopen it.
+        if (input.mode.kind === 'rest' && refusalCode !== 'INTEGRATION_CHANGED') return deps.repository.persistPreflightFailure(bundle, error);
         const clipped = error.slice(0, 2048);
-        const result = await deps.repository.reopenUnsentOrder(bundle, clipped);
-        return { ...result, refusalCode, error: clipped };
+        return deps.repository.reopenUnsentOrder(bundle, clipped, refusalCode);
       };
       let client: Pax8Client;
       try {
@@ -393,18 +398,36 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
       } catch (error) {
         // Payload construction may fail locally before isMock. It is still
         // provably unsent and must follow the AI reopen policy.
-        if (input.onPreflightFailure === 'reopen') return preflightFailure(errorText(error));
+        if (input.mode.kind === 'ai') return preflightFailure(errorText(error));
         throw error;
       }
       if (!preflight.ok) {
         return preflightFailure(preflight.errorBody);
       }
       await deps.repository.claimLines(bundle);
-      const execution = await deps.runOutsideDbContext(() => executeWrites(bundle, client));
-      return deps.repository.persistSubmitResults(bundle, execution.outcomes, execution.pax8OrderId);
+      let execution: Awaited<ReturnType<typeof executeWrites>>;
+      try {
+        execution = await deps.runOutsideDbContext(() => executeWrites(bundle, client));
+      } catch (error) {
+        if (error instanceof Pax8OrderError) {
+          throw new Pax8OrderError(error.message, error.status, { phase: 'execute', cause: error });
+        }
+        throw error;
+      }
+      const evidence = { partnerId: bundle.order.partnerId, orderId: bundle.order.id, ...execution };
+      recordExecution(evidence);
+      try {
+        return await deps.repository.persistSubmitResults(bundle, execution.outcomes, execution.pax8OrderId);
+      } catch (error) {
+        recordExecution(evidence, error);
+        if (error instanceof Pax8OrderError) {
+          throw new Pax8OrderError(error.message, error.status, { phase: 'persist', cause: error });
+        }
+        throw error;
+      }
     },
 
-    async reconcileOrder(input: { partnerId: string; orderId: string }): Promise<{ resolved: number; stillUnknown: number }> {
+    async reconcileOrder(input: { partnerId: string; orderId: string }): Promise<ReconcileResult> {
       const bundle = await deps.repository.loadReconcileOrder(input);
       // A crash can leave a line in_flight before or during the one real Pax8
       // attempt. Both states are ambiguous and require the same read-only human
@@ -417,7 +440,12 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
           && bundle.lines.every((line) => line.submitState === 'pending')) {
           return deps.repository.resetUnsentOrder(bundle);
         }
-        return { resolved: 0, stillUnknown: 0 };
+        return {
+          resolved: 0, stillUnknown: 0, status: bundle.order.status as Pax8OrderStatus,
+          lines: bundle.lines.map(line => ({ lineId: line.id, submitState: line.submitState as Pax8SubmitState, error: line.error })),
+          billingConflicts: bundle.lines.flatMap(line => line.error?.startsWith('billing_conflict:')
+            ? [{ lineId: line.id, reason: line.error.split(':')[1] ?? 'unknown' }] : []),
+        };
       }
       if (!bundle.order.pax8CompanyId) {
         throw new Pax8OrderError('Map this organization to a Pax8 company before reconciliation.', 422);

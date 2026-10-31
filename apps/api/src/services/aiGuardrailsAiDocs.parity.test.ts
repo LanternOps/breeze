@@ -1,3 +1,4 @@
+import { PAX8_SUBMIT_REFUSAL_CODES } from './pax8OrderSubmit';
 /**
  * Contract test: the published AI docs page
  * (apps/docs/src/content/docs/features/ai.mdx) must agree with the real
@@ -278,4 +279,12 @@ describe('W15 Pax8 documentation', () => {
     const documented = rows.flatMap((c) => c.actions);
     expect(actions.filter((a) => !documented.includes(a))).toEqual([]);
   });
+});
+
+it('Pax8 submit refusal codes stay documented in both client guides', () => {
+  for (const file of ['ai.mdx', 'mcp-server.mdx']) {
+    const guide = readFileSync(path.resolve(process.cwd(), `../docs/src/content/docs/features/${file}`), 'utf8');
+    expect(guide).toContain('PAX8_SUBMIT_REFUSAL_CODES');
+    for (const code of PAX8_SUBMIT_REFUSAL_CODES) expect(guide, `${file}: ${code}`).toContain(`\`${code}\``);
+  }
 });

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-const h = vi.hoisted(() => ({ get: vi.fn(), preview: vi.fn(), submit: vi.fn(), reconcile: vi.fn(), material: vi.fn(), audit: vi.fn() }));
+const h = vi.hoisted(() => ({ get: vi.fn(), preview: vi.fn(), submit: vi.fn(), reconcile: vi.fn(), material: vi.fn(), audit: vi.fn(), preflight: vi.fn(), capture: vi.fn() }));
+vi.mock('./sentry', () => ({captureException:h.capture}));
 vi.mock('../db', () => ({ db: {}, runOutsideDbContext: (f: any) => f(), withDbAccessContext: (_c: any, f: any) => f() }));
 vi.mock('./pax8OrderService', async original => ({ ...await original<typeof import('./pax8OrderService')>(), getOrderWithLines: h.get }));
-vi.mock('./pax8OrderSubmit', () => ({ preflightOrder: vi.fn(), submitOrder: h.submit, reconcileOrder: h.reconcile }));
+vi.mock('./pax8OrderSubmit', () => ({ preflightOrder: h.preflight, submitOrder: h.submit, reconcileOrder: h.reconcile }));
 vi.mock('./pax8OrderPreview', () => ({ previewPax8Order: h.preview }));
 vi.mock('./actionIntents/pax8OrderDigest', () => ({ pax8OrderDigestMaterial: h.material, hashPax8OrderMaterial: (value: unknown) => value === null ? null : (value as any).digest }));
 vi.mock('./aiToolsSoftwareShared', async original => ({ ...await original<typeof import('./aiToolsSoftwareShared')>(), auditToolWrite: h.audit }));
@@ -13,7 +14,7 @@ import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { buildApprovalDescription, checkGuardrails } from './aiGuardrails';
 import { isMfaGatedToolAction } from './aiToolMfaGate';
-import { Pax8OrderError } from './pax8OrderService';
+import { Pax8ClaimDriftError, Pax8OrderError } from './pax8OrderService';
 const ID = '00000000-0000-4000-8000-000000000001', ORG = '00000000-0000-4000-8000-000000000002', PARTNER = '00000000-0000-4000-8000-000000000003';
 const digest = 'a'.repeat(64);
 const company = { pax8CompanyId: 'fixture-company', name: 'Fixture Company' };
@@ -29,8 +30,8 @@ beforeEach(() => {
   h.get.mockResolvedValue({ order: { id: ID, orgId: ORG, status: 'draft' }, lines: [{ id: ID }] });
   h.preview.mockImplementation(async () => preview);
   h.material.mockResolvedValue({ digest });
-  h.submit.mockImplementation(async input => { await input.verifyClaim({ order: { id: ID, orgId: ORG }, lines: [{ id: ID }] }, {}); return { orderId: ID, status: 'completed', lines: [{ lineId: ID, submitState: 'succeeded', error: null }] }; });
-  h.reconcile.mockResolvedValue({ resolved: 1, stillUnknown: 0 });
+  h.submit.mockImplementation(async input => { const verification = await input.mode.verifyClaim({ order: { id: ID, orgId: ORG }, lines: [{ id: ID }] }, {}); if (!verification.ok) throw new Pax8ClaimDriftError(verification.message); return { kind:'executed',billingConflicts:[], orderId: ID, status: 'completed', lines: [{ lineId: ID, submitState: 'succeeded', error: null }] }; });
+  h.reconcile.mockResolvedValue({ status:'completed',lines:[],billingConflicts:[], resolved: 1, stillUnknown: 0 });
 });
 describe('W15 PR B Pax8 order submit', () => {
   it('appends exactly submit and reconcile to the action schema', () => expect(pax8ToolSchemas.manage_pax8_orders.shape.action.options).toEqual(['list','get','create_draft','add_line','update_line','remove_line','preview','preflight','submit','reconcile']));
@@ -43,9 +44,46 @@ describe('W15 PR B Pax8 order submit', () => {
   });
   it('verifies inside the claim before any isMock/write, without a pre-claim preflight', async () => {
     expect((await run()).status).toBe('completed');
-    expect(h.submit).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: ID, onPreflightFailure: 'reopen', verifyClaim: expect.any(Function) }));
+    expect(h.submit).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: ID, mode: {kind:'ai',verifyClaim: expect.any(Function)} }));
     expect(h.material).toHaveBeenCalledWith({}, ID);
+    expect(h.preflight).not.toHaveBeenCalled();
     expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'pax8.order.submit' }));
+  });
+  it.each(['submit', 'reconcile'])('audits %s service throws as failure with the error class', async action => {
+    const service = action === 'submit' ? h.submit : h.reconcile;
+    const createOrder = vi.fn().mockResolvedValue({pax8OrderId:'vendor-order'});
+    service.mockImplementationOnce(async () => { await createOrder(); throw new Pax8OrderError('result persistence conflict after send', 409, { phase: 'persist' }); });
+    await run({ ...args(), action });
+    expect(h.capture).toHaveBeenCalledWith(expect.any(Pax8OrderError), undefined, expect.objectContaining({errorId:'PAX8_PERSIST_FAILED'}));
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: `pax8.order.${action}`, result: 'failure', details: expect.objectContaining({ error: 'Pax8OrderError' }),
+    }));
+  });
+  it.each(['partially_failed', 'failed'])('audits %s executed outcomes as failure', async status => {
+    h.submit.mockResolvedValueOnce({ kind: 'executed', orderId: ID, status, billingConflicts: [], lines: [{ lineId: ID, submitState: 'failed', error: null }] });
+    await run();
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure', details: expect.objectContaining({ lines: [{ lineId: ID, submitState: 'failed' }] }) }));
+  });
+  it.each(['submit', 'reconcile'])('surfaces %s billing conflicts with billing guidance and a failure audit', async action => {
+    const billingConflicts = [{ lineId: ID, reason: 'baseline_changed' }];
+    const result = action === 'submit'
+      ? { kind: 'executed', orderId: ID, status: 'completed', lines: [], billingConflicts }
+      : { status: 'completed', lines: [], resolved: 1, stillUnknown: 0, billingConflicts };
+    (action === 'submit' ? h.submit : h.reconcile).mockResolvedValueOnce(result);
+    const out = await run({ ...args(), action });
+    expect(out.billingConflicts).toEqual(billingConflicts); expect(out.nextStep).toContain('billing');
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+  });
+  it.each(['CLAIM_LOST', 'INTEGRATION_UNAVAILABLE', 'BASELINE_NOT_CAPTURED', 'CONTRACT_LINE_MISSING'])('gives unsent guidance for %s claim refusals', async code => {
+    h.submit.mockRejectedValueOnce(new Pax8OrderError('Claim refused', 409, { phase: 'claim', code }));
+    const out = await run(); expect(out.code).toBe(code); expect(out.nextStep).toContain('nothing was sent'); expect(out.nextStep).not.toContain('unknown write');
+  });
+  it.each(['count', 'duplicate', 'unknown'])('rejects structural %s line mismatch', async shape => {
+    const input = args();
+    if (shape === 'count') preview.lines.push({ ...line, lineId: ORG });
+    if (shape === 'duplicate') { input.expectedLines.push({ ...line }); preview.lines.push({ ...line, lineId: ORG }); }
+    if (shape === 'unknown') input.expectedLines[0]!.lineId = ORG;
+    expect((await run(input)).code).toBe('PREVIEW_MISMATCH'); expect(h.submit).not.toHaveBeenCalled();
   });
   it.each(['unitCost', 'currency'])('PRICE_CHANGED on %s refuses before claim or writes', async field => {
     preview.lines[0][field] = 'changed';
@@ -87,11 +125,11 @@ describe('W15 PR B Pax8 order submit', () => {
     expect((await run()).code).toBe('TOO_MANY_LINES'); expect(h.preview).not.toHaveBeenCalled(); expect(h.submit).not.toHaveBeenCalled();
   });
   it('PREFLIGHT_FAILED reports the reopened order, never claims a terminal failure', async () => {
-    h.submit.mockResolvedValue({ orderId: ID, status: 'draft', lines: [{ lineId: ID, submitState: 'pending', error: null }], refusalCode: 'PREFLIGHT_FAILED', error: 'bad provisioning' });
+    h.submit.mockResolvedValue({ kind:'refused', billingConflicts:[], orderId: ID, status: 'draft', lines: [{ lineId: ID, submitState: 'pending', error: null }], refusalCode: 'PREFLIGHT_FAILED', error: 'bad provisioning' });
     const out = await run(); expect(out.code).toBe('PREFLIGHT_FAILED'); expect(out.result.status).toBe('draft');
   });
   it('clips all nested vendor errors to 2 KB on an unsent refusal', async () => {
-    h.submit.mockResolvedValue({ orderId: ID, status: 'draft', lines: [{ lineId: ID, submitState: 'pending', error: '界'.repeat(4000) }], refusalCode: 'PREFLIGHT_FAILED', error: '界'.repeat(4000) });
+    h.submit.mockResolvedValue({ kind:'refused', billingConflicts:[], orderId: ID, status: 'draft', lines: [{ lineId: ID, submitState: 'pending', error: '界'.repeat(4000) }], refusalCode: 'PREFLIGHT_FAILED', error: '界'.repeat(4000) });
     const out = await run();
     expect(out.code).toBe('PREFLIGHT_FAILED');
     for (const error of [out.error, out.result.error, out.result.lines[0].error]) expect(Buffer.byteLength(error)).toBeLessThanOrEqual(2048);
@@ -101,7 +139,7 @@ describe('W15 PR B Pax8 order submit', () => {
     expect((await run()).code).toBe('CONFLICT'); expect(h.submit).toHaveBeenCalledTimes(1);
   });
   it('names ambiguous writes with a reconcile hint', async () => {
-    h.submit.mockResolvedValue({ orderId: ID, status: 'partially_failed', lines: [{ lineId: ID, submitState: 'needs_reconcile', error: 'timeout' }] });
+    h.submit.mockResolvedValue({ kind:'executed', billingConflicts:[], orderId: ID, status: 'partially_failed', lines: [{ lineId: ID, submitState: 'needs_reconcile', error: 'timeout' }] });
     expect((await run()).nextStep).toContain('reconcile');
   });
   it.each(['submit','reconcile'])('%s repeats MFA, site, device and org gates before services', async action => {
@@ -117,7 +155,7 @@ describe('W15 PR B Pax8 order submit', () => {
     expect((await run(args(), auth({ principal: { kind: 'ai_agent' } }))).code).toBe('AGENT_HUMAN_ONLY'); expect(h.submit).not.toHaveBeenCalled();
   });
   it('reconcile calls the existing service and audits the read-backed billing result', async () => {
-    expect(await run({ action: 'reconcile', orderId: ID })).toEqual({ resolved: 1, stillUnknown: 0 });
+    expect(await run({ action: 'reconcile', orderId: ID })).toMatchObject({ resolved: 1, stillUnknown: 0, billingConflicts:[] });
     expect(h.reconcile).toHaveBeenCalledWith({ partnerId: PARTNER, orderId: ID });
     expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'pax8.order.reconcile' }));
   });

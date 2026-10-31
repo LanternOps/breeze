@@ -5,7 +5,12 @@ const mocks = vi.hoisted(() => ({
   validateLines: vi.fn(),
   events: [] as string[],
   createClient: vi.fn(),
+  logError: vi.fn(),
+  captureException: vi.fn(),
 }));
+
+vi.mock('./pax8OrderObservability', () => ({ errorIds: { PAX8_BILLING_CONFLICT: 'PAX8_BILLING_CONFLICT', PAX8_BILLING_INTEGRITY_DRIFT: 'PAX8_BILLING_INTEGRITY_DRIFT', PAX8_REOPEN_FAILED: 'PAX8_REOPEN_FAILED' }, logError: mocks.logError }));
+vi.mock('./sentry', () => ({ captureException: mocks.captureException }));
 
 vi.mock('../db', () => ({
   db: mocks.db,
@@ -15,8 +20,9 @@ vi.mock('../db', () => ({
 
 vi.mock('./pax8OrderService', () => {
   class Pax8OrderError extends Error {
-    constructor(message: string, public readonly status: number) {
-      super(message);
+    constructor(message: string, public readonly status: number, options: { phase?: string; code?: string; cause?: unknown } = {}) {
+      super(message, { cause: options.cause });
+      Object.assign(this, { phase: options.phase ?? 'claim', code: options.code });
     }
   }
   class Pax8OrderRestageRequiredError extends Pax8OrderError {
@@ -27,6 +33,7 @@ vi.mock('./pax8OrderService', () => {
   return {
     Pax8OrderError,
     Pax8OrderRestageRequiredError,
+    Pax8ClaimDriftError: class extends Pax8OrderError { constructor(message: string) { super(message, 409, { phase: 'claim', code: 'PREVIEW_MISMATCH' }); } },
     requireImmediateCancelDate: vi.fn(),
     validateDirectOrderLinesForSubmit: mocks.validateLines,
   };
@@ -37,6 +44,7 @@ vi.mock('./pax8SyncService', async (importOriginal) => {
   return { ...actual, createPax8ClientForIntegration: mocks.createClient };
 });
 
+import { pax8CredentialGeneration } from './actionIntents/pax8OrderDigest';
 import { pax8OrderSubmitRepository } from './pax8OrderSubmitRepository';
 
 const READY_METADATA = {
@@ -81,6 +89,8 @@ beforeEach(() => {
   mocks.validateLines.mockReset();
   mocks.createClient.mockReset();
   mocks.events.length = 0;
+  mocks.logError.mockReset();
+  mocks.captureException.mockReset();
 });
 
 describe('pax8OrderSubmitRepository.claimOrder', () => {
@@ -118,7 +128,7 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     const bundle = await pax8OrderSubmitRepository.claimOrder({
       partnerId: order.partnerId,
       orderId: order.id,
-      actorUserId: 'actor-1',
+      actorUserId: 'actor-1', mode: { kind: 'rest' },
     });
 
     expect(mocks.events.indexOf('parent-claimed')).toBeLessThan(mocks.events.indexOf('lines-read'));
@@ -161,7 +171,7 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     await expect(pax8OrderSubmitRepository.claimOrder({
       partnerId: order.partnerId,
       orderId: order.id,
-      actorUserId: 'actor-1',
+      actorUserId: 'actor-1', mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('stage it again') });
 
     expect(resetSet).toHaveBeenCalledWith(expect.objectContaining({
@@ -197,7 +207,7 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
     await expect(pax8OrderSubmitRepository.claimOrder({
       partnerId: order.partnerId,
       orderId: order.id,
-      actorUserId: 'actor-1',
+      actorUserId: 'actor-1', mode: { kind: 'rest' },
     })).rejects.toMatchObject({ status: 409 });
 
     expect(mocks.db.update).toHaveBeenCalledTimes(1);
@@ -210,6 +220,8 @@ const integration = {
   apiBaseUrl: 'https://api.example.test', tokenUrl: 'https://auth.example.test/token',
   clientIdEncrypted: 'synthetic-client-ciphertext', clientSecretEncrypted: 'synthetic-secret-ciphertext',
 } as import('./pax8SyncService').Pax8IntegrationSnapshot;
+
+const generation = { id: integration.id, partnerId: integration.partnerId, apiBaseUrl: integration.apiBaseUrl, tokenUrl: integration.tokenUrl, isActive: integration.isActive, credentialGeneration: pax8CredentialGeneration(integration) };
 
 const line = {
   id: 'line-1', orderId: order.id, partnerId: order.partnerId, orgId: order.orgId,
@@ -244,15 +256,17 @@ function prepareClaim(action: string = 'new_subscription', status: string = 'rea
 
 it.each(['new_subscription', 'change_quantity', 'cancel'])('captures and durably stores the %s approved baseline before verifyClaim', async (action) => {
   const { baseline } = prepareClaim(action);
-  const verifyClaim = vi.fn(async (bundle: import('./pax8OrderSubmit').SubmitBundle) => {
+  const verifyClaim = vi.fn(async (bundle: import('./pax8OrderSubmit').ClaimedBundle) => {
     expect(mocks.events).toContain('validated');
     expect(bundle.lines[0]!.authorizedBaselineQuantity).toBe('4.00');
     expect(baseline.returning).toHaveBeenCalled();
+    return { ok: true as const };
   });
-  const bundle = await pax8OrderSubmitRepository.claimOrder({ partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1', verifyClaim });
-  expect(verifyClaim).toHaveBeenCalledWith(bundle, mocks.db);
+  const bundle = await pax8OrderSubmitRepository.claimOrder({ partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1', mode: { kind: 'ai', verifyClaim } });
+  expect(verifyClaim).toHaveBeenCalledWith(bundle, { select: expect.any(Function) });
   expect(bundle.preClaimStatus).toBe('ready');
-  expect(bundle.integrationGeneration).toEqual(integration);
+  expect(bundle.integrationGeneration).toEqual(generation);
+  expect(bundle.integrationGeneration).not.toHaveProperty('clientSecretEncrypted');
   expect(baseline.set).toHaveBeenCalledWith(expect.objectContaining({ authorizedBaselineQuantity: '4.00' }));
 });
 
@@ -260,23 +274,24 @@ it('propagates verifyClaim drift inside the claim context without constructing a
   prepareClaim();
   await expect(pax8OrderSubmitRepository.claimOrder({
     partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1',
-    verifyClaim: async () => { throw new Error('PREVIEW_MISMATCH'); },
+    mode: { kind: 'ai', verifyClaim: async () => ({ ok: false, code: 'PREVIEW_MISMATCH', message: 'PREVIEW_MISMATCH' }) },
   })).rejects.toThrow('PREVIEW_MISMATCH');
-  expect(mocks.createClient).not.toHaveBeenCalled();
 });
 
 it.each(['apiBaseUrl', 'tokenUrl', 'clientIdEncrypted', 'clientSecretEncrypted', 'isActive'] as const)('refuses a client when the claimed integration %s changed', async (field) => {
-  mocks.db.select.mockReturnValueOnce(selectChain([], 'limit'));
+  const generationSelect = selectChain([integration], 'limit');
+  mocks.db.select.mockReturnValueOnce(generationSelect).mockReturnValueOnce(selectChain([integration], 'limit'));
   mocks.createClient.mockResolvedValue({ integration: { ...integration, [field]: field === 'isActive' ? false : 'changed' }, client: {} });
-  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: integration }))
+  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: generation, preClaimStatus: 'ready' }))
     .rejects.toMatchObject({ name: 'Pax8IntegrationGenerationChangedError' });
+  expect(mocks.createClient).toHaveBeenCalled();
 });
 
 it('accepts access-token churn without changing the claimed integration generation', async () => {
   const client = {};
-  mocks.db.select.mockReturnValueOnce(selectChain([integration], 'limit'));
+  mocks.db.select.mockReturnValueOnce(selectChain([integration], 'limit')).mockReturnValueOnce(selectChain([integration], 'limit'));
   mocks.createClient.mockResolvedValue({ integration: { ...integration, accessTokenEncrypted: 'refreshed' }, client });
-  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: integration })).resolves.toBe(client);
+  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: generation, preClaimStatus: 'ready' })).resolves.toBe(client);
 });
 
 it.each(['draft', 'awaiting_details', 'ready'])('reopens a provably unsent claim to %s with pending lines', async (preClaimStatus) => {
@@ -284,16 +299,21 @@ it.each(['draft', 'awaiting_details', 'ready'])('reopens a provably unsent claim
   mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([line], 'limit'));
   const reset = mutation([{ id: order.id }]);
   mocks.db.update.mockReturnValueOnce(reset);
-  const result = await pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: preClaimStatus as never }, 'preflight failed');
+  const result = await pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: preClaimStatus as never, integrationGeneration: generation }, 'preflight failed', 'PREFLIGHT_FAILED');
   expect(result.status).toBe(preClaimStatus);
   expect(result.lines[0]?.submitState).toBe('pending');
   expect(reset.set).toHaveBeenCalledWith(expect.objectContaining({ status: preClaimStatus, submittedBy: null, submittedAt: null }));
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const query = new PgDialect().sqlToQuery(reset.where.mock.calls[0]![0] as never);
+  expect(query.sql).toContain('submitted_at');
+  expect(query.sql).toContain("submit_state <> 'pending'");
+  expect(result).toMatchObject({ kind: 'refused', refusalCode: 'PREFLIGHT_FAILED' });
 });
 
 it('refuses to reopen after a line has entered in_flight', async () => {
   const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
   mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([{ ...line, submitState: 'in_flight' }], 'limit'));
-  await expect(pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: 'draft' }, 'failed')).rejects.toMatchObject({ status: 409 });
+  await expect(pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: 'draft', integrationGeneration: generation }, 'failed', 'PREFLIGHT_FAILED')).rejects.toMatchObject({ status: 409 });
   expect(mocks.db.update).not.toHaveBeenCalled();
 });
 
@@ -302,17 +322,89 @@ it.each(['persistSubmitResults', 'persistReconcileResults'] as const)('%s preser
   const sentLine = { ...line, authorizedBaselineQuantity: '4.00', submitState: 'in_flight' };
   const recorded = { ...sentLine, submitState: 'succeeded', error: 'billing_conflict' };
   mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit'))
+    .mockReturnValueOnce(selectChain([{ id: line.contractLineId, lineType: 'manual', manualQuantity: '3.00' }], 'limit'))
     .mockReturnValueOnce(selectChain([recorded], 'limit'));
   // The billing CAS sees a concurrent manual quantity edit and matches no row.
   const billingWrite = mutation([]);
   const lineWrite = mutation([{ id: line.id }]);
   const parentWrite = mutation([{ id: order.id }]);
   mocks.db.update.mockReturnValueOnce(billingWrite).mockReturnValueOnce(lineWrite).mockReturnValueOnce(parentWrite);
-  await pax8OrderSubmitRepository[method]({ order: claimed, lines: [sentLine] }, [{ lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: 'synthetic-subscription' }], 'synthetic-order');
+  const result = await pax8OrderSubmitRepository[method]({ order: claimed, lines: [sentLine] } as never, [{ lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: 'synthetic-subscription' }], 'synthetic-order');
+  expect(result.billingConflicts).toEqual([{ lineId: line.id, reason: 'baseline_changed' }]);
   expect(billingWrite.set).toHaveBeenCalledWith({ manualQuantity: '7.00' });
   expect(lineWrite.set).toHaveBeenCalledWith(expect.objectContaining({ submitState: 'succeeded', resultSubscriptionId: 'synthetic-subscription', error: expect.stringContaining('billing_conflict') }));
   const { PgDialect } = await import('drizzle-orm/pg-core');
   const query = new PgDialect().sqlToQuery(billingWrite.where.mock.calls[0]![0] as never);
   expect(query.sql).toContain('"manual_quantity" =');
   expect(query.params).toContain('4.00');
+});
+
+
+describe('billing result fidelity', () => {
+  it.each([
+    ['baseline_changed', [{ id: line.contractLineId, lineType: 'manual', manualQuantity: '3.00' }], '4.00', '7.00'],
+    ['line_missing', [], '4.00', '7.00'],
+    ['not_manual', [{ id: line.contractLineId, lineType: 'fixed', manualQuantity: '4.00' }], '4.00', '7.00'],
+    ['no_quantity', [], '4.00', null],
+    ['baseline_missing', [{ id: line.contractLineId, lineType: 'manual', manualQuantity: '3.00' }], null, '7.00'],
+  ] as const)('surfaces %s without rewriting a successful vendor result', async (reason, linked, baseline, quantity) => {
+    const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
+    const sent = { ...line, quantity, authorizedBaselineQuantity: baseline, submitState: 'in_flight' };
+    const error = `billing_conflict:${reason}: review billing`;
+    mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit'));
+    if (reason !== 'no_quantity') mocks.db.select.mockReturnValueOnce(selectChain([...linked], 'limit'));
+    mocks.db.select.mockReturnValueOnce(selectChain([{ ...sent, submitState: 'succeeded', error }], 'limit'));
+    if (reason !== 'no_quantity') mocks.db.update.mockReturnValueOnce(mutation([]));
+    const lineWrite = mutation([{ id: line.id }]);
+    const parentWrite = mutation([{ id: order.id }]);
+    mocks.db.update.mockReturnValueOnce(lineWrite).mockReturnValueOnce(parentWrite);
+    const result = await pax8OrderSubmitRepository.persistSubmitResults({ order: claimed, lines: [sent] } as never,
+      [{ lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: 'remote-sub' }], 'remote-order');
+    expect(result.billingConflicts).toEqual([{ lineId: line.id, reason }]);
+    expect(result.status).toBe('partially_failed');
+    expect(lineWrite.set).toHaveBeenCalledWith(expect.objectContaining({ submitState: 'succeeded', error: expect.stringContaining(`billing_conflict:${reason}:`) }));
+    expect(mocks.logError).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ partnerId: order.partnerId, orderId: order.id, lineId: line.id }));
+    if (reason === 'line_missing' || reason === 'not_manual') expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  it.each(['new_subscription', 'cancel'] as const)('uses the null-baseline SQL CAS and correct %s quantity', async (action) => {
+    const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
+    const sent = { ...line, action, authorizedBaselineQuantity: null, submitState: 'in_flight' };
+    mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([{ ...sent, submitState: 'succeeded' }], 'limit'));
+    const billing = mutation([{ id: line.contractLineId }]);
+    mocks.db.update.mockReturnValueOnce(billing).mockReturnValueOnce(mutation([{ id: line.id }])).mockReturnValueOnce(mutation([{ id: order.id }]));
+    const result = await pax8OrderSubmitRepository.persistSubmitResults({ order: claimed, lines: [sent] } as never,
+      [{ lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: 'remote-sub' }], 'remote-order');
+    expect(result.billingConflicts).toEqual([]);
+    expect(billing.set).toHaveBeenCalledWith({ manualQuantity: action === 'cancel' ? '0' : '7.00' });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    expect(new PgDialect().sqlToQuery(billing.where.mock.calls[0]![0] as never).sql).toContain('"manual_quantity" is null');
+  });
+});
+
+
+it('keeps the original refusal as cause when reopening loses its CAS', async () => {
+  const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
+  mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([line], 'limit'));
+  mocks.db.update.mockReturnValueOnce(mutation([]));
+  await expect(pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: 'ready', integrationGeneration: generation },
+    'Vendor dry run rejected input', 'PREFLIGHT_FAILED')).rejects.toMatchObject({
+    code: 'CLAIM_LOST', cause: { code: 'PREFLIGHT_FAILED', message: 'Vendor dry run rejected input' },
+  });
+  expect(mocks.logError).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({
+    orderId: order.id, partnerId: order.partnerId, refusalCode: 'PREFLIGHT_FAILED', originalError: 'Vendor dry run rejected input',
+  }));
+});
+
+it('checks exact API URL and ciphertext generation predicates under the integration lock', async () => {
+  const locked = selectChain([integration], 'limit');
+  const exact = selectChain([integration], 'limit');
+  mocks.db.select.mockReturnValueOnce(locked).mockReturnValueOnce(exact);
+  mocks.createClient.mockResolvedValue({ integration, client: {} });
+  await pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: generation, preClaimStatus: 'ready' });
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const query = new PgDialect().sqlToQuery((exact.where as ReturnType<typeof vi.fn>).mock.calls[0]![0] as never);
+  expect(query.sql).toContain('api_base_url');
+  expect(query.sql).toContain('client_secret_encrypted');
+  expect(query.params).toContain(integration.clientSecretEncrypted);
 });

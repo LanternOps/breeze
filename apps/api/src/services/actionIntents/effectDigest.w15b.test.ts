@@ -2,7 +2,7 @@ import { getTableColumns, getTableName } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '../../db';
 import { computeEffectDigestOutcome, effectDigestResolverKey, requiresPinnedEffectDigest } from './effectDigest';
-import { hashPax8OrderMaterial, pax8OrderDigestMaterial } from './pax8OrderDigest';
+import { hashPax8OrderMaterial, pax8OrderDigestMaterial, PAX8_ORDER_MATERIAL_VERSION, serializePax8OrderMaterial } from './pax8OrderDigest';
 
 const ORDER = '10000000-0000-4000-8000-000000000001';
 const PARTNER = '10000000-0000-4000-8000-000000000002';
@@ -128,6 +128,20 @@ describe('Pax8 submit local effect material (W15 Q2/Q4/Q5/Q7)', () => {
     expect(await digest()).toBe(before);
     first('contract_lines').manualQuantity = '6.00';
     expect(await digest()).not.toBe(before);
+  });
+
+  it('uses the explicit material version in the canonical envelope', async () => {
+    const material = await pax8OrderDigestMaterial(database, ORDER);
+    if (!material) throw new Error('missing material');
+    expect(JSON.parse(serializePax8OrderMaterial(material))).toEqual({ v: PAX8_ORDER_MATERIAL_VERSION, order: material });
+  });
+
+  it('omits catalog fields unused by the payload, approval card or price resolution', async () => {
+    const before = await digest();
+    Object.assign(first('catalog_items'), { description: 'Changed description', sku: 'Changed SKU', billingFrequency: 'annual', commitmentTermMonths: 36 });
+    expect(await digest()).toBe(before);
+    const material = await pax8OrderDigestMaterial(database, ORDER);
+    expect(Object.keys(material!.lines[0]!.catalog[0]!.item!).sort()).toEqual(['id', 'isActive', 'costBasis', 'costCurrency', 'taxable', 'taxCategory'].sort());
   });
 
   it('canonicalizes provisioning object-key order', async () => {

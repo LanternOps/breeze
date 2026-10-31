@@ -1,18 +1,28 @@
 /** Pax8 drafts, verified four-eyes submit and evidence-based reconciliation. */
+import type { z } from 'zod';
+import { captureException } from './sentry';
+import { errorIds } from './pax8OrderObservability';
 import { runOutsideDbContext, withDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import { PAX8_DRAFT_ACTIONS, pax8SubmitAssertionsSchema, pax8AddLineSchema, pax8UpdateLineSchema, pax8ToolSchemas } from './aiToolSchemasPax8';
+import { PAX8_DRAFT_ACTIONS, pax8ExpectedLineSchema, pax8SubmitAssertionsSchema, pax8AddLineSchema, pax8UpdateLineSchema, pax8ToolSchemas } from './aiToolSchemasPax8';
 import { pax8Clip, pax8DbContext, pax8Error, pax8InputSchema, pax8Page, pax8Partner } from './aiToolsPax8';
 import { addOrderLine, getOrderWithLines, getOrCreateDraftOrder, listPax8Orders, removeOrderLine, updateOrderLine, type Pax8OrderLineRow, type Pax8OrderRow } from './pax8OrderService';
 import { previewPax8Order } from './pax8OrderPreview';
-import { preflightOrder, submitOrder, reconcileOrder } from './pax8OrderSubmit';
+import { preflightOrder, submitOrder, reconcileOrder, type Pax8SubmitRefusalCode, type SubmitResult } from './pax8OrderSubmit';
 import { pax8OrderDigestMaterial, hashPax8OrderMaterial } from './actionIntents/pax8OrderDigest';
 import { isAutomationPrincipal } from '../middleware/principalKind';
-import { Pax8OrderError } from './pax8OrderService';
+import { Pax8ClaimDriftError, Pax8OrderError } from './pax8OrderService';
 import { Pax8ApiError } from './pax8Client';
 import { auditToolWrite, bounded, jsonError, orgWideWriteDenied, verifiedUserIdOrNull } from './aiToolsSoftwareShared';
+const LINE_ASSERTION_CODE = {
+  lineId: 'PREVIEW_MISMATCH', action: 'PREVIEW_MISMATCH', pax8ProductId: 'PREVIEW_MISMATCH',
+  productName: 'PREVIEW_MISMATCH', quantity: 'PREVIEW_MISMATCH', fromQuantity: 'PREVIEW_MISMATCH',
+  billingTerm: 'PREVIEW_MISMATCH', unitCost: 'PRICE_CHANGED', currency: 'PRICE_CHANGED',
+  commitmentTerm: 'COMMITMENT_CHANGED', cancellationFeeApplied: 'COMMITMENT_CHANGED',
+} satisfies Record<keyof z.infer<typeof pax8ExpectedLineSchema>, Pax8SubmitRefusalCode>;
+const BILLING_NEXT_STEP = 'Review billingConflicts and resolve the manual billing quantity with a person; do not re-submit successful vendor writes.';
 const TOOL = 'manage_pax8_orders';
 const WRITES: ReadonlySet<(typeof PAX8_DRAFT_ACTIONS)[number]> = new Set(
   PAX8_DRAFT_ACTIONS.filter(action => action !== 'list' && action !== 'get' && action !== 'preview'),
@@ -69,9 +79,17 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
         if (action === 'get') return bounded({ data: { order: presentOrder(bundle.order), lines: bundle.lines.map(presentLine) } });
         if (action === 'preview') return bounded(await runOutsideDbContext(() => previewPax8Order({ partnerId, orderId })));
         if (action === 'reconcile') {
-          const result = await runOutsideDbContext(() => reconcileOrder({ partnerId, orderId }));
-          audit(auth, partnerId, bundle.order.orgId, 'pax8.order.reconcile', orderId, result);
-          return bounded(result);
+          try {
+            const result = await runOutsideDbContext(() => reconcileOrder({ partnerId, orderId }));
+            audit(auth, partnerId, bundle.order.orgId, 'pax8.order.reconcile', orderId,
+              { ...result, lines: result.lines?.map(line => ({ lineId: line.lineId, submitState: line.submitState })) },
+              result.status === 'completed' && result.billingConflicts.length === 0 ? 'success' : 'failure');
+            return bounded({ ...result, ...(result.billingConflicts.length ? { nextStep: BILLING_NEXT_STEP } : {}) });
+          } catch (error) {
+            audit(auth, partnerId, bundle.order.orgId, 'pax8.order.reconcile', orderId,
+              { error: error instanceof Error ? error.constructor.name : typeof error }, 'failure');
+            throw error;
+          }
         }
         if (action === 'submit') {
           if (isAutomationPrincipal(auth)) return jsonError('A person must request Pax8 order submission', 'AGENT_HUMAN_ONLY');
@@ -83,41 +101,51 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
           // dependencies). Preview never preflights or writes through loadResolvedOrder.
           const live = await runOutsideDbContext(() => previewPax8Order({ partnerId, orderId }));
           if (live.blocked.length) return bounded({ error: 'The order cannot be submitted by AI; review its preview', code: live.blocked[0]!.code, blocked: live.blocked });
-          const refuse = (code: string, message: string) => jsonError(message, code);
+          const refuse = (code: Pax8SubmitRefusalCode, message: string) => jsonError(message, code);
           if (expected.expectedLines.length !== live.lines.length) return refuse('PREVIEW_MISMATCH', 'The approved line set changed');
           const actualById = new Map(live.lines.map(line => [line.lineId, line]));
           if (new Set(expected.expectedLines.map(line => line.lineId)).size !== live.lines.length) return refuse('PREVIEW_MISMATCH', 'The approved line set is not unique');
           for (const line of expected.expectedLines) {
             const actual = actualById.get(line.lineId);
             if (!actual) return refuse('PREVIEW_MISMATCH', 'An approved order line is unavailable');
-            if (line.unitCost !== actual.unitCost || line.currency !== actual.currency) return refuse('PRICE_CHANGED', 'The estimated Pax8 rate changed; preview and approve again');
-            if (line.commitmentTerm !== actual.commitmentTerm || (line.cancellationFeeApplied ?? null) !== actual.cancellationFeeApplied) return refuse('COMMITMENT_CHANGED', 'Pax8 commitment rules changed; preview and approve again');
+            for (const key of Object.keys(LINE_ASSERTION_CODE) as Array<keyof typeof LINE_ASSERTION_CODE>) {
+              if (line[key] !== actual[key]) return refuse(LINE_ASSERTION_CODE[key], `The approved ${key} changed; nothing was sent; preview and approve again`);
+            }
             if ((actual.action === 'cancel' && actual.allowForEarlyCancellation !== true)
               || (actual.action === 'change_quantity' && Number(actual.quantity) > Number(actual.fromQuantity) && actual.allowForQuantityIncrease !== true)
               || (actual.action === 'change_quantity' && Number(actual.quantity) < Number(actual.fromQuantity) && actual.allowForQuantityDecrease !== true)) {
               return refuse('COMMITMENT_CHANGED', 'The current Pax8 commitment no longer permits this action');
             }
-            for (const key of ['action', 'pax8ProductId', 'productName', 'quantity', 'billingTerm'] as const) {
-              if (line[key] !== actual[key]) return refuse('PREVIEW_MISMATCH', `The approved ${key} differs from the order`);
-            }
-            if ((line.fromQuantity ?? null) !== actual.fromQuantity) return refuse('PREVIEW_MISMATCH', 'The approved baseline quantity differs from the order');
           }
           if (expected.expectedCompany.pax8CompanyId !== live.company?.pax8CompanyId || expected.expectedCompany.name !== live.company?.name
             || expected.previewDigest !== live.previewDigest) return refuse('PREVIEW_MISMATCH', 'The approved company or local order inputs changed');
-          const result = await runOutsideDbContext(() => submitOrder({
-            partnerId, orderId, actorUserId: auth.user.id, onPreflightFailure: 'reopen',
+          let result: SubmitResult;
+          try {
+            result = await runOutsideDbContext(() => submitOrder({
+            partnerId, orderId, actorUserId: auth.user.id, mode: { kind: 'ai',
             verifyClaim: async (_claimed, database) => {
               const material = await pax8OrderDigestMaterial(database, orderId);
               if (!material || hashPax8OrderMaterial(material) !== expected.previewDigest) {
-                throw new Pax8OrderError('PREVIEW_MISMATCH: The order changed before its claim; nothing was sent.', 409);
+                return { ok: false, code: 'PREVIEW_MISMATCH', message: 'The order changed before its claim; nothing was sent; preview and approve again.' };
               }
-            },
+              return { ok: true };
+            }, },
           }));
-          const failure = result.refusalCode !== undefined;
-          audit(auth, partnerId, bundle.order.orgId, 'pax8.order.submit', orderId, { status: result.status, refusalCode: result.refusalCode }, failure ? 'failure' : 'success');
-          if (failure) return bounded({ error: pax8Clip(result.error) ?? 'The unsent order was reopened', code: result.refusalCode!, result: { ...result, error: pax8Clip(result.error), lines: result.lines.map(line => ({ ...line, error: pax8Clip(line.error) })) } });
+          } catch (error) {
+            audit(auth, partnerId, bundle.order.orgId, 'pax8.order.submit', orderId,
+              { error: error instanceof Error ? error.constructor.name : typeof error }, 'failure');
+            throw error;
+          }
+          audit(auth, partnerId, bundle.order.orgId, 'pax8.order.submit', orderId,
+            { status: result.status, ...(result.kind === 'refused' ? { refusalCode: result.refusalCode } : {}), billingConflicts: result.billingConflicts,
+              lines: result.lines.map(line => ({ lineId: line.lineId, submitState: line.submitState })) },
+            result.status === 'completed' && result.billingConflicts.length === 0 ? 'success' : 'failure');
+          if (result.kind === 'refused') return bounded({ error: pax8Clip(result.error), code: result.refusalCode,
+            nextStep: 'nothing was sent; preview and approve again.',
+            result: { ...result, error: pax8Clip(result.error), lines: result.lines.map(line => ({ ...line, error: pax8Clip(line.error) })) } });
           return bounded({ ...result, lines: result.lines.map(line => ({ ...line, error: pax8Clip(line.error) })),
-            ...(result.lines.some(line => line.submitState === 'needs_reconcile') ? { nextStep: 'Use reconcile to inspect vendor evidence; never retry an unknown write.' } : {}) });
+            ...(result.billingConflicts.length ? { nextStep: BILLING_NEXT_STEP }
+              : result.lines.some(line => line.submitState === 'needs_reconcile') ? { nextStep: 'Use reconcile to inspect vendor evidence; never retry an unknown write.' } : {}) });
         }
         if (action === 'preflight') {
           try {
@@ -161,8 +189,12 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
         }
         return jsonError('Unknown Pax8 order action', 'VALIDATION_ERROR');
       } catch (error) {
-        if (error instanceof Pax8OrderError && error.message.startsWith('PREVIEW_MISMATCH:')) return jsonError(error.message, 'PREVIEW_MISMATCH');
-        if (error instanceof Pax8OrderError && error.status === 409) return bounded({ error: pax8Clip(error.message), code: 'CONFLICT', nextStep: 'Inspect the order and reconcile any unknown write; never retry blindly.' });
+        if (error instanceof Pax8ClaimDriftError) return bounded({ error: pax8Clip(error.message), code: error.code, nextStep: 'nothing was sent; preview and approve again.' });
+        if (error instanceof Pax8OrderError) {
+          if (error.phase !== 'claim') captureException(error, undefined, { errorId: errorIds.PAX8_PERSIST_FAILED });
+          if (error.status === 409) return bounded({ error: pax8Clip(error.message), code: error.code ?? 'CONFLICT',
+            nextStep: error.phase === 'claim' ? 'nothing was sent; preview and approve again.' : 'Inspect the order and reconcile any unknown write; never retry blindly.' });
+        }
         return pax8Error(TOOL, error);
       }
     },

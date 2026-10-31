@@ -6,6 +6,7 @@ import { contracts, contractLines, pax8CompanyMappings, pax8ProductMappings, pax
 import { pax8OrderDigestMaterial, hashPax8OrderMaterial } from './actionIntents/pax8OrderDigest';
 import type { z } from 'zod';
 import type { pax8SubmitAssertionsSchema } from './aiToolSchemasPax8';
+import { isSubmittableStatus } from './pax8OrderTypes';
 import { getOrderWithLines, snapshotActiveCommitmentEvidence } from './pax8OrderService';
 import { createPax8ClientForIntegration } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
@@ -34,7 +35,16 @@ export interface Pax8PreviewLine {
   cancellationFeeApplied: boolean | null;
 }
 
+export const PREVIEW_FIELD_SOURCE = {
+  lineId: 'material', action: 'material', pax8ProductId: 'material', productName: 'material',
+  vendorSkuId: 'material', quantity: 'derived', fromQuantity: 'material', billingTerm: 'material',
+  commitmentTerm: 'vendor-live', unitCost: 'derived', currency: 'derived', sellUnitPrice: 'material',
+  sellCurrency: 'material', contractLineId: 'material', allowForQuantityIncrease: 'vendor-live',
+  allowForQuantityDecrease: 'vendor-live', allowForEarlyCancellation: 'vendor-live', cancellationFeeApplied: 'vendor-live',
+} as const satisfies Record<keyof Pax8PreviewLine, 'material' | 'vendor-live' | 'derived'>;
+
 export type Pax8PreviewBlocker =
+  | { code: 'CONTRACT_LINE_MISSING'; lineId: string }
   | { code: 'COST_UNKNOWN'; lineId: string }
   | { code: 'TERM_UNKNOWN'; lineId: string }
   | { code: 'QUANTITY_UNKNOWN'; lineId: string }
@@ -57,7 +67,6 @@ export interface Pax8OrderPreview {
 }
 
 export const MAX_PAX8_PREVIEW_LINES = 20;
-const SUBMITTABLE: ReadonlySet<Pax8OrderStatus> = new Set(['draft', 'awaiting_details', 'ready']);
 const billingTerms: ReadonlySet<string> = new Set(PAX8_BILLING_TERMS);
 const asBillingTerm = (value: string | null): Pax8BillingTerm | null =>
   value !== null && billingTerms.has(value) ? value as Pax8BillingTerm : null;
@@ -112,6 +121,7 @@ export async function previewPax8Order(input: {
         eq(pax8ProductMappings.integrationId, order.integrationId),
         eq(pax8ProductMappings.pax8ProductId, productId),
       )).limit(1) : [];
+      let contractLineMissing = false;
       let baseline = line.authorizedBaselineQuantity;
       let sellUnitPrice: string | null = null;
       let sellCurrency: string | null = null;
@@ -122,6 +132,7 @@ export async function previewPax8Order(input: {
         }).from(contractLines).where(and(
           eq(contractLines.id, line.contractLineId), eq(contractLines.orgId, order.orgId),
         )).limit(1);
+        contractLineMissing = !contractLine;
         if (contractLine) {
           baseline = contractLine.manualQuantity;
           const [contract] = await db.select({
@@ -147,7 +158,7 @@ export async function previewPax8Order(input: {
           }
         }
       }
-      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency, baseline });
+      evidence.push({ line, snapshot, mapping, productId, sellUnitPrice, sellCurrency, baseline, contractLineMissing });
     }
     const material = await pax8OrderDigestMaterial(db, order.id);
     return { ...bundle, companies, evidence, previewDigest: material ? hashPax8OrderMaterial(material) : null };
@@ -162,7 +173,7 @@ export async function previewPax8Order(input: {
   if (local.lines.length > MAX_PAX8_PREVIEW_LINES) blocked.push({ code: 'TOO_MANY_LINES' });
   // The persisted action/status vocabularies are constrained by DB CHECKs.
   const status = order.status as Pax8OrderStatus;
-  if (!SUBMITTABLE.has(status)) blocked.push({ code: 'NOT_PENDING' });
+  if (!isSubmittableStatus(status)) blocked.push({ code: 'NOT_PENDING' });
   const projectedOrder = { id: order.id, orgId: order.orgId, source: order.source, status };
   if (blocked.some(item => item.code === 'TOO_MANY_LINES' || item.code === 'NOT_PENDING')) {
     return { order: projectedOrder, company, lines: [], totals: [], totalsComplete: local.lines.length === 0, blocked, previewDigest };
@@ -178,7 +189,8 @@ export async function previewPax8Order(input: {
   // Cache live evidence only for this preview: repeated product lines must share one observation.
   const dependencies = new Map<string, Awaited<ReturnType<Pax8Client['getProductDependencies']>>>();
   const pricing = new Map<string, Awaited<ReturnType<Pax8Client['getProductPricing']>>>();
-  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency, baseline } of local.evidence) {
+  for (const { line, snapshot, mapping: product, productId, sellUnitPrice, sellCurrency, baseline, contractLineMissing } of local.evidence) {
+    if (contractLineMissing) blocked.push({ lineId: line.id, code: 'CONTRACT_LINE_MISSING' });
     if (line.submitState !== 'pending') blocked.push({ lineId: line.id, code: 'NOT_PENDING' });
     const missingSnapshot = line.action !== 'new_subscription' && !snapshot;
     if (missingSnapshot) blocked.push({ lineId: line.id, code: 'SUBSCRIPTION_NOT_FOUND' });

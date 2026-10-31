@@ -1,6 +1,6 @@
 /** W15: local inputs of one Pax8 submit. Reads only through the supplied transaction. */
 import { createHash } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, type AnyColumn } from 'drizzle-orm';
 import type { Database } from '../../db';
 import {
   catalogItemOrgPricing, catalogItemPrices, catalogItems, contractLines, contracts,
@@ -9,22 +9,69 @@ import {
 } from '../../db/schema';
 import { snapshotActiveCommitmentEvidence } from '../pax8OrderService';
 import { pax8CompanyOrderReadiness } from '../pax8CompanyReadiness';
+import { isSubmittableStatus } from '../pax8OrderTypes';
 import { canonicalizeArguments } from './canonicalize';
 
-export const serializePax8OrderMaterial = (order: Record<string, unknown>): string =>
-  canonicalizeArguments({ v: 1, order });
-export const hashPax8OrderMaterial = (order: Record<string, unknown>): string =>
+export const PAX8_ORDER_MATERIAL_VERSION = 1 as const;
+type ContractLineMaterial = Pick<typeof contractLines.$inferSelect, 'id' | 'contractId' | 'manualQuantity' | 'unitPrice' | 'lineType' | 'catalogItemId'>;
+type ContractMaterial = Pick<typeof contracts.$inferSelect, 'id' | 'currencyCode'>;
+type OrderLineMaterial = Pick<typeof pax8OrderLines.$inferSelect,
+  'id' | 'sortOrder' | 'action' | 'submitState' | 'pax8ProductId' | 'catalogItemId' | 'billingTerm' |
+  'commitmentTermId' | 'quantity' | 'authorizedBaselineQuantity' | 'targetSubscriptionId' | 'cancelDate' |
+  'contractLineId' | 'provisioningDetails'>;
+type SnapshotProjection = Pick<typeof pax8SubscriptionSnapshots.$inferSelect,
+  'id' | 'quantity' | 'quantityKnown' | 'unitCost' | 'unitPrice' | 'currencyCode' | 'status' | 'orgId' |
+  'productId' | 'productName' | 'vendorSkuId' | 'billingTerm' | 'raw'>;
+type SnapshotMaterial = Omit<SnapshotProjection, 'raw'> & {
+  activeCommitment: ReturnType<typeof snapshotActiveCommitmentEvidence>;
+};
+type ProductMaterial = Pick<typeof pax8ProductMappings.$inferSelect, 'pax8ProductId' | 'productName' | 'vendorSkuId' | 'catalogItemId'>;
+type CatalogMaterial = Pick<typeof catalogItems.$inferSelect, 'id' | 'isActive' | 'costBasis' | 'costCurrency' | 'taxable' | 'taxCategory'>;
+type PriceMaterial = Pick<typeof catalogItemPrices.$inferSelect, 'unitPrice' | 'currencyCode'>;
+type LinkMaterial = Pick<typeof pax8ContractLineLinks.$inferSelect, 'contractLineId' | 'syncEnabled'>;
+type GenerationProjection = Pick<typeof pax8Integrations.$inferSelect,
+  'id' | 'partnerId' | 'isActive' | 'apiBaseUrl' | 'tokenUrl' | 'clientIdEncrypted' | 'clientSecretEncrypted'>;
+export type Pax8IntegrationGeneration = Omit<GenerationProjection, 'clientIdEncrypted' | 'clientSecretEncrypted'> & { credentialGeneration: string };
+export const pax8CredentialGeneration = (generation: Pick<GenerationProjection, 'clientIdEncrypted' | 'clientSecretEncrypted'>): string =>
+  createHash('sha256').update(canonicalizeArguments({
+    clientId: generation.clientIdEncrypted, clientSecret: generation.clientSecretEncrypted,
+  })).digest('hex');
+type CompanyProjection = Pick<typeof pax8CompanyMappings.$inferSelect, 'pax8CompanyId' | 'status' | 'ignored' | 'orgId' | 'metadata'> & { name: string };
+type CompanyMaterial = Omit<CompanyProjection, 'metadata'> & { readiness: ReturnType<typeof pax8CompanyOrderReadiness> };
+export interface Pax8OrderMaterial {
+  id: string;
+  partnerId: string;
+  orgId: string;
+  integrationId: string;
+  source: string;
+  sourceQuoteId: string | null;
+  submittable: boolean;
+  pax8CompanyId: string | null;
+  mappings: CompanyMaterial[];
+  integration: Pax8IntegrationGeneration | null;
+  lines: Array<OrderLineMaterial & {
+    contractLine: ContractLineMaterial | null;
+    contract: ContractMaterial | null;
+    snapshot: SnapshotMaterial | null;
+    link: LinkMaterial | null;
+    productMapping: ProductMaterial | null;
+    catalog: Array<{ itemId: string; item: CatalogMaterial | null; price: PriceMaterial | null; orgPrice: PriceMaterial | null }>;
+  }>;
+}
+export const serializePax8OrderMaterial = (order: Pax8OrderMaterial): string =>
+  canonicalizeArguments({ v: PAX8_ORDER_MATERIAL_VERSION, order });
+export const hashPax8OrderMaterial = (order: Pax8OrderMaterial): string =>
   createHash('sha256').update(serializePax8OrderMaterial(order)).digest('hex');
 
 export async function pax8OrderDigestMaterial(
-  database: Database,
+  database: Pick<Database, 'select'>,
   orderId: string,
-): Promise<Record<string, unknown> | null> {
+): Promise<Pax8OrderMaterial | null> {
   const [order] = await database.select({
     id: pax8Orders.id, partnerId: pax8Orders.partnerId, orgId: pax8Orders.orgId,
     integrationId: pax8Orders.integrationId, source: pax8Orders.source,
     sourceQuoteId: pax8Orders.sourceQuoteId, status: pax8Orders.status,
-  }).from(pax8Orders).where(eq(pax8Orders.id, orderId)).limit(1);
+  } satisfies Record<keyof Pick<typeof pax8Orders.$inferSelect, 'id' | 'partnerId' | 'orgId' | 'integrationId' | 'source' | 'sourceQuoteId' | 'status'>, AnyColumn>).from(pax8Orders).where(eq(pax8Orders.id, orderId)).limit(1);
   if (!order) return null;
 
   const rows = await database.select({
@@ -35,7 +82,7 @@ export async function pax8OrderDigestMaterial(
     authorizedBaselineQuantity: pax8OrderLines.authorizedBaselineQuantity,
     targetSubscriptionId: pax8OrderLines.targetSubscriptionId, cancelDate: pax8OrderLines.cancelDate,
     contractLineId: pax8OrderLines.contractLineId, provisioningDetails: pax8OrderLines.provisioningDetails,
-  }).from(pax8OrderLines).where(and(
+  } satisfies Record<keyof OrderLineMaterial, AnyColumn>).from(pax8OrderLines).where(and(
     eq(pax8OrderLines.orderId, order.id), eq(pax8OrderLines.partnerId, order.partnerId),
     eq(pax8OrderLines.orgId, order.orgId),
   )).orderBy(asc(pax8OrderLines.sortOrder), asc(pax8OrderLines.id));
@@ -44,7 +91,7 @@ export async function pax8OrderDigestMaterial(
     pax8CompanyId: pax8CompanyMappings.pax8CompanyId, name: pax8CompanyMappings.pax8CompanyName,
     status: pax8CompanyMappings.status, ignored: pax8CompanyMappings.ignored,
     orgId: pax8CompanyMappings.orgId, metadata: pax8CompanyMappings.metadata,
-  }).from(pax8CompanyMappings).where(and(
+  } satisfies Record<keyof CompanyProjection, AnyColumn>).from(pax8CompanyMappings).where(and(
     eq(pax8CompanyMappings.integrationId, order.integrationId),
     eq(pax8CompanyMappings.partnerId, order.partnerId), eq(pax8CompanyMappings.orgId, order.orgId),
     eq(pax8CompanyMappings.ignored, false),
@@ -58,15 +105,13 @@ export async function pax8OrderDigestMaterial(
     id: pax8Integrations.id, partnerId: pax8Integrations.partnerId, isActive: pax8Integrations.isActive,
     apiBaseUrl: pax8Integrations.apiBaseUrl, tokenUrl: pax8Integrations.tokenUrl,
     clientIdEncrypted: pax8Integrations.clientIdEncrypted, clientSecretEncrypted: pax8Integrations.clientSecretEncrypted,
-  }).from(pax8Integrations).where(and(
+  } satisfies Record<keyof GenerationProjection, AnyColumn>).from(pax8Integrations).where(and(
     eq(pax8Integrations.id, order.integrationId), eq(pax8Integrations.partnerId, order.partnerId),
   )).limit(1);
   const integration = generation ? {
     id: generation.id, partnerId: generation.partnerId, isActive: generation.isActive,
     apiBaseUrl: generation.apiBaseUrl, tokenUrl: generation.tokenUrl,
-    credentialGeneration: createHash('sha256').update(canonicalizeArguments({
-      clientId: generation.clientIdEncrypted, clientSecret: generation.clientSecretEncrypted,
-    })).digest('hex'),
+    credentialGeneration: pax8CredentialGeneration(generation),
   } : null;
 
   const lines = [];
@@ -74,12 +119,12 @@ export async function pax8OrderDigestMaterial(
     const [contractLine] = line.contractLineId ? await database.select({
       id: contractLines.id, contractId: contractLines.contractId, manualQuantity: contractLines.manualQuantity,
       unitPrice: contractLines.unitPrice, lineType: contractLines.lineType, catalogItemId: contractLines.catalogItemId,
-    }).from(contractLines).where(and(
+    } satisfies Record<keyof ContractLineMaterial, AnyColumn>).from(contractLines).where(and(
       eq(contractLines.id, line.contractLineId), eq(contractLines.orgId, order.orgId),
     )).limit(1) : [];
     const [contract] = contractLine ? await database.select({
       id: contracts.id, currencyCode: contracts.currencyCode,
-    }).from(contracts).where(and(
+    } satisfies Record<keyof ContractMaterial, AnyColumn>).from(contracts).where(and(
       eq(contracts.id, contractLine.contractId), eq(contracts.orgId, order.orgId),
       eq(contracts.partnerId, order.partnerId),
     )).limit(1) : [];
@@ -91,7 +136,7 @@ export async function pax8OrderDigestMaterial(
       productId: pax8SubscriptionSnapshots.productId, productName: pax8SubscriptionSnapshots.productName,
       vendorSkuId: pax8SubscriptionSnapshots.vendorSkuId, billingTerm: pax8SubscriptionSnapshots.billingTerm,
       raw: pax8SubscriptionSnapshots.raw,
-    }).from(pax8SubscriptionSnapshots).where(and(
+    } satisfies Record<keyof SnapshotProjection, AnyColumn>).from(pax8SubscriptionSnapshots).where(and(
       eq(pax8SubscriptionSnapshots.integrationId, order.integrationId),
       eq(pax8SubscriptionSnapshots.partnerId, order.partnerId), eq(pax8SubscriptionSnapshots.orgId, order.orgId),
       eq(pax8SubscriptionSnapshots.pax8SubscriptionId, line.targetSubscriptionId),
@@ -102,7 +147,7 @@ export async function pax8OrderDigestMaterial(
     })() : null;
     const [link] = snapshot ? await database.select({
       contractLineId: pax8ContractLineLinks.contractLineId, syncEnabled: pax8ContractLineLinks.syncEnabled,
-    }).from(pax8ContractLineLinks).where(and(
+    } satisfies Record<keyof LinkMaterial, AnyColumn>).from(pax8ContractLineLinks).where(and(
       eq(pax8ContractLineLinks.subscriptionSnapshotId, snapshot.id),
       eq(pax8ContractLineLinks.integrationId, order.integrationId),
       eq(pax8ContractLineLinks.partnerId, order.partnerId), eq(pax8ContractLineLinks.orgId, order.orgId),
@@ -112,7 +157,7 @@ export async function pax8OrderDigestMaterial(
     const [productMapping] = productId ? await database.select({
       pax8ProductId: pax8ProductMappings.pax8ProductId, productName: pax8ProductMappings.productName,
       vendorSkuId: pax8ProductMappings.vendorSkuId, catalogItemId: pax8ProductMappings.catalogItemId,
-    }).from(pax8ProductMappings).where(and(
+    } satisfies Record<keyof ProductMaterial, AnyColumn>).from(pax8ProductMappings).where(and(
       eq(pax8ProductMappings.integrationId, order.integrationId), eq(pax8ProductMappings.partnerId, order.partnerId),
       eq(pax8ProductMappings.pax8ProductId, productId),
     )).limit(1) : [];
@@ -121,22 +166,21 @@ export async function pax8OrderDigestMaterial(
     const catalog = [];
     for (const itemId of itemIds) {
       const [item] = await database.select({
-        id: catalogItems.id, name: catalogItems.name, sku: catalogItems.sku, description: catalogItems.description,
-        itemType: catalogItems.itemType, isActive: catalogItems.isActive, billingType: catalogItems.billingType,
-        billingFrequency: catalogItems.billingFrequency, commitmentTermMonths: catalogItems.commitmentTermMonths,
-        costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency, markupPercent: catalogItems.markupPercent,
-        unitOfMeasure: catalogItems.unitOfMeasure, taxable: catalogItems.taxable, taxCategory: catalogItems.taxCategory,
-        isBundle: catalogItems.isBundle,
-      }).from(catalogItems).where(and(eq(catalogItems.id, itemId), eq(catalogItems.partnerId, order.partnerId))).limit(1);
+        // Price resolution uses cost/currency/tax fields; pin identity and availability too.
+        // Catalog description, SKU and billing metadata are not shown on the approval or sent to Pax8.
+        id: catalogItems.id, isActive: catalogItems.isActive,
+        costBasis: catalogItems.costBasis, costCurrency: catalogItems.costCurrency,
+        taxable: catalogItems.taxable, taxCategory: catalogItems.taxCategory,
+      } satisfies Record<keyof CatalogMaterial, AnyColumn>).from(catalogItems).where(and(eq(catalogItems.id, itemId), eq(catalogItems.partnerId, order.partnerId))).limit(1);
       const [price] = contract ? await database.select({
         unitPrice: catalogItemPrices.unitPrice, currencyCode: catalogItemPrices.currencyCode,
-      }).from(catalogItemPrices).where(and(
+      } satisfies Record<keyof PriceMaterial, AnyColumn>).from(catalogItemPrices).where(and(
         eq(catalogItemPrices.itemId, itemId), eq(catalogItemPrices.partnerId, order.partnerId),
         eq(catalogItemPrices.currencyCode, contract.currencyCode),
       )).limit(1) : [];
       const [orgPrice] = contract ? await database.select({
         unitPrice: catalogItemOrgPricing.unitPrice, currencyCode: catalogItemOrgPricing.currencyCode,
-      }).from(catalogItemOrgPricing).where(and(
+      } satisfies Record<keyof PriceMaterial, AnyColumn>).from(catalogItemOrgPricing).where(and(
         eq(catalogItemOrgPricing.catalogItemId, itemId), eq(catalogItemOrgPricing.partnerId, order.partnerId),
         eq(catalogItemOrgPricing.orgId, order.orgId),
       )).limit(1) : [];
@@ -154,7 +198,7 @@ export async function pax8OrderDigestMaterial(
   }
   // The claim's own parent transition is not content drift. Only a provably unsent submitting bundle is
   // equivalent here; submit's CAS still refuses every re-delivery before any HTTP can run.
-  const submittable = ['draft', 'awaiting_details', 'ready'].includes(order.status)
+  const submittable = isSubmittableStatus(order.status)
     || (order.status === 'submitting' && rows.length > 0 && rows.every(line => line.submitState === 'pending'));
   return {
     id: order.id, partnerId: order.partnerId, orgId: order.orgId, integrationId: order.integrationId,
