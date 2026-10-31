@@ -2407,6 +2407,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   const isolationContext: HeartbeatEpisodeContext = {};
   let isolation: typeof import('../../services/networkIsolation/reconcile') | undefined;
+  let savepointFreeLookup = false;
   try {
     // Load inside the fault boundary: isolation must not prevent other heartbeat work.
     isolation = await import('../../services/networkIsolation/reconcile');
@@ -2418,11 +2419,15 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const reconcile = () => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext);
     // #4618: without a report reconciliation only does the indexed episode SELECT.
     // Keep that common path at one statement; real reconciliation retains its savepoint.
-    if (data.containment?.networkIsolation === undefined) await reconcile();
+    if (data.containment?.networkIsolation === undefined) { savepointFreeLookup = true; await reconcile(); savepointFreeLookup = false; }
     else await withDbTransaction(reconcile);
   } catch (err) {
-    console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+    console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id, savepointFreeLookup });
     captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+    // A statement that failed outside a savepoint has aborted the org transaction: nothing after
+    // this point would commit, so fail the beat rather than return command claims that roll back.
+    // (Security review 2026-10-31.) The agent retries on its next beat.
+    if (savepointFreeLookup) throw err;
   }
   let containment: ContainmentDesiredBlock = { networkIsolation: null };
   if (isolation) {
