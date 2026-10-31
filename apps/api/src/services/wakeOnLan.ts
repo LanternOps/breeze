@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, ne, sql } from 'drizzle-orm';
-import { randomUUID } from 'node:crypto';
 import { db } from '../db';
+import { openOrJoinWakeAttempt, recordWakeRefusal, applyWakeRelayResult } from './wakeAttempts';
 import {
   auditLogs,
   deviceCommands,
@@ -351,20 +351,25 @@ export async function dispatchWake(
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
+  const refuse = async (failure: WakeFailure): Promise<WakeFailure> => {
+    await recordWakeRefusal({ deviceId: target.id, orgId: target.orgId, requestedBy: userId, bulkId: options.bulkId, code: failure.code });
+    return failure;
+  };
+
   const macs = await resolveTargetMacs(target.id, target.orgId);
   if (macs.length === 0) {
-    return { ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' };
+    return refuse({ ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' });
   }
 
   const { candidates, sawIpv6 } = await resolveTargetSubnetCandidates(target.id);
   if (candidates.length === 0) {
-    return {
+    return refuse({
       ok: false,
       code: sawIpv6 ? 'IPV6_ONLY' : 'NO_SUBNET',
       message: sawIpv6
         ? 'Target has only IPv6 history. Wake-on-LAN requires an IPv4 record with subnet mask.'
         : 'Target has no usable IPv4 record (APIPA-only addresses don\'t count) — agent must check in at least once on a real LAN.',
-    };
+    });
   }
 
   let relay: RelayCandidate | null = null;
@@ -383,7 +388,7 @@ export async function dispatchWake(
       .where(eq(devices.id, options.relayDeviceIdOverride))
       .limit(1);
     if (!override || override.siteId !== target.siteId || override.status !== 'online' || override.id === target.id || !isAgentConnected(override.agentId)) {
-      return { ok: false, code: 'RELAY_OVERRIDE_INVALID', message: 'Override relay must be a different online device at the target\'s site with a live agent connection.' };
+      return refuse({ ok: false, code: 'RELAY_OVERRIDE_INVALID', message: 'Override relay must be a different online device at the target\'s site with a live agent connection.' });
     }
     // Override: use the first candidate subnet (best-guess broadcast).
     // Operator opted into this path — they're picking the relay, not the
@@ -417,11 +422,11 @@ export async function dispatchWake(
   }
 
   if (!relay || !subnet) {
-    return {
+    return refuse({
       ok: false,
       code: 'NO_RELAY',
       message: `No online peer agent at the target's site has a recorded IPv4 on any of the ${candidates.length} candidate subnet(s) for this target.`,
-    };
+    });
   }
 
   // The row is addressed to the relay, so the relay is the device that
@@ -431,7 +436,11 @@ export async function dispatchWake(
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
-  const wakeAttemptId = randomUUID();
+  const { attemptId: wakeAttemptId } = await openOrJoinWakeAttempt({
+    deviceId: target.id, orgId: target.orgId, relayDeviceId: relay.deviceId,
+    relayHostname: relay.hostname, requestedBy: userId, bulkId: options.bulkId,
+    macs, broadcast: subnet.broadcast,
+  });
   const payload = {
     targetDeviceId: target.id,
     targetHostname: target.hostname,
@@ -456,6 +465,7 @@ export async function dispatchWake(
     .returning({ id: deviceCommands.id });
 
   if (!command) {
+    await applyWakeRelayResult(wakeAttemptId, false);
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to record wake command.' };
   }
 
@@ -491,9 +501,11 @@ export async function dispatchWake(
 
   const claimed = await claimPendingCommandForDelivery(command.id);
   if (claimed.status === 'cancelled') {
+    await applyWakeRelayResult(wakeAttemptId, false);
     return { ok: false, code: 'COMMAND_CANCELLED', message: cancelledCommandError(claimed.reason) };
   }
   if (claimed.status !== 'claimed') {
+    await applyWakeRelayResult(wakeAttemptId, false);
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Failed to claim wake command for dispatch.' };
   }
 
@@ -507,6 +519,7 @@ export async function dispatchWake(
   });
 
   if (!sent) {
+    await applyWakeRelayResult(wakeAttemptId, false);
     await releaseClaimedCommandDelivery(command.id, claimed.executedAt);
     return { ok: false, code: 'WS_SEND_FAILED', message: 'Relay agent went offline before the command could be sent. Try again.' };
   }

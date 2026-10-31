@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./wakeAttempts', () => ({
+  openOrJoinWakeAttempt: vi.fn(async () => ({ attemptId: '11111111-1111-4111-8111-111111111111', joined: false })),
+  recordWakeRefusal: vi.fn(async () => {}),
+  applyWakeRelayResult: vi.fn(async () => {}),
+}));
 import { computeBroadcast, intToIpv4, ipv4ToInt, isApipaIpv4 } from './wakeOnLan';
 
 describe('ipv4ToInt', () => {

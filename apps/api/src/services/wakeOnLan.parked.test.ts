@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./wakeAttempts', () => ({
+  openOrJoinWakeAttempt: vi.fn(async () => ({ attemptId: '11111111-1111-4111-8111-111111111111', joined: false })),
+  recordWakeRefusal: vi.fn(async () => {}),
+  applyWakeRelayResult: vi.fn(async () => {}),
+}));
+
 // Devices parked in a holding org, by id. The helper's query is proven against
 // Postgres in parkedCommandDelivery.integration.test.ts.
 const parkedDeviceIds = vi.hoisted(() => new Set<string>());
