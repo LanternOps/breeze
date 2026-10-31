@@ -354,7 +354,7 @@
     "currentSite": "Sito attuale",
     "newSite": "Nuovo sito",
     "loadingSites": "Caricamento siti...",
-    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti da Impostazioni → Organizzazioni per abilitare gli spostamenti.",
+    "thisOrganizationOnlyHasOneSite": "Questa organizzazione ha un solo sito. Aggiungi altri siti dalla scheda Siti dell'organizzazione (Organizzazioni → apri l'organizzazione → Siti) per abilitare gli spostamenti.",
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
@@ -2391,7 +2391,9 @@
       "completed": "Completata",
       "failed": "Non riuscita",
       "queued": "In coda",
-      "running": "In esecuzione"
+      "running": "In esecuzione",
+      "cancelled": "Annullata",
+      "expired": "Scaduta"
     },
     "scanType": "Scansione {{type}}",
     "scanTypes": {
@@ -2413,7 +2415,13 @@
       "quarantined": "In quarantena",
       "removed": "Rimossa"
     },
-    "threatsFound": "Minacce trovate: {{count}}"
+    "threatsFound": "Minacce trovate: {{count}}",
+    "waitingForSlot": "In attesa di uno slot di scansione libero. Scade il {{date}}.",
+    "cancelScan": "Annulla scansione",
+    "scanCancelled": "Scansione annullata",
+    "cancelScanFailed": "Impossibile annullare la scansione",
+    "scanAlreadyRunning": "La scansione è già in esecuzione sul dispositivo e non può essere annullata.",
+    "scanAlreadyQueued": "Per questo dispositivo è già in coda una scansione."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Aggiungi un tag...",

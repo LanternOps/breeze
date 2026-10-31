@@ -33,5 +33,6 @@
   "NO_UPDATES_PROVIDED": "Nenhuma alteração foi informada",
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro só podem ser alvos de políticas de configuração do parceiro",
   "PARTNER_GROUP_READ_ONLY": "Este grupo de dispositivos de todo o parceiro não pode ser alterado aqui",
-  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro não podem ser usados em filtros de grupos, e seus filtros não podem fazer referência a grupos ou organizações"
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Grupos de dispositivos de todo o parceiro não podem ser usados em filtros de grupos, e seus filtros não podem fazer referência a grupos ou organizações",
+  "SCAN_ALREADY_QUEUED": "Já existe uma verificação na fila para este dispositivo."
 }

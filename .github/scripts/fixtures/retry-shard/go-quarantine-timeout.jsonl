@@ -1,0 +1,38 @@
+{"Time":"2026-10-30T08:44:12.426382-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/internal/qtimeout"}
+{"Time":"2026-10-30T08:44:12.689787-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky"}
+{"Time":"2026-10-30T08:44:12.689883-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"=== RUN   TestFlaky\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:13.69329-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-10-30T08:44:13.693444-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\trunning tests:\n"}
+{"Time":"2026-10-30T08:44:13.693474-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t\tTestFlaky (1s)\n"}
+{"Time":"2026-10-30T08:44:13.693485-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\n"}
+{"Time":"2026-10-30T08:44:13.6935-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"goroutine 20 [running]:\n"}
+{"Time":"2026-10-30T08:44:13.693509-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-10-30T08:44:13.693518-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2959 +0x2c4\n"}
+{"Time":"2026-10-30T08:44:13.693571-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"created by time.goFunc\n"}
+{"Time":"2026-10-30T08:44:13.693581-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/time/sleep.go:182 +0x38\n"}
+{"Time":"2026-10-30T08:44:13.693587-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\n"}
+{"Time":"2026-10-30T08:44:13.693593-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-10-30T08:44:13.693599-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.(*T).Run(0x2f1a6e854008, {0x104a3599d?, 0x2f1a6e7a2a88?}, 0x104b9f3e8)\n"}
+{"Time":"2026-10-30T08:44:13.693604-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2266 +0x3cc\n"}
+{"Time":"2026-10-30T08:44:13.693609-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.runTests.func1(0x2f1a6e854008)\n"}
+{"Time":"2026-10-30T08:44:13.693614-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2742 +0x38\n"}
+{"Time":"2026-10-30T08:44:13.693619-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.tRunner(0x2f1a6e854008, 0x2f1a6e7a2bb8)\n"}
+{"Time":"2026-10-30T08:44:13.693633-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-10-30T08:44:13.69364-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.runTests({0x104a3ab8e, 0x1b}, {0x104a3fca2, 0x2d}, 0x2f1a6e8160f0, {0x104bba670, 0x2, 0x2}, {0x2f1a6e7a2c58?, 0x2f1a6e82c160?, ...})\n"}
+{"Time":"2026-10-30T08:44:13.693653-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2740 +0x400\n"}
+{"Time":"2026-10-30T08:44:13.693702-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.(*M).Run(0x2f1a6e8141e0)\n"}
+{"Time":"2026-10-30T08:44:13.693712-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2600 +0x578\n"}
+{"Time":"2026-10-30T08:44:13.693739-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"main.main()\n"}
+{"Time":"2026-10-30T08:44:13.693765-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t_testmain.go:48 +0x80\n"}
+{"Time":"2026-10-30T08:44:13.693776-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\n"}
+{"Time":"2026-10-30T08:44:13.693784-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"goroutine 35 [sleep]:\n"}
+{"Time":"2026-10-30T08:44:13.693791-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"time.Sleep(0x12a05f200)\n"}
+{"Time":"2026-10-30T08:44:13.693798-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/runtime/time.go:368 +0x150\n"}
+{"Time":"2026-10-30T08:44:13.693805-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"github.com/breeze-rmm/agent/internal/qtimeout.TestFlaky(0x2f1a6e854248?)\n"}
+{"Time":"2026-10-30T08:44:13.693824-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/home/runner/work/breeze/breeze/agent/internal/qtimeout/q_test.go:8 +0x28\n"}
+{"Time":"2026-10-30T08:44:13.693846-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"testing.tRunner(0x2f1a6e854248, 0x104b9f3e8)\n"}
+{"Time":"2026-10-30T08:44:13.693852-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-10-30T08:44:13.693857-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-30T08:44:13.693862-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Test":"TestFlaky","Output":"\t/opt/hostedtoolcache/go/1.27.0/x64/src/testing/testing.go:2258 +0x3b8\n"}
+{"Time":"2026-10-30T08:44:13.694471-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Output":"FAIL\tgithub.com/breeze-rmm/agent/internal/qtimeout\t1.268s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:44:13.694493-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/internal/qtimeout","Elapsed":1.268}

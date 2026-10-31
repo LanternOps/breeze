@@ -1,0 +1,22 @@
+name: Restore pnpm cache
+description: >
+  Restore (never save) the pnpm store. PR and merge-queue refs cannot share
+  caches with each other and would only evict main's, so only the seed
+  workflow on main saves it (ci-cache-seed.yml, which must save exactly the key
+  and path below). Run AFTER pnpm/action-setup: the store path differs on
+  Windows and macOS, so it is asked of pnpm. See #10744.
+runs:
+  using: composite
+  steps:
+    - name: Resolve pnpm store path
+      id: pnpm
+      shell: bash
+      run: echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pnpm cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pnpm.outputs.store }}
+        key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: |
+          pnpm-${{ runner.os }}-

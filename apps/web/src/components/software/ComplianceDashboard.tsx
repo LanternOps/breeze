@@ -26,6 +26,7 @@ import { i18n } from "@/lib/i18n";
 import { replaceUrl, seedRouterHistoryState } from '../../lib/replaceUrl';
 import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
 import SecurityAgentCoverageSetupLink from "../security/SecurityAgentCoverageSetupLink";
+import SoftwarePolicyCoverageBadge from "./SoftwarePolicyCoverageBadge";
 import {
   COVERAGE_STATES,
   coverageReasonLabel,
@@ -821,6 +822,7 @@ export default function ComplianceDashboard({
                   <td className="px-4 py-3 font-medium">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{policy.name}</span>
+                      <SoftwarePolicyCoverageBadge policyId={policy.id} />
                       {policy.enforceMode && policy.remediationOptions?.autoInstall && (
                         <span
                           data-testid="policy-autoinstall-badge"

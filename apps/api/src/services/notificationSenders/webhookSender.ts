@@ -36,7 +36,7 @@ export interface WebhookNotificationPayload {
   alertName: string;
   severity: string;
   summary: string;
-  deviceId?: string;
+  deviceId?: string | null;
   deviceName?: string;
   orgId: string;
   orgName?: string;
