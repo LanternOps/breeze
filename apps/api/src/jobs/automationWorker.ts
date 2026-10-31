@@ -834,6 +834,12 @@ async function admitTriggerEvent(
     return { skipped: 'filter_mismatch' };
   }
 
+  // Alert events without a device must never fall back to static/org targets.
+  if (data.eventType.startsWith('alert.') && typeof payload.deviceId !== 'string') {
+    console.warn(`[AutomationWorker] Skipping automation ${automation.id}: alert_has_no_device`);
+    return { skipped: 'alert_has_no_device' };
+  }
+
   // `typeof === 'string'` rather than `!== null`: an absent property (a
   // partially-selected row) would read as MANAGED under `!== null` and start
   // binding/skipping every ordinary customer automation. Fail toward unmanaged.
