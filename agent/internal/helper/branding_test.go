@@ -163,7 +163,7 @@ func TestBrandingInvalidKeepsLastValid(t *testing.T) {
 		"bad color short":        {DisplayName: "X", AccentColor: "#fff"},
 		"bad color rgb":          {DisplayName: "X", AccentColor: "rgb(1,2,3)"},
 		"control char":           {DisplayName: "a\x07b"},
-		"bidi override":          {DisplayName: "a‮b"},
+		"bidi override":          {DisplayName: "a\u202eb"},
 		"message too long":       {WelcomeMessage: strings.Repeat("x", 501)},
 		"title too long":         {WelcomeTitle: strings.Repeat("x", 121)},
 		"support label too long": {SupportLabel: strings.Repeat("x", 41)},
@@ -200,7 +200,7 @@ func TestBrandingLimitsAreCodePoints(t *testing.T) {
 	if _, err := resolveBranding(nil, setDecision("s", ok+"x")); err == nil {
 		t.Fatal("61 code points accepted")
 	}
-	if _, err := resolveBranding(nil, setDecision("s", "a‍b")); err != nil {
+	if _, err := resolveBranding(nil, setDecision("s", "a\u200db")); err != nil {
 		t.Fatalf("ZWJ rejected: %v", err)
 	}
 	if _, err := resolveBranding(nil, &BrandingDecision{State: "set", ScopeID: "s", Values: BrandingValues{PrimaryColor: "#aAbB09"}}); err != nil {

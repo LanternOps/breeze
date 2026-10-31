@@ -185,7 +185,7 @@ func readBranding(path string) (*Branding, error) {
 	if doc.Branding.ScopeID == "" {
 		return nil, fmt.Errorf("invalid branding in %s: missing scope", path)
 	}
-	if err := doc.Branding.BrandingValues.validate(); err != nil {
+	if err := doc.Branding.validate(); err != nil {
 		return nil, fmt.Errorf("invalid branding in %s: %w", path, err)
 	}
 	return doc.Branding, nil
