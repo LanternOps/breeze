@@ -1,4 +1,5 @@
 import { DEFAULT_ALERT_COOLDOWN_MINUTES } from '@breeze/shared';
+import { isDeviceOwned } from '../../services/alertOwner';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { zValidator, formatZodError, isJsonContentType } from '../../lib/validation';
@@ -314,10 +315,8 @@ alertsRoutes.get(
         }
       }
 
-      // Org-wide alerts (deviceId null) are not site-bound, so keep them visible
-      // alongside in-scope device alerts (the leftJoin makes a device-less alert's
-      // siteId null, which inArray would otherwise drop). A caller restricted to
-      // zero sites still sees org-wide alerts — only device-bound alerts are hidden.
+      // Restricted callers see only alerts owned by allowed sites/devices;
+      // org-level alerts and empty site ceilings fail closed.
       conditions.push(alertSiteScopeCondition(perms.allowedSiteIds)!);
     }
 
@@ -708,7 +707,7 @@ alertsRoutes.post(
       );
 
     // Site axis (RLS does NOT enforce it): drop alerts on devices outside the
-    // caller's allowed sites before mutating. Deviceless (org-wide) alerts stay,
+    // caller's allowed sites and org-level alerts before mutating,
     // matching the GET /alerts narrowing. No-op for unrestricted callers.
     const accessible = await filterAlertsBySiteScope(auth, orgScoped);
 
@@ -1025,6 +1024,7 @@ alertsRoutes.post(
 
     // Set cooldown to prevent immediate re-trigger by the evaluation worker
     if (alert.ruleId) {
+      if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
       const [rule] = await db
         .select()
         .from(alertRules)
@@ -1339,7 +1339,7 @@ alertsRoutes.get(
     }
 
     // Get related information
-    const [device] = await db
+    const [device] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))

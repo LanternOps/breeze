@@ -65,6 +65,12 @@ describe('cursor store', () => {
     expect(sql).toContain("COALESCE(\"alerts\".\"subject_key\", '') = ''");
   });
 
+  it('reads only device-owned history (#10725: org-level owners have no rules or device)', async () => {
+    await readClosedCursors('device-1', ['rule-1']);
+    const { sql } = compile(mocks.execute.mock.calls[0]![0]);
+    expect(sql).toContain("\"alerts\".\"owner_kind\" = 'device'");
+  });
+
   it('reads closedAt as UTC so the driver never parses a tz-less timestamp in local time', async () => {
     await readClosedCursors('device-1', ['rule-1']);
     const { sql } = compile(mocks.execute.mock.calls[0]![0]);
@@ -179,7 +185,8 @@ describe('advanceOpenRuleCursors', () => {
     expect(mocks.update).not.toHaveBeenCalled();
     const query = compile(mocks.readWhere.mock.calls[0]![0]);
     expect(query.sql).toContain('"alerts"."subject_key" is null');
-    expect(query.params).toEqual(['rule-1', 'device-1', 'active', 'acknowledged', 'suppressed']);
+    expect(query.sql).toContain('"alerts"."owner_kind" = $3');
+    expect(query.params).toEqual(['rule-1', 'device-1', 'device', 'active', 'acknowledged', 'suppressed']);
     expect(mocks.limit).toHaveBeenCalledWith(1);
   });
 

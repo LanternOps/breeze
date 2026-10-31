@@ -28,6 +28,7 @@ import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-
 import { evaluateConditions, evaluateAutoResolveConditions, evidenceLeafPaths, interpolateTemplate, type EvaluateOptions } from './alertConditions';
 import { isCooldownActive, setCooldown, recordStateTransition, isFlapping } from './alertCooldown';
 import { publishEvent } from './eventBus';
+import { alertOwnerKey, isDeviceOwned } from './alertOwner';
 import { resolveDeviceSiteId } from './deviceSiteResolver';
 import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
@@ -142,7 +143,7 @@ export interface RuleWithTemplate {
 async function publishAlertTriggeredOrRollback(opts: {
   alertId: string;
   orgId: string;
-  deviceId: string;
+  deviceId: string | null;
   /** Producing subsystem, used for the Sentry tag and log lines. */
   source: string;
   payload: Record<string, unknown>;
@@ -160,7 +161,7 @@ async function publishAlertTriggeredOrRollback(opts: {
       alertId,
       alertSource: source,
       orgId,
-      deviceId
+      ...(deviceId === null ? {} : { deviceId })
     });
     console.error(
       `[AlertService] Failed to publish alert.triggered for ${source} alert ${alertId}; rolling the alert row back:`,
@@ -180,7 +181,7 @@ async function publishAlertTriggeredOrRollback(opts: {
         alertId,
         alertSource: source,
         orgId,
-        deviceId
+        ...(deviceId === null ? {} : { deviceId })
       });
       console.error(
         `[AlertService] Could not roll back unpublished alert ${alertId}; it is stranded active with no notification:`,
@@ -305,9 +306,9 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 
   const insert = async (): Promise<{ id: string } | undefined> => {
     const [row] = await db.execute<{ id: string }>(sql`
-      INSERT INTO alerts (rule_id, device_id, org_id, severity, title, message, context,
+      INSERT INTO alerts (owner_kind, rule_id, device_id, org_id, severity, title, message, context,
         monitor_id, episode_id, requires_human, subject_key, status, triggered_at)
-      VALUES (${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
+      VALUES ('device', ${ruleId}, ${deviceId}, ${orgId}, ${severity}, ${title}, ${message},
         ${JSON.stringify(insertContext ?? {})}::jsonb, ${monitorFields.monitorId}, ${episodeId ?? null},
         ${requiresHuman ?? false}, ${subjectKey ?? null}, 'active', now())
       ON CONFLICT (rule_id, device_id, COALESCE(subject_key, ''))
@@ -332,6 +333,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
         cooldownMinutes,
         payload: {
           alertId: newAlert.id, ruleId, deviceId, severity, title, message,
+          owner: null, ownerKey: `device:${deviceId}`,
           ...monitorFields, episodeId: subjectEpisodeId, subjectKey, responsesOwner,
         },
       };
@@ -368,6 +370,7 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       ...monitorFields,
       subjectKey: null,
       responsesOwner: true,
+      owner: null, ownerKey: `device:${deviceId}`,
     },
     publisher: 'alert-service',
     siteId
@@ -390,10 +393,14 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
 }
 
 /**
- * Parameters for {@link createSourcedAlert}.
+ * Org-level owner accepted by {@link createSourcedAlert}.
  */
-export interface CreateSourcedAlertParams {
-  deviceId: string;
+export type SourcedAlertOwner = { kind: 'backup_workload'; ref: string };
+
+export type CreateSourcedAlertParams = (
+  | { deviceId: string; owner?: undefined }
+  | { deviceId: null; owner: SourcedAlertOwner }
+) & {
   orgId: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   title: string;
@@ -413,6 +420,7 @@ export interface CreateSourcedAlertParams {
   /**
    * Site to scope the published event to. Omit to resolve it from the device;
    * pass it explicitly (including `null`) when the caller already knows it.
+   * Workload owners always publish with a null site.
    */
   siteId?: string | null;
   /**
@@ -429,7 +437,7 @@ export interface CreateSourcedAlertParams {
    * by an AI verdict, always its own correlation root.
    */
   requiresHuman?: boolean;
-}
+};
 
 /**
  * Create an alert that has no `alert_rules` row behind it and publish
@@ -443,7 +451,8 @@ export interface CreateSourcedAlertParams {
  * invisible to every `alert.triggered` consumer: no notifications, no
  * escalation, no automations, no AI verdict.
  *
- * This helper is the shared insert + publish tail. Cooldown, dedupe and
+ * This helper is the shared insert + publish tail. Workload owners dedupe
+ * atomically on their open-owner index. Device cooldown, dedupe and
  * flap-suppression stay with the caller, whose keys are source-specific
  * (a monitor rule id, a warranty end date, …) rather than an `alertRules` id.
  *
@@ -455,10 +464,17 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
   const { deviceId, orgId, severity, title, message, context, publisher, eventPayload, triggeredAt } = params;
   const monitorFields = await monitorEventFields(params.monitorId, params.kind);
 
-  const [newAlert] = await db
+  const ownerKind = params.owner?.kind ?? 'device';
+  const ownerRef = params.owner?.ref ?? null;
+  const ownerKey = alertOwnerKey({
+    ownerKind, ownerRef, deviceId, topologySiteId: null, topologySourceKey: null,
+  });
+  const insert = db
     .insert(alerts)
     .values({
       ruleId: null,
+      ownerKind,
+      ownerRef,
       deviceId,
       orgId,
       configItemName: params.configItemName ?? null,
@@ -471,21 +487,29 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       requiresHuman: params.requiresHuman ?? false,
       status: 'active',
       triggeredAt: triggeredAt ?? new Date()
+    });
+  const [newAlert] = await (params.owner
+    ? insert.onConflictDoNothing({
+      target: [alerts.orgId, alerts.ownerKind, alerts.ownerRef],
+      where: sql`owner_kind NOT IN ('device', 'topology_site') AND status IN ('active', 'acknowledged', 'suppressed')`,
     })
-    .returning({ id: alerts.id });
+    : insert).returning({ id: alerts.id });
 
   const alertId = newAlert?.id;
   if (!alertId) {
+    // The partial unique index arbitrates concurrent writes for an org owner.
+    if (params.owner) return null;
     const err = new Error(
       `[AlertService] Insert returned no row for ${context.source} alert (org=${orgId} device=${deviceId}); nothing published`
     );
     console.error(err.message);
-    captureException(err, undefined, { alertSource: context.source, orgId, deviceId });
+    captureException(err, undefined, { alertSource: context.source, orgId, ...(deviceId === null ? {} : { deviceId }) });
     return null;
   }
 
   // Attach the device's site so site-restricted users see it, same as createAlert.
-  const siteId = params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
+  const siteId = deviceId === null ? null
+    : params.siteId !== undefined ? params.siteId : await resolveDeviceSiteId(deviceId);
   const published = await publishAlertTriggeredOrRollback({
     alertId,
     orgId,
@@ -494,15 +518,16 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
     payload: {
       alertId,
       ruleId: null,
-      deviceId,
       severity,
       title,
       message,
-      // `source` last so it is always the one persisted in context — a caller
-      // cannot accidentally publish a source that disagrees with the row.
+      // Persisted source and owner identity override caller-supplied fields.
       ...eventPayload,
       ...monitorFields,
-      source: context.source
+      source: context.source,
+      deviceId,
+      owner: params.owner ?? null,
+      ownerKey,
     },
     publisher,
     siteId
@@ -514,7 +539,7 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
 
   // Only correlate an alert that actually published — a rolled-back row must
   // not leave a correlation job pointing at a deleted alert.
-  enqueueAlertCorrelationForDevice(orgId, deviceId);
+  if (deviceId !== null) enqueueAlertCorrelationForDevice(orgId, deviceId);
 
   return alertId;
 }
@@ -565,6 +590,8 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
   if (!alert.ruleId) {
     return false;
   }
+
+  if (!isDeviceOwned(alert)) throw new Error('alert_has_no_device');
 
   // Get rule and template
   const [rule] = await db
@@ -915,6 +942,7 @@ export async function resolveAlert(
 
   // Already resolved by someone else (or gone). Not an error — just not ours.
   if (!alert) return false;
+  if (alert.ruleId && !isDeviceOwned(alert)) throw new Error('alert_has_no_device');
 
   // W03 — a subject recovery under the locked sweep commits its resolution and
   // pending `alert.resolved` event TOGETHER (in the SAME outer transaction as
@@ -952,7 +980,7 @@ export async function resolveAlert(
 
   // Phase 6a: Record resolution state transition for flapping detection
   try {
-    if (alert.ruleId) {
+    if (alert.ruleId && isDeviceOwned(alert)) {
       await recordStateTransition(alert.ruleId, alert.deviceId, 'resolved', alert.subjectKey ?? undefined);
 
     }
@@ -964,7 +992,7 @@ export async function resolveAlert(
   // Uses the rule's configured cooldown so the condition must persist
   // beyond the cooldown window before a new alert is created.
   // Retired policy alerts are history-only and need no cooldown.
-  if (alert.ruleId) {
+  if (alert.ruleId && isDeviceOwned(alert)) {
     // Legacy standalone alert rule
     const [rule] = await db
       .select()

@@ -27,6 +27,9 @@ function asCursors(value: unknown): LeafCursors | null {
 
 /**
  * One indexed lookup for the newest non-subject closed episode per rule.
+ * Re-arm is device-subject only: org-level owners (#10725) are sourced, never
+ * rule-backed, and have no device, so `owner_kind = 'device'` is explicit
+ * rather than implied by `device_id = $1`.
  * resolved_at/dismissed_at are tz-less and stored as UTC (as Drizzle maps
  * them); AT TIME ZONE 'UTC' hands the raw driver a timestamptz so it does not
  * parse them in the process's local zone.
@@ -46,6 +49,7 @@ export async function readClosedCursors(
       COALESCE(${alerts.resolvedAt}, ${alerts.dismissedAt}) AT TIME ZONE 'UTC' AS "closedAt"
     FROM ${alerts}
     WHERE ${alerts.deviceId} = ${deviceId}
+      AND ${alerts.ownerKind} = 'device'
       AND ${alerts.ruleId} = ANY(${sql.param(ruleIds)}::uuid[])
       AND ${alerts.ruleId} IS NOT NULL
       AND ${alerts.status} IN ('resolved', 'dismissed')
@@ -118,6 +122,7 @@ export async function advanceOpenRuleCursors(
   const [open] = await db.select({ id: alerts.id }).from(alerts).where(and(
     eq(alerts.ruleId, ruleId),
     eq(alerts.deviceId, deviceId),
+    eq(alerts.ownerKind, 'device'),
     inArray(alerts.status, [...OPEN_ALERT_STATUSES]),
     isNull(alerts.subjectKey),
   )).limit(1);
