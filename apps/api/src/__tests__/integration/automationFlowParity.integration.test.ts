@@ -475,14 +475,14 @@ function breezeEvent(orgId: string, at: Date, payload: Record<string, unknown>):
 // ── fixtures ───────────────────────────────────────────────────────────────
 
 /** Schedule + run_script on a groups target, then a per-device notice. Runs legacy, switches, runs the flow. */
-async function scheduleScriptFixture(onFailure: 'stop' | 'continue' | 'notify', failDevice: number | null) {
+async function scheduleScriptFixture(onFailure: 'stop' | 'continue' | 'notify', failDevice: number | null, whenOffline: 'queue' | 'skip' = 'queue') {
   const t = await tenant();
   const groupId = await groupOf(t, t.deviceIds);
   const row = await job(t, {
     trigger: { type: 'schedule', cronExpression: '0 * * * *', timezone: 'UTC' },
     conditions: { type: 'groups', groupIds: [groupId] },
     actions: [
-      { type: 'run_script', scriptId: t.script.id, whenOffline: 'queue' },
+      { type: 'run_script', scriptId: t.script.id, whenOffline },
       { type: 'send_notification', notificationChannelId: t.channelId, severity: 'critical' },
     ],
     onFailure,
@@ -549,6 +549,15 @@ describe('legacy ↔ converted flow effect parity (real Postgres, #5221 B7)', ()
     // and the device's own failure reason (#10705).
     expect(legacy.rawFailureNoticeMessages).toEqual(['Failed to queue run_script action command']);
     expect(flow.rawFailureNoticeMessages).toEqual([`Automation ${row.name} action 1 failed on <dev1>: ${INJECTED_FAILURE}`]);
+  }, 120_000);
+
+  runDb('offline devices under skip and notify: each failure notice names the device\'s offline reason (#10705)', async () => {
+    // Every device is offline, so `skip` fails all three without dispatching. The flow
+    // records an offline skip's reason only in the device row's output (no error column).
+    const { row, flow } = await scheduleScriptFixture('notify', null, 'skip');
+    expect(flow.rawFailureNoticeMessages).toEqual(['dev0', 'dev1', 'dev2'].map(
+      (d) => `Automation ${row.name} action 1 failed on <${d}>: Device is offline, cannot execute command`,
+    ));
   }, 120_000);
 
   runDb('event + send_notification with a filter: a matching event notifies, a non-matching one does nothing', async () => {

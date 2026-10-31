@@ -227,4 +227,20 @@ describe('executeResolveTargets', () => {
     // Over the cap the stored output becomes a truncated preview and every failure notice would be lost.
     expect(Buffer.byteLength(JSON.stringify((out as { output: unknown }).output))).toBeLessThan(FLOW_RUN_LIMITS.maxStoredOutputBytes);
   });
+
+  it('a cut never leaves half a surrogate pair', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1], failedDeviceIds: [D1] });
+    m.devices.mockResolvedValue(rows([D1]));
+    m.reasons.mockResolvedValue(new Map([[D1, `${'x'.repeat(FLEET_FAILURE_REASON_MAX_CHARS - 1)}\u{1F600}tail`]]));
+    const out = await executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx());
+    const reason = (out as unknown as { output: { devices: { failureReason: string }[] } }).output.devices[0]!.failureReason;
+    expect(reason).toBe('x'.repeat(FLEET_FAILURE_REASON_MAX_CHARS - 1));
+  });
+
+  it('a failed reasons read fails the step (never a notice built on a guess)', async () => {
+    m.stepOutputs.mockResolvedValue({ succeededDeviceIds: [], dispatchedDeviceIds: [D1], failedDeviceIds: [D1] });
+    m.devices.mockResolvedValue(rows([D1]));
+    m.reasons.mockRejectedValue(new Error('connection reset'));
+    await expect(executeResolveTargets({ fromStep: { stepId: 'a0_run_script', set: 'failed' } }, ctx())).rejects.toThrow('connection reset');
+  });
 });

@@ -37,6 +37,11 @@ function policyFailure(code: 'targets_unresolvable' | 'targets_over_cap', messag
 export const FLEET_FAILURE_REASON_MAX_CHARS = 160;
 export const NO_FAILURE_REASON = 'No failure reason was recorded.';
 
+/** Cut to the cap without leaving the high half of a surrogate pair at the end. */
+function cutReason(reason: string): string {
+  return reason.slice(0, FLEET_FAILURE_REASON_MAX_CHARS).replace(/[\uD800-\uDBFF]$/, '');
+}
+
 export function overCapMessage(count: number): string {
   return `The target resolved to ${count} devices; a flow step may target at most ${FLEET_MAX_TARGETS}. Nothing was run.`;
 }
@@ -57,7 +62,7 @@ export async function executeResolveTargets(input: ResolveTargetsInput, ctx: Bui
     found = await resolveDeviceIdsInRunOrg(run, ids);
     if (input.fromStep.set === 'failed' && found.length > 0) {
       const reasons = await loadFleetDeviceFailureReasons(ctx.run.id, input.fromStep.stepId, found.map((d) => d.id));
-      found = found.map((d) => ({ ...d, failureReason: (reasons.get(d.id) ?? NO_FAILURE_REASON).slice(0, FLEET_FAILURE_REASON_MAX_CHARS) }));
+      found = found.map((d) => ({ ...d, failureReason: cutReason(reasons.get(d.id) ?? NO_FAILURE_REASON) }));
     }
   } else if (input.deviceIds) {
     // Explicit ids (rendered templates included), kept to the run org's devices like a fromStep set.
