@@ -10,6 +10,7 @@ import {
   contractLines,
   pax8CompanyMappings,
   pax8OrderLines,
+  pax8Integrations,
   pax8Orders,
 } from '../db/schema';
 import {
@@ -26,7 +27,7 @@ import type {
   SubmitLineOutcome,
   SubmitResult,
 } from './pax8OrderSubmit';
-import { createPax8ClientForIntegration } from './pax8SyncService';
+import { createPax8ClientForIntegration, integrationGenerationPredicate, Pax8IntegrationGenerationChangedError } from './pax8SyncService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 
 const SUBMITTABLE_STATUSES = ['draft', 'awaiting_details', 'ready'] as const;
@@ -186,24 +187,11 @@ async function lockExecutingOrder(bundle: SubmitBundle): Promise<Pax8OrderRow> {
   return order;
 }
 
-async function updateManualContractQuantity(
-  line: Pax8OrderLineRow,
-): Promise<void> {
-  if (!line.contractLineId) return;
-  const [contractLine] = await db
-    .select({ id: contractLines.id, lineType: contractLines.lineType })
-    .from(contractLines)
-    .where(and(
-      eq(contractLines.id, line.contractLineId),
-      eq(contractLines.orgId, line.orgId),
-    ))
-    .limit(1);
-  if (!contractLine) {
-    throw new Pax8OrderError('The linked contract line is unavailable; the Pax8 result requires reconciliation.', 409);
-  }
-  if (contractLine.lineType !== 'manual') return;
+/** The remote result must survive a billing edit while the request was in flight. */
+async function updateManualContractQuantity(line: Pax8OrderLineRow): Promise<boolean> {
+  if (!line.contractLineId) return true;
   const quantity = line.action === 'cancel' ? '0' : line.quantity;
-  if (quantity === null) return;
+  if (quantity === null) return false;
   const updated = await db
     .update(contractLines)
     .set({ manualQuantity: quantity })
@@ -211,11 +199,12 @@ async function updateManualContractQuantity(
       eq(contractLines.id, line.contractLineId),
       eq(contractLines.orgId, line.orgId),
       eq(contractLines.lineType, 'manual' as never),
+      line.authorizedBaselineQuantity === null
+        ? isNull(contractLines.manualQuantity)
+        : eq(contractLines.manualQuantity, line.authorizedBaselineQuantity),
     ))
     .returning({ id: contractLines.id });
-  if (updated.length !== 1) {
-    throw new Pax8OrderError('The linked manual contract line changed before billing quantity was recorded.', 409);
-  }
+  return updated.length === 1;
 }
 
 async function persistLineOutcomes(
@@ -233,6 +222,9 @@ async function persistLineOutcomes(
     const stateCondition = typeof expectedState === 'string'
       ? eq(pax8OrderLines.submitState, expectedState)
       : inArray(pax8OrderLines.submitState, [...expectedState]);
+    if (outcome.submitState === 'succeeded' && !await updateManualContractQuantity(line)) {
+      outcome.error = 'billing_conflict: The linked billing quantity changed after approval; the Pax8 write succeeded and requires billing review.';
+    }
     const updated = await db
       .update(pax8OrderLines)
       .set({
@@ -252,7 +244,6 @@ async function persistLineOutcomes(
     if (updated.length !== 1) {
       throw new Pax8OrderError('A Pax8 line execution state changed before its result could be recorded.', 409);
     }
-    if (outcome.submitState === 'succeeded') await updateManualContractQuantity(line);
   }
 }
 
@@ -376,7 +367,39 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
       if (targets.some((target, index) => target !== null && targets.indexOf(target) !== index)) {
         throw new Pax8OrderError('Only one change or cancellation may target a Pax8 subscription per order.', 422);
       }
-      return { bundle: { order: claimed, lines } } as const;
+      const [integrationGeneration] = await db.select().from(pax8Integrations)
+        .where(and(eq(pax8Integrations.id, claimed.integrationId), eq(pax8Integrations.partnerId, claimed.partnerId)))
+        .limit(1);
+      if (!integrationGeneration || !integrationGeneration.isActive) {
+        throw new Pax8OrderError('The Pax8 integration is unavailable.', 409);
+      }
+      // Keep the approved billing baseline durable across a timeout/crash for
+      // every action, including cancels and quote-created subscriptions.
+      for (const line of lines) {
+        let baseline: string | null = null;
+        if (line.contractLineId) {
+          const [linked] = await db.select({ manualQuantity: contractLines.manualQuantity })
+            .from(contractLines)
+            .where(and(eq(contractLines.id, line.contractLineId), eq(contractLines.orgId, claimed.orgId)))
+            .for('share').limit(1);
+          if (!linked) throw new Pax8OrderError('The linked contract line is unavailable.', 409);
+          baseline = linked.manualQuantity;
+        }
+        const captured = await db.update(pax8OrderLines)
+          .set({ authorizedBaselineQuantity: baseline, updatedAt: new Date() })
+          .where(and(eq(pax8OrderLines.id, line.id), eq(pax8OrderLines.orderId, claimed.id),
+            eq(pax8OrderLines.partnerId, claimed.partnerId), eq(pax8OrderLines.orgId, claimed.orgId),
+            eq(pax8OrderLines.submitState, 'pending')))
+          .returning({ id: pax8OrderLines.id });
+        if (captured.length !== 1) throw new Pax8OrderError('The Pax8 billing baseline could not be captured.', 409);
+        line.authorizedBaselineQuantity = baseline;
+      }
+      const bundle: SubmitBundle = {
+        order: claimed, lines, integrationGeneration,
+        preClaimStatus: existing.status as SubmitBundle['preClaimStatus'],
+      };
+      await input.verifyClaim?.(bundle, db);
+      return { bundle } as const;
     });
     if ('restageError' in outcome) throw outcome.restageError;
     return outcome.bundle;
@@ -384,9 +407,19 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
 
   createClient(bundle) {
     return withPartnerDbContext(bundle.order.partnerId, async () => {
+      if (bundle.integrationGeneration) {
+        const [current] = await db.select({ id: pax8Integrations.id }).from(pax8Integrations)
+          .where(integrationGenerationPredicate(bundle.integrationGeneration)).for('share').limit(1);
+        if (!current) throw new Pax8IntegrationGenerationChangedError();
+      }
       const created = await createPax8ClientForIntegration(bundle.order.integrationId);
       if (created.integration.partnerId !== bundle.order.partnerId) {
         throw new Pax8OrderError('The Pax8 integration belongs to a different partner.', 403);
+      }
+      const expected = bundle.integrationGeneration;
+      if (expected && (['id', 'partnerId', 'apiBaseUrl', 'tokenUrl', 'clientIdEncrypted', 'clientSecretEncrypted', 'isActive'] as const)
+        .some((field) => created.integration[field] !== expected[field])) {
+        throw new Pax8IntegrationGenerationChangedError();
       }
       return created.client;
     });
@@ -411,6 +444,30 @@ export const pax8OrderSubmitRepository: Pax8OrderSubmitRepository = {
         // an incomplete committed claim.
         throw new Pax8OrderError('The Pax8 order line claim was incomplete; no external write was attempted.', 409);
       }
+    });
+  },
+
+  reopenUnsentOrder(bundle, error) {
+    return withOrderDbContext(bundle, async () => {
+      await lockExecutingOrder(bundle);
+      const lines = await reloadLines(bundle);
+      if (!bundle.preClaimStatus || lines.length === 0 || lines.length !== bundle.lines.length
+        || lines.some((line) => line.submitState !== 'pending')) {
+        throw new Pax8OrderError('The Pax8 order is no longer provably unsent; reconcile its unknown writes.', 409);
+      }
+      const updated = await db.update(pax8Orders).set({
+        status: bundle.preClaimStatus, submittedBy: null, submittedAt: null,
+        error: error.slice(0, 2048), updatedAt: new Date(),
+      }).where(and(
+        eq(pax8Orders.id, bundle.order.id), eq(pax8Orders.partnerId, bundle.order.partnerId),
+        eq(pax8Orders.orgId, bundle.order.orgId), eq(pax8Orders.integrationId, bundle.order.integrationId),
+        eq(pax8Orders.status, 'submitting'), eq(pax8Orders.submittedAt, bundle.order.submittedAt!),
+        sql`NOT EXISTS (SELECT 1 FROM pax8_order_lines pol
+          WHERE pol.order_id = ${pax8Orders.id} AND pol.partner_id = ${pax8Orders.partnerId}
+            AND pol.org_id = ${pax8Orders.orgId} AND pol.submit_state <> 'pending')`,
+      )).returning({ id: pax8Orders.id });
+      if (updated.length !== 1) throw new Pax8OrderError('The unsent Pax8 order could not be reopened.', 409);
+      return resultFromRows(bundle.order.id, bundle.preClaimStatus, lines);
     });
   },
 
