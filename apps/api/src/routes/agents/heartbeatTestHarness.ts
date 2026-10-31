@@ -542,4 +542,4 @@ export async function beat(extra: Record<string, unknown> = {}, agentOverrides: 
   });
 }
 
-export { recordPromptHostObservationMock, recordWorkstationCapabilitiesMock };
+export { recordPromptHostObservationMock, recordWorkstationCapabilitiesMock, claimPendingCommandsForDeviceMock };

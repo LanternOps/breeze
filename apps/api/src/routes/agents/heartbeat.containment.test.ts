@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupHeartbeatHarness, heartbeatSavepointDepth, beat as heartbeat } from './heartbeatTestHarness';
 import { buildContainmentHeartbeatBlock, reconcileContainmentReport, noteIsolationReportDropped } from '../../services/networkIsolation/reconcile';
+import { captureException } from '../../services/sentry';
 import { heartbeatSchema } from './schemas';
 const beat = { status: 'ok', agentVersion: '999.0.0', metrics: { cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 } };
 describe('containment heartbeat contract', () => {
@@ -83,6 +84,46 @@ describe('heartbeat isolation fault containment', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toHaveProperty('containment', { networkIsolation: null });
     expect(buildContainmentHeartbeatBlock).toHaveBeenCalledTimes(1);
+  });
+  it('a failing savepoint-free lookup fails the beat', async () => {
+    const failure = new Error('episode lookup failed');
+    let lookupDepth: number | undefined;
+    vi.mocked(reconcileContainmentReport).mockImplementationOnce(async (_tx, _device, report) => {
+      lookupDepth = heartbeatSavepointDepth();
+      if (report === undefined) throw failure;
+    });
+
+    const response = await heartbeat();
+
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(response.status).toBeLessThan(600);
+    expect(lookupDepth).toBe(0);
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({ phase: 'isolation_heartbeat_block' }));
+    // The claim runs before the lookup inside the same org transaction; the 5xx above is what
+    // guarantees it rolls back, so the agent never receives a command the server did not commit.
+    const body = await response.text();
+    expect(body).not.toContain('"commands":[{');
+  });
+  it('a failing report reconcile inside its savepoint keeps the beat alive', async () => {
+    const failure = new Error('report reconcile failed');
+    const report = { isolationId: null, phase: 'none' };
+    let reconcileDepth: number | undefined;
+    vi.mocked(reconcileContainmentReport).mockImplementationOnce(async (_tx, _device, _report, _at, context) => {
+      reconcileDepth = heartbeatSavepointDepth();
+      context!.row = row as never;
+      throw failure;
+    });
+    vi.mocked(buildContainmentHeartbeatBlock).mockRejectedValueOnce(new Error('block build failed'));
+
+    const response = await heartbeat({ containment: { networkIsolation: report } });
+
+    expect(response.status).toBe(200);
+    expect(reconcileDepth).toBe(1);
+    expect(vi.mocked(reconcileContainmentReport).mock.calls[0]?.[2]).toEqual(report);
+    expect(captureException).toHaveBeenCalledWith(failure, undefined, expect.objectContaining({ phase: 'isolation_heartbeat_block' }));
+    expect(await response.json()).toHaveProperty('containment', {
+      networkIsolation: { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot },
+    });
   });
   it('passes the parsed report to reconciliation and detects a dropped raw report', async () => {
     const response = await heartbeat({ containment: { networkIsolation: { state: 'garbage' } } });
