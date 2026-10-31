@@ -48,7 +48,7 @@ describe('wake sweep worker lifecycle', () => {
   beforeEach(() => vi.clearAllMocks());
   it('registers the required minute scheduler and readiness consumer, and closes resources', async () => {
     await initializeWakeAttemptSweep();
-    expect(schedule).toHaveBeenCalledWith('wake-attempt-sweep', { pattern: '* * * * *' }, expect.objectContaining({ name: 'sweep' }));
+    expect(schedule).toHaveBeenCalledWith('wake-attempt-sweep', { every: 60_000 }, expect.objectContaining({ name: 'sweep' }));
     expect(attach).toHaveBeenCalledWith(expect.anything(), 'wakeAttemptSweep');
     await shutdownWakeAttemptSweep();
     await shutdownWakeAttemptSweep();

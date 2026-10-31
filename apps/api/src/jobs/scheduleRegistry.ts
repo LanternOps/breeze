@@ -228,8 +228,8 @@ export const JOB_SCHEDULES = {
   // :03 (above) and the sub-daily `user-risk-scan` at :57; :08 keeps the
   // daily = 3 (mod 5) lane.
   'restore-point-attempt-retention': '8 22 * * *',
-  // Wake outcomes are evaluated each minute; closed history expires daily.
-  'wake-attempt-sweep': '* * * * *',
+  // Closed wake-attempt history expires daily; the outcome sweep uses a
+  // sub-hourly repeat interval and does not need a registry slot.
   'wake-attempt-retention': '23 22 * * *',
   // #9128 — daily prune of terminal webhook_deliveries rows past
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3

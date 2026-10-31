@@ -6,7 +6,6 @@ import { deviceWakeAttempts, deviceWakeStatus, type WakeAttemptOutcome } from '.
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { WAKE_OUTCOME_WINDOW_MS } from '../services/wakeAttempts';
-import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
 export const WAKE_ATTEMPT_GRACE_MS = 2 * 60_000;
@@ -126,7 +125,7 @@ export async function initializeWakeAttemptSweep(): Promise<void> {
     sweepWorker.on('error', error => { console.error(`${LOG_PREFIX} Worker error:`, error); captureException(error); });
     sweepWorker.on('failed', (job, error) => { console.error(`${LOG_PREFIX} Job ${job?.id} failed:`, error); captureException(error); });
     await getWakeAttemptSweepQueue().upsertJobScheduler(QUEUE_NAME,
-      { pattern: jobSchedule('wake-attempt-sweep') },
+      { every: 60_000 },
       { name: 'sweep', data: {}, opts: { removeOnComplete: { count: 5 }, removeOnFail: { count: 10 } } });
   } catch (error) {
     console.error(`${LOG_PREFIX} Failed to initialize:`, error);
