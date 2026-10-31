@@ -147,6 +147,14 @@ it('BASE + TAIL stay under 7.5 KB together', () => {
   expect(Buffer.byteLength(AI_SYSTEM_PROMPT_BASE + AI_SYSTEM_PROMPT_TAIL, 'utf8')).toBeLessThan(7.5 * 1024);
 });
 
+// #9855: a live run opened with a call to `list_processes_placeholder`, a name
+// no Breeze text ever contained. Processes, services, files and event logs are
+// commandTypes of execute_command (always loaded), not tools of their own.
+it('tells the model never to guess a tool name and where process listing lives', () => {
+  expect(AI_SYSTEM_PROMPT_BASE).toMatch(/never guess or invent a tool name/i);
+  expect(AI_SYSTEM_PROMPT_BASE).toContain('execute_command with commandType list_processes');
+});
+
 it('tells the model how to continue a paged result and how to read a handle (A-W05)', () => {
   expect(AI_SYSTEM_PROMPT_TAIL).toContain('hasMore');
   expect(AI_SYSTEM_PROMPT_TAIL).toContain('nextCursor');
