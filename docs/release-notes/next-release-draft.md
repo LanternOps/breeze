@@ -224,3 +224,8 @@ Update agents to a release containing this change before relying on the provider
 
 - **Crashes, Application hangs and Hardware errors now link to their own events.** On a device's Reliability panel, these factor rows open the Event log filtered to every source the scored events came from ("View in event log"), over the window the API scored. Before, they opened an unfiltered window ("Open event log"). The panel now takes each factor's window from the API instead of working it out in the browser. A snapshot gets the source list when it is next scored; until then the row keeps the window-only link.
 - `GET /api/v1/reliability/:deviceId` drivers add `windowStart`, `windowEnd` and, for `crashes`, `hangs` and `hardwareErrors`, `eventLogSources`. `GET /api/v1/devices/:id/eventlogs` accepts `source` more than once (`?source=a&source=b` matches any of them, up to 25); one `source` works as before. No migration or environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

@@ -30,7 +30,8 @@ const link = (
   label: over.label ?? 'Label',
   status: null,
   href: '',
-  addedBy: over.addedBy ?? 'user',
+  source: over.source ?? 'user_pin',
+  lastTouchedAt: over.lastTouchedAt ?? '',
   createdAt: over.createdAt ?? '2026-10-01T00:00:00Z',
 });
 
@@ -101,22 +102,29 @@ describe('normalizeLink', () => {
     label: 'Printer',
     status: 'open',
     href: '/tickets/t1',
-    addedBy: 'wisp',
+    source: 'wisp_pin', lastTouchedAt: '',
     createdAt: '2026-10-01T00:00:00Z',
   };
   it('accepts a full link', () => {
     expect(normalizeLink(good)).toEqual(good);
   });
+  it('preserves automatic-link recency and allows null ids only for concerns', () => {
+    const automatic = { ...good, source: 'auto', lastTouchedAt: '2026-10-24T08:00:00Z' };
+    expect(normalizeLink(automatic)).toEqual(automatic);
+    const concern = { ...automatic, id: null, source: 'concern' };
+    expect(normalizeLink(concern)).toEqual(concern);
+    expect(normalizeLink({ ...automatic, id: null })).toBeNull();
+  });
   it('applies defaults', () => {
     expect(
-      normalizeLink({ id: 'l', ref: { kind: 'site', id: 's', orgId: 5 }, label: 'S', status: 3, addedBy: 'WISP' }),
+      normalizeLink({ id: 'l', ref: { kind: 'site', id: 's', orgId: 5 }, label: 'S', status: 3, source: 'WISP' }),
     ).toEqual({
       id: 'l',
       ref: { kind: 'site', id: 's', orgId: null },
       label: 'S',
       status: null,
       href: '',
-      addedBy: 'user',
+      source: 'user_pin', lastTouchedAt: '',
       createdAt: '',
     });
   });
@@ -134,10 +142,10 @@ describe('normalizeLink', () => {
 describe('linksForDisplay', () => {
   it('puts user-added first, newest first, without mutating', () => {
     const input = [
-      link({ id: 'w-new', addedBy: 'wisp', refId: 'a', createdAt: '2026-10-05T00:00:00Z' }),
-      link({ id: 'u-old', addedBy: 'user', refId: 'b', createdAt: '2026-10-01T00:00:00Z' }),
-      link({ id: 'u-new', addedBy: 'user', refId: 'c', createdAt: '2026-10-03T00:00:00Z' }),
-      link({ id: 'u-bad', addedBy: 'user', refId: 'd', createdAt: 'nope' }),
+      link({ id: 'w-new', source: 'wisp_pin', lastTouchedAt: '', refId: 'a', createdAt: '2026-10-05T00:00:00Z' }),
+      link({ id: 'u-old', source: 'user_pin', lastTouchedAt: '', refId: 'b', createdAt: '2026-10-01T00:00:00Z' }),
+      link({ id: 'u-new', source: 'user_pin', lastTouchedAt: '', refId: 'c', createdAt: '2026-10-03T00:00:00Z' }),
+      link({ id: 'u-bad', source: 'user_pin', lastTouchedAt: '', refId: 'd', createdAt: 'nope' }),
     ];
     const snapshot = input.map((l) => l.id);
     const out = linksForDisplay(input);
@@ -147,8 +155,8 @@ describe('linksForDisplay', () => {
   });
   it('dedupes by kind:id keeping the first after sorting', () => {
     const out = linksForDisplay([
-      link({ id: 'w', addedBy: 'wisp', refId: 'same' }),
-      link({ id: 'u', addedBy: 'user', refId: 'same' }),
+      link({ id: 'w', source: 'wisp_pin', lastTouchedAt: '', refId: 'same' }),
+      link({ id: 'u', source: 'user_pin', lastTouchedAt: '', refId: 'same' }),
       link({ id: 'dev', kind: 'device', refId: 'same' }),
     ]);
     expect(out.map((l) => l.id)).toEqual(['u', 'dev']);
@@ -291,7 +299,7 @@ describe('homeSectionsFromPayload', () => {
     label: 'Printer down',
     status: 'open',
     href: '/tickets/t1',
-    addedBy: 'user',
+    source: 'user_pin', lastTouchedAt: '',
     createdAt: '2026-10-20T10:00:00Z',
   };
 
@@ -331,7 +339,7 @@ describe('homeSectionsFromPayload', () => {
       ...raw,
       id: 'l2',
       ref: { kind: 'device', id: 'd1', orgId: 'o1' },
-      addedBy: 'wisp',
+      source: 'wisp_pin', lastTouchedAt: '',
       createdAt: '2026-10-24T10:00:00Z',
     };
     expect(homeSectionsFromPayload({ links: [fromWisp, raw] }).links.map((l) => l.id)).toEqual(['l1', 'l2']);
