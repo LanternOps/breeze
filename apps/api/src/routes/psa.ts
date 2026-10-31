@@ -15,6 +15,7 @@ import { db } from '../db';
 import { devices, organizationExternalLinks, organizations, psaConnections as psaConnectionsTable, psaTicketMappings } from '../db/schema';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
+import { captureException } from '../services/sentry';
 import { writeRouteAudit } from '../services/auditEvents';
 import { MAX_IMPORT_ROWS, commitOrgImport, previewOrgImport } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
@@ -990,13 +991,21 @@ psaRoutes.post(
       });
     }
 
-    await resumeTicketingConnection(existing.id, () => writeRouteAudit(c, {
-      orgId: null, action: 'psa.alert_ticketing.resume', resourceType: 'psa_connection', resourceId: existing.id,
-      details: { reason: 'successful_connection_test', ...auditOwnerFields(existing) },
-    }));
+    let warning: string | undefined;
+    try {
+      await resumeTicketingConnection(existing.id, () => writeRouteAudit(c, {
+        orgId: null, action: 'psa.alert_ticketing.resume', resourceType: 'psa_connection', resourceId: existing.id,
+        details: { reason: 'successful_connection_test', ...auditOwnerFields(existing) },
+      }));
+    } catch (error) {
+      console.error('[psa] Failed to resume alert ticketing', { connectionId: existing.id, message: error instanceof Error ? error.message : String(error) });
+      captureException(error, undefined, { psa_connection_id: existing.id });
+      warning = 'Credentials verified, but alert ticketing could not be resumed. Retry the connection test.';
+    }
 
     return c.json({
       success: true,
+      ...(warning ? { warning } : {}),
       message: result.message || 'Credentials verified'
     });
   }

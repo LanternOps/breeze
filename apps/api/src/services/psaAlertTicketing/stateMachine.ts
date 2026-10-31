@@ -1,27 +1,14 @@
-import type { psaTicketMappings } from '../../db/schema';
+import type { alerts, psaTicketMappings } from '../../db/schema';
 export type TicketMapping = typeof psaTicketMappings.$inferSelect;
 export interface TicketAlert {
   id: string;
-  status: string;
+  status: typeof alerts.$inferSelect.status;
   acknowledgedAt: Date | null;
   resolvedAt: Date | null;
 }
 export type TicketOperation =
   'create' | 'adopt_lookup' | 'close' | 'note' | 'skip_resolved' | 'none';
-export interface CreateSnapshot {
-  input: import('../psa/types').PSAAlertTicketCreate;
-  closeOnResolve: boolean;
-  noteOnAcknowledge: boolean;
-  closedStatusId: number;
-  hourlyCreateCap: number;
-  connectionRev?: number;
-  connectionUpdatedAt?: string;
-  orgId?: string;
-  resolvedCompanyCount?: number;
-  operationAttempts?: Partial<Record<'create' | 'adopt_lookup' | 'close' | 'note', number>>;
-  unknownDeadline?: string;
-  duplicateTicketIds?: string[];
-}
+export type { CreateSnapshot } from './snapshot';
 export function nextOperation(
   mapping: TicketMapping,
   alert: TicketAlert | null,
@@ -45,7 +32,7 @@ export function nextOperation(
         ? 'create'
         : 'none';
   if (mapping.createState !== 'created') return 'none';
-  const snapshot = mapping.createSnapshot as CreateSnapshot | null;
+  const snapshot = mapping.createSnapshot;
   if (alert.status === 'resolved' && !['closed', 'failed'].includes(mapping.closeState)) {
     // An internal resolve note is non-idempotent just like an ack note.
     if (

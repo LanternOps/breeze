@@ -21,9 +21,12 @@ import { pauseTicketingConnection } from './pause';
 import { reportTicketingFailure } from './reporting';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import type { TicketingContext, TicketingDeps, MappingChanges } from './execution';
-import type { CreateSnapshot, TicketMapping } from './stateMachine';
+import type { TicketMapping } from './stateMachine';
+import type { CreateSnapshot } from './snapshot';
+import { TICKETING_LEASE_MS } from './constants';
 
 export async function loadTicketingContext(id: string): Promise<TicketingContext | null> {
+  let inactiveReason = 'context_missing';
   const loaded = await ticketingDb(async () => {
     const [row] = await db
       .select({
@@ -56,7 +59,11 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
       )
       .where(eq(psaTicketMappings.id, id))
       .limit(1);
-    if (!row || row.connection.partnerId !== row.partner.id) return null;
+    if (!row) return null;
+    if (row.connection.partnerId !== row.partner.id) {
+      inactiveReason = 'partner_mismatch';
+      return null;
+    }
     const links = await db
       .select({ externalId: organizationExternalLinks.externalId })
       .from(organizationExternalLinks)
@@ -69,7 +76,10 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
       );
     return { ...row, companyIds: links.map((r) => r.externalId) };
   });
-  if (!loaded) return null;
+  if (!loaded) {
+    await deferInactiveTicketing(id, inactiveReason);
+    return null;
+  }
   const {
     connection,
     partner,
@@ -83,13 +93,19 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
     connectionVersion,
   } = loaded;
   const credentials = decryptCredentials(connection.credentials);
-  if (!credentials) return null;
+  if (!credentials) {
+    await deferInactiveTicketing(id, 'credentials_unusable');
+    return null;
+  }
   const adapter = createPSAProvider(
     connection.provider,
     credentials,
     (connection.settings ?? {}) as Record<string, unknown>
   );
-  if (!supportsAlertTicketing(adapter)) return null;
+  if (!supportsAlertTicketing(adapter)) {
+    await deferInactiveTicketing(id, 'unsupported_provider');
+    return null;
+  }
   const resolved = resolveAlertTicketingConfig(
     connection,
     partner,
@@ -97,10 +113,14 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
   );
   const c = resolved.config;
   // Existing effects use their snapshot even if this connection is no longer enabled/bound.
-  if (!mapping.createSnapshot && !c) return null;
-  const snapshot = (mapping.createState === 'never_attempted'
+  if (!mapping.createSnapshot && !c) {
+    await deferInactiveTicketing(id, resolved.active ? 'config_missing' : resolved.reason);
+    return null;
+  }
+  const snapshot: CreateSnapshot = (mapping.createState === 'never_attempted' && c
     ? null
-    : (mapping.createSnapshot as CreateSnapshot | null)) ?? {
+    : mapping.createSnapshot) ?? {
+    operationAttempts: mapping.createSnapshot?.operationAttempts,
     connectionRev: connection.alertTicketingRev,
     connectionUpdatedAt: connectionVersion,
     orgId: alert.orgId,
@@ -136,11 +156,13 @@ export async function loadTicketingContext(id: string): Promise<TicketingContext
     closedStatusId: c!.closedStatusId!,
     hourlyCreateCap: c!.hourlyCreateCap,
   };
+  const unassignedPool = isUnassignedPoolOrgType(org.type);
   return {
     mapping,
     alert,
     connection,
-    canCreate: resolved.active && !isUnassignedPoolOrgType(org.type),
+    canCreate: resolved.active && !unassignedPool,
+    inactiveReason: !resolved.active ? resolved.reason : unassignedPool ? 'unassigned_pool' : undefined,
     companyIds,
     snapshot,
     adapter,
@@ -158,7 +180,7 @@ export async function claimTicketing(
       .set({
         ...changes,
         leaseToken: token,
-        leaseUntil: sql`now()+interval '60 seconds'`,
+        leaseUntil: sql`now() + ${TICKETING_LEASE_MS} * interval '1 millisecond'`,
         updatedAt: now,
       })
       .where(
@@ -180,17 +202,22 @@ export async function claimTicketing(
         WHERE a.id=${psaTicketMappings.alertId} AND o.partner_id=c.partner_id AND c.alert_ticketing_paused_reason IS NULL
         AND (${changes.createState === 'create_in_flight'} = false OR (a.status IN ('active','acknowledged')
           AND c.alert_ticketing->>'enabled'='true'
-          AND c.alert_ticketing_rev=${(changes.createSnapshot as CreateSnapshot)?.connectionRev ?? -1}
-          AND c.updated_at=${(changes.createSnapshot as CreateSnapshot)?.connectionUpdatedAt ?? null}::timestamp
-          AND a.org_id=${(changes.createSnapshot as CreateSnapshot)?.orgId ?? null}::uuid
-          AND (${(changes.createSnapshot as CreateSnapshot)?.resolvedCompanyCount !== 1} OR
-            (SELECT count(*)=1 AND min(l.external_id)=${(changes.createSnapshot as CreateSnapshot)?.input.companyId ?? ''}
+          AND c.alert_ticketing_rev=${changes.createSnapshot?.connectionRev ?? -1}
+          AND c.updated_at=${changes.createSnapshot?.connectionUpdatedAt ?? null}::timestamp
+          AND a.org_id=${changes.createSnapshot?.orgId ?? null}::uuid
+          AND (${changes.createSnapshot?.resolvedCompanyCount !== 1} OR
+            (SELECT count(*)=1 AND min(l.external_id)=${changes.createSnapshot?.input.companyId ?? ''}
               FROM organization_external_links l WHERE l.org_id=a.org_id AND l.partner_id=c.partner_id AND l.system=c.provider::text))
           AND EXISTS (SELECT 1 FROM partners p WHERE p.id=c.partner_id
             AND p.service_management_mode='external' AND p.service_management_psa_connection_id=c.id))))`
         )
       )
       .returning({ id: psaTicketMappings.id });
+    if (!row) {
+      await deferInactiveTicketing(expected.id, 'claim_rejected', expected, now);
+      console.warn('[psa-ticketing] claim rejected', { mappingId: expected.id,
+        alertId: expected.alertId, connectionId: expected.connectionId });
+    }
     return !!row;
   });
 }
@@ -210,7 +237,35 @@ export async function saveTicketing(id: string, token: string, changes: MappingC
     return !!row;
   });
 }
+export async function renewTicketingLease(id: string, token: string, now: Date) {
+  return ticketingDb(async () => {
+    const [row] = await db.update(psaTicketMappings)
+      .set({ leaseUntil: sql`now() + ${TICKETING_LEASE_MS} * interval '1 millisecond'`, updatedAt: now })
+      .where(and(eq(psaTicketMappings.id, id), eq(psaTicketMappings.leaseToken, token),
+        sql`${psaTicketMappings.leaseUntil} > now()`))
+      .returning({ id: psaTicketMappings.id });
+    return !!row;
+  });
+}
+
+/** Record recoverable configuration/claim failures without disturbing another owner. */
+async function deferInactiveTicketing(id: string, reason: string, expected?: TicketMapping, now = new Date()) {
+  return ticketingDb(async () => {
+    const rows = await db.update(psaTicketMappings).set({
+      lastError: reason === 'claim_rejected' ? reason : `connection_inactive:${reason}`,
+      lastErrorClass: 'transient', nextAttemptAt: new Date(now.getTime() + 30000), updatedAt: now,
+    }).where(and(eq(psaTicketMappings.id, id),
+      or(isNull(psaTicketMappings.leaseUntil), sql`${psaTicketMappings.leaseUntil} <= now()`),
+      expected ? and(eq(psaTicketMappings.createState, expected.createState),
+        eq(psaTicketMappings.closeState, expected.closeState), eq(psaTicketMappings.noteState, expected.noteState),
+        eq(psaTicketMappings.attempts, expected.attempts)) : undefined,
+    )).returning({ mappingId: psaTicketMappings.id, alertId: psaTicketMappings.alertId, connectionId: psaTicketMappings.connectionId });
+    for (const ids of rows) console.warn('[psa-ticketing] connection inactive', { ...ids, reason });
+  });
+}
+
 export const ticketingDeps: TicketingDeps = {
+  renewLease: renewTicketingLease,
   load: loadTicketingContext,
   claim: claimTicketing,
   save: saveTicketing,

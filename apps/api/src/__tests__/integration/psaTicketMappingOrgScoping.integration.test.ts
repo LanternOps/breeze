@@ -311,6 +311,7 @@ describe('W08 committed admission ledger', () => {
     expect(await claimTicketing(context!.mapping,randomUUID(),{createState:'create_in_flight',createSnapshot:context!.snapshot},new Date())).toBe(false);
     // Two replicas observing the same row still grant one permission to send.
     await withDbAccessContext(SYSTEM_CTX,()=>db.update(psaConnections).set({alertTicketingRev:1}).where(eq(psaConnections.id,connection!.id)));
+    await withDbAccessContext(SYSTEM_CTX,()=>db.update(psaTicketMappings).set({nextAttemptAt:null}).where(eq(psaTicketMappings.id,rows[0]!.id)));
     const refreshed=await loadTicketingContext(rows[0]!.id);
     const tokens=[randomUUID(),randomUUID()];
     const claims=await Promise.all(tokens.map(token=>claimTicketing(refreshed!.mapping,token,{createState:'create_in_flight',createSnapshot:refreshed!.snapshot},new Date())));
@@ -341,6 +342,7 @@ async function alertRows(id: string) {
 describe('W08 PSA ledger follows alert/device lifecycle', () => {
   it.each([
     [false, 'device'], [false, 'alert'], [true, 'device'], [true, 'alert'],
+    [true, 'topology_alert'],
   ] as const)('device mover crossPartner=%s anchor=%s', async (crossPartner, anchor) => {
     const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
     const sourceOrg = client.env.organization;
@@ -350,7 +352,14 @@ describe('W08 PSA ledger follows alert/device lifecycle', () => {
     const targetSite = await createSite({ orgId: targetOrg.id });
     const connectionId = await seedPartnerConnection(sourcePartner.id);
     const deviceId = await seedDevice(sourceOrg.id, 'mapping-move-device');
-    const alertId = await seedAlert(sourceOrg.id, deviceId, 'Mapping move alert');
+    const alertId = anchor === 'topology_alert'
+      ? (await withDbAccessContext(SYSTEM_CTX, async () => {
+        const site = await createSite({ orgId: sourceOrg.id });
+        return db.insert(alerts).values({ orgId: sourceOrg.id, deviceId, severity: 'high',
+          title: 'Site-owned mapping move alert', topologySiteId: site.id,
+          topologySourceKey: `topology:${'a'.repeat(64)}` }).returning();
+      }))[0]!.id
+      : await seedAlert(sourceOrg.id, deviceId, 'Mapping move alert');
     const anchors = anchor === 'device' ? { deviceId } : { alertId };
     const mappingId = await seedMapping(connectionId, 'MOVE-1', anchors);
 
@@ -377,16 +386,58 @@ describe('W08 PSA ledger follows alert/device lifecycle', () => {
         stepUp: null, via: 'generic_move',
       })));
 
-    expect(await mappingRows(mappingId)).toEqual(crossPartner ? [] : [{ id: mappingId, connectionId }]);
+    expect(await mappingRows(mappingId)).toEqual(crossPartner && anchor !== 'topology_alert' ? [] : [{ id: mappingId, connectionId }]);
     expect(await mappingRows(otherId)).toEqual([{ id: otherId, connectionId }]);
     if (destinationMappingId) {
       expect(await mappingRows(destinationMappingId))
         .toEqual([{ id: destinationMappingId, connectionId: destinationConnectionId }]);
     }
-    expect(await alertRows(alertId)).toEqual([{ id: alertId, orgId: targetOrg.id }]);
+    expect(await alertRows(alertId)).toEqual([{ id: alertId, orgId: anchor === 'topology_alert' ? sourceOrg.id : targetOrg.id }]);
     expect(await withDbAccessContext(SYSTEM_CTX, () =>
       db.select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, deviceId))))
       .toEqual([{ orgId: targetOrg.id }]);
+  });
+
+  it.each([
+    [true, 'create_in_flight', 'none', 'none', true],
+    [true, 'create_outcome_unknown', 'none', 'none', true],
+    [true, 'needs_attention', 'none', 'none', true],
+    [true, 'created', 'none', 'none', true],
+    [true, 'created', 'pending', 'none', true],
+    [true, 'created', 'in_flight', 'none', true],
+    [true, 'created', 'outcome_unknown', 'none', true],
+    [true, 'created', 'closed', 'pending', true],
+    [true, 'created', 'closed', 'in_flight', true],
+    [true, 'created', 'closed', 'outcome_unknown', true],
+    [true, 'created', 'closed', 'posted', false],
+    [true, 'failed', 'none', 'none', false],
+    [true, 'never_attempted', 'none', 'none', false],
+    [false, 'created', 'none', 'none', false],
+  ] as const)('PSA move guard crossPartner=%s %s/%s/%s refused=%s', async (crossPartner, createState, closeState, noteState, refused) => {
+    const client = await createIntegrationTestClient(buildApp(), { scope: 'partner' });
+    const sourceOrg = client.env.organization;
+    const connectionId = await seedPartnerConnection(client.env.partner.id);
+    const targetPartner = crossPartner ? await createPartner() : client.env.partner;
+    const targetOrg = await createOrganization({ partnerId: targetPartner.id });
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    const deviceId = await seedDevice(sourceOrg.id, 'open-psa-device');
+    const mappingId = await seedMapping(connectionId, 'OPEN-PSA-1', { deviceId });
+    await withDbAccessContext(SYSTEM_CTX, () => db.update(psaTicketMappings)
+      .set({ createState, closeState, noteState }).where(eq(psaTicketMappings.id, mappingId)));
+    const move = withDbAccessContext(SYSTEM_CTX, () => db.transaction(tx => moveDeviceOrgInTransaction(tx, {
+      deviceId, sourceOrgId: sourceOrg.id, targetOrgId: targetOrg.id,
+      targetSiteId: targetSite.id, targetOrgName: targetOrg.name,
+      deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+      actor: { userId: client.env.user.id, allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
+    })));
+    if (refused) {
+      await expect(move).rejects.toMatchObject({ code: 'PSA_TICKETING_OPEN', message: expect.stringContaining('PSA ticketing') });
+    } else {
+      await move;
+    }
+    expect(await mappingRows(mappingId)).toEqual(refused || !crossPartner ? [{ id: mappingId, connectionId }] : []);
+    expect(await withDbAccessContext(SYSTEM_CTX, () => db.select({ orgId: devices.orgId })
+      .from(devices).where(eq(devices.id, deviceId)))).toEqual([{ orgId: refused ? sourceOrg.id : targetOrg.id }]);
   });
 
   it.each(['alert', 'both'] as const)('deleting an alert cascades a %s-anchored mapping', async (anchor) => {

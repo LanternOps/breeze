@@ -42,7 +42,9 @@ export function makeAdmission(deps: AdmissionDeps) {
     const id = await deps.insert(alert, target, source, opts);
     if (id === 'inactive' || id === 'filtered') return id;
     // Durable insertion is already committed. Redis loss is repaired by the sweep.
-    await deps.wake(alertId).catch(() => {});
+    await deps.wake(alertId).catch((error: unknown) => {
+      console.warn('[psa-ticketing] admission wake failed', { alertId, connectionId: target.connectionId, message: error instanceof Error ? error.message : String(error) });
+    });
     return id ? 'admitted' : 'exists';
   };
 }

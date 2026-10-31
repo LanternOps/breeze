@@ -107,9 +107,9 @@ describe('leased PSA effects', () => {
   });
   it('honors 429 Retry-After', async () => {
     const f = harness();
-    f.adapter.createAlertTicket.mockRejectedValueOnce(adapterError('rate_limited'));
+    f.adapter.createAlertTicket.mockRejectedValueOnce(adapterError('rate_limited', 90000));
     await f.run();
-    expect(f.ctx.mapping.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(start.getTime() + 30000);
+    expect(f.ctx.mapping.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(start.getTime() + 90000);
     await f.run();
     expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(1);
   });
@@ -120,6 +120,8 @@ describe('leased PSA effects', () => {
     f.advance(60000);
     await f.run();
     expect(f.deps.pause).toHaveBeenCalledTimes(1);
+    expect(f.ctx.mapping.lastErrorClass).toBe('auth');
+    expect(f.ctx.mapping.createState).toBe('never_attempted');
     expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(1);
   });
   it('disable/rebind after create still closes on the pinned connection/snapshot', async () => {
@@ -220,4 +222,145 @@ it('a marker lookup error after two hours also ends in needs_attention', async (
   await f.run();
   expect(f.ctx.mapping.createState).toBe('needs_attention');
   expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(1);
+});
+
+
+it('actual closes remain eligible after 25 hours', async () => {
+  const f = harness();
+  f.ctx.snapshot.closeOnResolve = true;
+  await f.run();
+  f.ctx.alert!.status = 'resolved';
+  f.ctx.alert!.resolvedAt = start;
+  f.advance(25 * 3600000);
+  await f.run();
+  expect(f.adapter.closeTicket).toHaveBeenCalledTimes(1);
+  expect(f.ctx.mapping.closeState).not.toBe('failed');
+});
+it('three pre-send transient creates grow backoff and refund the create cap', async () => {
+  const f = harness();
+  let cap = 0;
+  f.deps.beforeCreate = vi.fn(async () => { cap++; return true; });
+  f.deps.refundCreateBudget = vi.fn(async () => { cap--; });
+  f.adapter.createAlertTicket.mockRejectedValue(adapterError('transient'));
+  for (const delay of [30000, 60000, 120000]) {
+    const attemptAt = f.now().getTime();
+    await f.run();
+    expect(f.ctx.mapping.nextAttemptAt!.getTime() - attemptAt).toBe(delay);
+    expect(cap).toBe(0);
+    f.advance(delay);
+  }
+  expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(3);
+});
+it('auth pause failure still finalizes the row and reports the real failure', async () => {
+  const f = harness();
+  const error = new Error('pause write failed', { cause: new Error('database unavailable') });
+  vi.mocked(f.deps.pause).mockRejectedValueOnce(error);
+  f.adapter.createAlertTicket.mockRejectedValueOnce(adapterError('auth'));
+  await expect(f.run()).rejects.toBe(error);
+  expect(f.ctx.mapping.createState).toBe('never_attempted');
+  expect(f.ctx.mapping.lastErrorClass).toBe('auth');
+  expect(f.ctx.mapping.leaseToken).toBeNull();
+  expect(f.deps.report).toHaveBeenCalledWith(expect.anything(), 'PSA_ALERT_TICKET_AUTH_PAUSED', error);
+});
+it('logs each adapter failure with ids and forwards real unknown errors with cause', async () => {
+  const f = harness();
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const error = new Error('unexpected adapter failure', { cause: new Error('root cause') });
+  f.adapter.createAlertTicket.mockRejectedValueOnce(error);
+  await f.run();
+  expect(log).toHaveBeenCalledWith('[psa-ticketing] operation failed', expect.objectContaining({
+    mappingId: 'mapping', alertId: 'alert', connectionId: 'connection', op: 'create',
+    attempt: 1, errorClass: 'unknown_outcome', message: error.message,
+  }));
+  expect(f.deps.report).toHaveBeenCalledWith(expect.anything(), 'PSA_ALERT_TICKET_OUTCOME_UNKNOWN', error);
+  log.mockRestore();
+});
+it('logs a rejected save after a remote effect', async () => {
+  const f = harness();
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.mocked(f.deps.save).mockResolvedValueOnce(false);
+  await f.run();
+  expect(log).toHaveBeenCalledWith('[psa-ticketing] write-back rejected', expect.objectContaining({
+    mappingId: 'mapping', op: 'create', token: expect.any(String),
+  }));
+  log.mockRestore();
+});
+it('inactive creates persist a reason and delayed wake without posting', async () => {
+  const f = harness();
+  f.ctx.canCreate = false;
+  await f.run();
+  expect(f.ctx.mapping.lastError).toMatch(/^connection_inactive:/);
+  expect(f.ctx.mapping.nextAttemptAt!.getTime()).toBeGreaterThan(start.getTime());
+  expect(f.adapter.createAlertTicket).not.toHaveBeenCalled();
+});
+it('a failed acknowledgement note uses the close/note error id', async () => {
+  const f = harness();
+  await f.run();
+  f.ctx.alert!.acknowledgedAt = start;
+  f.adapter.addNote.mockRejectedValueOnce(adapterError('rejected'));
+  await f.run();
+  expect(f.deps.report).toHaveBeenCalledWith(expect.anything(), 'PSA_ALERT_TICKET_CLOSE_FAILED', undefined);
+});
+it('renews the Postgres lease before a remote call and refuses lost ownership', async () => {
+  const f = harness();
+  f.deps.renewLease = vi.fn(async () => false);
+  await f.run();
+  expect(f.deps.renewLease).toHaveBeenCalledWith('mapping', expect.any(String), expect.any(Date));
+  expect(f.adapter.createAlertTicket).not.toHaveBeenCalled();
+  expect(f.ctx.mapping.lastError).toBe('redis_lease_lost');
+});
+
+it.each(['close', 'adopt_lookup'] as const)('reports real unexpected errors from retryable %s calls', async op => {
+  const f = harness();
+  const error = new Error('unexpected implementation error', { cause: new Error('root cause') });
+  if (op === 'close') {
+    await f.run();
+    f.ctx.alert!.status = 'resolved';
+    f.ctx.alert!.resolvedAt = start;
+    f.adapter.closeTicket.mockRejectedValueOnce(error);
+  } else {
+    f.ctx.mapping.createState = 'create_outcome_unknown';
+    f.ctx.mapping.createSnapshot = { ...f.ctx.snapshot, unknownDeadline: new Date(start.getTime() + 7200000).toISOString() };
+    f.adapter.findTicketsByMarker.mockRejectedValueOnce(error);
+  }
+  await f.run();
+  expect(f.deps.report).toHaveBeenCalledWith(expect.anything(), 'PSA_ALERT_TICKET_OUTCOME_UNKNOWN', error);
+});
+
+it.each(['auth', 'transient', 'rate_limited', 'rejected', 'unknown_outcome'] as const)(
+  'logs safe diagnostics for %s even without Sentry', async errorClass => {
+    const f = harness();
+    const error = adapterError(errorClass);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    f.adapter.createAlertTicket.mockRejectedValueOnce(error);
+    try {
+      await f.run();
+      expect(log).toHaveBeenCalledWith('[psa-ticketing] operation failed', {
+        mappingId: 'mapping', alertId: 'alert', connectionId: 'connection', op: 'create',
+        attempt: 1, errorClass, httpStatus: error.httpStatus, message: error.message,
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain('SECRET BODY');
+    } finally { log.mockRestore(); }
+  }
+);
+it('renews both fences throughout a long remote call and stops renewal on completion', async () => {
+  const f = harness();
+  let finish!: (value: typeof ref) => void;
+  f.adapter.createAlertTicket.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  f.deps.renewLease = vi.fn(async () => true);
+  f.deps.beforeCall = vi.fn(async () => {});
+  vi.useFakeTimers();
+  const pending = f.run();
+  try {
+    await vi.waitFor(() => expect(f.adapter.createAlertTicket).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(40001);
+    expect(f.deps.renewLease).toHaveBeenCalledTimes(3);
+    expect(f.deps.beforeCall).toHaveBeenCalledTimes(3);
+  } finally {
+    finish(ref);
+    await pending;
+    await vi.advanceTimersByTimeAsync(20001);
+    expect(f.deps.renewLease).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  }
 });

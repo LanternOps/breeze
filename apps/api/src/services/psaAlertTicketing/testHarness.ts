@@ -9,13 +9,14 @@ const ref = {
   createdAt: start.toISOString(),
 };
 function adapterError(
-  errorClass: 'unknown_outcome' | 'rate_limited' | 'auth' | 'transient' | 'rejected'
+  errorClass: 'unknown_outcome' | 'rate_limited' | 'auth' | 'transient' | 'rejected',
+  retryAfterMs = 30000
 ) {
   return new PsaAdapterError({
     provider: 'connectwise',
     errorClass,
     httpStatus: 500,
-    retryAfterMs: 30000,
+    retryAfterMs,
     message: 'Safe adapter error',
     bodySnippet: 'SECRET BODY',
   });

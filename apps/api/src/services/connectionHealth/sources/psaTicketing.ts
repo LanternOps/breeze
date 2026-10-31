@@ -14,9 +14,10 @@ export type PsaTicketingHealthRow = {
   paused: boolean;
   terminal: boolean;
   capped: boolean;
+  transient: boolean;
 };
 export function psaTicketingObservation(row: PsaTicketingHealthRow, now: Date): HealthObservation {
-  const broken = row.paused || row.terminal || row.capped;
+  const broken = row.paused || row.terminal || row.capped || row.transient;
   return {
     sourceKind: 'psa_ticketing',
     sourceId: row.id,
@@ -26,7 +27,7 @@ export function psaTicketingObservation(row: PsaTicketingHealthRow, now: Date): 
     state: broken ? 'broken' : 'healthy',
     severity: row.paused || row.terminal ? 'permanent' : 'transient',
     condition: row.paused ? 'reauth_required' : broken ? 'delivery_failed' : 'healthy',
-    detail: `${row.paused ? 'Alert ticketing paused: test the connection to resume.' : row.terminal ? 'Alert ticketing needs attention: review failed or uncertain operations.' : row.capped ? 'Hourly alert ticket create cap reached; creates are waiting.' : 'Alert ticketing operational.'} ${PSA_LIVE_VERIFICATION_NOTICE}.`,
+    detail: `${row.paused ? 'Alert ticketing paused: test the connection to resume.' : row.terminal ? 'Alert ticketing needs attention: review failed or uncertain operations.' : row.capped ? 'Hourly alert ticket create cap reached; creates are waiting.' : row.transient ? 'Alert ticketing delivery is waiting for infrastructure or connection recovery.' : 'Alert ticketing operational.'} ${PSA_LIVE_VERIFICATION_NOTICE}.`,
     displayName: cleanDisplayName(row.name, 'PSA alert tickets'),
     fixHref: FIX_HREF,
     ownerFixHref: null,
@@ -35,19 +36,23 @@ export function psaTicketingObservation(row: PsaTicketingHealthRow, now: Date): 
     observedAt: now,
   };
 }
+// W2-C adds mark-handled/redrive; bound terminal history until those controls ship.
+const TERMINAL = sql`m.updated_at > now() - interval '7 days' AND
+  (m.create_state IN ('failed','rejected','needs_attention','skipped_ambiguous_company')
+    OR m.close_state IN ('failed','outcome_unknown') OR m.note_state IN ('failed','outcome_unknown'))`;
+const TRANSIENT = sql`(m.last_error IN ('redis_unavailable','redis_lease_lost')
+  OR m.last_error LIKE 'connection_inactive:%')`;
 function selectRows(where: SQL) {
   return sql`SELECT c.id,c.partner_id AS "partnerId",c.name,
     (c.alert_ticketing_paused_reason IS NOT NULL) AS paused,
-    EXISTS (SELECT 1 FROM psa_ticket_mappings m WHERE m.connection_id=c.id AND
-      (m.create_state IN ('failed','rejected','needs_attention','skipped_ambiguous_company')
-        OR m.close_state IN ('failed','outcome_unknown') OR m.note_state IN ('failed','outcome_unknown'))) AS terminal,
+    EXISTS (SELECT 1 FROM psa_ticket_mappings m WHERE m.connection_id=c.id AND (${TERMINAL})) AS terminal,
+    EXISTS (SELECT 1 FROM psa_ticket_mappings m WHERE m.connection_id=c.id AND (${TRANSIENT})) AS transient,
     EXISTS (SELECT 1 FROM psa_ticket_mappings m WHERE m.connection_id=c.id AND m.last_error='hourly_create_cap'
       AND m.next_attempt_at > now()) AS capped
     FROM psa_connections c WHERE c.partner_id IS NOT NULL AND (${where})`;
 }
 const BROKEN = sql`c.alert_ticketing_paused_reason IS NOT NULL OR EXISTS (SELECT 1 FROM psa_ticket_mappings m
-  WHERE m.connection_id=c.id AND (m.create_state IN ('failed','rejected','needs_attention','skipped_ambiguous_company')
-    OR m.close_state IN ('failed','outcome_unknown') OR m.note_state IN ('failed','outcome_unknown')
+  WHERE m.connection_id=c.id AND ((${TERMINAL}) OR (${TRANSIENT})
     OR (m.last_error='hourly_create_cap' AND m.next_attempt_at > now())))`;
 async function load(where: SQL) {
   return Array.from(await db.execute<PsaTicketingHealthRow>(selectRows(where)));

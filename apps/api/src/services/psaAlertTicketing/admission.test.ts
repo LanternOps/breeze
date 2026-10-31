@@ -61,7 +61,7 @@ describe('PSA admission from committed alert', () => {
     expect(f.deps.insert).not.toHaveBeenCalled();
     expect(await f.admit('alert', 'manual', { bypassFilters: true })).toBe('admitted');
   });
-  it.each(['not_bound', 'disabled', 'not_external'])('%s admits nothing', async () => {
+  it('admits nothing when storage reports no active admission context', async () => {
     const f = fixture();
     f.deps.load.mockResolvedValue(null as never);
     expect(await f.admit('alert', 'auto')).toBe('inactive');
@@ -81,7 +81,6 @@ describe('reconciler is independent of event dispatch', () => {
     const wakeDue = vi.fn(async () => ['due', 'no-company-now-linked']);
     const admit = vi.fn(async () => 'admitted' as const);
     const wake = vi.fn(async (_id: string) => {});
-    process.env.EVENT_DISPATCH_MODE = 'off';
     await makeReconcile({ targets: async () => [f.target], candidates, wakeDue, admit, wake })(now);
     expect(candidates).toHaveBeenCalledWith('connection', f.target.enabledAt, f.target.config);
     expect(admit).toHaveBeenCalledWith('recent', 'auto');
@@ -93,6 +92,13 @@ describe('reconciler is independent of event dispatch', () => {
       new Date(now.getTime() - 24 * 3600000),
       f.target.config
     );
-    delete process.env.EVENT_DISPATCH_MODE;
   });
+});
+
+it('logs durable admission wake failures with alert and connection ids', async () => {
+  const f = fixture(), warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  f.deps.wake.mockRejectedValueOnce(new Error('redis disconnected'));
+  expect(await f.admit('alert', 'auto')).toBe('admitted');
+  expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ alertId: 'alert', connectionId: 'connection', message: 'redis disconnected' }));
+  warn.mockRestore();
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../../db', () => ({ db: {} }));
-import { psaTicketingObservation } from './psaTicketing';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { psaTicketingObservation, psaTicketingSource } from './psaTicketing';
 import { planTransitions } from '../transitions';
 const now = new Date('2026-10-31T12:00:00Z');
 const row = {
@@ -10,6 +11,7 @@ const row = {
   paused: true,
   terminal: false,
   capped: false,
+  transient: false,
 };
 describe('PSA ticketing partner health', () => {
   it('opens one partner incident for an auth pause and updates the same incident', () => {
@@ -48,7 +50,16 @@ describe('PSA ticketing partner health', () => {
       'broken'
     );
   });
-  it('recovers when terminal rows are redriven and the pause/cap is cleared', () => {
+  it('is healthy when the observation has no pause, failure or cap', () => {
     expect(psaTicketingObservation({ ...row, paused: false }, now).state).toBe('healthy');
   });
+});
+
+it('shows Redis and inactive-connection failures as transient delivery failures', () => {
+  expect(psaTicketingObservation({ ...row, paused: false, transient: true }, now)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'delivery_failed' });
+});
+it('bounds terminal history to seven days and includes retryable infrastructure errors in SQL', () => {
+  const query = new PgDialect().sqlToQuery(psaTicketingSource.brokenQuery(now).getSQL()).sql;
+  expect(query).toContain("updated_at > now() - interval '7 days'");
+  for (const value of ['redis_unavailable', 'redis_lease_lost', 'connection_inactive:%']) expect(query).toContain(value);
 });

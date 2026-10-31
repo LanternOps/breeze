@@ -45,8 +45,17 @@ describe('pause and resume', () => {
     await resumeTicketingConnection('connection');
     expect(h.audit).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ action: 'psa.alert_ticketing.resume' })
+      expect.objectContaining({ action: 'psa.alert_ticketing.resume', details: { reason: 'successful_connection_test' } })
     );
     expect(h.wake).toHaveBeenCalledWith('mapping', 'close');
   });
+});
+
+it('logs mapping wake failure after resume while retaining a successful resume', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  update([{ id: 'connection', partnerId: 'partner' }]); update([{ id: 'mapping' }]);
+  h.wake.mockRejectedValueOnce(new Error('redis disconnected'));
+  await expect(resumeTicketingConnection('connection')).resolves.toBeUndefined();
+  expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ connectionId: 'connection', mappingId: 'mapping', message: 'redis disconnected' }));
+  warn.mockRestore();
 });

@@ -13,7 +13,7 @@ async function audit(row: PauseRow, action: string) {
     action,
     resourceType: 'psa_connection',
     resourceId: row.id,
-    details: { reason: 'auth' },
+    details: { reason: action === 'psa.alert_ticketing.resume' ? 'successful_connection_test' : 'auth' },
   });
 }
 export async function pauseTicketingConnection(id: string) {
@@ -44,5 +44,7 @@ export async function resumeTicketingConnection(id: string, auditResume?: (row: 
       )
       .returning({ id: psaTicketMappings.id });
   });
-  for (const row of rows) await wakeMapping(row.id, 'close').catch(() => {});
+  for (const row of rows) await wakeMapping(row.id, 'close').catch((error: unknown) => {
+    console.warn('[psa-ticketing] resume wake failed', { connectionId: id, mappingId: row.id, message: error instanceof Error ? error.message : String(error) });
+  });
 }

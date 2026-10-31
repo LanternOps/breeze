@@ -18,14 +18,34 @@ export function makeReconcile(deps: {
   wake(id: string): Promise<void>;
 }) {
   return async (now = new Date()) => {
-    for (const target of await deps.targets()) {
-      const floor = new Date(
-        Math.max(target.enabledAt.getTime(), now.getTime() - target.config.lookbackHours * 3600000)
-      );
-      for (const id of await deps.candidates(target.connectionId, floor, target.config))
-        await deps.admit(id, 'auto');
-    }
-    for (const id of await deps.wakeDue(now)) await deps.wake(id);
+    const counts = { targets: 0, admitted: 0, woken: 0, errors: 0 };
+    const report = (error: unknown, connectionId?: string, mappingId?: string, alertId?: string) => {
+      counts.errors++;
+      console.error('[psa-ticketing] reconciler operation failed', { connectionId, mappingId, alertId, error });
+      captureException(error, undefined, connectionId ? { psa_connection_id: connectionId } : undefined);
+    };
+    try {
+      const targets = await deps.targets();
+      counts.targets = targets.length;
+      for (const target of targets) {
+        try {
+          const floor = new Date(Math.max(target.enabledAt.getTime(), now.getTime() - target.config.lookbackHours * 3600000));
+          for (const id of await deps.candidates(target.connectionId, floor, target.config)) {
+            try {
+              if (await deps.admit(id, 'auto') === 'admitted') counts.admitted++;
+            } catch (error) { report(error, target.connectionId, undefined, id); }
+          }
+        } catch (error) { report(error, target.connectionId); }
+      }
+    } catch (error) { report(error); }
+    // Admission failures never suppress recovery of mappings already in the ledger.
+    try {
+      for (const id of await deps.wakeDue(now)) {
+        try { await deps.wake(id); counts.woken++; }
+        catch (error) { report(error, undefined, id); }
+      }
+    } catch (error) { report(error); }
+    console.info('[psa-ticketing] reconciler tick', counts);
   };
 }
 export const reconcilePsaTicketing = makeReconcile({

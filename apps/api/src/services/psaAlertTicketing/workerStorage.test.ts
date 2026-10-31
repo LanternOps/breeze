@@ -1,15 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-const h = vi.hoisted(() => ({ where: vi.fn(), set: vi.fn() }));
+const h = vi.hoisted(() => ({ where: vi.fn(), set: vi.fn(), rows: [] as unknown[], selected: [] as unknown[][] }));
 vi.mock('../../db', () => ({
   db: {
+    select: () => {
+      const rows = h.selected.shift() ?? [];
+      const chain = {
+        from: () => chain, innerJoin: () => chain, leftJoin: () => chain,
+        where: () => chain, limit: async () => rows,
+        then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
+      };
+      return chain;
+    },
     update: () => ({
       set: (value: unknown) => {
         h.set(value);
         return {
           where: (predicate: unknown) => {
             h.where(predicate);
-            return { returning: async () => [] };
+            return { returning: async () => h.rows };
           },
         };
       },
@@ -17,9 +26,12 @@ vi.mock('../../db', () => ({
   },
 }));
 vi.mock('./storage', () => ({ ticketingDb: (fn: () => unknown) => fn() }));
+vi.mock('../psa/credentials', () => ({ decryptCredentials: (value: unknown) => value, validateProviderCredentials: () => {} }));
+vi.mock('../psa', () => ({ createPSAProvider: () => ({ alertTicketLimits: { summaryMaxCodePoints: 100, summaryMarkerSuffix: () => '' } }), supportsAlertTicketing: () => true }));
 vi.mock('./pause', () => ({ pauseTicketingConnection: vi.fn() }));
-import { claimTicketing, saveTicketing } from './workerStorage';
+import { claimTicketing, saveTicketing, loadTicketingContext, renewTicketingLease } from './workerStorage';
 import { harness } from './testHarness';
+beforeEach(() => { h.rows = [{ id: 'mapping' }]; h.selected = []; h.set.mockClear(); h.where.mockClear(); });
 function predicate() {
   return new PgDialect().sqlToQuery(h.where.mock.calls.at(-1)![0]);
 }
@@ -69,5 +81,58 @@ describe('PSA ledger CAS predicates', () => {
     expect(h.set).toHaveBeenLastCalledWith(
       expect.objectContaining({ leaseToken: null, leaseUntil: null })
     );
+  });
+});
+
+describe('PSA worker storage recovery', () => {
+  it('records missing contexts with a reason and a retry backoff', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await loadTicketingContext('mapping')).toBeNull();
+    expect(h.set).toHaveBeenCalledWith(expect.objectContaining({
+      lastError: 'connection_inactive:context_missing', lastErrorClass: 'transient',
+      nextAttemptAt: expect.any(Date),
+    }));
+    expect(warning).toHaveBeenCalled();
+    warning.mockRestore();
+  });
+  it('preserves operation attempts when refreshing the create snapshot', async () => {
+    const f = harness();
+    const credentials = { baseUrl: 'https://example.test', companyId: 'example', publicKey: 'public', privateKey: 'private' };
+    const { psaInstanceKey } = await import('./config');
+    h.selected = [[{
+      mapping: { ...f.ctx.mapping, createSnapshot: { ...f.ctx.snapshot, operationAttempts: { create: 2 } } },
+      alert: { ...f.ctx.alert, orgId: 'org', severity: 'high', title: 'Alert', message: 'Message', triggeredAt: f.now() },
+      connection: { ...f.ctx.connection, credentials, alertTicketingRev: 1,
+        alertTicketing: { enabled: true, boardId: 1, openStatusId: 2, closedStatusId: 3,
+          companyLinksConfirmedFor: psaInstanceKey('connectwise', credentials) } },
+      partner: { id: 'partner', serviceManagementMode: 'external', serviceManagementPsaConnectionId: 'connection' },
+      org: { name: 'Example', type: 'customer' }, hostname: null, siteName: null, monitorBoardId: null,
+      connectionVersion: 'version',
+    }], [{ externalId: '1' }]];
+    const context = await loadTicketingContext('mapping');
+    expect(context?.snapshot.operationAttempts).toEqual({ create: 2 });
+  });
+  it('renews only the matching live PostgreSQL lease using the shared duration', async () => {
+    h.rows = [{ id: 'mapping' }];
+    expect(await renewTicketingLease('mapping', 'token', new Date())).toBe(true);
+    const q = predicate();
+    expect(q.sql).toContain('lease_token');
+    expect(q.sql).toContain('> now()');
+    expect(q.params).toContain('token');
+    const duration = new PgDialect().sqlToQuery(h.set.mock.calls.at(-1)![0].leaseUntil);
+    expect(duration.params).toContain(60000);
+    h.rows = [];
+  });
+  it('records a rejected claim with backoff without overwriting a live owner', async () => {
+    h.rows = [];
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = harness();
+    await claimTicketing(f.ctx.mapping, 'token', {}, f.now());
+    expect(h.set).toHaveBeenLastCalledWith(expect.objectContaining({
+      lastError: 'claim_rejected', nextAttemptAt: new Date(f.now().getTime() + 30000),
+    }));
+    expect(predicate().sql).toContain('lease_until');
+    expect(warning).toHaveBeenCalledWith('[psa-ticketing] claim rejected', expect.objectContaining({ mappingId: 'mapping', connectionId: 'connection' }));
+    warning.mockRestore();
   });
 });

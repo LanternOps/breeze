@@ -55,6 +55,7 @@ import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } f
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
 import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
+import { detachPsaMappingsForDeviceMove } from './psaTicketingGuard';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -557,13 +558,9 @@ export async function moveDeviceOrgInTransaction(
           AND partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)`,
   );
 
-  // A ledger row must not carry source-partner PSA data into the target.
-  // Site-owned alerts stay at their source site, like alert_external_refs above.
-  await tx.execute(sql`DELETE FROM psa_ticket_mappings m USING psa_connections c
-    WHERE m.connection_id=c.id
-      AND (m.device_id=${deviceId}::uuid OR m.alert_id IN
-        (SELECT id FROM alerts WHERE device_id=${deviceId}::uuid AND topology_site_id IS NULL))
-      AND c.partner_id IS DISTINCT FROM (SELECT partner_id FROM organizations WHERE id=${targetOrgId}::uuid)`);
+  // Cross-partner moves must finish remote PSA work before dropping its ledger.
+  // Site-owned alert mappings remain at the source site, like external refs.
+  await detachPsaMappingsForDeviceMove(tx, deviceId, targetOrgId);
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
