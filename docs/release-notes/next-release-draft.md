@@ -234,3 +234,6 @@ Update agents to a release containing this change before relying on the provider
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
 - `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
+### Partner settings copy matches the inheritance badges (#10372)
+
+The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
