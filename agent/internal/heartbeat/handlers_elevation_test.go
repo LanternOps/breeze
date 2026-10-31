@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,7 +64,9 @@ func TestSendElevationRequestParsesIngestDecision(t *testing.T) {
 // retryable-500 error branch is identical with 0 retries — Do still returns a
 // non-nil error after the lone attempt — so the assertion is unchanged.
 func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
+	var attempts atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"boom"}`))
 	}))
@@ -76,16 +79,16 @@ func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
 	}, "test", nil, nil)
 	h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
 
-	start := time.Now()
 	_, err := h.SendElevationRequest(sampleElevationEvent())
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("SendElevationRequest returned nil error on 500, want non-nil")
 	}
-	// With MaxRetries:0 there is no backoff sleep, so this must return fast.
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("500 with MaxRetries:0 took %s, want fast (no backoff)", elapsed)
+	// Assert the mechanism, not the clock: MaxRetries:0 means exactly one
+	// attempt, hence no backoff sleep. A wall-clock bound flaked under -race
+	// on loaded runners (#10043).
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("500 with MaxRetries:0 made %d attempts, want exactly 1", got)
 	}
 }
 
@@ -95,7 +98,9 @@ func TestSendElevationRequestErrorsOnServerError(t *testing.T) {
 // and SendElevationRequest builds the "elevation-requests returned status %d"
 // error itself. This is the fast counterpart to the 500 retry-exhaustion test.
 func TestSendElevationRequestErrorsOnNonRetryableStatus(t *testing.T) {
+	var attempts atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":"nope"}`))
 	}))
@@ -107,9 +112,7 @@ func TestSendElevationRequestErrorsOnNonRetryableStatus(t *testing.T) {
 		AuthToken: "token",
 	}, "test", nil, nil)
 
-	start := time.Now()
 	_, err := h.SendElevationRequest(sampleElevationEvent())
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("SendElevationRequest returned nil error on 403, want non-nil")
@@ -117,11 +120,10 @@ func TestSendElevationRequestErrorsOnNonRetryableStatus(t *testing.T) {
 	if !strings.Contains(err.Error(), "403") {
 		t.Fatalf("error %q does not mention status code 403", err.Error())
 	}
-	// 403 must short-circuit without burning retry backoff. DefaultRetryConfig's
-	// first retry alone sleeps ~1s, so anything over a few hundred ms means we
-	// wrongly retried.
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("non-retryable 403 took %s, want fast (no retries)", elapsed)
+	// 403 must short-circuit: under DefaultRetryConfig a wrongly-retried status
+	// would hit the server again after a ~1s backoff. Count attempts, not time.
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("non-retryable 403 made %d attempts, want exactly 1", got)
 	}
 }
 
