@@ -37,7 +37,7 @@ describe('Pax8 quantity authorization baseline', () => {
 
 it('permits a durable approved billing baseline for every Pax8 line action', () => {
   const migration = readFileSync(fileURLToPath(new URL(
-    '../../../migrations/2027-01-18-140000-pax8-order-line-baseline-any-action.sql', import.meta.url,
+    '../../../migrations/2027-01-18-141000-pax8-order-line-baseline-any-action.sql', import.meta.url,
   )), 'utf8');
   expect(migration).toMatch(/DROP CONSTRAINT IF EXISTS pax8_order_lines_authorized_baseline_chk/i);
   expect(migration).toMatch(/CHECK \(authorized_baseline_quantity IS NULL OR authorized_baseline_quantity >= 0\)/i);
