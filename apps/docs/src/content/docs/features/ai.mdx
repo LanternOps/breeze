@@ -543,7 +543,7 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `list_scripts` | 1 | List scripts in the library |
 | `get_script_details` | 1 | Script content, versions, and execution stats |
 | `list_script_templates` | 1 | List built-in script templates |
-| `get_script_execution_history` | 1 | Past execution results for a script |
+| `get_script_execution_history` | 1 | Past script runs for one script, one device (`deviceId`, every script run there), or both; optional `since` |
 | `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
 | `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
 
