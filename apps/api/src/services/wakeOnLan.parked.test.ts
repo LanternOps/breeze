@@ -65,6 +65,7 @@ describe('dispatchWake for a device parked in a holding org', () => {
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };
@@ -94,6 +95,7 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };
@@ -134,6 +136,7 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     const chain = (rows: unknown[]) => {
       const where = () => Object.assign(Promise.resolve(rows), {
         limit: async () => rows,
+        groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
         orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
       });
       return { from: () => ({ where }) };

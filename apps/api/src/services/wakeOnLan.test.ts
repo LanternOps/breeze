@@ -5,7 +5,7 @@ vi.mock('./wakeAttempts', () => ({
   recordWakeRefusal: vi.fn(async () => {}),
   applyWakeRelayResult: vi.fn(async () => {}),
 }));
-import { computeBroadcast, intToIpv4, ipv4ToInt, isApipaIpv4 } from './wakeOnLan';
+import { computeBroadcast, intToIpv4, ipv4ToInt, isApipaIpv4, isWakeableMac } from './wakeOnLan';
 
 describe('ipv4ToInt', () => {
   it('converts dotted-quad to 32-bit int', () => {
@@ -130,6 +130,7 @@ import { deviceStatusEnum } from '../db/schema/devices';
 function chain(rows: unknown[]) {
   const result = Object.assign(Promise.resolve(rows), {
     limit: async () => rows,
+    groupBy: () => ({ orderBy: () => ({ limit: async () => rows }) }),
     orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
   });
   return { from: () => ({ where: () => result }) };
@@ -176,5 +177,17 @@ describe('dispatchWake target eligibility and MAC ordering', () => {
     seedWake('offline', [older, newer, networkMac], [{ mac: networkMac.mac.toLowerCase(), lastSeen: new Date() }]);
     expect(await wake()).toMatchObject({ ok: true, macs: [networkMac.mac, newer.mac, older.mac] });
     expect(selectMock).toHaveBeenCalledTimes(5);
+  });
+});
+
+
+describe('isWakeableMac', () => {
+  it.each(['aa:bb:cc:dd:ee:ff', 'aa-bb-cc-dd-ee-ff', 'AABB.CCDD.EEFF', ' \taa:bb:cc:dd:ee:ff\n'])('accepts %s', mac => {
+    expect(isWakeableMac(mac)).toBe(true);
+  });
+  it.each(['aa:bb:cc:dd:ee:ff:00:11', 'garbage text', '', '00:00:00:00:00:00',
+    'ff:ff:ff:ff:ff:ff', '01:00:5e:00:00:01', 'aabbccddeeff', 'aa:bb-cc:dd:ee:ff',
+    'aa:bb:cc:dd:ee:f', '0000.0000.0000', '0100.5e00.0001'])('rejects %s', mac => {
+    expect(isWakeableMac(mac)).toBe(false);
   });
 });

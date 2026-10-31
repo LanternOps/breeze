@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { openOrJoinWakeAttempt, recordWakeRefusal, applyWakeRelayResult } from './wakeAttempts';
 import {
@@ -122,7 +122,18 @@ export function isApipaIpv4(ip: string): boolean {
   return n >= 0xa9fe0000 && n <= 0xa9feffff;
 }
 
+/** Mirrors the agent's six-byte parseMAC formats, excluding non-unicast and zero addresses. */
+export function isWakeableMac(mac: string): boolean {
+  // Go strings.TrimSpace uses Unicode White_Space (unlike JavaScript trim's BOM handling).
+  const value = mac.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+  if (!/^(?:[0-9a-f]{2}([:-])(?:[0-9a-f]{2}\1){4}[0-9a-f]{2}|[0-9a-f]{4}(?:\.[0-9a-f]{4}){2})$/i.test(value)) return false;
+  const hex = value.replace(/[:.-]/g, '');
+  return hex !== '000000000000' && (parseInt(hex.slice(0, 2), 16) & 1) === 0;
+}
+
 async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise<string[]> {
+  const now = Date.now();
+  const latestSighting = new Date(now + 5 * 60 * 1000);
   // Live inventory takes precedence over recent historical interfaces.
   const fromNetwork = await db
     .select({ mac: deviceNetwork.macAddress, isPrimary: deviceNetwork.isPrimary, updatedAt: deviceNetwork.updatedAt })
@@ -137,26 +148,31 @@ async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise
     return b.updatedAt.getTime() - a.updatedAt.getTime();
   });
   for (const row of sorted) {
-    if (row.mac && !seen.has(row.mac.toLowerCase())) {
+    if (row.mac && isWakeableMac(row.mac) && !seen.has(row.mac.toLowerCase())) {
       seen.add(row.mac.toLowerCase());
       macs.push(row.mac);
     }
   }
 
+  const historyMac = sql<string>`lower(${deviceIpHistory.macAddress})`;
+  const newestHistory = sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen);
   const fromHistory = await db
-    .select({ mac: deviceIpHistory.macAddress, lastSeen: deviceIpHistory.lastSeen })
+    .select({ mac: sql<string>`min(${deviceIpHistory.macAddress})`, lastSeen: newestHistory })
     .from(deviceIpHistory)
     .where(and(
       eq(deviceIpHistory.deviceId, targetDeviceId),
       isNotNull(deviceIpHistory.macAddress),
-      gte(deviceIpHistory.lastSeen, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+      gte(deviceIpHistory.lastSeen, new Date(now - 30 * 24 * 60 * 60 * 1000)),
+      lte(deviceIpHistory.lastSeen, latestSighting),
     ))
-    .orderBy(desc(deviceIpHistory.lastSeen));
+    .groupBy(historyMac)
+    .orderBy(desc(newestHistory))
+    .limit(32);
 
-  // Dedupe before checking rivals so repeated history uses the target's newest sighting.
+  // Validate before candidate deduplication and the final eight-MAC cap.
   const candidates = new Map<string, typeof fromHistory[number]>();
   for (const row of fromHistory) {
-    if (!row.mac) continue;
+    if (!row.mac || !isWakeableMac(row.mac)) continue;
     const key = row.mac.toLowerCase();
     if (!seen.has(key) && !candidates.has(key)) candidates.set(key, row);
   }
@@ -166,18 +182,17 @@ async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise
     // One union query for both sources, never one query per MAC. Join devices
     // to scope sightings to the rival's current organization.
     const networkMac = sql<string>`lower(${deviceNetwork.macAddress})`;
-    const historyMac = sql<string>`lower(${deviceIpHistory.macAddress})`;
     const rivals = await db
       .select({ mac: networkMac, lastSeen: sql<Date>`max(${deviceNetwork.updatedAt})`.mapWith(deviceNetwork.updatedAt) })
       .from(deviceNetwork)
       .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
-      .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(networkMac, keys)))
+      .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(networkMac, keys), lte(deviceNetwork.updatedAt, latestSighting)))
       .groupBy(networkMac)
       .unionAll(db
         .select({ mac: historyMac, lastSeen: sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen) })
         .from(deviceIpHistory)
         .innerJoin(devices, eq(devices.id, deviceIpHistory.deviceId))
-        .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(historyMac, keys)))
+        .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(historyMac, keys), lte(deviceIpHistory.lastSeen, latestSighting)))
         .groupBy(historyMac));
     for (const row of rivals) {
       newestRival.set(row.mac, Math.max(newestRival.get(row.mac) ?? -Infinity, row.lastSeen.getTime()));

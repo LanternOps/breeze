@@ -101,4 +101,45 @@ describe('Wake-on-LAN MAC targeting (real Postgres)', () => {
     }
     expect(await wake()).toMatchObject({ ok: true, macs: [mac(1), mac(2)] });
   });
+  it.each(['network', 'history'])('filters junk and non-unicast %s MACs before the output cap', async source => {
+    const add = source === 'network' ? network : history;
+    for (const address of ['junk', '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff', '01:00:5e:00:00:01',
+      'aa:bb:cc:dd:ee:ff:00:11', 'invalid', 'aabbccddeeff', 'aa:bb-cc:dd:ee:ff']) {
+      await add(target, address, 0);
+    }
+    await history(target, mac(1), 1);
+    expect(await wake()).toMatchObject({ ok: true, macs: [mac(1)] });
+  });
+
+  it('returns NO_MACS when all addresses are filtered', async () => {
+    await network(target, '00:00:00:00:00:00', 0);
+    await history(target, 'garbage', 0);
+    expect(await wake()).toMatchObject({ ok: false, code: 'NO_MACS' });
+  });
+
+  it.each(['network', 'history'])('ignores a rival future-dated %s sighting', async source => {
+    await history(target, mac(1), 1);
+    await (source === 'network' ? network : history)(rival, mac(1), -1);
+    expect(await wake()).toMatchObject({ ok: true, macs: [mac(1)] });
+  });
+
+  it('does not count the target future-dated history as recent', async () => {
+    await history(target, mac(1), -1);
+    await history(target, mac(1).toLowerCase(), 31);
+    expect(await wake()).toMatchObject({ ok: false, code: 'NO_MACS' });
+  });
+
+  it('allows sightings within the five-minute clock tolerance', async () => {
+    await history(target, mac(1), -2 / 1440);
+    expect(await wake()).toMatchObject({ ok: true, macs: [mac(1)] });
+  });
+
+  it('bounds history to the newest 32 distinct case-insensitive MACs before rival exclusion', async () => {
+    for (let i = 1; i <= 40; i++) await history(target, mac(i), i / 10);
+    // Duplicate sightings must not consume the candidate budget.
+    for (let i = 1; i <= 10; i++) await history(target, mac(i).toLowerCase(), 20);
+    for (let i = 1; i <= 28; i++) await history(rival, mac(i), 0);
+    expect(await wake()).toMatchObject({ ok: true, macs: [29, 30, 31, 32].map(mac) });
+  });
+
 });
