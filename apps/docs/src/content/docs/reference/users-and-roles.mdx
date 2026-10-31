@@ -45,19 +45,18 @@ Administrators invite users by providing an email address, display name, and rol
 
 <Tabs>
   <TabItem label="Organisation Scope">
-    When inviting into an organisation, you can optionally restrict the user to specific **sites** and **device groups**:
+    When inviting into an organisation, you can optionally restrict the user to specific **sites**:
 
     ```json
     {
       "email": "tech@example.com",
       "name": "Jane Doe",
       "roleId": "<role-uuid>",
-      "siteIds": ["<site-uuid>"],
-      "deviceGroupIds": ["<group-uuid>"]
+      "siteIds": ["<site-uuid>"]
     }
     ```
 
-    Omit `siteIds` and `deviceGroupIds` to grant access to all sites and device groups within the organisation.
+    Omit `siteIds` to grant access to all sites within the organisation. Restricting a user to specific **device groups** is not supported yet: an invite that includes `deviceGroupIds` is rejected with `400 Bad Request` instead of silently creating a user who can see every device group. `orgAccess` and `orgIds` are partner-scope fields and are also rejected with `400` here.
 
     <Aside type="note" title="Site-restricted users and org-wide settings">
       A site-restricted technician can still **assign** an existing policy to their own site — that stays governed by the resource's normal write permission (e.g. `devices:write`). But a defined site restriction (including a restriction to zero sites) blocks **creating or editing** the org-wide governance objects themselves: webhooks, alert notification channels, software policies, peripheral (USB/Bluetooth) policies, configuration policies and their feature links, PAM configuration and signer groups, and backup destinations/profiles. These objects have no per-site ownership model — they always apply organisation- or partner-wide — so a technician who can only see one site is never allowed to create or change one, even if their role otherwise grants the write permission. An unrestricted administrator (no `siteIds` set) is unaffected. Attempting a blocked action returns an error asking to contact an unrestricted administrator.
@@ -81,6 +80,8 @@ Administrators invite users by providing an email address, display name, and rol
       "orgIds": ["<org-uuid-1>", "<org-uuid-2>"]
     }
     ```
+
+    Partner users cannot be restricted to individual sites or device groups. An invite that includes `siteIds` or `deviceGroupIds` in partner scope is rejected with `400 Bad Request`. To limit a technician to specific sites, invite them into the organisation instead.
   </TabItem>
 </Tabs>
 
@@ -770,7 +771,7 @@ SSO endpoints are mounted under `/api/v1/sso`.
 | `user_id` | `uuid` | FK to `users`. |
 | `role_id` | `uuid` | FK to `roles`. |
 | `site_ids` | `uuid[]` | Optional site restrictions. |
-| `device_group_ids` | `uuid[]` | Optional device group restrictions. |
+| `device_group_ids` | `uuid[]` | Reserved for device group restrictions. Not enforced yet; new invites always write `NULL`. |
 
 ### Sessions Table
 

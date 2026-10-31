@@ -455,6 +455,12 @@ export interface RunContext {
   run: RunRow;
   agent: AgentRow;
   orgPartnerId: string;
+  /**
+   * The run org's display name, read with `orgPartnerId` (#10387: the
+   * assessment prompt names its org). Optional so fixtures that predate it
+   * stay valid; absent reads as "no name".
+   */
+  orgName?: string | null;
   device: { id: string; siteId: string; hostname: string; osType: string } | null;
   alert: { title: string; severity: string; message: string | null } | null;
   /** Bounded, sanitized ticket context (Task 4) — `null` for every non-ticket

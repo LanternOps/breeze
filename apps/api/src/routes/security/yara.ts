@@ -35,6 +35,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishRuleSet } from '../../services/yaraRuleSetPublisher';
+import { yaracAvailable } from '../../services/yaraPrecheck';
 import { requireSecurityReadAccess } from './readAuthorization';
 import { getPolicyOrgId } from './helpers';
 import {
@@ -64,7 +65,20 @@ function mayEnableAutoQuarantine(c: Context): boolean {
   return !!perms && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
 }
 
-function summarize(row: YaraRuleSet) {
+/**
+ * Why a stale set is not published (#10306): `checker_unavailable` when this
+ * server cannot run breeze-yarac (a missing compiler is not an error in the
+ * user's rules), otherwise `errors`. null for a set that is not stale.
+ */
+export type YaraStaleReason = 'errors' | 'checker_unavailable' | null;
+
+/** Probes the compiler only when some row is stale. */
+async function checkerAvailableFor(rows: YaraRuleSet[]): Promise<boolean> {
+  return rows.some((r) => r.stale) ? yaracAvailable() : true;
+}
+
+function summarize(row: YaraRuleSet, checkerAvailable: boolean) {
+  const staleReason: YaraStaleReason = !row.stale ? null : checkerAvailable ? 'errors' : 'checker_unavailable';
   return {
     id: row.id,
     orgId: row.orgId,
@@ -81,6 +95,7 @@ function summarize(row: YaraRuleSet) {
     publishedAt: row.publishedAt?.toISOString() ?? null,
     publishedEngine: row.publishedEngine,
     stale: row.stale,
+    staleReason,
     ruleCount: row.ruleCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -103,7 +118,8 @@ yaraRoutes.get(
       .from(yaraRuleSets)
       .where(access)
       .orderBy(desc(yaraRuleSets.isBuiltin), asc(yaraRuleSets.name));
-    return c.json({ data: rows.map(summarize) });
+    const checkerAvailable = await checkerAvailableFor(rows);
+    return c.json({ data: rows.map((r) => summarize(r, checkerAvailable)) });
   },
 );
 
@@ -171,7 +187,7 @@ yaraRoutes.post(
       details: { ownerScope: payload.ownerScope, autoQuarantine: created.autoQuarantine },
     });
 
-    return c.json({ data: summarize(created) }, 201);
+    return c.json({ data: summarize(created, await checkerAvailableFor([created])) }, 201);
   },
 );
 
@@ -204,7 +220,7 @@ yaraRoutes.get(
 
     return c.json({
       data: {
-        ...summarize(set),
+        ...summarize(set, await checkerAvailableFor([set])),
         rules: rules.map((r) => ({
           ...r,
           createdAt: r.createdAt.toISOString(),
@@ -240,7 +256,7 @@ yaraRoutes.patch(
     if (payload.enabled !== undefined) changes.enabled = payload.enabled;
     if (payload.autoQuarantine !== undefined) changes.autoQuarantine = payload.autoQuarantine;
     if (Object.keys(changes).length === 0) {
-      return c.json({ data: summarize(set) });
+      return c.json({ data: summarize(set, await checkerAvailableFor([set])) });
     }
     changes.updatedAt = new Date();
 
@@ -264,7 +280,7 @@ yaraRoutes.patch(
       details: { fields: Object.keys(payload), ...(publish ? publishAudit(publish) : {}) },
     });
 
-    return c.json({ data: updated ? summarize(updated) : null, ...(publish ? { publish: publishBody(publish) } : {}) });
+    return c.json({ data: updated ? summarize(updated, await checkerAvailableFor([updated])) : null, ...(publish ? { publish: publishBody(publish) } : {}) });
   },
 );
 

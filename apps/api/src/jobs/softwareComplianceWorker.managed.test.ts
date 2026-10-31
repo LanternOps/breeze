@@ -127,6 +127,7 @@ function applicability(notReady: Record<string, Record<string, string>>) {
       const reason = notReady[deviceId]?.[catalogId];
       return { catalogId, vendor: VENDOR_BY_CATALOG[catalogId], result: reason ? { ok: false, reason } : { ok: true } };
     }),
+    isRuleApplicable: (deviceId: string, catalogId: string) => !notReady[deviceId]?.[catalogId],
     filterViolations: (deviceId: string, violations: Array<{ type: string; rule?: { catalogId?: string } }>) => {
       const kept: typeof violations = [];
       const notApplicable: Array<{ catalogId: string; reason: string }> = [];

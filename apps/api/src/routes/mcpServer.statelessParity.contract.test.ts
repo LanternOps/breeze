@@ -113,7 +113,10 @@ vi.mock('../services/aiTools', () => ({
 
 vi.mock('../services/aiGuardrails', async (importOriginal) => ({
   ...await importOriginal<typeof import('../services/aiGuardrails')>(),
-  checkGuardrails: () => ({ allowed: true, tier: 1 }),
+  // No per-action table entry here, so the real checkGuardrails would return
+  // the registry tier (#10027: the intent gate reads this tier, so a blanket
+  // tier 1 would look like a downgraded read on every Tier-3 tool).
+  checkGuardrails: (name: string) => ({ allowed: true, tier: mocks.getToolTier(name) ?? 1 }),
   checkToolPermission: async () => null,
   checkToolRateLimit: async () => null,
   checkPermissionRequirement: async () => null,

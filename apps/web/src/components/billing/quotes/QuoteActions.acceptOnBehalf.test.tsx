@@ -111,6 +111,30 @@ describe('Accept on behalf', () => {
     expect(screen.queryByTestId('quote-accept-on-behalf')).toBeNull();
   });
 
+  // #9963: an item-less quote converted into a $0 draft invoice. The server
+  // refuses it (422 QUOTE_EMPTY); the button says why instead of opening a
+  // dialog whose submit can only fail.
+  it.each([
+    ['draft', 'Add at least one item before accepting.'],
+    ['sent', 'This quote has no items. Use Revise quote to issue a version with items.'],
+  ] as const)('disables the button on an item-less %s quote and says why', (status, why) => {
+    const internalOnly = sent({ status });
+    internalOnly.lines = internalOnly.lines.map((l) => ({ ...l, customerVisible: false }));
+    render(<QuoteActions detail={internalOnly} variant="header" onChanged={vi.fn()} />);
+    const button = screen.getByTestId('quote-accept-on-behalf');
+    expect(button.hasAttribute('disabled')).toBe(true);
+    expect(button.getAttribute('title')).toBe(why);
+    fireEvent.click(button);
+    expect(screen.queryByTestId('accept-on-behalf-reference')).toBeNull();
+  });
+
+  it('keeps the button enabled when the quote has a customer-visible item', () => {
+    render(<QuoteActions detail={sent()} variant="header" onChanged={vi.fn()} />);
+    const button = screen.getByTestId('quote-accept-on-behalf');
+    expect(button.hasAttribute('disabled')).toBe(false);
+    expect(button.getAttribute('title')).toBeNull();
+  });
+
   // "This quote was never sent. The customer's first sight of it will be the
   // invoice." — the one consequence a tech cannot undo by voiding the invoice.
   it('warns about a never-sent draft, and only on a draft', () => {

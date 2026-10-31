@@ -27,7 +27,7 @@ import {
   REPORT_TYPE_PERMISSION_DENIED,
 } from '../../services/reportTypePermissions';
 import type { UserPermissions } from '../../services/permissions';
-import { rowsToCsv, rowsToTsv } from '@breeze/shared';
+import { rowsToCsv, rowsToXlsx, XLSX_MIME_TYPE, XlsxLimitError } from '@breeze/shared';
 import {
   getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
   isSystemManagedReportDefinition, PARTNER_OWNED_REPORT, partnerOwnedReportVisibility,
@@ -553,9 +553,18 @@ runsRoutes.get(
     }
 
     if (format === 'excel') {
-      const body = rowsToTsv(rows);
-      c.header('Content-Type', 'application/vnd.ms-excel');
-      c.header('Content-Disposition', `attachment; filename="${baseName}.xls"`);
+      // #9956: a real .xlsx workbook (was TSV text saved as .xls, which Excel
+      // opened only after a format-mismatch warning).
+      let body: Uint8Array<ArrayBuffer>;
+      try {
+        body = rowsToXlsx(rows);
+      } catch (err) {
+        // Only the worksheet row/column limits are expected; anything else is a bug.
+        if (!(err instanceof XlsxLimitError)) throw err;
+        return c.json({ error: 'Report is too large for an Excel worksheet; download it as CSV instead' }, 409);
+      }
+      c.header('Content-Type', XLSX_MIME_TYPE);
+      c.header('Content-Disposition', `attachment; filename="${baseName}.xlsx"`);
       auditSensitiveRead(c, {
         action: 'report.run.download',
         orgId: row.orgId,
@@ -564,7 +573,7 @@ runsRoutes.get(
         resourceId: runId,
         format,
         rowCount: rows.length,
-        byteCount: Buffer.byteLength(body, 'utf8'),
+        byteCount: body.byteLength,
       });
       return c.body(body);
     }

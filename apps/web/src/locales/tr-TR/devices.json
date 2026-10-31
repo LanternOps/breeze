@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
@@ -376,23 +376,6 @@
     "moveDevices_other": "{{count}} cihazı taşı",
     "bulkPolicyNote": "Taşıma, bu cihazlara uygulanan site yapılandırma ilkelerini, bakım pencerelerini, uyarı yönlendirmesini ve raporları değiştirir. Breeze onları otomatik olarak geri taşımaz.",
     "failedToMoveDevices": "Cihazlar taşınamadı"
-  },
-  "createGroupModal": {
-    "failedToCreateGroup": "Grup oluşturulamadı",
-    "newDeviceGroup": "Yeni Cihaz Grubu",
-    "name": "İsim",
-    "eGProductionServers": "ör. Üretim Sunucuları",
-    "type": "Tür",
-    "static": "Statik",
-    "dynamic": "Dinamik",
-    "manuallyAddAndRemoveDevicesAfter": "Cihazları oluşturduktan sonra manuel olarak ekleyin ve kaldırın.",
-    "devicesAreAutoAssignedBasedOn": "Cihazlar, filtre kurallarına göre otomatik olarak atanır.",
-    "filterRules": "Filtre Kuralları",
-    "cancel": "İptal",
-    "creating": "Oluşturuluyor...",
-    "createGroup": "Grup Oluştur",
-    "created": "Cihaz grubu oluşturuldu",
-    "missingGroupId": "Grup oluşturuldu ancak sunucu yanıtında grup kimliği eksik. Lütfen sayfayı yenileyin."
   },
   "decommissionedHiddenHint": {
     "label": "{{count}} çıkarılan gizlendi",
@@ -2076,11 +2059,14 @@
     "loading": "Yama durumu yükleniyor...",
     "notDownloadedTitle": "Henüz indirilmedi; yükleme işlemi daha uzun sürecektir",
     "notices": {
+      "installCommandEnded": "Yükleme komutu, cihaz bir sonuç bildirmeden önce sona erdi ({{status}}). Ayrıntılar için cihazın komut geçmişine bakın.",
+      "installFinishedWithIssues": "Yükleme tamamlandı: {{installed}} yüklendi, {{failed}} başarısız, {{awaitingRestart}} yeniden başlatma bekliyor, {{unresolved}} henüz doğrulanmadı. Ayrıntılar için yama satırlarına bakın.",
       "installLongerThanExpected": "Kurulum beklenenden uzun sürüyor. macOS güncellemeleri 30+ dakika sürebilir. Durumu kontrol etmek için sayfayı daha sonra yenileyin.",
       "installPatchFailed": "{{name}} yüklenemedi",
       "installPatchQueued": "Kurulum \"{{name}}\" için sıraya alındı",
       "installPatchQueuedDetail": "Kurulum \"{{name}}\"{{dispatchSuffix}} için sıraya alındı.",
       "installQueuedForPatches": "{{label}} {{count}} yamaları için sıraya girdi{{commandSuffix}}{{dispatchSuffix}}.",
+      "installStatusUnavailable": "Yükleme durumu denetlenemedi: yama listesi yüklenemedi. En son durumu görmek için sayfayı yenileyin.",
       "installedSuccessfully": "{{installed}} yama(lar)ı başarıyla yüklendi. {{pending}} hâlâ beklemede.",
       "installingPolling": "Yamalar yükleniyor... Güncellemeler için oylama.",
       "noPendingForLabel": "{{label}} için bekleyen yama yok.",
@@ -2126,6 +2112,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedUserScopeTitle": "Yüklenemez: bu, Breeze'in henüz uygulayamadığı kullanıcı başına bir yükleme olduğundan hiçbir yama çalıştırması onu yüklemez.",
       "excludedFeatureUpdateTitle": "{{ring}} güncelleme halkası bu Windows özellik sürümünü engelliyor (veya cihazları başka bir sürüme sabitliyor), bu nedenle zamanlanmış yama çalıştırmaları bunu atlar.",
       "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",
@@ -2404,7 +2391,9 @@
       "completed": "Tamamlandı",
       "failed": "Başarısız",
       "queued": "Sıraya alındı",
-      "running": "Çalışıyor"
+      "running": "Çalışıyor",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
     },
     "scanType": "{{type}} tarama",
     "scanTypes": {
@@ -2426,7 +2415,13 @@
       "quarantined": "Karantinaya alındı",
       "removed": "Kaldırıldı"
     },
-    "threatsFound": "Bulunan tehditler: {{count}}"
+    "threatsFound": "Bulunan tehditler: {{count}}",
+    "waitingForSlot": "Boş bir tarama yuvası bekleniyor. Bitiş: {{date}}.",
+    "cancelScan": "Taramayı iptal et",
+    "scanCancelled": "Tarama iptal edildi",
+    "cancelScanFailed": "Tarama iptal edilemedi",
+    "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
+    "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
@@ -2617,9 +2612,18 @@
       "refreshFailed": "Garanti yenileme başarısız oldu: {{error}}",
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
-      "updated": "Garanti bilgileri güncellendi."
+      "updated": "Garanti bilgileri güncellendi.",
+      "agentCollected": "Bu cihazın garantisi Breeze ajanı tarafından toplanıyor, bu nedenle üretici sorgusu daha yeni bir bilgi sağlayamaz.",
+      "noVendorLookupKept": "Bu üretici için garanti sorgusu kullanılamıyor. Mevcut garanti verileri korundu."
     },
-    "lookUp": "Sorgula"
+    "lookUp": "Sorgula",
+    "sources": {
+      "agentCmsl": "Ajan (HP CMSL)",
+      "agentPlist": "Ajan (macOS plist)",
+      "import": "İçe aktarıldı",
+      "importVendorEarlier": "İçe aktarıldı (üretici daha erken bir bitiş tarihi bildiriyor)",
+      "provider": "Üretici API"
+    }
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -2758,6 +2762,10 @@
       "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
       "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
       "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
+      "bulkMoveSiteNotMovedConflict": "{{devices}} (liste yüklendikten sonra sitesi değişti; liste yenilendi, yeniden deneyin)",
+      "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
+      "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
+      "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
     },
     "tryAgain": "Tekrar deneyin",
@@ -2963,8 +2971,10 @@
     "title": "Filtre kısayolları"
   },
   "filterPreviewFooter": {
+    "awaitingValue": "Eşleşen cihazları görmek için bir değer seçin",
     "counting": "…sayılıyor",
-    "matches": "~{{count}} cihazlar eşleşiyor",
+    "matches_one": "~{{count}} cihaz eşleşiyor",
+    "matches_other": "~{{count}} cihaz eşleşiyor",
     "unavailable": "önizleme kullanılamıyor"
   },
   "filterSentenceBuilder": {
@@ -4319,6 +4329,7 @@
       "pending": "Henüz denetlenmedi",
       "private": "Özel kayıt defteri — kimlik bilgileri gerekli",
       "unsupported_registry": "Kayıt defteri desteklenmiyor",
+      "provenance_unknown": "Kaynak bilinmiyor — imaj adı hiçbir kayıt defterine gönderilmez",
       "error": "Kayıt defteri denetimi başarısız — yeniden denenecek",
       "behind": "Bu etiket için daha yeni bir imaj yayımlandı",
       "current": "Kayıt defteriyle eşleşiyor",

@@ -160,7 +160,10 @@ export function ApprovalHistoryFeed({ executions, loading }: Props) {
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${badge.className}`}
                       >
                         <BadgeIcon className="h-3 w-3" />
-                        {exec.status}
+                        {t(
+                          /* i18n-dynamic */ `aiRiskApprovalHistoryFeed.status.${exec.status}`,
+                          { defaultValue: exec.status },
+                        )}
                       </span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">

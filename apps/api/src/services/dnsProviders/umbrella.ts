@@ -8,11 +8,14 @@ import type {
 } from './index';
 import { DnsProviderHttpError, requestJson } from './http';
 import { asArray, asNumber, asRecord, asString } from './helpers';
+import { storesAllowedTraffic } from './syncScope';
 
 export interface UmbrellaProviderConfig {
   organizationId?: string;
   blocklistId?: string;
   allowlistId?: string;
+  /** #10054 — see services/dnsProviders/syncScope.ts. */
+  storeAllowedTraffic?: boolean;
 }
 
 /** Cisco's OAuth2 client-credentials token endpoint (Umbrella API). */
@@ -61,7 +64,10 @@ const UMBRELLA_ACTIVITY_OFFSET_CAP = 10_000;
 /**
  * Narrowest time slice the walk will split down to. A burst of more records
  * than the offset cap can reach inside one second is kept up to the cap and
- * the remainder dropped with a warning, rather than splitting forever.
+ * the remainder dropped, rather than splitting forever. The endpoint pages by
+ * limit/offset only (no cursor), so the remainder is unreachable; the slice
+ * carries a `truncated` marker so the job records the loss on the integration
+ * instead of a plain success (#10047).
  */
 const UMBRELLA_MIN_SLICE_MS = 1000;
 
@@ -464,6 +470,9 @@ export class UmbrellaProvider implements DnsProvider {
         }
 
         if (result.truncated) {
+          // Server-side detail; the tenant-visible record of the loss is the
+          // slice's `truncated` marker, which the job turns into a
+          // `truncated` sync status (#10047).
           console.warn(
             `[UmbrellaProvider] ${new Date(cursor).toISOString()}..${new Date(end).toISOString()} holds ` +
             `more than ${result.recordCount} activity records in under ${UMBRELLA_MIN_SLICE_MS} ms — ` +
@@ -474,7 +483,13 @@ export class UmbrellaProvider implements DnsProvider {
         }
 
         run.slicesCompleted++;
-        yield { events: result.events, until: new Date(end) };
+        yield {
+          events: result.events,
+          until: new Date(end),
+          ...(result.truncated
+            ? { truncated: { from: new Date(cursor), to: new Date(end), reachableRecords: result.recordCount } }
+            : {})
+        };
 
         cursor = end;
         if (result.recordCount < UMBRELLA_ACTIVITY_OFFSET_CAP / 4) width *= 2;
@@ -519,7 +534,8 @@ export class UmbrellaProvider implements DnsProvider {
    * The probe is a shortcut, not the guarantee — events can land mid-walk —
    * so the walk itself also stops before any offset past the cap. A window
    * that cannot be split further keeps what the cap allows and reports itself
-   * `truncated`.
+   * `truncated` — unless the page that crossed the cap was shorter than the
+   * server's page size, which ends the window: then nothing lay past the cap.
    */
   private async fetchActivityWindow(
     from: number,
@@ -566,7 +582,16 @@ export class UmbrellaProvider implements DnsProvider {
         if (splittable) return { kind: 'overflow' };
         run.skippedUnparseable += skippedUnparseable;
         run.skippedNonDns += skippedNonDns;
-        return { kind: 'complete', events, recordCount: nextOffset, truncated: true };
+        // The next page would sit past the cap, so whether anything is left
+        // cannot be asked. A page shorter than the largest one served this run
+        // is the window's last (the same rule that skips the probe above), so
+        // only a page as large as any seen means records were dropped. Without
+        // this, a window of 10,001..10,999 records would be reported as a loss
+        // it never had — and that report is now tenant-visible (#10047). Like
+        // the probe rule, this assumes the server's page size is steady within
+        // a run; a full page that happens to end the window still reports.
+        const truncated = records.length >= run.largestPage;
+        return { kind: 'complete', events, recordCount: nextOffset, truncated };
       }
       offset = nextOffset;
     }
@@ -598,6 +623,13 @@ export class UmbrellaProvider implements DnsProvider {
     // and `meta` is documented as an empty object, so there is no total or
     // has-more to read. `offset` must stay within 0..10000 (#7207).
     url.searchParams.set('offset', String(offset));
+    // #10054 — an integration that does not store allowed traffic asks for
+    // the blocked and proxied verdicts only, so allowed queries (~99% of the
+    // feed) are never paged and cost none of the per-run request budget. The
+    // sync job still drops allowed events before insert, whatever comes back.
+    if (!storesAllowedTraffic(this.config)) {
+      url.searchParams.set('verdict', 'blocked,proxied');
+    }
 
     const payload = await this.withAuth((authorization) =>
       requestJson<Record<string, unknown>>(url, {

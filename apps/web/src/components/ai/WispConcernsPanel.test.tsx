@@ -156,6 +156,17 @@ describe('WispConcernsPanel', () => {
       expect(api.listWispConcerns).toHaveBeenLastCalledWith('g1', ['open', 'snoozed', 'resolved', 'dismissed']));
   });
 
+  it('#10104: a refreshKey change reloads, clearing a failed load (paused grant resumed)', async () => {
+    api.listWispConcerns.mockRejectedValueOnce(new Error('409 grant_inactive'));
+    const { rerender } = render(<WispConcernsPanel grantId="g1" threadId="t1" refreshKey={0} />);
+    await screen.findByTestId('wisp-concerns-load-error');
+    api.listWispConcerns.mockResolvedValue([concern('a', 'high')]);
+    rerender(<WispConcernsPanel grantId="g1" threadId="t1" refreshKey={1} />);
+    await screen.findAllByTestId('wisp-concern-row');
+    expect(screen.queryByTestId('wisp-concerns-load-error')).toBeNull();
+    expect(api.listWispConcerns).toHaveBeenCalledTimes(2);
+  });
+
   it('renders the empty state', async () => {
     render(<WispConcernsPanel grantId="g1" threadId="t1" />);
     expect(await screen.findByTestId('wisp-concerns-empty')).toBeTruthy();

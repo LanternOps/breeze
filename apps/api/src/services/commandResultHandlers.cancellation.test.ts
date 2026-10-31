@@ -124,6 +124,7 @@ vi.mock('../db', () => ({
 
 import { commandResultHandlers } from './commandResultHandlers';
 import { scriptExecutionBatches } from '../db/schema';
+import { commandResultSchema } from '../routes/agents/schemas';
 
 const EXEC_ID = '55555555-5555-4555-8555-555555555555';
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
@@ -177,6 +178,25 @@ describe('script result closes a cancelling execution (#3525 closer 1)', () => {
   it('a result carrying the cancellation marker confirms the cancel', async () => {
     seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: CC1 });
     await handleResult({ status: 'failed', exitCode: -1, cancelled: true, cancelledByCommandId: CC1 });
+    expect(lastExecutionUpdate()).toMatchObject({ status: 'cancelled', cancelState: 'confirmed' });
+  });
+
+  it('confirms from a RAW agent frame parsed by the real transport schema (#10377)', async () => {
+    // The other cases here hand the handler a pre-shaped object, which is how
+    // #10377 shipped: the agent sent the marker, `commandResultSchema` stripped
+    // it, and every racing cancel ended `failed`/`unconfirmed` in production.
+    // This one goes through the same parse both transports run first.
+    const cancelCommandId = '77777777-7777-4777-8777-777777777777';
+    seed({ status: 'cancelling', cancel_state: 'requested', cancel_command_id: cancelCommandId });
+    const agentFrame = JSON.parse(JSON.stringify({
+      status: 'failed',
+      exitCode: -1,
+      error: 'execution cancelled',
+      durationMs: 91_000,
+      cancelled: true,
+      cancelledByCommandId: cancelCommandId,
+    }));
+    await handleResult(commandResultSchema.parse(agentFrame));
     expect(lastExecutionUpdate()).toMatchObject({ status: 'cancelled', cancelState: 'confirmed' });
   });
 

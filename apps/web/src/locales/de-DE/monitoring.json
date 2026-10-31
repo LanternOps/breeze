@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Eskalieren nach",
       "recurrenceWindowDays": "Vorfällen innerhalb (Tagen)",
       "pauseResponses": "Automatische Reaktionen anhalten, bis eine Person sie zurücksetzt",
-      "aiAgent": "KI-Agent (aktiviert KI-Triage-Reaktionen)"
+      "aiAgent": "KI-Agent (aktiviert KI-Triage-Reaktionen)",
+      "psaBoard": "PSA-Board für Alarm-Tickets"
     },
     "deliveryModes": {
       "inherit": "Routing-Regeln verwenden",
@@ -170,7 +171,11 @@
       "failed": "Assets konnten nicht geladen werden",
       "orgRequired": "Wählen Sie eine Organisation als Eigentümer, um ein Asset zu binden.",
       "pingName": "Ping für {{label}}"
-    }
+    },
+    "psaBoardDefault": "Standard-Board der Verbindung verwenden",
+    "psaBoardHelp": "Alarm-Tickets für diesen Monitor werden in diesem Board statt im Standard-Board der Verbindung erstellt.",
+    "psaBoardReadOnly": "Alarm-Tickets gehen an PSA-Board #{{id}}",
+    "psaBoardUnavailable": "PSA-Boards konnten nicht geladen werden, daher ist die Board-Überschreibung derzeit nicht verfügbar."
   },
   "kinds": {
     "composite": "Kombiniert (alle oder eine von mehreren)",

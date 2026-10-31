@@ -129,7 +129,6 @@ vi.mock('./helpers', () => ({
 vi.mock('@breeze/shared', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@breeze/shared')>()),
   rowsToCsv: vi.fn(),
-  rowsToTsv: vi.fn(),
 }));
 
 vi.mock('../../services/sensitiveReadAudit', () => ({ auditSensitiveRead: vi.fn() }));

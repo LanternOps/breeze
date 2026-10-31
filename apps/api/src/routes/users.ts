@@ -167,6 +167,40 @@ const updateOrgAccessSchema = z.object({
 type PartnerOrgAccess = 'all' | 'selected' | 'none';
 
 /**
+ * Restriction fields POST /users/invite accepts but cannot honour in the
+ * caller's scope (#10315). Returns the 400 message, or null when none apply.
+ *
+ * - Partner scope: `partner_users` has no site or device-group axis — partner
+ *   staff reach is `orgAccess`/`orgIds` only.
+ * - Organization scope: `orgIds` is partner-only. `deviceGroupIds` would be
+ *   stored on `organization_users` but nothing reads it for authorization, so
+ *   the invitee would see every device group — reject until it is enforced.
+ *   `siteIds` is enforced and stays allowed.
+ */
+function inviteRestrictionError(
+  scope: ScopeContext['scope'],
+  data: { orgIds?: string[]; siteIds?: string[]; deviceGroupIds?: string[] },
+): string | null {
+  if (scope === 'partner') {
+    if (data.siteIds !== undefined) {
+      return 'siteIds is only valid for organization scope; partner users are scoped with orgAccess/orgIds';
+    }
+    if (data.deviceGroupIds !== undefined) {
+      return 'deviceGroupIds is only valid for organization scope; partner users are scoped with orgAccess/orgIds';
+    }
+  }
+  if (scope === 'organization') {
+    if (data.orgIds !== undefined) {
+      return 'orgIds is only valid for partner scope';
+    }
+    if (data.deviceGroupIds !== undefined) {
+      return 'deviceGroupIds restrictions are not supported yet; restrict the user with siteIds instead';
+    }
+  }
+  return null;
+}
+
+/**
  * Shape rules for a partner membership's organization reach, shared by
  * POST /users/invite and POST /users/:id/org-access. Returns the value to
  * persist (org_ids deduplicated for 'selected', NULL otherwise) or the 400
@@ -1585,6 +1619,15 @@ userRoutes.post(
       return c.json({ error: 'orgAccess is only valid for partner scope' }, 400);
     }
 
+    // #10315: a restriction the invite cannot store or enforce must be a 400,
+    // never silently dropped — dropping it creates a user broader than the
+    // caller asked for. Presence (even []) is rejected: an empty list is a
+    // restriction to nothing, which is just as unenforceable.
+    const restrictionError = inviteRestrictionError(scopeContext.scope, data);
+    if (restrictionError) {
+      return c.json({ error: restrictionError }, 400);
+    }
+
     const role = await getScopedRole(data.roleId, scopeContext);
     if (!role) {
       return c.json({ error: 'Invalid role for this scope' }, 400);
@@ -1799,7 +1842,9 @@ userRoutes.post(
           userId: user.id,
           roleId: data.roleId,
           siteIds: delegatedSiteIds,
-          deviceGroupIds: data.deviceGroupIds ?? null
+          // Always unrestricted: deviceGroupIds is rejected up front (#10315)
+          // because no authorization path reads this column yet.
+          deviceGroupIds: null
         })
         .returning();
 
@@ -1853,7 +1898,7 @@ userRoutes.post(
         orgAccess: scopeContext.scope === 'partner' ? data.orgAccess ?? 'none' : undefined,
         orgIds: scopeContext.scope === 'partner' ? data.orgIds ?? [] : undefined,
         siteIds: scopeContext.scope === 'organization' ? result.delegatedSiteIds : undefined,
-        deviceGroupIds: scopeContext.scope === 'organization' ? data.deviceGroupIds ?? [] : undefined,
+        deviceGroupIds: scopeContext.scope === 'organization' ? null : undefined,
         inviteEmailSent: invite.inviteEmailSent
       }
     });

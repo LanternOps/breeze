@@ -227,7 +227,7 @@ func captureScreenshotWithFn(monitor int, capFn CaptureFunc) (*ScreenshotRespons
 		return nil, fmt.Errorf("failed to capture screen: %w", err)
 	}
 	if img == nil {
-		return nil, fmt.Errorf("capturer returned nil image")
+		return nil, errNoFrame
 	}
 
 	width, height, err = capturer.GetScreenBounds()

@@ -571,6 +571,7 @@ export default function AiChatMessages({
           approvalWindowMs={pendingApproval.approvalWindowMs}
           approvalExpiresAt={pendingApproval.approvalExpiresAt}
           scriptRunContext={pendingApproval.scriptRunContext}
+          resolution={pendingApproval.resolution}
           onIntentDecided={onIntentDecided}
         />
       )}
