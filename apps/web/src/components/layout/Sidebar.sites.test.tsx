@@ -84,4 +84,13 @@ describe('Sidebar — Sites entry (#9794)', () => {
 
     expect(await screen.findByTestId('nav-sites')).toBeInTheDocument();
   });
+
+  it('exposes the section header as a testid hook whose aria-expanded reflects the expanded state (#10040)', async () => {
+    state.user.permissions = ORG_TECH;
+    render(<Sidebar currentPath="/" />);
+
+    const header = await screen.findByTestId('nav-section-toggle-fleet-management');
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('nav-sites')).toBeInTheDocument();
+  });
 });
