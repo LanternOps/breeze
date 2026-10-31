@@ -3686,6 +3686,7 @@
         }
       },
       "tools": {
+        "acknowledge_network_device": "Confermare una modifica di rete",
         "analyze_boot_performance": "Analisi delle prestazioni di avvio",
         "analyze_disk_usage": "Analisi dell'utilizzo del disco",
         "analyze_fleet_metrics": "Analisi delle metriche della flotta",
@@ -3693,55 +3694,151 @@
         "analyze_screen": "Analisi dello schermo",
         "apply_cis_remediation": "Remediation CIS",
         "apply_configuration_policy": "Applicare una policy di configurazione",
+        "assign_security_training": "Assegnare una formazione sulla sicurezza",
+        "browse_device_event_log": "Sfogliare il registro eventi di un dispositivo",
+        "browse_snapshots": "Snapshot di backup",
         "cancel_script_execution": "Annullare un'esecuzione di script",
         "capture_agent_pprof": "Acquisire la diagnostica dell'agente",
+        "collect_evidence": "Raccogliere le prove dell'incidente",
         "computer_control": "Controllo remoto",
         "configuration_policy_compliance": "Conformità della policy di configurazione",
+        "configure_backup_sla": "Configurare gli SLA di backup",
+        "configure_network_baseline": "Configurare una baseline di rete",
+        "configure_vault": "Configurare i vault locali",
+        "create_incident": "Creare un incidente di sicurezza",
+        "create_remote_session": "Avviare una sessione remota",
+        "create_watch": "Creare un monitoraggio Wisp",
         "delete_tenant": "Eliminare un'organizzazione",
         "detect_log_correlations": "Rilevare correlazioni tra i log",
+        "diagnose_connectivity": "Eseguire una verifica della connettività",
         "disk_cleanup": "Pulizia disco",
         "edr_endpoint_action": "EDR: isolare, rilasciare o analizzare un dispositivo",
         "execute_command": "Eseguire un comando di sistema",
+        "execute_containment": "Contenere un dispositivo",
+        "execute_dr_plan": "Eseguire un piano DR",
         "execute_playbook": "Eseguire un playbook",
+        "export_dataset": "Esportare un set di dati",
         "file_operations": "Operazioni sui file",
+        "find_proven_fixes": "Trovare correzioni collaudate",
+        "generate_incident_report": "Report dell'incidente",
         "generate_report": "Report",
         "get_active_users": "Utenti attivi",
+        "get_ai_agent_run": "Dettagli dell'esecuzione dell'agente IA",
+        "get_alert_correlations": "Correlazioni degli avvisi",
+        "get_backup_status": "Stato dei backup",
+        "get_browser_security": "Sicurezza del browser",
         "get_catalog_item": "Ricerca di un articolo del catalogo",
         "get_cis_compliance": "Report di conformità CIS",
         "get_cis_device_report": "Report CIS del dispositivo",
+        "get_compliance_status": "Stato di conformità del dispositivo",
         "get_configuration_policy": "Dettagli della policy di configurazione",
         "get_contract": "Dettagli del contratto",
+        "get_device_ai_activity": "Attività IA su un dispositivo",
+        "get_device_billing": "Righe di fatturazione del dispositivo",
         "get_device_context": "Contesto del dispositivo",
         "get_device_details": "Dettagli del dispositivo",
+        "get_device_events": "Cronologia delle attività del dispositivo",
+        "get_device_hardware_health": "Salute dell'hardware",
+        "get_device_health": "Salute del dispositivo riportata dall'agente",
+        "get_device_software": "Software installato",
+        "get_device_time_status": "Stato della sincronizzazione dell'ora",
         "get_device_vulnerabilities": "Vulnerabilità del dispositivo",
+        "get_diagnostic_run": "Esecuzione diagnostica della topologia",
         "get_dns_security": "Attività di sicurezza DNS",
+        "get_dr_execution_status": "Stato dell'esecuzione DR",
+        "get_dr_plan_details": "Dettagli del piano DR",
+        "get_edr_status": "Stato EDR",
         "get_effective_configuration": "Configurazione effettiva",
+        "get_elevation_history": "Cronologia delle richieste di elevazione",
+        "get_executive_summary": "Riepilogo esecutivo",
+        "get_fleet_design": "Report Fleet Design",
+        "get_fleet_device_stats": "Conteggi dei dispositivi della flotta",
         "get_fleet_findings": "Rilevazioni della flotta",
         "get_fleet_health": "Salute della flotta",
+        "get_flow": "Dettagli del flusso",
+        "get_flow_run": "Dettagli dell'esecuzione del flusso",
         "get_huntress_incidents": "Incidenti Huntress",
         "get_huntress_status": "Stato di Huntress",
+        "get_hyperv_vm_details": "Dettagli della VM Hyper-V",
+        "get_incident_timeline": "Cronologia dell'incidente",
+        "get_interface_history": "Cronologia delle interfacce di rete",
         "get_invite_funnel": "Imbuto degli inviti di distribuzione",
         "get_invoice": "Dettagli della fattura",
+        "get_ip_history": "Cronologia degli indirizzi IP",
+        "get_link_evidence": "Prove del collegamento di rete",
+        "get_link_health": "Salute del collegamento di rete",
         "get_log_trends": "Tendenze dei log",
+        "get_management_posture": "Copertura degli strumenti di gestione",
+        "get_monitor": "Dettagli del monitor",
+        "get_monitor_activity": "Attività di violazione del monitor",
+        "get_mssql_backup_status": "Stato del backup MSSQL",
+        "get_network_asset": "Dettagli della risorsa di rete",
+        "get_network_asset_reachability": "Raggiungibilità della risorsa di rete",
+        "get_network_changes": "Modifiche di rete",
+        "get_peripheral_activity": "Attività USB e periferiche",
         "get_playbook_history": "Cronologia di esecuzione del playbook",
+        "get_process_samples": "Istantanea dei processi",
         "get_quote": "Dettagli del preventivo",
+        "get_recent_network_changes": "Modifiche recenti alla topologia",
+        "get_running_timer": "Timer in esecuzione",
         "get_s1_status": "Stato di SentinelOne",
         "get_s1_threats": "Minacce rilevate da SentinelOne",
         "get_script_details": "Dettagli dello script",
         "get_script_execution": "Dettagli dell'esecuzione dello script",
         "get_script_execution_history": "Cronologia di esecuzione dello script",
+        "get_script_proposal": "Dettagli della proposta di script",
+        "get_security_compliance": "Viste di conformità della sicurezza",
         "get_security_posture": "Postura di sicurezza",
         "get_service_monitoring_status": "Stato del monitoraggio dei servizi",
+        "get_site": "Dettagli della sede",
+        "get_sla_breaches": "Violazioni degli SLA di backup",
+        "get_sla_compliance_report": "Report di conformità degli SLA di backup",
+        "get_snmp_metrics": "Metriche SNMP",
+        "get_software_compliance": "Conformità del software",
+        "get_ticket_approval_status": "Stato di approvazione del ticket",
+        "get_timesheet": "Foglio presenze",
+        "get_topology": "Topologia di rete",
+        "get_topology_impact": "Impatto dei guasti sulla topologia",
+        "get_topology_monitoring_status": "Stato del monitoraggio della topologia",
+        "get_trust_page_status": "Stato della pagina di attendibilità",
         "get_user_experience_metrics": "Metriche di esperienza utente",
+        "get_vault_status": "Stato del vault",
+        "get_vm_restore_estimate": "Stima del ripristino della VM",
         "get_vulnerability_report": "Report delle vulnerabilità",
+        "instant_boot_vm": "Avviare un backup come VM in modo istantaneo",
+        "link_entity": "Collegare un elemento a una conversazione Wisp",
+        "list_ai_agent_runs": "Esecuzioni degli agenti IA",
+        "list_ai_agent_schedules": "Pianificazioni degli agenti IA",
+        "list_ai_agents": "Elenco degli agenti IA",
+        "list_business_calendars": "Calendari dell'orario lavorativo",
+        "list_concerns": "Segnalazioni di Wisp",
         "list_configuration_policies": "Elenco delle policy di configurazione",
         "list_contracts": "Elenco dei contratti",
+        "list_deliverable_templates": "Modelli di deliverable",
+        "list_deliverables": "Deliverable di servizio",
+        "list_device_restore_point_attempts": "Tentativi di punto di ripristino",
+        "list_edr_detections": "Rilevamenti EDR",
+        "list_fleet_designs": "Report Fleet Design",
+        "list_flow_runs": "Esecuzioni dei flussi",
+        "list_flows": "Elenco dei flussi",
+        "list_incidents": "Incidenti di sicurezza",
         "list_invoices": "Elenco delle fatture",
+        "list_links": "Collegamenti delle conversazioni Wisp",
+        "list_monitors": "Elenco dei monitor",
+        "list_network_assets": "Risorse di rete",
+        "list_org_contacts": "Contatti dell'organizzazione",
+        "list_org_documents": "Documenti dell'organizzazione",
         "list_organizations": "Elenco delle organizzazioni",
         "list_playbooks": "Elenco dei playbook",
         "list_quotes": "Elenco dei preventivi",
+        "list_remediation_suggestions": "Suggerimenti di remediation",
+        "list_remote_sessions": "Sessioni remote",
         "list_script_templates": "Elenco dei modelli di script",
         "list_scripts": "Elenco degli script",
+        "list_sites": "Elenco delle sedi",
+        "list_ticket_routing_rules": "Regole di instradamento dei ticket",
+        "list_time_entries": "Registrazioni di tempo",
+        "list_time_sync_issues": "Problemi di sincronizzazione dell'ora",
         "lookup_distributor_product": "Ricerca di un prodotto del distributore",
         "m365_query_groups": "Gruppi di Microsoft 365",
         "m365_query_intune_devices": "Dispositivi di Microsoft Intune",
@@ -3749,54 +3846,163 @@
         "m365_query_signins": "Accessi a Microsoft 365",
         "m365_query_sites": "Siti di Microsoft 365",
         "m365_query_users": "Utenti di Microsoft 365",
+        "manage_accounting_sync": "Gestire la sincronizzazione contabile",
         "manage_alert_rules": "Gestire le regole di avviso",
         "manage_alerts": "Gestire gli avvisi",
+        "manage_audit_baselines": "Gestire le baseline di audit",
         "manage_automations": "Gestire le automazioni",
         "manage_backup_configs": "Gestire le configurazioni di backup",
+        "manage_backup_profiles": "Gestire i profili di backup",
+        "manage_billing_catalog": "Gestire il listino di fatturazione",
+        "manage_billing_profiles": "Gestire i tariffari di fatturazione",
+        "manage_billing_settings": "Gestire le impostazioni di fatturazione",
+        "manage_browser_policy": "Gestire le policy del browser",
+        "manage_compliance_policies": "Gestire le policy di conformità",
         "manage_configuration_policy": "Gestire le policy di configurazione",
+        "manage_contract_documents": "Gestire gli accordi firmati",
+        "manage_contract_templates": "Gestire i modelli di accordo",
         "manage_contracts": "Gestire i contratti",
+        "manage_deliverables": "Gestire i deliverable di servizio",
+        "manage_delivery": "Gestire il recapito degli avvisi",
         "manage_deployments": "Gestire le distribuzioni",
+        "manage_device_anomalies": "Gestire le anomalie dei dispositivi",
+        "manage_device_function": "Gestire la funzione di un dispositivo",
+        "manage_device_links": "Gestire i record di dispositivo collegati",
+        "manage_device_software": "Gestire il software installato",
+        "manage_device_warranty": "Gestire la garanzia del dispositivo",
         "manage_dns_policy": "Gestire la policy DNS",
+        "manage_dr_plan": "Gestire i piani DR",
+        "manage_fleet_findings": "Gestire le rilevazioni della flotta",
         "manage_groups": "Gestire i gruppi di dispositivi",
+        "manage_hyperv_checkpoints": "Gestire i checkpoint Hyper-V",
+        "manage_hyperv_vm": "Gestire le VM Hyper-V",
         "manage_invoices": "Gestire le fatture",
+        "manage_key_dates": "Gestire le date chiave",
         "manage_maintenance_windows": "Gestire le finestre di manutenzione",
+        "manage_manual_assets": "Gestire le risorse manuali",
+        "manage_monitor_definitions": "Gestire le definizioni dei monitor",
         "manage_monitors": "Gestire i monitor di disponibilità",
+        "manage_notification_channels": "Gestire i canali di notifica",
+        "manage_org_documents": "Gestire i documenti dell'organizzazione",
         "manage_organizations": "Gestire le organizzazioni",
         "manage_patches": "Gestire le patch",
         "manage_peripheral_policies": "Gestire le policy delle periferiche",
+        "manage_peripheral_policy": "Modificare le policy e le eccezioni delle periferiche",
         "manage_policy_feature_link": "Collegare una policy a una funzionalità",
+        "manage_processes": "Gestire i processi",
+        "manage_quotes": "Gestire i preventivi",
+        "manage_recovery_keys": "Gestire le chiavi di ripristino",
+        "manage_saved_filters": "Gestire i filtri salvati",
+        "manage_scheduled_tasks": "Gestire le attività pianificate",
+        "manage_security_policies": "Gestire le policy di sicurezza",
+        "manage_security_recommendations": "Gestire i consigli di sicurezza",
         "manage_service_monitors": "Gestire i monitor dei servizi",
         "manage_services": "Gestire i servizi",
+        "manage_snmp_templates": "Gestire i modelli SNMP",
+        "manage_software_catalog": "Gestire il catalogo software",
+        "manage_software_deployments": "Gestire le distribuzioni software",
+        "manage_software_inventory": "Gestire l'inventario software",
         "manage_software_policies": "Gestire le policy software",
+        "manage_software_policy": "Gestire gli elenchi di software consentito e bloccato",
         "manage_startup_items": "Gestire gli elementi di avvio",
+        "manage_support_sessions": "Gestire le sessioni di Quick Support",
+        "manage_tags": "Gestire i tag dei dispositivi",
+        "manage_tenant_variables": "Gestire le variabili degli script",
+        "manage_ticket_attachments": "Gestire gli allegati dei ticket",
+        "manage_ticket_checklist": "Gestire le checklist dei ticket",
+        "manage_ticket_checklist_templates": "Gestire i modelli di checklist per i ticket",
+        "manage_ticket_config": "Gestire le impostazioni dei ticket",
+        "manage_ticket_forms": "Gestire i moduli dei ticket",
+        "manage_ticket_inbox": "Gestire la casella email dei ticket",
+        "manage_ticket_response_templates": "Gestire i modelli di risposta ai ticket",
+        "manage_ticket_routing_rules": "Gestire le regole di instradamento dei ticket",
+        "manage_tickets": "Gestire i ticket",
+        "manage_time_suggestions": "Gestire i suggerimenti di tempo",
         "manage_update_rings": "Gestire gli anelli di aggiornamento",
         "network_discovery": "Individuazione della rete",
         "preview_configuration_change": "Anteprima di una modifica alla configurazione",
+        "probe_network_asset": "Eseguire il ping di una risorsa di rete",
+        "propose_script": "Proporre uno script",
+        "query_agent_versions": "Versioni dell'agente",
+        "query_analytics": "Analisi",
         "query_audit_log": "Interrogare il registro di audit",
+        "query_backup_sla": "Configurazioni degli SLA di backup",
+        "query_backups": "Backup",
+        "query_c2c_connections": "Connessioni cloud-to-cloud",
         "query_change_log": "Interrogare il registro delle modifiche",
+        "query_compliance_policies": "Policy di conformità",
+        "query_custom_fields": "Campi personalizzati",
+        "query_device_workloads": "Container e VM su un dispositivo",
         "query_devices": "Interrogare i dispositivi",
+        "query_dr_plans": "Elenco dei piani DR",
+        "query_hyperv_vms": "Elenco delle VM Hyper-V",
         "query_monitors": "Interrogare i monitor",
+        "query_mssql_instances": "Istanze MSSQL",
+        "query_psa_status": "Stato della connessione PSA",
+        "query_vaults": "Vault locali",
+        "query_webhooks": "Elenco dei webhook",
+        "raise_concern": "Sollevare una segnalazione Wisp",
+        "read_artifact": "Leggere un risultato salvato",
+        "recall": "Memoria di Wisp",
+        "registry_operations": "Registro di Windows",
+        "reliability_feedback": "Feedback sul punteggio di affidabilità",
+        "remediate_sensitive_data": "Correggere i dati sensibili",
+        "remediate_software_violation": "Correggere una violazione software",
         "remediate_vulnerability": "Correggere una vulnerabilità",
+        "remember": "Salvare una memoria di Wisp",
         "remove_configuration_policy_assignment": "Rimuovere un'assegnazione di policy di configurazione",
+        "request_elevation": "Richiedere un'elevazione PAM",
+        "reset_monitor_escalation": "Reimpostare l'escalation del monitor",
+        "resolve_concern": "Risolvere una segnalazione Wisp",
         "resolve_device_context": "Risolvere un dispositivo",
+        "restore_as_vm": "Ripristinare uno snapshot come VM",
+        "restore_c2c_items": "Ripristinare elementi cloud-to-cloud",
+        "restore_hyperv_vm": "Ripristinare una VM Hyper-V",
+        "restore_mssql_database": "Ripristinare un database MSSQL",
+        "restore_snapshot": "Ripristinare uno snapshot",
+        "revoke_elevation": "Revocare un'elevazione PAM",
         "run_script": "Eseguire uno script",
         "s1_isolate_device": "SentinelOne: isolare un dispositivo",
         "s1_threat_action": "Azioni sulle minacce di SentinelOne",
         "search_agent_logs": "Cercare nei log dell'agente",
         "search_catalog": "Cercare nel catalogo prodotti",
+        "search_documentation": "Cercare nella documentazione",
         "search_logs": "Cercare nei log del dispositivo",
+        "search_packages": "Cercare pacchetti software",
+        "search_script_library": "Cercare nella libreria di script",
         "security_scan": "Scansione di sicurezza",
         "set_agent_log_level": "Impostare il livello di log dell'agente",
         "set_device_context": "Impostare il contesto del dispositivo",
+        "snooze_concern": "Posticipare una segnalazione Wisp",
         "sync_edr_data": "Sincronizzare i dati EDR",
         "sync_huntress_data": "Sincronizzare i dati di Huntress",
         "system_cleanup": "Pulizia di sistema",
-        "take_screenshot": "Acquisire uno screenshot"
+        "take_screenshot": "Acquisire uno screenshot",
+        "test_ticket_routing_rule": "Testare una regola di instradamento dei ticket",
+        "test_webhook": "Inviare un webhook di prova",
+        "trigger_agent_restart": "Riavviare un agente",
+        "trigger_agent_upgrade": "Aggiornare un agente",
+        "trigger_backup": "Eseguire un backup",
+        "trigger_c2c_sync": "Eseguire una sincronizzazione cloud-to-cloud",
+        "trigger_hyperv_backup": "Eseguire il backup di una VM Hyper-V",
+        "trigger_mssql_backup": "Eseguire il backup di un database MSSQL",
+        "trigger_vault_sync": "Sincronizzare un vault locale",
+        "validate_flow": "Convalidare un flusso",
+        "verify_mssql_backup": "Verificare un backup MSSQL",
+        "workspace_cancel": "Annullare la sandbox di analisi",
+        "workspace_collect": "Raccogliere i file della sandbox",
+        "workspace_run": "Eseguire uno script nella sandbox",
+        "workspace_stage": "Preparare i file nella sandbox"
       },
       "actions": {
         "apply_cis_remediation": {
           "apply": "Applicare la remediation CIS",
           "rollback": "Ripristinare la remediation CIS"
+        },
+        "browse_device_event_log": {
+          "get_event": "Dettagli dell'evento",
+          "list_logs": "Elencare i log degli eventi",
+          "query": "Interrogare le voci del registro eventi"
         },
         "computer_control": {
           "double_click": "Doppio clic",
@@ -3813,9 +4019,22 @@
           "status": "Stato di conformità",
           "summary": "Riepilogo di conformità"
         },
+        "configure_backup_sla": {
+          "create": "Creare uno SLA di backup",
+          "update": "Aggiornare uno SLA di backup"
+        },
+        "configure_vault": {
+          "create": "Creare un vault locale",
+          "update": "Aggiornare un vault locale"
+        },
         "disk_cleanup": {
           "execute": "Eseguire la pulizia disco",
           "preview": "Anteprima della pulizia disco"
+        },
+        "edr_endpoint_action": {
+          "isolate": "Isolare un dispositivo",
+          "scan": "Eseguire una scansione EDR",
+          "unisolate": "Rilasciare un dispositivo dall'isolamento"
         },
         "execute_command": {
           "event_logs_list": "Elencare i log degli eventi",
@@ -3847,16 +4066,44 @@
           "list": "Elencare i report",
           "update": "Aggiornare un report"
         },
+        "get_alert_correlations": {
+          "analyze": "Analizzare gli avvisi per la correlazione",
+          "by_alert": "Correlazioni di un avviso",
+          "evaluation": "Qualità della correlazione",
+          "explain": "Spiegare un gruppo di correlazione",
+          "get": "Dettagli del gruppo di correlazione",
+          "groups": "Elencare i gruppi di correlazione",
+          "links": "Collegamenti di correlazione"
+        },
         "get_dns_security": {
           "allowed": "Attività DNS consentita",
           "blocked": "Attività DNS bloccata",
           "redirected": "Attività DNS reindirizzata"
+        },
+        "get_fleet_health": {
+          "evaluation": "Valutazione dell'affidabilità",
+          "history": "Cronologia dell'affidabilità",
+          "list": "Elencare i punteggi di affidabilità dei dispositivi",
+          "offenders": "Dispositivi meno affidabili",
+          "org_summary": "Riepilogo dell'affidabilità dell'organizzazione"
         },
         "get_service_monitoring_status": {
           "known_services": "Servizi noti",
           "results": "Risultati del monitoraggio",
           "status": "Stato del monitoraggio",
           "summary": "Riepilogo del monitoraggio"
+        },
+        "get_snmp_metrics": {
+          "dashboard": "Dashboard SNMP",
+          "history": "Cronologia delle metriche SNMP"
+        },
+        "manage_accounting_sync": {
+          "customers": "Elencare i clienti contabili",
+          "income_accounts": "Elencare i conti di ricavo",
+          "mappings": "Elencare le corrispondenze contabili",
+          "owed_operations": "Elencare le operazioni di sincronizzazione in sospeso",
+          "remote_candidates": "Cercare record del provider da collegare",
+          "status": "Mostrare lo stato della sincronizzazione contabile"
         },
         "manage_alert_rules": {
           "alert_summary": "Riepilogo degli avvisi",
@@ -3876,6 +4123,11 @@
           "resolve": "Risolvere un avviso",
           "suppress": "Sospendere un avviso"
         },
+        "manage_audit_baselines": {
+          "compliance": "Conformità della baseline di audit",
+          "device_results": "Risultati di audit del dispositivo",
+          "list": "Elencare le baseline di audit"
+        },
         "manage_automations": {
           "create": "Creare un'automazione",
           "delete": "Eliminare un'automazione",
@@ -3893,12 +4145,70 @@
           "list": "Elencare le configurazioni di backup",
           "update": "Aggiornare una configurazione di backup"
         },
+        "manage_backup_profiles": {
+          "create": "Creare un profilo di backup",
+          "delete": "Eliminare un profilo di backup",
+          "get": "Dettagli del profilo di backup",
+          "list": "Elencare i profili di backup",
+          "update": "Aggiornare un profilo di backup"
+        },
+        "manage_billing_catalog": {
+          "archive_item": "Archiviare una voce del listino",
+          "create_item": "Creare una voce del listino",
+          "remove_org_price": "Rimuovere un prezzo dell'organizzazione",
+          "remove_price": "Rimuovere un prezzo",
+          "set_bundle_components": "Impostare i componenti del bundle",
+          "set_org_price": "Impostare un prezzo dell'organizzazione",
+          "set_price": "Impostare un prezzo",
+          "update_item": "Aggiornare una voce del listino"
+        },
+        "manage_billing_profiles": {
+          "archive": "Archiviare un tariffario",
+          "clear_org_profile": "Rimuovere il tariffario di un'organizzazione",
+          "clone": "Duplicare un tariffario",
+          "create": "Creare un tariffario",
+          "create_work_type": "Creare un tipo di lavoro",
+          "get": "Dettagli del tariffario",
+          "get_org_profile": "Tariffario dell'organizzazione",
+          "list": "Elencare i tariffari",
+          "list_work_types": "Elencare i tipi di lavoro",
+          "set_org_profile": "Impostare il tariffario di un'organizzazione",
+          "set_rows": "Impostare le righe del tariffario",
+          "update": "Aggiornare un tariffario",
+          "update_work_type": "Aggiornare un tipo di lavoro"
+        },
+        "manage_billing_settings": {
+          "currency_impact": "Anteprima di un cambio di valuta",
+          "get_org": "Impostazioni di fatturazione dell'organizzazione",
+          "get_partner": "Impostazioni di fatturazione del partner",
+          "reporting_totals": "Totali del report di fatturazione",
+          "update_org": "Aggiornare le impostazioni di fatturazione dell'organizzazione",
+          "update_partner": "Aggiornare le impostazioni di fatturazione del partner"
+        },
+        "manage_browser_policy": {
+          "apply": "Applicare una policy del browser",
+          "create": "Creare una policy del browser",
+          "list": "Elencare le policy del browser",
+          "update": "Aggiornare una policy del browser"
+        },
+        "manage_compliance_policies": {
+          "deactivate": "Disattivare una policy di conformità"
+        },
         "manage_configuration_policy": {
           "activate": "Attivare una policy di configurazione",
           "create": "Creare una policy di configurazione",
           "deactivate": "Disattivare una policy di configurazione",
           "delete": "Eliminare una policy di configurazione",
           "update": "Aggiornare una policy di configurazione"
+        },
+        "manage_contract_documents": {
+          "list": "Elencare gli accordi firmati"
+        },
+        "manage_contract_templates": {
+          "get": "Dettagli del modello di accordo",
+          "get_version": "Versione del modello di accordo",
+          "list": "Elencare i modelli di accordo",
+          "usage": "Utilizzo del modello di accordo"
         },
         "manage_contracts": {
           "activate": "Attivare un contratto",
@@ -3907,10 +4217,34 @@
           "create_draft": "Creare una bozza di contratto",
           "delete_draft": "Eliminare una bozza di contratto",
           "pause": "Sospendere un contratto",
+          "preview_invoice": "Visualizzare l'anteprima della prossima fattura del contratto",
           "remove_line": "Rimuovere una riga di contratto",
           "resume": "Riprendere un contratto",
           "update": "Aggiornare un contratto",
           "update_line": "Aggiornare una riga di contratto"
+        },
+        "manage_deliverables": {
+          "apply_template": "Applicare un modello di deliverable",
+          "create": "Creare un deliverable",
+          "deactivate": "Disattivare un deliverable",
+          "deliver": "Segnare un deliverable come consegnato",
+          "link_evidence": "Collegare le prove di consegna",
+          "reopen": "Riaprire un deliverable",
+          "reschedule": "Ripianificare un deliverable",
+          "update": "Aggiornare un deliverable",
+          "waive": "Annullare l'obbligo di un deliverable"
+        },
+        "manage_delivery": {
+          "create_escalation": "Creare una regola di escalation",
+          "create_routing": "Creare un percorso di recapito",
+          "delete_escalation": "Eliminare una regola di escalation",
+          "delete_routing": "Eliminare un percorso di recapito",
+          "list_escalation": "Elencare le regole di escalation",
+          "list_routing": "Elencare i percorsi di recapito",
+          "resolve": "Risolvere il recapito degli avvisi",
+          "set_default": "Impostare il percorso di recapito predefinito",
+          "update_escalation": "Aggiornare una regola di escalation",
+          "update_routing": "Aggiornare un percorso di recapito"
         },
         "manage_deployments": {
           "cancel": "Annullare una distribuzione",
@@ -3922,11 +4256,48 @@
           "resume": "Riprendere una distribuzione",
           "start": "Avviare una distribuzione"
         },
+        "manage_device_anomalies": {
+          "dismiss": "Ignorare un'anomalia",
+          "list": "Elencare le anomalie",
+          "promote": "Promuovere un'anomalia ad avviso",
+          "resolve": "Risolvere un'anomalia"
+        },
+        "manage_device_function": {
+          "get": "Funzione del dispositivo"
+        },
+        "manage_device_links": {
+          "create": "Collegare record di dispositivo",
+          "dissolve": "Sciogliere un collegamento tra dispositivi",
+          "for_device": "Collegamenti di un dispositivo",
+          "get": "Dettagli del collegamento tra dispositivi",
+          "list": "Elencare i collegamenti tra dispositivi",
+          "update": "Aggiornare un collegamento tra dispositivi"
+        },
+        "manage_device_software": {
+          "update": "Aggiornare un'applicazione"
+        },
+        "manage_device_warranty": {
+          "expiring": "Elencare le garanzie in scadenza",
+          "get": "Garanzia del dispositivo",
+          "refresh": "Aggiornare la garanzia di un dispositivo"
+        },
         "manage_dns_policy": {
           "add_allow": "Consentire un dominio",
           "add_block": "Bloccare un dominio",
           "remove_allow": "Rimuovere un dominio consentito",
           "remove_block": "Rimuovere un dominio bloccato"
+        },
+        "manage_dr_plan": {
+          "add_group": "Aggiungere un gruppo al piano",
+          "create_plan": "Creare un piano DR",
+          "delete_group": "Eliminare un gruppo del piano",
+          "update_group": "Aggiornare un gruppo del piano",
+          "update_plan": "Aggiornare un piano DR"
+        },
+        "manage_fleet_findings": {
+          "acknowledge": "Confermare la presa in carico di una rilevazione della flotta",
+          "dismiss": "Ignorare una rilevazione della flotta",
+          "reopen": "Riaprire una rilevazione della flotta"
         },
         "manage_groups": {
           "add_devices": "Aggiungere dispositivi a un gruppo",
@@ -3938,6 +4309,19 @@
           "preview": "Anteprima dell'appartenenza al gruppo",
           "remove_devices": "Rimuovere dispositivi da un gruppo",
           "update": "Aggiornare un gruppo di dispositivi"
+        },
+        "manage_hyperv_checkpoints": {
+          "apply": "Applicare un checkpoint",
+          "create": "Creare un checkpoint",
+          "delete": "Eliminare un checkpoint"
+        },
+        "manage_hyperv_vm": {
+          "force_stop": "Arrestare forzatamente una VM",
+          "pause": "Sospendere una VM",
+          "resume": "Riprendere una VM",
+          "save": "Salvare lo stato di una VM",
+          "start": "Avviare una VM",
+          "stop": "Arrestare una VM"
         },
         "manage_invoices": {
           "add_bundle_line": "Aggiungere una riga bundle",
@@ -3951,11 +4335,18 @@
           "delete_draft": "Eliminare una bozza di fattura",
           "issue": "Emettere una fattura",
           "record_payment": "Registrare un pagamento",
+          "refresh_time_lines": "Aggiornare le righe di tempo",
           "remove_line": "Rimuovere una riga di fattura",
           "update_header": "Aggiornare i dettagli della fattura",
           "update_line": "Aggiornare una riga di fattura",
           "void": "Annullare una fattura",
           "void_payment": "Annullare un pagamento"
+        },
+        "manage_key_dates": {
+          "create": "Creare una data chiave",
+          "delete": "Eliminare una data chiave",
+          "list": "Elencare le date chiave",
+          "update": "Aggiornare una data chiave"
         },
         "manage_maintenance_windows": {
           "active_now": "Finestre di manutenzione attive",
@@ -3965,11 +4356,41 @@
           "list": "Elencare le finestre di manutenzione",
           "update": "Aggiornare una finestra di manutenzione"
         },
+        "manage_manual_assets": {
+          "create": "Creare una risorsa manuale",
+          "delete": "Eliminare una risorsa manuale",
+          "link": "Collegare una risorsa manuale",
+          "list": "Elencare le risorse manuali",
+          "unlink": "Scollegare una risorsa manuale",
+          "update": "Aggiornare una risorsa manuale"
+        },
+        "manage_monitor_definitions": {
+          "attach": "Associare una definizione di monitor",
+          "create": "Creare una definizione di monitor",
+          "delete": "Eliminare una definizione di monitor",
+          "describe": "Descrivere le opzioni delle definizioni di monitor",
+          "detach": "Dissociare una definizione di monitor",
+          "disable": "Disabilitare una definizione di monitor",
+          "enable": "Abilitare una definizione di monitor",
+          "update": "Aggiornare una definizione di monitor"
+        },
         "manage_monitors": {
           "create": "Creare un monitor",
           "delete": "Eliminare un monitor",
           "get": "Dettagli del monitor",
           "update": "Aggiornare un monitor"
+        },
+        "manage_notification_channels": {
+          "create": "Creare un canale di notifica",
+          "delete": "Eliminare un canale di notifica",
+          "list": "Elencare i canali di notifica",
+          "test": "Testare un canale di notifica",
+          "update": "Aggiornare un canale di notifica"
+        },
+        "manage_org_documents": {
+          "set_portal_visibility": "Impostare la visibilità nel portale",
+          "supersede": "Sostituire un documento",
+          "update_metadata": "Aggiornare i dettagli del documento"
         },
         "manage_organizations": {
           "add_contact": "Aggiungere un contatto dell'organizzazione",
@@ -3983,6 +4404,7 @@
           "compliance": "Conformità delle patch",
           "decline": "Rifiutare una patch",
           "defer": "Rinviare una patch",
+          "device_history": "Cronologia delle patch del dispositivo",
           "install": "Installare una patch",
           "list": "Elencare le patch",
           "rollback": "Ripristinare una patch",
@@ -3995,11 +4417,68 @@
           "list": "Elencare le policy delle periferiche",
           "update": "Aggiornare una policy delle periferiche"
         },
+        "manage_peripheral_policy": {
+          "add_exception": "Aggiungere un'eccezione per le periferiche",
+          "create": "Creare una policy delle periferiche",
+          "disable": "Disabilitare una policy delle periferiche",
+          "remove_exception": "Rimuovere un'eccezione per le periferiche",
+          "update": "Aggiornare una policy delle periferiche"
+        },
         "manage_policy_feature_link": {
           "add": "Collegare una policy a una funzionalità",
+          "describe": "Descrivere i collegamenti tra policy e funzionalità",
           "list": "Elencare i collegamenti di policy",
           "remove": "Rimuovere un collegamento di policy",
           "update": "Aggiornare un collegamento di policy"
+        },
+        "manage_processes": {
+          "kill": "Terminare un processo",
+          "list": "Elencare i processi"
+        },
+        "manage_quotes": {
+          "add_block": "Aggiungere un blocco al preventivo",
+          "add_catalog_line": "Aggiungere una riga di catalogo",
+          "add_manual_line": "Aggiungere una riga manuale",
+          "create_draft": "Creare una bozza di preventivo",
+          "create_pay_link": "Creare un link di pagamento",
+          "decline": "Rifiutare un preventivo",
+          "delete_block": "Eliminare un blocco del preventivo",
+          "delete_draft": "Eliminare una bozza di preventivo",
+          "move_line": "Spostare una riga del preventivo",
+          "remove_line": "Rimuovere una riga del preventivo",
+          "reorder_blocks": "Riordinare i blocchi del preventivo",
+          "reorder_lines": "Riordinare le righe del preventivo",
+          "send": "Inviare un preventivo",
+          "update": "Aggiornare un preventivo",
+          "update_block": "Aggiornare un blocco del preventivo",
+          "update_line": "Aggiornare una riga del preventivo"
+        },
+        "manage_recovery_keys": {
+          "collect": "Raccogliere le chiavi di ripristino",
+          "list": "Elencare le chiavi di ripristino",
+          "rotate": "Ruotare una chiave di ripristino"
+        },
+        "manage_saved_filters": {
+          "create": "Creare un filtro salvato",
+          "delete": "Eliminare un filtro salvato",
+          "get": "Dettagli del filtro salvato",
+          "list": "Elencare i filtri salvati"
+        },
+        "manage_scheduled_tasks": {
+          "disable": "Disabilitare un'attività pianificata",
+          "enable": "Abilitare un'attività pianificata",
+          "list": "Elencare le attività pianificate",
+          "run": "Eseguire un'attività pianificata"
+        },
+        "manage_security_policies": {
+          "create": "Creare una policy di sicurezza",
+          "list": "Elencare le policy di sicurezza",
+          "update": "Aggiornare una policy di sicurezza"
+        },
+        "manage_security_recommendations": {
+          "complete": "Completare un consiglio",
+          "dismiss": "Ignorare un consiglio",
+          "list": "Elencare i consigli"
         },
         "manage_service_monitors": {
           "list": "Elencare i monitor dei servizi"
@@ -4010,8 +4489,55 @@
           "start": "Avviare un servizio",
           "stop": "Arrestare un servizio"
         },
+        "manage_snmp_templates": {
+          "browse_oids": "Sfogliare gli OID SNMP",
+          "create": "Creare un modello SNMP",
+          "delete": "Eliminare un modello SNMP",
+          "get": "Dettagli del modello SNMP",
+          "list": "Elencare i modelli SNMP",
+          "update": "Aggiornare un modello SNMP",
+          "validate_oids": "Convalidare gli OID SNMP"
+        },
+        "manage_software_catalog": {
+          "add_install_method": "Aggiungere un metodo di installazione",
+          "add_version": "Aggiungere una versione",
+          "archive": "Archiviare un articolo del catalogo",
+          "create": "Creare un articolo del catalogo",
+          "delete_install_method": "Eliminare un metodo di installazione",
+          "get": "Dettagli dell'articolo del catalogo",
+          "import_package": "Importare un pacchetto",
+          "list": "Elencare gli articoli del catalogo",
+          "promote_version": "Promuovere una versione",
+          "update": "Aggiornare un articolo del catalogo",
+          "update_install_method": "Aggiornare un metodo di installazione",
+          "update_version": "Aggiornare una versione"
+        },
+        "manage_software_deployments": {
+          "cancel": "Annullare una distribuzione software",
+          "create": "Creare una distribuzione software",
+          "get": "Dettagli della distribuzione software",
+          "list": "Elencare le distribuzioni software",
+          "results": "Risultati della distribuzione software",
+          "retry": "Riprovare una distribuzione software",
+          "summary": "Riepilogo della distribuzione software"
+        },
+        "manage_software_inventory": {
+          "approve": "Approvare un software",
+          "clear": "Azzerare una decisione sul software",
+          "deny": "Bloccare un software",
+          "devices": "Dispositivi con un software",
+          "list": "Elencare l'inventario software",
+          "names": "Cercare nomi di software"
+        },
         "manage_software_policies": {
           "create": "Creare una policy software",
+          "get": "Dettagli della policy software",
+          "list": "Elencare le policy software",
+          "update": "Aggiornare una policy software"
+        },
+        "manage_software_policy": {
+          "create": "Creare una policy software",
+          "delete": "Eliminare una policy software",
           "get": "Dettagli della policy software",
           "list": "Elencare le policy software",
           "update": "Aggiornare una policy software"
@@ -4020,11 +4546,160 @@
           "disable": "Disabilitare un elemento di avvio",
           "enable": "Abilitare un elemento di avvio"
         },
+        "manage_support_sessions": {
+          "end": "Terminare una sessione di supporto",
+          "get": "Dettagli della sessione di supporto",
+          "list": "Elencare le sessioni di supporto"
+        },
+        "manage_tags": {
+          "list": "Elencare i tag dei dispositivi"
+        },
+        "manage_tenant_variables": {
+          "list": "Elencare le variabili degli script"
+        },
+        "manage_ticket_attachments": {
+          "attach_from_artifact": "Allegare un risultato salvato",
+          "delete": "Eliminare un allegato",
+          "list": "Elencare gli allegati",
+          "read_content": "Leggere un allegato"
+        },
+        "manage_ticket_checklist": {
+          "add_item": "Aggiungere una voce alla checklist",
+          "apply_template": "Applicare un modello di checklist",
+          "delete_item": "Eliminare una voce della checklist",
+          "duplicate_template": "Duplicare un modello di checklist",
+          "get_template": "Dettagli del modello di checklist",
+          "list": "Elencare le voci della checklist",
+          "list_templates": "Elencare i modelli di checklist",
+          "reorder": "Riordinare le voci della checklist",
+          "save_as_template": "Salvare come modello di checklist",
+          "update_item": "Aggiornare una voce della checklist"
+        },
+        "manage_ticket_checklist_templates": {
+          "add_item": "Aggiungere una voce al modello",
+          "create": "Creare un modello di checklist",
+          "delete": "Eliminare un modello di checklist",
+          "get": "Dettagli del modello di checklist",
+          "list": "Elencare i modelli di checklist",
+          "remove_item": "Rimuovere una voce dal modello",
+          "reorder_items": "Riordinare le voci del modello",
+          "update": "Aggiornare un modello di checklist",
+          "update_item": "Aggiornare una voce del modello"
+        },
+        "manage_ticket_config": {
+          "create_category": "Creare una categoria di ticket",
+          "create_domain": "Creare un dominio di ticket",
+          "create_status": "Creare uno stato di ticket",
+          "delete_category": "Eliminare una categoria di ticket",
+          "delete_domain": "Eliminare un dominio di ticket",
+          "get_config": "Configurazione dei ticket",
+          "get_org_settings": "Impostazioni dei ticket dell'organizzazione",
+          "list_categories": "Elencare le categorie di ticket",
+          "list_domains": "Elencare i domini di ticket",
+          "reorder_categories": "Riordinare le categorie di ticket",
+          "reorder_statuses": "Riordinare gli stati dei ticket",
+          "set_priorities": "Impostare le priorità dei ticket",
+          "update_category": "Aggiornare una categoria di ticket",
+          "update_domain": "Aggiornare un dominio di ticket",
+          "update_org_settings": "Aggiornare le impostazioni dei ticket dell'organizzazione",
+          "update_status": "Aggiornare uno stato di ticket"
+        },
+        "manage_ticket_forms": {
+          "available": "Moduli ticket disponibili",
+          "create": "Creare un modulo ticket",
+          "delete": "Eliminare un modulo ticket",
+          "list": "Elencare i moduli ticket",
+          "update": "Aggiornare un modulo ticket"
+        },
+        "manage_ticket_inbox": {
+          "convert": "Convertire un'email in ticket",
+          "dismiss": "Ignorare un'email",
+          "list": "Elencare le email non assegnate"
+        },
+        "manage_ticket_response_templates": {
+          "create": "Creare un modello di risposta",
+          "delete": "Eliminare un modello di risposta",
+          "list": "Elencare i modelli di risposta",
+          "update": "Aggiornare un modello di risposta"
+        },
+        "manage_ticket_routing_rules": {
+          "create": "Creare una regola di instradamento",
+          "delete": "Eliminare una regola di instradamento",
+          "reorder": "Riordinare le regole di instradamento",
+          "update": "Aggiornare una regola di instradamento"
+        },
+        "manage_tickets": {
+          "assign": "Assegnare un ticket",
+          "bulk_update": "Aggiornare i ticket in blocco",
+          "comment": "Commentare un ticket",
+          "create": "Creare un ticket",
+          "create_from_alert": "Creare un ticket da un avviso",
+          "delete_comment": "Eliminare un commento del ticket",
+          "draft": "Redigere una bozza di ticket",
+          "edit_comment": "Modificare un commento del ticket",
+          "get": "Dettagli del ticket",
+          "link_alert": "Collegare un avviso a un ticket",
+          "link_device": "Collegare un dispositivo a un ticket",
+          "link_ticket": "Collegare ticket correlati",
+          "list": "Elencare i ticket",
+          "list_links": "Elencare i collegamenti del ticket",
+          "list_work_types": "Elencare i tipi di lavoro",
+          "log_time_entry": "Registrare un tempo di lavoro",
+          "merge": "Unire i ticket",
+          "merge_preview": "Anteprima dell'unione dei ticket",
+          "move_org": "Spostare un ticket in un'altra organizzazione",
+          "start_timer": "Avviare il timer di un ticket",
+          "stop_timer": "Arrestare il timer di un ticket",
+          "unlink_alert": "Scollegare un avviso da un ticket",
+          "unlink_ticket": "Scollegare ticket correlati",
+          "update_fields": "Aggiornare i campi del ticket",
+          "update_status": "Aggiornare lo stato del ticket",
+          "update_time_entry": "Aggiornare una registrazione di tempo"
+        },
+        "manage_time_suggestions": {
+          "confirm": "Confermare un suggerimento di tempo",
+          "dismiss": "Ignorare un suggerimento di tempo",
+          "list": "Elencare i suggerimenti di tempo",
+          "undo": "Ripristinare un suggerimento ignorato"
+        },
         "manage_update_rings": {
           "create": "Creare un anello di aggiornamento",
           "get": "Dettagli dell'anello di aggiornamento",
           "list": "Elencare gli anelli di aggiornamento",
           "update": "Aggiornare un anello di aggiornamento"
+        },
+        "query_agent_versions": {
+          "check_upgrades": "Verificare gli aggiornamenti dei dispositivi",
+          "list_versions": "Elencare le versioni dell'agente"
+        },
+        "query_analytics": {
+          "capacity_predictions": "Previsioni di capacità",
+          "sla_compliance": "Conformità SLA",
+          "sla_definitions": "Definizioni SLA"
+        },
+        "query_backups": {
+          "list_configs": "Elencare le configurazioni di backup",
+          "list_jobs": "Elencare i job di backup",
+          "list_policies": "Elencare le policy di backup"
+        },
+        "query_custom_fields": {
+          "get_device_values": "Valori dei campi personalizzati di un dispositivo",
+          "list_definitions": "Elencare le definizioni dei campi personalizzati"
+        },
+        "registry_operations": {
+          "create_key": "Creare una chiave di registro",
+          "delete_key": "Eliminare una chiave di registro",
+          "get_value": "Leggere un valore di registro",
+          "read_key": "Leggere una chiave di registro",
+          "set_value": "Impostare un valore di registro"
+        },
+        "remediate_sensitive_data": {
+          "accept_risk": "Accettare il rischio",
+          "encrypt": "Crittografare un file",
+          "false_positive": "Contrassegnare come falso positivo",
+          "mark_remediated": "Contrassegnare come corretto",
+          "quarantine": "Mettere in quarantena un file",
+          "secure_delete": "Eliminare un file in modo sicuro"
         },
         "s1_threat_action": {
           "kill": "Terminare il processo di una minaccia",
