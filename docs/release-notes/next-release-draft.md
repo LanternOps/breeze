@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Org settings — partner locks follow the settings catalog (#9762)
 
 - `GET /orgs/organizations/:id/effective-settings` now lists a partner-set field in `locked` only when the partner value actually wins. Partner defaults an org may override (agent version pins, enrollment defaults, Pushover fill-blank defaults) move to a new `partnerDefaults` list. A partner Event Logs destination is reported as locking the org's Event Logs fields only while it is enabled with a URL (the destination the runtime actually uses), so the org Event Logs editor no longer disables its fields when the partner's destination is disabled or incomplete. API clients that read `locked` as "the partner set this" should also read `partnerDefaults`. No migration, no new environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

@@ -354,7 +354,7 @@
     "currentSite": "Sitio actual",
     "newSite": "Nuevo sitio",
     "loadingSites": "Cargando sitios...",
-    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios desde Configuración → Organizaciones para habilitar movimientos.",
+    "thisOrganizationOnlyHasOneSite": "Esta organización solo tiene un sitio. Agregue más sitios en la pestaña Sitios de la organización (Organizaciones → abra la organización → Sitios) para habilitar movimientos.",
     "current": "(actual)",
     "cancel": "Cancelar",
     "moving": "Moviendo...",
@@ -2391,7 +2391,9 @@
       "completed": "Terminado",
       "failed": "Fallido",
       "queued": "En cola",
-      "running": "En ejecución"
+      "running": "En ejecución",
+      "cancelled": "Cancelado",
+      "expired": "Vencido"
     },
     "scanType": "escaneo {{type}}",
     "scanTypes": {
@@ -2413,7 +2415,13 @@
       "quarantined": "En cuarentena",
       "removed": "Eliminado"
     },
-    "threatsFound": "Amenazas encontradas: {{count}}"
+    "threatsFound": "Amenazas encontradas: {{count}}",
+    "waitingForSlot": "Esperando un espacio de análisis libre. Vence el {{date}}.",
+    "cancelScan": "Cancelar análisis",
+    "scanCancelled": "Análisis cancelado",
+    "cancelScanFailed": "No se pudo cancelar el análisis",
+    "scanAlreadyRunning": "El análisis ya se está ejecutando en el dispositivo y no se puede cancelar.",
+    "scanAlreadyQueued": "Ya hay un análisis en cola para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Agregue una etiqueta...",

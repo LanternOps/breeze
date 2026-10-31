@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { capabilitySnapshot } from './capabilities';
 import { bitdefenderAdapter } from './bitdefender/adapter';
+import { emsisoftAdapter } from './emsisoft/adapter';
 
 describe('capabilitySnapshot', () => {
   it('is the adapter capability keys plus the key-specific degradation notes from the last test', () => {
@@ -20,5 +21,9 @@ describe('capabilitySnapshot', () => {
       'tenants:partner', 'detections:poll_and_push', 'installer:none',
       'action:isolate', 'action:unisolate', 'action:scan',
     ]);
+  });
+
+  it('emsisoft: partner tenants, polled detections, no installer, no actions in PR-A', () => {
+    expect(capabilitySnapshot(emsisoftAdapter, [])).toEqual(['tenants:partner', 'detections:poll', 'installer:none']);
   });
 });

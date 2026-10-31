@@ -46,6 +46,7 @@ import { attachWorkerObservability } from '../jobs/workerObservability';
 import { escalationStepSchema, type EscalationStep } from './delivery/escalationSteps';
 import { escalationOccurrences, listEscalationUsers, processUserEscalation, type UserEscalationJob } from './delivery/escalationExecution';
 import { resolveDelivery } from './delivery/resolveDelivery';
+import { alertOwnerKey } from './alertOwner';
 import { alertOwningSiteId } from './alertOwnership';
 import { partnerIdForOrg, railOwnershipCondition } from './delivery/railOwnership';
 
@@ -214,7 +215,7 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
   // Get device info for in-app notification. Only a device in the ALERT's org
   // is attributable: a site-owned topology alert (M3-D6) stays in its site's
   // org after its origin device moves org, and must not disclose that device.
-  const [deviceRow] = await db
+  const [deviceRow] = alert.deviceId === null ? [] : await db
     .select()
     .from(devices)
     .where(eq(devices.id, alert.deviceId))
@@ -590,7 +591,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
 
     // Get device info for context — only a device in the ALERT's org (a
     // site-owned topology alert outlives its origin device's org move, M3-D6).
-    const [deviceRow] = await db
+    const [deviceRow] = alert.deviceId === null ? [] : await db
       .select()
       .from(devices)
       .where(eq(devices.id, alert.deviceId))
@@ -646,12 +647,13 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
     }
 
     // Feature #4: per-channel sliding-window throttle (defense-in-depth vs alert storms).
-    // Keyed by (channelId, device:<deviceId>) so one flooding device cannot starve other devices.
+    // Keyed by channel and owner so one flooding subject cannot starve another.
     if (channel.throttleMaxPerWindow && channel.throttleMaxPerWindow > 0) {
       const windowSeconds = channel.throttleWindowSeconds ?? 3600;
+      const ownerKey = alertOwnerKey(alert);
       const throttle = await checkNotificationThrottle(
         channel.id,
-        `device:${alert.deviceId}`,
+        ownerKey,
         channel.throttleMaxPerWindow,
         windowSeconds
       );
@@ -659,7 +661,7 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
         const windowExpiresIso = new Date(throttle.windowExpiresAt).toISOString();
         const throttleMessage = `Throttled: ${throttle.currentCount} delivered in last ${windowSeconds}s (cap=${channel.throttleMaxPerWindow})`;
         console.warn(
-          `[NotificationThrottle] Suppressed: channel=${channel.id} device=${alert.deviceId} ` +
+          `[NotificationThrottle] Suppressed: channel=${channel.id} owner=${ownerKey} ` +
           `count=${throttle.currentCount}/${channel.throttleMaxPerWindow} resetsAt=${windowExpiresIso}`
         );
         // Use 'failed' status + descriptive errorMessage so UI / queries that

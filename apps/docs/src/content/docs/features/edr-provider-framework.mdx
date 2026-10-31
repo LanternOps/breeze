@@ -7,11 +7,12 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 The EDR provider framework is a common way for Breeze to connect to Endpoint Detection and Response products. A provider supplies the vendor-specific parts (credentials, tenant and endpoint discovery, detections); Breeze supplies the shared parts: tenant-to-organization mapping, endpoint-to-device linking, the incidents feed, the device page section, alerts, and the customer portal summary.
 
-Currently one provider is available:
+Currently two providers are available:
 
 | Provider | Key |
 |----------|-----|
 | Bitdefender GravityZone | `bitdefender` |
+| Emsisoft (cloud Management Console) | `emsisoft` |
 
 Huntress and SentinelOne keep their own dedicated integrations; see [EDR Integrations](/features/edr-integrations/).
 
@@ -51,6 +52,23 @@ Until a tenant is mapped, its endpoints and detections are not visible to any or
 ## Linking endpoints to devices
 
 During each sync Breeze tries to match vendor endpoints to enrolled devices. Endpoints that cannot be matched are listed as **unlinked**, and endpoints that match more than one device are listed as **ambiguous**. From the connection's endpoint list you can link an endpoint to the correct device, or unlink one that was matched wrongly.
+
+## Emsisoft (cloud Management Console)
+
+The Emsisoft connection reads from the cloud Emsisoft Management Console (EMC). The on-premises Enterprise Console is not supported. This first release is read-only: Breeze shows endpoints, protection health and incidents, and does not start scans or change verdicts.
+
+**Key setup.** Create a dedicated EMC user in your partner account, give it access to every workspace Breeze should see, and create the API key from that user's profile. Paste the key into the **API key** field; there is no Access URL. A key from a user who belongs to more than one partner account is refused, because Breeze needs one stable account to attach the connection to. If the key can list workspaces but not read their devices (a licence-manager role, for example), **Test connection** still succeeds and notes it, and only the affected workspaces report an error.
+
+**What syncs.**
+
+- Each EMC **workspace** is a tenant. Map it to an organization like any other tenant. Workspace names are the only suggestion signal, because Emsisoft has no external-code field.
+- The device list gives names; operating system, domain, IP addresses, online state and protection health come from a per-device lookup that refreshes a batch of devices each inventory run. A device that runs no Emsisoft agent (network-discovered or an unused seat) is never reported as protected.
+- Incidents arrive as detections: one row for each involved device, all linked to the same incident. Breeze checks the last 30 days of incidents every run. Emsisoft has no "closed" state, so an incident shows as **Mitigated** (an action was taken on every signal), **False positive** (marked benign in the console), **In progress**, or **Open**; it is never shown as resolved.
+- Because Emsisoft does not report when a verdict changes, Breeze also re-checks open incidents on each inventory run, about 20 per workspace per hour, oldest check first. A verdict changed in the console weeks later appears within a few inventory cycles. An incident the vendor no longer returns stays open rather than being closed on its own.
+
+**Matching to devices.** Emsisoft gives Breeze a device name only (no MAC address or serial number), so Breeze links an endpoint only when the name is unique on both sides: exactly one device in the organization has that name, and exactly one Emsisoft record carries it. Duplicates stay **ambiguous** and are listed for manual linking. Linking one of two same-name devices by hand does not link the other one automatically.
+
+**Not included.** Isolation is not available for Emsisoft. Detections are polled every 15 minutes and inventory every 60; both intervals lengthen automatically for partners with many workspaces so the connection stays inside the vendor's request limits.
 
 ## Where the data appears
 

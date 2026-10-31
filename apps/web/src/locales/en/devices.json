@@ -354,7 +354,7 @@
     "currentSite": "Current site",
     "newSite": "New site",
     "loadingSites": "Loading sites...",
-    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more sites from Settings → Organizations to enable moves.",
+    "thisOrganizationOnlyHasOneSite": "This organization only has one site. Add more on the organization's Sites tab (Organizations → open the organization → Sites) to enable moves.",
     "current": "(current)",
     "cancel": "Cancel",
     "moving": "Moving...",
@@ -2391,7 +2391,9 @@
       "completed": "Completed",
       "failed": "Failed",
       "queued": "Queued",
-      "running": "Running"
+      "running": "Running",
+      "cancelled": "Cancelled",
+      "expired": "Expired"
     },
     "scanType": "{{type}} scan",
     "scanTypes": {
@@ -2413,7 +2415,13 @@
       "quarantined": "Quarantined",
       "removed": "Removed"
     },
-    "threatsFound": "Threats found: {{count}}"
+    "threatsFound": "Threats found: {{count}}",
+    "waitingForSlot": "Waiting for a free scan slot. Expires {{date}}.",
+    "cancelScan": "Cancel scan",
+    "scanCancelled": "Scan cancelled",
+    "cancelScanFailed": "Could not cancel the scan",
+    "scanAlreadyRunning": "The scan is already running on the device and cannot be cancelled.",
+    "scanAlreadyQueued": "A scan is already queued for this device."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Add a tag...",

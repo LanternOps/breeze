@@ -1472,6 +1472,9 @@
       "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta cotización en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación.",
       "acceptOnBehalf": {
         "button": "Aceptar en nombre del cliente",
+        "emptyDraftTitle": "Agregue al menos un artículo antes de aceptar.",
+        "emptySentTitle": "Esta cotización no tiene artículos. Use Revisar cotización para emitir una versión con artículos.",
+        "errorQuoteEmpty": "Esta cotización no tiene artículos. Cierre este cuadro de diálogo y agregue un artículo, o use Revisar cotización si ya se envió.",
         "title": "Registrar la aceptación del cliente",
         "methodLabel": "¿Cómo dio su conformidad?",
         "method": {
