@@ -574,4 +574,33 @@ describe('operator_task items (recipe spec §6.5)', () => {
       expect(screen.getByTestId('ticket-checklist-save-template-form')).toBeTruthy();
     });
   });
+
+  describe('readOnly (merged tombstone ticket, #10025)', () => {
+    it('keeps the steps readable but offers no write control', async () => {
+      fetchWithAuth.mockImplementation(fakeServer(
+        [item({ id: 'i-1', done: true }), item({ id: 'i-2', label: 'Second step' })],
+        [template()],
+      ));
+      render(<TicketChecklistCard ticketId="tk-1" readOnly />);
+      expect(await screen.findByTestId('ticket-checklist-progress')).toHaveTextContent('1 / 2');
+      expect(screen.getByTestId('ticket-checklist-item-i-2')).toHaveTextContent('Second step');
+      expect(screen.getByTestId('ticket-checklist-toggle-i-1')).toBeDisabled();
+      expect(screen.getByTestId('ticket-checklist-toggle-i-2')).toBeDisabled();
+      for (const id of [
+        'ticket-checklist-edit-i-1', 'ticket-checklist-delete-i-1', 'ticket-checklist-up-i-1',
+        'ticket-checklist-down-i-1', 'ticket-checklist-add-form', 'ticket-checklist-apply-template',
+      ]) {
+        expect(screen.queryByTestId(id), id).toBeNull();
+      }
+      const writes = fetchWithAuth.mock.calls.filter(([, init]) => init?.method && init.method !== 'GET');
+      expect(writes).toEqual([]);
+    });
+
+    it('renders nothing for an empty checklist even when a template exists', async () => {
+      fetchWithAuth.mockImplementation(fakeServer([], [template()]));
+      const { container } = render(<TicketChecklistCard ticketId="tk-1" readOnly />);
+      await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(checklistUrl()));
+      await waitFor(() => expect(container.querySelector('[data-testid="ticket-checklist-card"]')).toBeNull());
+    });
+  });
 });
