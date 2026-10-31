@@ -18,7 +18,7 @@ import { currentActivity, listActivity } from './activity';
 import { listConcernsForCeiling } from './concerns';
 import { assertWithinCeiling, CeilingViolationError, inSystemContext, type GrantCeiling } from './grantAuthority';
 import { getPartnerSettings } from './partnerSettings';
-import { listLinks } from './threadLinks';
+import { listWorkingSet } from './threadLinks';
 
 export const BRIEF_MAX_AGE_HOURS = 36;
 export const NEEDS_YOU_LIMIT = 50;
@@ -102,6 +102,6 @@ export async function buildHomeSections(input: {
   const concerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'] });
   const activity = await listActivity(ceiling, { limit: HOME_ACTIVITY_LIMIT, threadId: input.threadId });
   const current = currentWithinCeiling(ceiling, await currentActivity(input.grantId));
-  const links = await listLinks({ auth: input.auth, ceiling }, input.threadId);
+  const links = await listWorkingSet({ auth: input.auth, ceiling }, input.threadId, { concerns });
   return { brief, needsYou: needsYouOrder(concerns), activity, current, links, partner };
 }
