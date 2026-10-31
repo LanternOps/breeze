@@ -250,6 +250,9 @@ func pamSupportName(s string) string {
 	return pamSupportFallback
 }
 
+// pamOutcomeNoticeRender is a var so tests can make the catalog fail.
+var pamOutcomeNoticeRender = promptkinds.ElevationOutcomeNotice
+
 // pamOutcomeNotice is the title and body of one outcome notice for a tracked
 // request (#10696): the elevation prompt's catalog copy for state
 // (promptkinds.ElevationOutcomeNotice), in the locale of the request's
@@ -257,11 +260,11 @@ func pamSupportName(s string) string {
 // (elevationPartner). english is #8928's copy, used only if the catalog
 // cannot render (it always can; the embed is tested): a notice in English
 // beats no notice.
-func (h *Heartbeat) pamOutcomeNotice(entry pamTrackedRequest, state ipc.PromptState, technician, reason string, english func() (string, string)) (title, body string) {
+func (h *Heartbeat) pamOutcomeNotice(requestID string, entry pamTrackedRequest, state ipc.PromptState, technician, reason string, english func() (string, string)) (title, body string) {
 	loc := h.pamNoticeLocale(entry.WinSession)
-	title, body, err := promptkinds.ElevationOutcomeNotice(loc, state, entry.Program, h.elevationPartner(entry.SupportName), technician, reason)
+	title, body, err := pamOutcomeNoticeRender(loc, state, entry.Program, h.elevationPartner(entry.SupportName), technician, reason)
 	if err != nil {
-		log.Warn("pam: outcome notice not localized; showing the English copy",
+		log.Warn("pam: outcome notice not localized; showing the English copy", "elevationRequestId", requestID,
 			"state", string(state), "locale", string(loc), "error", err.Error())
 		return english()
 	}
@@ -407,7 +410,7 @@ func (h *Heartbeat) notifyPamApplyOutcome(requestID string, result pamlifetime.R
 	if !ok || onAssist {
 		return
 	}
-	title, body := h.pamOutcomeNotice(entry, state, technician, "", func() (string, string) {
+	title, body := h.pamOutcomeNotice(requestID, entry, state, technician, "", func() (string, string) {
 		return copyFn(entry.Program, entry.SupportName)
 	})
 	if err := h.notifyPamUser(title, body, entry.WinSession); err != nil {

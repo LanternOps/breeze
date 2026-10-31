@@ -77,7 +77,7 @@ func handlePamRequestNotify(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewSuccessResult(map[string]any{"shown": false, "notShownReason": "not_tracked"}, time.Since(start).Milliseconds())
 	}
 
-	title, body := h.pamOutcomeNotice(entry, state, "", reason, func() (string, string) {
+	title, body := h.pamOutcomeNotice(payload.RequestID, entry, state, "", reason, func() (string, string) {
 		if state == ipc.PromptStateDenied {
 			return pamCopyDenied(entry.Program, entry.SupportName, reason)
 		}

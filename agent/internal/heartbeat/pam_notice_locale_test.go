@@ -1,11 +1,13 @@
 package heartbeat
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/promptcatalog"
+	"github.com/breeze-rmm/agent/internal/promptidentity"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -164,5 +166,64 @@ func TestPamOutcomeNoticeGermanLiteral(t *testing.T) {
 	}
 	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
 		t.Fatalf("notices = %+v, want [%+v]", calls, want)
+	}
+}
+
+// TestPamOutcomeNoticeNamesThePartnerLikeThePrompt: the notice names the
+// identity store's partner, as the elevation prompt does (elevationPartner),
+// over the support name captured at hand-off.
+func TestPamOutcomeNoticeNamesThePartnerLikeThePrompt(t *testing.T) {
+	setOSUILocaleForTest(t, "en-US")
+	h := &Heartbeat{}
+	h.promptIdentity = promptidentity.Open(t.TempDir(), promptidentity.Options{})
+	if _, _, err := h.promptIdentity.Apply(&promptidentity.HeartbeatBlock{State: "set", ScopeID: hbScopeA, PartnerName: "Acme MSP"}); err != nil {
+		t.Fatalf("apply identity: %v", err)
+	}
+	rec := recordPamNotices(h)
+	h.pamTracker().MarkAwaiting(pamNotifyTestRequestID, "5", "mmc.exe", "Contoso IT")
+	handlePamRequestNotify(h, pamNotifyCommand(map[string]any{"requestId": pamNotifyTestRequestID, "outcome": "expired"}))
+	want := pamNotifyCall{Title: "Request expired", Body: "Your request for mmc.exe expired before Acme MSP answered.", WinSession: "5"}
+	if calls := rec.Calls(); len(calls) != 1 || calls[0] != want {
+		t.Fatalf("notices = %+v, want [%+v]", calls, want)
+	}
+}
+
+// TestPamOutcomeNoticeFallsBackToEnglish: if the catalog cannot render, each
+// outcome still shows #8928's English copy for that outcome — never a blank
+// notice, never another outcome's text.
+func TestPamOutcomeNoticeFallsBackToEnglish(t *testing.T) {
+	prev := pamOutcomeNoticeRender
+	pamOutcomeNoticeRender = func(promptcatalog.Locale, ipc.PromptState, string, string, string, string) (string, string, error) {
+		return "", "", errors.New("catalog broken")
+	}
+	t.Cleanup(func() { pamOutcomeNoticeRender = prev })
+
+	for _, tc := range []struct {
+		name string
+		fire func(h *Heartbeat)
+		want pamNotifyCall
+	}{
+		{"approved", func(h *Heartbeat) {
+			h.notifyPamApplyOutcome(pamNotifyTestRequestID, pamlifetime.Result{State: pamlifetime.ResultVerifiedActive}, "Dana")
+		}, pamNotifyCall{"Request approved", "mmc.exe was approved by Contoso IT and is starting.", "5"}},
+		{"couldn't start", func(h *Heartbeat) {
+			h.notifyPamApplyOutcome(pamNotifyTestRequestID, pamlifetime.Result{State: pamlifetime.ResultFailed, FailureCode: "launch_failed"}, "")
+		}, pamNotifyCall{"Request approved", "mmc.exe was approved but couldn't start. Contact Contoso IT.", "5"}},
+		{"denied", func(h *Heartbeat) {
+			handlePamRequestNotify(h, pamNotifyCommand(map[string]any{"requestId": pamNotifyTestRequestID, "outcome": "denied", "reason": "No."}))
+		}, pamNotifyCall{"Request denied", "mmc.exe was denied by Contoso IT.\nReason: No.", "5"}},
+		{"expired", func(h *Heartbeat) {
+			handlePamRequestNotify(h, pamNotifyCommand(map[string]any{"requestId": pamNotifyTestRequestID, "outcome": "expired"}))
+		}, pamNotifyCall{"Request expired", "Your request for mmc.exe expired before Contoso IT responded. Try again or contact Contoso IT.", "5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Heartbeat{}
+			rec := recordPamNotices(h)
+			h.pamTracker().MarkAwaiting(pamNotifyTestRequestID, "5", "mmc.exe", "Contoso IT")
+			tc.fire(h)
+			if calls := rec.Calls(); len(calls) != 1 || calls[0] != tc.want {
+				t.Fatalf("notices = %+v, want [%+v]", calls, tc.want)
+			}
+		})
 	}
 }
