@@ -800,7 +800,7 @@ export function buildSuppressAlertCas(alertId: string) {
  * logged and reported as `false` for callers that surface a warning.
  */
 export async function publishAlertSuppressed(input: {
-  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string };
+  alert: { id: string; orgId: string; ruleId: string | null; deviceId: string | null };
   suppressedBy: string;
   suppressedUntil: Date | null;
   durationHours?: number | null;

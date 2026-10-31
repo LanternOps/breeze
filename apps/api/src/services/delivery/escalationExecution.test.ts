@@ -169,6 +169,23 @@ describe('processEscalationEvent', () => {
       { eventId: escalationEventId('alert-1', 12) },
     ]);
   });
+  it('publishes alert.escalated with deviceId null for an org-subject alert', async () => {
+    state.rows.push([{
+      id: 'alert-1', orgId: 'org-1', ruleId: 'rule-1', deviceId: null,
+      ownerKind: 'backup_workload', ownerRef: 'workload-1', status: 'active',
+    }]);
+    await expect(processEscalationEvent(job)).resolves.toBe(true);
+    expect(publishEvent).toHaveBeenCalledExactlyOnceWith(
+      'alert.escalated',
+      'org-1',
+      {
+        alertId: 'alert-1', ruleId: 'rule-1', deviceId: null,
+        escalationPolicyId: 'policy-1', escalationStep: 12, policyStep: 2, repeat: 1,
+      },
+      'notification-dispatcher',
+      { eventId: escalationEventId('alert-1', 12) },
+    );
+  });
   it.each(['acknowledged', 'resolved', 'suppressed', 'dismissed'])('publishes nothing once the alert is %s', async status => {
     state.rows.push([{ id: 'alert-1', orgId: 'org-1', ruleId: null, deviceId: 'device-1', status }]);
     await expect(processEscalationEvent(job)).resolves.toBe(false);

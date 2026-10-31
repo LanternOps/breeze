@@ -40,6 +40,24 @@ describe('publishAlertSuppressed', () => {
     ]);
   });
 
+  it('publishes alert.suppressed with deviceId null for an org-subject alert', async () => {
+    const orgAlert = { ...alert, deviceId: null, ownerKind: 'backup_workload' as const, ownerRef: 'workload-1' };
+    await expect(publishAlertSuppressed({
+      alert: orgAlert, suppressedBy: 'user-1', suppressedUntil: null, source: 'alerts-route',
+    })).resolves.toBe(true);
+
+    expect(publishEvent).toHaveBeenCalledExactlyOnceWith(
+      'alert.suppressed',
+      'org-1',
+      {
+        alertId: 'alert-1', ruleId: 'rule-1', deviceId: null,
+        suppressedBy: 'user-1', suppressedUntil: null, durationHours: null,
+      },
+      'alerts-route',
+      { userId: 'user-1' },
+    );
+  });
+
   it('returns false and logs instead of throwing when the publish fails', async () => {
     publishEvent.mockRejectedValueOnce(new Error('redis down'));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
