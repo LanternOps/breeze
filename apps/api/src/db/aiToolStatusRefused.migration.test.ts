@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import type { AiToolStatus } from '@breeze/shared';
 import { aiToolStatusEnum } from './schema/ai';
 
-const FILE = '2027-01-17-183000-ai-tool-status-refused.sql';
+const FILE = '2027-01-18-150000-ai-tool-status-refused.sql';
 const SQL = readFileSync(new URL(`../../migrations/${FILE}`, import.meta.url), 'utf8');
 
 describe(FILE, () => {
