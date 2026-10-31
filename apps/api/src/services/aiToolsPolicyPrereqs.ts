@@ -263,7 +263,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
-          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom"|"linux" (apt/dnf package name),packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
+          appRules: { type: 'array', items: { type: 'object' }, description: '[{source:"third_party"|"custom"|"linux",packageId,action:"block"|"pin",pinnedVersion (pin),displayName?}]. Linux: apt/dnf name. 200 unique max; update replaces.' },
           featureUpdates: { type: 'object', description: '{mode:"block"|"allow"|"pin", product:"windows-11"|"windows-10", targetVersion:"25H2"} (pin needs both). Default block. Pin sets WUfB target release.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
