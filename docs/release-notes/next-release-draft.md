@@ -219,3 +219,9 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Security agents: SentinelOne installer missing (#9247)
+
+- **A SentinelOne package with no deployable MSI is now shown on the coverage panels instead of silently stopping enforcement.** If the partner's SentinelOne package loses its deployable installer after the vendor was enabled, the generated software policy keeps its SentinelOne rule. Every reached Windows device that does not have SentinelOne yet (in an organization whose site mapping is ready) shows **Not applicable · Installer not uploaded** on the device EDR panel and the software compliance coverage table, with an **Upload the installer** link to the package's Versions tab. Nothing is installed until a deployable MSI is uploaded again; devices already running SentinelOne keep their Covered / Vendor offline / Gap state. Previously the repair sweep removed the rule, deactivated the policy and sent a Sentry event.
+- `GET /api/v1/edr/security-agents/coverage` rows now carry `setupPath` (`/software#versions=<catalogId>` for `installer_missing` rows, otherwise `null`), and coverage rows can carry the new reason code `installer_missing`.
+- The repair sweep no longer sends the `security_agents_repair` / `binary_missing` Sentry event; it logs an info line instead. No migration, environment variable or setting.

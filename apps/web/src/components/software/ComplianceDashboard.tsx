@@ -25,6 +25,7 @@ import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import { replaceUrl, seedRouterHistoryState } from '../../lib/replaceUrl';
 import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import SecurityAgentCoverageSetupLink from "../security/SecurityAgentCoverageSetupLink";
 import {
   COVERAGE_STATES,
   coverageReasonLabel,
@@ -780,7 +781,10 @@ export default function ComplianceDashboard({
                         <SecurityAgentCoverageStateBadge state={row.state} />
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
-                        {coverageReasonLabel(tSecurity, row.reasonCode)}
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span>{coverageReasonLabel(tSecurity, row.reasonCode)}</span>
+                          <SecurityAgentCoverageSetupLink row={row} />
+                        </span>
                       </td>
                     </tr>
                   ))}
