@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Escalonar após",
       "recurrenceWindowDays": "episódios em (dias)",
       "pauseResponses": "Pausar as respostas automáticas até que uma pessoa as redefina",
-      "aiAgent": "Agente de IA (habilita respostas de triagem por IA)"
+      "aiAgent": "Agente de IA (habilita respostas de triagem por IA)",
+      "psaBoard": "Quadro do PSA para chamados de alertas"
     },
     "deliveryModes": {
       "inherit": "Usar regras de roteamento",
@@ -170,7 +171,10 @@
       "failed": "Não foi possível carregar os ativos",
       "orgRequired": "Selecione uma organização proprietária para vincular um ativo.",
       "pingName": "Ping para {{label}}"
-    }
+    },
+    "psaBoardDefault": "Usar o quadro padrão da conexão",
+    "psaBoardHelp": "Os chamados de alertas deste monitor são criados neste quadro, em vez do padrão da conexão.",
+    "psaBoardReadOnly": "Os chamados de alertas vão para o quadro #{{id}} do PSA"
   },
   "kinds": {
     "composite": "Composto (todas ou alguma de várias)",

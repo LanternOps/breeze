@@ -389,6 +389,9 @@ const TARGET_GLOBS = [
   // the connection list is empty — so a failed save on a populated page was
   // silent (#3291 review).
   'src/components/psa/PsaConnectionsPage.tsx',
+  // Alert -> PSA ticket settings (#10535): the PUT enables automatic ticket creation in the
+  // partner's PSA; a silent failure would leave the tech believing alerts are ticketed.
+  'src/components/psa/PsaAlertTicketingCard.tsx',
   // CIS hardening: the whole directory has exactly two mutations (baseline
   // create/update, trigger scan) and both now route through runAction. The scan
   // queues work that changes nothing on screen — the results land minutes later
@@ -1033,7 +1036,8 @@ describe('no silent mutations in targeted set', () => {
     // Tool Catalog W4 flows/api.ts: 282 → 283.
     // Physical placement W1-D1 (#8134) adds devices/PhysicalPlacementCard.tsx: 283 → 284.
     // Partner-wide groups W4 adds creation and partner group assignments: 284 → 286.
-    expect(absoluteFiles.length).toBe(286);
+    // Alert ticketing card (#10535) adds PsaAlertTicketingCard.tsx: 286 → 287.
+    expect(absoluteFiles.length).toBe(287);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

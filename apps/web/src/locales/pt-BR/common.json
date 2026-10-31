@@ -1084,6 +1084,59 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Chamados de alertas",
+        "scopeNote": "Vale para todo o parceiro; sem substituição por organização.",
+        "pausedBanner": "Pausado: o PSA rejeitou as credenciais. Execute “Testar conexão” para retomar.",
+        "yes": "Ativados",
+        "no": "Desativados",
+        "selectPlaceholder": "Selecionar…",
+        "priorityDefault": "Padrão do PSA",
+        "closedSuffix": "{{name}} (fechado)",
+        "saved": "Configurações dos chamados de alertas salvas",
+        "saving": "Salvando…",
+        "save": "Salvar",
+        "conflict": "Estas configurações foram alteradas em outro lugar. Os valores mais recentes foram carregados; revise-os e salve novamente.",
+        "errors": {
+          "save": "Não foi possível salvar as configurações dos chamados de alertas"
+        },
+        "status": {
+          "active": "Os chamados de alertas estão ativados para esta conexão.",
+          "notExternal": "Vincule esta conexão como o PSA de gerenciamento de serviços (modo externo) para usar chamados de alertas.",
+          "disabled": "Os chamados de alertas estão desativados.",
+          "paused": "Os chamados de alertas estão pausados até que a conexão com o PSA volte a funcionar.",
+          "companyLinksUnverified": "Confirme os vínculos de empresas desta instância do PSA.",
+          "invalidConfig": "As configurações salvas dos chamados de alertas não são válidas. Revise-as e salve novamente.",
+          "unsupportedProvider": "Os chamados de alertas não estão disponíveis para este provedor de PSA."
+        },
+        "fields": {
+          "enabled": "Ativar chamados de alertas",
+          "board": "Quadro",
+          "openStatus": "Status de chamado novo",
+          "closedStatus": "Status fechado",
+          "priorityHeading": "Prioridade do PSA por gravidade do alerta",
+          "minSeverity": "Gravidade mínima",
+          "minSeverityHelp": "Baixa inclui monitores de nível de aviso",
+          "closeOnResolve": "Fechar o chamado quando o alerta for resolvido",
+          "noteOnAcknowledge": "Adicionar uma nota quando o alerta for reconhecido",
+          "confirmCompanyLinks": "Os vínculos de empresas das organizações correspondem a esta instância do PSA"
+        },
+        "severity": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Média",
+          "low": "Baixa",
+          "info": "Informativo"
+        },
+        "options": {
+          "error": "Não foi possível carregar as opções do PSA",
+          "retry": "Tentar novamente",
+          "truncated": "Somente os primeiros resultados do PSA são exibidos."
+        },
+        "readOnly": {
+          "enabled": "Chamados de alertas"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importar empresas",
         "subtitle": "Crie organizações a partir das empresas em {{name}}.",

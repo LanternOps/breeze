@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Escalar después de",
       "recurrenceWindowDays": "episodios dentro de (días)",
       "pauseResponses": "Pausar las respuestas automáticas hasta que una persona las restablezca",
-      "aiAgent": "Agente de IA (habilita respuestas de triaje con IA)"
+      "aiAgent": "Agente de IA (habilita respuestas de triaje con IA)",
+      "psaBoard": "Tablero del PSA para tickets de alertas"
     },
     "deliveryModes": {
       "inherit": "Usar reglas de enrutamiento",
@@ -170,7 +171,10 @@
       "failed": "No se pudieron cargar los activos",
       "orgRequired": "Selecciona una organización como propietaria para vincular un activo.",
       "pingName": "Ping a {{label}}"
-    }
+    },
+    "psaBoardDefault": "Usar el tablero predeterminado de la conexión",
+    "psaBoardHelp": "Los tickets de alertas de este monitor se crean en este tablero en lugar del predeterminado de la conexión.",
+    "psaBoardReadOnly": "Los tickets de alertas van al tablero #{{id}} del PSA"
   },
   "kinds": {
     "composite": "Compuesto (todas o alguna de varias)",

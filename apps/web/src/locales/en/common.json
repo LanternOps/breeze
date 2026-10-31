@@ -1084,6 +1084,59 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Alert tickets",
+        "scopeNote": "Partner-wide; no per-organization override.",
+        "pausedBanner": "Paused: the PSA rejected the credentials. Run Test connection to resume.",
+        "yes": "On",
+        "no": "Off",
+        "selectPlaceholder": "Select…",
+        "priorityDefault": "PSA default",
+        "closedSuffix": "{{name}} (closed)",
+        "saved": "Alert ticket settings saved",
+        "saving": "Saving…",
+        "save": "Save",
+        "conflict": "These settings were changed elsewhere. The latest values have been loaded; review them and save again.",
+        "errors": {
+          "save": "Could not save alert ticket settings"
+        },
+        "status": {
+          "active": "Alert tickets are enabled for this connection.",
+          "notExternal": "Bind this connection as the service-management PSA (external mode) to use alert tickets.",
+          "disabled": "Alert tickets are turned off.",
+          "paused": "Alert tickets are paused until the PSA connection is working again.",
+          "companyLinksUnverified": "Confirm company links for this PSA instance.",
+          "invalidConfig": "The saved alert ticket settings are not valid. Review and save them again.",
+          "unsupportedProvider": "Alert tickets are not available for this PSA provider."
+        },
+        "fields": {
+          "enabled": "Enable alert tickets",
+          "board": "Board",
+          "openStatus": "New ticket status",
+          "closedStatus": "Closed status",
+          "priorityHeading": "PSA priority by alert severity",
+          "minSeverity": "Minimum severity",
+          "minSeverityHelp": "Low includes warning-level monitors",
+          "closeOnResolve": "Close the ticket when the alert resolves",
+          "noteOnAcknowledge": "Add a note when the alert is acknowledged",
+          "confirmCompanyLinks": "Organization company links match this PSA instance"
+        },
+        "severity": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "info": "Info"
+        },
+        "options": {
+          "error": "Could not load options from the PSA",
+          "retry": "Retry",
+          "truncated": "Only the first results from the PSA are shown."
+        },
+        "readOnly": {
+          "enabled": "Alert tickets"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Import companies",
         "subtitle": "Create organizations from the companies in {{name}}.",

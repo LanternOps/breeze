@@ -1084,6 +1084,59 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Tickets de alertas",
+        "scopeNote": "Aplica a todo el partner; no hay anulación por organización.",
+        "pausedBanner": "En pausa: el PSA rechazó las credenciales. Ejecuta “Probar conexión” para reanudar.",
+        "yes": "Activados",
+        "no": "Desactivados",
+        "selectPlaceholder": "Seleccionar…",
+        "priorityDefault": "Predeterminado del PSA",
+        "closedSuffix": "{{name}} (cerrado)",
+        "saved": "Configuración de tickets de alertas guardada",
+        "saving": "Guardando…",
+        "save": "Guardar",
+        "conflict": "Esta configuración se cambió en otro lugar. Se cargaron los valores más recientes; revísalos y guarda de nuevo.",
+        "errors": {
+          "save": "No se pudo guardar la configuración de tickets de alertas"
+        },
+        "status": {
+          "active": "Los tickets de alertas están habilitados para esta conexión.",
+          "notExternal": "Vincula esta conexión como el PSA de gestión de servicios (modo externo) para usar tickets de alertas.",
+          "disabled": "Los tickets de alertas están desactivados.",
+          "paused": "Los tickets de alertas están en pausa hasta que la conexión con el PSA vuelva a funcionar.",
+          "companyLinksUnverified": "Confirma los vínculos de empresas de esta instancia del PSA.",
+          "invalidConfig": "La configuración guardada de tickets de alertas no es válida. Revísala y guárdala de nuevo.",
+          "unsupportedProvider": "Los tickets de alertas no están disponibles para este proveedor de PSA."
+        },
+        "fields": {
+          "enabled": "Habilitar tickets de alertas",
+          "board": "Tablero",
+          "openStatus": "Estado de ticket nuevo",
+          "closedStatus": "Estado cerrado",
+          "priorityHeading": "Prioridad del PSA según la gravedad de la alerta",
+          "minSeverity": "Gravedad mínima",
+          "minSeverityHelp": "Baja incluye los monitores de nivel de advertencia",
+          "closeOnResolve": "Cerrar el ticket cuando se resuelva la alerta",
+          "noteOnAcknowledge": "Agregar una nota cuando se reconozca la alerta",
+          "confirmCompanyLinks": "Los vínculos de empresas de las organizaciones coinciden con esta instancia del PSA"
+        },
+        "severity": {
+          "critical": "Crítica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Baja",
+          "info": "Información"
+        },
+        "options": {
+          "error": "No se pudieron cargar las opciones del PSA",
+          "retry": "Reintentar",
+          "truncated": "Solo se muestran los primeros resultados del PSA."
+        },
+        "readOnly": {
+          "enabled": "Tickets de alertas"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importar empresas",
         "subtitle": "Crea organizaciones a partir de las empresas de {{name}}.",
