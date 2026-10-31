@@ -23,6 +23,9 @@ export interface EventLogFilter {
 
 const EVENTLOG_TAB = 'eventlog';
 
+/** The API's cap on repeated `source` values (routes/devices/eventlogs.ts). */
+export const MAX_EVENT_LOG_LINK_SOURCES = 25;
+
 /** The bare tab fragment (no filter) — what clearing a linked filter writes. */
 export const EVENTLOG_TAB_HASH = EVENTLOG_TAB;
 const KNOWN_TABS = [EVENTLOG_TAB] as const;
@@ -73,5 +76,9 @@ export function eventLogFilterFromHash(hash: string): EventLogFilter | undefined
   // `selection` and each `source` value are already percent-decoded exactly
   // once by parseHashGrammar.
   const sources = [...new Set([...(selection ? [selection] : []), ...(params.source ?? [])])];
+  // More sources than the API filter accepts can only come from a hand-edited
+  // link; treat it like any other invalid link (plain tab) rather than send a
+  // request that is refused.
+  if (sources.length > MAX_EVENT_LOG_LINK_SOURCES) return undefined;
   return sources.length > 0 ? { sources, from, to } : { from, to };
 }

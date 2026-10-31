@@ -171,6 +171,20 @@ describe('device eventlogs multi-value source filter', () => {
     expect(params).toContain('Service Control Manager');
   });
 
+  it('treats an empty source value as no filter, alone or beside a real one', async () => {
+    let res = await app().request(`/${DEVICE_ID}/eventlogs?source=`);
+    expect(res.status).toBe(200);
+    expect(renderWhere().sql).not.toMatch(/"source"/);
+
+    res = await app().request(`/${DEVICE_ID}/eventlogs?source=&source=EventLog`);
+    expect(res.status).toBe(200);
+    const { sql, params } = renderWhere();
+    expect(sql).toMatch(/"source" = \$\d+/);
+    expect(sql).not.toMatch(/"source" in/);
+    expect(params).toContain('EventLog');
+    expect(params).not.toContain('');
+  });
+
   it('rejects more source values than the cap', async () => {
     const qs = Array.from({ length: 26 }, (_, i) => `source=S${i}`).join('&');
     const res = await app().request(`/${DEVICE_ID}/eventlogs?${qs}`);

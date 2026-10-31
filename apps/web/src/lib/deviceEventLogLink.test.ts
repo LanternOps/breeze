@@ -72,6 +72,12 @@ describe('deviceEventLogLink', () => {
     expect(eventLogFilterFromHash(`eventlog/disk&source=disk,Ntfs&${q}`)).toEqual({ sources: ['disk', 'Ntfs'], from, to });
   });
 
+  it('treats a link with more sources than the API accepts as invalid', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => `S${i}`);
+    expect(eventLogFilterFromHash(deviceEventLogHash({ sources: many(25), from, to }))?.sources).toHaveLength(25);
+    expect(eventLogFilterFromHash(deviceEventLogHash({ sources: many(26), from, to }))).toBeUndefined();
+  });
+
   it('accepts from === to', () => {
     expect(eventLogFilterFromHash(deviceEventLogHash({ from, to: from }))).toEqual({ from, to: from });
   });

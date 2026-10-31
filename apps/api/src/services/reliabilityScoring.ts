@@ -1130,6 +1130,10 @@ function factorScoringWindow(windowEnd: Date, days: number, floor: Date | null):
 
 type SourcedReliabilityFactor = 'crashes' | 'hangs' | 'hardwareErrors';
 
+// agent/internal/collectors/reliability.go appendHang: the processName it
+// records for a hang event that carried no source.
+const AGENT_UNKNOWN_HANG_SOURCE = 'unknown';
+
 function readEventSource(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
@@ -1179,8 +1183,10 @@ function collectScoredEventLogSources(
     for (const event of row.appHangs) {
       if (!isNewEvent(appHangKey(event))) continue;
       if (!inWindow(event.timestamp, row.collectedAt)) continue;
-      // The agent stores a hang event's provider (event-log source) as processName.
-      note('hangs', readEventSource(event.processName));
+      // The agent stores a hang event's provider (event-log source) as
+      // processName, and the placeholder "unknown" when the event had none —
+      // that names no event-log source, so it counts as unnamed.
+      note('hangs', event.processName === AGENT_UNKNOWN_HANG_SOURCE ? null : readEventSource(event.processName));
     }
     for (const event of row.hardwareErrors) {
       if (!isGenuineHardwareError(event)) continue;

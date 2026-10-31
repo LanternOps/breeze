@@ -110,6 +110,18 @@ describe('scoreDeviceReliability scored event-log sources (#10053)', () => {
     expect(factors(values.details).crashes!.eventLogSources).toBeUndefined();
   });
 
+  it('treats the agent\'s "unknown" hang placeholder as an unnamed source', () => {
+    const rows = [row('2026-03-10T10:00:00.000Z', {
+      appHangs: [
+        { processName: 'Application Hang', timestamp: '2026-03-10T08:00:00.000Z', duration: 0, resolved: false },
+        { processName: 'unknown', timestamp: '2026-03-10T08:30:00.000Z', duration: 0, resolved: false },
+      ],
+    })];
+    const { values } = scoreDeviceReliability({ ...baseInput, rows: rows as any, baseline: null });
+    expect(values.hangCount30d).toBe(2);
+    expect(factors(values.details).hangs!.eventLogSources).toBeUndefined();
+  });
+
   it('omits the list when the scored events span more sources than a link can carry', () => {
     const crashEvents = Array.from({ length: I.MAX_FACTOR_EVENT_LOG_SOURCES + 1 }, (_, i) => ({
       type: 'bsod', timestamp: `2026-03-10T09:${String(i).padStart(2, '0')}:00.000Z`, details: { source: `Source-${i}` },
@@ -136,6 +148,22 @@ describe('buildReliabilityDrivers window + sources (#10053)', () => {
       windowStart: '2026-03-01T00:00:00.000Z',
       windowEnd: '2026-03-31T12:00:00.000Z',
       eventLogSources: ['EventLog', 'Microsoft-Windows-Kernel-Power'],
+    });
+  });
+
+  it('prefers the persisted window over one re-derived from the current enrolment/computedAt', () => {
+    const drivers = I.buildReliabilityDrivers({
+      factors: {
+        crashes: { score: 40, weight: 25, windowStart: '2026-02-20T00:00:00.000Z', windowEnd: '2026-03-21T09:00:00.000Z' },
+        hangs: { score: 80, weight: 15, windowStart: '2026-02-20T00:00:00.000Z' },
+      },
+    }, { computedAt: '2026-03-31T12:00:00.000Z', enrolledAt: '2026-03-05T08:00:00.000Z' });
+    expect(drivers.find((d) => d.factor === 'crashes')).toMatchObject({
+      windowStart: '2026-02-20T00:00:00.000Z', windowEnd: '2026-03-21T09:00:00.000Z',
+    });
+    // Half a persisted window is not a window: fall back to the derived one.
+    expect(drivers.find((d) => d.factor === 'hangs')).toMatchObject({
+      windowStart: '2026-03-05T08:00:00.000Z', windowEnd: '2026-03-31T12:00:00.000Z',
     });
   });
 

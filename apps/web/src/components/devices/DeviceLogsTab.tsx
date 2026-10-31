@@ -196,7 +196,10 @@ export default function DeviceLogsTab({
     to: string;
   } | null>(linkedFilter ? { from: linkedFilter.from, to: linkedFilter.to } : null);
   // Every source the link selects (#10053: a reliability factor can name
-  // several); sent as repeated `source` params until a manual edit.
+  // several), sent as repeated `source` params. It stays the source filter
+  // after other manual edits drop the linked window (the text box shows it
+  // comma-joined, which is not itself a sendable filter) and is replaced only
+  // when the source box itself is edited or the filters are cleared.
   const [linkedSources, setLinkedSources] = useState<string[] | undefined>(
     linkedFilter?.sources,
   );
@@ -218,12 +221,11 @@ export default function DeviceLogsTab({
     setExpandedId(null);
   }, [linkedFilter]);
 
-  // A manual edit drops the linked state and the hash params so the URL and
-  // the visible filters agree.
+  // A manual edit drops the linked window and the hash params so the URL and
+  // the visible filters agree. The linked sources stay (see above).
   const dropLinked = () => {
     if (linkedWindow === null && linkedFilter === undefined) return;
     setLinkedWindow(null);
-    setLinkedSources(undefined);
     appliedKey.current = "";
     if (linkedFilter !== undefined) window.location.hash = EVENTLOG_TAB_HASH;
   };
@@ -296,6 +298,7 @@ export default function DeviceLogsTab({
     setLevelFilter("");
     setCategoryFilter("");
     setSourceFilter("");
+    setLinkedSources(undefined);
     setStartDate("");
     setEndDate("");
     setPage(1);
@@ -359,6 +362,7 @@ export default function DeviceLogsTab({
           {hasFilters && (
             <button
               type="button"
+              data-testid="device-logs-clear-filters"
               onClick={clearFilters}
               className="ml-auto text-xs text-muted-foreground hover:text-foreground"
             >
@@ -425,6 +429,7 @@ export default function DeviceLogsTab({
               value={sourceFilter}
               onChange={(e) => {
                 dropLinked();
+                setLinkedSources(undefined);
                 setSourceFilter(e.target.value);
               }}
               onKeyDown={(e) => {
@@ -450,6 +455,7 @@ export default function DeviceLogsTab({
                     type="button"
                     onClick={() => {
                       dropLinked();
+                      setLinkedSources(undefined);
                       setSourceFilter(preset.value);
                       setPage(1);
                     }}

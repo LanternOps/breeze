@@ -190,6 +190,27 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
     expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
   });
 
+  it('another manual edit after a multi-source link keeps sending every source, not the joined text', async () => {
+    const user = userEvent.setup();
+    window.location.hash = `#${deviceEventLogHash({ sources: ['EventLog', 'Ntfs'], from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['EventLog', 'Ntfs'], from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
+    expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+    await waitFor(() => expect(lastParams().get('level')).toBe('error'));
+    expect(lastParams().getAll('source')).toEqual(['EventLog', 'Ntfs']);
+  });
+
+  it('clearing after a multi-source link drops every source', async () => {
+    const user = userEvent.setup();
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ sources: ['EventLog', 'Ntfs'], from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
+    await user.click(screen.getByTestId('device-logs-clear-filters'));
+    await waitFor(() => expect(lastParams().has('level')).toBe(false));
+    expect(lastParams().has('source')).toBe(false);
+  });
+
   it('without a linked filter nothing is seeded', async () => {
     render(<DeviceLogsTab deviceId="d1" />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
