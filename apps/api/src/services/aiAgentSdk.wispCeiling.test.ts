@@ -497,6 +497,25 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     allowTier(1);
   });
 
+  it('starts the focal reservation synchronously before a detached hook can cross the turn reset', async () => {
+    const session = wispSession({ pendingTurnAutoLinkCount: 0 });
+    const result = await createSessionPreToolUse(session)('get_device_details', {});
+    if (!result.allowed || !result.onSuccess) throw new Error('expected a success hook');
+    let release!: () => void;
+    autoLink.focal.mockImplementationOnce(() => {
+      session.pendingTurnAutoLinkCount += 1;
+      return new Promise<void>((resolve) => { release = resolve; });
+    });
+    const pending = result.onSuccess({});
+    expect(session.pendingTurnAutoLinkCount).toBe(1);
+    // The tool result can now be returned and the turn settled. Finishing
+    // the detached I/O must not reserve a slot against the reset counter.
+    session.pendingTurnAutoLinkCount = 0;
+    release();
+    await pending;
+    expect(session.pendingTurnAutoLinkCount).toBe(0);
+  });
+
   it('hands onSuccess the exact per-call auth/ceiling even after session auth changes', async () => {
     const session = wispSession();
     const input = { deviceId: '00000000-0000-4000-8000-000000000001' };
@@ -1128,7 +1147,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, expect.objectContaining({ user: expect.anything() }), CEILING, { type: 'device', id: 'd-1' });
   });
 
   it('resolves and passes the ceiling before rebuilding record context, then reuses it for the seed', async () => {
@@ -1138,7 +1157,7 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
     expect(wisp.resolveGrantCeiling).toHaveBeenCalledWith(GRANT.grantId, GRANT.revisionId);
     expect(mockBuildSystemPrompt).toHaveBeenCalledWith(auth, page, undefined, CEILING);
     expect(wisp.resolveGrantCeiling.mock.invocationCallOrder[0]).toBeLessThan(mockBuildSystemPrompt.mock.invocationCallOrder[0]!);
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT, auth, CEILING, page);
   });
 
   it('refuses an inactive ceiling before building record context', async () => {

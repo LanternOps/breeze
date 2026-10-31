@@ -715,7 +715,7 @@ async function runPreFlightAdmission(
       const ceiling = await resolveGrantCeiling(grant.grantId, grant.revisionId);
       systemPrompt = [
         await buildSystemPrompt(auth, sanitizedPageContext, undefined, ceiling),
-        await wispSeedForSession(grant, auth, ceiling),
+        await wispSeedForSession(grant, auth, ceiling, sanitizedPageContext),
       ].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
@@ -1205,11 +1205,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     }
     const { ceiling, permissionKeys, narrow } = wispCall.current;
     const toolAuth = narrow(session.toolAuth, ceiling, session.breezeSessionId, permissionKeys);
+    // Load while the gate is still awaited. The detached success hook must
+    // enter autoLinkFocalAct (and reserve its slots) synchronously, before the
+    // tool result can reach the SDK and settlement can reset the turn count.
+    let autoLinkFocalAct: typeof import('./wisp/autoLink').autoLinkFocalAct;
+    try {
+      ({ autoLinkFocalAct } = await import('./wisp/autoLink'));
+    } catch (err) {
+      console.error(`[AI-SDK] Auto-link module unavailable for ${toolName}:`, err);
+      captureException(err, undefined, { op: 'wisp.auto_link', toolName });
+      return { ...result, toolAuth };
+    }
     return {
       ...result,
       toolAuth,
       onSuccess: async (callInput) => {
-        const { autoLinkFocalAct } = await import('./wisp/autoLink');
         await autoLinkFocalAct({ session, toolName, input: callInput, auth: toolAuth, ceiling });
       },
     };
