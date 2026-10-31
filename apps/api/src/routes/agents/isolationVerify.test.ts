@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ lock: vi.fn(), update: vi.fn(), set: vi.fn(), where: vi.fn() }));
-vi.mock('../../db', () => ({ db: { update: h.update } }));
-vi.mock('../../services/networkIsolation/episodeStore', () => ({ withEpisodeLock: h.lock }));
+const h = vi.hoisted(() => ({ snapshot: vi.fn(), transactionDepth: 0, lock: vi.fn(), update: vi.fn(), set: vi.fn(), where: vi.fn() }));
+vi.mock('../../db', () => ({ db: { update: h.update }, withDbTransaction: async (fn: () => Promise<unknown>) => { h.transactionDepth++; try { return await fn(); } finally { h.transactionDepth--; } } }));
+vi.mock('../../services/networkIsolation/episodeStore', async original => ({ ...(await original<typeof import('../../services/networkIsolation/episodeStore')>()), withEpisodeLock: h.lock, writeEpisodeSnapshot: h.snapshot }));
 
 import { isolationVerifyRoutes } from './isolationVerify';
 import { db } from '../../db';
@@ -40,9 +40,11 @@ describe('POST /agents/:id/isolation/:isolationId/verify', () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     episode = { id: EPISODE, deviceId: DEVICE, orgId: ORG, state: 'applying', desiredState: 'isolated', generation: 1, verifiedAt: null };
-    h.lock.mockReset().mockImplementation(async (_tx: unknown, _id: string, fn: (row: unknown) => Promise<unknown>) => ({
-      found: true, value: await fn(episode),
-    }));
+    h.snapshot.mockReset().mockResolvedValue(true);
+    h.lock.mockReset().mockImplementation(async (_tx: unknown, _id: string, fn: (row: unknown) => Promise<unknown>) => {
+      expect(h.transactionDepth).toBe(1);
+      return { found: true, value: await fn(episode) };
+    });
     const chain: any = {
       where: h.where,
       returning: vi.fn(async () => [{ id: EPISODE }]),
@@ -74,36 +76,33 @@ describe('POST /agents/:id/isolation/:isolationId/verify', () => {
     const res = await post();
     expect(res.status).toBe(200);
     expect(h.lock).toHaveBeenCalledWith(db, EPISODE, expect.any(Function));
-    expect(h.set).toHaveBeenCalledWith(expect.objectContaining({ verifiedAt: NOW }));
+    expect(h.snapshot).toHaveBeenCalledWith(db, EPISODE, expect.anything(), expect.objectContaining({ state: episode.state, verifiedAt: NOW }), NOW);
     expect(res.headers.get('date')).toBe(NOW.toUTCString());
   });
 
   it('ignores client timestamps and cannot certify a newer generation from input', async () => {
     const res = await post(app(), EPISODE, { verifiedAt: '2099-01-01T00:00:00Z', generation: 100 });
     expect(res.status).toBe(200);
-    expect(h.set).toHaveBeenCalledWith(expect.objectContaining({ verifiedAt: NOW }));
-    expect(h.set.mock.calls[0]![0]).not.toHaveProperty('generation');
-    expect(h.set.mock.calls[0]![0]).not.toHaveProperty('state', 'verified');
+    expect(h.snapshot).toHaveBeenCalledWith(db, EPISODE, expect.anything(), expect.objectContaining({ state: episode.state, verifiedAt: NOW }), NOW);
+    expect(h.snapshot.mock.calls[0]![3]).toMatchObject({ generation: 1, state: 'applying' });
   });
 
   it.each(['applied', 'verified', 'dispatched', 'requested'])('accepts live %s episodes without changing state', async (state) => {
     episode.state = state;
     const res = await post();
     expect(res.status).toBe(200);
-    expect(h.set.mock.calls[0]![0]).not.toHaveProperty('state');
+    expect(h.snapshot.mock.calls[0]![3]).toHaveProperty('state', state);
   });
 
   it('rejects another device credential even in the same org', async () => {
     const res = await post(app({ deviceId: OTHER_DEVICE }));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(404);
     expect(h.update).not.toHaveBeenCalled();
   });
 
   it('rejects another org credential even if supplied a matching device id', async () => {
     const res = await post(app({ orgId: '22222222-2222-4222-8222-222222222223' }));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(404);
     expect(h.update).not.toHaveBeenCalled();
   });
 
@@ -117,8 +116,7 @@ describe('POST /agents/:id/isolation/:isolationId/verify', () => {
     episode.state = state;
     episode.desiredState = 'released';
     const res = await post();
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.status).toBeLessThan(500);
+    expect(res.status).toBe(409);
     expect(h.update).not.toHaveBeenCalled();
   });
 
@@ -133,4 +131,18 @@ describe('POST /agents/:id/isolation/:isolationId/verify', () => {
     expect(h.lock).not.toHaveBeenCalled();
     expect(h.update).not.toHaveBeenCalled();
   });
+  it('refuses a different agent id before reading the episode', async () => {
+    expect((await post(app({ agentId: 'different-agent' }))).status).toBe(403);
+    expect(h.lock).not.toHaveBeenCalled();
+  });
+  it('refuses a lost snapshot CAS', async () => {
+    h.snapshot.mockResolvedValue(false);
+    expect((await post()).status).toBe(409);
+  });
+  it('does not replace an existing verification timestamp', async () => {
+    const first = new Date('2026-10-30T00:00:00Z'); episode.verifiedAt = first;
+    expect((await post()).status).toBe(200);
+    expect(h.snapshot.mock.calls[0]![3]).toHaveProperty('verifiedAt', first);
+  });
+
 });

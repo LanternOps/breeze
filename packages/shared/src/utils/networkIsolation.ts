@@ -162,3 +162,39 @@ export function agentSupportsNetworkIsolation(
   const cmp = semverCompare(agentVersion.trim(), NETWORK_ISOLATION_MIN_AGENT_VERSION);
   return cmp !== null && cmp >= 0;
 }
+
+/** Ordering identity shared by agent evidence, command results, and persisted safe reports. */
+export interface IsolationOrderingKey { isolationId: string; generation: number; journalSeq: number }
+
+/** Deliberate persistence whitelist: no secrets, resolved addresses, or agent prose. */
+export type SafeAgentReport = (IsolationOrderingKey & {
+  state: AgentReportableIsolationState; phase: IsolationJournalPhase;
+  mechanism: IsolationMechanism | null; ruleDigest: string | null;
+}) | { isolationId: null; phase: 'none' };
+
+export type IsolationStartRefusal =
+  | 'feature_disabled' | 'partner_not_enabled' | 'agent_below_gate' | 'agent_not_ready' | 'device_lifecycle'
+  | 'unsupported_platform' | 'trust_restricted' | 'isolation_already_active'
+  | 'isolation_unacknowledged' | 'incident_mismatch' | 'site_forbidden';
+
+export function isUnresolvedTerminalIsolationState(state: string): state is (typeof UNRESOLVED_TERMINAL_STATES)[number] {
+  return UNRESOLVED_TERMINAL_SET.has(state);
+}
+export function isTerminalIsolationState(state: string): state is (typeof UNRESOLVED_TERMINAL_STATES | typeof RESOLVED_TERMINAL_STATES)[number] {
+  return isUnresolvedTerminalIsolationState(state) || isResolvedTerminalIsolationState(state);
+}
+export function isIsolationFailureCode(code: unknown): code is IsolationFailureCode {
+  return typeof code === 'string' && ISOLATION_FAILURE_CODES.includes(code as IsolationFailureCode);
+}
+export function failureCodeFromJournalType(type: string): IsolationFailureCode | undefined {
+  const code = type.startsWith('failed_') ? type.slice('failed_'.length) : undefined;
+  return isIsolationFailureCode(code) ? code : undefined;
+}
+export const ISOLATION_RELEASE_JOURNAL_TYPES = {
+  released_dead_man: 'dead_man', released_local_code: 'local_code', released_local_forced: 'local_forced',
+} as const satisfies Record<string, IsolationReleaseKind>;
+
+export const ISOLATION_RESULT_PHASE_BY_STATE: Readonly<Record<AgentReportableIsolationState, IsolationJournalPhase>> = {
+  applying: 'provisional', applied: 'committed', verified: 'committed', failed: 'rolled_back',
+  released: 'released', expired: 'released', released_locally: 'released', self_released: 'released',
+};

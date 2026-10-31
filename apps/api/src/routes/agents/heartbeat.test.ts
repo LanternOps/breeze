@@ -1,4 +1,4 @@
-vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async () => undefined) }));
+vi.mock('../../services/networkIsolation/reconcile', () => ({ buildContainmentHeartbeatBlock: vi.fn(async () => ({ networkIsolation: null })), reconcileContainmentReport: vi.fn(async () => undefined), noteIsolationReportDropped: vi.fn(), storedContainmentHeartbeatBlock: vi.fn((row) => ({ networkIsolation: row ? { isolationId: row.id, generation: row.generation, desired: row.desiredState, allow: row.allowSnapshot } : null })) }));
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Hono } from 'hono';
 
@@ -5462,9 +5462,9 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
       .toHaveBeenCalledWith('device-1', 'org-1', expect.objectContaining({ policySet: set }));
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
-    // hierarchy/set savepoint + the policy probe's and the UniFi collector
-    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
+    // Hierarchy/set + two policy probe savepoints, plus the isolated reconciliation
+    // and containment-block savepoints: SQL faults in either must not abort the beat.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(5);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {

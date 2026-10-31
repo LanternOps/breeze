@@ -1,4 +1,4 @@
-import { buildContainmentHeartbeatBlock, reconcileContainmentReport } from '../../services/networkIsolation/reconcile';
+import { buildContainmentHeartbeatBlock, reconcileContainmentReport, storedContainmentHeartbeatBlock, noteIsolationReportDropped, type HeartbeatEpisodeContext } from '../../services/networkIsolation/reconcile';
 import { topologyHeartbeat, topologyHeartbeatWithoutMaterialization } from '../../services/topology/heartbeat';
 import { loadAgentTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from '../../services/topology/flags';
 import { Hono } from 'hono';
@@ -2405,7 +2405,25 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  await reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date());
+  const isolationContext: HeartbeatEpisodeContext = {};
+  // Informational input may have collapsed under .catch(undefined); report paths, never values.
+  const rawBeat = await c.req.json();
+  const rawIsolation = rawBeat?.containment?.networkIsolation;
+  if (data.containment?.networkIsolation === undefined) noteIsolationReportDropped(device.id, rawIsolation);
+  try {
+    await withDbTransaction(() => reconcileContainmentReport(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, data.containment?.networkIsolation, new Date(), isolationContext));
+  } catch (err) {
+    console.error('[heartbeat] isolation reconcile failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+    captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+  }
+  let containment;
+  try {
+    containment = await withDbTransaction(() => buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device, isolationContext));
+  } catch (err) {
+    console.error('[heartbeat] isolation block failed', { deviceId: device.id, isolationId: isolationContext.row?.id });
+    captureException(err, undefined, { phase: 'isolation_heartbeat_block', deviceId: device.id, isolationId: isolationContext.row?.id ?? 'unknown' });
+    containment = storedContainmentHeartbeatBlock(isolationContext.row);
+  }
 
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
@@ -2417,7 +2435,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceId: device.id,
     remoteManagement,
     mainResponse: {
-      containment: await buildContainmentHeartbeatBlock(db as unknown as import('../../services/networkIsolation/episodeStore').EpisodeTx, device),
+      containment,
       commands: deliverableCommands,
       configUpdate: mergedConfigUpdate,
       networkContextReceipt,

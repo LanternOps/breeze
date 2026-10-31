@@ -98,7 +98,6 @@ describe('human network-isolation routes', () => {
 
   const noEffects = () => {
     for (const endpoint of endpoints) expect(endpoint.service).not.toHaveBeenCalled();
-    expect(writeRouteAudit).not.toHaveBeenCalled();
   };
 
   beforeEach(() => {
@@ -211,4 +210,23 @@ describe('human network-isolation routes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ startEligibility: { allowed: false, reason: 'feature_disabled' } });
   });
+  it.each([
+    ['isolation_secret_unavailable', 503], ['device_not_found', 404], ['isolation_not_found', 404],
+    ['site_forbidden', 403], ['trust_restricted', 403], ['invalid_allowlist', 400], ['relay_unavailable', 400],
+    ['agent_below_gate', 409], ['agent_not_ready', 409], ['device_lifecycle', 409],
+    ['feature_disabled', 409], ['partner_not_enabled', 409], ['device_pending_assignment', 409],
+  ])('maps the service refusal %s to %s', async (code, status) => {
+    h.start.mockResolvedValue({ error: code });
+    expect((await request(endpoints[0])).status).toBe(status);
+  });
+
+  it.each([
+    ['site_forbidden', { 'x-deny-site': 'true' }, 403],
+    ['device_not_found', {}, 404],
+  ] as const)('audits the route precheck refusal %s', async (code, headers, status) => {
+    if (code === 'device_not_found') vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(null);
+    expect((await request(endpoints[0], headers)).status).toBe(status);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.isolation.refused', details: { code } }));
+  });
+
 });

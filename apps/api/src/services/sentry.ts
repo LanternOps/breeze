@@ -522,6 +522,29 @@ const ALLOWED_TAG_NAMES = new Set([
   'flow_run_id',
   'flow_site',
 ]);
+// Isolation diagnostics carry only local UUIDs and closed server labels. Keep the generic
+// names unavailable to unrelated callers, and never admit report paths or agent prose.
+const ISOLATION_DIAGNOSTIC_PHASES = new Set([
+  'isolation_heartbeat_block', 'isolation_report_dropped', 'isolation_allowlist_fallback',
+  'isolation_result_ignored', 'isolation_verify_tamper', 'isolation_secret_unavailable',
+  'isolation_outcome_publish',
+]);
+const ISOLATION_DIAGNOSTIC_REASONS = new Set([
+  'stdout_missing', 'stdout_oversize', 'stdout_not_json', 'identity_schema',
+  'identity_mismatch', 'episode_mismatch', 'transport_timeout',
+]);
+const ISOLATION_UUID_TAGS = new Set(['deviceId', 'isolationId', 'incidentId', 'incidentActionId', 'commandId', 'agentId']);
+const LOCAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isIsolationDiagnosticTag(key: string, value: unknown, tags: Record<string, unknown> | undefined): boolean {
+  if (!(typeof tags?.phase === 'string' && ISOLATION_DIAGNOSTIC_PHASES.has(tags.phase))
+    && !(typeof tags?.isolationId === 'string' && LOCAL_UUID.test(tags.isolationId))) return false;
+  if (typeof value !== 'string') return false;
+  if (ISOLATION_UUID_TAGS.has(key)) return LOCAL_UUID.test(value);
+  if (key === 'phase') return ISOLATION_DIAGNOSTIC_PHASES.has(value);
+  if (key === 'reason') return ISOLATION_DIAGNOSTIC_REASONS.has(value);
+  if (key === 'source') return value === 'configuration' || value === 'builder';
+  return false;
+}
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
 
@@ -543,7 +566,7 @@ function pickAllowedTags(
 ): Record<string, string | number | boolean> {
   const picked: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(tags ?? {})) {
-    if (!ALLOWED_TAG_NAMES.has(key)) continue;
+    if (!ALLOWED_TAG_NAMES.has(key) && !isIsolationDiagnosticTag(key, value, tags)) continue;
     if (key === 'route_template') {
       if (isSafeRouteTemplateTag(value)) picked[key] = value;
       continue;
@@ -619,7 +642,7 @@ function setCallerTags(
 ): void {
   for (const [key, value] of Object.entries(tags ?? {})) {
     if (
-      ALLOWED_TAG_NAMES.has(key) &&
+      (ALLOWED_TAG_NAMES.has(key) || isIsolationDiagnosticTag(key, value, tags)) &&
       key !== 'route_template' &&
       isBoundedTagValue(value)
     ) {

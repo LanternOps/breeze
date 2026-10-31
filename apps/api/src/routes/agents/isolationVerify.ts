@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
-import { ACTIVE_STATES } from '@breeze/shared';
-import { db } from '../../db';
-import { deviceNetworkIsolations } from '../../db/schema';
+import { isActiveIsolationState } from '@breeze/shared';
+import { db, withDbTransaction } from '../../db';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
-import { withEpisodeLock, type EpisodeTx } from '../../services/networkIsolation/episodeStore';
+import { withEpisodeLock, toEpisodeSnapshot, writeEpisodeSnapshot, type EpisodeTx } from '../../services/networkIsolation/episodeStore';
+import { applyEpisodeEvent } from '../../services/networkIsolation/stateMachine';
+import { captureException } from '../../services/sentry';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 
 export const isolationVerifyRoutes = new Hono();
@@ -16,17 +16,24 @@ isolationVerifyRoutes.post('/:id/isolation/:isolationId/verify', async c => {
   if (agent.agentId !== c.req.param('id')) return c.json({ error: 'Forbidden' }, 403);
   const id = c.req.param('isolationId');
   if (!PG_UUID_REGEX.test(id)) return c.json({ error: 'Invalid isolation id' }, 400);
-  const result = await withEpisodeLock(db as unknown as EpisodeTx, id, async row => {
-    if (row.deviceId !== agent.deviceId || row.orgId !== agent.orgId) return false;
-    if (row.desiredState !== 'isolated' || !ACTIVE_STATES.includes(row.state as never)) return false;
+  const result = await withDbTransaction(() => withEpisodeLock(db as unknown as EpisodeTx, id, async row => {
+    if (row.deviceId !== agent.deviceId || row.orgId !== agent.orgId) {
+      console.warn('[isolation] verify ownership mismatch', { agentId: agent.agentId, isolationId: id });
+      captureException(new Error('Isolation verify ownership mismatch'), undefined, { phase: 'isolation_verify_tamper', agentId: agent.agentId, isolationId: id });
+      return { status: 404 as const };
+    }
+    if (row.desiredState !== 'isolated' || !isActiveIsolationState(row.state)) return { status: 409 as const };
     const now = new Date();
     // This round trip is only the positive probe. The agent must still observe a drop before it
     // reports verified; never synthesize a journal sequence or the agent's verified state here.
-    await db.update(deviceNetworkIsolations).set({ verifiedAt: now, updatedAt: now }).where(eq(deviceNetworkIsolations.id, row.id));
-    return now;
-  });
+    const previous = toEpisodeSnapshot(row);
+    const transition = applyEpisodeEvent(previous, { type: 'server_probe_verified', generation: row.generation, at: now });
+    if (!('next' in transition) || !await writeEpisodeSnapshot(db as unknown as EpisodeTx, row.id, previous, transition.next, now)) return { status: 409 as const };
+    return { status: 200 as const, at: now };
+  }));
   if (!result.found) return c.json({ error: 'Isolation not found' }, 404);
-  if (!result.value) return c.json({ error: 'Isolation not active for this device' }, 409);
-  c.header('Date', result.value.toUTCString());
-  return c.json({ verifiedAt: result.value.toISOString() });
+  if (result.value.status === 404) return c.json({ error: 'Isolation not found' }, 404);
+  if (result.value.status !== 200) return c.json({ error: 'Isolation not active for this device' }, 409);
+  c.header('Date', result.value.at.toUTCString());
+  return c.json({ verifiedAt: result.value.at.toISOString() });
 });

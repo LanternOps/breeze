@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+const isolation = vi.hoisted(() => ({ owner: vi.fn(async () => null as unknown), journal: vi.fn() }));
+vi.mock('../services/networkIsolation/episodeStore', () => ({ findEpisodeByCommand: isolation.owner }));
+vi.mock('../services/networkIsolation/reconcile', () => ({ journalIsolationEvent: isolation.journal }));
 
 const { updateMock, finalizeMock, captureExceptionMock } = vi.hoisted(() => ({
   updateMock: vi.fn(),
@@ -75,9 +78,16 @@ describe('staleCommandReaper execute_containment follow-through (#9662)', () => 
 
   it('does not finalize network isolation on timeout or undelivered expiry', async () => {
     for (const kind of ['timeout', 'expired']) {
+      isolation.owner.mockResolvedValueOnce({ id: 'episode' });
       await timedOut({ commandType: 'execute_containment', kind, payload: { ...PAYLOAD, actionType: 'network_isolation' } });
     }
     expect(finalizeMock).not.toHaveBeenCalled();
+    expect(isolation.journal).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails the legacy network-isolation action with no owning episode', async () => {
+    await timedOut({ commandType: 'execute_containment', payload: { ...PAYLOAD, actionType: 'network_isolation' } });
+    expect(finalizeMock).toHaveBeenCalledTimes(1);
   });
 
   it('leaves other command types alone', async () => {

@@ -87,10 +87,11 @@ describe('startNetworkIsolation', () => {
   });
   it.each([
     ['feature_disabled', () => vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'false')],
-    ['feature_disabled', () => vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', '77777777-7777-4777-8777-777777777777')],
-    ['agent_unsupported', () => { h.device.agentVersion = '1.0.0'; }],
-    ['agent_unsupported', () => { h.device.networkIsolationVersion = 0; }],
-    ['agent_unsupported', () => { h.device.networkIsolationReady = false; }],
+    ['partner_not_enabled', () => vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', '77777777-7777-4777-8777-777777777777')],
+    ['agent_below_gate', () => { h.device.agentVersion = '1.0.0'; }],
+    ['agent_below_gate', () => { h.device.networkIsolationVersion = 0; }],
+    ['agent_not_ready', () => { h.device.networkIsolationReady = false; }],
+    ['device_lifecycle', () => { h.device.status = 'quarantined'; }],
     ['unsupported_platform', () => { h.device.osType = 'unknown'; }],
     ['trust_restricted', () => h.trust.mockRejectedValue(new TrustDeniedError('TRUST_RESTRICTED', 'Restricted', deviceId, 'execute_containment'))],
     ['isolation_already_active', () => { h.active = episode(); }],
@@ -101,7 +102,9 @@ describe('startNetworkIsolation', () => {
     setup();
     const caller = { ...auth, canAccessSite: (id: string | null) => id !== 'denied' } as AuthContext;
     const result = await startNetworkIsolation(caller, deviceId, { incidentId: h.incident.id, reason: 'Investigation' }, { requestedByKind: 'user' });
-    expect(result).toEqual({ error }); expect(h.dispatch).not.toHaveBeenCalled();
+    expect(result).toEqual({ error });
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.isolation.refused', details: expect.objectContaining({ code: error }) }));
+    expect(h.dispatch).not.toHaveBeenCalled();
   });
   it('refuses a closed incident and an incident not affecting this device', async () => {
     for (const patch of [{ status: 'closed' }, { status: 'detected', affectedDevices: [] }]) {
@@ -137,4 +140,43 @@ describe('startNetworkIsolation', () => {
     expect(result).toHaveProperty('episodes.0.lastReportedGeneration', 2);
     expect(result).not.toHaveProperty('episodes.0.breakGlassSecretEnc');
   });
+  it('carries the readiness explanation in start eligibility', async () => {
+    h.device.networkIsolationReady = false;
+    h.device.networkIsolationUnsupportedReason = 'Firewall backend unavailable';
+    expect(await listDeviceIsolations(auth, deviceId)).toHaveProperty('startEligibility.networkIsolationUnsupportedReason', 'Firewall backend unavailable');
+  });
+  it.each(['missing', 'throwing'])('returns the typed secret fault when sealing is %s', async mode => {
+    if (mode === 'throwing') h.seal.mockImplementation(() => { throw new Error('key unavailable'); });
+    else h.seal.mockReturnValue(null);
+    expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'isolation_secret_unavailable' });
+  });
+  it.each(['missing', 'throwing'])('returns the typed secret fault when decrypt is %s', async mode => {
+    h.row = episode();
+    if (mode === 'throwing') h.decrypt.mockImplementation(() => { throw new Error('key unavailable'); });
+    else h.decrypt.mockReturnValue(null);
+    expect(await getBreakGlassCodes(auth, deviceId, isolationId)).toEqual({ error: 'isolation_secret_unavailable' });
+  });
+  it('carries an agent readiness refusal explanation in the response', async () => {
+    h.device.networkIsolationReady = false;
+    h.device.networkIsolationUnsupportedReason = 'Firewall backend unavailable';
+    expect(await startNetworkIsolation(auth, deviceId, input, { requestedByKind: 'user' })).toEqual({ error: 'agent_not_ready', networkIsolationUnsupportedReason: 'Firewall backend unavailable' });
+  });
+  it('treats missing stored active secret as unavailable', async () => {
+    h.row = episode({ breakGlassSecretEnc: '' });
+    expect(await getBreakGlassCodes(auth, deviceId, isolationId)).toEqual({ error: 'isolation_secret_unavailable' });
+  });
+  it('refuses break-glass codes for a resolved episode', async () => {
+    h.row = episode({ state: 'released', desiredState: 'released' });
+    expect(await getBreakGlassCodes(auth, deviceId, isolationId)).toEqual({ error: 'isolation_conflict' });
+    expect(h.decrypt).not.toHaveBeenCalled();
+  });
+  it('accepts 720 hours and clamps 72 hour command delivery to the standard TTL', async () => {
+    const { deliveryTtlMs } = await import('../commandOfflinePolicy');
+    expect(await startNetworkIsolation(auth, deviceId, { ...input, ttlHours: 720 }, { requestedByKind: 'user' })).not.toHaveProperty('error');
+    expect(await startNetworkIsolation(auth, deviceId, { ...input, ttlHours: 72 }, { requestedByKind: 'user' })).not.toHaveProperty('error');
+    expect(h.dispatch.mock.calls[0]![0].offlinePolicy.deliverWithinMs).toBe(deliveryTtlMs('standard'));
+    expect(h.dispatch.mock.calls[1]![0].offlinePolicy.deliverWithinMs).toBeLessThanOrEqual(72 * 3_600_000);
+    expect(h.dispatch.mock.calls[1]![0].offlinePolicy.deliverWithinMs).toBeGreaterThan(72 * 3_600_000 - 1000);
+  });
+
 });

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { closeDb, db, withDbAccessContext } from '../../db';
-import { devices, deviceNetworkIsolations, incidentActions, incidents } from '../../db/schema';
+import { devices, deviceCommands, deviceNetworkIsolations, incidentActions, incidents } from '../../db/schema';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 import { orgContext } from './topology-fixtures';
 import type { AuthContext } from '../../middleware/auth';
@@ -17,6 +17,11 @@ vi.mock('../../services/partnerTrust.commands', () => ({
   assertDeviceExecuteAllowed: async () => undefined, deviceExecuteAllowedForOrg: async () => true,
   TrustDeniedError: class extends Error {},
 }));
+import { queueCommand } from '../../services/commandQueue';
+import { decryptCommandForDelivery } from '../../services/sensitiveCommandPayload';
+import { decryptSecret } from '../../services/secretCrypto';
+import { columnAad } from '../../services/encryptedColumnTransform';
+import { ISOLATION_SECRET_COLUMN } from '../../services/networkIsolation/reconcile';
 import { startNetworkIsolation } from '../../services/networkIsolation/service';
 afterAll(() => closeDb());
 afterEach(() => vi.unstubAllEnvs());
@@ -38,12 +43,20 @@ const input = { createIncident: { title: 'Containment investigation', severity: 
 describe('isolation start transaction', () => {
   it('makes the action and episode visible to dispatch in the same transaction', async () => {
     const { device, org, auth } = await fixture();
-    dispatch.mockImplementationOnce(async ({ commandId }: { commandId: string }) => {
+    dispatch.mockImplementationOnce(async ({ commandId, payload }: { commandId: string; payload: Record<string, unknown> }) => {
       const episodes = await db.select().from(deviceNetworkIsolations).where(eq(deviceNetworkIsolations.deviceId, device.id));
       const actions = await db.select().from(incidentActions).where(eq(incidentActions.orgId, org.id));
       expect(episodes).toHaveLength(1); expect(actions).toHaveLength(1);
       expect(episodes[0]!.incidentActionId).toBe(actions[0]!.id);
       expect(actions[0]).toMatchObject({ reversible: true, actionType: 'network_isolation', result: { commandId } });
+      // Exercise the real INSERT boundary: bypassing the service's sealing causes
+      // the enc: assertion to fail; corrupt delivery AAD fails the plaintext equality.
+      await queueCommand(device.id, 'execute_containment', payload, undefined, { commandId });
+      const [command] = await db.select().from(deviceCommands).where(eq(deviceCommands.id, commandId));
+      expect((command!.payload as Record<string, unknown>).breakGlassSecret).toMatch(/^enc:/);
+      const plaintext = decryptSecret(episodes[0]!.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, episodes[0]!.id), strict: true });
+      const delivered = decryptCommandForDelivery(command!);
+      expect((delivered?.payload as Record<string, unknown>)?.breakGlassSecret).toBe(plaintext);
       return { ok: true, command: { id: commandId }, delivery: 'queued_offline' };
     });
     expect(await startNetworkIsolation(auth, device.id, input, { requestedByKind: 'system' })).not.toHaveProperty('error');

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import {
-  NETWORK_ISOLATION_TTL, isResolvedTerminalIsolationState, startNetworkIsolationSchema,
+  NETWORK_ISOLATION_TTL, isResolvedTerminalIsolationState, isUnresolvedTerminalIsolationState, startNetworkIsolationSchema,
   releaseNetworkIsolationSchema, extendNetworkIsolationSchema,
   type IsolationReleaseKind, type StartNetworkIsolationInput, type ReleaseNetworkIsolationInput,
 } from '@breeze/shared';
@@ -20,17 +20,34 @@ import { generateEpisodeSecret, currentBreakGlassCodes } from './breakGlass';
 import { createEpisode, findUnresolvedEpisode, findUnconfirmedTombstone, withEpisodeLock, writeEpisodeSnapshot, toEpisodeSnapshot, listEpisodes, type EpisodeTx } from './episodeStore';
 import { applyEpisodeEvent, type EpisodeEvent } from './stateMachine';
 import { ISOLATION_SECRET_COLUMN } from './reconcile';
+import { captureException } from '../sentry';
 import { isolationStartGate, type IsolationStartRefusal } from './gates';
 export type { IsolationStartRefusal } from './gates';
 export interface ApprovalBinding { orgId: string; deviceId: string; isolationId: string; generation: number }
-class IsolationRefusal extends Error { constructor(readonly code: string) { super(code); } }
-function refuse(code: string): never { throw new IsolationRefusal(code); }
+export type IsolationRefusalCode = IsolationStartRefusal
+  | 'device_not_found' | 'isolation_not_found' | 'relay_unavailable' | 'invalid_allowlist'
+  | 'isolation_conflict' | 'isolation_secret_unavailable' | 'approval_mismatch'
+  | 'device_offline' | 'device_decommissioned' | 'device_pending_assignment' | 'backup_helper_update_required';
+class IsolationRefusal extends Error { constructor(readonly code: IsolationRefusalCode, readonly networkIsolationUnsupportedReason?: string) { super(code); } }
+function refuse(code: IsolationRefusalCode, reason?: string): never { throw new IsolationRefusal(code, reason); }
+function secretUnavailable(error: unknown, deviceId: string, isolationId?: string): never {
+  const fault = error instanceof Error ? error : new Error('Isolation secret unavailable');
+  console.error('[isolation] secret unavailable', { deviceId, isolationId });
+  captureException(fault, undefined, { phase: 'isolation_secret_unavailable', deviceId, ...(isolationId ? { isolationId } : {}) });
+  return refuse('isolation_secret_unavailable');
+}
+
 /** A refusal rolls back the whole savepoint, including incident/action/command inserts. */
-async function inScope<T>(auth: AuthContext, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: string }> {
+async function inScope<T>(auth: AuthContext, deviceId: string, work: (tx: EpisodeTx) => Promise<T>): Promise<T | { error: IsolationRefusalCode; networkIsolationUnsupportedReason?: string }> {
   try {
     return await withDbAccessContext(dbAccessContextFromAuth(auth), () => withDbTransaction(() => work(db as unknown as EpisodeTx)));
   } catch (error) {
-    if (error instanceof IsolationRefusal) return { error: error.code };
+    if (error instanceof IsolationRefusal) {
+      // Run after the failed savepoint has rolled back: a refusal audit must survive it.
+      console.info('[isolation] refused', { deviceId, code: error.code });
+      writeRouteAudit({ ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: auth.orgId ?? undefined, action: 'device.isolation.refused', resourceType: 'device', resourceId: deviceId, details: { code: error.code } });
+      return { error: error.code, ...(error.networkIsolationUnsupportedReason ? { networkIsolationUnsupportedReason: error.networkIsolationUnsupportedReason } : {}) };
+    }
     throw error;
   }
 }
@@ -47,7 +64,7 @@ async function partnerFor(tx: EpisodeTx, orgId: string) {
 }
 function safeEpisode(row: DeviceNetworkIsolation) {
   const { breakGlassSecretEnc: _secret, ...episode } = row;
-  return { ...episode, lastReportedGeneration: typeof row.lastAgentReport?.generation === 'number' ? row.lastAgentReport.generation : null };
+  return { ...episode, lastReportedGeneration: row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : null };
 }
 async function queue(device: { id: string; orgId: string }, type: 'execute_containment' | 'release_containment', commandId: string, payload: Record<string, unknown>, auth: AuthContext, expiresAt?: Date) {
   const result = await dispatchDeviceCommand({ deviceId: device.id, expectedOrgId: device.orgId, type, commandId,
@@ -64,14 +81,14 @@ async function queue(device: { id: string; orgId: string }, type: 'execute_conta
 }
 export async function startNetworkIsolation(auth: AuthContext, deviceId: string, raw: StartNetworkIsolationInput, opts: { requestedByKind: 'user' | 'brain' | 'system'; approvalRef?: string }) {
   const input = startNetworkIsolationSchema.parse(raw);
-  return inScope(auth, async (tx) => {
+  return inScope(auth, deviceId, async (tx) => {
     const device = await loadDevice(tx, auth, deviceId);
     const gate = isolationStartGate(device, await partnerFor(tx, device.orgId));
-    if (gate) return refuse(gate);
+    if (gate) return refuse(gate, gate === 'agent_not_ready' ? device.networkIsolationUnsupportedReason ?? undefined : undefined);
     try { await assertDeviceExecuteAllowed(device.id, 'execute_containment', auth.user.id); }
     catch (error) { if (error instanceof TrustDeniedError) return refuse('trust_restricted'); throw error; }
     const unresolved = await findUnresolvedEpisode(tx, device.id);
-    if (unresolved) return refuse(['released_locally', 'self_released'].includes(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active');
+    if (unresolved) return refuse(isUnresolvedTerminalIsolationState(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active');
     if (await findUnconfirmedTombstone(tx, device.id)) return refuse('isolation_already_active');
     const remoteRelay = input.remoteRelay ?? false;
     if (remoteRelay && !process.env.TURN_HOST?.trim() && !process.env.TURN_TLS_HOST?.trim()) return refuse('relay_unavailable');
@@ -91,8 +108,10 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
     const id = randomUUID(); const actionId = randomUUID(); const commandId = randomUUID();
     const expiresAt = new Date(now.getTime() + (input.ttlHours ?? NETWORK_ISOLATION_TTL.defaultHours) * 3_600_000);
     const secret = generateEpisodeSecret().toString('base64');
-    const sealedSecret = encryptSecret(secret, { aad: columnAad(ISOLATION_SECRET_COLUMN, id) });
-    if (!sealedSecret) throw new Error('isolation_secret_unavailable');
+    let sealedSecret: string | null;
+    try { sealedSecret = encryptSecret(secret, { aad: columnAad(ISOLATION_SECRET_COLUMN, id) }); }
+    catch (error) { return secretUnavailable(error, device.id, id); }
+    if (!sealedSecret) return secretUnavailable(new Error('Isolation secret encryption returned no value'), device.id, id);
     await tx.insert(incidentActions).values({ id: actionId, orgId: device.orgId, incidentId: incidentId!, actionType: 'network_isolation',
       description: 'Network isolation', executedBy: opts.requestedByKind, status: 'in_progress', reversible: true,
       result: { commandId }, approvalRef: opts.approvalRef ?? null, executedAt: now });
@@ -111,7 +130,7 @@ export async function startNetworkIsolation(auth: AuthContext, deviceId: string,
   });
 }
 async function locked<T>(auth: AuthContext, deviceId: string, isolationId: string, work: (tx: EpisodeTx, row: DeviceNetworkIsolation) => Promise<T>) {
-  return inScope(auth, async tx => {
+  return inScope(auth, deviceId, async tx => {
     const device = await loadDevice(tx, auth, deviceId);
     const result = await withEpisodeLock(tx, isolationId, async row => {
       if (row.deviceId !== device.id || row.orgId !== device.orgId) return refuse('isolation_not_found');
@@ -153,29 +172,31 @@ export async function extendNetworkIsolation(auth: AuthContext, deviceId: string
 export async function acknowledgeNetworkIsolation(auth: AuthContext, deviceId: string, isolationId: string) {
   return locked(auth, deviceId, isolationId, async (tx, row) => {
     const updated = await transition(tx, row, { type: 'acknowledge', generation: row.generation, userId: auth.user.id, at: new Date() });
-    await tx.update(deviceNetworkIsolations).set({ breakGlassSecretEnc: '' }).where(eq(deviceNetworkIsolations.id, row.id));
     return { episode: safeEpisode(updated) };
   });
 }
 export async function getBreakGlassCodes(auth: AuthContext, deviceId: string, isolationId: string, auditContext?: AuditContext) {
   return locked(auth, deviceId, isolationId, async (_tx, row) => {
-    if (isResolvedTerminalIsolationState(row.state) || !row.breakGlassSecretEnc) return refuse('isolation_conflict');
-    const secret = decryptSecret(row.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, row.id), strict: true });
-    if (!secret) return refuse('isolation_secret_unavailable');
-    const generation = typeof row.lastAgentReport?.generation === 'number' ? row.lastAgentReport.generation : row.generation;
+    if (isResolvedTerminalIsolationState(row.state)) return refuse('isolation_conflict');
+    if (!row.breakGlassSecretEnc) return secretUnavailable(new Error('Isolation secret is missing'), row.deviceId, row.id);
+    let secret: string | null;
+    try { secret = decryptSecret(row.breakGlassSecretEnc, { aad: columnAad(ISOLATION_SECRET_COLUMN, row.id), strict: true }); }
+    catch (error) { return secretUnavailable(error, row.deviceId, row.id); }
+    if (!secret) return secretUnavailable(new Error('Isolation secret decryption returned no value'), row.deviceId, row.id);
+    const generation = row.lastAgentReport && 'generation' in row.lastAgentReport ? row.lastAgentReport.generation : row.generation;
     writeRouteAudit(auditContext ?? { ...requestLikeFromSnapshot({}), get: () => auth }, { orgId: row.orgId, action: 'device.isolation.break_glass_code_view', resourceType: 'device', resourceId: row.deviceId, details: { isolationId: row.id, generation } });
     return { generation, ...currentBreakGlassCodes(Buffer.from(secret, 'base64'), row.id, generation, new Date()) };
   });
 }
 export async function listDeviceIsolations(auth: AuthContext, deviceId: string) {
-  return inScope(auth, async tx => {
+  return inScope(auth, deviceId, async tx => {
     const device = await loadDevice(tx, auth, deviceId);
     const episodes = await listEpisodes(tx, device.id);
     let reason: IsolationStartRefusal | null = isolationStartGate(device, await partnerFor(tx, device.orgId));
     if (!reason && !await deviceExecuteAllowedForOrg(device.orgId, 'execute_containment', auth.user.id)) reason = 'trust_restricted';
     const unresolved = await findUnresolvedEpisode(tx, device.id);
-    if (!reason && unresolved) reason = ['released_locally', 'self_released'].includes(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active';
+    if (!reason && unresolved) reason = isUnresolvedTerminalIsolationState(unresolved.state) ? 'isolation_unacknowledged' : 'isolation_already_active';
     if (!reason && await findUnconfirmedTombstone(tx, device.id)) reason = 'isolation_already_active';
-    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, lastReportedGeneration: typeof episode.lastAgentReport?.generation === 'number' ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason } };
+    return { episodes: episodes.map(({ breakGlassSecretEnc: _secret, ...episode }: typeof episodes[number] & { breakGlassSecretEnc?: string }) => ({ ...episode, lastReportedGeneration: episode.lastAgentReport && 'generation' in episode.lastAgentReport ? episode.lastAgentReport.generation : null })), startEligibility: { allowed: reason === null, reason, networkIsolationUnsupportedReason: device.networkIsolationUnsupportedReason ?? null } };
   });
 }

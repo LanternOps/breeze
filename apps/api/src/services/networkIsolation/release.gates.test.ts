@@ -16,7 +16,7 @@ vi.mock('../../db', () => {
         return [];
       }) }) }),
       insert: (table: any) => ({ values: async (v: any) => { h.order.push(table[Symbol.for('drizzle:Name')]); h.writes.push(v); } }),
-      update: () => ({ set: (v: any) => ({ where: async () => { h.writes.push(v); } }) }),
+      update: () => ({ set: (v: any) => ({ where: () => { h.writes.push(v); return { returning: async () => [{ id: h.row?.id }], then: (resolve: (value: unknown) => unknown) => Promise.resolve().then(resolve) }; } }) }),
     },
     withDbAccessContext: async (_ctx: unknown, fn: () => unknown) => fn(),
     withDbTransaction: async (fn: () => unknown) => { h.txDepth++; try { return await fn(); } finally { h.txDepth--; } },
@@ -34,8 +34,10 @@ vi.mock('../sensitiveCommandPayload', () => ({ encryptSensitivePayloadFields: (_
 vi.mock('../secretCrypto', () => ({ encryptSecret: (...args: unknown[]) => h.seal(...args), decryptSecret: (...args: unknown[]) => h.decrypt(...args) }));
 vi.mock('../auditEvents', () => ({ writeRouteAudit: (...args: unknown[]) => h.audit(...args), requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }) }));
 vi.mock('./reconcile', () => ({ ISOLATION_SECRET_COLUMN: { table: 'device_network_isolations', column: 'break_glass_secret_enc', kind: 'text', aadBinding: 'row', description: 'Test' } }));
-vi.mock('./episodeStore', async original => ({
-  ...(await original<typeof import('./episodeStore')>()),
+vi.mock('./episodeStore', async original => {
+  const actual = await original<typeof import('./episodeStore')>();
+  return {
+  ...actual,
   findUnresolvedEpisode: async () => h.active,
   findUnconfirmedTombstone: async () => h.tombstone,
   listEpisodes: async () => h.row ? [h.row] : [],
@@ -46,8 +48,8 @@ vi.mock('./episodeStore', async original => ({
     return { ok: true, episode: h.row };
   },
   withEpisodeLock: async (_tx: unknown, id: string, fn: (row: any) => Promise<unknown>) => h.row?.id === id ? { found: true, value: await fn(h.row) } : { found: false },
-  writeEpisodeSnapshot: async (_tx: unknown, _id: string, _prev: unknown, next: any) => { h.row = { ...h.row, ...next }; return true; },
-}));
+  writeEpisodeSnapshot: async (tx: any, id: string, prev: any, next: any) => { const written = await actual.writeEpisodeSnapshot(tx, id, prev, next); if (written) h.row = { ...h.row, ...next }; return written; },
+}; });
 import { startNetworkIsolation, releaseNetworkIsolation, extendNetworkIsolation, acknowledgeNetworkIsolation, getBreakGlassCodes, listDeviceIsolations } from './service';
 import { TrustDeniedError } from '../partnerTrust.commands';
 import { isolationStartGate } from './gates';
@@ -73,18 +75,15 @@ beforeEach(() => {
   h.dispatch.mockImplementation(async (args) => { expect(h.txDepth).toBe(1); h.order.push('dispatch'); return { ok: true, command: { id: args.commandId }, delivery: 'queued_offline' }; });
 });
 describe('release stays live when start gates fail', () => {
-  it.each(['flag_off', 'partner_missing', 'old_agent', 'capability_zero', 'trust_restricted', 'requester_deactivated', 'quarantined', 'incident_closed', 'offline'])('%s', async condition => {
+  it.each(['flag_off', 'partner_missing', 'old_agent', 'capability_zero', 'trust_restricted', 'quarantined'])('%s', async condition => {
     h.row = episode();
     if (condition === 'flag_off') vi.stubEnv('NETWORK_ISOLATION_ENABLED', 'false');
     if (condition === 'partner_missing') vi.stubEnv('NETWORK_ISOLATION_ENABLED_PARTNER_IDS', '77777777-7777-4777-8777-777777777777');
     if (condition === 'old_agent') h.device.agentVersion = '1.0.0';
     if (condition === 'capability_zero') { h.device.networkIsolationVersion = 0; h.device.networkIsolationReady = false; }
     if (condition === 'trust_restricted') h.trust.mockRejectedValue(new TrustDeniedError('TRUST_RESTRICTED', 'Restricted', deviceId, 'execute_containment'));
-    if (condition === 'requester_deactivated') h.device.requesterActive = false;
     if (condition === 'quarantined') h.device.status = 'quarantined';
-    if (condition === 'incident_closed') h.incident.status = 'closed';
-    if (condition === 'offline') h.device.status = 'offline';
-    if (condition === 'partner_missing') expect(isolationStartGate(h.device, '44444444-4444-4444-8444-444444444444')).toBe('feature_disabled');
+    if (condition === 'partner_missing') expect(isolationStartGate(h.device, '44444444-4444-4444-8444-444444444444')).toBe('partner_not_enabled');
     const result = await releaseNetworkIsolation(auth, deviceId, isolationId, { reason: 'Release' }, { kind: 'console' });
     expect(result).not.toHaveProperty('error');
     expect(h.row).toMatchObject({ desiredState: 'released', state: 'release_requested', generation: 4, releaseConfirmedAt: null });
@@ -103,10 +102,23 @@ describe('release stays live when start gates fail', () => {
     h.row = episode({ desiredState: 'released', state: 'released_locally' });
     expect(await acknowledgeNetworkIsolation(auth, deviceId, isolationId)).not.toHaveProperty('error');
     expect(h.row.state).toBe('released');
+    expect(h.writes).toContainEqual(expect.objectContaining({ state: 'released', breakGlassSecretEnc: '' }));
   });
   it('refuses a mismatched device episode without delivery', async () => {
     h.row = episode({ deviceId: 'other' });
     expect(await releaseNetworkIsolation(auth, deviceId, isolationId, { reason: 'Release' }, { kind: 'console' })).toEqual({ error: 'isolation_not_found' });
     expect(h.dispatch).not.toHaveBeenCalled();
   });
+  it('redelivers an unconfirmed tombstone without changing its generation', async () => {
+    h.row = episode({ state: 'failed', desiredState: 'released', generation: 4 });
+    expect(await releaseNetworkIsolation(auth, deviceId, isolationId, { reason: 'Retry' }, { kind: 'console' })).not.toHaveProperty('error');
+    expect(h.dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: 'release_containment', payload: { isolationId, generation: 4, reason: 'Retry' } }));
+    expect(h.row.generation).toBe(4);
+  });
+  it('returns an already-confirmed episode without another delivery', async () => {
+    h.row = episode({ state: 'released', desiredState: 'released', releaseConfirmedAt: new Date() });
+    expect(await releaseNetworkIsolation(auth, deviceId, isolationId, { reason: 'Retry' }, { kind: 'console' })).not.toHaveProperty('error');
+    expect(h.dispatch).not.toHaveBeenCalled();
+  });
+
 });

@@ -241,8 +241,11 @@ export async function handleExecuteContainmentResult(
 ): Promise<void> {
   const { command, commandId, result, stdout } = args;
   if ((command.payload as Record<string, unknown> | null)?.actionType === 'network_isolation') {
-    const { handleNetworkIsolationResult } = await import('./networkIsolation/finalizer');
-    return handleNetworkIsolationResult(args);
+    const { findEpisodeByCommand } = await import('./networkIsolation/episodeStore');
+    if (await findEpisodeByCommand(db, commandId)) {
+      const { handleNetworkIsolationResult } = await import('./networkIsolation/finalizer');
+      return handleNetworkIsolationResult(args);
+    }
   }
   const completed = result.status === 'completed';
   await finalizeContainmentAction({

@@ -1,5 +1,5 @@
-import { and, desc, eq, getTableColumns, isNull, notInArray } from 'drizzle-orm';
-import { RESOLVED_TERMINAL_STATES } from '@breeze/shared';
+import { and, desc, eq, getTableColumns, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { RESOLVED_TERMINAL_STATES, isTerminalIsolationState, type SafeAgentReport } from '@breeze/shared';
 import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import type { db } from '../../db';
 import {
@@ -154,6 +154,34 @@ export async function findUnconfirmedTombstone(tx: EpisodeTx, deviceId: string):
   return row ?? null;
 }
 
+/** One indexed device lookup per beat; unconfirmed tombstones take precedence. */
+export async function findHeartbeatEpisode(tx: EpisodeTx, deviceId: string): Promise<DeviceNetworkIsolation | null> {
+  const [row] = await tx.select().from(deviceNetworkIsolations).where(and(
+    eq(deviceNetworkIsolations.deviceId, deviceId),
+    or(notInArray(deviceNetworkIsolations.state, [...RESOLVED_TERMINAL_STATES]), and(
+      eq(deviceNetworkIsolations.desiredState, 'released'), isNull(deviceNetworkIsolations.releaseConfirmedAt),
+    )),
+  )).orderBy(desc(sql`(${deviceNetworkIsolations.desiredState} = 'released' AND ${deviceNetworkIsolations.releaseConfirmedAt} IS NULL)`), desc(deviceNetworkIsolations.createdAt), desc(deviceNetworkIsolations.id)).limit(1);
+  return row ?? null;
+}
+
+/** Payload labels are insufficient: only an episode binding owns an isolation command. */
+export async function findEpisodeByCommand(tx: Pick<EpisodeTx, 'select'>, commandId: string): Promise<DeviceNetworkIsolation | null> {
+  const [row] = await tx.select().from(deviceNetworkIsolations).where(or(
+    eq(deviceNetworkIsolations.commandId, commandId), eq(deviceNetworkIsolations.releaseCommandId, commandId),
+  )).limit(1);
+  return row ?? null;
+}
+
+/** Persist exactly the same safe whitelist for both heartbeat and command-result evidence. */
+export async function writeAgentReport(tx: EpisodeTx, id: string, safeReport: SafeAgentReport, ackSeq?: number): Promise<void> {
+  await tx.update(deviceNetworkIsolations).set({
+    lastAgentReport: safeReport,
+    ...(safeReport.isolationId ? { mechanism: safeReport.mechanism } : {}),
+    ...(ackSeq !== undefined ? { breakGlassAckSeq: sql`coalesce(${deviceNetworkIsolations.breakGlassAckSeq}, ${ackSeq})` } : {}),
+  }).where(eq(deviceNetworkIsolations.id, id));
+}
+
 /** An episode without its break-glass ciphertext: safe to hand to a route or the AI. */
 export type EpisodeSummary = Omit<DeviceNetworkIsolation, 'breakGlassSecretEnc'>;
 
@@ -214,6 +242,7 @@ export async function writeEpisodeSnapshot(
   const updated = await tx
     .update(deviceNetworkIsolations)
     .set({
+      ...(isTerminalIsolationState(next.state) ? { breakGlassSecretEnc: '' } : {}),
       state: next.state,
       desiredState: next.desiredState,
       generation: next.generation,
