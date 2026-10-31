@@ -1869,10 +1869,20 @@
       "loadFailed": "Falha ao carregar eventos"
     },
     "loading": "Carregando…",
-    "eventCount_one": "{{shown}} de {{total}} evento (100 mais recentes)",
-    "eventCount_other": "{{shown}} de {{total}} eventos (100 mais recentes)",
-    "blockedEventCount_one": "{{shown}} de {{total}} evento bloqueado (100 mais recentes)",
-    "blockedEventCount_other": "{{shown}} de {{total}} eventos bloqueados (100 mais recentes)",
+    "eventCount_one": "{{shown}} de {{total}} evento",
+    "eventCount_other": "{{shown}} de {{total}} eventos",
+    "blockedEventCount_one": "{{shown}} de {{total}} evento bloqueado",
+    "blockedEventCount_other": "{{shown}} de {{total}} eventos bloqueados",
+    "eventCountCapped": "{{shown}} de mais de {{total}} eventos",
+    "blockedEventCountCapped": "{{shown}} de mais de {{total}} eventos bloqueados",
+    "loadMore": "Carregar mais",
+    "window": {
+      "label": "Período",
+      "last24h": "Últimas 24 horas",
+      "last7d": "Últimos 7 dias",
+      "last30d": "Últimos 30 dias",
+      "last90d": "Últimos 90 dias"
+    },
     "showAll": "Mostrar todos (não apenas bloqueados)",
     "actions": {
       "refresh": "Atualizar",

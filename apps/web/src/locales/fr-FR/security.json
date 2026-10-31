@@ -1869,10 +1869,20 @@
       "loadFailed": "Impossible de charger les événements"
     },
     "loading": "Chargement...",
-    "eventCount_one": "{{shown}} de {{total}} événement (le plus récent 100)",
-    "eventCount_other": "{{shown}} d’événements {{total}} (les 100 plus récents)",
-    "blockedEventCount_one": "{{shown}} de {{total}} événement bloqué (le plus récent 100)",
-    "blockedEventCount_other": "{{shown}} de {{total}} événements bloqués (les 100 plus récents)",
+    "eventCount_one": "{{shown}} sur {{total}} événement",
+    "eventCount_other": "{{shown}} sur {{total}} événements",
+    "blockedEventCount_one": "{{shown}} sur {{total}} événement bloqué",
+    "blockedEventCount_other": "{{shown}} sur {{total}} événements bloqués",
+    "eventCountCapped": "{{shown}} sur plus de {{total}} événements",
+    "blockedEventCountCapped": "{{shown}} sur plus de {{total}} événements bloqués",
+    "loadMore": "Charger plus",
+    "window": {
+      "label": "Période",
+      "last24h": "Dernières 24 heures",
+      "last7d": "7 derniers jours",
+      "last30d": "30 derniers jours",
+      "last90d": "90 derniers jours"
+    },
     "showAll": "Tout afficher (pas juste bloqué)",
     "actions": {
       "refresh": "Actualiser",
