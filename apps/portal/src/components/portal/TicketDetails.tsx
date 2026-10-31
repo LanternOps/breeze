@@ -214,8 +214,10 @@ function ReplyComposer({
  *  the conversation continues on the ticket it was merged into. */
 function MergedTicketNotice({ ticket }: { ticket: PortalMergedTicket }) {
   const target = ticket.mergedInto;
+  // Named the way the tickets list and the ticket header name it (#10072).
+  const targetRef = target?.ticketNumber ? `#${target.ticketNumber}` : null;
   const message = target
-    ? `This request was merged into ${target.internalNumber ?? 'another request'}.`
+    ? `This request was merged into ${targetRef ?? 'another request'}.`
     : ticket.survivorDeleted
       ? 'This request was merged into a ticket that has since been removed.'
       : 'This request was merged into another request.';
@@ -240,7 +242,7 @@ function MergedTicketNotice({ ticket }: { ticket: PortalMergedTicket }) {
               data-testid="portal-ticket-merged-link"
               className="font-semibold text-primary-on-tint underline underline-offset-4"
             >
-              Open {target.internalNumber ?? 'the request'}
+              Open {targetRef ?? 'the request'}
             </a>
           </p>
         ) : (

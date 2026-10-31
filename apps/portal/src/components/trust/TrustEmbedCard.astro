@@ -10,7 +10,6 @@ interface Props {
 }
 const { card, fullPageUrl, view } = Astro.props;
 const logo = card.logoUrl && card.logoUrl.startsWith('https://') ? card.logoUrl : null;
-const verifiedOn = (card.lastEvaluatedAt ?? card.publishedAt).slice(0, 10);
 ---
 <article class="flex items-start gap-3 rounded-lg border bg-card p-4 text-card-foreground" data-testid="trust-embed-card">
   {logo && <img src={logo} alt="" width="40" height="40" class="h-10 w-10 shrink-0 rounded object-contain" loading="lazy" referrerpolicy="no-referrer" />}
@@ -19,7 +18,7 @@ const verifiedOn = (card.lastEvaluatedAt ?? card.publishedAt).slice(0, 10);
     <p class="doc-accent-text text-xs font-medium">{view.badge}</p>
     <p class="mt-1 text-xs text-muted-foreground" data-testid="trust-embed-summary">{view.summary}</p>
     <p class="mt-0.5 text-xs text-muted-foreground">
-      {view.lastVerified} <time datetime={verifiedOn}>{verifiedOn}</time>
+      {view.lastVerified} <time datetime={view.verifiedOnIso}>{view.verifiedOn}</time>
       {card.stale && <span class="ml-1" data-testid="trust-embed-stale">· {view.paused}</span>}
     </p>
     <a

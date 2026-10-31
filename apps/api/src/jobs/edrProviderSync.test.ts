@@ -103,6 +103,8 @@ const { FakeEdrError } = vi.hoisted(() => {
 });
 
 const m = vi.hoisted(() => ({
+  caps: {} as Record<string, unknown>,
+  real: null as unknown,
   listTenants: vi.fn(),
   listEndpoints: vi.fn(),
   countEndpoints: vi.fn(),
@@ -123,23 +125,29 @@ const m = vi.hoisted(() => ({
   evaluateEdrStaleTenants: vi.fn(),
   clearExpiredTenantDenials: vi.fn(),
   pollEdrActionStatus: vi.fn(),
+  loadOpenDetectionRefs: vi.fn(),
+  applyDetectionStatusUpdates: vi.fn(),
+  rereadDetectionStatus: vi.fn(),
 }));
 
 vi.mock('../services/edrProviders/types', () => ({ EdrProviderRequestError: FakeEdrError }));
 vi.mock('../services/edrProviders/registry', () => ({
-  getEdrProvider: () => ({
+  getEdrProvider: () => m.real ?? ({
     key: 'bitdefender',
     hostAllowlist: ['.gravityzone.bitdefender.com'],
     capabilities: {
       tenantModel: 'partner', detectionDelivery: 'poll', installer: 'none', actions: [],
+      endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
       requestBudget: { perSecond: 10 }, tenantFetchConcurrency: 2,
       defaultIntervals: { detectionsMinutes: 5, inventoryMinutes: 60 },
+      ...m.caps,
     },
     listTenants: m.listTenants,
     listEndpoints: m.listEndpoints,
     countEndpoints: m.countEndpoints,
     enrichEndpoints: m.enrichEndpoints,
     listDetections: m.listDetections,
+    rereadDetectionStatus: m.rereadDetectionStatus,
   }),
 }));
 const SECRET_KEY = 'sk-distinctive-secret-9f3a';
@@ -153,6 +161,8 @@ vi.mock('../services/edrProviders/persist', () => ({
   refreshDetectionDeviceLinks: m.refreshDetectionDeviceLinks,
   isDeadlockError: m.isDeadlockError,
   clearExpiredTenantDenials: m.clearExpiredTenantDenials,
+  loadOpenDetectionRefs: m.loadOpenDetectionRefs,
+  applyDetectionStatusUpdates: m.applyDetectionStatusUpdates,
 }));
 vi.mock('../services/edrProviders/actionStatus', () => ({
   pollEdrActionStatus: m.pollEdrActionStatus,
@@ -164,7 +174,10 @@ vi.mock('../services/edrProviders/alerts', () => ({
   evaluateEdrEndpointHealth: (...a: unknown[]) => { events.push(`health@${contextDepth}`); return m.evaluateEdrEndpointHealth(...a); },
   evaluateEdrStaleTenants: m.evaluateEdrStaleTenants,
 }));
-vi.mock('../services/edrProviders/deviceMatching', () => ({ matchEdrEndpoints: m.matchEdrEndpoints }));
+vi.mock('../services/edrProviders/deviceMatching', async (orig) => ({
+  ...(await orig<typeof import('../services/edrProviders/deviceMatching')>()),
+  matchEdrEndpoints: m.matchEdrEndpoints,
+}));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: vi.fn(() => null) }));
 const h = vi.hoisted(() => ({ readEdrHints: vi.fn(), ackEdrHints: vi.fn() }));
@@ -184,7 +197,7 @@ vi.mock('../services/bullmqQueue', () => ({
 vi.mock('../services/bullmqUtils', () => ({ enqueueOrReplaceStale: m.enqueueOrReplaceStale }));
 
 import {
-  __testOnly, edrActionStatusJobId, edrSyncJobId, enqueueEdrActionStatus, enqueueEdrSync, isFinalSyncAttempt,
+  DEFAULT_ESTIMATED_CALLS, __testOnly, edrActionStatusJobId, edrSyncJobId, enqueueEdrActionStatus, enqueueEdrSync, isFinalSyncAttempt,
   selectDueStreams, syncEdrDetections, syncEdrInventory,
 } from './edrProviderSync';
 
@@ -214,6 +227,8 @@ const RUN_CACHE = new Map<string, Promise<unknown>>();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.caps = {};
+  m.real = null;
   contextDepth = 0; tenantSelects = 0; executeRows = [];
   fetchDepths.length = 0; dbCallDepths.length = 0; updatePayloads.length = 0; events.length = 0;
   connectionRow = { ...BASE_ROW };
@@ -238,6 +253,9 @@ beforeEach(() => {
   m.evaluateEdrEndpointHealth.mockResolvedValue({ raised: 0, resolved: 0 });
   m.evaluateEdrStaleTenants.mockResolvedValue({ published: 0 });
   m.clearExpiredTenantDenials.mockResolvedValue(0);
+  m.loadOpenDetectionRefs.mockResolvedValue(new Map());
+  m.applyDetectionStatusUpdates.mockResolvedValue(0);
+  m.rereadDetectionStatus.mockResolvedValue([]);
   m.pollEdrActionStatus.mockResolvedValue({ checked: 0, settled: 0 });
   hintDepths.read = []; hintDepths.ack = [];
   h.readEdrHints.mockResolvedValue({ members: [], hints: [], markerAt: null });
@@ -245,6 +263,9 @@ beforeEach(() => {
 });
 
 import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { emsisoftAdapter } from '../services/edrProviders/emsisoft/adapter';
 
 describe('isFinalSyncAttempt', () => {
   // BullMQ 5 bumps attemptsMade only when an attempt finishes or is retried, so inside the
@@ -328,6 +349,32 @@ describe('syncEdrInventory', () => {
     await syncEdrInventory(CONNECTION_ID);
     expect(m.enrichEndpoints).toHaveBeenCalledTimes(1);
     expect(m.enrichEndpoints.mock.calls[0]![2]).toEqual(['new-1', 'old-stale', 'old-fresh']);
+  });
+
+  it('plans the cadence with the adapter\'s capabilities.estimatedCalls, else the DEFAULT_ESTIMATED_CALLS (A2)', async () => {
+    // Default estimates: 2 tenants fit the 10 req/s budget at the floor intervals.
+    await syncEdrInventory(CONNECTION_ID);
+    expect(lastConnectionUpdate()?.payload).toMatchObject({
+      effectiveInventoryIntervalMinutes: 60, effectiveDetectionIntervalMinutes: 5,
+    });
+    // A heavy declared estimate must lengthen the inventory interval: the declared value is the one planned with.
+    m.caps = { estimatedCalls: { perTenantDetection: 1, perTenantInventory: 100_000, perConnectionOverhead: 2 } };
+    updatePayloads.length = 0;
+    await syncEdrInventory(CONNECTION_ID);
+    const heavy = lastConnectionUpdate()!.payload as { effectiveInventoryIntervalMinutes: number };
+    expect(heavy.effectiveInventoryIntervalMinutes).toBeGreaterThan(60);
+  });
+
+  it('passes strictUnique to the matcher only for adapters without mac/serial identifiers (A3)', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.matchEdrEndpoints.mock.calls[0]![2]).toEqual({ strictUnique: false });
+    m.caps = { endpointIdentifiers: ['hostname', 'fqdn'] };
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.matchEdrEndpoints.mock.calls[1]![2]).toEqual({ strictUnique: true });
+  });
+
+  it('exports DEFAULT_ESTIMATED_CALLS unchanged from the pre-A2 literal', () => {
+    expect(DEFAULT_ESTIMATED_CALLS).toEqual({ perTenantDetection: 1, perTenantInventory: 3, perConnectionOverhead: 2 });
   });
 
   it('never writes capabilities_snapshot (only a connection test does)', async () => {
@@ -452,6 +499,87 @@ describe('syncEdrInventory', () => {
     m.persistInventory.mockRejectedValue(other);
     await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: false })).rejects.toBe(other);
     expect(m.persistInventory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reread_open_on_inventory (A5)', () => {
+  const REREAD = { detectionStatusModel: 'reread_open_on_inventory' };
+  const ref = (id: string) => ({ vendorDetectionId: id, vendorKind: 'incident', vendorRef: `sha-${id}`, groupKey: `g-${id}` });
+  const update = (id: string) => ({
+    vendorDetectionId: id, vendorKind: 'incident', status: 'false_positive', vendorStatus: 'ConfirmedBenign/None', severity: 'low',
+    vendorSeverity: 'Unwanted', resolvedAt: new Date('2026-10-01T00:00:00Z'), lastVendorUpdateAt: null,
+  });
+
+  it('a delta_with_updates adapter (GravityZone) loads nothing and makes no re-read call', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.loadOpenDetectionRefs).not.toHaveBeenCalled();
+    expect(m.rereadDetectionStatus).not.toHaveBeenCalled();
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
+  });
+
+  it('loads open rows for MAPPED tenants only, capped by rereadOpenPerRun (default 20), and passes them to the adapter', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a'), ref('b')]]]));
+    await syncEdrInventory(CONNECTION_ID);
+    const [, connId, tenantIds, cap] = m.loadOpenDetectionRefs.mock.calls[0]!;
+    expect(connId).toBe(CONNECTION_ID);
+    expect(tenantIds).toEqual(['t-mapped']);
+    expect(cap).toBe(20);
+    expect(m.rereadDetectionStatus).toHaveBeenCalledTimes(1);
+    expect(m.rereadDetectionStatus.mock.calls[0]![2]).toEqual([ref('a'), ref('b')]);
+
+    m.caps = { ...REREAD, rereadOpenPerRun: 5 };
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.loadOpenDetectionRefs.mock.calls[1]![3]).toBe(5);
+  });
+
+  it('the re-read runs in Phase 2 (outside any db context) and its updates are applied in Phase 3 scoped to the tenant row and org', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a'), ref('b')]]]));
+    m.rereadDetectionStatus.mockImplementation(async () => { fetchDepths.push(contextDepth); return [update('a')]; });
+    await syncEdrInventory(CONNECTION_ID);
+    expect(fetchDepths.every((d) => d === 0)).toBe(true);
+    expect(m.applyDetectionStatusUpdates).toHaveBeenCalledTimes(1);
+    const [, o] = m.applyDetectionStatusUpdates.mock.calls[0]!;
+    expect(o).toMatchObject({ connectionId: CONNECTION_ID, tenantId: 't-mapped', orgId: 'org-1' });
+    expect(o.updates).toEqual([update('a')]);
+    // 'b' was asked about and omitted -> rotated (not closed) by the writer
+    expect(o.attempted).toEqual([
+      { vendorDetectionId: 'a', vendorKind: 'incident' }, { vendorDetectionId: 'b', vendorKind: 'incident' },
+    ]);
+  });
+
+  it('a throwing re-read fails THAT tenant\'s inventory (skip semantics): nothing is applied for it, the other tenant persists', async () => {
+    tenantRows = [MAPPED, MAPPED2];
+    m.listTenants.mockResolvedValue([vt('v-mapped'), vt('v-mapped2')]);
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a')]], ['t-mapped2', [ref('z')]]]));
+    m.rereadDetectionStatus.mockImplementation(async (_c: unknown, t: { vendorTenantId: string }) => {
+      if (t.vendorTenantId === 'v-mapped') throw new FakeEdrError('forbidden', { code: 'forbidden', reauth: false, scope: 'tenant' });
+      return [update('z')];
+    });
+    m.persistInventory.mockResolvedValue({ endpoints: 1, failedTenants: 1 });
+    await expect(syncEdrInventory(CONNECTION_ID)).resolves.toBeUndefined();
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string; ok: boolean }>;
+    expect(results.find((r) => r.vendorTenantId === 'v-mapped')).toMatchObject({ ok: false });
+    expect(m.applyDetectionStatusUpdates).toHaveBeenCalledTimes(1);
+    expect(m.applyDetectionStatusUpdates.mock.calls[0]![1]).toMatchObject({ tenantId: 't-mapped2' });
+  });
+
+  it('a connection-scope error from the re-read fails the whole run like any other connection error', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([['t-mapped', [ref('a')]]]));
+    m.rereadDetectionStatus.mockRejectedValue(new FakeEdrError('bad key', { code: 'auth', reauth: true, scope: 'connection' }));
+    await expect(syncEdrInventory(CONNECTION_ID)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
+  });
+
+  it('a tenant with no open rows makes no re-read call', async () => {
+    m.caps = { ...REREAD };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map());
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.rereadDetectionStatus).not.toHaveBeenCalled();
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
   });
 });
 
@@ -854,5 +982,157 @@ describe('W03 (#8167): action status job', () => {
   it('the inventory Phase 3 clears expired tenant licence denials for this connection', async () => {
     await syncEdrInventory(CONNECTION_ID);
     expect(m.clearExpiredTenantDenials).toHaveBeenCalledWith(expect.anything(), CONNECTION_ID, expect.any(Date));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Emsisoft through the REAL sync job (W04 PR-A, Task A9): the real adapter + client + normalizer
+// behind a fixture fetch; persistence is the mocked boundary (real rows: edrProviderSync.integration).
+// ---------------------------------------------------------------------------
+describe('Emsisoft through the real sync job (A9)', () => {
+  const fxDir = join(__dirname, '..', 'services', 'edrProviders', 'emsisoft', '__fixtures__');
+  const fx = (name: string) => readFileSync(join(fxDir, name), 'utf8');
+  const WS1 = '00000000-0000-4000-8000-0000000000b1';
+  const WS2 = '00000000-0000-4000-8000-0000000000b2';
+  const D1 = '00000000-0000-4000-8000-0000000000d1';
+  const D2 = '00000000-0000-4000-8000-0000000000d2';
+  const INC = '00000000-0000-4000-8000-0000000000c1';
+  const SHA1 = 'da39a3ee5e6b4b0d3255bfef95601890afd80709';
+  const T1 = { id: 't-ws1', vendorTenantId: WS1, orgId: 'org-1', apiHost: null, detectionCursor: null };
+  const T2 = { id: 't-ws2', vendorTenantId: WS2, orgId: 'org-2', apiHost: null, detectionCursor: null };
+  const T2_UNMAPPED = { ...T2, orgId: null };
+
+  type Reply = { status?: number; body: string };
+  let routes: Record<string, Reply | Reply[]>;
+  let paths: string[];
+  const list = (data: unknown[]): Reply => ({ body: JSON.stringify({ data, totalCount: data.length }) });
+
+  beforeEach(() => {
+    paths = [];
+    const counters: Record<string, number> = {};
+    routes = {
+      '/v1/account': { body: fx('account-partner.json') },
+      '/v1/workspaces': list([{ guid: WS1, name: 'One' }, { guid: WS2, name: 'Two' }]),
+    };
+    m.real = emsisoftAdapter;
+    connectionRow = { ...BASE_ROW, provider: 'emsisoft' };
+    m.buildEdrAdapterContext.mockImplementation(() => ({
+      creds: { apiKey: SECRET_KEY }, baseUrl: null, region: null, runCache: new Map(), limiter: { acquire: async () => {} },
+      fetch: async (rawUrl: string) => {
+        const path = new URL(rawUrl).pathname;
+        paths.push(path);
+        const route = routes[path];
+        if (!route) throw new Error(`unrouted ${path}`);
+        const i = (counters[path] = (counters[path] ?? -1) + 1);
+        const r = Array.isArray(route) ? route[Math.min(i, route.length - 1)]! : route;
+        return { status: r.status ?? 200, headers: new Headers(), text: async () => r.body };
+      },
+    }));
+    m.listTenants.mockImplementation((...a: unknown[]) => emsisoftAdapter.listTenants(...(a as Parameters<typeof emsisoftAdapter.listTenants>)));
+  });
+
+  it('two workspaces, one mapped: endpoints (and their details) for the mapped one, only a COUNT for the other (D5)', async () => {
+    tenantRows = [T1, T2_UNMAPPED];
+    routes[`/v1/workspaces/${WS1}/devices`] = { body: fx('devices-page1.json') };
+    routes[`/v1/workspaces/${WS2}/devices`] = list([{ guid: D1, name: 'A' }, { guid: D2, name: 'B' }, { guid: '00000000-0000-4000-8000-0000000000d3', name: 'C' }]);
+    routes[`/v1/devices/${D1}/details`] = { body: fx('device-details.json') };
+    routes[`/v1/devices/${D2}/details`] = { body: fx('device-details-workgroup.json') };
+    await syncEdrInventory(CONNECTION_ID);
+
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string; ok: boolean; value: { endpoints: unknown[]; details: Array<{ vendorEndpointId: string }>; count?: number } }>;
+    const one = results.find((r) => r.vendorTenantId === WS1)!;
+    const two = results.find((r) => r.vendorTenantId === WS2)!;
+    expect(one.value.endpoints).toHaveLength(2);
+    expect(one.value.details.map((d) => d.vendorEndpointId)).toEqual([D1, D2]);
+    expect(two.value).toMatchObject({ endpoints: [], details: [], count: 3 });
+    expect(paths.filter((p) => p.startsWith('/v1/devices/'))).toHaveLength(2);
+    expect(m.matchEdrEndpoints.mock.calls[0]![2]).toEqual({ strictUnique: true });
+    expect(lastConnectionUpdate()!.payload).toMatchObject({ status: 'connected', lastInventorySyncStatus: 'success' });
+  });
+
+  it('a workspace /devices 401 fails THAT tenant only: the connection stays connected and the other workspace syncs (Review Focus 2)', async () => {
+    tenantRows = [T1, T2];
+    routes[`/v1/workspaces/${WS1}/devices`] = { status: 401, body: '{}' };
+    routes[`/v1/workspaces/${WS2}/devices`] = list([{ guid: D1, name: 'A' }]);
+    routes[`/v1/devices/${D1}/details`] = { body: fx('device-details.json') };
+    m.persistInventory.mockResolvedValue({ endpoints: 1, failedTenants: 1 });
+    await expect(syncEdrInventory(CONNECTION_ID)).resolves.toBeUndefined();
+    const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string; ok: boolean; error?: string }>;
+    expect(results.find((r) => r.vendorTenantId === WS1)).toMatchObject({ ok: false });
+    expect(results.find((r) => r.vendorTenantId === WS1)!.error).toBe('Emsisoft GET /v1/workspaces/{ws}/devices: HTTP 401');
+    expect(results.find((r) => r.vendorTenantId === WS2)).toMatchObject({ ok: true });
+    expect(updatePayloads.some((u) => u.payload.status === 'reauth_required')).toBe(false);
+    expect(lastConnectionUpdate()!.payload).toMatchObject({ status: 'connected', lastInventorySyncStatus: 'partial', lastSyncFailedTenants: 1 });
+  });
+
+  it('/account 401 (a dead key) -> reauth_required + UnrecoverableError, nothing written', async () => {
+    tenantRows = [T1];
+    routes['/v1/workspaces'] = { status: 401, body: '{}' };
+    routes['/v1/account'] = { status: 401, body: '{}' };
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: false })).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(updatePayloads.some((u) => u.payload.status === 'reauth_required')).toBe(true);
+    expect(m.upsertTenants).not.toHaveBeenCalled();
+  });
+
+  it('/workspaces 403 with a live /account is a missing PERMISSION, not a dead key: no reauth_required', async () => {
+    tenantRows = [T1];
+    routes['/v1/workspaces'] = { status: 403, body: '{}' };
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: true })).rejects.toMatchObject({ code: 'forbidden' });
+    expect(updatePayloads.some((u) => u.payload.status === 'reauth_required')).toBe(false);
+  });
+
+  it('a detection run writes one row per involved device; a second run with a changed verdict keeps the SAME ids (no duplicates)', async () => {
+    tenantRows = [T1];
+    const incident = (verdict: string) => ({
+      guid: INC, type: 'File', verdict, actionTaken: 'None', actionsTaken: ['None'], highestSeverity: 'Suspicious',
+      lastDetectionAt: '2026-10-24T07:00:00Z', involvedDevices: ['PC01', 'srv01.corp.example.test'], involvedDeviceUsers: ['user1'], sha1: SHA1,
+    });
+    routes[`/v1/workspaces/${WS1}/incidents`] = [list([incident('New')]), list([incident('ConfirmedBenign')])];
+    routes[`/v1/workspaces/${WS1}/devices`] = { body: fx('devices-page1.json') };
+
+    await syncEdrDetections(CONNECTION_ID);
+    await syncEdrDetections(CONNECTION_ID);
+    type Row = { vendorDetectionId: string; status: string; vendorEndpointId: string | null };
+    const pageOf = (n: number) => (m.persistDetections.mock.calls[n]![2] as Array<{ value: { detections: Row[] } }>)[0]!.value.detections;
+    const first = pageOf(0);
+    const second = pageOf(1);
+    expect(first.map((d) => d.vendorDetectionId)).toEqual([`${INC}:pc01`, `${INC}:srv01.corp.example.test`]);
+    expect(first.map((d) => d.vendorEndpointId)).toEqual([D1, D2]);
+    expect(first.every((d) => d.status === 'open')).toBe(true);
+    expect(second.map((d) => d.vendorDetectionId)).toEqual(first.map((d) => d.vendorDetectionId));
+    expect(second.every((d) => d.status === 'false_positive')).toBe(true);
+  });
+
+  it('an inventory run re-reads an open row older than the discovery window and flips it to false_positive (Review Focus 3)', async () => {
+    tenantRows = [T1];
+    routes[`/v1/workspaces/${WS1}/devices`] = { body: fx('devices-page1.json') };
+    routes[`/v1/devices/${D1}/details`] = { body: fx('device-details.json') };
+    routes[`/v1/devices/${D2}/details`] = { body: fx('device-details-workgroup.json') };
+    routes[`/v1/workspaces/${WS1}/incidents/${SHA1}`] = { body: fx('incident-detail.json') };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([[
+      't-ws1', [{ vendorDetectionId: `${INC}:pc01`, vendorKind: 'incident', vendorRef: SHA1, groupKey: INC }],
+    ]]));
+    await syncEdrInventory(CONNECTION_ID);
+    expect(m.loadOpenDetectionRefs.mock.calls[0]![3]).toBe(20);
+    expect(m.applyDetectionStatusUpdates).toHaveBeenCalledTimes(1);
+    const o = m.applyDetectionStatusUpdates.mock.calls[0]![1];
+    expect(o).toMatchObject({ tenantId: 't-ws1', orgId: 'org-1' });
+    expect(o.updates).toHaveLength(1);
+    expect(o.updates[0]).toMatchObject({ vendorDetectionId: `${INC}:pc01`, status: 'false_positive' });
+  });
+
+  it('a re-read 403 on the workspace fails that tenant\'s inventory, never as a reauth', async () => {
+    tenantRows = [T1];
+    routes[`/v1/workspaces/${WS1}/devices`] = { body: fx('devices-page1.json') };
+    routes[`/v1/devices/${D1}/details`] = { body: fx('device-details.json') };
+    routes[`/v1/devices/${D2}/details`] = { body: fx('device-details.json') };
+    routes[`/v1/workspaces/${WS1}/incidents/${SHA1}`] = { status: 403, body: '{}' };
+    m.loadOpenDetectionRefs.mockResolvedValue(new Map([[
+      't-ws1', [{ vendorDetectionId: INC, vendorKind: 'incident', vendorRef: SHA1, groupKey: INC }],
+    ]]));
+    // The only tenant failed -> the all-failed guard fails the run closed, but never as a reauth.
+    await expect(syncEdrInventory(CONNECTION_ID)).rejects.toThrow(/tenant fetch/);
+    expect(updatePayloads.some((u) => u.payload.status === 'reauth_required')).toBe(false);
+    expect(m.applyDetectionStatusUpdates).not.toHaveBeenCalled();
   });
 });

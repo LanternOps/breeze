@@ -11,12 +11,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * The real-DB proof is configComplianceAlertDelivery.integration.test.ts.
  */
 
-const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, publishEventMock, resolveRulesMock, scanDueMock, withDbTransactionMock, captureExceptionMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
   publishEventMock: vi.fn(),
   resolveRulesMock: vi.fn(),
   scanDueMock: vi.fn(),
+  withDbTransactionMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  captureExceptionMock: vi.fn(),
 }));
 
 vi.mock('../jobs/automationWorker', () => ({ enqueueAutomationRun: vi.fn() }));
@@ -27,9 +29,11 @@ vi.mock('../db', () => ({
     update: vi.fn(),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  hasDbAccessContext: () => true,
+  withDbTransaction: withDbTransactionMock,
 }));
 vi.mock('./eventBus', () => ({ publishEvent: publishEventMock }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./featureConfigResolver', () => ({
   resolveComplianceRulesForDevice: resolveRulesMock,
   scanDueComplianceChecks: scanDueMock,
@@ -77,6 +81,9 @@ beforeEach(() => {
   publishEventMock.mockReset();
   resolveRulesMock.mockReset();
   scanDueMock.mockReset();
+  withDbTransactionMock.mockReset();
+  withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+  captureExceptionMock.mockReset();
 
   mockSelects();
   insertMock.mockReturnValue({ values: () => ({ onConflictDoUpdate: () => Promise.resolve() }) });
@@ -163,5 +170,237 @@ describe('scanAndEvaluateConfigPolicyCompliance compliance events', () => {
 
     expect(publishEventMock.mock.calls.map((c) => c[0])).toEqual(['policy.evaluated', 'policy.violation']);
     expect(result.afterCommit).toBeUndefined();
+  });
+
+  // #10401 — the scan runs every device in ONE system transaction. A SQL error
+  // in one evaluation aborts that transaction, and postgres.js re-throws it at
+  // COMMIT: nothing the scan wrote persists, no event goes out, and every
+  // compliance alert in the fleet stays as it was. Each device runs in its own
+  // savepoint, and each rule set in a savepoint nested inside it, so a failed
+  // rule set rolls back alone: the device's other rule sets still commit and
+  // still raise their events.
+  describe('per-rule-set isolation', () => {
+    const OTHER = { ...DEVICE, id: '55555555-5555-4555-8555-555555555555', hostname: 'WS-2' };
+    const SECOND_RULE = { ...RULE, id: '66666666-6666-4666-8666-666666666666', name: 'Second rule set' };
+    const sqlError = Object.assign(new Error('value too long for type character varying(200)'), { code: '22001' });
+
+    /**
+     * Models Postgres savepoints: each withDbTransaction opens a frame, a
+     * rejected callback discards its frame (ROLLBACK TO SAVEPOINT), a resolved
+     * one merges it into the parent (RELEASE). `committed` is what the outer
+     * transaction would commit. By default SECOND_RULE's upsert fails on
+     * DEVICE. With `failReleaseOfCall` every upsert succeeds and instead the
+     * n-th savepoint (1-based) fails at RELEASE, after its callback has run:
+     * the failure lands once the rule set has already buffered its events.
+     */
+    function trackSavepoints(opts: { failReleaseOfCall?: number } = {}) {
+      const committed: string[] = [];
+      const frames: string[][] = [committed];
+      let calls = 0;
+      const releaseError = Object.assign(new Error('release failed'), { code: '40001' });
+      withDbTransactionMock.mockImplementation(async (fn: () => Promise<unknown>) => {
+        const call = ++calls;
+        const frame: string[] = [];
+        frames.push(frame);
+        try {
+          const out = await fn();
+          if (call === opts.failReleaseOfCall) throw releaseError;
+          frames.pop();
+          frames[frames.length - 1]!.push(...frame);
+          return out;
+        } catch (error) {
+          frames.pop();
+          throw error;
+        }
+      });
+      insertMock.mockImplementation(() => ({
+        values: (row: { deviceId: string; configItemName: string }) => ({
+          onConflictDoUpdate: () => {
+            if (!opts.failReleaseOfCall && row.deviceId === DEVICE.id && row.configItemName === SECOND_RULE.name) {
+              return Promise.reject(sqlError);
+            }
+            frames[frames.length - 1]!.push(`${row.deviceId}:${row.configItemName}`);
+            return Promise.resolve();
+          },
+        }),
+      }));
+      return committed;
+    }
+
+    beforeEach(() => {
+      let deviceLookups = 0;
+      selectMock.mockImplementation(() => {
+        const chain: Record<string, unknown> = {};
+        const step = () => chain;
+        chain.from = step;
+        chain.where = step;
+        chain.innerJoin = step;
+        chain.leftJoin = step;
+        chain.limit = () => Promise.resolve([deviceLookups++ === 0 ? DEVICE : OTHER]);
+        chain.then = (resolve: (v: unknown) => unknown) => resolve([]);
+        return chain;
+      });
+      scanDueMock.mockResolvedValue([
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: SECOND_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+      ]);
+      resolveRulesMock.mockResolvedValue([RULE, SECOND_RULE]);
+      publishEventMock.mockResolvedValue('event-id');
+    });
+
+    it('rolls back only the failed rule set; the device\'s other rule sets commit and raise events', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints();
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+
+        expect(committed).toEqual([`${DEVICE.id}:${RULE.name}`, `${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesEvaluated).toBe(2);
+        expect(result.devicesFailed).toBe(0);
+        expect(result.ruleSetsFailed).toBe(1);
+        expect(result.results.map((r) => [r.deviceId, r.complianceRuleId])).toEqual([
+          [DEVICE.id, RULE.id],
+          [OTHER.id, RULE.id],
+        ]);
+        expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+        expect(captureExceptionMock).toHaveBeenCalledWith(
+          sqlError,
+          undefined,
+          { job: 'config-policy-compliance-scan', stage: 'rule_set' },
+          { fingerprint: ['config-policy-compliance-device', '22001'] },
+        );
+
+        await result.afterCommit!();
+        const published = publishEventMock.mock.calls.map((c) => {
+          const payload = c[2] as { deviceId: string; configPolicyComplianceRuleId: string };
+          return `${c[0]}:${payload.deviceId}:${payload.configPolicyComplianceRuleId}`;
+        });
+        expect(published).toEqual([
+          `policy.evaluated:${DEVICE.id}:${RULE.id}`,
+          `policy.violation:${DEVICE.id}:${RULE.id}`,
+          `policy.evaluated:${OTHER.id}:${RULE.id}`,
+          `policy.violation:${OTHER.id}:${RULE.id}`,
+        ]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('without deferEnqueue, publishes the surviving rule sets inline and nothing for the failed one', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      trackSavepoints();
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance();
+
+        expect(result.ruleSetsFailed).toBe(1);
+        const publishedRules = publishEventMock.mock.calls.map(
+          (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
+        );
+        expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Savepoints open in order: DEVICE, its RULE, its SECOND_RULE (call 3),
+    // OTHER, its RULE. SECOND_RULE's events are already buffered when its
+    // savepoint fails, so only the per-rule-set buffer keeps them back.
+    it.each([
+      ['with deferEnqueue', true],
+      ['without deferEnqueue', false],
+    ])('a rule set that fails after buffering its events hands none of them on (%s)', async (_label, defer) => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints({ failReleaseOfCall: 3 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance(defer ? { deferEnqueue: true } : {});
+        if (defer) await result.afterCommit!();
+
+        expect(committed).toEqual([`${DEVICE.id}:${RULE.name}`, `${OTHER.id}:${RULE.name}`]);
+        expect(result.ruleSetsFailed).toBe(1);
+        const publishedRules = publishEventMock.mock.calls.map(
+          (c) => (c[2] as { configPolicyComplianceRuleId: string }).configPolicyComplianceRuleId,
+        );
+        expect(publishedRules).not.toContain(SECOND_RULE.id);
+        expect(publishedRules).toEqual([RULE.id, RULE.id, RULE.id, RULE.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    // Without deferEnqueue nothing goes out while the device's savepoint is
+    // open: a device-level failure after a rule set succeeded must not leave
+    // that rule set's events published for rows that rolled back.
+    it('without deferEnqueue, a device that fails after a rule set succeeded publishes nothing for it', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Calls: DEVICE (1) fails at release after both rule sets succeeded.
+      const committed = trackSavepoints({ failReleaseOfCall: 1 });
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance();
+
+        expect(committed).toEqual([`${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesFailed).toBe(1);
+        const publishedFor = publishEventMock.mock.calls.map((c) => (c[2] as { deviceId: string }).deviceId);
+        expect(publishedFor).toEqual([OTHER.id, OTHER.id]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('a device whose every rule set fails counts as a failed device without failing the scan', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const committed = trackSavepoints();
+      resolveRulesMock.mockImplementation(async (deviceId: string) => (deviceId === DEVICE.id ? [SECOND_RULE] : [RULE]));
+      scanDueMock.mockResolvedValue([
+        { complianceRule: SECOND_RULE, assignmentLevel: 'device', assignmentTargetId: DEVICE.id, policyId: 'p', policyName: 'P' },
+        { complianceRule: RULE, assignmentLevel: 'device', assignmentTargetId: OTHER.id, policyId: 'p', policyName: 'P' },
+      ]);
+      try {
+        const result = await scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true });
+
+        expect(committed).toEqual([`${OTHER.id}:${RULE.name}`]);
+        expect(result.devicesFailed).toBe(1);
+        expect(result.ruleSetsFailed).toBe(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
+  // Every evaluation failing is a fault the whole scan shares, not one bad rule
+  // set: the job must fail rather than commit an empty scan that looks healthy.
+  // A device counts as failed when it threw outright or every rule set failed.
+  it('fails the scan when every evaluation fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    insertMock.mockImplementation(() => ({
+      values: () => ({ onConflictDoUpdate: () => Promise.reject(new Error('column does not exist')) }),
+    }));
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true }))
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 1 rule set(s))');
+      expect(publishEventMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  // A failure outside any rule set (resolving the device's rules, loading its
+  // telemetry) still rolls back the whole device and is reported as one.
+  it('fails the scan when every device fails before reaching a rule set', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const loadError = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    resolveRulesMock.mockRejectedValue(loadError);
+    try {
+      await expect(scanAndEvaluateConfigPolicyCompliance({ deferEnqueue: true }))
+        .rejects.toThrow('every compliance evaluation failed (1 device(s), 0 rule set(s))');
+      expect(captureExceptionMock).toHaveBeenCalledWith(
+        loadError,
+        undefined,
+        { job: 'config-policy-compliance-scan', stage: 'device' },
+        { fingerprint: ['config-policy-compliance-device', '42P01'] },
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
