@@ -180,6 +180,8 @@ describe('SoftwareVersionManager script fields and args (#10037)', () => {
     fireEvent.change(fileInput, { target: { files: [new File(['x'], 'tool.zip')] } });
     onlyOs(/windows/i);
     fireEvent.change(screen.getByTestId('post-install-script'), { target: { value: 'echo post' } });
+    // Whitespace-only counts as absent: not sent.
+    fireEvent.change(screen.getByTestId('pre-install-script'), { target: { value: '   ' } });
 
     fireEvent.click(submitButton());
 
@@ -187,7 +189,109 @@ describe('SoftwareVersionManager script fields and args (#10037)', () => {
     const metadata = uploadMock.mock.calls[0]![0].metadata;
     expect(metadata.postInstallScript).toBe('echo post');
     expect(metadata.preInstallScript).toBeUndefined();
-    expect(metadata.silentInstallArgs).toBeUndefined();
+  });
+
+  it.each([
+    ['tool.zip', /windows/i],
+    ['app.pkg', /macos/i],
+  ])('an upload of %s drops args typed earlier (type from the filename)', async (fileName, os) => {
+    uploadMock.mockResolvedValue(jsonResponse({ data: { ...base, id: 'v-up', version: '3.0.0', fileType: 'zip' } }));
+    await renderLoaded();
+    openAdd();
+    fireEvent.change(versionInput(), { target: { value: '3.0.0' } });
+    fireEvent.change(urlInput(), { target: { value: 'https://cdn.example/setup.exe' } });
+    fireEvent.change(argsInput()!, { target: { value: '/S' } });
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [new File(['x'], fileName)] },
+    });
+    await waitFor(() => expect(argsInput()).toBeNull());
+    onlyOs(os);
+    if (fileName.endsWith('.zip')) {
+      fireEvent.change(screen.getByTestId('post-install-script'), { target: { value: 'echo post' } });
+    }
+
+    fireEvent.click(submitButton());
+
+    await waitFor(() => expect(uploadMock).toHaveBeenCalled());
+    expect(uploadMock.mock.calls[0]![0].metadata.silentInstallArgs).toBeUndefined();
+  });
+
+  it('a whitespace-only post-install script does not satisfy the zip rule', async () => {
+    await renderLoaded();
+    openAdd();
+    fireEvent.change(versionInput(), { target: { value: '3.0.0' } });
+    fireEvent.change(urlInput(), { target: { value: 'https://cdn.example/tool.zip' } });
+    onlyOs(/windows/i);
+    fireEvent.change(screen.getByTestId('post-install-script'), { target: { value: '  \n ' } });
+    expect(await screen.findByTestId('install-spec-issue-zip_requires_post_install_script')).toBeInTheDocument();
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it('editing a version with inactive scripts shows them but leaves the OS editable', async () => {
+    serve([{ ...ZIP_VERSION, id: 'v-dormant', fileType: 'exe', installScriptsEnabled: false }]);
+    await renderLoaded();
+    fireEvent.click(await screen.findByTestId('version-edit-v-dormant'));
+    expect((screen.getByTestId('post-install-script') as HTMLTextAreaElement).readOnly).toBe(true);
+    expect(screen.getByRole('checkbox', { name: /windows/i })).not.toBeDisabled();
+  });
+
+  it('does not seed a new version with dormant (inactive) scripts', async () => {
+    serve([{ ...ZIP_VERSION, id: 'v-dormant', fileType: 'exe', installScriptsEnabled: false }]);
+    await renderLoaded();
+    openAdd();
+    expect(await screen.findByTestId('pre-install-script')).toHaveValue('');
+    expect(screen.getByTestId('post-install-script')).toHaveValue('');
+  });
+
+  it('in edit mode, args follow the stored type and the type cannot be changed', async () => {
+    serve([{ ...PKG_LEGACY_ARGS, id: 'v-exe', fileType: 'exe', silentInstallArgs: '/S', supportedOs: ['windows'] }]);
+    await renderLoaded();
+    fireEvent.click(await screen.findByTestId('version-edit-v-exe'));
+    const select = screen.getByTestId('version-file-type') as HTMLSelectElement;
+    expect(select).toBeDisabled();
+    fireEvent.change(select, { target: { value: 'pkg' } });
+    expect(screen.getByDisplayValue('/S')).toBeInTheDocument();
+  });
+
+  it('shows the server\'s refusal when a metadata-only create fails', async () => {
+    fetchMock.mockImplementation((url: string, opts?: RequestInit) => {
+      if (String(url).startsWith('/custom-fields')) return Promise.resolve(jsonResponse({ data: [] }));
+      if (opts?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: vi.fn().mockResolvedValue({ error: 'Install scripts require devices.execute' }),
+        } as unknown as Response);
+      }
+      return Promise.resolve(jsonResponse({ data: [] }));
+    });
+    await renderLoaded();
+    openAdd();
+    fireEvent.change(versionInput(), { target: { value: '3.0.0' } });
+    fireEvent.change(urlInput(), { target: { value: 'https://cdn.example/setup.exe' } });
+    onlyOs(/windows/i);
+    fireEvent.change(screen.getByTestId('post-install-script'), { target: { value: 'echo post' } });
+    fireEvent.click(submitButton());
+    expect(await screen.findByText(/Install scripts require devices\.execute/)).toBeInTheDocument();
+  });
+
+  it('editing a legacy zip version with no scripts is not blocked by the zip rule', async () => {
+    serve([{ ...ZIP_VERSION, id: 'v-old-zip', preInstallScript: null, postInstallScript: null, installScriptsEnabled: false }]);
+    await renderLoaded();
+    fireEvent.click(await screen.findByTestId('version-edit-v-old-zip'));
+    expect(screen.queryByTestId('install-spec-issue-zip_requires_post_install_script')).toBeNull();
+    expect(screen.getByRole('button', { name: /^save$/i })).not.toBeDisabled();
+  });
+
+  it('opening Add after an edit starts from the latest version, not the edited one', async () => {
+    serve([ZIP_VERSION, { ...PKG_LEGACY_ARGS, isLatest: false }]);
+    await renderLoaded();
+    fireEvent.click(await screen.findByTestId('version-edit-v-pkg'));
+    fireEvent.click(screen.getByTestId('version-form-cancel'));
+    openAdd();
+    const pre = (await screen.findByTestId('pre-install-script')) as HTMLTextAreaElement;
+    expect(pre.readOnly).toBe(false);
+    expect(pre).toHaveValue('Stop-Service tool');
   });
 
   it('seeds a new version with the latest version\'s scripts', async () => {

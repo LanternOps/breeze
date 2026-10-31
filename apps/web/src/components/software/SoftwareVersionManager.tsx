@@ -406,8 +406,11 @@ export default function SoftwareVersionManager({
   const effectiveFileType: SoftwareFileType | null = formState.file
     ? deriveSoftwareFileTypeFromUrl(formState.fileName)
     : formState.fileType || inferredFileType;
-  const argsHidden =
-    effectiveFileType !== null && ARGS_HIDDEN_FILE_TYPES.has(effectiveFileType);
+  // On edit the PATCH cannot change the type, and the API judges args against
+  // the STORED type, so that is what decides here.
+  const argsHidden = editingEntry
+    ? ARGS_HIDDEN_FILE_TYPES.has(editingEntry.fileType)
+    : effectiveFileType !== null && ARGS_HIDDEN_FILE_TYPES.has(effectiveFileType);
   // Active scripts bind a version to its one OS (they pick the interpreter);
   // the PATCH route rejects any change, so the checkboxes lock.
   const osLocked = Boolean(
@@ -471,8 +474,14 @@ export default function SoftwareVersionManager({
             supportedOs: [...seed.supportedOs],
             detectionRules: seed.detectionRules.map((r) => ({ ...r })),
             successExitCodesRaw: formatSuccessExitCodes(seed.successExitCodes),
-            preInstallScript: seed.preInstallScript ?? "",
-            postInstallScript: seed.postInstallScript ?? "",
+            // Only active scripts carry over: a routine new release must not
+            // start running a dormant script as SYSTEM/root unasked.
+            ...(seed.installScriptsEnabled
+              ? {
+                  preInstallScript: seed.preInstallScript ?? "",
+                  postInstallScript: seed.postInstallScript ?? "",
+                }
+              : {}),
           }
         : EMPTY_FORM,
     );
@@ -731,12 +740,18 @@ export default function SoftwareVersionManager({
             }),
           },
         );
-        if (!response.ok)
+        if (!response.ok) {
+          // Pass the server's refusal through (e.g. scripts need
+          // devices.execute, an install-spec issue) — same as the edit path.
+          const errData = await response.json().catch(() => ({}));
           throw new Error(
-            i18n.t(
-              "policies:software.softwareVersionManager.failedToCreateVersion",
-            ),
+            typeof errData.error === "string"
+              ? errData.error
+              : i18n.t(
+                  "policies:software.softwareVersionManager.failedToCreateVersion",
+                ),
           );
+        }
         const newVersionData = await response.json();
         const newVersion = normalizeVersion(
           newVersionData.data ?? newVersionData,
@@ -962,7 +977,9 @@ export default function SoftwareVersionManager({
                   onChange={(e) =>
                     handleFileTypeChange(e.target.value as "" | SoftwareFileType)
                   }
-                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  // The PATCH route has no fileType: a version's type is fixed.
+                  disabled={Boolean(editingVersionId)}
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <option value="">
                     {inferredFileType

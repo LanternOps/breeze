@@ -106,7 +106,7 @@ Software versions can use the **zip** package type and can carry **pre-install**
 - **Silent install arguments** are not supported for `pkg`, `dmg`, `deb` and `zip` versions and are rejected.
 - **Agent version.** Devices whose agent is older than **0.125.0** fail with `agent_update_required`, and nothing is dispatched to them.
 - **Existing versions.** Scripts stored on versions created before this release stay inactive until the version is re-created. The version manager shows a notice on those versions.
-- **Changing scripts.** A version's scripts cannot be edited after it is created; editing the version shows them read-only and keeps its target OS fixed. To change them, use **Add version** on the package: the new version starts with the latest version's scripts, and the form accepts zip and checks the rules above before saving.
+- **Changing scripts.** A version's scripts cannot be edited after it is created; editing the version shows them read-only and keeps its target OS fixed. To change them, use **Add version** on the package: the new version starts with the latest version's active scripts, and the form accepts zip and checks the rules above before saving.
 
 Breeze also ships a small set of vendor-pinned packages built on this mechanism; see [Deploying DNS filtering clients](/features/dns-security/#deploying-dns-filtering-clients-control-d-nextdns).
 
