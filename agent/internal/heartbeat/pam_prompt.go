@@ -103,12 +103,18 @@ type elevationFlow struct {
 	// request: Cancel request is refused while one is under way, so a
 	// launch never lands behind a "cancelled" card.
 	applying int
+
+	// afterSettle (tests) runs after every settle, on the settling goroutine.
+	afterSettle func()
 }
 
 func (f *elevationFlow) settle(a elevationAnswer) {
 	select {
 	case f.answers <- a:
 	default: // the first answer wins
+	}
+	if f.afterSettle != nil {
+		f.afterSettle()
 	}
 }
 
@@ -249,10 +255,11 @@ func (h *Heartbeat) askElevationPrompt(ctx context.Context, winSession string, o
 		deadline = time.Now().Add(elevationWaitingFallback)
 	}
 	flow := &elevationFlow{
-		requestID: strings.ToLower(outcome.RequestID),
-		owner:     owner,
-		answers:   make(chan elevationAnswer, 1),
-		created:   time.Now(),
+		requestID:   strings.ToLower(outcome.RequestID),
+		owner:       owner,
+		answers:     make(chan elevationAnswer, 1),
+		created:     time.Now(),
+		afterSettle: h.elevationAfterSettle,
 	}
 	flow.e = promptkinds.NewElevation(promptkinds.ElevationParams{
 		RequestID:          outcome.RequestID,
@@ -263,6 +270,11 @@ func (h *Heartbeat) askElevationPrompt(ctx context.Context, winSession string, o
 		FirstQuestionRoles: roles,
 		WaitingDeadline:    deadline,
 	}, promptkinds.ElevationHooks{
+		// Answered records the answer at once (a consent exit or a server
+		// outcome arriving now must not supersede it); RunPamFlow is woken
+		// only by AnswerApplied, once the host has applied the answer, so the
+		// waiting card it places is never fenced by Send request's own patch
+		// (#10734).
 		Answered: func(actionID string, role ipc.HelperRole) {
 			flow.mu.Lock()
 			flow.answered = true
@@ -270,6 +282,8 @@ func (h *Heartbeat) askElevationPrompt(ctx context.Context, winSession string, o
 				flow.phase = elevationSent
 			}
 			flow.mu.Unlock()
+		},
+		AnswerApplied: func(actionID string, role ipc.HelperRole) {
 			a := elevationAnswer{renderer: elevationRendererLabel(role)}
 			if actionID == promptkinds.ActionSendRequest {
 				a.dialog = ipc.PamDialogResult{Approved: true}

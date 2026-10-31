@@ -112,8 +112,14 @@ type ElevationParams struct {
 // outside the host's state lock, serialized with every other action.
 type ElevationHooks struct {
 	// Answered runs when the person answered the first question
-	// (ActionSendRequest or ActionCancel) on a renderer of role.
+	// (ActionSendRequest or ActionCancel) on a renderer of role, before the
+	// host applies the answer: record it here, but do not act on it yet.
 	Answered func(actionID string, role ipc.HelperRole)
+	// AnswerApplied runs for the same answer once the host has applied and
+	// sent it (the first question's renderer fenced or the card cancelled):
+	// the domain acts on the answer from here, so its WaitingPatch can never
+	// be overwritten by the answer's own patch (#10734).
+	AnswerApplied func(actionID string, role ipc.HelperRole)
 	// CancelRequest runs for Cancel request on the waiting card. false
 	// refuses it (the request was decided meanwhile).
 	CancelRequest func(role ipc.HelperRole) bool
@@ -189,14 +195,23 @@ func NewElevation(p ElevationParams, hooks ElevationHooks) *Elevation {
 	applyEN(&show, e.localize)
 
 	refuse := prompthost.ActionOutcome{Accepted: false}
+	// answer records a first-question answer now and hands it to the domain
+	// once the host has applied patch (ActionOutcome.After).
+	answer := func(actionID string, role ipc.HelperRole, patch prompthost.Patch) prompthost.ActionOutcome {
+		if hooks.Answered != nil {
+			hooks.Answered(actionID, role)
+		}
+		out := prompthost.ActionOutcome{Accepted: true, Patch: &patch}
+		if hooks.AnswerApplied != nil {
+			out.After = func() { hooks.AnswerApplied(actionID, role) }
+		}
+		return out
+	}
 	onAction := func(actionID string, _ prompthost.Owner, role ipc.HelperRole) (prompthost.ActionOutcome, error) {
 		switch e.state() {
 		case ipc.PromptStatePending:
 			switch actionID {
 			case ActionSendRequest:
-				if hooks.Answered != nil {
-					hooks.Answered(actionID, role)
-				}
 				// Nobody draws it until the domain has dismissed the UAC
 				// prompt and calls Update(WaitingPatch): the old renderer is
 				// fenced now and never sees the waiting state.
@@ -204,16 +219,13 @@ func NewElevation(p ElevationParams, hooks ElevationHooks) *Elevation {
 				if err != nil {
 					return refuse, err
 				}
-				return prompthost.ActionOutcome{Accepted: true, Patch: &patch}, nil
+				return answer(actionID, role, patch), nil
 			case ActionCancel:
-				if hooks.Answered != nil {
-					hooks.Answered(actionID, role)
-				}
 				patch, err := e.patchTo(elevationView{state: ipc.PromptStateCancelled}, nil)
 				if err != nil {
 					return refuse, err
 				}
-				return prompthost.ActionOutcome{Accepted: true, Patch: &patch}, nil
+				return answer(actionID, role, patch), nil
 			}
 		case ipc.PromptStateWaiting:
 			switch actionID {
