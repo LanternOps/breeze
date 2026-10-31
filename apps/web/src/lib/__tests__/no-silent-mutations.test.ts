@@ -33,6 +33,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 // To guard a file, add its line here; there is no total to bump (#10030).
+// MIN_GUARDED_FILES below is a floor that additions never touch.
 const TARGET_GLOBS = [
   // Partner-wide groups: creation and policy assignment mutations surface outcomes.
   'src/components/devices/CreateGroupModal.tsx',
@@ -172,7 +173,7 @@ const TARGET_GLOBS = [
   'src/components/toolSources/ToolTestDrawer.tsx',
   // Execution plane W05 (#5716) — the per-org AI external-processing consent
   // switch and the attach-artifact-to-ticket control. Both mutate through
-  // runAction; the count assertion below was bumped by exactly these two.
+  // runAction.
   'src/components/settings/OrgAiProcessingToggle.tsx',
   'src/components/aiAgents/AttachArtifactToTicket.tsx',
   // Account board (W02): org create and restore go through runAction in the
@@ -605,6 +606,13 @@ const TARGET_GLOBS = [
   'src/components/aiOperator/StartRecipeForm.tsx',
 ];
 
+// Ratchet floor, not a total: adding an entry above never touches this line.
+// Lower it only in a PR that deliberately un-guards files (deletes a guarded
+// component, moves one to the backlog); leave a little headroom when you do,
+// so two removals in the queue at once don't both claim the same new floor.
+// Raising it is optional housekeeping.
+const MIN_GUARDED_FILES = 286;
+
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
 const allowAbsolute = new Set(RUN_ACTION_ALLOWLIST.map((a) => resolve(REPO_ROOT, a.file)));
 
@@ -895,17 +903,22 @@ describe('no silent mutations in targeted set', () => {
   const checker = program.getTypeChecker();
 
   it('finds files to scan, and every guarded file exists', () => {
-    // No hard-coded total (#10030). The old `toBe(<n>)` was bumped by every PR
-    // that guarded a file, so any two such PRs collided in the merge queue: a
+    // No exact total (#10030). The old `toBe(<n>)` was bumped by every PR that
+    // guarded a file, so any two such PRs collided in the merge queue: a
     // textual conflict when their bumps differed, a red merged group when they
-    // matched. It added no coverage — each guarded file is still scanned below,
-    // and dropping an entry shows as a deleted line in TARGET_GLOBS. A deleted
-    // or renamed source file fails here, by name.
-    expect(absoluteFiles.length).toBeGreaterThan(0);
+    // matched. Adding an entry now touches nothing else. The floor below is a
+    // ratchet against the list shrinking (a bad conflict resolution, or an
+    // entry deleted to silence its scan): only a PR that deliberately un-guards
+    // files below it has to lower it. A deleted or renamed source file fails
+    // here, by name.
+    expect(
+      new Set(TARGET_GLOBS).size,
+      'TARGET_GLOBS shrank below MIN_GUARDED_FILES — restore the dropped entries, ' +
+        'or lower the floor in the same PR that deliberately un-guards a file',
+    ).toBeGreaterThanOrEqual(MIN_GUARDED_FILES);
     const missing = TARGET_GLOBS.filter((_, i) => {
       try {
-        statSync(absoluteFiles[i]);
-        return false;
+        return !statSync(absoluteFiles[i]).isFile();
       } catch {
         return true;
       }
@@ -923,7 +936,6 @@ describe('no silent mutations in targeted set', () => {
       return false;
     });
     expect(duplicates).toEqual([]);
-    expect(seen.size).toBe(absoluteFiles.length);
   });
 
   for (const absPath of absoluteFiles) {
