@@ -757,6 +757,16 @@ describe('DELETE /devices/:id/permanent — tickets are detached, not destroyed'
     }));
   });
 
+  it('omits detachedTopologyAlerts from the audit when no site-owned alert was detached', async () => {
+    rigDeviceLookup(DEVICE);
+    rigDeleteTransaction({ detachedTopologyAlerts: 0 });
+    const res = await app.request(`/devices/${DEVICE.id}/permanent`, {
+      method: 'DELETE', headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(await auditDetails()).not.toHaveProperty('detachedTopologyAlerts');
+  });
+
   it('hard delete detaches tickets (device_id -> NULL) instead of deleting them', async () => {
     rigDeviceLookup(DEVICE);
     const statements = rigDeleteTransaction();

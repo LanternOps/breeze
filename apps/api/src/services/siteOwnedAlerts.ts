@@ -45,13 +45,14 @@ export async function deleteSiteOwnedTopologyAlerts(tx: SqlExecutor, orgId: stri
  * Why this exists (PR #7117 re-review): the ownership guard pins a site-owned
  * alert's org_id to its SITE when the origin device moves org, but device_id
  * (NO ACTION FK) keeps pointing at the moved device. The device's new org
- * then holds a device a row in ANOTHER org still references, so a delete of
- * that device, or an erasure of its new org (which deletes alerts by org_id
- * only), must remove these first or the devices DELETE raises 23503. Matches
- * how device-bound alerts go with their device. Must run in a SYSTEM db
- * context: the alert may belong to an org the caller cannot see.
+ * then holds a device a row in ANOTHER org still references. Org erasure
+ * (which deletes alerts by org_id only) must remove these first or the devices
+ * DELETE raises 23503; that is the only caller left. A permanent device delete
+ * no longer uses this: it detaches the provenance device instead
+ * (detachOriginDeviceTopologyAlerts, #7269) so the site keeps its alert history.
+ * Must run in a SYSTEM db context: the alert may belong to an org the caller
+ * cannot see.
  */
-// Device deletion uses detachOriginDeviceTopologyAlerts; org erasure still deletes.
 export async function deleteOriginDeviceTopologyAlerts(
   tx: SqlExecutor,
   deviceIds: SQL,

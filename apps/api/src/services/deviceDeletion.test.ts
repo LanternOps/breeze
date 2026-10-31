@@ -590,6 +590,9 @@ describe('deleteDeviceCascade topology alert history (#7269)', () => {
       sql: "UPDATE alerts SET device_id = NULL WHERE owner_kind = 'topology_site' AND device_id = $1::uuid RETURNING id",
       params: ['device-1'],
     });
+    // The generic alerts delete must also follow the detach, or the topology rows would go with the device.
+    const alertsDelete = queries.findIndex(q => q.sql.startsWith('DELETE FROM "alerts" WHERE device_id ='));
+    expect(alertsDelete).toBeGreaterThan(detach);
     for (const table of ['alert_notifications', 'alert_correlations', 'psa_ticket_mappings']) {
       const childDelete = queries.findIndex(q => q.sql.startsWith(`DELETE FROM ${table}`));
       expect(childDelete, table).toBeGreaterThan(detach);
