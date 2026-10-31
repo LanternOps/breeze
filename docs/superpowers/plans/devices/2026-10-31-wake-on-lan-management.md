@@ -1,7 +1,7 @@
 ---
-roadmap_item: LanternOps/breeze#10838
+tracking_issue: LanternOps/breeze#10838
 waves: [W01, W02, W03, W04, W05, W06, W07, W08, W09]
-status: draft, awaiting Todd's review. Not yet promoted to a feature
+status: approved, waves tracked on LanternOps/breeze#10838
 ---
 
 # Wake-on-LAN Management Implementation Plan
