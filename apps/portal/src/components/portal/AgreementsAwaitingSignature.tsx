@@ -5,10 +5,12 @@ import { LINK } from './ui';
 
 interface AgreementsAwaitingSignatureProps {
   agreements: PortalAgreementSummary[];
+  /** The org zone (the dashboard's `timezone`); the card is SSR-only (#10291). */
+  timezone: string;
 }
 
 /** Dashboard card: agreements this user can sign right now. Renders nothing when there are none. */
-export function AgreementsAwaitingSignature({ agreements }: AgreementsAwaitingSignatureProps) {
+export function AgreementsAwaitingSignature({ agreements, timezone }: AgreementsAwaitingSignatureProps) {
   const signable = agreements.filter((a) => a.canSign);
   if (signable.length === 0) return null;
 
@@ -30,7 +32,7 @@ export function AgreementsAwaitingSignature({ agreements }: AgreementsAwaitingSi
               className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm hover:underline"
             >
               <span className="font-semibold text-foreground">{a.name}</span>
-              <span className="text-figures text-xs text-muted-foreground">Expires {shortDate(a.expiresAt)}</span>
+              <span className="text-figures text-xs text-muted-foreground">Expires {shortDate(a.expiresAt, timezone)}</span>
             </a>
           </li>
         ))}

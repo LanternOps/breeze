@@ -40,6 +40,13 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: unknown) => unknown) => selector(orgStoreState),
 }));
 
+// The card has its own suite; here we only assert when the page mounts it.
+vi.mock('./PsaAlertTicketingCard', () => ({
+  default: ({ connectionId }: { connectionId: string }) => (
+    <div data-testid={`alert-ticketing-card-${connectionId}`} />
+  ),
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 function makeResponse(payload: unknown, ok = true, status = ok ? 200 : 500): Response {
@@ -115,13 +122,9 @@ describe('PsaConnectionsPage round-trip contract', () => {
         username: 'admin@acme.com',
         apiToken: 'tok-123',
       },
-      settings: {
-        syncEnabled: true,
-        syncInterval: '1h',
-        syncDirection: 'bidirectional',
-        syncOnClose: true,
-        includeNotes: true,
-      },
+      // #9947: ticket sync is not implemented, so the form must not post the
+      // hidden sync defaults (syncEnabled/interval/direction/onClose/notes).
+      settings: {},
     });
     // Flat form fields must NOT leak to the top level, and empty secrets must
     // not appear as empty-string credential keys.
@@ -196,13 +199,10 @@ describe('PsaConnectionsPage round-trip contract', () => {
         baseUrl: 'https://acme.atlassian.net',
         username: 'admin@acme.com',
       },
+      // #9947: stored sync keys are neither echoed back nor overwritten — the
+      // server-side PATCH merge keeps whatever is already stored.
       settings: {
         defaultQueue: 'OPS',
-        syncEnabled: false,
-        syncInterval: '6h',
-        syncDirection: 'outbound',
-        syncOnClose: false,
-        includeNotes: false,
       },
     });
     // PATCH must not send provider, and untouched secrets must be omitted so
@@ -579,5 +579,44 @@ describe('PsaConnectionsPage round-trip contract', () => {
     expect(screen.queryByLabelText(/sync interval/i)).toBeNull();
     expect(screen.queryByLabelText(/sync direction/i)).toBeNull();
     expect(screen.getByTestId('psa-ticket-sync-unavailable')).toBeTruthy();
+  });
+
+  it('titles the ticket card for what it shows, not as synced tickets (#9947)', async () => {
+    installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+    render(<PsaConnectionsPage />);
+
+    expect(await screen.findByRole('heading', { name: /^psa tickets$/i })).toBeTruthy();
+    expect(screen.queryByText(/synced tickets/i)).toBeNull();
+  });
+});
+
+describe('PsaConnectionsPage alert ticketing card mount', () => {
+  afterEach(() => {
+    ownerScopeState.isPartnerScope = false;
+  });
+
+  const connections = [
+    { id: 'cw-partner', provider: 'connectwise', name: 'MSP CW', status: 'active', ownerScope: 'partner' },
+    { id: 'cw-org', provider: 'connectwise', name: 'Org CW', status: 'active', ownerScope: 'organization' },
+    { id: 'jira-partner', provider: 'jira', name: 'MSP Jira', status: 'active', ownerScope: 'partner' },
+  ];
+
+  it('mounts only for a partner-owned, capable provider in a partner session', async () => {
+    ownerScopeState.isPartnerScope = true;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.getByTestId('alert-ticketing-card-cw-partner')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-ticketing-card-cw-org')).toBeNull();
+    expect(screen.queryByTestId('alert-ticketing-card-jira-partner')).toBeNull();
+  });
+
+  it('does not mount in an org-scope session', async () => {
+    ownerScopeState.isPartnerScope = false;
+    installFetchRouter({ 'GET /psa/connections': { data: connections } }, []);
+    render(<PsaConnectionsPage />);
+    await screen.findByText('MSP Jira');
+    expect(screen.queryByTestId('alert-ticketing-card-cw-partner')).toBeNull();
   });
 });

@@ -25,6 +25,17 @@ describe('findActiveWispGrant', () => {
     expect(h.fetchWispThread.mock.calls).toEqual([['org-a'], [null]]);
   });
 
+  it('the 200 "no grant for this scope" rejection (#10200) moves on to partner-wide, and for both scopes is "none"', async () => {
+    const { WispThreadReadError } = await vi.importActual<typeof import('./wispGrant')>('./wispGrant');
+    const noGrant = () => new WispThreadReadError('none', 200, 'no_active_grant');
+    h.fetchWispThread.mockRejectedValueOnce(noGrant()).mockResolvedValueOnce(active);
+    await expect(findActiveWispGrant('org-a')).resolves.toEqual({ kind: 'grant', grant: active });
+    h.fetchWispThread.mockReset().mockRejectedValue(noGrant());
+    await expect(findActiveWispGrant('org-a')).resolves.toEqual({ kind: 'none' });
+    expect(h.fetchWispThread.mock.calls).toEqual([['org-a'], [null]]);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
   it.each([404, 403, 402])('%i is a definitive "no grant"', async (status) => {
     h.fetchWispThread.mockRejectedValue(new WispThreadError('no', status));
     await expect(findActiveWispGrant('org-a')).resolves.toEqual({ kind: 'none' });

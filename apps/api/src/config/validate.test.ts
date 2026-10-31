@@ -4253,3 +4253,35 @@ describe('empty-string compose passthrough (#7640)', () => {
     });
   });
 });
+
+// #9700: INTERNAL_SERVICE_CIDRS exempts the in-cluster plain-HTTP hop from
+// FORCE_HTTPS. It must name a private network — a public or all-addresses range
+// would let internet clients claim the internal exemption.
+describe('INTERNAL_SERVICE_CIDRS validation (#9700)', () => {
+  it('accepts the compose bridge subnet', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('accepts unset (exemption disabled)', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0.0.0.0/0', '::/0', '203.0.113.0/24', 'not-a-cidr', '172.31.0.0/99', '10.0.0.0/1', '172.16.0.0/8', 'fc00::/1'])(
+    'refuses %j',
+    (entry) => {
+      withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: `172.31.0.0/24,${entry}` }, () => {
+        expect(() => validateConfig()).toThrow(/INTERNAL_SERVICE_CIDRS/);
+      });
+    },
+  );
+
+  it('refuses an INTERNAL_API_HOSTS entry that is not a bare host[:port]', () => {
+    withEnv({ ...validEnv, INTERNAL_SERVICE_CIDRS: '172.31.0.0/24', INTERNAL_API_HOSTS: 'http://api:3001/x' }, () => {
+      expect(() => validateConfig()).toThrow(/INTERNAL_API_HOSTS/);
+    });
+  });
+});

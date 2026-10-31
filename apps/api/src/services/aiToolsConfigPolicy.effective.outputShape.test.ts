@@ -98,4 +98,42 @@ describe('get_effective_configuration output shape (#6745)', () => {
     expect(out.inheritanceChain.every((e: { featureTypes: string[] }) => e.featureTypes.includes(ft))).toBe(true);
     expectDefaultPageFits('get_effective_configuration', raw);
   });
+
+  // #10397: a blank windowStart was echoed raw and read as "never opens", and
+  // nothing told the model that weekly means Sunday. The resolved schedule
+  // rides next to the stored settings.
+  it('maintenance with includeSettings carries the resolved schedule beside the stored settings', async () => {
+    const cfg = effective();
+    const maintenance = {
+      recurrence: 'weekly', windowStart: '', durationHours: 2, timezone: 'America/Denver',
+      suppressAlerts: true, suppressPatching: true, suppressAutomations: false, suppressScripts: false,
+      rebootIfPending: true, notifyBeforeMinutes: 15, notifyOnStart: true, notifyOnEnd: true,
+    };
+    (cfg.features.maintenance as Record<string, unknown>).inlineSettings = maintenance;
+    resolveEffectiveConfigMock.mockResolvedValue(cfg);
+    const raw = await tool().handler({ deviceId: DEVICE_ID, includeSettings: true, featureType: 'maintenance' }, auth());
+    const out = JSON.parse(raw) as Record<string, any>;
+    expect(out.features.maintenance.inlineSettings).toEqual(maintenance);
+    expect(out.features.maintenance.effectiveSchedule).toMatchObject({
+      recurrence: 'weekly', opensOn: 'Sunday', startTime: '00:00', startTimeSource: 'default_midnight',
+      durationHours: 2, timezone: 'America/Denver',
+    });
+    expect(out.features.maintenance.effectiveSchedule.nextWindow.startsAt).toMatch(/Z$/);
+    expectDefaultPageFits('get_effective_configuration', raw);
+  });
+
+  it('only the maintenance feature, and only with includeSettings, carries effectiveSchedule', async () => {
+    // A maintenance-shaped blob on EVERY feature: only the maintenance slot may be described.
+    const cfg = effective();
+    const maintenanceShaped = { recurrence: 'weekly', windowStart: '02:00', durationHours: 2, timezone: 'UTC' };
+    for (const feature of Object.values(cfg.features)) (feature as Record<string, unknown>).inlineSettings = maintenanceShaped;
+    resolveEffectiveConfigMock.mockResolvedValue(cfg);
+    const all = JSON.parse(await tool().handler({ deviceId: DEVICE_ID, includeSettings: true }, auth())) as Record<string, any>;
+    for (const [featureType, feature] of Object.entries(all.features)) {
+      if (featureType === 'maintenance') expect((feature as any).effectiveSchedule?.opensOn).toBe('Sunday');
+      else expect((feature as any).effectiveSchedule, featureType).toBeUndefined();
+    }
+    const compact = JSON.parse(await tool().handler({ deviceId: DEVICE_ID }, auth())) as Record<string, any>;
+    expect(compact.features.maintenance.effectiveSchedule).toBeUndefined();
+  });
 });

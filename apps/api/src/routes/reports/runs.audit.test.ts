@@ -1,18 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import JSZip from 'jszip';
 
 const {
   auditSensitiveReadMock,
   getReportRunMock,
   selectRows,
   rowsToCsvMock,
-  rowsToTsvMock,
+  rowsToXlsxMock,
 } = vi.hoisted(() => ({
   auditSensitiveReadMock: vi.fn(),
   getReportRunMock: vi.fn(),
   selectRows: [] as unknown[][],
   rowsToCsvMock: vi.fn((rows: unknown[]) => `csv:${JSON.stringify(rows)}`),
-  rowsToTsvMock: vi.fn((rows: unknown[]) => `tsv:${JSON.stringify(rows)}`),
+  rowsToXlsxMock: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -121,11 +122,16 @@ vi.mock('./helpers', () => ({
   getPagination: vi.fn(),
 }));
 
-vi.mock('@breeze/shared', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@breeze/shared')>()),
-  rowsToCsv: rowsToCsvMock,
-  rowsToTsv: rowsToTsvMock,
-}));
+vi.mock('@breeze/shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@breeze/shared')>();
+  // Real .xlsx writer by default so the Excel test inspects actual workbook bytes.
+  rowsToXlsxMock.mockImplementation(actual.rowsToXlsx);
+  return {
+    ...actual,
+    rowsToCsv: rowsToCsvMock,
+    rowsToXlsx: rowsToXlsxMock,
+  };
+});
 
 vi.mock('../../services/sensitiveReadAudit', () => ({
   auditSensitiveRead: auditSensitiveReadMock,
@@ -165,7 +171,6 @@ describe('report run sensitive-read audit', () => {
     selectRows.length = 0;
     getReportRunMock.mockResolvedValue(runAccess());
     rowsToCsvMock.mockImplementation((rows: unknown[]) => `csv:${JSON.stringify(rows)}`);
-    rowsToTsvMock.mockImplementation((rows: unknown[]) => `tsv:${JSON.stringify(rows)}`);
   });
 
   it('audits the exact CSV response bytes and actual result-row count', async () => {
@@ -228,8 +233,9 @@ describe('report run sensitive-read audit', () => {
     },
   );
 
-  it('audits TSV-backed Excel output after serialization', async () => {
-    const rows = [{ hostname: 'pc-1' }];
+  // #9956: "Excel" used to be TSV text saved as .xls (Excel warned on open).
+  it('serves Excel as a real .xlsx workbook and audits its byte length', async () => {
+    const rows = [{ hostname: 'pc-1', cpuPercent: 12 }];
     selectRows.push([{
       id: RUN_ID,
       orgId: ORG_ID,
@@ -241,15 +247,69 @@ describe('report run sensitive-read audit', () => {
     }]);
 
     const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
-    const body = await res.text();
+    const body = new Uint8Array(await res.arrayBuffer());
 
     expect(res.status).toBe(200);
-    expect(body).toBe(`tsv:${JSON.stringify(rows)}`);
+    expect(res.headers.get('content-type')).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(res.headers.get('content-disposition')).toMatch(
+      /^attachment; filename="device_inventory-report-\d{4}-\d{2}-\d{2}\.xlsx"$/,
+    );
+    expect(rowsToXlsxMock).toHaveBeenCalledWith(rows);
+    const sheet = await (await JSZip.loadAsync(body)).file('xl/worksheets/sheet1.xml')!.async('string');
+    expect(sheet).toContain('>hostname</t>');
+    expect(sheet).toContain('>cpuPercent</t>');
+    expect(sheet).toContain('>pc-1</t>');
+    expect(sheet).toContain('<c r="B2"><v>12</v></c>');
     expect(auditSensitiveReadMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       format: 'excel',
       rowCount: 1,
-      byteCount: Buffer.byteLength(body, 'utf8'),
+      byteCount: body.byteLength,
     }));
+  });
+
+  it('answers 409 without auditing when the rows do not fit an Excel worksheet', async () => {
+    const { XlsxLimitError } = await import('@breeze/shared');
+    rowsToXlsxMock.mockImplementationOnce(() => {
+      throw new XlsxLimitError('too many rows');
+    });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: [{ hostname: 'pc-1' }] },
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: expect.stringContaining('CSV') });
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
+  });
+
+  it('does not report an unexpected writer failure as "too large" (no 409, no audit)', async () => {
+    rowsToXlsxMock.mockImplementationOnce(() => {
+      // An engine RangeError (not the writer's limit error) must not map to 409.
+      throw new RangeError('Maximum call stack size exceeded');
+    });
+    selectRows.push([{
+      id: RUN_ID,
+      orgId: ORG_ID,
+      status: 'completed',
+      result: { rows: [{ hostname: 'pc-1' }] },
+      reportType: 'device_inventory',
+      reportName: 'Inventory',
+      reportFormat: 'excel',
+    }]);
+
+    const res = await app().request(`/reports/runs/${RUN_ID}/download?format=excel`);
+
+    expect(res.status).toBe(500);
+    expect(auditSensitiveReadMock).not.toHaveBeenCalled();
   });
 
   it('does not query or audit a missing or unauthorized run', async () => {

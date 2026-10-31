@@ -1,9 +1,53 @@
 package heartbeat
 
 import (
+	"sync"
+
 	"github.com/breeze-rmm/agent/internal/patching"
 	"github.com/breeze-rmm/agent/internal/winupdate"
 )
+
+// featureUpdateOutcome is the part of an applied feature-update policy that
+// decides whether the log line is news. For a Breeze-managed pin,
+// Result.Reason is deliberately left out: it flips from "pinned" to "already
+// pinned (re-asserted …)" on the beat after a pin lands without anything
+// having changed.
+type featureUpdateOutcome struct {
+	mode            patching.FeatureUpdateMode
+	product         string
+	targetVersion   string
+	managed         bool
+	enforced        bool
+	reverted        bool
+	unmanagedReason string
+}
+
+// featureUpdateLogState remembers the last outcome logged at INFO. The policy
+// is re-applied on every heartbeat (60 s); only a changed outcome is logged at
+// INFO, the steady-state re-assert goes to DEBUG (#10382).
+type featureUpdateLogState struct {
+	mu     sync.Mutex
+	last   featureUpdateOutcome
+	logged bool
+}
+
+// changed records o and reports whether it differs from the last outcome
+// recorded (true on the first call and after reset).
+func (s *featureUpdateLogState) changed(o featureUpdateOutcome) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.logged && s.last == o {
+		return false
+	}
+	s.last, s.logged = o, true
+	return true
+}
+
+func (s *featureUpdateLogState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logged = false
+}
 
 // applyTargetRelease is the seam to the Windows-only registry policy, a
 // package var so the dispatch + parse path is unit-tested on every platform
@@ -59,6 +103,9 @@ func (h *Heartbeat) applyFeatureUpdateConfig(raw any) {
 
 	res, err := applyTargetRelease(pin)
 	if err != nil {
+		// Forget the last outcome so the next successful apply is reported
+		// at INFO even if it matches what was logged before the failure.
+		h.featureUpdateLog.reset()
 		log.Error("failed to apply Windows Update target-release policy",
 			"mode", string(policy.Mode), "error", err.Error())
 		return
@@ -67,7 +114,24 @@ func (h *Heartbeat) applyFeatureUpdateConfig(raw any) {
 		log.Debug("Windows Update target-release policy not supported on this platform", "mode", string(policy.Mode))
 		return
 	}
-	log.Info("applied Windows feature-update policy",
+	outcome := featureUpdateOutcome{
+		mode:          policy.Mode,
+		product:       policy.Product,
+		targetVersion: policy.TargetVersion,
+		managed:       res.Managed,
+		enforced:      res.Enforced,
+		reverted:      res.Reverted,
+	}
+	if !res.Managed {
+		// Unmanaged reasons are stable per state, and the admin-owned GPO
+		// case carries the admin's target version only in Reason.
+		outcome.unmanagedReason = res.Reason
+	}
+	logFn := log.Debug
+	if h.featureUpdateLog.changed(outcome) {
+		logFn = log.Info
+	}
+	logFn("applied Windows feature-update policy",
 		"mode", string(policy.Mode),
 		"product", policy.Product,
 		"targetVersion", policy.TargetVersion,

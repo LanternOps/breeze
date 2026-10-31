@@ -195,6 +195,33 @@ describe('WispThreadPage (W06 T7, W01 T13 companion layout)', () => {
     await waitFor(() => expect(h.fetchWithAuth.mock.calls.length).toBe(calls + 1));
   });
 
+  // #10104: the concerns and activity panes load once per refresh key. A
+  // grant status change (Resume from the rail, or a poll that finds the grant
+  // paused / resumed) must re-run them, or a pane that failed while paused
+  // stays on "Couldn't load" until a manual reload.
+  it('#10104: a grant status change refreshes the rail panes and the column — from a rail patch and from a poll', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    h.fetchWithAuth.mockResolvedValue(res(200, payload({ grant: { status: 'paused' } })));
+    render(<WispThreadPage threadId="t1" />);
+    await screen.findByTestId('wisp-rail');
+    const k0 = lastRail().activityKey as number;
+
+    // An unchanged status on a poll does not churn the panes.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(lastRail().activityKey).toBe(k0);
+
+    // Resume from the rail.
+    act(() => (lastRail().onWispChange as (p: unknown) => void)({ status: 'active', pausedReason: null }));
+    await waitFor(() => expect(lastRail().activityKey).not.toBe(k0));
+    const k1 = lastRail().activityKey as number;
+    expect(lastThread().refreshKey).toBe(k1);
+
+    // A poll that finds the grant paused elsewhere (system pause) refreshes again.
+    h.fetchWithAuth.mockResolvedValue(res(200, payload({ grant: { status: 'paused' } })));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await waitFor(() => expect(lastRail().activityKey).not.toBe(k1));
+  });
+
   it('a poll carries the thread’s newest lastSessionId to the column', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<WispThreadPage threadId="t1" />);
