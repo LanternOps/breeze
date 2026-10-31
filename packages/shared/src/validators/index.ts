@@ -1,5 +1,6 @@
 import { CONFIG_FEATURE_TYPES } from '../constants/configFeatureTypes';
 import { z } from 'zod';
+import { applicationProvidersSchema } from './eventLogProviders';
 import {
   ACTOR_TYPES,
   AUDIT_RESULTS,
@@ -26,6 +27,7 @@ export * from './businessEmail';
 export * from './sendingDomains';
 export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
+export * from './securityLimits';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './ringFeatureUpdates';
@@ -35,6 +37,7 @@ export * from './securityAgents';
 export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';
+export * from './mfaRecoveryCode';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
@@ -55,6 +58,7 @@ export * from './softwareDownloadPolicy';
 export * from './softwareVersionInstallSpec';
 export * from './systemCleanup';
 export * from './psa';
+export * from './psaAlertTicketing';
 export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
@@ -927,6 +931,7 @@ export * from './timeSync';
 export * from './workloads';
 
 export const eventLogInlineSettingsSchema = z.object({
+  applicationProviders: applicationProvidersSchema,
   retentionDays: z.number().int().min(7).max(365).default(30),
   maxEventsPerCycle: z.number().int().min(10).max(500).default(100),
   collectCategories: z.array(z.enum(['security', 'hardware', 'application', 'system'])).min(1).default(['security', 'hardware', 'application', 'system']),
@@ -1434,3 +1439,4 @@ export * from './flowRuns';
 export * from './flowBudgets';
 export * from './flowWebhooks';
 export * from './flowConversions';
+export * from './networkIsolation';

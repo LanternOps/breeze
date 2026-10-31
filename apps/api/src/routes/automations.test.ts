@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { automationRoutes, automationWebhookRoutes } from './automations';
+
+// W06 R1 (#5221, Decision 8): with Flows enabled (the default) POST /automations
+// answers 410. The legacy create suites below run with Flows off; the R1 suite
+// sets the flag itself.
+beforeEach(() => { vi.stubEnv('FLOWS_ENABLED', 'false'); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 // #7347: models withAuthDbAccessContext as a fresh transaction that COMMITS
 // when its callback resolves (or throws "commit failed" when `failNextCommit`).
@@ -763,6 +769,50 @@ describe('automations routes', () => {
     const body = await res.json();
     expect(body.id).toBe('11111111-1111-4111-8111-111111111111');
     expect(body.trigger.type).toBe('manual');
+  });
+
+  describe('R1 create refusal (#5221 C5, Decision 8)', () => {
+    const body = {
+      name: 'New Job', trigger: { type: 'manual' }, conditions: { type: 'all' },
+      actions: [{ type: 'run_script', scriptId: 'script-1' }], onFailure: 'stop',
+    };
+    const post = (payload: unknown = body) => app.request('/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer valid-token' },
+      body: JSON.stringify(payload),
+    });
+
+    it.each([['unset', undefined], ['true', 'true']] as const)(
+      'POST /automations is 410 with flowsUrl when flows are enabled (FLOWS_ENABLED %s)', async (_label, value) => {
+        if (value === undefined) vi.stubEnv('FLOWS_ENABLED', undefined as unknown as string);
+        else vi.stubEnv('FLOWS_ENABLED', value);
+        const res = await post();
+        expect(res.status).toBe(410);
+        expect(await res.json()).toEqual({ error: 'automations_moved_to_flows', flowsUrl: '/flows' });
+        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+        expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+      },
+    );
+
+    it('the 410 answers before body validation (an invalid body is still 410, not 400)', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'true');
+      const res = await post({ name: '' });
+      expect(res.status).toBe(410);
+    });
+
+    it('POST /automations still creates when FLOWS_ENABLED=false', async () => {
+      vi.stubEnv('FLOWS_ENABLED', 'false');
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: '11111111-1111-4111-8111-111111111111', name: 'New Job', orgId: 'org-123',
+            trigger: { type: 'manual' }, enabled: true,
+          }]),
+        }),
+      } as any);
+      const res = await post();
+      expect(res.status).toBe(201);
+    });
   });
 
   describe('script action elevation at the HTTP boundary', () => {

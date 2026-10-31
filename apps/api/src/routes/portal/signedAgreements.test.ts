@@ -58,7 +58,7 @@ function app() {
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
       user: { id: 'pu-1', orgId: ORG, email: 'dana@customer.example', name: 'Dana', contactId: null, receiveNotifications: true, status: 'active' },
-      token: 't', authMethod: 'bearer', partnerId: PARTNER, timezone: 'UTC',
+      token: 't', authMethod: 'bearer', partnerId: PARTNER, timezone: 'America/Denver',
     });
     await next();
   });
@@ -97,7 +97,9 @@ describe('GET /signed-agreements', () => {
     h.rows.set(contractTemplateVersions, [{ versionId: VERSION, versionNumber: 3, templateName: 'BAA' }]);
     const res = await app().request('/signed-agreements');
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual([
+    const body = await res.json();
+    expect(body.timezone).toBe('America/Denver'); // #10291
+    expect(body.data).toEqual([
       {
         id: DOC, name: 'HIPAA BAA 2026', templateName: 'BAA', versionNumber: 3, sourceKind: 'request', quoteNumber: null,
         mime: 'application/pdf', byteSize: 1200, signerName: 'Dana Buyer', signedAt: '2026-10-21T09:00:00.000Z',

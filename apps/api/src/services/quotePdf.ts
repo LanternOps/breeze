@@ -661,7 +661,9 @@ async function renderCoverPage(
   const colW = c.contentWidth / 2 - 12;
   const rightX = c.left + colW + 24;
 
-  const preparedForName = cp.preparedForName ?? quote.billToName ?? null;
+  // `||`, not `??`: the same rule as the screen cover (buildQuoteDocumentModel),
+  // so an empty override falls back to the bill-to name on both (#9957).
+  const preparedForName = cp.preparedForName || quote.billToName || null;
   if (preparedForName) {
     doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('PREPARED FOR', c.left, rowY);
     doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(preparedForName, c.left, rowY + 14, { width: colW });

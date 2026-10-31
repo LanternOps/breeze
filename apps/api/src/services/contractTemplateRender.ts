@@ -495,6 +495,31 @@ function displayEffectiveDate(quote: QuoteRow): Date | undefined {
   return undefined;
 }
 
+/** ADMIN quote editor only (#9867): every auto variable's value as the client
+ *  will read it, so the agreement block can show `Client name — Acme Co`
+ *  instead of `{{client.name}}`. A sent quote reads its frozen snapshot (same
+ *  map as the display render). A DRAFT has no frozen bill-to or seller yet —
+ *  `billToName`/`sellerSnapshot` are null until send — so the caller passes
+ *  what send will freeze: getQuote's resolved `billTo` (override → org name +
+ *  billing address) and resolveQuoteBranding's live-synthesized `seller`. */
+export function resolveQuoteEditorAutoVariables(
+  quote: QuoteRow,
+  opts: {
+    locale?: string | null;
+    billTo?: { name: string | null; address: BillToAddress | null } | null;
+    seller?: SellerSnapshot | null;
+  },
+): Record<string, string> {
+  const ctx = renderContextFromQuote(quote, { effectiveDate: displayEffectiveDate(quote), locale: opts.locale });
+  if (quote.status !== 'draft') return resolveAutoVariables(ctx);
+  return resolveAutoVariables({
+    ...ctx,
+    clientName: opts.billTo?.name ?? ctx.clientName,
+    clientAddress: opts.billTo?.address ?? ctx.clientAddress,
+    sellerName: opts.seller?.name ?? ctx.sellerName,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Substitution
 // ---------------------------------------------------------------------------

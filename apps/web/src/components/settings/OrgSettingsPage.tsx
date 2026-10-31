@@ -156,12 +156,13 @@ type OrgDetails = {
   settings?: {
     branding?: {
       logoUrl?: string;
-      primaryColor?: string;
       secondaryColor?: string;
       theme?: 'light' | 'dark' | 'system';
-      // customCss deliberately absent (#5952) — it now lives in
-      // portal_branding, loaded/saved by OrgBrandingEditor via
-      // /orgs/organizations/:id/portal-settings, not here.
+      // customCss (#5952) and primaryColor (#9962) deliberately absent — they
+      // live in portal_branding, loaded/saved by OrgBrandingEditor via
+      // /orgs/organizations/:id/portal-settings, not here. A legacy stored
+      // branding.primaryColor is dropped on the next Branding save, which
+      // replaces the whole category.
       portalSubdomain?: string;
     };
     defaults?: {

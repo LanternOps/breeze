@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { policyAwareMonitorEventLogWarnings } from '../services/monitorEventLogWarnings';
 import { monitorConversionRoutes } from './monitorDefinitions.conversion';
 import { z } from 'zod';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -61,7 +62,6 @@ import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
   monitorKindSchema,
-  monitorEventLogCollectionWarnings,
 } from '@breeze/shared';
 
 /**
@@ -166,8 +166,8 @@ monitorDefinitionRoutes.get('/kinds', requireScope('organization', 'partner', 's
  * partial PATCH (no kind/condition in the body) is still checked. Omitted when
  * empty so the response shape is unchanged for every other monitor.
  */
-function collectionWarnings(row: { kind: unknown; condition: unknown }): { warnings?: string[] } {
-  const warnings = monitorEventLogCollectionWarnings(row.kind, row.condition);
+async function collectionWarnings(row: { kind: unknown; condition: unknown; orgId: string | null; partnerId: string | null }): Promise<{ warnings?: string[] }> {
+  const warnings = await policyAwareMonitorEventLogWarnings(row);
   return warnings.length > 0 ? { warnings } : {};
 }
 
@@ -206,7 +206,7 @@ monitorDefinitionRoutes.post(
         resourceName: created.name,
         details: { kind: created.kind, partnerWide: created.orgId === null },
       });
-      return c.json({ data: created, ...collectionWarnings(created) }, 201);
+      return c.json({ data: created, ...await collectionWarnings(created) }, 201);
     } catch (error) {
       const mapped = errorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);
@@ -286,7 +286,7 @@ monitorDefinitionRoutes.patch(
         resourceId: updated.id,
         resourceName: updated.name,
       });
-      return c.json({ data: updated, ...collectionWarnings(updated) });
+      return c.json({ data: updated, ...await collectionWarnings(updated) });
     } catch (error) {
       const mapped = errorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);

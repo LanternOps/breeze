@@ -569,7 +569,9 @@
       "after": "peşinde",
       "between": "arasındadır",
       "withinLast": "sonuncu içinde",
-      "notWithinLast": "sonuncusu içinde değil"
+      "notWithinLast": "sonuncusu içinde değil",
+      "below": "daha düşük",
+      "atLeast": "en az"
     },
     "value": {
       "noValue": "Değere gerek yok",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Çıkarıldı"
-      }
+      },
+      "softwareName": "Yazılım adı",
+      "softwareVersion": "Yazılım sürümü"
     }
   },
   "account": {
@@ -1080,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Uyarı ticket’ları",
+        "scopeNote": "Tüm iş ortağı için geçerlidir; kuruluş bazında geçersiz kılma yoktur.",
+        "pausedBanner": "Duraklatıldı: PSA kimlik bilgilerini reddetti. Devam etmek için “Bağlantıyı test et” işlemini çalıştırın.",
+        "yes": "Açık",
+        "no": "Kapalı",
+        "selectPlaceholder": "Seçin…",
+        "priorityDefault": "PSA varsayılanı",
+        "closedSuffix": "{{name}} (kapalı)",
+        "saved": "Uyarı ticket’ı ayarları kaydedildi",
+        "saving": "Kaydediliyor…",
+        "save": "Kaydet",
+        "conflict": "Bu ayarlar başka bir yerde değiştirildi. En son değerler yüklendi; gözden geçirip yeniden kaydedin.",
+        "errors": {
+          "save": "Uyarı ticket’ı ayarları kaydedilemedi"
+        },
+        "status": {
+          "active": "Bu bağlantı için uyarı ticket’ları etkin.",
+          "notExternal": "Uyarı ticket’larını kullanmak için bu bağlantıyı hizmet yönetimi PSA’sı (harici mod) olarak bağlayın.",
+          "disabled": "Uyarı ticket’ları kapalı.",
+          "paused": "PSA bağlantısı yeniden çalışana kadar uyarı ticket’ları duraklatıldı.",
+          "companyLinksUnverified": "Bu PSA örneği için şirket bağlantılarını onaylayın.",
+          "invalidConfig": "Kayıtlı uyarı ticket’ı ayarları geçerli değil. Gözden geçirip yeniden kaydedin.",
+          "unsupportedProvider": "Uyarı ticket’ları bu PSA sağlayıcısı için kullanılamıyor.",
+          "credentialsUnusable": "Bu bağlantının kimlik bilgileri eksik veya okunamıyor. Bağlantıyı düzenleyin ve bilgileri yeniden girin."
+        },
+        "fields": {
+          "enabled": "Uyarı ticket’larını etkinleştir",
+          "board": "Pano",
+          "openStatus": "Yeni ticket durumu",
+          "closedStatus": "Kapalı durumu",
+          "priorityHeading": "Uyarı önem derecesine göre PSA önceliği",
+          "minSeverity": "En düşük önem derecesi",
+          "minSeverityHelp": "Düşük, uyarı düzeyindeki monitörleri de kapsar",
+          "closeOnResolve": "Uyarı çözüldüğünde ticket’ı kapat",
+          "noteOnAcknowledge": "Uyarı onaylandığında not ekle",
+          "confirmCompanyLinks": "Kuruluşların şirket bağlantıları bu PSA örneğiyle eşleşiyor"
+        },
+        "severity": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük",
+          "info": "Bilgi"
+        },
+        "options": {
+          "error": "Seçenekler PSA’dan yüklenemedi",
+          "retry": "Tekrar dene",
+          "truncated": "PSA’dan yalnızca ilk sonuçlar gösteriliyor."
+        },
+        "readOnly": {
+          "enabled": "Uyarı ticket’ları"
+        },
+        "loadError": {
+          "message": "Uyarı ticket ayarları yüklenemedi",
+          "retry": "Yeniden dene"
+        },
+        "configInvalid": {
+          "warning": "Kaydedilmiş uyarı ticket ayarları okunamadı. Kaydetmek bunların yerine geçer.",
+          "confirm": "Okunamayan ayarları değiştir"
+        }
+      },
       "PsaCompanyImport": {
         "title": "İthalat şirketleri",
         "subtitle": "{{name}} şirketlerinden organizasyonlar oluşturun.",
@@ -1292,7 +1358,7 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "PSA Biletleri",
         "unlinked": "Bağlantı kaldırıldı"
       }
     },
@@ -1552,7 +1618,8 @@
           "enabled": "Web kancası etkinleştirildi",
           "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
-          "updated": "Web kancası güncellendi"
+          "updated": "Web kancası güncellendi",
+          "deleted": "\"{{name}}\" web kancası silindi"
         },
         "title": "Web kancaları"
       }

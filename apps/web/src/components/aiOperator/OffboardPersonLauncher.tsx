@@ -8,9 +8,12 @@
  *    `unavailable` — which is what the recipe's own flag being off produces.
  * A launcher that opens a form which cannot submit is worse than none.
  *
- * Launching from a ticket carries the requester into the form (a contact when
- * the ticket has one, else the submitter's email as a hint) and NO source
- * citation: the task opens its own checklist ticket.
+ * Launching from a ticket does NOT fill in the person leaving: the requester
+ * is often the manager reporting someone else's departure (#10075), and this
+ * recipe suspends accounts, removes licences and wipes phones. The form starts
+ * empty and offers the requester (a contact when the ticket has one, else the
+ * submitter's email) as a suggestion the technician must choose. NO source
+ * citation is sent: the task opens its own checklist ticket.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -24,11 +27,11 @@ import StartRecipeForm, { type StartRecipeLaunch } from './StartRecipeForm';
 export interface OffboardPersonLauncherProps {
   orgId: string;
   source: 'ticket' | 'contact';
-  /** The contact, when one is known (always, from a contact). */
+  /** From a contact: the person leaving. From a ticket: the requester contact, only suggested. */
   contactId: string | null;
-  /** From a ticket with no requester contact: the submitter's email, resolved by the draft. */
+  /** From a ticket: the submitter's email, only suggested (resolved by the draft if chosen). */
   personHint?: string | null;
-  /** Display label for the person. */
+  /** Display label for the person (from a ticket, for the requester suggestion). */
   label: string | null;
   className?: string;
   /** Defaults to `offboard-launcher-<source>`; a table passes one per row. */

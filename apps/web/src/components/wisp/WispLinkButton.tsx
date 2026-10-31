@@ -136,7 +136,7 @@ export default function WispLinkButton({
       data-testid="wisp-link-button"
       disabled={busy || view.linked}
       onClick={() => void link()}
-      className={`inline-flex items-center rounded-md border font-medium transition hover:bg-muted disabled:cursor-default disabled:opacity-70 ${SIZE_CLASSES[size]}`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-md border font-medium transition hover:bg-muted disabled:cursor-default disabled:opacity-70 ${SIZE_CLASSES[size]}`}
     >
       {view.linked
         ? <Check className={size === 'sm' ? 'h-3.5 w-3.5 text-success' : 'h-4 w-4 text-success'} aria-hidden="true" />

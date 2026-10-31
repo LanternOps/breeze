@@ -1,0 +1,11 @@
+{
+  "name": "PC02",
+  "domain": "WORKGROUP",
+  "protectionStatus": "NotProtected",
+  "os": "Windows Server 2022",
+  "version": "2026.9.0.1",
+  "updateStatus": {
+    "online": "Offline"
+  },
+  "networkAdapters": []
+}

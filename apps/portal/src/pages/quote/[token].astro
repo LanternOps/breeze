@@ -18,8 +18,16 @@ const initial = response.data?.data ?? null;
 const supersededBranding = response.statusCode === 410 && response.code === 'QUOTE_SUPERSEDED'
   ? ((response.errorData as { branding?: { partnerName?: string } } | undefined)?.branding ?? {})
   : null;
+// #3740: an accepted quote's link still reaches its invoice's payment. Accepting
+// spends the link (the view above answers 401), so on a 401 — or a still-live
+// link to an already-converted quote — ask the payment route, which serves the
+// accepting link and nothing beyond that invoice's payment. Its own 401 (a
+// genuinely invalid link) leaves the page on the generic fallback.
+const accepted = response.statusCode === 401 || initial?.quote.status === 'converted'
+  ? ((await portalApi.getPublicQuotePayment(token!, buildServerApiConfig(Astro.request))).data?.data ?? null)
+  : null;
 const error = response.statusCode === 401 || supersededBranding ? undefined : response.error;
-const partnerName = initial?.branding?.partnerName ?? supersededBranding?.partnerName;
+const partnerName = initial?.branding?.partnerName ?? supersededBranding?.partnerName ?? accepted?.partnerName ?? undefined;
 const title = partnerName ? `Proposal from ${partnerName}` : 'Proposal';
 ---
 
@@ -30,5 +38,5 @@ const title = partnerName ? `Proposal from ${partnerName}` : 'Proposal';
   supportPhone={initial?.branding?.supportPhone}
   partnerName={partnerName}
 >
-  <PublicQuoteView token={token!} initial={initial} error={error} superseded={supersededBranding} client:load />
+  <PublicQuoteView token={token!} initial={initial} error={error} superseded={supersededBranding} accepted={accepted} client:load />
 </PublicDocumentLayout>

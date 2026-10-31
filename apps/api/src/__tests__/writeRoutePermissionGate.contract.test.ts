@@ -359,6 +359,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',
+  'POST /api/v1/quotes/public/:token/pay': 'public: Signed public quote link token; spent only by the accepting jti (durable row record); mints Checkout for the quote\'s own converted invoice under its org',
   // routes/sso.ts
   'POST /api/v1/sso/link/start/:providerId': 'own account: Starts linking caller\'s own SSO identity; MFA required',
   'POST /api/v1/sso/reauth/start': 'own account: Caller\'s own IdP re-authentication start',

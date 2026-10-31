@@ -32,6 +32,7 @@ import {
   getPeripheralPolicyDistributionQueue, shutdownPeripheralJobs,
 } from '../src/jobs/peripheralJobs';
 import { closeRedis } from '../src/services/redis';
+import { SOFTWARE_GROUP_FILTER_FIELDS } from '../src/services/softwareGroupFilterFields';
 import { cascadeDeletePartner } from '../src/services/tenantCascade';
 import type { PartnerGroupOrgResult } from '../src/services/partnerGroupEvaluation';
 import { pgErrorCode } from '../src/utils/pgErrors';
@@ -223,7 +224,7 @@ async function churn(fleet: Fleet, competingWholeGroup: boolean) {
     for (let offset = 0; offset < deviceRows.length; offset += 100) {
       await Promise.all(deviceRows.slice(offset, offset + 100).map(device => scheduleDeviceGroupReevaluation({
         deviceId: device.id, orgId: device.orgId, eventType: 'device.updated',
-        changedFields: ['software.installed', 'software.notInstalled'], reason: TAG,
+        changedFields: [...SOFTWARE_GROUP_FILTER_FIELDS], reason: TAG,
       })));
     }
     while (finished.size < deviceRows.length) {

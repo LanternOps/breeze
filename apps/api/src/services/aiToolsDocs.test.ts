@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { registerDocsTools } from './aiToolsDocs';
+import { DOCS_SEARCH_MAX_CHARS, registerDocsTools, searchDocsIndex, type DocsIndexEntry } from './aiToolsDocs';
 import type { AiTool } from './aiTools';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -134,5 +135,218 @@ describe('search_documentation handler', () => {
       const result = await handler({ query: 'xyzzy99completely_impossible_term' }, mockAuth);
       expect(result).toContain('No documentation found');
     });
+  });
+});
+
+// ── Section text (#10398) ────────────────────────────────────────────────
+
+function entry(overrides: Partial<DocsIndexEntry> & Pick<DocsIndexEntry, 'path' | 'title'>): DocsIndexEntry {
+  return { description: '', headings: [], section: 'features', sections: [], ...overrides };
+}
+
+const FIXTURE: DocsIndexEntry[] = [
+  entry({
+    path: '/features/maintenance-windows/',
+    title: 'Maintenance Windows',
+    description: 'Schedule maintenance windows.',
+    headings: ['Recurring Windows', 'Timezone Handling'],
+    sections: [
+      { heading: '', anchor: '', text: 'Maintenance windows suppress alerts.' },
+      {
+        heading: 'Recurring Windows',
+        anchor: 'recurring-windows',
+        text: '| `weekly` | The configured start time on the most recent Sunday in the configured timezone |',
+      },
+      { heading: 'Timezone Handling', anchor: 'timezone-handling', text: 'Windows are evaluated in the configured IANA timezone.' },
+    ],
+  }),
+  entry({
+    path: '/features/patch-management/',
+    title: 'Alpha Patch Management',
+    description: 'Approve and deploy patches.',
+    headings: ['Schedules'],
+    sections: [{ heading: 'Schedules', anchor: 'schedules', text: 'Patch schedules can run weekly on a chosen day.' }],
+  }),
+  entry({ path: '/reference/glossary/', title: 'Glossary', description: 'Weekly terms', section: 'reference' }),
+];
+
+describe('searchDocsIndex — section text (#10398)', () => {
+  it('returns the matching section text, not just headings, with a deep link', () => {
+    const out = searchDocsIndex(FIXTURE, 'weekly recurring window');
+    expect(out).toContain('most recent Sunday');
+    expect(out).toContain('Section: Recurring Windows');
+    expect(out).toContain('https://docs.breezermm.com/features/maintenance-windows/#recurring-windows');
+  });
+
+  it('ranks the section whose heading matches above a page that only mentions the term in its body', () => {
+    const out = searchDocsIndex(FIXTURE, 'recurring weekly');
+    expect(out.indexOf('Maintenance Windows')).toBeGreaterThanOrEqual(0);
+    expect(out.indexOf('Maintenance Windows')).toBeLessThan(out.indexOf('Alpha Patch Management'));
+  });
+
+  it('does not let one stray body substring outrank a page whose title and heading match', () => {
+    const reference = entry({
+      path: '/features/reference/',
+      title: 'Alpha Reference',
+      headings: ['Big table'],
+      sections: [{ heading: 'Big table', anchor: 'big-table', text: 'maintenance window weekly picker day' }],
+    });
+    const out = searchDocsIndex([reference, ...FIXTURE], 'how do weekly maintenance windows pick their day');
+    expect(out.match(/^Title: .+$/m)?.[0]).toBe('Title: Maintenance Windows');
+  });
+
+  it('weights a heading hit above a body hit at equal keyword coverage', () => {
+    // The heading page sorts LAST by title, so only the weights can put it first.
+    const bodyOnly = entry({
+      path: '/features/a/',
+      title: 'Alpha Body',
+      headings: ['Overview'],
+      sections: [{ heading: 'Overview', anchor: 'overview', text: 'Mentions quarantine once.' }],
+    });
+    const headingOnly = entry({
+      path: '/features/z/',
+      title: 'Zulu Heading',
+      headings: ['Quarantine'],
+      sections: [{ heading: 'Quarantine', anchor: 'quarantine', text: 'Isolates the host.' }],
+    });
+    const out = searchDocsIndex([bodyOnly, headingOnly], 'quarantine');
+    expect(out.match(/^Title: .+$/gm)).toEqual(['Title: Zulu Heading', 'Title: Alpha Body']);
+  });
+
+  it('still lists a page that matches only on title/description', () => {
+    const out = searchDocsIndex(FIXTURE, 'glossary');
+    expect(out).toContain('Title: Glossary');
+    expect(out).toContain('URL: https://docs.breezermm.com/reference/glossary/');
+  });
+
+  it('ignores filler words so "how do I" does not match every page', () => {
+    const out = searchDocsIndex(FIXTURE, 'how do I set the timezone');
+    const titles = out.match(/^Title: .+$/gm) ?? [];
+    expect(titles).toEqual(['Title: Maintenance Windows']);
+    expect(out).toContain('IANA timezone');
+  });
+
+  it('honours the section filter', () => {
+    const out = searchDocsIndex(FIXTURE, 'weekly', 'reference');
+    expect(out.match(/^Title: .+$/gm)).toEqual(['Title: Glossary']);
+  });
+
+  it('excerpts a long section around the matching paragraph and stays inside the char budget', () => {
+    const filler = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} about unrelated configuration detail.`.padEnd(200, '.'));
+    filler.splice(30, 0, 'The needle answer: reboots wait for the device to come online.');
+    const big = entry({
+      path: '/features/big/',
+      title: 'Big Page',
+      headings: ['Long Section'],
+      sections: [{ heading: 'Long Section', anchor: 'long-section', text: filler.join('\n\n') }],
+    });
+    const out = searchDocsIndex([big], 'needle answer');
+    expect(out).toContain('The needle answer');
+    expect(out).toContain('…');
+    expect(out).not.toContain('Paragraph 0 ');
+    expect(out.length).toBeLessThanOrEqual(DOCS_SEARCH_MAX_CHARS);
+  });
+
+  it('windows a single oversized paragraph (a long table) onto the matching row', () => {
+    const rows = Array.from({ length: 200 }, (_, i) => `| row${i} | filler value ${i} |`);
+    rows[150] = '| needle | the matching row |';
+    const big = entry({
+      path: '/features/table/',
+      title: 'Table Page',
+      headings: ['Fields'],
+      sections: [{ heading: 'Fields', anchor: 'fields', text: rows.join('\n') }],
+    });
+    const out = searchDocsIndex([big], 'needle');
+    expect(out).toContain('| needle | the matching row |');
+    expect(out).not.toContain('| row0 |');
+    expect(out.length).toBeLessThanOrEqual(DOCS_SEARCH_MAX_CHARS);
+  });
+
+  it('starts an oversized paragraph at its head when it was selected by heading alone', () => {
+    const rows = Array.from({ length: 200 }, (_, i) => `| row${i} | filler value ${i} |`);
+    const big = entry({
+      path: '/features/table/',
+      title: 'Table Page',
+      headings: ['Needle fields'],
+      sections: [{ heading: 'Needle fields', anchor: 'needle-fields', text: rows.join('\n') }],
+    });
+    const out = searchDocsIndex([big], 'needle');
+    expect(out).toContain('| row0 | filler value 0 |');
+    expect(out).not.toContain('| row199 |');
+  });
+});
+
+describe('search_documentation against the shipped index (#10398)', () => {
+  const handler = getHandler(buildToolMap());
+
+  it('answers how weekly maintenance windows pick their day', async () => {
+    const out = await handler({ query: 'weekly maintenance window day' }, mockAuth);
+    expect(out).toContain('most recent Sunday');
+  });
+
+  it('answers why a pending reboot is not happening in the window', async () => {
+    const out = await handler({ query: 'pending reboot not rebooting during maintenance window' }, mockAuth);
+    expect(out).toMatch(/must be \*\*online\*\*/);
+  });
+
+  it('stays within the char budget for a broad query', async () => {
+    for (const query of ['agent', 'security', 'policy device alert', 'upgrade release notes', 'patch reboot windows', 'api key token']) {
+      const out = await handler({ query }, mockAuth);
+      expect(out.length).toBeLessThanOrEqual(DOCS_SEARCH_MAX_CHARS);
+    }
+  });
+});
+
+describe('docsIndex.json section contract (#10398)', () => {
+  const index = JSON.parse(
+    readFileSync(new URL('../data/docsIndex.json', import.meta.url), 'utf8'),
+  ) as DocsIndexEntry[];
+
+  it('carries section text for every page (regenerate with `npx tsx scripts/build-docs-index.ts`)', () => {
+    for (const page of index) {
+      expect(Array.isArray(page.sections), page.path).toBe(true);
+      expect(page.sections.map((s) => s.heading).filter(Boolean), page.path).toEqual(page.headings);
+    }
+  });
+
+  it('emits the same anchors Starlight renders', () => {
+    const page = index.find((p) => p.path === '/features/maintenance-windows/')!;
+    // The page links to its own heading by this id.
+    expect(page.sections.map((s) => s.anchor)).toContain('partner-wide-windows-all-organizations');
+  });
+
+  it('strips MDX imports and components from prose', () => {
+    for (const page of index) {
+      for (const section of page.sections) {
+        const prose = section.text.replace(/```[\s\S]*?```/g, '');
+        expect(prose, `${page.path}#${section.anchor}`).not.toMatch(/^import\s.+\sfrom\s['"]@astrojs/m);
+        expect(prose, `${page.path}#${section.anchor}`).not.toMatch(/<\/?(?:Tabs|TabItem|Aside|Steps)\b/);
+      }
+    }
+  });
+
+  it('keeps <PLACEHOLDER> tokens in inline code verbatim (they are not MDX components)', () => {
+    const docsRoot = new URL('../../../docs/src/content/docs/', import.meta.url);
+    const page = (path: string) => index.find((p) => p.path === path)!.sections.map((s) => s.text).join('\n');
+    const checked: string[] = [];
+    for (const [path, file] of [
+      ['/deploy/environment/', 'deploy/environment.mdx'],
+      ['/deploy/cloudflare-tunnel/', 'deploy/cloudflare-tunnel.mdx'],
+    ] as const) {
+      const source = readFileSync(new URL(file, docsRoot), 'utf8').replace(/```[\s\S]*?```/g, '');
+      const spans = source.match(/`[^`\n]*<[A-Z][\w]*>[^`\n]*`/g) ?? [];
+      expect(spans.length, file).toBeGreaterThan(0);
+      const text = page(path);
+      for (const span of spans) {
+        expect(text, `${path} lost ${span}`).toContain(span);
+        checked.push(span);
+      }
+    }
+    expect(checked).toContain('`<PUBLIC_APP_URL>/api/v1/tickets/mailbox/callback`');
+  });
+
+  it('turns an imported TabItem label into a bold lead-in', () => {
+    const text = index.find((p) => p.path === '/features/maintenance-windows/')!.sections.map((s) => s.text).join('\n');
+    expect(text).toContain('**Windows:**');
   });
 });

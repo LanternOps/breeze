@@ -110,7 +110,7 @@ describe('wispSpecialistRequestHandler (the approval carrier release)', () => {
   it('reports grant_inactive when the grant was paused after approval (Review Focus 1) — nothing admitted', async () => {
     h.requestSpecialist.mockResolvedValue({ refused: 'grant_inactive' });
     const out = JSON.parse(await wispSpecialistRequestHandler(ARGS, {} as never, { actionIntentId: INTENT }));
-    expect(out).toEqual({ error: 'grant_inactive' });
+    expect(out).toEqual({ error: 'grant_inactive', message: expect.stringContaining('paused, revoked or expired') });
   });
 
   it('reports the approver\'s missing permission (Review Focus 2)', async () => {
@@ -156,6 +156,24 @@ describe('launchSpecialistHandler (the Tier-2 chat tool)', () => {
     expect(ids[0]).not.toBe(ids[1]);
   });
 
+  // #10193: every refusal carries a sentence for the person, not only a code.
+  it('a refusal carries the launcher\'s own message, or one derived from its code and detail', async () => {
+    const named = 'The agent "QA Patching agent" is switched off. Turn it on under Settings → AI Agents (/settings/ai-agents), then ask again.';
+    h.requestSpecialist.mockResolvedValueOnce({ refused: 'agent_disabled', detail: 'disabled', message: named });
+    expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({
+      error: 'agent_disabled', detail: 'disabled', message: named,
+    });
+    // A run-admission skip after the approval (state changed while the card waited).
+    h.requestSpecialist.mockResolvedValueOnce({ refused: 'admission_skipped', detail: 'agent_disabled' });
+    expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({
+      error: 'admission_skipped', detail: 'agent_disabled', message: expect.stringContaining('is switched off'),
+    });
+    h.requestSpecialist.mockResolvedValueOnce({ refused: 'admission_skipped', detail: 'cooldown' });
+    expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({
+      error: 'admission_skipped', detail: 'cooldown', message: expect.stringContaining('did not accept the run'),
+    });
+  });
+
   it('rejects malformed input without calling the coordinator', async () => {
     const out = JSON.parse(await launchSpecialistHandler({ ...input, kind: 'run_script' } as never, sessionAuth()));
     expect(out.error).toBeTruthy();
@@ -164,7 +182,9 @@ describe('launchSpecialistHandler (the Tier-2 chat tool)', () => {
 
   it('surfaces a refusal as an error and an admission as its result', async () => {
     h.requestSpecialist.mockResolvedValueOnce({ refused: 'budget_exhausted' });
-    expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({ error: 'budget_exhausted' });
+    expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({
+      error: 'budget_exhausted', message: expect.stringContaining("today's AI budget"),
+    });
     expect(JSON.parse(await launchSpecialistHandler(input, sessionAuth()))).toEqual({ admitted: true, runId: 'run-child' });
   });
 });

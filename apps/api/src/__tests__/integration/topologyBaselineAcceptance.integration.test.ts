@@ -595,7 +595,7 @@ describe('grouped overview: one LAN reported by three observers', () => {
       const graphNode = body.nodes.find(node => node.id === device.nodeId)!;
       expect(graphNode.label).toBe(`lan-observer-${index}`);
       expect(graphNode.inventory).toMatchObject({ source: 'device', name: `lan-observer-${index}`, addresses: [`10.1.2.${10 + index}`],
-        mac: `02:00:00:00:00:0${index}`, os: 'linux 6.1', presence: { state: 'online', source: 'agent', agentStatus: 'online' } });
+        mac: `02:00:00:00:00:0${index}`, os: 'Linux 6.1', presence: { state: 'online', source: 'agent', agentStatus: 'online' } });
       expect(graphNode.inventory!.presence.lastSeenAt).toEqual(expect.any(String));
       // Freshly reported memberships/routes make the observer node fresh with OS evidence.
       expect(graphNode.freshness).toBe('fresh');

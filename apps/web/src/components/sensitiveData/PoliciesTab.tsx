@@ -7,7 +7,8 @@ import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { nextCronOccurrenceAt } from '@breeze/shared';
-import { DETECTION_CLASSES, DATA_TYPE_COLORS, dataTypeLabel } from './constants';
+import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
+import { useSensitiveDataLabels } from './useSensitiveDataLabels';
 import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -63,6 +64,7 @@ const defaultForm: FormState = {
 
 export default function PoliciesTab() {
   const { t } = useTranslation('security');
+  const { dataTypeLabel } = useSensitiveDataLabels();
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
@@ -377,7 +379,7 @@ export default function PoliciesTab() {
                         : 'hover:bg-muted'
                     }`}
                   >
-                    {cls.label}
+                    {dataTypeLabel(cls.value)}
                   </button>
                 ))}
               </div>
@@ -562,6 +564,12 @@ export default function PoliciesTab() {
                   <td className="px-4 py-3">
                     <button
                       type="button"
+                      role="switch"
+                      aria-checked={policy.isActive}
+                      aria-label={t('sensitiveDataLabels.a11y.togglePolicyActive', {
+                        defaultValue: 'Active: {{name}}',
+                        name: policy.name,
+                      })}
                       onClick={() => handleToggleActive(policy)}
                       className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${policy.isActive ? 'bg-emerald-500/80' : 'bg-muted'}`}
                     >
@@ -573,6 +581,8 @@ export default function PoliciesTab() {
                       <button
                         type="button"
                         onClick={() => openEdit(policy)}
+                        aria-label={t('sensitiveDataLabels.a11y.editPolicy', { defaultValue: 'Edit policy {{name}}', name: policy.name })}
+                        title={t('sensitiveDataLabels.a11y.editPolicy', { defaultValue: 'Edit policy {{name}}', name: policy.name })}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
                       >
                         <Pencil className="h-4 w-4" />
@@ -580,6 +590,8 @@ export default function PoliciesTab() {
                       <button
                         type="button"
                         onClick={() => handleDelete(policy)}
+                        aria-label={t('sensitiveDataLabels.a11y.deletePolicy', { defaultValue: 'Delete policy {{name}}', name: policy.name })}
+                        title={t('sensitiveDataLabels.a11y.deletePolicy', { defaultValue: 'Delete policy {{name}}', name: policy.name })}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border text-destructive hover:bg-destructive/10"
                       >
                         <Trash2 className="h-4 w-4" />

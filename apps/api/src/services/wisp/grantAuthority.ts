@@ -186,7 +186,23 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
   if (ceiling.status !== 'active') {
     throw new CeilingViolationError('inactive', `delegation grant ${ceiling.grantId} is ${ceiling.status}`);
   }
+  assertTermsWithinCeiling(ceiling, check);
+}
 
+/**
+ * READ-ONLY belt (#10104): the org / site terms of assertWithinCeiling
+ * WITHOUT its status gate, so the stored-revision ceiling of a paused grant
+ * (resolveGrantCeiling with `allowPaused`) can still filter what a
+ * thread page shows. It takes no tool or permission term on purpose: it can
+ * only narrow a read, never admit an action — every action goes through
+ * assertWithinCeiling, which refuses a paused ceiling.
+ */
+export function assertReadWithinCeiling(ceiling: GrantCeiling, check: { orgId: string | null; siteId?: string | null }): void {
+  assertTermsWithinCeiling(ceiling, check);
+}
+
+/** The tool / org / site / permission terms of a check; the caller has applied (or, for a read, deliberately skipped) the status gate. */
+function assertTermsWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck): void {
   if (check.toolName !== undefined) {
     // The two agent deny registries are checked directly too, so the
     // never-delegable floor does not depend on how the ceiling was built.
@@ -542,7 +558,7 @@ export const wispCeilingSnapshotSchema = z.object({
  * or the grantor's live term fails (the reconciler persists that pause; this
  * function fails closed without writing).
  *
- * `allowPaused` (READ-ONLY callers only; today the thread timeline): a
+ * `allowPaused` (READ-ONLY callers only: the thread timeline / activity and the concern list / detail routes): a
  * `paused` grant resolves from its stored revision ∩ the grantor's live term,
  * with `status: 'paused'`, so its history stays readable. Every other refusal
  * still throws (revoked, expired, Wisp off, corrupt pin, failed live term, no
