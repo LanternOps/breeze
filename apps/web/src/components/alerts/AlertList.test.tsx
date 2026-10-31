@@ -165,4 +165,17 @@ describe('AlertList e2e hooks (#10040)', () => {
     expect(screen.getByTestId('alert-row-a-1')).toBeInTheDocument();
     expect(screen.getByTestId('alert-row-a-2')).toBeInTheDocument();
   });
+
+  it('reports filtered vs total separately when a filter is active', () => {
+    render(
+      <AlertList
+        alerts={[baseAlert, { ...baseAlert, id: 'a-2', severity: 'low' }]}
+        initialSeverity={['critical']}
+      />,
+    );
+    const count = screen.getByTestId('alert-list-count');
+    expect(count).toHaveAttribute('data-filtered', '1');
+    expect(count).toHaveAttribute('data-total', '2');
+    expect(screen.queryByTestId('alert-row-a-2')).toBeNull();
+  });
 });

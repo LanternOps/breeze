@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #9794 — the Sites nav item (spec §4.1, Decisions 1–2): shown to anyone with
@@ -92,5 +92,8 @@ describe('Sidebar — Sites entry (#9794)', () => {
     const header = await screen.findByTestId('nav-section-toggle-fleet-management');
     expect(header).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByTestId('nav-sites')).toBeInTheDocument();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 });
