@@ -21,7 +21,6 @@ import AddDeviceModal from './AddDeviceModal';
 import ManualAssetModal from './ManualAssetModal';
 import AddNetworkAssetModal from './AddNetworkAssetModal';
 import RmmCustomFieldImport from './RmmCustomFieldImport';
-import CreateGroupModal from './CreateGroupModal';
 import LinkVmHostModal from './LinkVmHostModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
 import { DeviceFilterToolbar } from './DeviceFilterToolbar';
@@ -441,8 +440,6 @@ export default function DevicesPage() {
     refetch: refetchAdvancedFilterIds,
   } = useAdvancedFilterIds(advancedFilter, orgScopeKey);
   const advancedFilterBlocked = advancedFilterLoading || advancedFilterState === 'error' || advancedFilterError;
-  const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [autoSelectGroupId, setAutoSelectGroupId] = useState<string | null>(null);
 
   // #1459 — distinct software names for the filter picker, fetched server-side
   // (debounced) as the user types so the picker searches the real inventory
@@ -982,16 +979,6 @@ export default function DevicesPage() {
     fetchDevices(controller.signal);
     return () => controller.abort();
   }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
-
-  const handleGroupCreated = useCallback(async (newGroupId: string, ownerScope: 'organization' | 'partner') => {
-    setShowCreateGroup(false);
-    if (ownerScope === 'organization') setAutoSelectGroupId(newGroupId);
-    await refreshDevices();
-  }, [refreshDevices]);
-
-  const handleAutoSelectConsumed = useCallback(() => {
-    setAutoSelectGroupId(null);
-  }, []);
 
   // Real-time device status updates
   const handleDeviceEvent = useCallback((event: { type: string; payload: Record<string, unknown> }) => {
@@ -2393,7 +2380,9 @@ export default function DevicesPage() {
           groups={deviceGroups}
           softwareOptions={softwareOptions}
           onSoftwareSearch={handleSoftwareSearch}
-          onCreateGroup={() => setShowCreateGroup(true)}
+          // One create path for groups (#9865): the Device Groups page flow
+          // has the org picker and static-member chooser this page lacked.
+          createGroupHref="/devices/groups#create"
         />
       ) : (
         <DeviceFilterBar
@@ -2524,9 +2513,6 @@ export default function DevicesPage() {
           onHideDecommissioned={onHideDecommissioned}
           listFilters={listFilters}
           onListFiltersChange={setListFilters}
-          onCreateGroup={() => setShowCreateGroup(true)}
-          autoSelectGroupId={autoSelectGroupId}
-          onAutoSelectConsumed={handleAutoSelectConsumed}
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
           headerActions={viewToggle}
@@ -2637,12 +2623,6 @@ export default function DevicesPage() {
           }}
         />
       )}
-
-      <CreateGroupModal
-        isOpen={showCreateGroup}
-        onClose={() => setShowCreateGroup(false)}
-        onCreated={handleGroupCreated}
-      />
 
       {vmHostPickerDevices && !advancedFilterBlocked && (
         <LinkVmHostModal
