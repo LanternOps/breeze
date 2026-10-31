@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Webhook picker offers Ticket Merged
+
+The webhook event picker now lists **Ticket Merged** (`ticket.merged`), so subscribers can opt in from the UI. No migration or setting.
