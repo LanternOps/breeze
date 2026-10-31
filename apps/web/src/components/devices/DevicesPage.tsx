@@ -36,13 +36,13 @@ import {
 } from './deviceClassFilter';
 import { useDeviceClassFilter } from './useDeviceClassFilter';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
-import { runAction } from '../../lib/runAction';
+import { runAction, ActionError } from '../../lib/runAction';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { fetchAllSites } from '@/lib/fetchAllSites';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
-import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
+import { sendDeviceCommand, sendBulkCommand, executeScript, exitMaintenanceMode, decommissionDevice, bulkDecommissionDevices, permanentDeleteDevice, requestWakeCommand, requestBulkWakeCommand, type WakeResponse, type BulkWakeSummary, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost, bulkRestoreDevices, startBulkPurge, fetchPurgeRun, PURGE_POLL_INTERVAL_MS } from '../../services/deviceActions';
 import type { BulkMaintenanceResponse } from '../../services/deviceActions';
 import MaintenanceModeDialog from './MaintenanceModeDialog';
 import { isInMaintenance } from '../../lib/maintenanceResource';
@@ -1265,7 +1265,12 @@ export default function DevicesPage() {
 
         case 'wake': {
           try {
-            const wake = await sendWakeCommand(device.id);
+            const wake = await runAction<WakeResponse>({
+              request: () => requestWakeCommand(device.id),
+              onUnauthorized: handleSessionExpired,
+              errorFallback: t('devicesPage.toasts.actionFailed', { action: 'wake', hostname: device.hostname }),
+              friendly: (code, message) => wakeFriendlyErrorMessage(code) ?? message,
+            });
             const hostname = device.hostname;
             showToast({
               type: 'success',
@@ -1294,12 +1299,8 @@ export default function DevicesPage() {
                 wakeWatchersRef.current.delete(wakeController);
               });
           } catch (err) {
-            if (err instanceof WakeCommandError) {
-              const friendly = wakeFriendlyErrorMessage(err.code) ?? err.message;
-              showToast({ type: 'error', message: t('devicesPage.toasts.deviceError', { hostname: device.hostname, error: friendly }) });
-            } else {
-              throw err;
-            }
+            if (err instanceof ActionError) break; // runAction already handled feedback, including 401.
+            throw err;
           }
           break;
         }
@@ -1921,28 +1922,25 @@ export default function DevicesPage() {
           // and returns per-device outcome. We render one summary toast
           // grouped by failure code so a 50-device bulk doesn't spam 50
           // toasts.
-          const summary = await sendBulkWakeCommand(deviceIds);
-          const failureSummary = summarizeBulkWakeFailures(summary.failed);
-          if (summary.failed.length === 0) {
-            showToast({
-              type: 'success',
-              message: t('devicesPage.toasts.bulkWakeSent', { count: summary.succeeded.length }),
+          try {
+            const summary = await runAction<BulkWakeSummary>({
+              request: () => requestBulkWakeCommand(deviceIds),
+              onUnauthorized: handleSessionExpired,
+              errorFallback: t('devicesPage.toasts.bulkActionFailed', { action: 'wake' }),
             });
-          } else if (summary.succeeded.length === 0) {
-            showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkWakeAllFailed', { count: summary.failed.length, failureSummary }),
+            const message = t('devicesPage.toasts.bulkWakeResult', {
+              sent: summary.succeeded.length,
+              skipped: summary.failed.length,
             });
-          } else {
             showToast({
-              type: 'error',
-              message: t('devicesPage.toasts.bulkWakeSomeFailed', {
-                succeeded: summary.succeeded.length,
-                total: summary.succeeded.length + summary.failed.length,
-                failed: summary.failed.length,
-                failureSummary,
-              }),
+              type: summary.failed.length ? 'error' : 'success',
+              message: summary.failed.length
+                ? `${message}: ${summarizeBulkWakeFailures(summary.failed)}`
+                : message,
             });
+          } catch (err) {
+            if (err instanceof ActionError) break; // runAction already handled feedback, including 401.
+            throw err;
           }
           break;
         }

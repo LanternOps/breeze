@@ -2766,7 +2766,8 @@
       "bulkMoveSiteNotMovedForbidden": "{{devices}} (mevcut siteye veya hedef siteye erişiminiz yok)",
       "bulkMoveSiteNotMovedNotFound": "{{devices}} (artık bulunamıyor; silinmiş olabilir)",
       "bulkMoveSiteNotMovedError": "{{devices}} (beklenmeyen bir hata oluştu; yeniden deneyin)",
-      "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"
+      "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı",
+      "bulkWakeResult": "{{sent}} cihaza gönderildi, {{skipped}} cihaz atlandı"
     },
     "tryAgain": "Tekrar deneyin",
     "unknownDevice": "Bilinmiyor",
@@ -2805,7 +2806,18 @@
     "emptyOrgTitleUnnamed": "Bu kuruluşta henüz cihaz yok",
     "emptyOrgDescription": "İzlemeye başlamak için ajanı bu kuruluştaki bir makineye kurun veya filonuzun geri kalanını görmek için tüm kuruluşlara geçin.",
     "viewAllOrganizations": "Tüm kuruluşları görüntüle",
-    "importFromRmmShort": "İçe aktar"
+    "importFromRmmShort": "İçe aktar",
+    "wakeSkipReasons": {
+      "online": "zaten çevrimiçi",
+      "relayUnavailable": "aynı konumda çevrimiçi aracı yok",
+      "missingMac": "kayıtlı MAC adresi yok (aracı henüz bağlantı kurmadı)",
+      "missingSubnet": "kullanılabilir IPv4 geçmişi yok",
+      "ipv6": "yalnızca IPv6 geçmişi var",
+      "relayDisconnected": "gönderim sırasında aktarıcı bağlantısı kesildi — yeniden deneyin",
+      "missingTarget": "bulunamadı veya erişim reddedildi",
+      "removed": "kaldırıldı",
+      "invalidRelay": "aktarıcı seçimi geçersiz"
+    }
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",

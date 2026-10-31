@@ -1,3 +1,4 @@
+import { i18n } from '../lib/i18n';
 import { fetchWithAuth } from '@/stores/auth';
 import { extractApiError } from '../lib/apiError';
 import { createCancellableRequest } from '../lib/cancellableRequest';
@@ -115,6 +116,7 @@ export async function sendDeviceCommand(
 }
 
 export type WakeFailureCode =
+  | 'TARGET_ONLINE'
   | 'TARGET_NOT_FOUND'
   | 'NO_MACS'
   | 'NO_SUBNET'
@@ -232,11 +234,15 @@ function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
-  const response = await fetchWithAuth(`/devices/${deviceId}/commands`, {
+export function requestWakeCommand(deviceId: string): Promise<Response> {
+  return fetchWithAuth(`/devices/${deviceId}/commands`, {
     method: 'POST',
     body: JSON.stringify({ type: 'wake' })
   });
+}
+
+export async function sendWakeCommand(deviceId: string): Promise<WakeResponse> {
+  const response = await requestWakeCommand(deviceId);
 
   if (!response.ok) {
     let code: WakeFailureCode | undefined;
@@ -286,6 +292,13 @@ export interface BulkWakeSummary {
   failed: BulkWakeFailed[];
 }
 
+export function requestBulkWakeCommand(deviceIds: string[]): Promise<Response> {
+  return fetchWithAuth('/devices/bulk/commands', {
+    method: 'POST',
+    body: JSON.stringify({ deviceIds, type: 'wake' })
+  });
+}
+
 /**
  * Bulk Wake-on-LAN — one HTTP round-trip, server iterates per-device with
  * a relay-pick per LAN. Server response includes per-device outcome with
@@ -298,10 +311,7 @@ export interface BulkWakeSummary {
  * "0 succeeded."
  */
 export async function sendBulkWakeCommand(deviceIds: string[]): Promise<BulkWakeSummary> {
-  const response = await fetchWithAuth('/devices/bulk/commands', {
-    method: 'POST',
-    body: JSON.stringify({ deviceIds, type: 'wake' })
-  });
+  const response = await requestBulkWakeCommand(deviceIds);
   if (!response.ok) {
     throw new Error(await getErrorMessage(response, 'Failed to send bulk wake command'));
   }
@@ -315,38 +325,37 @@ export async function sendBulkWakeCommand(deviceIds: string[]): Promise<BulkWake
  * Example: "3 have no online peer at their site; 1 has no MAC on file"
  */
 export function summarizeBulkWakeFailures(failed: BulkWakeFailed[]): string {
-  if (failed.length === 0) return '';
-  const buckets: Record<string, number> = {};
-  for (const f of failed) {
-    const label = bulkWakeFailureLabel(f.code);
-    buckets[label] = (buckets[label] ?? 0) + 1;
+  const buckets = new Map<string, { label: string; count: number }>();
+  for (const failure of failed) {
+    const bucket = buckets.get(failure.code);
+    if (bucket) bucket.count++;
+    else buckets.set(failure.code, { label: bulkWakeFailureLabel(failure), count: 1 });
   }
-  return Object.entries(buckets)
-    .map(([label, count]) => `${count} ${label}`)
-    .join('; ');
+  return [...buckets.values()].map(({ label, count }) => `${count} ${label}`).join('; ');
 }
 
-function bulkWakeFailureLabel(code: string): string {
-  switch (code) {
+function bulkWakeFailureLabel(failure: BulkWakeFailed): string {
+  switch (failure.code) {
+    case 'TARGET_ONLINE':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.online');
     case 'NO_RELAY':
-      return 'with no online peer at their site';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.relayUnavailable');
     case 'NO_MACS':
-      return 'with no MAC on file (agent has not checked in)';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingMac');
     case 'NO_SUBNET':
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingSubnet');
     case 'IPV6_ONLY':
-      return 'with no usable IPv4 history';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.ipv6');
     case 'WS_SEND_FAILED':
-      return 'had relay disconnect mid-dispatch — retry';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.relayDisconnected');
     case 'TARGET_NOT_FOUND':
-      return 'not found or access denied';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.missingTarget');
     case 'DECOMMISSIONED':
-      return 'removed';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.removed');
     case 'RELAY_OVERRIDE_INVALID':
-      // Bulk path never uses override; surface generically if it ever
-      // does appear so we notice in telemetry.
-      return 'with invalid relay override';
+      return i18n.t('devices:devicesPage.wakeSkipReasons.invalidRelay');
     default:
-      return `with error ${code}`;
+      return failure.message;
   }
 }
 

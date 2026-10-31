@@ -478,16 +478,18 @@ export function DeviceDetailScreen({ route }: Props) {
           border={theme.border}
           brand={theme.brand}
         />
-        <ActionButton
-          label="Wake"
-          onPress={() => handleAction('wake')}
-          loading={actionLoading === 'wake'}
-          disabled={actionLoading !== null}
-          textHi={theme.textHi}
-          bg={theme.bg2}
-          border={theme.border}
-          brand={theme.brand}
-        />
+        {device.status !== 'online' && (
+          <ActionButton
+            label="Wake"
+            onPress={() => handleAction('wake')}
+            loading={actionLoading === 'wake'}
+            disabled={actionLoading !== null}
+            textHi={theme.textHi}
+            bg={theme.bg2}
+            border={theme.border}
+            brand={theme.brand}
+          />
+        )}
       </View>
     </ScrollView>
   );

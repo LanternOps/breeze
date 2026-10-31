@@ -555,6 +555,14 @@ describe('deviceActions service', () => {
   });
 
   describe('summarizeBulkWakeFailures', () => {
+    it('groups TARGET_ONLINE skips and preserves unknown server messages', () => {
+      expect(summarizeBulkWakeFailures([
+        { deviceId: 'a', code: 'TARGET_ONLINE', message: 'Online' },
+        { deviceId: 'b', code: 'TARGET_ONLINE', message: 'Online' },
+        { deviceId: 'c', code: 'FUTURE_CODE' as BulkWakeFailed['code'], message: 'Wake policy declined' },
+      ])).toBe('2 already online; 1 Wake policy declined');
+    });
+
     it('returns empty string when nothing failed', () => {
       expect(summarizeBulkWakeFailures([])).toBe('');
     });
@@ -573,14 +581,13 @@ describe('deviceActions service', () => {
       expect(out).toMatch(/1 removed/);
     });
 
-    it('collapses IPv6_ONLY and NO_SUBNET into one bucket', () => {
+    it('keeps IPv6_ONLY and NO_SUBNET in distinct code buckets', () => {
       const failed: BulkWakeFailed[] = [
         { deviceId: '1', code: 'NO_SUBNET', message: '' },
         { deviceId: '2', code: 'IPV6_ONLY', message: '' },
       ];
       const out = summarizeBulkWakeFailures(failed);
-      // Both map to the same label "with no usable IPv4 history" → one bucket of 2
-      expect(out).toBe('2 with no usable IPv4 history');
+      expect(out).toBe('1 with no usable IPv4 history; 1 with IPv6 history only');
     });
   });
 
