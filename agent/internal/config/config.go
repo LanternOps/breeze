@@ -532,6 +532,8 @@ func loadLocked(cfgFile string) (*Config, error) {
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("BREEZE")
 
+	// The bytes of agent.yaml as read, for the reattached-identity pin below.
+	var fileBytes []byte
 	if trustedFile != "" {
 		data, err := readTrustedMachineConfigFileFn(trustedFile)
 		switch {
@@ -544,16 +546,22 @@ func loadLocked(cfgFile string) (*Config, error) {
 			if err := viper.ReadConfig(bytes.NewReader(data)); err != nil {
 				return nil, fmt.Errorf("reading %s: %w", trustedFile, err)
 			}
+			fileBytes = data
 		}
 	} else if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
+	} else if used := viper.ConfigFileUsed(); used != "" {
+		// The same file viper just parsed (this branch has no trust check).
+		fileBytes, _ = os.ReadFile(used)
 	}
 
 	if err := viper.Unmarshal(cfg); err != nil {
 		return nil, err
 	}
+	// #8318 — a reattached identity in agent.yaml wins over BREEZE_* values.
+	pinReattachedIdentity(cfg, fileBytes)
 
 	// Accept watchdog.max_heartbeat_staleness_sec (in seconds) as documented in
 	// issue #799 — coerce to the canonical Duration field. The alias mechanism
@@ -885,11 +893,20 @@ func SaveTo(cfg *Config, cfgFile string) error {
 // SaveEnrollment is SaveTo for a freshly enrolled identity: cfg's agent,
 // watchdog and helper tokens replace whatever is on disk, and any staged
 // pending_* set is dropped — it belonged to the previous identity and can
-// never be promoted against the new one.
+// never be promoted against the new one. So is a staged reattach set
+// (#8318): its phase 1 and confirm name the previous agent id.
 func SaveEnrollment(cfg *Config, cfgFile string) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
-	return saveToLocked(cfg, cfgFile, credentialsFromConfig)
+	// A new enrollment is no reattach: the environment may pin it again.
+	viper.Set(reattachIntentKey, "")
+	if err := saveToLocked(cfg, cfgFile, credentialsFromConfig); err != nil {
+		return err
+	}
+	if err := RemoveRebindStaged(cfgFile); err != nil {
+		log.Warn("enrollment could not remove a staged reattach set of the previous identity", "error", err.Error())
+	}
+	return nil
 }
 
 // credentialSource selects who is authoritative for credential keys in a
@@ -1023,17 +1040,19 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	}
 
 	orgID, siteID, ownershipEpoch := cfg.OrgID, cfg.SiteID, cfg.OwnershipEpoch
+	agentID, deviceID := cfg.AgentID, cfg.DeviceID
 	if identity == identityFromDisk {
 		orgID, siteID, ownershipEpoch = resolveIdentityForSave(cfgPath, orgID, siteID, ownershipEpoch)
+		agentID, deviceID = resolveReattachedIDsForSave(cfgPath, agentID, deviceID)
 	}
 
-	viper.Set("agent_id", cfg.AgentID)
+	viper.Set("agent_id", agentID)
 	viper.Set("server_url", cfg.ServerURL)
 	viper.Set("backup_server_url", cfg.BackupServerURL)
 	viper.Set("org_id", orgID)
 	viper.Set("site_id", siteID)
 	viper.Set("ownership_epoch", ownershipEpoch)
-	viper.Set("device_id", cfg.DeviceID)
+	viper.Set("device_id", deviceID)
 	viper.Set("heartbeat_interval_seconds", cfg.HeartbeatIntervalSeconds)
 	viper.Set("metrics_interval_seconds", cfg.MetricsIntervalSeconds)
 	viper.Set("enabled_collectors", cfg.EnabledCollectors)
@@ -1284,11 +1303,15 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	// Best-effort directory fsync — durable on POSIX, no-ops or errors on
-	// Windows. Log failures so a FS that's lost the ability to fsync metadata
-	// (e.g. went read-only, ENOSPC on the inode table) doesn't silently
-	// degrade durability across every SaveTo.
-	dir := filepath.Dir(path)
+	syncConfigDir(filepath.Dir(path))
+	return nil
+}
+
+// syncConfigDir is a best-effort directory fsync after a rename or a removal
+// in it — durable on POSIX, no-ops or errors on Windows. Failures are logged
+// so a FS that's lost the ability to fsync metadata (e.g. went read-only,
+// ENOSPC on the inode table) doesn't silently degrade durability.
+func syncConfigDir(dir string) {
 	if d, err := os.Open(dir); err == nil {
 		if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
 			log.Warn("config dir fsync failed", "dir", dir, "error", err.Error())
@@ -1297,7 +1320,6 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	} else if runtime.GOOS != "windows" {
 		log.Warn("config dir open for fsync failed", "dir", dir, "error", err.Error())
 	}
-	return nil
 }
 
 // isSecretYAMLKey reports whether key should be kept out of agent.yaml (i.e.
