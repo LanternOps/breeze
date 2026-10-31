@@ -6,15 +6,21 @@ import { wakeAlertMappings } from './storage';
 import { handlePsaAlertEvent } from './subscriber';
 import type { BreezeEvent } from '../eventBus';
 describe('PSA lifecycle subscriber', () => {
-  it.each(['alert.acknowledged', 'alert.resolved'])('%s only wakes existing mappings', async (type) => {
-    vi.clearAllMocks();
-    await handlePsaAlertEvent({ type, payload: { alertId: 'alert' } } as BreezeEvent);
-    expect(admitAlert).not.toHaveBeenCalled();
-    expect(wakeAlertMappings).toHaveBeenCalledWith('alert');
-  });
+  it.each(['alert.acknowledged', 'alert.resolved'])(
+    '%s only wakes existing mappings',
+    async (type) => {
+      vi.clearAllMocks();
+      await handlePsaAlertEvent({ type, payload: { alertId: 'alert' } } as unknown as BreezeEvent);
+      expect(admitAlert).not.toHaveBeenCalled();
+      expect(wakeAlertMappings).toHaveBeenCalledWith('alert');
+    }
+  );
   it('trigger admits using only the alert id', async () => {
     vi.clearAllMocks();
-    await handlePsaAlertEvent({ type: 'alert.triggered', payload: { alertId: 'alert' } } as BreezeEvent);
+    await handlePsaAlertEvent({
+      type: 'alert.triggered',
+      payload: { alertId: 'alert' },
+    } as unknown as BreezeEvent);
     expect(admitAlert).toHaveBeenCalledWith('alert', 'auto');
   });
 });
