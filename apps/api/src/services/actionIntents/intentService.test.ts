@@ -3425,6 +3425,49 @@ describe('createActionIntent — mcp_api origin (B-W04)', () => {
     expect(mcp!.originPrincipalId).toBe('key-A');
   });
 
+  // #9758: an OAuth-originated MCP intent records the auth_epoch its filing
+  // call was verified at, so release can refuse after a password change.
+  it('stores originAuthEpoch on an oauth_grant mcp_api intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-oauth' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-oauth' }]);
+    await createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: 5 }),
+    );
+    const [row] = dbState.insertedActionIntentValues;
+    expect(row!.originPrincipalKind).toBe('oauth_grant');
+    expect(row!.originAuthEpoch).toBe(5);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['not an integer', 1.5],
+  ])('refuses an oauth_grant mcp_api intent whose auth epoch is %s, before insert', async (_label, epoch) => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    await expect(createActionIntent(
+      makeAuth({ principal: { kind: 'oauth_grant', grantId: 'grant-1' } }),
+      mcpInput({ originAuthEpoch: epoch }),
+    )).rejects.toMatchObject({ code: 'principal_not_supported' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('never stores originAuthEpoch on an api_key mcp_api intent or a chat intent', async () => {
+    fourEyes();
+    intentApproversState.resolveIntentApprovers.mockResolvedValue([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-key' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-key' }]);
+    await createActionIntent(makeAuth({ principal: KEY_A }), mcpInput({ originAuthEpoch: 5 }));
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'i-chat-epoch' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'a-chat-epoch' }]);
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'chat-epoch', originAuthEpoch: 5 }));
+    const [key, chat] = dbState.insertedActionIntentValues;
+    expect(key!.originAuthEpoch).toBeNull();
+    expect(chat!.originAuthEpoch).toBeNull();
+  });
+
   it('supervised mcp_api intent notifies its requester (headless: nobody watches a chat pane)', async () => {
     supervised();
     intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);

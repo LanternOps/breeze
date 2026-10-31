@@ -350,6 +350,17 @@ export const actionIntents = pgTable(
       .$type<ActionIntentOriginPrincipalKind>(),
     /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
     originPrincipalId: text('origin_principal_id'),
+    /**
+     * #9758: the requester's `users.auth_epoch` the OAuth bearer middleware
+     * verified on the MCP call that filed this intent. Set iff the intent is
+     * MCP-origin with an `oauth_grant` principal
+     * (action_intents_origin_auth_epoch_chk allows it on no other kind);
+     * NULL for every other intent. Release refuses when the live epoch has
+     * moved (password change/reset, status change, membership removal, global
+     * logout…) — the exact check, not the best-effort post-commit grant sweep.
+     * Immutable (action_intents_block_content_update()).
+     */
+    originAuthEpoch: integer('origin_auth_epoch'),
     // --- AI origin attribution (#5022 W01) -------------------------------
     // The serializable AiOriginRef, so a chat-minted origin survives
     // intentReleaseWorker's from-scratch AuthContext rebuild. Distinct from
