@@ -14,6 +14,7 @@ import {
   type ReadinessResult,
 } from './installerReadiness';
 import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors';
+import { readDeployableUploadedBinaryCatalogIds, vendorRequiresUploadedBinary } from './managedPolicyOwnerCatalog';
 
 /**
  * Which rules of a GENERATED (security agents) software policy apply to which
@@ -38,8 +39,15 @@ import { vendorForCatalogPackage, type VendorKey } from './securityAgentVendors'
  * device the pass did not describe, is not applicable. A managed policy only
  * ever installs through these checks.
  *
- * Loaded once per pass: two queries plus one batched readiness read per vendor,
- * whatever the device count. Runs in the compliance worker's system context.
+ * A rule whose package needs a partner-uploaded installer (SentinelOne's MSI)
+ * is `installer_missing` on every device while that package has no deployable
+ * latest version (#9247). The generator keeps such a rule rather than dropping
+ * it, so this check is what stops the install, and what puts a partner-visible
+ * coverage row on each reached device.
+ *
+ * Loaded once per pass: two queries (three when a rule needs an uploaded
+ * installer) plus one batched readiness read per vendor, whatever the device
+ * count. Runs in the compliance worker's system context.
  */
 
 export type NotApplicableEntry = { catalogId: string; vendor: VendorKey | null; reason: ReadinessReason };
@@ -126,6 +134,14 @@ export async function loadManagedRuleApplicability(
     parsed.success ? parsed.data.agents.map((agent) => [agent.vendor, agent.platforms] as const) : [],
   );
 
+  // #9247: a rule whose package needs a partner-uploaded installer applies only
+  // while that package's latest version is deployable (the same test the
+  // generator's write path refuses on). Partner-level, so it is read once here.
+  const needsBinary = Array.from(vendorByCatalogId, ([catalogId, vendor]) => ({ catalogId, vendor }))
+    .filter((entry): entry is { catalogId: string; vendor: VendorKey } => entry.vendor !== null && vendorRequiresUploadedBinary(entry.vendor));
+  const deployableBinary = await readDeployableUploadedBinaryCatalogIds(db, needsBinary);
+  const installerMissing = new Set(needsBinary.filter((entry) => !deployableBinary.has(entry.catalogId)).map((entry) => entry.catalogId));
+
   const deviceById = new Map(devices.map((device) => [device.deviceId, device] as const));
   const orgIds = Array.from(new Set(devices.map((device) => device.orgId)));
   const vendors = Array.from(new Set(Array.from(vendorByCatalogId.values()).filter((v): v is VendorKey => v !== null)));
@@ -146,6 +162,9 @@ export async function loadManagedRuleApplicability(
     if (rowPlatform !== undefined && rowPlatform !== device.osType) {
       return { vendor, result: { ok: false, reason: 'platform_unsupported' } };
     }
+    // After platform (a Mac is no SentinelOne target at all), before the org:
+    // no org can be ready while the partner's package cannot be installed.
+    if (installerMissing.has(catalogId)) return { vendor, result: { ok: false, reason: 'installer_missing' } };
     return {
       vendor,
       result: orgReadinessByVendor.get(vendor)?.get(device.orgId) ?? { ok: false, reason: 'org_not_mapped' },

@@ -37,6 +37,8 @@ export interface CoverageRow {
   state: CoverageState | string;
   reasonCode: string | null;
   detail: string | null;
+  /** Where the cause is fixed, when the API can say (#9247: installer_missing). */
+  setupPath?: string | null;
   lastEvaluatedAt: string;
   stateChangedAt: string;
 }
@@ -136,6 +138,7 @@ const REASON_KEYS: Record<string, string> = {
   platform_not_selected: "platformNotSelected",
   var_missing: "varMissing",
   var_secret: "varSecret",
+  installer_missing: "installerMissing",
   vendor_unavailable: "vendorUnavailable",
   install_failed: "installFailed",
   install_not_armed: "installNotArmed",
@@ -157,6 +160,29 @@ export function coverageReasonLabel(t: TFn, code: string | null): string {
   if (!code) return "";
   const key = REASON_KEYS[code];
   return key ? t(/* i18n-dynamic */ `security:securityAgentCoverage.reasons.${key}`) : code;
+}
+
+/** Setup-link labels per reason; any other reason with a setup path reads the default. */
+const SETUP_LINK_KEYS: Record<string, string> = {
+  installer_missing: "installerMissing",
+};
+
+/** Translated label for a row's setup link (`setupPath`). */
+export function coverageSetupLinkLabel(t: TFn, code: string | null): string {
+  const key = (code && SETUP_LINK_KEYS[code]) || "default";
+  return t(/* i18n-dynamic */ `security:securityAgentCoverage.setupLink.${key}`);
+}
+
+/**
+ * A row's setup path as a link target, or null. The value comes from the
+ * server, so only a same-site absolute path is used (no protocol-relative or
+ * backslash forms a browser would normalize to another host).
+ */
+export function coverageSetupPath(row: { setupPath?: unknown }): string | null {
+  const value = row.setupPath;
+  return typeof value === "string" && /^\/(?![\/\\])/.test(value) && !value.includes("\\")
+    ? value
+    : null;
 }
 
 const STATE_CLASSES: Record<CoverageState, string> = {
