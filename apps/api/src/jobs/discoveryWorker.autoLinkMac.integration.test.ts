@@ -25,7 +25,7 @@ type Tenant = Awaited<ReturnType<typeof createTopologyTenant>>;
 
 async function tenantWithWorkstation(role: { deviceRole?: string; deviceRoleSource?: 'auto' | 'manual' | 'discovery' } = {}) {
   const t = await createTopologyTenant();
-  const workstation = await addDevice(t, 'DRJJ-CHECKOUT', role);
+  const workstation = await addDevice(t, 'LAB-CHECKOUT-01', role);
   return { ...t, workstation };
 }
 
@@ -112,7 +112,7 @@ describe('scan auto-link matches on MAC only', () => {
 
   it('ignores a decommissioned row that still holds the re-enrolled machine\'s NIC', async () => {
     const t = await tenantWithWorkstation();
-    const retired = await addDevice(t, 'DRJJ-CHECKOUT-old', {}, 'decommissioned');
+    const retired = await addDevice(t, 'LAB-CHECKOUT-01-old', {}, 'decommissioned');
     await addNic(t, retired.id, { mac: WORKSTATION_MAC, ip: null });
     await addNic(t, t.workstation.id, { mac: WORKSTATION_MAC, ip: null });
 
@@ -166,7 +166,7 @@ describe('re-scan repairs auto-links the MAC does not support', () => {
 
   it('moves an auto-link off a decommissioned device to the live one that owns the MAC', async () => {
     const t = await tenantWithWorkstation();
-    const retired = await addDevice(t, 'DRJJ-CHECKOUT-old', {}, 'decommissioned');
+    const retired = await addDevice(t, 'LAB-CHECKOUT-01-old', {}, 'decommissioned');
     await addNic(t, retired.id, { mac: WORKSTATION_MAC, ip: null });
     await addNic(t, t.workstation.id, { mac: WORKSTATION_MAC, ip: null });
     await seedLinkedPrinter(t, retired.id, 'auto', WORKSTATION_MAC);
