@@ -9,6 +9,7 @@ import {
   checkAgentGuardrails,
   checkGuardrails,
   isNeverAgentTool,
+  resolveApprovalScope,
   TIER1_ACTIONS,
   TIER2_ACTIONS,
   TIER2_READONLY_ACTIONS,
@@ -1082,6 +1083,12 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
     expect(check.tier).toBe(3);
     expect(check.allowed).toBe(false);
     expect(check.reason ?? '').not.toMatch(/human-only/);
+  });
+
+  it.each(['add_devices', 'remove_devices'])('manage_groups:%s resolves to the supervised approval class and is not act-eligible', (action) => {
+    expect(resolveApprovalScope('manage_groups', action, { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBe('supervised');
+    expect(ACT_MANIFEST.some((op) => op.key.startsWith("manage_groups"))).toBe(false);
+    expect(resolveActOperation('manage_groups', { action, groupId: 'g-1', deviceIds: ['dev-1'] })).toBeNull();
   });
 
   it.each(['add_devices', 'remove_devices'])('an unallowlisted manage_groups:%s still denies on the allowlist', (action) => {

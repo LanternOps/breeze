@@ -245,6 +245,42 @@ describe('manage_groups add_devices/remove_devices — org/site scope guards (#1
     expectNoWrite();
   });
 
+  it.each(actions)('%s answers an out-of-site dynamic group with not-found, not the dynamic-group message', async (action) => {
+    mockSelects(group({ type: 'dynamic', siteId: 'site-FORBIDDEN' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-FORBIDDEN' }]);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: ['d1'] }, makeAuth(['site-A'])));
+    expect(parsed.error).toMatch(/not found or access denied/);
+    expect(parsed.error).not.toMatch(/dynamic/);
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses more than 100 ids instead of truncating, before any query', async (action) => {
+    mockSelects(group(), []);
+    const deviceIds = Array.from({ length: 101 }, (_, i) => `d${i}`);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds }, makeAuth(undefined)));
+    expect(parsed.error).toMatch(/At most 100/);
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expectNoWrite();
+  });
+
+  it.each(actions)('%s refuses an empty deviceIds array', async (action) => {
+    mockSelects(group(), []);
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action, groupId: 'g1', deviceIds: [] }, makeAuth(undefined)));
+    expect(parsed.error).toBe('deviceIds is required');
+    expectNoWrite();
+  });
+
+  it('add_devices de-duplicates repeated ids before writing', async () => {
+    mockSelects(group(), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
+    let inserted: unknown[] = [];
+    insertSpy.mockImplementation(() => ({ values: (rows: unknown[]) => { inserted = rows; return { onConflictDoNothing: () => ({
+      returning: () => Promise.resolve([{ deviceId: 'd1' }]),
+    }) }; } }));
+    const parsed = JSON.parse(await handlerFor('manage_groups')({ action: 'add_devices', groupId: 'g1', deviceIds: ['d1', 'd1'] }, makeAuth(undefined)));
+    expect(inserted).toHaveLength(1);
+    expect(parsed).toMatchObject({ success: true, added: 1 });
+    expect(parsed.alreadyMembers).toBeUndefined();
+  });
+
   it("control: add_devices writes when every device is in the group's org and site", async () => {
     mockSelects(group({ siteId: 'site-A' }), [{ id: 'd1', orgId: 'org-1', siteId: 'site-A' }]);
     const parsed = JSON.parse(await handlerFor('manage_groups')({ action: 'add_devices', groupId: 'g1', deviceIds: ['d1'] }, makeAuth(['site-A'])));
