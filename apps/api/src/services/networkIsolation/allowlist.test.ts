@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ECH_DOH_ENDPOINT_URLS, isolationAllowEntrySchema, type IsolationAllowEntry } from '@breeze/shared';
-import { buildIsolationAllowlist } from './allowlist';
+import { ECH_DOH_ENDPOINT_URLS, NETWORK_ISOLATION_LIMITS, isolationAllowEntrySchema, type IsolationAllowEntry } from '@breeze/shared';
+import { IsolationAllowlistError, buildIsolationAllowlist } from './allowlist';
 
 const SERVER = 'https://control.example.test';
 const noEnv = {} as Record<string, string | undefined>;
@@ -98,6 +98,30 @@ describe('buildIsolationAllowlist — DoH and scope', () => {
   it('refuses a malformed policy extra instead of sending it', () => {
     const bad = { kind: 'cidr', cidr: '0.0.0.0/0', proto: 'tcp', ports: [443], scope: 'any' } as unknown as IsolationAllowEntry;
     expect(() => buildIsolationAllowlist({ serverUrl: SERVER, remoteRelay: false, env: noEnv, policyExtras: [bad] })).toThrow(/policyExtras/);
+  });
+
+  it('throws a typed error that names the misconfigured source', () => {
+    const attempt = (env: Record<string, string>, remoteRelay = true) => {
+      try {
+        buildIsolationAllowlist({ serverUrl: SERVER, remoteRelay, env });
+        return null;
+      } catch (err) {
+        return err;
+      }
+    };
+    const bad = attempt({ TURN_HOST: 'turn:relay.example.test:3478' });
+    expect(bad).toBeInstanceOf(IsolationAllowlistError);
+    expect(bad).toMatchObject({ source: 'TURN_HOST' });
+    expect(attempt({ TURN_HOST: 'relay.example.test', TURN_PORT: 'abc' })).toMatchObject({ source: 'TURN_PORT' });
+    expect(attempt({ AGENT_BACKUP_SERVER_URL: 'nope' }, false)).toMatchObject({ source: 'AGENT_BACKUP_SERVER_URL' });
+  });
+
+  it(`refuses more than ${NETWORK_ISOLATION_LIMITS.maxAllowEntries} entries rather than emit a block the agent schema rejects`, () => {
+    const extras: IsolationAllowEntry[] = Array.from({ length: NETWORK_ISOLATION_LIMITS.maxAllowEntries }, (_, i) => ({
+      kind: 'host', host: `extra${i}.example.test`, proto: 'tcp', ports: [443], scope: 'any',
+    }));
+    expect(() => buildIsolationAllowlist({ serverUrl: SERVER, remoteRelay: false, env: noEnv, policyExtras: extras }))
+      .toThrow(IsolationAllowlistError);
   });
 
   it('merges duplicate destinations and every entry passes the wire schema', () => {

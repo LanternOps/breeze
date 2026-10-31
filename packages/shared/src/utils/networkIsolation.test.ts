@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_STATES,
+  AGENT_REPORTABLE_STATES,
   ECH_DOH_ENDPOINT_URLS,
   ISOLATION_FAILURE_CODES,
   ISOLATION_RELEASE_KINDS,
@@ -50,6 +51,13 @@ describe('network isolation closed sets (plan "Closed sets")', () => {
     }
     expect(isUnresolvedIsolationState('quarantined')).toBe(false);
     expect(isResolvedTerminalIsolationState('quarantined')).toBe(false);
+  });
+
+  it('lets an agent report only the states it can observe', () => {
+    expect([...AGENT_REPORTABLE_STATES].sort()).toEqual([
+      'applied', 'applying', 'expired', 'failed', 'released', 'released_locally', 'self_released', 'verified',
+    ]);
+    for (const s of AGENT_REPORTABLE_STATES) expect(ISOLATION_STATES).toContain(s);
   });
 
   it('lists the seven failure codes and eight release kinds', () => {

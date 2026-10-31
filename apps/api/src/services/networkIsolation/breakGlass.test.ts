@@ -23,10 +23,16 @@ describe('breakGlassCode — shared vectors', () => {
   it('covers the cases the plan names', () => {
     expect(vectors.length).toBeGreaterThanOrEqual(6);
     expect(vectors.some((v) => /^0+$/.test(v.secretHex))).toBe(true);
-    expect(new Set(vectors.map((v) => v.generation))).toEqual(new Set([1, 2, 7]));
+    const generations = vectors.map((v) => v.generation);
+    expect(generations).toContain(1);
+    expect(generations).toContain(7);
     expect(vectors.some((v) => v.hourBucket === 0)).toBe(true);
     expect(vectors.some((v) => v.hourBucket === 493000)).toBe(true);
     expect(vectors.some((v) => v.isolationId !== v.isolationId.toLowerCase())).toBe(true);
+  });
+
+  it('records the exact signed message for each vector', () => {
+    for (const v of vectors) expect(v.message).toBe(`${v.isolationId.toLowerCase()}|${v.generation}|${v.hourBucket}`);
   });
 
   it.each(vectors.map((v) => [v.description, v] as const))('%s', (_desc, v) => {

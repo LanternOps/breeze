@@ -166,6 +166,14 @@ describe('device_network_isolations migration', () => {
     expect(sql).toContain('CREATE TRIGGER breeze_network_isolation_device_moved BEFORE UPDATE OF org_id ON public.devices');
     expect(sql).toContain("o.status::text = 'merging'");
     expect(sql).toContain('isolation_unresolved');
+    // An unconfirmed tombstone (e.g. failed:not_delivered) still owes the device a release: refuse, never delete.
+    expect(sql).toContain("OR (i.desired_state = 'released' AND i.release_confirmed_at IS NULL)");
+  });
+
+  it('ties desired_state to state: isolated exactly while isolating', () => {
+    expect(normalized()).toContain(
+      "CONSTRAINT device_network_isolations_desired_matches_state_chk CHECK ((desired_state = 'isolated') = (state IN ('requested', 'dispatched', 'applying', 'applied', 'verified')))",
+    );
   });
 
   /**

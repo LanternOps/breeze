@@ -34,7 +34,12 @@ import type {
  *    composite SET NULL would null org_id too, so never generate DDL from these declarations
  *    (hand-written SQL only, per apps/api/migrations/README.md);
  *  - the BEFORE UPDATE OF org_id trigger on devices (breeze_network_isolation_device_moved) that
- *    deletes resolved history before a device org flip and refuses one with an unresolved episode.
+ *    deletes resolved, confirmed history before a device org flip and refuses one while an episode is
+ *    unresolved or a release tombstone is unconfirmed;
+ *  - desired_state = 'isolated' exactly while the state is isolating (desired_matches_state_chk).
+ *
+ * `breakGlassSecretEnc` is row-bound ciphertext (encryptedColumnRegistry: AAD = episode id). It is
+ * NOT NULL, so erasing it when the episode resolves (W1b) writes '' and readers treat '' as no secret.
  */
 export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -47,7 +52,7 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
   generation: integer('generation').notNull().default(1),
   acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
   acknowledgedBy: uuid('acknowledged_by').references(() => users.id, { onDelete: 'set null' }),
-  /** Encrypted under APP_ENCRYPTION_KEY; zeroed when the episode resolves. Never logged or audited. */
+  /** Encrypted under APP_ENCRYPTION_KEY; '' once erased at resolution. Never logged or audited. */
   breakGlassSecretEnc: text('break_glass_secret_enc').notNull(),
   requestedByKind: varchar('requested_by_kind', { length: 16 }).$type<IsolationRequestedByKind>().notNull(),
   requestedByUserId: uuid('requested_by_user_id').references(() => users.id, { onDelete: 'set null' }),
@@ -109,6 +114,10 @@ export const deviceNetworkIsolations = pgTable('device_network_isolations', {
     .on(table.incidentActionId)
     .where(sql`incident_action_id IS NOT NULL`),
   check('device_network_isolations_failed_has_code_chk', sql`(state = 'failed') = (failure_code IS NOT NULL)`),
+  check(
+    'device_network_isolations_desired_matches_state_chk',
+    sql`(desired_state = 'isolated') = (state IN ('requested', 'dispatched', 'applying', 'applied', 'verified'))`,
+  ),
   check('device_network_isolations_generation_chk', sql`generation >= 1`),
   check('device_network_isolations_journal_seq_chk', sql`last_journal_seq >= 0`),
 ]);

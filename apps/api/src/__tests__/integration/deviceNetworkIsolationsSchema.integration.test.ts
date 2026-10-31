@@ -39,13 +39,26 @@ async function incidentWithAction(orgId: string) {
   return { incidentId: incident!.id, actionId: action!.id };
 }
 
-async function insertEpisode(o: { orgId: string; deviceId: string; incidentId?: string | null; actionId?: string | null; state: string; failureCode?: string | null }) {
+const ISOLATING = new Set(['requested', 'dispatched', 'applying', 'applied', 'verified']);
+const TERMINAL = new Set(['released', 'expired', 'failed', 'uninstalled', 'released_locally', 'self_released']);
+
+/**
+ * A row shaped the way the state machine leaves it: desired_state follows the state, and a terminal
+ * row's release is confirmed unless `confirmed: false` (an owed tombstone, e.g. failed:not_delivered).
+ */
+async function insertEpisode(o: {
+  orgId: string; deviceId: string; incidentId?: string | null; actionId?: string | null; state: string;
+  failureCode?: string | null; desiredState?: string; confirmed?: boolean;
+}) {
+  const desired = o.desiredState ?? (ISOLATING.has(o.state) ? 'isolated' : 'released');
+  const confirmed = o.confirmed ?? TERMINAL.has(o.state);
   const [row] = await admin<{ id: string }>(sql`
     INSERT INTO device_network_isolations
-      (org_id, device_id, incident_id, incident_action_id, state, failure_code, break_glass_secret_enc,
-       requested_by_kind, reason, expires_at)
-    VALUES (${o.orgId}::uuid, ${o.deviceId}::uuid, ${o.incidentId ?? null}, ${o.actionId ?? null}, ${o.state},
-       ${o.failureCode ?? null}, 'enc:v1:placeholder', 'user', 'Suspected ransomware', now() + interval '72 hours')
+      (org_id, device_id, incident_id, incident_action_id, state, desired_state, failure_code, release_confirmed_at,
+       break_glass_secret_enc, requested_by_kind, reason, expires_at)
+    VALUES (${o.orgId}::uuid, ${o.deviceId}::uuid, ${o.incidentId ?? null}, ${o.actionId ?? null}, ${o.state}, ${desired},
+       ${o.failureCode ?? null}, ${confirmed ? sql`now()` : sql`NULL`}, 'enc:v1:placeholder', 'user', 'Suspected ransomware',
+       now() + interval '72 hours')
     RETURNING id`);
   return row!.id;
 }
@@ -136,6 +149,13 @@ describe('device_network_isolations — tenancy', () => {
     await rejectedWith(insertEpisode({ orgId: a.orgId, deviceId, state: 'released', failureCode: 'apply_error' }), '23514');
     await rejectedWith(insertEpisode({ orgId: a.orgId, deviceId, state: 'failed', failureCode: 'timed_out' }), '23514');
   });
+
+  it('rejects a desired_state that contradicts the state', async () => {
+    const { a, deviceId } = await seeded();
+    await rejectedWith(insertEpisode({ orgId: a.orgId, deviceId, state: 'verified', desiredState: 'released' }), '23514');
+    await rejectedWith(insertEpisode({ orgId: a.orgId, deviceId, state: 'release_requested', desiredState: 'isolated' }), '23514');
+    await rejectedWith(insertEpisode({ orgId: a.orgId, deviceId, state: 'expired', desiredState: 'isolated' }), '23514');
+  });
 });
 
 describe('device_network_isolations — device org move (BEFORE trigger)', () => {
@@ -165,13 +185,21 @@ describe('device_network_isolations — device org move (BEFORE trigger)', () =>
     expect(trg).toEqual({ tgenabled: 'O' }); // the rollback re-enabled it
   });
 
-  it.each(['requested', 'verified', 'release_requested', 'released_locally', 'self_released'])(
-    'refuses the move (55000 isolation_unresolved) while an episode is %s, and deletes nothing',
-    async (state) => {
+  it.each([
+    { label: 'requested', state: 'requested' },
+    { label: 'verified', state: 'verified' },
+    { label: 'release_requested', state: 'release_requested' },
+    { label: 'released_locally', state: 'released_locally' },
+    { label: 'self_released', state: 'self_released' },
+    // Resolved, but the agent may have applied isolation from the heartbeat: the tombstone is still owed.
+    { label: 'failed:not_delivered with an unconfirmed tombstone', state: 'failed', failureCode: 'not_delivered', confirmed: false },
+  ])(
+    'refuses the move (55000 isolation_unresolved) while an episode is $label, and deletes nothing',
+    async ({ state, failureCode, confirmed }) => {
       const { a, deviceId, incidentId } = await seeded();
       const b = await tenant(a.partnerId);
       await insertEpisode({ orgId: a.orgId, deviceId, incidentId, state: 'released' });
-      await insertEpisode({ orgId: a.orgId, deviceId, incidentId, state });
+      await insertEpisode({ orgId: a.orgId, deviceId, incidentId, state, failureCode, confirmed });
       await expect(flip(deviceId, b)).rejects.toSatisfy((err: unknown) => {
         const e = err as { code?: string; message?: string; cause?: { code?: string; message?: string } };
         const code = e.code ?? e.cause?.code;

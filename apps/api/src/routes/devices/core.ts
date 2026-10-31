@@ -476,9 +476,10 @@ export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // W3 (#7887): day rows name source-org sites the same way; history does not cross orgs (prospective again).
   'topology_device_presence_days',
   // Network isolation (#10089): (incident_id, org_id) and (incident_action_id, org_id) name SOURCE-org rows,
-  // so a restamp would 23503. Only resolved history can reach this point: the BEFORE UPDATE OF org_id trigger
-  // breeze_network_isolation_device_moved deletes it before the flip and refuses a move with an unresolved
-  // episode (the app-level refusal is W1c); audit_logs keep the record. This loop is the fallback.
+  // so a restamp would 23503. Only resolved, confirmed history can reach this point: the BEFORE UPDATE OF
+  // org_id trigger breeze_network_isolation_device_moved deletes it before the flip and refuses a move while
+  // an episode is unresolved or a release tombstone is unconfirmed (the app-level refusal is W1c); audit_logs
+  // keep the record. This loop is the fallback.
   'device_network_isolations',
 ];
 

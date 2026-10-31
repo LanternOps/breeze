@@ -1,5 +1,6 @@
 import {
   isResolvedTerminalIsolationState,
+  type ACTIVE_STATES,
   type IsolationDesiredState,
   type IsolationFailureCode,
   type IsolationReleaseKind,
@@ -52,37 +53,54 @@ export interface EpisodeSnapshot {
 interface EventBase {
   /** The generation the sender acted on. */
   generation: number;
-  /** The agent journal sequence number; absent on server-originated events. */
-  journalSeq?: number;
   /** When it happened (server clock), stamped onto any timestamp the transition sets. */
   at: Date;
 }
 
-export type EpisodeEvent = EventBase &
-  (
-    | { type: 'dispatched' }
+/** From the agent: every report and command result carries its journal sequence (plan "Ordering key"). */
+interface AgentEventBase extends EventBase {
+  journalSeq: number;
+}
+
+/** Decided by the server; no journal sequence. */
+interface ServerEventBase extends EventBase {
+  journalSeq?: never;
+}
+
+export type EpisodeEvent =
+  | (AgentEventBase & (
     | { type: 'agent_ack' }
     | { type: 'agent_applied' }
     | { type: 'agent_verified' }
     | { type: 'agent_failed'; code: IsolationFailureCode }
-    | { type: 'release_requested'; kind: IsolationReleaseKind }
     | { type: 'agent_released'; kind: IsolationReleaseKind }
     | { type: 'agent_expired' }
     | { type: 'agent_self_released' }
     | { type: 'agent_released_locally'; kind: 'local_code' | 'local_forced' }
-    | { type: 'agent_absent' }
+  ))
+  // The "nothing Breeze-owned is installed" report may omit its journalSeq (networkIsolationReportSchema).
+  | (EventBase & { type: 'agent_absent'; journalSeq?: number })
+  | (ServerEventBase & (
+    | { type: 'dispatched' }
+    | { type: 'release_requested'; kind: IsolationReleaseKind }
     | { type: 'uninstalled' }
     | { type: 'not_delivered' }
     | { type: 'extend'; expiresAt: Date }
-    | { type: 'acknowledge'; userId?: string | null }
-  );
+    // The human who resolved it; the audit trail for the one human gate.
+    | { type: 'acknowledge'; userId: string }
+  ));
 
 export type EpisodeIgnoredReason = 'stale_generation' | 'stale_seq' | 'invalid_transition' | 'already_terminal';
 
 export type EpisodeTransition = { next: EpisodeSnapshot } | { ignored: EpisodeIgnoredReason };
 
-/** Forward order of the isolating states; agent progress only ever moves up it. */
-const PROGRESS_RANK: Partial<Record<IsolationState, number>> = {
+type IsolatingState = Exclude<(typeof ACTIVE_STATES)[number], 'release_requested'>;
+
+/**
+ * Forward order of the isolating states; agent progress only ever moves up it. Keyed by every active
+ * state except release_requested, so adding an active state to the shared tuple fails to compile here.
+ */
+const PROGRESS_RANK: Readonly<Record<IsolatingState, number>> = {
   requested: 0,
   dispatched: 1,
   applying: 2,
@@ -90,16 +108,16 @@ const PROGRESS_RANK: Partial<Record<IsolationState, number>> = {
   verified: 4,
 };
 
-function isIsolating(state: IsolationState): boolean {
-  return PROGRESS_RANK[state] !== undefined;
+function isIsolating(state: IsolationState): state is IsolatingState {
+  return Object.prototype.hasOwnProperty.call(PROGRESS_RANK, state);
 }
 
 function rank(state: IsolationState): number {
-  return PROGRESS_RANK[state] ?? -1;
+  return isIsolating(state) ? PROGRESS_RANK[state] : -1;
 }
 
-const INVALID: EpisodeTransition = { ignored: 'invalid_transition' };
-const TERMINAL: EpisodeTransition = { ignored: 'already_terminal' };
+const INVALID: EpisodeTransition = Object.freeze({ ignored: 'invalid_transition' as const });
+const TERMINAL: EpisodeTransition = Object.freeze({ ignored: 'already_terminal' as const });
 
 function checkOrdering(row: EpisodeSnapshot, ev: EpisodeEvent): EpisodeIgnoredReason | null {
   if (ev.generation < row.generation) return 'stale_generation';
@@ -143,7 +161,7 @@ export function applyEpisodeEvent(row: EpisodeSnapshot, ev: EpisodeEvent): Episo
         state: 'released',
         desiredState: 'released',
         acknowledgedAt: at,
-        acknowledgedBy: ev.userId ?? null,
+        acknowledgedBy: ev.userId,
       }),
     };
   }
@@ -254,7 +272,28 @@ function progress(
   return { next: withSeq(row, ev, { ...patch, state: target }) };
 }
 
+/**
+ * The next snapshot: exactly the EpisodeSnapshot fields, so a caller that hands in a wider row (a full
+ * DB row is structurally assignable) never gets id, org_id or the secret back to write.
+ */
 function withSeq(row: EpisodeSnapshot, ev: EpisodeEvent, patch: Partial<EpisodeSnapshot>): EpisodeSnapshot {
   const lastJournalSeq = ev.journalSeq !== undefined ? Math.max(row.lastJournalSeq, ev.journalSeq) : row.lastJournalSeq;
-  return { ...row, ...patch, lastJournalSeq };
+  const merged = { ...row, ...patch };
+  return {
+    state: merged.state,
+    desiredState: merged.desiredState,
+    generation: merged.generation,
+    lastJournalSeq,
+    failureCode: merged.failureCode,
+    releaseKind: merged.releaseKind,
+    expiresAt: merged.expiresAt,
+    dispatchedAt: merged.dispatchedAt,
+    appliedAt: merged.appliedAt,
+    verifiedAt: merged.verifiedAt,
+    releaseRequestedAt: merged.releaseRequestedAt,
+    releasedAt: merged.releasedAt,
+    releaseConfirmedAt: merged.releaseConfirmedAt,
+    acknowledgedAt: merged.acknowledgedAt,
+    acknowledgedBy: merged.acknowledgedBy,
+  };
 }

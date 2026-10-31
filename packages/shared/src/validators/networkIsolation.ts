@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import {
-  ISOLATION_DESIRED_STATES,
+  AGENT_REPORTABLE_STATES,
   ISOLATION_JOURNAL_PHASES,
   ISOLATION_MECHANISMS,
-  ISOLATION_STATES,
+  NETWORK_ISOLATION_LIMITS,
   NETWORK_ISOLATION_TTL,
 } from '../utils/networkIsolation';
 
@@ -31,7 +31,8 @@ const hostNameSchema = z
   .string()
   .regex(HOST_NAME_RE, 'host must be a DNS name')
   // An address belongs in a `cidr` entry: the agent resolves `host` entries, a literal needs no resolving.
-  .refine((host) => !z.ipv4().safeParse(host).success, { message: 'an IP address is a cidr entry, not a host' });
+  // An all-digit last label (`127.1`, `3232235777`) is read as an address by many resolvers (RFC 3696 §2).
+  .refine((host) => !/(?:^|\.)\d+$/.test(host), { message: 'an IP address is a cidr entry, not a host' });
 
 const cidrSchema = z
   .union([z.cidrv4(), z.cidrv6()])
@@ -75,27 +76,45 @@ export type ExtendNetworkIsolationInput = z.infer<typeof extendNetworkIsolationS
 
 const timestampSchema = z.string().datetime({ offset: true });
 
+/** A string cut to `max` characters (code points) instead of failing validation. */
+function truncated(max: number) {
+  return z.string().transform((s) => Array.from(s).slice(0, max).join(''));
+}
+
 /**
  * Base64 (standard alphabet, padded) of exactly 32 bytes: 43 characters plus one `=`. Checked by
  * shape so the schema needs no Buffer (it also runs in the browser).
  */
 const breakGlassSecretSchema = z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'breakGlassSecret must be base64 of 32 bytes');
 
-/**
- * The heartbeat response's desired state for one device. `breakGlassSecret` travels only until the
- * agent acknowledges it (`break_glass_ack_seq`), only over the agent's TLS channel, and is never
- * logged or audited (Gate B decision 4 vii).
- */
-export const networkIsolationDesiredSchema = z.strictObject({
+const desiredBase = {
   isolationId: z.uuid(),
   generation: z.number().int().min(1),
-  desired: z.enum(ISOLATION_DESIRED_STATES),
   expiresAt: timestampSchema,
   deadManSeconds: z.number().int().min(0),
   remoteRelay: z.boolean(),
-  allow: z.array(isolationAllowEntrySchema).max(64),
-  breakGlassSecret: breakGlassSecretSchema.optional(),
-});
+};
+
+/**
+ * The heartbeat response's desired state for one device.
+ * - `isolated`: the permits to install (never empty: the control plane is always one). `breakGlassSecret`
+ *   travels only until the agent acknowledges it (`break_glass_ack_seq`), only over the agent's TLS
+ *   channel, and is never logged or audited (Gate B decision 4 vii).
+ * - `released`: the tombstone. No permits and never the secret (strict: the key is rejected).
+ */
+export const networkIsolationDesiredSchema = z.discriminatedUnion('desired', [
+  z.strictObject({
+    ...desiredBase,
+    desired: z.literal('isolated'),
+    allow: z.array(isolationAllowEntrySchema).min(1).max(NETWORK_ISOLATION_LIMITS.maxAllowEntries),
+    breakGlassSecret: breakGlassSecretSchema.optional(),
+  }),
+  z.strictObject({
+    ...desiredBase,
+    desired: z.literal('released'),
+    allow: z.array(isolationAllowEntrySchema).max(0),
+  }),
+]);
 export type NetworkIsolationDesired = z.infer<typeof networkIsolationDesiredSchema>;
 
 /**
@@ -116,37 +135,41 @@ export const isolationJournalEventSchema = z.object({
   type: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
   isolationId: z.uuid().optional(),
   generation: z.number().int().min(1).optional(),
-  detail: z.string().max(500).optional(),
+  /** Diagnostic text: truncated, never a reason to drop the report. */
+  detail: truncated(500).optional(),
 });
 export type IsolationJournalEvent = z.infer<typeof isolationJournalEventSchema>;
 
 const reportExtras = {
   secretAckSeq: z.number().int().min(0).optional(),
   recoveryVersion: z.string().max(64).optional(),
-  events: z.array(isolationJournalEventSchema).max(200).optional(),
+  events: z.array(isolationJournalEventSchema).max(NETWORK_ISOLATION_LIMITS.maxReportEvents).optional(),
 };
 
 /**
  * What the agent reports for an episode. Unknown keys are stripped rather than rejected so a newer
- * agent's report still reconciles; nullable fields also accept absence (Go `omitempty`).
+ * agent's report still reconciles; nullable fields also accept absence (Go `omitempty`); free-text
+ * diagnostics are truncated rather than rejected. The closed sets (state, phase, mechanism) stay strict:
+ * the server ships before any agent that could send a new member, and the caller (W1b reconcile) logs
+ * a report it cannot parse.
  */
 const activeReportSchema = z.object({
   isolationId: z.uuid(),
   generation: z.number().int().min(1),
   journalSeq: z.number().int().min(0),
-  state: z.enum(ISOLATION_STATES),
+  state: z.enum(AGENT_REPORTABLE_STATES),
   phase: z.enum(ISOLATION_JOURNAL_PHASES),
   mechanism: z.enum(ISOLATION_MECHANISMS).nullish(),
   appliedAt: timestampSchema.nullish(),
   lastVerifiedAt: timestampSchema.nullish(),
   ruleDigest: z.string().max(128).nullish(),
-  lastError: z.string().max(1000).nullish(),
+  lastError: truncated(1000).nullish(),
   ...reportExtras,
 });
 
 /** "Nothing Breeze-owned is installed": how the agent confirms a release tombstone. */
 const absentReportSchema = z.object({
-  isolationId: z.null(),
+  isolationId: z.null().optional(),
   phase: z.literal('none'),
   journalSeq: z.number().int().min(0).optional(),
   ...reportExtras,

@@ -35,12 +35,22 @@ function snap(overrides: Partial<EpisodeSnapshot> = {}): EpisodeSnapshot {
   };
 }
 
+const USER_ID = 'b6a8d1f2-3c4e-4f5a-9b6c-7d8e9f0a1b2c';
+/** Agent events must carry a journalSeq; tests that do not care get a fresh, always-newer one. */
+const SEQ_REQUIRED = new Set<EpisodeEvent['type']>([
+  'agent_ack', 'agent_applied', 'agent_verified', 'agent_failed', 'agent_released', 'agent_expired',
+  'agent_self_released', 'agent_released_locally',
+]);
+let autoSeq = 1000;
+
 /** An event at the snapshot's generation unless overridden. */
 function ev<E extends EpisodeEvent['type']>(
   type: E,
-  extra: Omit<Extract<EpisodeEvent, { type: E }>, 'type' | 'generation' | 'at'> & { generation?: number; at?: Date } = {} as never,
+  extra: Partial<Omit<Extract<EpisodeEvent, { type: E }>, 'type'>> & Record<string, unknown> = {},
 ): Extract<EpisodeEvent, { type: E }> {
-  return { type, generation: 1, at: AT, ...extra } as Extract<EpisodeEvent, { type: E }>;
+  const seq = SEQ_REQUIRED.has(type) && extra.journalSeq === undefined ? { journalSeq: ++autoSeq } : {};
+  const user = type === 'acknowledge' && extra.userId === undefined ? { userId: USER_ID } : {};
+  return { type, generation: 1, at: AT, ...seq, ...user, ...extra } as unknown as Extract<EpisodeEvent, { type: E }>;
 }
 
 function next(row: EpisodeSnapshot, event: EpisodeEvent): EpisodeSnapshot {
@@ -126,10 +136,40 @@ describe('spec §3.2 arrows', () => {
 
   it.each(UNRESOLVED_TERMINAL_STATES)('%s → acknowledge resolves to released', (state) => {
     const row = snap({ state, desiredState: 'released', releaseKind: state === 'self_released' ? 'dead_man' : 'local_code', releaseConfirmedAt: T0 });
-    const n = next(row, ev('acknowledge', { userId: 'b6a8d1f2-3c4e-4f5a-9b6c-7d8e9f0a1b2c' }));
-    expect(n).toMatchObject({
-      state: 'released', acknowledgedAt: AT, acknowledgedBy: 'b6a8d1f2-3c4e-4f5a-9b6c-7d8e9f0a1b2c', releaseKind: row.releaseKind,
-    });
+    const n = next(row, ev('acknowledge', { userId: USER_ID }));
+    expect(n).toMatchObject({ state: 'released', acknowledgedAt: AT, acknowledgedBy: USER_ID, releaseKind: row.releaseKind });
+  });
+
+  it('acknowledge at a stale generation is stale_generation (it cannot resolve a newer episode state)', () => {
+    const row = snap({ state: 'released_locally', desiredState: 'released', generation: 3, releaseKind: 'local_forced', releaseConfirmedAt: T0 });
+    expect(ignored(row, ev('acknowledge', { generation: 2 }))).toBe('stale_generation');
+  });
+});
+
+describe('arrows the spec does not draw', () => {
+  it('a verified episode cannot fail, and neither can a pending release', () => {
+    expect(ignored(snap({ state: 'verified' }), ev('agent_failed', { code: 'enforcement_not_observed' }))).toBe('invalid_transition');
+    expect(ignored(snap({ state: 'release_requested', desiredState: 'released' }), ev('agent_failed', { code: 'apply_error' })))
+      .toBe('invalid_transition');
+  });
+
+  it('extend refuses an invalid date and a pending release', () => {
+    expect(ignored(snap({ state: 'verified' }), ev('extend', { expiresAt: new Date('nope') }))).toBe('invalid_transition');
+    expect(ignored(snap({ state: 'release_requested', desiredState: 'released' }), ev('extend', { expiresAt: EXPIRES })))
+      .toBe('invalid_transition');
+  });
+
+  it('a stale absence report cannot confirm an owed tombstone', () => {
+    const undelivered = snap({ state: 'failed', failureCode: 'not_delivered', desiredState: 'released', generation: 2, lastJournalSeq: 9 });
+    expect(ignored(undelivered, ev('agent_absent', { generation: 1 }))).toBe('stale_generation');
+    expect(ignored(undelivered, ev('agent_absent', { generation: 2, journalSeq: 9 }))).toBe('stale_seq');
+    expect(next(undelivered, ev('agent_absent', { generation: 2, journalSeq: 10 }))).toMatchObject({ releaseConfirmedAt: AT, lastJournalSeq: 10 });
+  });
+
+  it('keeps only snapshot fields when handed a wider row', () => {
+    const wide = { ...snap({ state: 'verified' }), id: 'row-id', orgId: 'org-id', breakGlassSecretEnc: 'ciphertext' };
+    const n = next(wide, ev('release_requested', { kind: 'console' }));
+    expect(Object.keys(n).sort()).toEqual(Object.keys(snap()).sort());
   });
 });
 

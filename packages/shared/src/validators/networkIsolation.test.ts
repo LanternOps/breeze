@@ -36,6 +36,8 @@ describe('isolationAllowEntrySchema', () => {
       { kind: 'cidr', cidr: '0.0.0.0/0', proto: 'tcp', ports: [443], scope: 'any' }, // never a blanket permit
       { kind: 'cidr', cidr: '::/0', proto: 'tcp', ports: [443], scope: 'any' },
       { kind: 'host', host: 'control.example.test', proto: 'tcp', ports: [443], scope: 'breeze', extra: true },
+      { kind: 'host', host: '127.1', proto: 'tcp', ports: [443], scope: 'breeze' }, // numeric last label reads as an address
+      { kind: 'host', host: '3232235777', proto: 'tcp', ports: [443], scope: 'breeze' },
     ];
     for (const entry of bad) expect(isolationAllowEntrySchema.safeParse(entry).success, JSON.stringify(entry)).toBe(false);
   });
@@ -93,11 +95,27 @@ describe('containmentDesiredBlockSchema (heartbeat response)', () => {
     allow: [{ kind: 'host', host: 'control.example.test', proto: 'tcp', ports: [443], scope: 'breeze' }],
   };
 
-  it('accepts null (nothing to assert) and a block with or without the secret', () => {
+  it('accepts null (nothing to assert) and an isolate block with or without the secret', () => {
     expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: null }).success).toBe(true);
     expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: block }).success).toBe(true);
     expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, breakGlassSecret: SECRET_B64 } }).success).toBe(true);
-    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, desired: 'released' } }).success).toBe(true);
+  });
+
+  it('an isolate block always permits something (the control plane)', () => {
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, allow: [] } }).success).toBe(false);
+  });
+
+  it('a release tombstone carries no permits and never the secret', () => {
+    const tombstone = { ...block, desired: 'released', allow: [] };
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: tombstone }).success).toBe(true);
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...tombstone, allow: block.allow } }).success).toBe(false);
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...tombstone, breakGlassSecret: SECRET_B64 } }).success).toBe(false);
+  });
+
+  it('caps the allowlist at the shared limit', () => {
+    const allow = Array.from({ length: 65 }, (_, i) => ({ kind: 'host', host: `h${i}.example.test`, proto: 'tcp', ports: [443], scope: 'breeze' }));
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, allow } }).success).toBe(false);
+    expect(containmentDesiredBlockSchema.safeParse({ networkIsolation: { ...block, allow: allow.slice(0, 64) } }).success).toBe(true);
   });
 
   it('requires the networkIsolation key: absent never means "no change"', () => {
@@ -131,16 +149,33 @@ describe('networkIsolationReportSchema (heartbeat request)', () => {
     }).success).toBe(true);
   });
 
-  it('accepts the "nothing Breeze-owned is installed" form', () => {
+  it('accepts the "nothing Breeze-owned is installed" form, with isolationId null or omitted (Go omitempty)', () => {
     expect(networkIsolationReportSchema.safeParse({ isolationId: null, phase: 'none' }).success).toBe(true);
+    expect(networkIsolationReportSchema.safeParse({ phase: 'none' }).success).toBe(true);
     expect(networkIsolationReportSchema.safeParse({ isolationId: null, phase: 'none', journalSeq: 12 }).success).toBe(true);
     expect(networkIsolationReportSchema.safeParse({ isolationId: null, phase: 'committed' }).success).toBe(false);
+    expect(networkIsolationReportSchema.safeParse({ phase: 'committed' }).success).toBe(false);
   });
 
   it('rejects an unknown state, phase or a negative journalSeq', () => {
     for (const patch of [{ state: 'quarantined' }, { phase: 'half_applied' }, { journalSeq: -1 }, { generation: 0 }, { isolationId: 'nope' }]) {
       expect(networkIsolationReportSchema.safeParse({ ...report, ...patch }).success, JSON.stringify(patch)).toBe(false);
     }
+  });
+
+  it('rejects server-only states from the agent', () => {
+    for (const state of ['requested', 'dispatched', 'release_requested', 'uninstalled']) {
+      expect(networkIsolationReportSchema.safeParse({ ...report, state }).success, state).toBe(false);
+    }
+  });
+
+  it('truncates long diagnostics instead of dropping the whole report', () => {
+    const parsed = networkIsolationReportSchema.parse({
+      ...report, lastError: 'e'.repeat(5000),
+      events: [{ seq: 40, at: '2026-10-30T10:04:00.000Z', type: 'apply_error', detail: 'd'.repeat(5000) }],
+    });
+    expect('lastError' in parsed && parsed.lastError).toHaveLength(1000);
+    expect(parsed.events?.[0]?.detail).toHaveLength(500);
   });
 
   it('bounds the event list', () => {

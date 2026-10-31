@@ -49,6 +49,31 @@ export const ACTIVE_STATES = [
   'release_requested',
 ] as const satisfies readonly IsolationState[];
 
+/**
+ * The states an AGENT may report for an episode (heartbeat `containment.networkIsolation.state` and
+ * command results). requested / dispatched / release_requested are server bookkeeping and uninstalled
+ * is recorded by the uninstall path, so an agent never claims them.
+ */
+export const AGENT_REPORTABLE_STATES = [
+  'applying',
+  'applied',
+  'verified',
+  'released',
+  'expired',
+  'failed',
+  'released_locally',
+  'self_released',
+] as const satisfies readonly IsolationState[];
+export type AgentReportableIsolationState = (typeof AGENT_REPORTABLE_STATES)[number];
+
+/** Wire bounds shared by the server builder, the Zod schemas and the agent (W1d). */
+export const NETWORK_ISOLATION_LIMITS = {
+  /** Entries in one desired block's `allow`. */
+  maxAllowEntries: 64,
+  /** Journal events in one report; the agent sends the oldest unacknowledged events first. */
+  maxReportEvents: 200,
+} as const;
+
 /** Terminal, but a human must acknowledge it before the device can be isolated again. */
 export const UNRESOLVED_TERMINAL_STATES = ['released_locally', 'self_released'] as const satisfies readonly IsolationState[];
 

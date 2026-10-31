@@ -7,9 +7,9 @@ import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { closeDb, db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import type { NewDeviceNetworkIsolation } from '../../db/schema';
 import {
   createEpisode,
+  type CreateEpisodeInput,
   findUnconfirmedTombstone,
   findUnresolvedEpisode,
   listEpisodes,
@@ -35,7 +35,7 @@ async function deviceInOrg() {
   return { partnerId: partner.id, orgId: org.id, deviceId: device.id };
 }
 
-function episodeValues(orgId: string, deviceId: string, extra: Partial<NewDeviceNetworkIsolation> = {}): NewDeviceNetworkIsolation {
+function episodeValues(orgId: string, deviceId: string, extra: Partial<CreateEpisodeInput> = {}): CreateEpisodeInput {
   return {
     orgId,
     deviceId,
@@ -47,7 +47,7 @@ function episodeValues(orgId: string, deviceId: string, extra: Partial<NewDevice
   };
 }
 
-const create = (orgId: string, deviceId: string, extra: Partial<NewDeviceNetworkIsolation> = {}) =>
+const create = (orgId: string, deviceId: string, extra: Partial<CreateEpisodeInput> = {}) =>
   withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => createEpisode(tx, episodeValues(orgId, deviceId, extra))));
 
 describe('createEpisode', () => {
@@ -148,15 +148,15 @@ describe('finders', () => {
 });
 
 describe('withEpisodeLock', () => {
-  it('returns null for a missing or invisible episode, without calling fn', async () => {
+  it('reports not-found for a missing or invisible episode, without calling fn', async () => {
     const { orgId, deviceId } = await deviceInOrg();
     const other = await deviceInOrg();
     const created = await create(orgId, deviceId);
     if (!created.ok) throw new Error('setup: create failed');
     let called = false;
     const fn = async () => { called = true; return 'ran'; };
-    expect(await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => withEpisodeLock(tx, '00000000-0000-4000-8000-000000000000', fn)))).toBeNull();
-    expect(await withDbAccessContext(orgContext(other.orgId), () => db.transaction((tx) => withEpisodeLock(tx, created.episode.id, fn)))).toBeNull();
+    expect(await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => withEpisodeLock(tx, '00000000-0000-4000-8000-000000000000', fn)))).toEqual({ found: false });
+    expect(await withDbAccessContext(orgContext(other.orgId), () => db.transaction((tx) => withEpisodeLock(tx, created.episode.id, fn)))).toEqual({ found: false });
     expect(called).toBe(false);
   });
 
@@ -180,7 +180,40 @@ describe('withEpisodeLock', () => {
       const e = err as { code?: string; cause?: { code?: string } };
       return (e.code ?? e.cause?.code) === '55P03';
     });
-    expect(await holder).toBe('held');
+    expect(await holder).toEqual({ found: true, value: 'held' });
+  });
+});
+
+describe('store guards', () => {
+  it('pins the lifecycle on create even when handed a wider object', async () => {
+    const { orgId, deviceId } = await deviceInOrg();
+    const sneaky = { ...episodeValues(orgId, deviceId), state: 'verified', generation: 9, desiredState: 'released' } as unknown as CreateEpisodeInput;
+    const created = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => createEpisode(tx, sneaky)));
+    expect(created.ok && created.episode).toMatchObject({ state: 'requested', generation: 1, desiredState: 'isolated', lastJournalSeq: 0 });
+  });
+
+  it('listEpisodes never returns the break-glass ciphertext', async () => {
+    const { orgId, deviceId } = await deviceInOrg();
+    await create(orgId, deviceId);
+    const [row] = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => listEpisodes(tx, deviceId)));
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty('breakGlassSecretEnc');
+    expect(row).toHaveProperty('state', 'requested');
+  });
+
+  it('writeEpisodeSnapshot refuses to overwrite a row that moved on (compare-and-swap)', async () => {
+    const { orgId, deviceId } = await deviceInOrg();
+    const created = await create(orgId, deviceId);
+    if (!created.ok) throw new Error('setup: create failed');
+    const prev = toEpisodeSnapshot(created.episode);
+    const out = applyEpisodeEvent(prev, { type: 'dispatched', generation: 1, at: new Date() });
+    if (!('next' in out)) throw new Error(out.ignored);
+    // Someone else moved the episode on after `prev` was read.
+    await admin(sql`UPDATE device_network_isolations SET state = 'applying', last_journal_seq = 3 WHERE id = ${created.episode.id}::uuid`);
+    const written = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => writeEpisodeSnapshot(tx, created.episode.id, prev, out.next)));
+    expect(written).toBe(false);
+    const [row] = await admin(sql`SELECT state, last_journal_seq::int AS seq FROM device_network_isolations WHERE id = ${created.episode.id}::uuid`);
+    expect(row).toEqual({ state: 'applying', seq: 3 });
   });
 });
 
@@ -192,10 +225,11 @@ describe('state machine round trip', () => {
     const id = created.episode.id;
     const step = (event: Parameters<typeof applyEpisodeEvent>[1]) => withDbAccessContext(orgContext(orgId), () => db.transaction((tx) =>
       withEpisodeLock(tx, id, async (row) => {
-        const out = applyEpisodeEvent(toEpisodeSnapshot(row), event);
+        const prev = toEpisodeSnapshot(row);
+        const out = applyEpisodeEvent(prev, event);
         if (!('next' in out)) return out.ignored;
-        return (await writeEpisodeSnapshot(tx, id, out.next)) ? out.next.state : 'lost';
-      })));
+        return (await writeEpisodeSnapshot(tx, id, prev, out.next)) ? out.next.state : 'lost';
+      })).then((r) => (r.found ? r.value : 'missing')));
     const at = new Date();
     expect(await step({ type: 'dispatched', generation: 1, at })).toBe('dispatched');
     expect(await step({ type: 'agent_verified', generation: 1, journalSeq: 4, at })).toBe('verified');
@@ -216,11 +250,13 @@ describe('state machine round trip', () => {
     const { orgId, deviceId } = await deviceInOrg();
     const created = await create(orgId, deviceId);
     if (!created.ok) throw new Error('setup: create failed');
-    await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => withEpisodeLock(tx, created.episode.id, async (row) => {
-      const out = applyEpisodeEvent(toEpisodeSnapshot(row), { type: 'agent_failed', code: 'control_plane_unreachable', generation: 1, journalSeq: 2, at: new Date() });
+    const written = await withDbAccessContext(orgContext(orgId), () => db.transaction((tx) => withEpisodeLock(tx, created.episode.id, async (row) => {
+      const prev = toEpisodeSnapshot(row);
+      const out = applyEpisodeEvent(prev, { type: 'agent_failed', code: 'control_plane_unreachable', generation: 1, journalSeq: 2, at: new Date() });
       if (!('next' in out)) throw new Error(out.ignored);
-      return writeEpisodeSnapshot(tx, created.episode.id, out.next);
+      return writeEpisodeSnapshot(tx, created.episode.id, prev, out.next);
     })));
+    expect(written).toEqual({ found: true, value: true });
     const [row] = await admin(sql`SELECT state, failure_code FROM device_network_isolations WHERE id = ${created.episode.id}::uuid`);
     expect(row).toEqual({ state: 'failed', failure_code: 'control_plane_unreachable' });
   });

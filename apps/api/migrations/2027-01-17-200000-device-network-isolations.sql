@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS device_network_isolations (
   -- A failed episode always says why, and only a failed episode carries a failure code.
   CONSTRAINT device_network_isolations_failed_has_code_chk
     CHECK ((state = 'failed') = (failure_code IS NOT NULL)),
+  -- The server wants isolation exactly while the episode is isolating; release_requested and every
+  -- terminal state carry desired_state = 'released' (a tombstone until release_confirmed_at is set).
+  CONSTRAINT device_network_isolations_desired_matches_state_chk
+    CHECK ((desired_state = 'isolated') = (state IN ('requested', 'dispatched', 'applying', 'applied', 'verified'))),
   CONSTRAINT device_network_isolations_release_kind_chk
     CHECK (release_kind IS NULL OR release_kind IN ('console', 'ai', 'expired', 'dead_man', 'local_code', 'local_forced', 'uninstall', 'system')),
   CONSTRAINT device_network_isolations_requested_by_kind_chk
@@ -192,11 +196,15 @@ END $$;
 -- the device's episode history before the flip, leaving the restamp nothing to touch. audit_logs keep
 -- the record.
 --
--- An UNRESOLVED episode (active, or released_locally / self_released awaiting acknowledgement) is never
--- deleted: the move is refused instead ("release network isolation first", spec §3.6 item 6). Deleting
--- it would leave the device isolated with no release path but expiry. The app-level refusal in the move
--- entry point (W1c) gives the operator the friendly error; this is the backstop for any other writer of
--- devices.org_id.
+-- Two kinds of row are never deleted; the move is refused instead ("release network isolation first",
+-- spec §3.6 item 6):
+--  - an UNRESOLVED episode (active, or released_locally / self_released awaiting acknowledgement);
+--  - an UNCONFIRMED release tombstone (desired_state = 'released', release_confirmed_at IS NULL), even
+--    on a resolved row: failed:not_delivered owes one, because the agent may have applied isolation
+--    from the heartbeat's desired state after its command was reaped.
+-- Deleting either would leave the device isolated with no release path but expiry or the offline code.
+-- The app-level refusal in the move entry point (W1c) gives the operator the friendly error and must use
+-- this same definition; this is the backstop for any other writer of devices.org_id.
 --
 -- Skipped entirely while the source org is fenced for a merge: the merge repoints devices, incidents,
 -- incident_actions and these rows to the survivor together under deferred constraints
@@ -223,7 +231,8 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM public.device_network_isolations i
        WHERE i.device_id = OLD.id
-         AND i.state NOT IN ('released', 'expired', 'failed', 'uninstalled')
+         AND (i.state NOT IN ('released', 'expired', 'failed', 'uninstalled')
+              OR (i.desired_state = 'released' AND i.release_confirmed_at IS NULL))
     ) THEN
       PERFORM set_config('breeze.scope', COALESCE(_prev_scope, ''), true);
       RAISE EXCEPTION 'isolation_unresolved: release network isolation on device % before moving it to another organization', OLD.id
