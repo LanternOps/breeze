@@ -1523,12 +1523,15 @@ export const useAiStore = create<AiState>()(
     // A restored session can still be rehydrating its Wisp grant. Start an
     // explicitly plain session instead of trusting a temporarily null header.
     set({ ...CLEARED_SESSION });
-    await get().createSession({ orgId: target.orgId ?? undefined });
-    if (sequence !== wispTalkSequence) return;
+    const creating = get().createSession({ orgId: target.orgId ?? undefined });
+    const owner = sessionOwnerToken; // createSession claims ownership synchronously.
+    await creating;
+    if (sequence !== wispTalkSequence || sessionOwnerToken !== owner) return;
     if (!get().sessionId || get().wisp) throw new Error(get().error ?? i18n.t('ai:wisp.links.addFailed'));
     set((state) => ({
       composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
       composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
     }));
     // Bind a plain session before opening: the sidebar otherwise auto-enters
     // an ambient org's grant while its own lookup is in flight.
@@ -1577,7 +1580,10 @@ export const useAiStore = create<AiState>()(
       if (sequence !== wispTalkSequence || get().wisp?.grantId !== grant.grantId
         || get().wisp?.threadId !== grant.threadId || get().wisp?.focusOrgId !== target.orgId) return 'declined_focus';
     } else if (get().wisp?.grantId !== grant.grantId || !get().sessionId) {
-      await get().enterWispMode(grant);
+      const entering = get().enterWispMode(grant);
+      const owner = sessionOwnerToken;
+      await entering;
+      if (sessionOwnerToken !== owner) return 'declined_focus';
     }
     if (sequence !== wispTalkSequence) return 'declined_focus';
     const current = get().wisp;
@@ -1590,6 +1596,7 @@ export const useAiStore = create<AiState>()(
     set((state) => ({
       composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
       composerFocusRequest: state.composerFocusRequest + 1,
+      showHistory: false,
     }));
     get().open();
     return 'opened';

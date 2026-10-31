@@ -21,7 +21,7 @@ export default function WispLinkPill({ link, onPin, onDismiss, onRemove, threadI
       data-thread-id={threadId} data-age={old ? 'old' : 'recent'}
       className={`flex min-w-0 max-w-full items-center gap-1 rounded-full border bg-background py-0.5 pl-2.5 pr-1 text-xs ${old ? 'opacity-60' : ''}`}>
       {link.source === 'wisp_pin' && <Sparkles className="h-3 w-3 shrink-0 text-primary" aria-label={t('wisp.links.addedByWisp')} data-testid="wisp-link-added-by-wisp" />}
-      <a href={link.href} className="min-w-0 truncate font-medium hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">{link.label}</a>
+      <a data-testid={`wisp-link-target-${link.ref.kind}-${link.ref.id}`} href={link.href} className="min-w-0 truncate font-medium hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">{link.label}</a>
       {link.source === 'concern' && <span className="shrink-0 text-muted-foreground">{t('wisp.links.groupConcerns')}</span>}
       {link.status && <span className="shrink-0 text-[11px] text-muted-foreground">{link.status}</span>}
       {link.id !== null && isPinnedLink(link) && onRemove && <button type="button" data-testid={`wisp-link-remove-${key}`} aria-label={t('wisp.links.remove', { label: link.label })} disabled={busy} onClick={onRemove} className={actionClass}><X className="h-3 w-3" aria-hidden="true" /></button>}

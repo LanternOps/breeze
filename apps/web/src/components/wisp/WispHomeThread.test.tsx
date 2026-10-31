@@ -58,9 +58,9 @@ vi.mock('../ai/AiChatInput', () => ({
 }));
 const LINK = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: 'Printer down', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '2026-10-25T09:00:00Z' };
 vi.mock('./WispEntityPicker', () => ({
-  default: (p: { open: boolean; threadId: string; onLinked: (l: unknown) => void; onClose: () => void }) =>
+  default: (p: { open: boolean; threadId: string; linkedKeys: Set<string>; onLinked: (l: unknown) => void; onClose: () => void }) =>
     p.open ? (
-      <div data-testid="picker-stub" data-thread={p.threadId}>
+      <div data-testid="picker-stub" data-thread={p.threadId} data-linked-keys={[...p.linkedKeys].join(",")}>
         <button type="button" onClick={() => p.onLinked(LINK)}>pick</button>
       </div>
     ) : null,
@@ -266,7 +266,7 @@ describe('WispHomeThread as the companion column (W01 #10211)', () => {
   });
 
   it('the composer link button opens the entity picker and a pick is added to the links', async () => {
-    const existing = { ...LINK, id: 'l-0', label: 'Old' };
+    const existing = { ...LINK, id: 'l-0', ref: { ...LINK.ref, id: 't-other' }, label: 'Old' };
     render(<WispHomeThread {...extra} links={[existing] as never[]} wisp={wisp} lastSessionId={null} />);
     const button = await screen.findByTestId('wisp-composer-link');
     expect(button).toHaveAccessibleName('Link an item');
@@ -618,4 +618,14 @@ describe('WispHomeThread reads the thread timeline (W02b #10213)', () => {
     await Promise.resolve();
     expect(timelineCalls()).toHaveLength(0);
   });
+});
+
+it('composer picker excludes derived concern keys and pinning replaces that entity only', async () => {
+  const concern = { ...LINK, id: null, source: 'concern' as const };
+  const other = { ...concern, ref: { ...concern.ref, id: 't-other' } };
+  render(<WispHomeThread {...extra} links={[concern, other] as WispThreadLink[]} wisp={wisp} lastSessionId={null} />);
+  fireEvent.click(await screen.findByTestId('wisp-composer-link'));
+  expect(screen.getByTestId('picker-stub')).toHaveAttribute('data-linked-keys', '');
+  fireEvent.click(screen.getByText('pick'));
+  expect(onLinksChange).toHaveBeenCalledWith([LINK, other]);
 });

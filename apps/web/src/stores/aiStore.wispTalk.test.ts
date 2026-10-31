@@ -204,3 +204,27 @@ it('a refused plain create cannot reuse an older session and report success', as
   await expect(useAiStore.getState().talkToWispAbout(target)).rejects.toThrow('Could not create chat');
   expect(useAiStore.getState()).toMatchObject({ sessionId: null, isOpen: false, composerDraft: '' });
 });
+
+it.each([true, false])('header action reveals the composer from History (grant=%s)', async (withGrant) => {
+  h.activeThreadFor.mockResolvedValue(withGrant ? grant() : null);
+  useAiStore.setState({ showHistory: true });
+  await useAiStore.getState().talkToWispAbout(target);
+  expect(useAiStore.getState()).toMatchObject({ isOpen: true, showHistory: false, composerFocusRequest: 1 });
+});
+
+it.each([false, true])('a superseded session create cannot prefill or open the newly selected conversation (grant=%s)', async (withGrant) => {
+  let finish!: (response: Response) => void;
+  h.activeThreadFor.mockResolvedValue(withGrant ? grant() : null);
+  h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/ai/sessions' && init?.method === 'POST') return new Promise<Response>((resolve) => { finish = resolve; });
+    if (url === '/ai/sessions/session-picked') return response({ session: { id: 'session-picked', type: 'general', status: 'active', orgId: 'org-b' }, messages: [] });
+    return response({ data: [] });
+  });
+  const pending = useAiStore.getState().talkToWispAbout(target);
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  await useAiStore.getState().loadSession('session-picked');
+  expect(useAiStore.getState().sessionId).toBe('session-picked');
+  finish(response({ id: 'session-stale', orgId: 'org-b' }));
+  await pending;
+  expect(useAiStore.getState()).toMatchObject({ sessionId: 'session-picked', composerDraft: '', composerFocusRequest: 0, isOpen: false });
+});

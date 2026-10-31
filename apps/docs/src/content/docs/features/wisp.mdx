@@ -61,7 +61,7 @@ How the thread reads:
 - New posts appear while the page is open. The home refreshes every 30 seconds, and the thread re-reads its newest messages when that refresh shows Wisp starting or finishing a check, a newer brief, or a change in the concerns that need you. If that read fails, the thread says so and offers **Retry**.
 - An empty thread shows Wisp's welcome and four suggestions: **What needs me today?**, **Which devices are offline?**, **Run a health sweep** and **What happened overnight?**. Select one to send it. When a morning brief is already in the thread, only the suggestions show.
 
-The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Linked items](#linked-items). The thread resumes the last session instead of starting a new one on every visit. **New conversation** closes it, so its summary lands on the thread, and starts a fresh one on the grant. Nothing starts while the grant is paused or ended. While Wisp is paused, the conversation still shows its history, read-only, and the composer is replaced by the paused notice. When the grant has ended, the history is not shown.
+The composer says **Message Wisp**. Enter sends and Shift+Enter adds a line. The plus button links an item to the thread; see [Working set](#working-set). The thread resumes the last session instead of starting a new one on every visit. **New conversation** closes it, so its summary lands on the thread, and starts a fresh one on the grant. Nothing starts while the grant is paused or ended. While Wisp is paused, the conversation still shows its history, read-only, and the composer is replaced by the paused notice. When the grant has ended, the history is not shown.
 
 The rail, from the top:
 
@@ -70,7 +70,7 @@ The rail, from the top:
 | Identity and grant controls | Wisp's name, its state ("Active" with the scope, or a live "Checking ..." line while an assessment runs), and the grant controls: refresh, settings, turn off, the spend meter, and pause and resume. |
 | **Needs your attention** | Open and snoozed concerns for your grant, approvals first and then by severity, with a count of items waiting for your approval. Snooze, dismiss and give feedback exactly as on the thread page. Approvals open in the Approvals page. |
 | **Workers** | Up to five recent specialist runs, with **All runs** linking to the full list. |
-| **Linked items** | The tickets, devices and other items you pinned to Wisp; see [Linked items](#linked-items). |
+| **Linked items** | Pinned records, subjects of open concerns, and recent records Wisp worked on; see [Working set](#working-set). |
 | **Activity** | A timeline of what Wisp did. It starts collapsed; select **Show** to expand it. |
 
 At the bottom of the rail are links to **All chats** (`/ai/chat`) and **Memory** (`/settings/wisp-memory`).
@@ -89,25 +89,34 @@ The multi-tab chat page is **Breeze AI**, at `/ai/chat`. It has the same tabs (u
 
 Breeze AI and the docked panel use the same message list as the Wisp home, so tool activity folds into one line there too, and the composer sends on Enter and adds a line on Shift+Enter.
 
-## Linked items
+## Working set
 
-You can link items to your Wisp thread so Wisp keeps them in view. A thread holds up to 50 links. Link a ticket, quote, invoice, contract, device, organization, site, alert, agent run, operator task or user.
+Wisp keeps a bounded working set of the records you are discussing. Its pills appear in three groups, in this order:
 
-Add a link in either of two ways:
+- **Pinned.** Records you pin from the picker or a record page, plus records Wisp explicitly pins during a conversation. Pins stay until removed; a thread holds up to 50. Wisp's pins carry an **Added by Wisp** marker.
+- **Open concerns.** The subjects of open and snoozed concerns. These are derived from the concerns, so there is no separate remove action. They leave this group when the concern resolves. A record that is already stored appears once under its stored source.
+- **Recent.** Records Wisp reads individually or changes in a successful tool call. List and fleet searches do not add records. A thread holds up to 20 recent records; the least recently touched recent record drops out when that cap is reached. Pins are kept. Recent records fade after 24 hours without being touched.
 
-1. On the Wisp home, use **Link an item** in the Linked items section and pick a kind. The picker searches each kind's normal list, so you only see what you could already see.
-2. On a ticket, quote, invoice, contract, device or organization page, click **Link to Wisp**. The button appears only when Wisp is on, you are signed in at partner scope, your partner's plan includes Wisp and you have an active grant. Once linked it reads **Linked in Wisp**.
+Select a pill to open its record. Use **Pin** on a recent record to keep it, **Dismiss** to drop it from the working set, or **Remove** on a pin. Dismiss removes the reference; a later focal action can add it again. The strip shows twelve records initially; **More** reveals the rest. **Link an item** opens the existing picker, which searches each kind's normal list. Supported kinds include tickets, quotes, invoices, contracts, devices, organizations, sites, alerts, agent runs, operator tasks and users.
 
-Wisp can also link items during a conversation; those are marked **Added by Wisp**.
+### Talk about a record
 
-Links are re-checked against your current access and the grant's reach every time they are read:
+Device, ticket, quote, invoice, contract and organization headers have a **Talk to Wisp** button. With an active grant, it opens the docked Wisp chat and pins the record. When Wisp is focused on a different organization, an inline question offers to switch focus. Choosing **No** stops the action. If the composer is empty, the button prepares **About {record label}:** and focuses it; an existing draft is kept. It never sends a message for you.
 
-- An item you can no longer see is hidden. The link is kept and reappears if your access returns.
-- An item that was deleted disappears.
-- The label is read from the item each time, so it follows renames.
-- Removing a link never needs an active grant.
+Without an active grant, the control reads **Ask AI about this** and opens an ordinary AI chat with a draft about the record.
 
-A link gives Wisp only a handle to the item (its kind, id and title), never the body of the record.
+### Record context and access
+
+The docked chat receives record context from ticket, quote, invoice, contract, organization and site pages, as well as device context on device pages. The server reads the record and checks current permissions before including it in the prompt. The page label is a display hint, not authority to read a record. Wisp's seed also checks access to working-set records against the live grant ceiling.
+
+Working-set labels, status and destinations are read from the records each time:
+
+- A record you can no longer access, or that is outside the grant, is hidden; a stored reference can reappear if access returns.
+- A deleted record disappears.
+- Renaming a record updates its pill label.
+- Removing a stored reference does not require an active grant.
+
+A reference gives Wisp a handle to the record (kind, id and label); the record body is read through the usual authorized tools.
 
 ## Grants
 
