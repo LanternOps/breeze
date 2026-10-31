@@ -1474,6 +1474,9 @@
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} teklifle karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin.",
       "acceptOnBehalf": {
         "button": "Müşteri adına kabul et",
+        "emptyDraftTitle": "Kabul etmeden önce en az bir öğe ekleyin.",
+        "emptySentTitle": "Bu teklifte öğe yok. Öğeler içeren bir sürüm düzenlemek için Teklifi revize et seçeneğini kullanın.",
+        "errorQuoteEmpty": "Bu teklifte öğe yok. Bu iletişim kutusunu kapatıp bir öğe ekleyin veya teklif zaten gönderildiyse Teklifi revize et seçeneğini kullanın.",
         "title": "Müşterinin kabulünü kaydedin",
         "methodLabel": "Müşteri nasıl onay verdi?",
         "method": {

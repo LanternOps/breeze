@@ -226,3 +226,8 @@ Update agents to a release containing this change before relying on the provider
 - **The "quote accepted" email** sent to the quote's creator now says how many recurring contracts were created as drafts and still need activating.
 - `GET /api/v1/contracts` rows gain `sourceQuoteId` and `sourceQuote` (`{ id, quoteNumber }` or `null`). `GET /api/v1/contracts/:id` gains `sourceQuote`. `GET /api/v1/quotes/:id` gains `contracts` (`[{ id, name, status, intervalMonths }]`, or `null` when the caller lacks `contracts:read`).
 - **Migration** `2027-01-17-150000-contracts-source-quote.sql`: adds the nullable `contracts.source_quote_id` (same-org foreign key to `quotes`, cleared when the quote is deleted) and a partial index. It backfills existing contracts from their executed agreement and from Pax8 orders. A contract with neither (for example the annual contract of a quote with no agreement and no Pax8 lines) stays unlinked. No environment variable or setting.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
