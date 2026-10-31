@@ -1,0 +1,169 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getTableName } from 'drizzle-orm';
+
+const m = vi.hoisted(() => ({
+  select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(),
+  getOrderWithLines: vi.fn(), createClient: vi.fn(), resolvePrice: vi.fn(),
+  dependencies: vi.fn(), pricing: vi.fn(), contextDepth: 0, outsideDepth: 0,
+  withContext: vi.fn(), outside: vi.fn(),
+}));
+vi.mock('../db', () => ({
+  db: { select: m.select, insert: m.insert, update: m.update, delete: m.delete },
+  withDbAccessContext: m.withContext, runOutsideDbContext: m.outside,
+}));
+vi.mock('./pax8OrderService', async (original) => ({
+  ...await original<typeof import('./pax8OrderService')>(), getOrderWithLines: m.getOrderWithLines,
+}));
+vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: m.createClient }));
+vi.mock('./catalogService', () => ({
+  resolvePrice: m.resolvePrice,
+  CatalogServiceError: class CatalogServiceError extends Error { constructor(message: string, public code: string) { super(message); } },
+}));
+import { previewPax8Order } from './pax8OrderPreview';
+
+const partnerId = '10000000-0000-4000-8000-000000000001';
+const orgId = '10000000-0000-4000-8000-000000000002';
+const orderId = '10000000-0000-4000-8000-000000000003';
+const integrationId = '10000000-0000-4000-8000-000000000004';
+const lineId = '10000000-0000-4000-8000-000000000005';
+const client = { getProductDependencies: m.dependencies, getProductPricing: m.pricing };
+const commitment = (id = 'fixture-term', term = 'Annual') => ({
+  id, term, allowForQuantityIncrease: true, allowForQuantityDecrease: false,
+  allowForEarlyCancellation: false, cancellationFeeApplied: true,
+});
+let rows: Record<string, unknown[]>;
+let order: Record<string, unknown>;
+let lines: Record<string, unknown>[];
+const run = () => previewPax8Order({ partnerId, orderId, client: client as never });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  m.contextDepth = 0; m.outsideDepth = 0;
+  m.outside.mockImplementation(async (fn) => {
+    const saved = m.contextDepth; m.contextDepth = 0; m.outsideDepth++;
+    try { return await fn(); } finally { m.outsideDepth--; m.contextDepth = saved; }
+  });
+  m.withContext.mockImplementation(async (_ctx, fn) => {
+    m.contextDepth++;
+    try { return await fn(); } finally { m.contextDepth--; }
+  });
+  order = { id: orderId, partnerId, orgId, integrationId, pax8CompanyId: null, source: 'direct', status: 'draft' };
+  lines = [{ id: lineId, action: 'new_subscription', submitState: 'pending', pax8ProductId: 'fixture-product',
+    quantity: '5', billingTerm: 'Monthly', commitmentTermId: 'fixture-term', contractLineId: null,
+    authorizedBaselineQuantity: null, targetSubscriptionId: null }];
+  rows = {
+    pax8_company_mappings: [{ pax8CompanyId: 'fixture-company', pax8CompanyName: 'Fixture Company', status: 'Active',
+      metadata: { contacts: [{ types: ['Admin', 'Billing', 'Technical'].map(type => ({ type, primary: true })) }] } }],
+    pax8_product_mappings: [{ productName: 'Fixture Product', vendorSkuId: 'fixture-sku' }],
+    pax8_subscription_snapshots: [{ productId: 'fixture-product', productName: 'Fixture Subscription', vendorSkuId: 'fixture-sku',
+      unitCost: '7.50', currencyCode: 'USD', billingTerm: 'Monthly', raw: { commitmentTermId: 'fixture-term' } }],
+    contract_lines: [{ id: 'fixture-contract-line', contractId: 'fixture-contract', catalogItemId: 'fixture-catalog', unitPrice: '12.00' }],
+    contracts: [{ id: 'fixture-contract', currencyCode: 'CAD', createdBy: 'fixture-user' }],
+  };
+  m.select.mockImplementation(() => {
+    const chain: Record<string, unknown> = {};
+    let table = '';
+    chain.from = vi.fn((value) => { table = getTableName(value); return chain; });
+    for (const method of ['where', 'limit', 'orderBy']) chain[method] = vi.fn(() => chain);
+    chain.then = (resolve: (v: unknown[]) => unknown) => resolve(rows[table] ?? []);
+    return chain;
+  });
+  m.getOrderWithLines.mockImplementation(async () => {
+    expect(m.contextDepth).toBeGreaterThan(0);
+    return { order, lines };
+  });
+  m.dependencies.mockImplementation(async () => {
+    expect(m.contextDepth).toBe(0); expect(m.outsideDepth).toBeGreaterThan(0);
+    return { commitments: [commitment()] };
+  });
+  m.pricing.mockImplementation(async () => {
+    expect(m.contextDepth).toBe(0); expect(m.outsideDepth).toBeGreaterThan(0);
+    return [{ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '8.25', currencyCode: 'USD' }];
+  });
+  m.resolvePrice.mockResolvedValue({ unitPrice: '15.00' });
+  m.createClient.mockResolvedValue({ client });
+});
+
+describe('previewPax8Order', () => {
+  it('new line priced from the live pricing row matching billing and commitment term', async () => {
+    m.pricing.mockResolvedValue([
+      { commitmentTerm: 'Annual', billingTerm: 'Annual', partnerBuyRate: '99', currencyCode: 'USD' },
+      { commitmentTerm: 'Monthly', billingTerm: 'Monthly', partnerBuyRate: '20', currencyCode: 'USD' },
+      { commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '8.25', currencyCode: 'USD' },
+    ]);
+    const result = await run();
+    expect(result.lines[0]).toMatchObject({ unitCost: '8.25', commitmentTerm: 'Annual', productName: 'Fixture Product' });
+    expect(result.totals).toEqual([{ currency: 'USD', billingTerm: 'Monthly', partnerCost: '41.25' }]);
+    expect(result.blocked).toEqual([]);
+    expect(m.pricing).toHaveBeenCalledWith('fixture-product');
+  });
+  it.each([{ pricing: [] }, { pricing: [{ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '8', currencyCode: 'USD' },
+    { commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '9', currencyCode: 'USD' }] }])('no unique pricing row blocks unknown cost (%j)', async ({ pricing }) => {
+    m.pricing.mockResolvedValue(pricing);
+    const result = await run();
+    expect(result.lines[0]?.unitCost).toBeNull();
+    expect(result.blocked).toContainEqual({ lineId, code: 'COST_UNKNOWN' });
+  });
+  it('change uses authorized baseline and snapshot cost', async () => {
+    Object.assign(lines[0]!, { action: 'change_quantity', targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3' });
+    const result = await run();
+    expect(result.lines[0]).toMatchObject({ fromQuantity: '3', quantity: '5', unitCost: '7.50' });
+    expect(m.pricing).not.toHaveBeenCalled();
+  });
+  it('cancel carries ACTIVE commitment flags rather than the first commitment', async () => {
+    Object.assign(lines[0]!, { action: 'cancel', targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3', quantity: null });
+    m.dependencies.mockResolvedValue({ commitments: [{ ...commitment('other', 'Monthly'), cancellationFeeApplied: false }, commitment()] });
+    expect((await run()).lines[0]).toMatchObject({ quantity: '0', fromQuantity: '3', commitmentTerm: 'Annual', cancellationFeeApplied: true, allowForEarlyCancellation: false });
+  });
+  it('increase with null snapshot cost is blocked', async () => {
+    Object.assign(lines[0]!, { action: 'change_quantity', targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3' });
+    Object.assign(rows.pax8_subscription_snapshots![0]!, { unitCost: null });
+    expect((await run()).blocked).toContainEqual({ lineId, code: 'COST_UNKNOWN' });
+  });
+  it('quote-created new line reports contract-currency customer price', async () => {
+    order.source = 'quote'; lines[0]!.contractLineId = 'fixture-contract-line';
+    expect((await run()).lines[0]).toMatchObject({ sellUnitPrice: '15.00', sellCurrency: 'CAD' });
+    expect(m.resolvePrice).toHaveBeenCalledWith('fixture-catalog', 'CAD', orgId, expect.objectContaining({ partnerId, accessibleOrgIds: [orgId] }));
+  });
+  it('never resolves or persists an unresolved company', async () => {
+    rows.pax8_company_mappings = [];
+    const result = await run();
+    expect(result.company).toBeNull();
+    expect(result.blocked).toContainEqual({ code: 'COMPANY_UNRESOLVED' });
+    expect(m.update).not.toHaveBeenCalled(); expect(m.insert).not.toHaveBeenCalled();
+  });
+  it('more than 20 lines are blocked', async () => {
+    lines = Array.from({ length: 21 }, (_, i) => ({ ...lines[0], id: `${lineId}-${i}` }));
+    expect((await run()).blocked).toContainEqual({ code: 'TOO_MANY_LINES' });
+  });
+  it('constructs the credential-reading client in a short partner DB context', async () => {
+    m.createClient.mockImplementation(async () => {
+      expect(m.contextDepth).toBeGreaterThan(0);
+      expect(m.withContext).toHaveBeenLastCalledWith(expect.objectContaining({
+        scope: 'partner', accessiblePartnerIds: [partnerId], currentPartnerId: partnerId,
+      }), expect.any(Function));
+      return { client };
+    });
+    await previewPax8Order({ partnerId, orderId });
+    expect(m.createClient).toHaveBeenCalledWith(integrationId);
+  });
+  it('runs every Pax8 HTTP call outside the client-construction DB context', async () => {
+    await previewPax8Order({ partnerId, orderId });
+    expect(m.dependencies).toHaveBeenCalledWith('fixture-product');
+    expect(m.pricing).toHaveBeenCalledWith('fixture-product');
+  });
+  it('writes nothing and returns no raw payloads', async () => {
+    const result = await run();
+    for (const write of [m.insert, m.update, m.delete]) expect(write).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toMatch(/metadata|raw|encrypted/);
+  });
+  it('ambiguous active commitment blocks the line', async () => {
+    Object.assign(lines[0]!, { action: 'cancel', targetSubscriptionId: 'fixture-subscription' });
+    Object.assign(rows.pax8_subscription_snapshots![0]!, { raw: { commitmentTermId: 'fixture-term', commitment: { id: 'other' } } });
+    expect((await run()).blocked).toContainEqual({ lineId, code: 'COMMITMENT_AMBIGUOUS' });
+  });
+  it('nonpending lines and nonsubmittable orders are blocked', async () => {
+    lines[0]!.submitState = 'succeeded'; order.status = 'completed';
+    expect((await run()).blocked).toContainEqual({ lineId, code: 'NOT_PENDING' });
+  });
+});
