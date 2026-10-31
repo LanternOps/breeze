@@ -224,3 +224,9 @@ Update agents to a release containing this change before relying on the provider
 
 - **Partner-wide AI sessions now see each row's organization.** When the caller can reach more than one organization (a partner user with several organizations, or a Wisp grant covering several), `query_devices` and `manage_alerts` (`list`) rows carry `orgId`, and the result adds `organizations: [{ orgId, orgName }]`, one entry per organization on the page. Single-organization callers get the same rows as before.
 - **Smaller default pages.** `query_devices` now returns 20 devices by default (was 25) and `manage_alerts` `list` 12 alerts (was 15), so a page spanning a handful of organizations still fits the chat budget with the organization fields. `limit` up to 100 is unchanged. No migration, no new environment variable.
+
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

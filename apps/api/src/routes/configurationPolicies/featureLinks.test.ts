@@ -1916,6 +1916,47 @@ describe('compliance rule set names', () => {
     expect(updateFeatureLinkMock).not.toHaveBeenCalled();
   });
 
+  it('POST refuses a rule set name over 200 characters → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: { items: [{ name: 'x'.repeat(201), rules }] } }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_RULE_SET_NAME_TOO_LONG');
+    expect(body.error).toContain('200');
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH refuses a rule set name over 200 characters → 400, nothing written', async () => {
+    getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
+    const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: { items: [{ name: 'Baseline', rules }, { name: 'x'.repeat(201), rules }] } }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('COMPLIANCE_RULE_SET_NAME_TOO_LONG');
+    expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST accepts a rule set name of exactly 200 characters', async () => {
+    getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    const res = await buildApp().request(`/${POLICY_ID}/features`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ featureType: 'compliance', inlineSettings: { items: [{ name: 'x'.repeat(200), rules }] } }),
+    });
+
+    expect(res.status).not.toBe(400);
+    expect(addFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+
   it('PATCH with distinct names saves', async () => {
     getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [{ id: LINK_ID, featureType: 'compliance' }] });
     const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
