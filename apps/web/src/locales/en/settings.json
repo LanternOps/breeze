@@ -4035,7 +4035,8 @@
         "system_cleanup": {
           "list": "List system cleanup actions",
           "run": "Run system cleanup",
-          "status": "System cleanup run status"
+          "status": "System cleanup run status",
+          "cancel": "Cancel system cleanup run"
         }
       },
       "alwaysOnCount_one": "{{count}} read-only tool",

@@ -467,10 +467,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/eventlogs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'devices/events.ts': { tools: ['get_device_events'] }, // W13 (#6783)
   'devices/filesystem.ts': { tools: ['analyze_disk_usage', 'disk_cleanup'] },
-  // list/run/status are the same OS-native cleanup workflow as the `system_cleanup`
-  // AI tool (W05 gap triage). The route's cancel endpoint (#6485 F-5) has no
-  // matching `system_cleanup` action yet -- a small future addition, not a
-  // fresh MCP_COVERAGE gap.
+  // list/run/status/cancel are the same OS-native cleanup workflow as the
+  // `system_cleanup` AI tool (W05 gap triage; cancel = #6485 F-5 route, AI action #10161).
   'devices/filesystemSystemCleanup.ts': { tools: ['system_cleanup'] },
   'devices/function.ts': { tools: ['manage_device_function'] }, // W13 (#6783)
   'devices/groups.ts': { tools: ['manage_groups'] },

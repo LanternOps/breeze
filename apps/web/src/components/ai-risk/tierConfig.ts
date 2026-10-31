@@ -480,6 +480,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'file_operations (read/write/delete/mkdir/rename)', description: 'Read or mutate files on device', category: 'Files, Disk & Registry' },
       { name: 'disk_cleanup (execute)', description: 'Execute disk cleanup', category: 'Files, Disk & Registry' },
       { name: 'system_cleanup (run)', description: 'Run OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux caches/journal)', category: 'Files, Disk & Registry' },
+      { name: 'system_cleanup (cancel)', description: 'Cancel a running native cleanup run', category: 'Files, Disk & Registry' },
       { name: 'registry_operations (set_value/create_key/delete_key)', description: 'Modify Windows registry', category: 'Files, Disk & Registry' },
       // Network & DNS
       { name: 'network_discovery', description: 'Network discovery scan', category: 'Network & DNS' },
@@ -1050,7 +1051,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   test_ticket_routing_rule: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
-  system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
+  system_cleanup: { list: 'devices.execute', run: 'devices.execute', cancel: 'devices.execute', status: 'devices.read' },
   file_operations: { list: 'devices.read', read: 'devices.read', write: 'devices.execute', delete: 'devices.execute', mkdir: 'devices.execute', rename: 'devices.execute' },
   // Registry
   registry_operations: { read_key: 'devices.execute', get_value: 'devices.execute', set_value: 'devices.execute', create_key: 'devices.execute', delete_key: 'devices.execute' },

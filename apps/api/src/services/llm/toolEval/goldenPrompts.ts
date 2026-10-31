@@ -147,4 +147,6 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   // Full-control W14 PR B (#6784): generate an invoice (preview first, then a four-eyes generate) and a Xero push (four-eyes).
   { id: 'g112', prompt: "Generate this month's invoice for the Contoso managed services contract.", expect: [{ tool: 'manage_contracts', action: 'preview_invoice' }, { tool: 'manage_contracts', action: 'generate_invoice' }, { tool: 'list_contracts' }] },
   { id: 'g113', prompt: 'Push invoice INV-1042 to Xero.', expect: [{ tool: 'manage_accounting_sync', action: 'push' }, { tool: 'manage_accounting_sync', action: 'status' }, { tool: 'list_invoices' }] },
+  // #10161: ticket merge reaches the chat SDK shape (preview first, then the supervised merge).
+  { id: 'g114', prompt: 'Ticket 1043 is a duplicate of 1042, merge it in.', expect: [{ tool: 'manage_tickets', action: 'merge_preview' }, { tool: 'manage_tickets', action: 'merge' }] },
 ];
