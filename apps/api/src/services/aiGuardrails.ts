@@ -4918,14 +4918,14 @@ export function buildApprovalDescription(
       parts.push(`${humanizeToolAction(toolName, action)} ${subject}${details.length ? `: ${details.join(', ')}` : ''}`);
       break;
     }
-    // Full-control W14 PR B (#6784): the four-eyes card states every figure the approvers sign (the assertions the
-    // handler and the pinned effect digest both enforce). Ids are truncated; amounts and dates are the model's
-    // assertions, refused at release when they are not the live invoice.
     case 'manage_pax8_subscriptions':
     case 'manage_pax8_orders':
       parts.push(describePax8Action(toolName, action) ?? humanizeToolAction(toolName, action));
       break;
 
+    // Full-control W14 PR B (#6784): the four-eyes card states every figure the approvers sign (the assertions the
+    // handler and the pinned effect digest both enforce). Ids are truncated; amounts and dates are the model's
+    // assertions, refused at release when they are not the live invoice.
     case 'manage_contracts': {
       if (action !== 'generate_invoice' || typeof input.contractId !== 'string') { parts.push(humanizeToolAction(toolName, action)); break; }
       const total = typeof input.expectedTotal === 'string' ? input.expectedTotal : '?';

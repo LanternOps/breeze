@@ -4,6 +4,7 @@ import { checkGuardrails, isReadOnlyResolution, requiredPermissionsForTool } fro
 import { isMfaGatedToolAction } from './aiToolMfaGate';
 import { AGENT_HUMAN_ONLY_ACTIONS } from './aiToolExposure';
 import { TOOL_RATE_LIMITS } from './aiToolRateLimits';
+import { RAW_TEXT_FIELDS_BY_TOOL } from './aiToolOutput';
 import { TOOL_CAPABILITY } from './aiAgents/agentToolCatalog';
 
 const actions = [
@@ -43,7 +44,15 @@ describe('W15 PR A Pax8 guardrail classes', () => {
     expect(AGENT_HUMAN_ONLY_ACTIONS.has(`${tool}:${action}`)).toBe(false);
   });
 
-  it('limits orders and subscriptions tool-wide', () => {
+  it.each(tools)('%s fences vendor-authored term and SKU text', (tool) => {
+    for (const field of ['commitmentTerm', 'billingTerm', 'catalogSku']) {
+      expect(RAW_TEXT_FIELDS_BY_TOOL[tool]?.has(field), `${tool}.${field}`).toBe(true);
+    }
+  });
+
+  it('limits all Pax8 tools tool-wide', () => {
+    expect(TOOL_RATE_LIMITS.search_pax8_products).toEqual({ limit: 30, windowSeconds: 300 });
+    expect(TOOL_RATE_LIMITS.get_pax8_status).toEqual({ limit: 30, windowSeconds: 300 });
     expect(TOOL_RATE_LIMITS.manage_pax8_orders).toEqual({ limit: 30, windowSeconds: 300 });
     expect(TOOL_RATE_LIMITS.manage_pax8_subscriptions).toEqual({ limit: 10, windowSeconds: 300 });
   });

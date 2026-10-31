@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-const h = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), draft: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn(), preflight: vi.fn(), preview: vi.fn(), audit: vi.fn() }));
+const h = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), draft: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn(), preflight: vi.fn(), preview: vi.fn(), audit: vi.fn(), auditLog: vi.fn() }));
 vi.mock('../db', () => ({ db: {}, runOutsideDbContext: (f: any) => f(), withDbAccessContext: (_c: any, f: any) => f() }));
 vi.mock('./aiToolsSoftwareShared', async original => ({ ...await original<typeof import('./aiToolsSoftwareShared')>(), verifiedUserIdOrNull: vi.fn(async () => null), auditToolWrite: h.audit }));
 vi.mock('./pax8OrderService', async original => ({ ...await original<typeof import('./pax8OrderService')>(), getOrderWithLines: h.get, listPax8Orders: h.list, getOrCreateDraftOrder: h.draft, addOrderLine: h.add, updateOrderLine: h.update, removeOrderLine: h.remove }));
+vi.mock('./auditService', () => ({ createAuditLogAsync: h.auditLog }));
 vi.mock('./pax8OrderSubmit', () => ({ preflightOrder: h.preflight }));
 vi.mock('./pax8OrderPreview', () => ({ previewPax8Order: h.preview }));
 import { registerPax8OrderTools } from './aiToolsPax8Orders';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
+import { Pax8ApiError } from './pax8Client';
+import { Pax8OrderError } from './pax8OrderService';
+import { auditToolWrite } from './aiToolsSecurityPolicyShared';
 const PARTNER = '00000000-0000-4000-8000-000000000001', ORG = '00000000-0000-4000-8000-000000000002', ID = '00000000-0000-4000-8000-000000000003';
 const auth = (over = {}) => ({ scope: 'partner', partnerId: PARTNER, partnerOrgAccess: 'all', user: { id: ID }, principal: { kind: 'user_session' }, accessibleOrgIds: [ORG], canAccessOrg: (id: string) => id === ORG, orgCondition: () => undefined, token: { mfa: true }, ...over }) as unknown as AuthContext;
 const tools = new Map<string, AiTool>(); registerPax8OrderTools(tools);
@@ -16,12 +20,23 @@ const run = async (input: Record<string, unknown>, a = auth()) => JSON.parse(awa
 const writes = ['create_draft','add_line','update_line','remove_line','preflight'];
 beforeEach(() => { vi.clearAllMocks(); h.get.mockResolvedValue({ order: { id: ID, orgId: ORG }, lines: [] }); h.draft.mockResolvedValue({ id: ID, orgId: ORG }); h.list.mockResolvedValue([]); });
 describe('Pax8 orders', () => {
+  it.each(['success', 'failure'] as const)('persists the selected audit result %s', result => {
+    auditToolWrite(auth(), { orgId: ORG, action: 'pax8.order.preflight', resourceType: 'pax8_order', result });
+    expect(h.auditLog).toHaveBeenCalledWith(expect.objectContaining({ result }));
+  });
   it('action enum is exactly PR A', () => expect(pax8ToolSchemas.manage_pax8_orders.shape.action.options).toEqual(['list','get','create_draft','add_line','update_line','remove_line','preview','preflight']));
   it('refuses organization scope and device-bound sessions', async () => {
     expect((await run({ action: 'list' }, auth({ scope: 'organization' }))).code).toBe('PARTNER_SCOPE_REQUIRED');
     expect((await run({ action: 'get', orderId: ID }, auth({ allowedDeviceIds: [ID] }))).code).toBe('ACCESS_DENIED');
   });
-  it.each(writes)('%s requires MFA', async action => { expect((await run({ action, orgId: ORG, orderId: ID }, auth({ token: {} }))).code).toBe('MFA_REQUIRED'); });
+  it.each(writes)('%s requires MFA before calling any service', async action => {
+    expect((await run({ action, orgId: ORG, orderId: ID }, auth({ token: {} }))).code).toBe('MFA_REQUIRED');
+    for (const f of [h.get,h.list,h.draft,h.add,h.update,h.remove,h.preflight,h.preview]) expect(f).not.toHaveBeenCalled();
+  });
+  it('refuses device-bound add_line before calling any service', async () => {
+    expect((await run({ action: 'add_line', orderId: ID, line: { action: 'new_subscription', pax8ProductId: 'product', quantity: '1' } }, auth({ allowedDeviceIds: [ID] }))).code).toBe('ACCESS_DENIED');
+    expect(h.get).not.toHaveBeenCalled(); expect(h.add).not.toHaveBeenCalled();
+  });
   it.each(writes)('%s refuses site-ceiling writes', async action => { expect((await run({ action, orgId: ORG, orderId: ID }, auth({ allowedSiteIds: [ID] }))).code).toBe('ACCESS_DENIED'); });
   it.each(['get','preview','add_line','update_line','remove_line','preflight'])('%s gates the order org before services', async action => {
     h.get.mockResolvedValue({ order: { id: ID, orgId: ID }, lines: [] });
@@ -61,7 +76,45 @@ describe('Pax8 orders', () => {
     h.remove.mockResolvedValue({ removed: true });
     expect((await run({ action: 'remove_line', orderId: ID, lineId: ID })).removed).toBe(true);
   });
-  it('preflight failure returns a clipped error and audits', async () => {
-    h.preflight.mockResolvedValue({ ok: false, errorBody: 'x'.repeat(4000) }); const out = await run({ action: 'preflight', orderId: ID }); expect(out.error.length).toBeLessThanOrEqual(2048); expect(h.audit).toHaveBeenCalled();
+  it('preview propagates a clipped vendor failure through pax8Error', async () => {
+    h.preview.mockRejectedValue(new Pax8ApiError('vendor rejected', 503, 'x'.repeat(4000)));
+    const out = await run({ action: 'preview', orderId: ID });
+    expect(out.code).toBe('PAX8_API_ERROR'); expect(out.error).toHaveLength(2048);
+  });
+  it('preflight failure returns a clipped error and audits failure', async () => {
+    h.preflight.mockResolvedValue({ ok: false, errorBody: 'x'.repeat(4000), cause: new Pax8ApiError('rejected', 422, 'x'.repeat(4000)) });
+    const out = await run({ action: 'preflight', orderId: ID });
+    expect(out.code).toBe('PREFLIGHT_FAILED'); expect(out.error).toHaveLength(2048);
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure', details: expect.objectContaining({ ok: false }) }));
+  });
+  it.each([
+    [new Pax8ApiError('unavailable', 503, 'vendor outage'), 'PAX8_API_ERROR'],
+    [new Pax8ApiError('transport'), 'PAX8_API_ERROR'],
+    [new Pax8OrderError('bad order', 422), 'VALIDATION_ERROR'],
+  ])('audits thrown preflight %s and uses the normal error mapping', async (error, code) => {
+    h.preflight.mockRejectedValue(error);
+    expect((await run({ action: 'preflight', orderId: ID })).code).toBe(code);
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure', details: expect.objectContaining({ ok: false, error: error.constructor.name }) }));
+  });
+  it('maps only thrown Pax8 4xx to PREFLIGHT_FAILED', async () => {
+    h.preflight.mockRejectedValue(new Pax8ApiError('invalid', 422, 'x'.repeat(4000)));
+    const out = await run({ action: 'preflight', orderId: ID });
+    expect(out.code).toBe('PREFLIGHT_FAILED'); expect(out.error).toHaveLength(2048);
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'failure' }));
+  });
+  it('routes returned non-4xx failures through pax8Error', async () => {
+    h.preflight.mockResolvedValue({ ok: false, errorBody: 'outage', cause: new Pax8ApiError('unavailable', 503, 'outage') });
+    expect((await run({ action: 'preflight', orderId: ID })).code).toBe('PAX8_API_ERROR');
+    expect(h.audit).toHaveBeenCalledTimes(1);
+  });
+  it('reports and audits a preflight that sent nothing to Pax8', async () => {
+    h.preflight.mockResolvedValue({ ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' });
+    expect(await run({ action: 'preflight', orderId: ID })).toEqual({ ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' });
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'success', details: expect.objectContaining({ ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' }) }));
+  });
+  it('reports and audits a completed vendor dry run', async () => {
+    h.preflight.mockResolvedValue({ ok: true, sentToPax8: true });
+    expect(await run({ action: 'preflight', orderId: ID })).toEqual({ ok: true, sentToPax8: true });
+    expect(h.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ result: 'success', details: expect.objectContaining({ ok: true, sentToPax8: true }) }));
   });
 });

@@ -17,9 +17,11 @@ vi.mock('./pax8OrderService', async (original) => ({
 vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: m.createClient }));
 vi.mock('./catalogService', () => ({
   resolvePrice: m.resolvePrice,
-  CatalogServiceError: class CatalogServiceError extends Error { constructor(message: string, public code: string) { super(message); } },
+  CatalogServiceError: class CatalogServiceError extends Error { constructor(message: string, public status = 400, public code?: string) { super(message); } },
 }));
 import { previewPax8Order } from './pax8OrderPreview';
+import { Pax8ApiError } from './pax8Client';
+import { CatalogServiceError } from './catalogService';
 
 const partnerId = '10000000-0000-4000-8000-000000000001';
 const orgId = '10000000-0000-4000-8000-000000000002';
@@ -95,6 +97,7 @@ describe('previewPax8Order', () => {
     expect(result.lines[0]).toMatchObject({ unitCost: '8.25', commitmentTerm: 'Annual', productName: 'Fixture Product' });
     expect(result.totals).toEqual([{ currency: 'USD', billingTerm: 'Monthly', partnerCost: '41.25' }]);
     expect(result.blocked).toEqual([]);
+    expect(result.totalsComplete).toBe(true);
     expect(m.pricing).toHaveBeenCalledWith('fixture-product');
   });
   it.each([{ pricing: [] }, { pricing: [{ commitmentTerm: 'Annual', billingTerm: 'Monthly', partnerBuyRate: '8', currencyCode: 'USD' },
@@ -134,7 +137,12 @@ describe('previewPax8Order', () => {
   });
   it('more than 20 lines are blocked', async () => {
     lines = Array.from({ length: 21 }, (_, i) => ({ ...lines[0], id: `${lineId}-${i}` }));
-    expect((await run()).blocked).toContainEqual({ code: 'TOO_MANY_LINES' });
+    const result = await previewPax8Order({ partnerId, orderId });
+    expect(result.blocked).toContainEqual({ code: 'TOO_MANY_LINES' });
+    expect(result.totalsComplete).toBe(false);
+    expect(m.createClient).not.toHaveBeenCalled();
+    expect(m.dependencies).not.toHaveBeenCalled();
+    expect(m.pricing).not.toHaveBeenCalled();
   });
   it('constructs the credential-reading client in a short partner DB context', async () => {
     m.createClient.mockImplementation(async () => {
@@ -162,8 +170,122 @@ describe('previewPax8Order', () => {
     Object.assign(rows.pax8_subscription_snapshots![0]!, { raw: { commitmentTermId: 'fixture-term', commitment: { id: 'other' } } });
     expect((await run()).blocked).toContainEqual({ lineId, code: 'COMMITMENT_AMBIGUOUS' });
   });
-  it('nonpending lines and nonsubmittable orders are blocked', async () => {
-    lines[0]!.submitState = 'succeeded'; order.status = 'completed';
-    expect((await run()).blocked).toContainEqual({ lineId, code: 'NOT_PENDING' });
+  it('nonpending lines are blocked separately from the order', async () => {
+    lines[0]!.submitState = 'succeeded';
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'NOT_PENDING' });
+    expect(result.blocked).not.toContainEqual({ code: 'NOT_PENDING' });
+  });
+  it('nonsubmittable orders return early without constructing a client or vendor calls', async () => {
+    order.status = 'completed';
+    const result = await previewPax8Order({ partnerId, orderId });
+    expect(result.blocked).toContainEqual({ code: 'NOT_PENDING' });
+    expect(result.totalsComplete).toBe(false);
+    expect(result.lines).toEqual([]);
+    expect(m.createClient).not.toHaveBeenCalled();
+    expect(m.dependencies).not.toHaveBeenCalled();
+    expect(m.pricing).not.toHaveBeenCalled();
+  });
+  it('caches dependencies and pricing once per product within each preview', async () => {
+    lines.push({ ...lines[0], id: 'second-line', quantity: '2' });
+    const result = await run();
+    expect(m.dependencies).toHaveBeenCalledTimes(1);
+    expect(m.pricing).toHaveBeenCalledTimes(1);
+    expect(result.totals).toEqual([{ currency: 'USD', billingTerm: 'Monthly', partnerCost: '57.75' }]);
+    await run();
+    expect(m.dependencies).toHaveBeenCalledTimes(2);
+    expect(m.pricing).toHaveBeenCalledTimes(2);
+  });
+  it.each(['change_quantity', 'cancel'])('%s with missing snapshot cost reports incomplete totals', async action => {
+    Object.assign(lines[0]!, { action, targetSubscriptionId: 'fixture-subscription', quantity: '2', authorizedBaselineQuantity: '3' });
+    Object.assign(rows.pax8_subscription_snapshots![0]!, { unitCost: null });
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'COST_UNKNOWN' });
+    expect(result.totals).toEqual([]);
+    expect(result.totalsComplete).toBe(false);
+  });
+  it.each([null, '', 'unrecognized'])('unknown billing term %s blocks totals', async billingTerm => {
+    lines[0]!.billingTerm = billingTerm;
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'TERM_UNKNOWN' });
+    expect(result.totalsComplete).toBe(false);
+    expect(result.totals).toEqual([]);
+  });
+  it.each([null, '', 'garbage', '-1', 'Infinity', '0', '0x10', '1e2'])('missing or invalid quantity %s is never priced as zero', async quantity => {
+    lines[0]!.quantity = quantity;
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'QUANTITY_UNKNOWN' });
+    expect(result.lines[0]?.quantity).toBeNull();
+    expect(result.totalsComplete).toBe(false);
+    expect(result.totals).toEqual([]);
+  });
+  it('a quantity change to zero remains valid', async () => {
+    Object.assign(lines[0]!, { action: 'change_quantity', quantity: '0', targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3' });
+    const result = await run();
+    expect(result.lines[0]?.quantity).toBe('0');
+    expect(result.totalsComplete).toBe(true);
+    expect(result.blocked).toEqual([]);
+  });
+  it('snapshot billing term gaps block otherwise known snapshot cost', async () => {
+    Object.assign(lines[0]!, { action: 'change_quantity', billingTerm: null, targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3' });
+    Object.assign(rows.pax8_subscription_snapshots![0]!, { billingTerm: null });
+    const result = await run();
+    expect(result.blocked).toEqual([{ lineId, code: 'TERM_UNKNOWN' }]);
+    expect(result.totalsComplete).toBe(false);
+  });
+  it.each([null, '', '-2', 'NaN'])('unknown snapshot cost %s always blocks a decrease', async unitCost => {
+    Object.assign(lines[0]!, { action: 'change_quantity', quantity: '2', targetSubscriptionId: 'fixture-subscription', authorizedBaselineQuantity: '3' });
+    Object.assign(rows.pax8_subscription_snapshots![0]!, { unitCost });
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'COST_UNKNOWN' });
+    expect(result.totalsComplete).toBe(false);
+  });
+  it('missing target snapshot is identified instead of commitment ambiguity', async () => {
+    Object.assign(lines[0]!, { action: 'change_quantity', targetSubscriptionId: 'missing', authorizedBaselineQuantity: '3' });
+    rows.pax8_subscription_snapshots = [];
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'SUBSCRIPTION_NOT_FOUND' });
+    expect(result.blocked).not.toContainEqual({ lineId, code: 'COMMITMENT_AMBIGUOUS' });
+  });
+  it('missing product is identified instead of commitment ambiguity', async () => {
+    lines[0]!.pax8ProductId = null;
+    const result = await run();
+    expect(result.blocked).toContainEqual({ lineId, code: 'PRODUCT_UNKNOWN' });
+    expect(result.blocked).not.toContainEqual({ lineId, code: 'COMMITMENT_AMBIGUOUS' });
+    expect(m.dependencies).not.toHaveBeenCalled();
+    expect(m.pricing).not.toHaveBeenCalled();
+  });
+  it('partial totals explicitly report excluded lines', async () => {
+    lines.push({ ...lines[0], id: 'second-line', quantity: null });
+    const result = await run();
+    expect(result.totals).toEqual([{ currency: 'USD', billingTerm: 'Monthly', partnerCost: '41.25' }]);
+    expect(result.totalsComplete).toBe(false);
+    expect(result.blocked).toContainEqual({ lineId: 'second-line', code: 'QUANTITY_UNKNOWN' });
+  });
+  it.each(['pricing', 'dependencies', 'createClient'] as const)('%s rejection propagates without a partial preview', async method => {
+    const error = new Pax8ApiError('vendor failure', 503, 'failure body');
+    m[method].mockRejectedValue(error);
+    await expect(previewPax8Order({ partnerId, orderId })).rejects.toBe(error);
+  });
+  it.each(['NO_PRICE_FOR_CURRENCY', 'PRICE_NOT_REPRESENTABLE'] as const)('falls back to contract price for %s', async code => {
+    lines[0]!.contractLineId = 'fixture-contract-line';
+    m.resolvePrice.mockRejectedValue(new CatalogServiceError('price unavailable', 400, code));
+    expect((await run()).lines[0]).toMatchObject({ sellUnitPrice: '12.00', sellCurrency: 'CAD' });
+  });
+  it('uses a contract price directly when there is no catalog item', async () => {
+    lines[0]!.contractLineId = 'fixture-contract-line';
+    Object.assign(rows.contract_lines![0]!, { catalogItemId: null });
+    expect((await run()).lines[0]).toMatchObject({ sellUnitPrice: '12.00', sellCurrency: 'CAD' });
+    expect(m.resolvePrice).not.toHaveBeenCalled();
+  });
+  it('propagates unrelated catalog errors instead of silently falling back', async () => {
+    lines[0]!.contractLineId = 'fixture-contract-line';
+    const error = new Error('database unavailable');
+    m.resolvePrice.mockRejectedValue(error);
+    await expect(run()).rejects.toBe(error);
+  });
+  it('empty orders have complete empty totals', async () => {
+    lines = [];
+    expect(await run()).toMatchObject({ totals: [], totalsComplete: true });
   });
 });

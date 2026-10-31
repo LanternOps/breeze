@@ -220,10 +220,17 @@ describe('Pax8 AI scope and local authoring (real PostgreSQL)', () => {
     expect(billing!.manualQuantity).toBe('10.00');
   });
 
-  it('refuses an order outside the selected org before any Pax8 read or write', async () => {
+  it('refuses an order outside canAccessOrg even when RLS can see it, before any Pax8 read or write', async () => {
+    // Keep both organizations in the DB context so RLS cannot mask the application gate.
+    const canAccessOrg = vi.fn((id: string) => id === f.orgA.id);
+    const auth = { ...f.auth, canAccessOrg };
+    const visible = await withDbAccessContext(context(auth), () =>
+      db.select({ id: pax8Orders.id }).from(pax8Orders).where(eq(pax8Orders.id, f.orderB.id)));
+    expect(visible).toEqual([{ id: f.orderB.id }]);
     const result = await run('manage_pax8_orders', { action: 'add_line', orderId: f.orderB.id,
-      line: { action: 'new_subscription', pax8ProductId: PRODUCT, catalogItemId: f.catalog.id, billingTerm: 'Monthly', quantity: '5' } }, f.selected);
-    expect(['FORBIDDEN', 'NOT_FOUND'], result.raw).toContain(result.body.code);
+      line: { action: 'new_subscription', pax8ProductId: PRODUCT, catalogItemId: f.catalog.id, billingTerm: 'Monthly', quantity: '5' } }, auth);
+    expect(result.body.code, result.raw).toBe('FORBIDDEN');
+    expect(canAccessOrg).toHaveBeenCalledWith(f.orgB.id);
     expect(await getTestDb().select().from(pax8OrderLines).where(eq(pax8OrderLines.orderId, f.orderB.id))).toHaveLength(0);
     expect(vendor.createClient).not.toHaveBeenCalled();
   });

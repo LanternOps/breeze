@@ -3,14 +3,17 @@ import { runOutsideDbContext, withDbAccessContext } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { mfaGatedToolError } from './aiToolMfaGate';
-import { pax8AddLineSchema, pax8UpdateLineSchema, pax8ToolSchemas } from './aiToolSchemasPax8';
+import { PAX8_DRAFT_ACTIONS, pax8AddLineSchema, pax8UpdateLineSchema, pax8ToolSchemas } from './aiToolSchemasPax8';
 import { pax8Clip, pax8DbContext, pax8Error, pax8InputSchema, pax8Page, pax8Partner } from './aiToolsPax8';
 import { addOrderLine, getOrderWithLines, getOrCreateDraftOrder, listPax8Orders, removeOrderLine, updateOrderLine, type Pax8OrderLineRow, type Pax8OrderRow } from './pax8OrderService';
 import { previewPax8Order } from './pax8OrderPreview';
 import { preflightOrder } from './pax8OrderSubmit';
+import { Pax8ApiError } from './pax8Client';
 import { auditToolWrite, bounded, jsonError, orgWideWriteDenied, verifiedUserIdOrNull } from './aiToolsSoftwareShared';
 const TOOL = 'manage_pax8_orders';
-const WRITES = new Set(['create_draft', 'add_line', 'update_line', 'remove_line', 'preflight']);
+const WRITES: ReadonlySet<(typeof PAX8_DRAFT_ACTIONS)[number]> = new Set(
+  PAX8_DRAFT_ACTIONS.filter(action => action !== 'list' && action !== 'get' && action !== 'preview'),
+);
 function presentOrder(order: Pax8OrderRow) {
   return { id: order.id, orgId: order.orgId, source: order.source, sourceQuoteId: order.sourceQuoteId, status: order.status,
     pax8CompanyId: order.pax8CompanyId, pax8OrderId: order.pax8OrderId, createdAt: order.createdAt, updatedAt: order.updatedAt,
@@ -23,8 +26,8 @@ function presentLine(line: Pax8OrderLineRow) {
     cancelDate: line.cancelDate, contractLineId: line.contractLineId, provisioningDetails: line.provisioningDetails,
     sortOrder: line.sortOrder, submitState: line.submitState, error: pax8Clip(line.error) };
 }
-function audit(auth: AuthContext, partnerId: string, orgId: string, action: string, orderId: string, details = {}) {
-  auditToolWrite(auth, { orgId, partnerId, action, resourceType: 'pax8_order', resourceId: orderId, details: { tool_name: TOOL, ...details } });
+function audit(auth: AuthContext, partnerId: string, orgId: string, action: string, orderId: string, details = {}, result: 'success' | 'failure' = 'success') {
+  auditToolWrite(auth, { orgId, partnerId, action, resourceType: 'pax8_order', resourceId: orderId, result, details: { tool_name: TOOL, ...details } });
 }
 export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
   aiTools.set(TOOL, {
@@ -34,7 +37,7 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const partner = pax8Partner(auth, input.partnerId); if ('refusal' in partner) return partner.refusal;
       const partnerId = partner.partnerId, action = String(input.action);
-      const write = WRITES.has(action);
+      const write = WRITES.has(action as (typeof PAX8_DRAFT_ACTIONS)[number]);
       if (write) {
         const mfa = mfaGatedToolError(TOOL, action, auth); if (mfa) return mfa;
         const denied = orgWideWriteDenied(auth, 'Pax8 orders'); if (denied) return denied;
@@ -61,9 +64,22 @@ export function registerPax8OrderTools(aiTools: Map<string, AiTool>): void {
         if (action === 'get') return bounded({ data: { order: presentOrder(bundle.order), lines: bundle.lines.map(presentLine) } });
         if (action === 'preview') return bounded(await runOutsideDbContext(() => previewPax8Order({ partnerId, orderId })));
         if (action === 'preflight') {
-          const result = await runOutsideDbContext(() => preflightOrder({ partnerId, orderId }));
-          audit(auth, partnerId, bundle.order.orgId, 'pax8.order.preflight', orderId, { ok: result.ok });
-          return result.ok ? bounded(result) : jsonError(pax8Clip(result.errorBody) ?? 'Pax8 preflight failed', 'PREFLIGHT_FAILED');
+          try {
+            const result = await runOutsideDbContext(() => preflightOrder({ partnerId, orderId }));
+            if (!result.ok) throw result.cause ?? new Error(result.errorBody);
+            const response = result.sentToPax8 === false
+              ? { ok: true, sentToPax8: false, reason: result.reason }
+              : { ok: true, sentToPax8: true };
+            audit(auth, partnerId, bundle.order.orgId, 'pax8.order.preflight', orderId, response);
+            return bounded(response);
+          } catch (error) {
+            audit(auth, partnerId, bundle.order.orgId, 'pax8.order.preflight', orderId,
+              { ok: false, error: error instanceof Error ? error.constructor.name : typeof error }, 'failure');
+            if (error instanceof Pax8ApiError && error.status !== undefined && error.status >= 400 && error.status < 500) {
+              return jsonError(pax8Clip(error.body || error.message) ?? 'Pax8 preflight failed', 'PREFLIGHT_FAILED');
+            }
+            throw error;
+          }
         }
         if (action === 'add_line') {
           const parsed = pax8AddLineSchema.safeParse(input.line);

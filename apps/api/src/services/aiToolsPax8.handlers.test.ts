@@ -6,12 +6,15 @@ vi.mock('../db', () => ({ db: { select: () => { const q: any = new Proxy({}, { g
 vi.mock('./auditService', () => ({ createAuditLogAsync: vi.fn() }));
 vi.mock('../jobs/pax8SyncWorker', () => ({ enqueuePax8Sync: h.sync }));
 vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: h.client, linkPax8SubscriptionToContractLine: h.link, unlinkPax8Subscription: h.unlink }));
-vi.mock('./pax8CatalogService', () => ({ getPax8ProductPricing: h.pricing }));
+vi.mock('./pax8CatalogService', async original => ({ ...await original<typeof import('./pax8CatalogService')>(), getPax8ProductPricing: h.pricing }));
 vi.mock('./pax8Drift', () => ({ detectPax8Drift: h.drift }));
 vi.mock('./pax8OrderService', async (original) => ({ ...await original<typeof import('./pax8OrderService')>(), listPax8Products: h.products }));
 import { pax8Clip, registerPax8Tools } from './aiToolsPax8';
 import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { Pax8ApiError } from './pax8Client';
+import { Pax8CatalogError } from './pax8CatalogService';
+import { CatalogServiceError } from './catalogService';
+import { createAuditLogAsync } from './auditService';
 const PARTNER = '00000000-0000-4000-8000-000000000001';
 const ORG = '00000000-0000-4000-8000-000000000002';
 const ID = '00000000-0000-4000-8000-000000000003';
@@ -51,7 +54,45 @@ describe('W15 Pax8 tools', () => {
     h.rows.push([{ id: ID }], [{ id: ID, raw: { private: 'hidden' }, productName: 'Example' }]);
     const out = await run('manage_pax8_subscriptions', { action: 'list' }); expect(out.data[0].raw).toBeUndefined(); expect(JSON.stringify(out)).not.toContain('hidden');
   });
-  it.each(['sync','link','unlink'])('%s requires MFA before services', async action => expect((await run('manage_pax8_subscriptions', { action }, auth({ token: {} }))).code).toBe('MFA_REQUIRED'));
+  it.each(['sync','link','unlink'])('%s requires MFA before services', async action => {
+    expect((await run('manage_pax8_subscriptions', { action }, auth({ token: {} }))).code).toBe('MFA_REQUIRED');
+    for (const service of [h.sync, h.link, h.unlink, h.products, h.pricing, h.client, h.drift]) expect(service).not.toHaveBeenCalled();
+    expect(h.rows).toEqual([]);
+  });
+  it('refuses device-bound sync before enqueueing or reading the integration', async () => {
+    h.rows.push([{ id: ID }]);
+    expect((await run('manage_pax8_subscriptions', { action: 'sync' }, auth({ allowedDeviceIds: [ID] }))).code).toBe('ACCESS_DENIED');
+    expect(h.sync).not.toHaveBeenCalled(); expect(h.rows).toHaveLength(1);
+  });
+  it('companies reports a missing or inactive integration', async () => {
+    expect((await run('get_pax8_status', { view: 'companies' })).code).toBe('NOT_FOUND');
+  });
+  it.each([
+    [new Pax8CatalogError('Pax8 is not connected', 400, 'PAX8_NOT_CONFIGURED'), 'PAX8_NOT_CONFIGURED'],
+    [new Pax8CatalogError('Missing catalog product', 404), 'NOT_FOUND'],
+    [new Pax8CatalogError('Partner denied', 403), 'FORBIDDEN'],
+    [new CatalogServiceError('No catalog price', 400, 'NO_PRICE_FOR_CURRENCY'), 'NO_PRICE_FOR_CURRENCY'],
+    [new CatalogServiceError('Catalog missing', 404), 'NOT_FOUND'],
+  ])('preserves expected catalog errors: %s', async (error, code) => {
+    h.pricing.mockRejectedValueOnce(error);
+    const out = await run('search_pax8_products', { action: 'pricing', productId: 'example-product' });
+    expect(out).toMatchObject({ error: error.message, code });
+  });
+  it.each(['Pax8 integration not found', 'Pax8 integration is inactive', 'Pax8 integration credentials could not be decrypted', 'Malformed encrypted secret'])('reports client configuration failures: %s', async message => {
+    h.rows.push([{ id: ID }]); h.client.mockRejectedValueOnce(new Error(message));
+    const out = await run('search_pax8_products', { action: 'dependencies', productId: 'example-product' });
+    expect(out.code).toBe('PAX8_NOT_CONFIGURED'); expect(out.error).toContain('not configured');
+  });
+  it('reports a credential decryption failure in the pricing path as not configured', async () => {
+    h.pricing.mockRejectedValueOnce(new Error('Malformed encrypted secret'));
+    expect((await run('search_pax8_products', { action: 'pricing', productId: 'example-product' })).code).toBe('PAX8_NOT_CONFIGURED');
+  });
+  it.each(['Map the Pax8 company to a Breeze organization before linking billing lines.', 'This contract line is already linked to another Pax8 subscription.', 'x'.repeat(3000)])('returns link validation messages clipped to 2 KiB', async message => {
+    h.rows.push([{ id: ID }], [{ orgId: ORG, integrationId: ID }], [{ orgId: ORG }]); h.link.mockRejectedValueOnce(new Error(message));
+    const out = await run('manage_pax8_subscriptions', { action: 'link', subscriptionSnapshotId: ID, contractLineId: ID });
+    expect(out).toMatchObject({ error: pax8Clip(message), code: 'VALIDATION_ERROR' });
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+  });
   it('clips Pax8 API errors to 2 KiB', async () => {
     h.products.mockRejectedValue(new Pax8ApiError('Pax8 failed', 502, 'x'.repeat(4000)));
     const out = await run('search_pax8_products', { action: 'search' }); expect(out.error.length).toBeLessThanOrEqual(2048);
@@ -80,6 +121,10 @@ describe('W15 Pax8 tools', () => {
     h.rows.push([{ id: ID }], [{ orgId: ORG, integrationId: ID }], [{ orgId: ORG }]); h.link.mockResolvedValue({ id: ID });
     expect((await run('manage_pax8_subscriptions', { action: 'link', integrationId: ID, subscriptionSnapshotId: ID, contractLineId: ID })).data.id).toBe(ID);
     expect(h.link).toHaveBeenCalledWith({ integrationId: ID, partnerId: PARTNER, subscriptionSnapshotId: ID, contractLineId: ID, syncEnabled: false });
+    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'pax8.subscription.link_contract_line',
+      details: expect.objectContaining({ contractLineId: ID, syncEnabled: false }),
+    }));
   });
   it('unlink refuses a foreign snapshot org before mutation', async () => {
     h.rows.push([{ id: ID }], [{ orgId: ID, integrationId: ID }]);

@@ -11,12 +11,26 @@ import { pax8ToolSchemas } from './aiToolSchemasPax8';
 import { pageEnvelope, readPageArgs } from './aiToolPagination';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { Pax8ApiError } from './pax8Client';
-import { getPax8ProductPricing } from './pax8CatalogService';
+import { getPax8ProductPricing, Pax8CatalogError } from './pax8CatalogService';
+import { CatalogServiceError } from './catalogService';
 import { pax8CompanyOrderReadiness } from './pax8CompanyReadiness';
 import { detectPax8Drift } from './pax8Drift';
 import { listPax8Products, Pax8OrderError, snapshotActiveCommitmentEvidence } from './pax8OrderService';
 import { createPax8ClientForIntegration, linkPax8SubscriptionToContractLine, unlinkPax8Subscription } from './pax8SyncService';
 import { auditToolWrite, bounded, deviceBoundDenied, jsonError, notFound, thrown } from './aiToolsSoftwareShared';
+
+const PAX8_NOT_CONFIGURED_MESSAGE = 'Pax8 is not configured. Connect an active integration with valid credentials.';
+
+/** Credential decoding can throw plain crypto Errors before the client exists. */
+async function withPax8ConfigurationErrors<T>(resolve: () => Promise<T>): Promise<T> {
+  try { return await resolve(); }
+  catch (error) {
+    if (error instanceof Error && error.constructor === Error) {
+      throw new Pax8CatalogError(PAX8_NOT_CONFIGURED_MESSAGE, 400, 'PAX8_NOT_CONFIGURED');
+    }
+    throw error;
+  }
+}
 
 /** The same partner resolver as both REST modules, plus W15's device ceiling. */
 export function pax8Partner(auth: AuthContext, requested: unknown): { partnerId: string } | { refusal: string } {
@@ -49,7 +63,16 @@ export function pax8Clip(value: string | null | undefined): string | null {
 }
 export function pax8Error(tool: string, error: unknown): string {
   if (error instanceof Pax8ApiError) return jsonError(pax8Clip(error.body || error.message) ?? 'Pax8 request failed', 'PAX8_API_ERROR');
+  if (error instanceof Pax8CatalogError || error instanceof CatalogServiceError) {
+    return jsonError(pax8Clip(error.message)!, error.code ?? (error.status === 404 ? 'NOT_FOUND' : error.status === 403 ? 'FORBIDDEN' : error.status === 409 ? 'CONFLICT' : 'VALIDATION_ERROR'));
+  }
   if (error instanceof Pax8OrderError) return jsonError(pax8Clip(error.message)!, error.status === 404 ? 'NOT_FOUND' : error.status === 403 ? 'FORBIDDEN' : 'VALIDATION_ERROR');
+  if (error instanceof Error && [
+    'Pax8 integration not found', 'Pax8 integration is inactive',
+    'Pax8 integration credentials could not be decrypted',
+  ].includes(error.message)) {
+    return jsonError(PAX8_NOT_CONFIGURED_MESSAGE, 'PAX8_NOT_CONFIGURED');
+  }
   return thrown(tool, error);
 }
 export function pax8InputSchema(schema: z.ZodType): AiTool['definition']['input_schema'] {
@@ -81,7 +104,7 @@ function presentIntegration(row: NonNullable<Awaited<ReturnType<typeof pax8Integ
 }
 async function companies(partnerId: string, integrationId?: string) {
   const integration = await pax8Integration(partnerId, integrationId);
-  if (!integration) return [];
+  if (!integration) return notFound('Pax8 integration');
   const rows = await db.select({ pax8CompanyId: pax8CompanyMappings.pax8CompanyId, pax8CompanyName: pax8CompanyMappings.pax8CompanyName,
     status: pax8CompanyMappings.status, mappedOrgId: pax8CompanyMappings.orgId, mappedOrgName: organizations.name,
     ignored: pax8CompanyMappings.ignored, lastSeenAt: pax8CompanyMappings.lastSeenAt, metadata: pax8CompanyMappings.metadata,
@@ -140,9 +163,15 @@ async function subscriptionAction(input: Record<string, unknown>, auth: AuthCont
     if (typeof input.contractLineId !== 'string') return jsonError('contractLineId is required', 'VALIDATION_ERROR');
     const [line] = await db.select({ orgId: contractLines.orgId }).from(contractLines).where(eq(contractLines.id, input.contractLineId)).limit(1);
     if (!line || !auth.canAccessOrg(line.orgId)) return jsonError('Access to contract line denied', 'FORBIDDEN');
-    data = await linkPax8SubscriptionToContractLine({ partnerId, integrationId: integration.id, subscriptionSnapshotId: input.subscriptionSnapshotId, contractLineId: input.contractLineId, syncEnabled: input.syncEnabled === true });
+    try {
+      data = await linkPax8SubscriptionToContractLine({ partnerId, integrationId: integration.id, subscriptionSnapshotId: input.subscriptionSnapshotId, contractLineId: input.contractLineId, syncEnabled: input.syncEnabled === true });
+    } catch (error) {
+      // The REST service uses plain Errors for expected local link validation.
+      if (error instanceof Error && error.constructor === Error) return jsonError(pax8Clip(error.message)!, 'VALIDATION_ERROR');
+      throw error;
+    }
   } else data = await unlinkPax8Subscription({ integrationId: integration.id, subscriptionSnapshotId: input.subscriptionSnapshotId });
-  auditToolWrite(auth, { orgId: snapshot.orgId, partnerId, action: action === 'link' ? 'pax8.subscription.link_contract_line' : 'pax8.subscription.unlink_contract_line', resourceType: 'pax8_subscription_snapshot', resourceId: input.subscriptionSnapshotId, details: { integrationId: integration.id, tool_name: 'manage_pax8_subscriptions' } });
+  auditToolWrite(auth, { orgId: snapshot.orgId, partnerId, action: action === 'link' ? 'pax8.subscription.link_contract_line' : 'pax8.subscription.unlink_contract_line', resourceType: 'pax8_subscription_snapshot', resourceId: input.subscriptionSnapshotId, details: { integrationId: integration.id, tool_name: 'manage_pax8_subscriptions', ...(action === 'link' ? { contractLineId: input.contractLineId, syncEnabled: input.syncEnabled === true } : {}) } });
   return bounded({ data });
 }
 export function registerPax8Tools(aiTools: Map<string, AiTool>): void {
@@ -153,7 +182,10 @@ export function registerPax8Tools(aiTools: Map<string, AiTool>): void {
       const partner = pax8Partner(auth, input.partnerId); if ('refusal' in partner) return partner.refusal;
       if (!canManagePartnerWidePolicies(auth)) return jsonError(PARTNER_WIDE_WRITE_DENIED_MESSAGE, 'ACCESS_DENIED');
       try {
-        if (input.view === 'companies') return pax8Page('get_pax8_status', input, await companies(partner.partnerId, input.integrationId as string | undefined));
+        if (input.view === 'companies') {
+          const rows = await companies(partner.partnerId, input.integrationId as string | undefined);
+          return typeof rows === 'string' ? rows : pax8Page('get_pax8_status', input, rows);
+        }
         const integration = await pax8Integration(partner.partnerId, input.integrationId as string | undefined);
         return bounded({ data: integration ? presentIntegration(integration) : null });
       } catch (error) { return pax8Error('get_pax8_status', error); }
@@ -173,13 +205,13 @@ export function registerPax8Tools(aiTools: Map<string, AiTool>): void {
         }
         if (typeof input.productId !== 'string') return jsonError('productId is required', 'VALIDATION_ERROR');
         if (input.action === 'pricing') {
-          const rows = await getPax8ProductPricing(input.productId as string, { partnerId: partner.partnerId, userId: auth.user.id, accessibleOrgIds: auth.accessibleOrgIds }, pax8DbContext(auth, partner.partnerId));
+          const rows = await withPax8ConfigurationErrors(() => getPax8ProductPricing(input.productId as string, { partnerId: partner.partnerId, userId: auth.user.id, accessibleOrgIds: auth.accessibleOrgIds }, pax8DbContext(auth, partner.partnerId)));
           return bounded({ data: rows.map(({ raw: _raw, ...row }) => row) });
         }
         const created = await runOutsideDbContext(() => withDbAccessContext(pax8DbContext(auth, partner.partnerId), async () => {
           const integration = await pax8Integration(partner.partnerId);
           if (!integration) throw new Pax8OrderError('Pax8 integration not found', 404);
-          return createPax8ClientForIntegration(integration.id);
+          return withPax8ConfigurationErrors(() => createPax8ClientForIntegration(integration.id));
         }));
         if (created.integration.partnerId !== partner.partnerId) return notFound('Pax8 integration');
         const data = await runOutsideDbContext(() => input.action === 'provision_details'
