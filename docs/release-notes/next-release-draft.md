@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Partner settings copy matches the inheritance badges (#10372)
+
+The default-expiry and maximum-lifetime selects and the partner agent-pin caption no longer say organizations "configure individually" or are "pinned for all"; each now agrees with its Org can override / Partner-wide badge.
