@@ -222,6 +222,6 @@ Update agents to a release containing this change before relying on the provider
 
 ### Remote desktop idle timeout default (#10422)
 
-- **Desktop sessions on devices with no Remote Access policy now idle out after 30 minutes, not 5.** Watching an install, a reboot prompt or a long script no longer drops the session. Max session duration (8 h) is unchanged, and so is any idle timeout a policy already sets, including a stored `5`.
+- **Desktop sessions now idle out after 30 minutes instead of 5** on devices with no Remote Access policy, and under any policy that does not set an idle timeout. Watching an install, a reboot prompt or a long script no longer drops the session. An idle timeout a policy sets explicitly, including a stored `5`, is unchanged, and so is max session duration (8 h).
 - **New Remote Access policies start at a 30-minute idle timeout** in the policy editor. The restrictive fallback used when policy resolution fails keeps 5 minutes.
 - No migration, environment variable or agent update.
