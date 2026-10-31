@@ -10,6 +10,9 @@ import {
   PROMPT_CATALOG,
   PROMPT_LOCALES,
   PromptCatalogError,
+  PROMPT_RESERVED_BRANDS,
+  PROMPT_RESERVED_BRAND_QUALIFIERS,
+  isReservedPromptBrandName,
   negotiatePromptLocale,
   promptMessagePlaceholders,
   renderPromptMessage,
@@ -123,6 +126,47 @@ describe('sanitizePromptPartnerName (shared fixture with the Go agent and Assist
   // surrogate (Go turns it into U+FFFD, which the fixture covers).
   it('strips a lone surrogate', () => {
     expect(sanitizePromptPartnerName('North\ud800wind')).toBe('Northwind');
+  });
+
+  // #10325: the reserved list is data; the Go mirror asserts the same lists.
+  it('reserved brand lists match the shared fixture', () => {
+    expect([...PROMPT_RESERVED_BRANDS]).toEqual(sanitizeFixture.reservedBrands.brands);
+    expect([...PROMPT_RESERVED_BRAND_QUALIFIERS]).toEqual(sanitizeFixture.reservedBrands.qualifiers);
+  });
+});
+
+describe('isReservedPromptBrandName (save-time check, #10325)', () => {
+  it.each([
+    'Microsoft',
+    'Microsoft Support',
+    '  windows   security ',
+    'Apple Help Desk',
+    'Ｍｉｃｒｏｓｏｆｔ',
+    'Micro soft',
+  ])('refuses %j', (name) => {
+    expect(isReservedPromptBrandName(name)).toBe(true);
+  });
+
+  it.each([
+    'Northwind IT',
+    'Northwind Microsoft Partner',
+    'Pineapple IT',
+    '',
+    '   ',
+    // Rejected by the sanitizer for another reason (mixed scripts), not a reserved brand.
+    'Місrosoft Support',
+  ])('allows %j', (name) => {
+    expect(isReservedPromptBrandName(name)).toBe(false);
+  });
+
+  it('agrees with the sanitizer on every fixture case', () => {
+    for (const { input, expected, name } of sanitizeFixture.cases) {
+      if (isReservedPromptBrandName(input)) expect(expected, name).toBeNull();
+    }
+  });
+
+  it('is total over non-strings', () => {
+    expect(isReservedPromptBrandName(undefined as unknown as string)).toBe(false);
   });
 });
 

@@ -219,3 +219,8 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Reserved brand names on device prompts (#10325)
+
+- **A partner or organization name that is only a reserved brand is refused.** Saving a name such as "Microsoft", "Windows Security", "Apple Help Desk" or "Microsoft 365 Support" (also run together, letter-spaced, or with accents or a ™/® sign) now returns `400` with a message asking for the company's own name: on `PATCH /orgs/partners/me`, `POST`/`PATCH /orgs/partners[/:id]`, `POST`/`PATCH /orgs/organizations[/:id]` and Partner API `POST /organizations`. A name that only mentions a brand next to other words ("Northwind Microsoft Partner", "Apple Valley IT") is unchanged.
+- **Device prompts show "Your IT support team" for such a name**, in the API, the agent and Breeze Assist alike, including for partners or organizations already saved with one. The brand and qualifier word lists live in `packages/shared/src/promptCatalog/sanitize.ts`, mirrored in the agent. No migration, no new environment variable.

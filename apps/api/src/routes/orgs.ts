@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
+import { refuseReservedBrandName } from '../lib/reservedBrandName';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
 import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
@@ -260,7 +261,7 @@ async function validateAgentVersionPins(defaults: unknown): Promise<string | nul
 }
 
 const createPartnerSchema = z.object({
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['msp', 'enterprise', 'internal']).optional(),
   // plan and maxDevices are managed by the billing service (via direct DB writes).
@@ -340,7 +341,7 @@ function preserveIpAllowlistOnOmit(
 
 export const createOrganizationSchema = z.object({
   partnerId: z.string().guid().optional(),
-  name: z.string().min(1),
+  name: refuseReservedBrandName(z.string().min(1)),
   slug: z.string().min(1).max(100),
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
@@ -1058,7 +1059,7 @@ const PARTNER_SECURITY_CLEARABLE_KEYS = [
 
 const updatePartnerSettingsSchema = z.object({
   settings: partnerSettingsSchema.optional(),
-  name: z.string().min(1).optional(),
+  name: refuseReservedBrandName(z.string().min(1)).optional(),
   billingEmail: z.string().email().optional(),
   // Plain-text signature appended to outbound customer emails (quote sends).
   emailSignature: z.string().max(2000).nullable().optional(),
