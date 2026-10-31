@@ -48,7 +48,12 @@ export function getRemoteAccessBaseline(): RemoteAccessSettings {
     defaultAllowedPorts: [],
     autoEnableProxy: false,
     maxConcurrentTunnels: 5,
-    idleTimeoutMinutes: 5,
+    // 30 min, not 5: watching an install, a reboot-pending dialog or a long
+    // script routinely goes 5 min without viewer input, and most orgs never
+    // create a Remote Access policy, so this is the limit they hit (#10422).
+    // The resolution-failure FAILSAFE_DESKTOP_POLICY in remoteAccessPolicy.ts
+    // stays at 5 min on purpose.
+    idleTimeoutMinutes: 30,
     maxSessionDurationHours: 8,
   };
 }
