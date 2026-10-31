@@ -967,5 +967,10 @@
       "body": "I modelli esistenti restano modificabili qui e verranno convertiti nella prossima versione.",
       "link": "Apri Monitor"
     }
+  },
+  "subject": {
+    "label": "Oggetto",
+    "backupWorkload": "Carico di backup",
+    "topologySite": "Sito topologico"
   }
 }

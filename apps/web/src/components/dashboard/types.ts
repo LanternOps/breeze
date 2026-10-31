@@ -2,6 +2,8 @@
 // (see the route files referenced on each type) — narrow to the fields the
 // dashboard actually renders.
 
+import type { AlertSubjectFields } from '../alerts/AlertSubjectChip';
+
 /** GET /devices/stats — apps/api/src/routes/devices/stats.ts */
 export interface DeviceStats {
   total: number;
@@ -21,13 +23,12 @@ export interface AlertsSummary {
 }
 
 /** GET /alerts (list rows) — apps/api/src/routes/alerts/alerts.ts */
-export interface AlertRow {
+export interface AlertRow extends AlertSubjectFields {
   id: string;
   title: string | null;
   message?: string | null;
   severity: string;
   status: string;
-  deviceId?: string | null;
   deviceHostname?: string | null;
   /** Mirrored from the list row (apps/api/src/routes/alerts/alerts.ts); absent on older payloads. */
   orgId?: string | null;

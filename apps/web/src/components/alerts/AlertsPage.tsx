@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
+import { isDeviceAlert } from './AlertSubjectChip';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type NotificationHistory, type LinkedAlertTicket } from './AlertDetails';
 import SuppressAlertDialog from './SuppressAlertDialog';
@@ -53,7 +54,10 @@ function alertIdFromHash(hash: string): string | null {
 
 function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
   return rows.map((row) => {
-    const deviceName = row.deviceName ?? row.deviceHostname ?? row.hostname ?? unknownDevice;
+    const nonDeviceOwner = row.ownerKind === 'backup_workload' || row.ownerKind === 'topology_site';
+    const deviceName = nonDeviceOwner
+      ? row.subjectName ?? row.ownerLabel ?? unknownDevice
+      : row.deviceName ?? row.deviceHostname ?? row.hostname ?? unknownDevice;
     const deviceLabel = String(deviceName);
     const contextData = row.contextData ?? row.context;
     const anomalyContext = row.anomalyContext ?? normalizeMetricAnomalyContext(contextData);
@@ -292,8 +296,7 @@ export default function AlertsPage() {
   const filteredAlerts = useMemo(() => {
     if (!deviceFilterIds) return alerts;
     return alerts.filter(alert => {
-      const deviceId = (alert as unknown as Record<string, unknown>).deviceId as string | undefined;
-      return deviceId ? deviceFilterIds.has(deviceId) : false;
+      return isDeviceAlert(alert) && deviceFilterIds.has(alert.deviceId);
     });
   }, [alerts, deviceFilterIds]);
 
@@ -522,12 +525,12 @@ export default function AlertsPage() {
 
       <AlertsSummary alerts={alertCounts} onFilterBySeverity={handleFilterBySeverity} />
 
-      <DeviceFilterBar
+      {(alerts.some(isDeviceAlert) || deviceFilter !== null) && <DeviceFilterBar
         value={deviceFilter}
         onChange={setDeviceFilter}
         collapsible
         defaultExpanded={false}
-      />
+      />}
 
       {deviceFilterState === 'error' && <div role="alert" data-testid="alert-device-filter-error">
         {t('devices:deviceList.advancedFilterFailed')}

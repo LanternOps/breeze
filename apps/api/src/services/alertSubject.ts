@@ -1,7 +1,7 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { formatAlertSubject, type AlertSubjectSource } from '@breeze/shared';
 import { db } from '../db';
-import { backupProviderCustomers, backupProviderDevices, sites } from '../db/schema';
+import { backupProviderCustomers, backupProviderDevices, organizations, sites } from '../db/schema';
 import { providerLabelFor } from './backupHealthRows';
 
 /** Batch display enrichment inside the caller's DB context; every owner read is org-pinned. */
@@ -16,13 +16,14 @@ export async function enrichAlertSubjects<T extends AlertSubjectSource & { orgId
     dataSources: backupProviderDevices.dataSources,
     provider: backupProviderDevices.provider,
     portalShowProviderName: backupProviderDevices.portalShowProviderName,
-    customerName: backupProviderCustomers.vendorCustomerName,
+    customerName: sql<string | null>`COALESCE(${backupProviderCustomers.vendorCustomerName}, ${organizations.name})`,
   }).from(backupProviderDevices)
     .leftJoin(backupProviderCustomers, and(
       eq(backupProviderCustomers.id, backupProviderDevices.customerId),
       eq(backupProviderCustomers.orgId, backupProviderDevices.orgId),
       eq(backupProviderCustomers.connectionId, backupProviderDevices.connectionId),
     ))
+    .leftJoin(organizations, eq(organizations.id, backupProviderDevices.orgId))
     // owner_ref is text; compare as text so stale/malformed refs cannot cause UUID errors.
     .where(or(...workloads.map(row => and(
       eq(backupProviderDevices.orgId, row.orgId),

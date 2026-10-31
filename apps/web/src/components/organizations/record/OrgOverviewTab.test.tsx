@@ -426,6 +426,26 @@ describe('OrgOverviewTab — critical alert device link (ui-flow W03)', () => {
     createdAt: '2026-09-05T10:00:00.000Z',
   };
 
+  it('renders a backup workload subject without a device link', async () => {
+    const workload = { ...criticalAlert, title: 'Backup failed', deviceId: null, deviceHostname: null,
+      ownerKind: 'backup_workload', ownerLabel: 'Microsoft 365 mail backup',
+      subjectName: 'Microsoft 365 mail backup · Example organization' };
+    const { container } = renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [workload] }) }));
+    const chip = await screen.findByTestId('alert-subject-chip');
+    expect(chip).toHaveAttribute('href', '/backup#health');
+    expect(chip).toHaveTextContent(workload.subjectName);
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(container.querySelector('a[href*="/devices/null"]')).toBeNull();
+  });
+
+  it('links topology owners to their site even when their provenance device is present', async () => {
+    const topology = { ...criticalAlert, ownerKind: 'topology_site', topologySiteId: 'site-1',
+      ownerLabel: 'Primary site', subjectName: 'Primary site' };
+    renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [topology] }) }));
+    expect(await screen.findByTestId('alert-subject-chip')).toHaveAttribute('href', '/discovery#topology/site/site-1');
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+  });
+
   it('links a critical alert hostname to the device', async () => {
     renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [criticalAlert] }) }));
     const link = await screen.findByTestId('device-record-link');

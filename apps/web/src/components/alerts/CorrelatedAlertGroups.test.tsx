@@ -197,7 +197,7 @@ const mlFlags = (rcaEnabled: boolean, alertCorrelationEnabled = true) => ({
   },
 });
 
-function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEnabled?: boolean } = {}) {
+function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEnabled?: boolean; group?: unknown } = {}) {
   const rcaEnabled = options.rcaEnabled ?? true;
   const alertCorrelationEnabled = options.alertCorrelationEnabled ?? true;
   fetchMock.mockImplementation((input, init) => {
@@ -207,7 +207,7 @@ function mockGroupsResponse(options: { rcaEnabled?: boolean; alertCorrelationEna
       return Promise.resolve(makeJsonResponse(mlFlags(rcaEnabled, alertCorrelationEnabled)));
     }
     if (url === '/alerts/correlations' && method === 'GET') {
-      return Promise.resolve(makeJsonResponse({ groups: [groupPayload] }));
+      return Promise.resolve(makeJsonResponse({ groups: [options.group ?? groupPayload] }));
     }
     if (url === `/alerts/correlations/${GROUP_ID}/acknowledge` && method === 'POST') {
       return Promise.resolve(makeJsonResponse({ updated: 2, skipped: 1 }));
@@ -622,4 +622,23 @@ describe('CorrelatedAlertGroups', () => {
     expect(await screen.findByText('Correlations disabled')).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByRole('link', { name: 'Correlations' })).toBeNull();
   });
+});
+
+
+it('links a topology-owned correlation to its site outside the expand button', async () => {
+  useOrgStore.setState({ currentOrgId: 'org-1' });
+  mockGroupsResponse({ group: {
+    ...groupPayload,
+    rootCause: { ...groupPayload.rootCause, ownerKind: 'topology_site', topologySiteId: 'site-1', subjectName: 'Branch', deviceId: 'origin-1' },
+    alerts: [{ ...groupPayload.alerts[0], ownerKind: 'topology_site', topologySiteId: 'site-1', subjectName: 'Branch', deviceId: 'origin-1' }],
+  } });
+  const { container } = render(<CorrelatedAlertGroups />);
+  const subjects = await screen.findAllByTestId('alert-subject-chip');
+  expect(subjects).toHaveLength(2);
+  const subject = subjects[0];
+  expect(subject).toHaveAttribute('href', '/discovery#topology/site/site-1');
+  expect(subject?.closest('button')).toBeNull();
+  expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: /High CPU on SRV-01/ }));
+  expect(screen.getAllByTestId('alert-subject-chip')).toHaveLength(1);
 });

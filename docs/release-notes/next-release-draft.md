@@ -22,6 +22,10 @@ Last release: **v0.125.0** (2026-10-27).
 
 ## Features / API
 
+### Org-subject alerts (#10725)
+
+- Alerts, notification templates and API payloads identify backup workloads and topology sites, with links to their health pages and device actions shown only for device alerts.
+
 ## Migrations
 
 ### Flows W05 (#5215 / #5220, PR D — web, limits and egress audit)

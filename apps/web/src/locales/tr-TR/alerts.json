@@ -967,5 +967,10 @@
       "body": "Mevcut şablonlar burada düzenlenebilir kalır ve bir sonraki sürümde dönüştürülür.",
       "link": "Monitörleri aç"
     }
+  },
+  "subject": {
+    "label": "Konu",
+    "backupWorkload": "Yedekleme iş yükü",
+    "topologySite": "Topoloji sitesi"
   }
 }

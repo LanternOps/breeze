@@ -36,6 +36,7 @@ describe('enrichAlertSubjects', () => {
     const join = dialect.sqlToQuery(queries[0]?.joins[0] as never).sql;
     expect(join).toContain('"backup_provider_customers"."org_id" = "backup_provider_devices"."org_id"');
     expect(join).toContain('"backup_provider_customers"."connection_id" = "backup_provider_devices"."connection_id"');
+    expect(dialect.sqlToQuery(queries[0]?.joins[1] as never).sql).toBe('"organizations"."id" = "backup_provider_devices"."org_id"');
   });
   it('does not attribute a foreign workload even under system context', async () => {
     results.push([{ id: 'w1', orgId: OTHER, customerName: 'Foreign customer', dataSources: ['m365_mail'] }]);
