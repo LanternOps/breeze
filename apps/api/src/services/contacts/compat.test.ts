@@ -4,7 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
-  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+  syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
 

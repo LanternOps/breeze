@@ -39,6 +39,7 @@ import WispWelcome from "../wisp/WispWelcome";
 import { useWispScopeLabel } from "../wisp/useWispScopeLabel";
 import { wispSessionOrgId } from "@/lib/wispSession";
 import { useTranslation } from "react-i18next";
+import { RIGHT_DOCK_BACKDROP_CLASS, RIGHT_DOCK_PANEL_CLASS } from "../layout/rightDockPanel";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -306,9 +307,11 @@ export default function AiChatSidebar() {
         // mounted (transition:persist). `inert` + pointer-events-none make the
         // off-canvas shell truly non-interactive so it can't intercept clicks
         // meant for page content on wide layouts, and its (off-viewport) Close
-        // control drops out of the focus/hit-test order (#1419).
+        // control drops out of the focus/hit-test order (#1419). It docks below
+        // the app header so the bell, theme and account menu stay usable while
+        // it is open (#10107).
         inert={!isOpen}
-        className={`fixed right-0 top-0 z-40 flex h-full w-[400px] flex-col border-l bg-card transition-transform duration-300 ${
+        className={`${RIGHT_DOCK_PANEL_CLASS} ${
           isOpen ? "translate-x-0 shadow-2xl" : "translate-x-full pointer-events-none"
         }`}
       >
@@ -567,7 +570,8 @@ export default function AiChatSidebar() {
       {/* Backdrop overlay when open on small screens */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/30 lg:hidden"
+          data-testid="ai-chat-sidebar-backdrop"
+          className={RIGHT_DOCK_BACKDROP_CLASS}
           onClick={close}
         />
       )}

@@ -2,11 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { getTableName, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
+const caps = vi.hoisted(() => ({ detailOwnedFields: [] as readonly string[] }));
 vi.mock('./registry', () => ({
-  getEdrProvider: () => ({ hostAllowlist: ['.gravityzone.bitdefender.com'] }),
+  getEdrProvider: () => ({ hostAllowlist: ['.gravityzone.bitdefender.com'], capabilities: { detailOwnedFields: caps.detailOwnedFields } }),
 }));
 
 import {
+  applyDetectionStatusUpdates,
+  loadOpenDetectionRefs,
   clearExpiredTenantDenials,
   isDeadlockError,
   persistDetections,
@@ -16,7 +19,7 @@ import {
   upsertTenants,
   type TenantFetch,
 } from './persist';
-import type { EdrDetectionPage, VendorEdrDetection, VendorEdrEndpoint } from './types';
+import type { EdrDetectionPage, EdrDetectionStatusUpdate, VendorEdrDetection, VendorEdrEndpoint } from './types';
 
 const CONN = { id: '00000000-0000-4000-8000-0000000000c1', partnerId: '00000000-0000-4000-8000-0000000000a1', provider: 'bitdefender' };
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -236,6 +239,54 @@ describe('persistInventory', () => {
   });
 });
 
+describe('persistInventory: detail-owned fields (A2)', () => {
+  const tenantRows = [{ id: T1, vendorTenantId: 'co1', orgId: ORG }, { id: T2, vendorTenantId: 'co2', orgId: null }];
+  const run = async (details: Array<Record<string, unknown>>, owned: readonly string[]) => {
+    caps.detailOwnedFields = owned;
+    const { tx, ops } = makeTx({ selects: [tenantRows, [{ id: 'row-1', vendorEndpointId: 'e1' }]] });
+    await persistInventory(tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: { endpoints: [endpoint('e1')], details: details as never } },
+    ], NOW);
+    caps.detailOwnedFields = [];
+    return ops;
+  };
+
+  it('detail-owned columns are omitted from the list upsert DO UPDATE (they survive across runs); the rest still overwrite', async () => {
+    const ops = await run([], ['osName', 'online', 'fqdn']);
+    const insert = ops.find((o) => o.kind === 'insert')!;
+    const keys = Object.keys(insert.conflict!.set!);
+    for (const owned of ['osName', 'online', 'fqdn']) expect(keys).not.toContain(owned);
+    expect(keys).toEqual(expect.arrayContaining(['hostname', 'policyName', 'health', 'agentVersion', 'updatedAt']));
+    // a first insert still takes the list values
+    const [row] = insert.values as Array<Record<string, unknown>>;
+    expect(row).toMatchObject({ osName: 'Windows 11', online: true, fqdn: 'ws-01.corp' });
+  });
+
+  it('no detailOwnedFields -> every column overwrites as before (GravityZone regression guard)', async () => {
+    const ops = await run([], []);
+    const keys = Object.keys(ops.find((o) => o.kind === 'insert')!.conflict!.set!);
+    expect(keys).toEqual(expect.arrayContaining([
+      'hostname', 'fqdn', 'serialNumber', 'macAddresses', 'ipAddresses', 'osPlatform', 'osName', 'endpointType',
+      'agentVersion', 'health', 'online', 'isolationState', 'tamperProtection', 'policyName', 'lastSeenAt', 'vendorRaw', 'updatedAt',
+    ]));
+  });
+
+  it('the detail update writes fqdn, ipAddresses, osPlatform and endpointType', async () => {
+    const ops = await run([{ vendorEndpointId: 'e1', fqdn: 'pc01.corp.example.test', ipAddresses: ['192.0.2.10'], osPlatform: 'windows', endpointType: 'server' }], []);
+    const detail = ops.find((o) => o.kind === 'update' && o.table === 'edr_endpoints')!;
+    expect(detail.set).toMatchObject({ fqdn: 'pc01.corp.example.test', ipAddresses: ['192.0.2.10'], osPlatform: 'windows', endpointType: 'server' });
+  });
+
+  it('"not fetched" (absent key) leaves the column; "fetched as null/empty" clears it', async () => {
+    const ops = await run([{ vendorEndpointId: 'e1', fqdn: null, ipAddresses: [] }], ['fqdn', 'osName']);
+    const set = ops.find((o) => o.kind === 'update' && o.table === 'edr_endpoints')!.set!;
+    expect(set).toHaveProperty('fqdn', null);
+    expect(set).toHaveProperty('ipAddresses', []);
+    expect(set).not.toHaveProperty('osName');
+    expect(set).not.toHaveProperty('endpointType');
+  });
+});
+
 describe('persistDetections', () => {
   const tenantRows = [
     { id: T1, vendorTenantId: 'co1', orgId: ORG },
@@ -287,6 +338,50 @@ describe('persistDetections', () => {
     ], NOW);
     const resyncInsert = resync.ops.find((o) => o.kind === 'insert')!;
     expect((resyncInsert.values as Array<Record<string, unknown>>)[0]).not.toHaveProperty('notifiedSeverity');
+  });
+
+  describe('A4: locator, group key, sticky attribution', () => {
+    const run = async (d: VendorEdrDetection) => {
+      const { tx, ops } = makeTx({ selects: [tenantRows, []], returning: [[{ id: 'd1' }]] });
+      await persistDetections(tx, CONN, [{ vendorTenantId: 'co1', ok: true, value: page([d]) }], NOW);
+      return ops.find((o) => o.kind === 'insert')!;
+    };
+
+    it('vendorRef / groupKey land in details._breeze', async () => {
+      const insert = await run(detection('x1', { vendorRef: 'a'.repeat(40), groupKey: 'inc-guid-1', details: { k: 1 } }));
+      const [row] = insert.values as Array<{ details: Record<string, unknown> }>;
+      expect(row!.details).toEqual({ k: 1, _breeze: { vendorRef: 'a'.repeat(40), groupKey: 'inc-guid-1' } });
+    });
+
+    it('an adapter-supplied details._breeze is overwritten (or stripped when there is no locator)', async () => {
+      const forged = await run(detection('x1', { vendorRef: 'real', groupKey: null, details: { _breeze: { vendorRef: 'forged', groupKey: 'forged' } } }));
+      expect((forged.values as Array<{ details: Record<string, unknown> }>)[0]!.details._breeze).toEqual({ vendorRef: 'real', groupKey: null });
+      const none = await run(detection('x2', { details: { _breeze: { vendorRef: 'forged' }, other: true } }));
+      expect((none.values as Array<{ details: Record<string, unknown> }>)[0]!.details).toEqual({ other: true });
+    });
+
+    it('clips the locator (255) and group key (128)', async () => {
+      const insert = await run(detection('x1', { vendorRef: 'r'.repeat(400), groupKey: 'g'.repeat(400) }));
+      const b = (insert.values as Array<{ details: { _breeze: { vendorRef: string; groupKey: string } } }>)[0]!.details._breeze;
+      expect(b.vendorRef).toHaveLength(255);
+      expect(b.groupKey).toHaveLength(128);
+    });
+
+    it('a detection\'s vendor endpoint / endpoint are STICKY: the stored value wins, a later value only fills a null', async () => {
+      const insert = await run(detection('x1'));
+      const set = insert.conflict!.set!;
+      expect(render(set.vendorEndpointId)).toMatch(/COALESCE\("edr_detections"\."vendor_endpoint_id", excluded\.vendor_endpoint_id\)/);
+      // the link columns only FILL while they agree with the kept vendor endpoint (no split attribution)
+      for (const col of [set.endpointId, set.breezeDeviceId]) {
+        expect(render(col)).toMatch(/CASE WHEN "edr_detections"\."vendor_endpoint_id" IS NULL OR "edr_detections"\."vendor_endpoint_id" = excluded\.vendor_endpoint_id THEN COALESCE\(/);
+      }
+      expect(render(set.endpointId)).toMatch(/COALESCE\("edr_detections"\."endpoint_id", excluded\.endpoint_id\) ELSE "edr_detections"\."endpoint_id" END/);
+    });
+
+    it('a GravityZone-shaped detection (no locator) keeps its details byte-for-byte', async () => {
+      const insert = await run(detection('x1', { details: { raw: 'gz' } }));
+      expect((insert.values as Array<{ details: unknown }>)[0]!.details).toEqual({ raw: 'gz' });
+    });
   });
 
   it('counts a conflict row owned by another tenant (filtered by the DO UPDATE WHERE) as skipped', async () => {
@@ -379,5 +474,90 @@ describe('clearExpiredTenantDenials (W03, #8167)', () => {
     expect(q).toMatch(/unsupported_actions_at < \$2::timestamptz/);
     expect(q).toContain(CONN.id);
     expect(q).toContain('2026-12-15T12:00:00.000Z');
+  });
+});
+
+describe('reread_open_on_inventory writers (A5)', () => {
+  const upd = (id: string, over: Partial<EdrDetectionStatusUpdate> = {}): EdrDetectionStatusUpdate => ({
+    vendorDetectionId: id, vendorKind: 'incident', status: 'false_positive', vendorStatus: 'ConfirmedBenign/None',
+    severity: 'low', vendorSeverity: 'Unwanted', resolvedAt: NOW, lastVendorUpdateAt: NOW, ...over,
+  });
+  const o = { connectionId: CONN.id, tenantId: T1, orgId: ORG };
+
+  it('loadOpenDetectionRefs: live OPEN rows only, per-tenant cap, stalest first (updated_at, id), trusted locator from details._breeze', async () => {
+    const { tx, ops } = makeTx({ executes: [[
+      { tenant_id: T1, vendor_detection_id: 'a', vendor_kind: 'incident', vendor_ref: 'sha', group_key: 'g' },
+      { tenant_id: T1, vendor_detection_id: 'b', vendor_kind: 'incident', vendor_ref: null, group_key: null },
+      { tenant_id: T2, vendor_detection_id: 'c', vendor_kind: 'incident', vendor_ref: 'h', group_key: 'g2' },
+    ]] });
+    const out = await loadOpenDetectionRefs(tx, CONN.id, [T1, T2], 7);
+    const q = ops[0]!.sql!;
+    expect(q).toMatch(/detached_at IS NULL/);
+    expect(q).toMatch(/status IN \('open', 'in_progress', 'unknown'\)/);
+    expect(q).toMatch(/PARTITION BY tenant_id ORDER BY updated_at ASC, id ASC/);
+    expect(q).toMatch(/rn <= \$/);
+    expect(q).toContain("details->'_breeze'->>'vendorRef'");
+    expect(q).toContain(CONN.id);
+    expect(q).toMatch(/rn <= \$\d+/);
+    expect(ops[0]!.sql).toMatch(/\[[^\]]*\b7\b[^\]]*\]$/);
+    expect(out.get(T1)).toEqual([
+      { vendorDetectionId: 'a', vendorKind: 'incident', vendorRef: 'sha', groupKey: 'g' },
+      { vendorDetectionId: 'b', vendorKind: 'incident', vendorRef: null, groupKey: null },
+    ]);
+    expect(out.get(T2)).toHaveLength(1);
+  });
+
+  it('loadOpenDetectionRefs: no tenants or a zero cap issues no query', async () => {
+    const { tx, ops } = makeTx();
+    expect((await loadOpenDetectionRefs(tx, CONN.id, [], 5)).size).toBe(0);
+    expect((await loadOpenDetectionRefs(tx, CONN.id, [T1], 0)).size).toBe(0);
+    expect(ops).toHaveLength(0);
+  });
+
+  it('applyDetectionStatusUpdates: narrow UPDATE scoped by connection+tenant+org+kind+id, live rows only, never moves org/tenant, never touches notified_severity', async () => {
+    const { tx, ops } = makeTx({ executes: [[{ id: 'row-1' }], [], []] });
+    const n = await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')], attempted: [] });
+    expect(n).toBe(1);
+    const q = ops.find((e) => e.kind === 'execute' && /UPDATE edr_detections/.test(e.sql!))!.sql!;
+    expect(q).toMatch(/SET\s+status = v\.status/);
+    expect(q).toMatch(/d\.connection_id = \$\d+::uuid/);
+    expect(q).toMatch(/d\.tenant_id = /);
+    expect(q).toMatch(/d\.org_id = /);
+    expect(q).toMatch(/d\.vendor_kind = v\.vendor_kind/);
+    expect(q).toMatch(/d\.vendor_detection_id = v\.vendor_detection_id/);
+    expect(q).toMatch(/d\.detached_at IS NULL/);
+    expect(q).toMatch(/updated_at = now\(\)/);
+    expect(q).not.toMatch(/notified_severity/);
+    expect(q).not.toMatch(/SET[^W]*\borg_id\b/);
+    expect(q).not.toMatch(/SET[^W]*\btenant_id\b/);
+    expect(q).toContain('ConfirmedBenign/None');
+  });
+
+  it('applyDetectionStatusUpdates: recomputes the tenant\'s open count when anything changed', async () => {
+    const { tx, ops } = makeTx({ executes: [[{ id: 'row-1' }], []] });
+    await applyDetectionStatusUpdates(tx, { ...o, updates: [upd('x1')], attempted: [] });
+    const count = ops.filter((e) => e.kind === 'execute').map((e) => e.sql!).find((q) => /open_detection_count/.test(q));
+    expect(count).toBeDefined();
+    expect(count).toMatch(/detached_at IS NULL/);
+  });
+
+  it('applyDetectionStatusUpdates: attempted-but-omitted rows only get updated_at bumped (they rotate to the back), status untouched', async () => {
+    const { tx, ops } = makeTx({ executes: [[{ id: 'row-1' }], [], []] });
+    await applyDetectionStatusUpdates(tx, {
+      ...o, updates: [upd('x1')],
+      attempted: [{ vendorDetectionId: 'x1', vendorKind: 'incident' }, { vendorDetectionId: 'gone', vendorKind: 'incident' }],
+    });
+    const rotate = ops.filter((e) => e.kind === 'execute').map((e) => e.sql!).find((q) => /SET updated_at = now\(\)/.test(q) && q.includes('gone'))!;
+    expect(rotate).toBeDefined();
+    expect(rotate).not.toMatch(/status/);
+    expect(rotate).not.toContain('x1');
+    expect(rotate).toMatch(/detached_at IS NULL/);
+    expect(rotate).toMatch(/tenant_id = /);
+  });
+
+  it('applyDetectionStatusUpdates: nothing to do -> no statements', async () => {
+    const { tx, ops } = makeTx();
+    expect(await applyDetectionStatusUpdates(tx, { ...o, updates: [], attempted: [] })).toBe(0);
+    expect(ops).toHaveLength(0);
   });
 });

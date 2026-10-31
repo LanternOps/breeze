@@ -894,3 +894,10 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     }
   });
 });
+
+// Sourced-alert diagnostics must survive the outbound scrubber.
+it('retains local alert owner identity in Sentry tags', async () => {
+  const { scrubEvent } = await import('./sentry');
+  const tags = { ownerKind: 'backup_workload', ownerRef: '11111111-1111-4111-8111-111111111111' };
+  expect(scrubEvent({ tags: { ...tags } }).tags).toEqual(tags);
+});

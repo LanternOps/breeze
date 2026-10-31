@@ -226,3 +226,8 @@ Update agents to a release containing this change before relying on the provider
 - The items need the `devices.write` permission (and MFA, like other group membership changes). They are disabled, with the reason shown, when the selection spans organizations or exceeds 500 devices.
 - New API route `POST /device-groups/:id/devices/remove` (body `{ deviceIds }`, up to 500) removes several devices from a static group and returns one outcome per device: `removed`, `not_member`, or `forbidden` (no access to the device's site). Audited as `device_group.device.remove`.
 - No migration, setting, or environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

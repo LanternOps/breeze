@@ -111,7 +111,11 @@ describe('PartnerSettingsPage inheritance (#9790 W4)', () => {
     const user = await renderPage('#security');
     const line = await screen.findByTestId('partner-settings-line-security.sessionTimeout');
     expect(line.textContent).not.toMatch(/^Saved value:/);
-    await user.type(screen.getByLabelText('Session Timeout (minutes)'), '60');
+    // Clear first: the fixture holds 720, and typing after it would make 72060,
+    // which the shared session-timeout bound now blocks before Save (#10081).
+    const timeout = screen.getByLabelText('Session Timeout (minutes)');
+    await user.clear(timeout);
+    await user.type(timeout, '60');
     expect(screen.getByTestId('partner-settings-line-security.sessionTimeout').textContent).toMatch(/^Saved value: /);
     expect(screen.getByTestId('partner-settings-line-security.requireMfa').textContent).not.toMatch(/^Saved value:/);
 

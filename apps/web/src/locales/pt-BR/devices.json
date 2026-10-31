@@ -354,7 +354,7 @@
     "currentSite": "Site atual",
     "newSite": "Novo site",
     "loadingSites": "Carregando sites...",
-    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites em Configurações → Organizações para permitir movimentações.",
+    "thisOrganizationOnlyHasOneSite": "Esta organização tem apenas um site. Adicione outros sites na aba Sites da organização (Organizações → abra a organização → Sites) para permitir movimentações.",
     "current": "(atual)",
     "cancel": "Cancelar",
     "moving": "Movendo...",
@@ -2394,7 +2394,9 @@
       "completed": "Concluída",
       "failed": "Falhou",
       "queued": "Na fila",
-      "running": "Em execução"
+      "running": "Em execução",
+      "cancelled": "Cancelada",
+      "expired": "Expirada"
     },
     "scanType": "Verificação {{type}}",
     "scanTypes": {
@@ -2416,7 +2418,13 @@
       "quarantined": "Em quarentena",
       "removed": "Removida"
     },
-    "threatsFound": "Ameaças encontradas: {{count}}"
+    "threatsFound": "Ameaças encontradas: {{count}}",
+    "waitingForSlot": "Aguardando um espaço de verificação livre. Expira em {{date}}.",
+    "cancelScan": "Cancelar verificação",
+    "scanCancelled": "Verificação cancelada",
+    "cancelScanFailed": "Não foi possível cancelar a verificação",
+    "scanAlreadyRunning": "A verificação já está em execução no dispositivo e não pode ser cancelada.",
+    "scanAlreadyQueued": "Já existe uma verificação na fila para este dispositivo."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Adicionar uma tag...",

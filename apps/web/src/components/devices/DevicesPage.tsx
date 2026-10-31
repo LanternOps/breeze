@@ -140,6 +140,11 @@ const CONFIRM_KEY_OVERRIDES: Record<string, string> = {
 };
 const confirmKeyFor = (action: string): string => CONFIRM_KEY_OVERRIDES[action] ?? action;
 
+// Return-to-tab re-sync (#9936): a list fetched less than this long ago is
+// treated as fresh. A refetch walks every device page plus orgs, sites and
+// groups, so quick tab flicks must not re-walk a large fleet each time.
+const RETURN_RESYNC_MIN_AGE_MS = 15_000;
+
 /**
  * The Devices page's "Add" control (#4622 W04). What was a single "Install
  * agent" button (opens AddDeviceModal — enrollment, creates no row) is now a
@@ -422,6 +427,10 @@ export default function DevicesPage() {
   // clobbering the newer result.
   const deviceFetchGeneration = useRef(0);
   useEffect(() => () => { deviceFetchGeneration.current += 1; }, []);
+  // When the last fetchDevices pass STARTED (ms epoch). Read by the
+  // return-to-tab re-sync below (#9936) to skip a refetch while the list is
+  // still fresh or a fetch is already in flight.
+  const lastDeviceFetchStartedAt = useRef(0);
   const filtersV2 = typeof window !== 'undefined' ? isFiltersV2Enabled() : false;
   // #3205 W06: a coverage-notice deep link pins the org in the hash. Adoption is a
   // LAYOUT effect, and its position above useAdvancedFilterIds is load-bearing:
@@ -666,6 +675,7 @@ export default function DevicesPage() {
   const fetchDevices = useCallback(async (signal?: AbortSignal, opts?: { background?: boolean }) => {
     const background = opts?.background === true;
     const generation = ++deviceFetchGeneration.current;
+    lastDeviceFetchStartedAt.current = Date.now();
     const isCurrentDeviceFetch = () => generation === deviceFetchGeneration.current && !signal?.aborted;
     try {
       if (background) setRefreshing(true);
@@ -1031,6 +1041,38 @@ export default function DevicesPage() {
   useEffect(() => {
     subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled']);
   }, [subscribe]);
+
+  // Re-sync when the user comes back to this tab (#9936). The stream above
+  // carries status and version deltas only: nothing publishes a removal,
+  // restore, rename or site move, so a device removed in another tab (or by
+  // another user) stayed listed here until a manual refresh. #9510 dropped
+  // the never-published `device.decommissioned`; #8836 L4 owns re-adding it
+  // with a real publisher. Until then, and for every other unpublished change,
+  // refresh on return. Bounded: a return within RETURN_RESYNC_MIN_AGE_MS of
+  // the last fetch START is skipped, which also absorbs the visibilitychange +
+  // focus pair a single tab switch fires and any fetch still in flight. It
+  // reuses the header Refresh path, so the list stays on screen and the
+  // server-resolved filter ids are refreshed with the rows (#5023).
+  useEffect(() => {
+    // Same #4147 gate as the mount effect: a return before the org scope
+    // resolves must not issue an unscoped request.
+    if (orgScopeResolving || orgContextFailed) return;
+    // A foreground load is still walking the fleet (a large fleet can take
+    // longer than the freshness window). Superseding it would discard its
+    // rows and clear `loading` early, flashing an empty list.
+    if (loading) return;
+    const onReturn = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastDeviceFetchStartedAt.current < RETURN_RESYNC_MIN_AGE_MS) return;
+      void handleManualRefresh();
+    };
+    document.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('focus', onReturn);
+    return () => {
+      document.removeEventListener('visibilitychange', onReturn);
+      window.removeEventListener('focus', onReturn);
+    };
+  }, [handleManualRefresh, orgScopeResolving, orgContextFailed, loading]);
 
   // A failed advanced-filter preview (403 on a pinned orgId the caller can't
   // access, 500, network error) must never render as a silently unfiltered

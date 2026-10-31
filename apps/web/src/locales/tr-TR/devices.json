@@ -354,7 +354,7 @@
     "currentSite": "Mevcut site",
     "newSite": "Yeni site",
     "loadingSites": "Siteler yükleniyor...",
-    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için Ayarlar → Kuruluşlar'dan daha fazla site ekleyin.",
+    "thisOrganizationOnlyHasOneSite": "Bu kuruluşun yalnızca bir sitesi var. Taşımayı etkinleştirmek için kuruluşun Siteler sekmesinden (Kuruluşlar → kuruluşu açın → Siteler) daha fazla site ekleyin.",
     "current": "(güncel)",
     "cancel": "İptal",
     "moving": "Taşınıyor...",
@@ -2394,7 +2394,9 @@
       "completed": "Tamamlandı",
       "failed": "Başarısız",
       "queued": "Sıraya alındı",
-      "running": "Çalışıyor"
+      "running": "Çalışıyor",
+      "cancelled": "İptal edildi",
+      "expired": "Süresi doldu"
     },
     "scanType": "{{type}} tarama",
     "scanTypes": {
@@ -2416,7 +2418,13 @@
       "quarantined": "Karantinaya alındı",
       "removed": "Kaldırıldı"
     },
-    "threatsFound": "Bulunan tehditler: {{count}}"
+    "threatsFound": "Bulunan tehditler: {{count}}",
+    "waitingForSlot": "Boş bir tarama yuvası bekleniyor. Bitiş: {{date}}.",
+    "cancelScan": "Taramayı iptal et",
+    "scanCancelled": "Tarama iptal edildi",
+    "cancelScanFailed": "Tarama iptal edilemedi",
+    "scanAlreadyRunning": "Tarama cihazda zaten çalışıyor ve iptal edilemez.",
+    "scanAlreadyQueued": "Bu cihaz için zaten kuyrukta bekleyen bir tarama var."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",

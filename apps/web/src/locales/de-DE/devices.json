@@ -354,7 +354,7 @@
     "currentSite": "Aktueller Standort",
     "newSite": "Neuer Standort",
     "loadingSites": "Standorte werden geladen...",
-    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Unter Einstellungen → Organisationen weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
+    "thisOrganizationOnlyHasOneSite": "Diese Organisation hat nur einen Standort. Auf der Registerkarte „Standorte“ der Organisation (Organisationen → Organisation öffnen → Standorte) weitere Standorte hinzufügen, um Verschiebungen zu ermöglichen.",
     "current": "(aktuell)",
     "cancel": "Abbrechen",
     "moving": "Wird verschoben...",
@@ -2394,7 +2394,9 @@
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
       "queued": "In der Warteschlange",
-      "running": "Wird ausgeführt"
+      "running": "Wird ausgeführt",
+      "cancelled": "Abgebrochen",
+      "expired": "Abgelaufen"
     },
     "scanType": "{{type}} scannen",
     "scanTypes": {
@@ -2416,7 +2418,13 @@
       "quarantined": "Unter Quarantäne gestellt",
       "removed": "Entfernt"
     },
-    "threatsFound": "Gefundene Bedrohungen: {{count}}"
+    "threatsFound": "Gefundene Bedrohungen: {{count}}",
+    "waitingForSlot": "Wartet auf einen freien Scan-Platz. Läuft ab: {{date}}.",
+    "cancelScan": "Scan abbrechen",
+    "scanCancelled": "Scan abgebrochen",
+    "cancelScanFailed": "Der Scan konnte nicht abgebrochen werden",
+    "scanAlreadyRunning": "Der Scan läuft bereits auf dem Gerät und kann nicht abgebrochen werden.",
+    "scanAlreadyQueued": "Für dieses Gerät ist bereits ein Scan in der Warteschlange."
   },
   "deviceSettingsModal": {
     "addTagPlaceholder": "Tag hinzufügen...",
