@@ -26,7 +26,7 @@ func slowCounterRunner(calls *[]winPDCall) psRunner {
 	return func(_ context.Context, timeout time.Duration, script string) (execResult, error) {
 		*calls = append(*calls, winPDCall{timeout, script})
 		if strings.Contains(script, "Get-StorageReliabilityCounter") {
-			return execResult{Stdout: []byte("{\"UniqueId\":\"D1\",\"Temperature\":31,\"Wear\":2,\"ReadErrorsTotal\":0,\"WriteErrorsTotal\":0}\r\n{\"Uniq"), ExitCode: -1}, context.DeadlineExceeded
+			return execResult{Stdout: []byte("{\"UniqueId\":\"D1\",\"Pending\":true}\r\n{\"UniqueId\":\"D1\",\"Temperature\":31,\"Wear\":2,\"ReadErrorsTotal\":0,\"WriteErrorsTotal\":0}\r\n{\"UniqueId\":\"D2\",\"Pending\":true}\r\n{\"Uniq"), ExitCode: -1}, context.DeadlineExceeded
 		}
 		return execResult{Stdout: []byte(winPDInventory)}, nil
 	}
@@ -51,8 +51,8 @@ func TestWinPDKeepsInventoryWhenCountersTimeOut(t *testing.T) {
 	if d2.TemperatureC != nil {
 		t.Fatalf("D2 got counters it never reported: %+v", d2)
 	}
-	if !hasWarning(r.Warnings, "context deadline exceeded") || !hasWarning(r.Warnings, "D2") {
-		t.Fatalf("counter timeout not recorded as a warning: %v", r.Warnings)
+	if len(r.Warnings) != 2 || r.Warnings[0] != "Reliability counters incomplete (context deadline exceeded); 1 of 2 disks reported; no answer for D2" || r.Warnings[1] != "Reliability counters unavailable for D2" {
+		t.Fatalf("counter timeout not recorded as warnings: %q", r.Warnings)
 	}
 	if len(calls) != 2 || strings.Contains(calls[0].script, "Get-StorageReliabilityCounter") {
 		t.Fatalf("inventory must run on its own, before the counters: %d calls", len(calls))
@@ -170,5 +170,80 @@ func TestWinPDCountersCleanRun(t *testing.T) {
 	writes, _ := d2.Attributes["writeErrors"].(*int64)
 	if d2.TemperatureC == nil || *d2.TemperatureC != 40 || wear == nil || *wear != 7 || writes == nil || *writes != 2 {
 		t.Fatalf("%+v", d2)
+	}
+}
+
+// The summary goes before the inventory's own warnings, so the snapshot's
+// 50-warning cap drops per-disk lines, never the cause.
+func TestWinPDCounterSummaryFirst(t *testing.T) {
+	inv := strings.Replace(winPDInventory, `"Warnings":[]`, `"Warnings":["inv-a","inv-b"]`, 1)
+	run := func(_ context.Context, _ time.Duration, script string) (execResult, error) {
+		if strings.Contains(script, "Get-StorageReliabilityCounter") {
+			return execResult{Stderr: []byte("\r\nGet-PhysicalDisk : Access denied\r\nAt line:2\r\n"), ExitCode: 1}, nil
+		}
+		return execResult{Stdout: []byte(inv)}, nil
+	}
+	r, e := collectWinPD(context.Background(), run, map[string]string{})
+	if e != nil {
+		t.Fatal(e)
+	}
+	want := []string{
+		"Reliability counters incomplete (exit 1: Get-PhysicalDisk : Access denied); 0 of 2 disks reported",
+		"inv-a", "inv-b",
+		"Reliability counters unavailable for D1", "Reliability counters unavailable for D2",
+	}
+	if strings.Join(r.Warnings, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q", r.Warnings)
+	}
+}
+
+// A duplicate line for a disk must never discard counters already read.
+func TestWinPDCounterBestLineWins(t *testing.T) {
+	got := parseWinPDCounters([]byte("{\"UniqueId\":\"A\",\"Pending\":true}\n{\"UniqueId\":\"A\",\"Temperature\":31}\n{\"UniqueId\":\"A\",\"Error\":true}\n{\"UniqueId\":\"A\",\"Pending\":true}\n" +
+		"{\"UniqueId\":\"B\",\"Error\":true}\n{\"UniqueId\":\"B\",\"Pending\":true}\n{\"UniqueId\":\"C\",\"Pending\":true}\n"))
+	if a := got["A"]; a.rank() != counterOK || a.Temperature == nil || *a.Temperature != 31 {
+		t.Fatalf("A %+v", a)
+	}
+	if got["B"].rank() != counterError || got["C"].rank() != counterPending || len(got) != 3 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// Both PowerShell runs report a Lost Communication pool member under its
+// member GUID; counters must join on that raw UniqueId and land on the row
+// keyed by the member's remembered real UniqueId (#6895).
+func TestWinPDCountersJoinLostCommunicationMember(t *testing.T) {
+	const guid = "{97978214-4542-a5b2-308f-43ed169c97b9}"
+	remembered := map[string]string{guid: "REALID"}
+	inv := `{"Disks":[{"UniqueId":"` + guid + `","ObjectId":"SPACES_PhysicalDisk.ObjectId=\"{51d89d4d-36bf-11f1-97ce-806e6f6e6963}:PD:` + guid + `\"","FriendlyName":"Msft Virtual Disk","HealthStatus":"Warning","OperationalStatus":["Lost Communication"],"Size":1},{"UniqueId":"OS","FriendlyName":"OS","HealthStatus":"Healthy","OperationalStatus":["OK"],"Size":2}],"Warnings":[]}`
+	for _, tc := range []struct {
+		name, line string
+		wantTemp   bool
+	}{
+		{"counters", `{"UniqueId":"` + guid + `","Temperature":44}`, true},
+		{"error", `{"UniqueId":"` + guid + `","Error":true}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := func(_ context.Context, _ time.Duration, script string) (execResult, error) {
+				if strings.Contains(script, "Get-StorageReliabilityCounter") {
+					return execResult{Stdout: []byte(tc.line + "\n{\"UniqueId\":\"OS\",\"Temperature\":30}\n")}, nil
+				}
+				return execResult{Stdout: []byte(inv)}, nil
+			}
+			r, e := collectWinPD(context.Background(), run, remembered)
+			if e != nil || len(r.Components) != 2 {
+				t.Fatalf("%+v %v", r, e)
+			}
+			m := findComponent(t, r.Components, "winpd:REALID")
+			if tc.wantTemp != (m.TemperatureC != nil && *m.TemperatureC == 44) {
+				t.Fatalf("member row %+v", m)
+			}
+			if !tc.wantTemp && !hasWarning(r.Warnings, "Reliability counters unavailable for "+guid) {
+				t.Fatalf("%q", r.Warnings)
+			}
+			if osDisk := findComponent(t, r.Components, "winpd:OS"); osDisk.TemperatureC == nil || *osDisk.TemperatureC != 30 {
+				t.Fatalf("OS row %+v", osDisk)
+			}
+		})
 	}
 }

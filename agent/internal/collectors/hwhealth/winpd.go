@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -47,7 +49,7 @@ func buildWinPD(doc winPDDoc, counters map[string]winPDCounter, remembered map[s
 			continue
 		}
 		if counters != nil {
-			if c, ok := counters[d.UniqueId]; ok && !c.Error {
+			if c, ok := counters[d.UniqueId]; ok && c.rank() == counterOK {
 				d.Temperature, d.Wear, d.ReadErrorsTotal, d.WriteErrorsTotal = c.Temperature, c.Wear, c.ReadErrorsTotal, c.WriteErrorsTotal
 			} else {
 				r.Warnings = append(r.Warnings, "Reliability counters unavailable for "+d.UniqueId)
@@ -58,19 +60,38 @@ func buildWinPD(doc winPDDoc, counters map[string]winPDCounter, remembered map[s
 	return r
 }
 
-// winPDCounter is one line of winPDCountersScript output.
+// winPDCounter is one line of winPDCountersScript output: a Pending marker
+// written before a disk's counter call, then that disk's counters or Error.
 type winPDCounter struct {
 	UniqueId                          string
-	Error                             bool
+	Pending, Error                    bool
 	Temperature, Wear                 *int
 	ReadErrorsTotal, WriteErrorsTotal *int64
+}
+
+const (
+	counterPending = iota
+	counterError
+	counterOK
+)
+
+func (c winPDCounter) rank() int {
+	switch {
+	case c.Error:
+		return counterError
+	case c.Pending:
+		return counterPending
+	}
+	return counterOK
 }
 
 var utf8BOM = []byte("\xef\xbb\xbf")
 
 // parseWinPDCounters reads the counter run's line-per-disk JSON. Lines that do
 // not parse (the cut-off last line of a run killed at its deadline, stray host
-// output) are skipped: their disks simply have no counters.
+// output) are skipped: their disks simply have no counters. When a disk has
+// several lines, the best one wins (counters over an error over the marker),
+// so a duplicate line can never discard counters already read.
 func parseWinPDCounters(b []byte) map[string]winPDCounter {
 	out := map[string]winPDCounter{}
 	for _, line := range bytes.Split(b, []byte("\n")) {
@@ -82,9 +103,55 @@ func parseWinPDCounters(b []byte) map[string]winPDCounter {
 		if json.Unmarshal(line, &c) != nil || c.UniqueId == "" {
 			continue
 		}
-		out[c.UniqueId] = c
+		if prev, ok := out[c.UniqueId]; !ok || c.rank() >= prev.rank() {
+			out[c.UniqueId] = c
+		}
 	}
 	return out
+}
+
+// counterProblem summarizes a counter run that did not finish cleanly, naming
+// the disks whose counter call never returned (Pending marker only) and the
+// first stderr line, so a stall is attributable to one disk.
+func counterProblem(c execResult, e error, counters map[string]winPDCounter, disks int) string {
+	cause := ""
+	if e != nil {
+		cause = e.Error()
+	} else if c.ExitCode != 0 {
+		cause = fmt.Sprintf("exit %d", c.ExitCode)
+	} else {
+		return ""
+	}
+	if line := firstLine(c.Stderr); line != "" {
+		cause += ": " + line
+	}
+	reported := 0
+	var stalled []string
+	for id, v := range counters {
+		if v.rank() == counterPending {
+			stalled = append(stalled, id)
+		} else {
+			reported++
+		}
+	}
+	msg := fmt.Sprintf("Reliability counters incomplete (%s); %d of %d disks reported", cause, reported, disks)
+	if len(stalled) > 0 {
+		sort.Strings(stalled)
+		msg += "; no answer for " + strings.Join(stalled, ", ")
+	}
+	return msg
+}
+
+func firstLine(b []byte) string {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if t := strings.TrimSpace(string(bytes.TrimPrefix(bytes.TrimSpace(line), utf8BOM))); t != "" {
+			if len(t) > 200 {
+				t = t[:200]
+			}
+			return t
+		}
+	}
+	return ""
 }
 
 // Inventory and reliability counters run as two PowerShell processes with
@@ -107,9 +174,11 @@ foreach($d in @(Get-PhysicalDisk)) {
 
 // winPDCountersScript writes and flushes one compressed JSON line per disk as
 // soon as that disk answers, so a run killed at its deadline still hands back
-// the counters it had already read.
+// the counters it had already read. A Pending marker goes out before each
+// call, so a disk whose call never returns is named in the warning.
 const winPDCountersScript = `$ErrorActionPreference='Stop'
 foreach($d in @(Get-PhysicalDisk)) {
+ [Console]::Out.WriteLine(([pscustomobject]@{UniqueId=[string]$d.UniqueId;Pending=$true} | ConvertTo-Json -Compress)); [Console]::Out.Flush()
  try { $r=$d | Get-StorageReliabilityCounter -ErrorAction Stop; $o=[pscustomobject]@{UniqueId=[string]$d.UniqueId;Temperature=$(if($r){$r.Temperature}else{$null});Wear=$(if($r){$r.Wear}else{$null});ReadErrorsTotal=$(if($r){$r.ReadErrorsTotal}else{$null});WriteErrorsTotal=$(if($r){$r.WriteErrorsTotal}else{$null})} } catch { $o=[pscustomobject]@{UniqueId=[string]$d.UniqueId;Error=$true} }
  [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress)); [Console]::Out.Flush()
 }`
@@ -121,7 +190,9 @@ type psRunner func(context.Context, time.Duration, string) (execResult, error)
 // collectWinPD fails the source only when Get-PhysicalDisk itself fails, so a
 // real inventory failure still alerts. The reliability counters are
 // best-effort: a slow, failed or partial counter run keeps the inventory and
-// records warnings instead.
+// records warnings instead. Complete stays true: counters never decide which
+// disks exist, and Complete=false would make merge keep carrying forward
+// the previous snapshot's rows for this source (a removed disk would linger).
 func collectWinPD(ctx context.Context, run psRunner, remembered map[string]string) (Result, error) {
 	o, e := run(ctx, winPDInventoryTimeout, winPDInventoryScript)
 	if e != nil {
@@ -136,15 +207,9 @@ func collectWinPD(ctx context.Context, run psRunner, remembered map[string]strin
 	}
 	c, e := run(ctx, winPDCountersTimeout, winPDCountersScript)
 	counters := parseWinPDCounters(c.Stdout)
-	problem := ""
-	if e != nil {
-		problem = e.Error()
-	} else if c.ExitCode != 0 {
-		problem = fmt.Sprintf("exit %d", c.ExitCode)
-	}
-	if problem != "" {
+	if problem := counterProblem(c, e, counters, len(doc.Disks)); problem != "" {
 		// First, so the 50-warning snapshot cap never drops the cause.
-		doc.Warnings = append([]string{fmt.Sprintf("Reliability counters incomplete (%s); %d of %d disks reported", problem, len(counters), len(doc.Disks))}, doc.Warnings...)
+		doc.Warnings = append([]string{problem}, doc.Warnings...)
 	}
 	return buildWinPD(doc, counters, remembered), nil
 }
