@@ -259,8 +259,8 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
-  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_partner_settings_inheritance', // #9763 Tier-1 read: partner settings inheritance counts + org drill-down
+  'get_pax8_status', // W15 (#6785): tier-1 metadata; handler additionally requires partner scope and full access
   'get_peripheral_activity',
   'get_playbook_history',
   'get_process_samples', // Full-control W13 (#6783): tier-1 recorded process snapshot, device-scoped
