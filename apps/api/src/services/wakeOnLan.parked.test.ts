@@ -66,6 +66,7 @@ describe('dispatchWake for a device parked in a holding org', () => {
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
     parkedDeviceIds.add(RELAY);
@@ -94,6 +95,7 @@ describe('dispatchWake when the push claim cancels the wake command', () => {
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));
     insertMock.mockReturnValue({
@@ -133,6 +135,7 @@ describe('dispatchWake pushes to the relay agent id read in the claim (#8318 §6
     selectMock
       .mockReturnValueOnce(chain([{ id: TARGET, orgId: 'org-1', siteId: 'site-1', hostname: 'target' }]))
       .mockReturnValueOnce(chain([{ mac: 'aa:bb:cc:dd:ee:ff', isPrimary: true, updatedAt: new Date() }]))
+      .mockReturnValueOnce(chain([])) // Recent MAC history.
       .mockReturnValueOnce(chain([{ ip: '192.168.1.20', mask: '255.255.255.0', lastSeen: new Date() }]))
       // The relay as read before the claim.
       .mockReturnValueOnce(chain([{ id: RELAY, agentId: 'relay-agent', hostname: 'relay', siteId: 'site-1', status: 'online' }]));

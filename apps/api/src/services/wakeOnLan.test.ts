@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeBroadcast, intToIpv4, ipv4ToInt, isApipaIpv4 } from './wakeOnLan';
 
 describe('ipv4ToInt', () => {
@@ -104,5 +104,71 @@ describe('isApipaIpv4', () => {
     expect(isApipaIpv4('not-an-ip')).toBe(false);
     expect(isApipaIpv4('')).toBe(false);
     expect(isApipaIpv4('::1')).toBe(false);
+  });
+});
+
+
+const { selectMock, insertMock } = vi.hoisted(() => ({ selectMock: vi.fn(), insertMock: vi.fn() }));
+vi.mock('../db', () => ({ db: { select: selectMock, insert: insertMock } }));
+vi.mock('./unassignedPool/deliveryEligibility', () => ({ isParkedDevice: vi.fn(() => false) }));
+vi.mock('./commandDispatch', () => ({
+  claimPendingCommandForDelivery: vi.fn(async () => ({ status: 'claimed', agentId: 'relay-agent' })),
+  releaseClaimedCommandDelivery: vi.fn(),
+}));
+vi.mock('../routes/agentWs', () => ({ isAgentConnected: vi.fn(() => true), sendCommandToAgent: vi.fn(() => true) }));
+vi.mock('./commandQueue', () => ({ CommandTypes: { WAKE_ON_LAN: 'wake_on_lan' } }));
+import { dispatchWake } from './wakeOnLan';
+import { sendCommandToAgent } from '../routes/agentWs';
+import { deviceStatusEnum } from '../db/schema/devices';
+
+function chain(rows: unknown[]) {
+  const result = Object.assign(Promise.resolve(rows), {
+    limit: async () => rows,
+    orderBy: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }),
+  });
+  return { from: () => ({ where: () => result }) };
+}
+
+function seedWake(status: string, network: unknown[] = [], history: unknown[] = []) {
+  selectMock
+    .mockReturnValueOnce(chain([{ id: 'target', orgId: 'org', siteId: 'site', hostname: 'target', status }]))
+    .mockReturnValueOnce(chain(network))
+    .mockReturnValueOnce(chain(history))
+    .mockReturnValueOnce(chain([{ ip: '192.0.2.20', mask: '255.255.255.0', lastSeen: new Date() }]))
+    .mockReturnValueOnce(chain([{ id: 'relay', agentId: 'relay-agent', hostname: 'relay', siteId: 'site', status: 'online' }]));
+}
+
+const networkMac = { mac: 'AA:BB:CC:DD:EE:01', isPrimary: true, updatedAt: new Date() };
+const wake = () => dispatchWake('target', 'user', { relayDeviceIdOverride: 'relay' });
+
+describe('dispatchWake target eligibility and MAC ordering', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    insertMock.mockReturnValue({ values: () => Object.assign(Promise.resolve(), {
+      returning: async () => [{ id: 'command' }],
+    }) });
+  });
+
+  it('returns TARGET_ONLINE and sends nothing when target status is online', async () => {
+    seedWake('online', [networkMac]);
+    expect(await wake()).toMatchObject({ ok: false, code: 'TARGET_ONLINE' });
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it.each(deviceStatusEnum.enumValues.filter(status => status !== 'online'))('still sends for status %s', async status => {
+    seedWake(status, [networkMac]);
+    expect(await wake()).toMatchObject({ ok: true, macs: [networkMac.mac] });
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps primary then newest network MACs and skips rivals for network-only history', async () => {
+    const older = { mac: 'aa:bb:cc:dd:ee:02', isPrimary: false, updatedAt: new Date(1) };
+    const newer = { mac: 'aa:bb:cc:dd:ee:03', isPrimary: false, updatedAt: new Date(2) };
+    seedWake('offline', [older, newer, networkMac], [{ mac: networkMac.mac.toLowerCase(), lastSeen: new Date() }]);
+    expect(await wake()).toMatchObject({ ok: true, macs: [networkMac.mac, newer.mac, older.mac] });
+    expect(selectMock).toHaveBeenCalledTimes(5);
   });
 });

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db } from '../db';
 import {
@@ -17,6 +17,7 @@ import { markRequestAuditWritten } from './auditRequestTracking';
 
 export type WakeFailureCode =
   | 'TARGET_NOT_FOUND'
+  | 'TARGET_ONLINE'
   | 'NO_MACS'
   | 'NO_SUBNET'
   | 'IPV6_ONLY'
@@ -121,8 +122,8 @@ export function isApipaIpv4(ip: string): boolean {
   return n >= 0xa9fe0000 && n <= 0xa9feffff;
 }
 
-async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
-  // Prefer device_network (live inventory), fall back to device_ip_history (historical).
+async function resolveTargetMacs(targetDeviceId: string, orgId: string): Promise<string[]> {
+  // Live inventory takes precedence over recent historical interfaces.
   const fromNetwork = await db
     .select({ mac: deviceNetwork.macAddress, isPrimary: deviceNetwork.isPrimary, updatedAt: deviceNetwork.updatedAt })
     .from(deviceNetwork)
@@ -141,21 +142,53 @@ async function resolveTargetMacs(targetDeviceId: string): Promise<string[]> {
       macs.push(row.mac);
     }
   }
-  if (macs.length > 0) return macs;
 
   const fromHistory = await db
     .select({ mac: deviceIpHistory.macAddress, lastSeen: deviceIpHistory.lastSeen })
     .from(deviceIpHistory)
-    .where(and(eq(deviceIpHistory.deviceId, targetDeviceId), isNotNull(deviceIpHistory.macAddress)))
-    .orderBy(desc(deviceIpHistory.lastSeen))
-    .limit(20);
+    .where(and(
+      eq(deviceIpHistory.deviceId, targetDeviceId),
+      isNotNull(deviceIpHistory.macAddress),
+      gte(deviceIpHistory.lastSeen, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)),
+    ))
+    .orderBy(desc(deviceIpHistory.lastSeen));
+
+  // Dedupe before checking rivals so repeated history uses the target's newest sighting.
+  const candidates = new Map<string, typeof fromHistory[number]>();
   for (const row of fromHistory) {
-    if (row.mac && !seen.has(row.mac.toLowerCase())) {
-      seen.add(row.mac.toLowerCase());
-      macs.push(row.mac);
+    if (!row.mac) continue;
+    const key = row.mac.toLowerCase();
+    if (!seen.has(key) && !candidates.has(key)) candidates.set(key, row);
+  }
+  const newestRival = new Map<string, number>();
+  if (candidates.size > 0) {
+    const keys = [...candidates.keys()];
+    // One union query for both sources, never one query per MAC. Join devices
+    // to scope sightings to the rival's current organization.
+    const networkMac = sql<string>`lower(${deviceNetwork.macAddress})`;
+    const historyMac = sql<string>`lower(${deviceIpHistory.macAddress})`;
+    const rivals = await db
+      .select({ mac: networkMac, lastSeen: sql<Date>`max(${deviceNetwork.updatedAt})`.mapWith(deviceNetwork.updatedAt) })
+      .from(deviceNetwork)
+      .innerJoin(devices, eq(devices.id, deviceNetwork.deviceId))
+      .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(networkMac, keys)))
+      .groupBy(networkMac)
+      .unionAll(db
+        .select({ mac: historyMac, lastSeen: sql<Date>`max(${deviceIpHistory.lastSeen})`.mapWith(deviceIpHistory.lastSeen) })
+        .from(deviceIpHistory)
+        .innerJoin(devices, eq(devices.id, deviceIpHistory.deviceId))
+        .where(and(eq(devices.orgId, orgId), ne(devices.id, targetDeviceId), inArray(historyMac, keys)))
+        .groupBy(historyMac));
+    for (const row of rivals) {
+      newestRival.set(row.mac, Math.max(newestRival.get(row.mac) ?? -Infinity, row.lastSeen.getTime()));
     }
   }
-  return macs;
+  for (const [key, row] of candidates) {
+    if ((newestRival.get(key) ?? -Infinity) <= row.lastSeen.getTime()) {
+      macs.push(row.mac!);
+    }
+  }
+  return macs.slice(0, 8);
 }
 
 /**
@@ -304,18 +337,21 @@ export async function dispatchWake(
   options: DispatchWakeOptions = {},
 ): Promise<WakeResult> {
   const [target] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
+    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname, status: devices.status })
     .from(devices)
     .where(eq(devices.id, targetDeviceId))
     .limit(1);
   if (!target) {
     return { ok: false, code: 'TARGET_NOT_FOUND', message: 'Target device not found.' };
   }
+  if (target.status === 'online') {
+    return { ok: false, code: 'TARGET_ONLINE', message: 'Target device is already online.' };
+  }
   if (await isParkedDevice(db, target.id)) {
     return { ok: false, code: 'DEVICE_PENDING_ASSIGNMENT', message: PARKED_DEVICE_COMMAND_REFUSAL_MESSAGE };
   }
 
-  const macs = await resolveTargetMacs(target.id);
+  const macs = await resolveTargetMacs(target.id, target.orgId);
   if (macs.length === 0) {
     return { ok: false, code: 'NO_MACS', message: 'Target has no recorded MAC address. The agent must check in at least once before Wake-on-LAN is available.' };
   }
