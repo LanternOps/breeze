@@ -33,7 +33,7 @@ export interface PushoverNotificationPayload {
   alertName: string;
   severity: AlertSeverity;
   summary: string;
-  deviceId?: string;
+  deviceId?: string | null;
   deviceName?: string;
   orgId: string;
   orgName?: string;

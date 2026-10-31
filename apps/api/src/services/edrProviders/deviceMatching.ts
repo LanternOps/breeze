@@ -40,10 +40,21 @@ const ENDPOINT_MATCH_NAME_SQL: SQL<string> = deviceMatchNameSql(
   { shortenFqdn: true },
 );
 
+/**
+ * A vendor that offers neither MAC nor serial can only be matched by name, so a
+ * name that is not unique on BOTH sides is never auto-linked (spec 4.6 rule 3:
+ * "a same-org hostname collision stays ambiguous").
+ */
+export function strictMatchingFor(identifiers: readonly string[]): boolean {
+  return !identifiers.includes('mac') && !identifiers.includes('serial');
+}
+
 export async function matchEdrEndpoints(
   tx: EdrSyncTx,
   connectionId: string,
+  opts: { strictUnique?: boolean } = {},
 ): Promise<{ linked: number; ambiguous: number }> {
+  const strictUnique = opts.strictUnique === true;
   // 1. Stale auto links: the device must still exist in the row's org, not be
   //    decommissioned, not be parked, and still answer to the row's match name.
   await tx
@@ -80,6 +91,8 @@ export async function matchEdrEndpoints(
     ));
 
   // 3. Unlinked, non-manual targets.
+  // Strict mode needs every row of the connection (linked or not) to count how
+  // many rows share a name, but only the unlinked, non-manual ones may be linked.
   const targets = await tx
     .select({
       id: edrEndpoints.id,
@@ -87,13 +100,21 @@ export async function matchEdrEndpoints(
       hostname: edrEndpoints.hostname,
       fqdn: edrEndpoints.fqdn,
       macAddresses: edrEndpoints.macAddresses,
+      breezeDeviceId: edrEndpoints.breezeDeviceId,
+      deviceMatchSource: edrEndpoints.deviceMatchSource,
     })
     .from(edrEndpoints)
-    .where(and(
-      eq(edrEndpoints.connectionId, connectionId),
-      sql`${edrEndpoints.deviceMatchSource} IS DISTINCT FROM 'manual'`,
-      isNull(edrEndpoints.breezeDeviceId),
-    ));
+    .where(strictUnique
+      ? eq(edrEndpoints.connectionId, connectionId)
+      : and(
+        eq(edrEndpoints.connectionId, connectionId),
+        sql`${edrEndpoints.deviceMatchSource} IS DISTINCT FROM 'manual'`,
+        isNull(edrEndpoints.breezeDeviceId),
+      ));
+
+  const eligible = (t: { breezeDeviceId?: string | null; deviceMatchSource?: string | null }): boolean =>
+    (t.breezeDeviceId ?? null) === null && t.deviceMatchSource !== 'manual';
+  const eligibleIds = new Set(targets.filter(eligible).map((t) => t.id));
 
   const named = targets
     .map((t) => ({
@@ -107,8 +128,13 @@ export async function matchEdrEndpoints(
     return { linked: await countLinked(tx, connectionId), ambiguous: 0 };
   }
 
-  const orgIds = [...new Set(named.map((t) => t.orgId))];
-  const names = [...new Set(named.map((t) => t.matchName))];
+  // Candidates are only needed for names an eligible row carries.
+  const eligibleNamed = named.filter((t) => eligibleIds.has(t.id));
+  if (eligibleNamed.length === 0) {
+    return { linked: await countLinked(tx, connectionId), ambiguous: 0 };
+  }
+  const orgIds = [...new Set(eligibleNamed.map((t) => t.orgId))];
+  const names = [...new Set(eligibleNamed.map((t) => t.matchName))];
 
   // `claimed` is scoped to THIS connection to match the per-connection partial
   // unique index; a device linked by another connection's product stays free.
@@ -123,7 +149,10 @@ export async function matchEdrEndpoints(
     { shortenFqdn: true },
   );
 
-  const { links, ambiguous } = resolveDeviceMatches(named, candidates);
+  const resolved = resolveDeviceMatches(named, candidates, { strictUnique });
+  // Rows that were only in the batch to be counted (already linked) are never re-linked or re-reported.
+  const links = resolved.links.filter((l) => eligibleIds.has(l.rowId));
+  const ambiguous = resolved.ambiguous.filter((id) => eligibleIds.has(id));
 
   if (links.length > 0) {
     try {

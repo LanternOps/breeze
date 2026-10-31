@@ -24,7 +24,7 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: Object.assign(
     (selector: (state: { updateUser: () => void }) => unknown) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) }
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true), commitMfaStateIfCurrent: vi.fn(() => true) }) }
   )
 }));
 
@@ -184,6 +184,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
     render(<ProfilePage initialUser={PASSWORDLESS_USER} />);
 
     fireEvent.click(await screen.findByTestId('passkey-add'));
+    fireEvent.click(await screen.findByTestId('passkey-add-confirm'));
 
     await waitFor(() => expect(screen.getAllByText(LOCALIZED).length).toBeGreaterThan(0));
     expect(screen.queryByText(/Please verify with your identity provider again/i)).toBeNull();
@@ -210,6 +211,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
     render(<ProfilePage initialUser={PASSWORDLESS_USER} />);
 
     fireEvent.click(await screen.findByTestId('passkey-add'));
+    fireEvent.click(await screen.findByTestId('passkey-add-confirm'));
 
     await waitFor(() => expect(screen.getAllByText(LOCALIZED).length).toBeGreaterThan(0));
     expect(screen.queryByText(/Please verify with your identity provider again/i)).toBeNull();
