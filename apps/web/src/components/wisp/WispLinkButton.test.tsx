@@ -27,7 +27,7 @@ const res = (status: number, body: unknown) => ({ ok: status >= 200 && status < 
 const threadBody = (threadId: string, grantId: string, status = 'active') => ({
   data: { thread: { id: threadId, focusOrgId: null, summary: '' }, grant: { id: grantId, status, orgId: null, expiresAt: '2026-12-01T00:00:00Z' } },
 });
-const ticketLink = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'org-1' }, label: '#1 Jam', status: 'open', href: '/tickets/t-1', addedBy: 'user', createdAt: '' };
+const ticketLink = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'org-1' }, label: '#1 Jam', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '' };
 
 describe('WispLinkButton (W08 Task 10)', () => {
   beforeEach(() => {

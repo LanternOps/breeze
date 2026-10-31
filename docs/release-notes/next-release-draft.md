@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### Software version manager: install scripts and zip (#10037)
 
 Adding a version to an existing package now has the pre/post-install script fields and accepts zip, as Add Package does; the form checks the same rules before saving (zip needs a post-install script, scripts need exactly one target OS). A new version starts with the latest version's active scripts. Silent-install arguments are no longer offered for pkg, dmg, deb or zip. Editing a version shows its scripts read-only (they cannot change after creation) and locks the target OS while its scripts are active. No API change, no migration.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

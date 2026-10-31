@@ -214,6 +214,10 @@ type SessionManager struct {
 	// while a watchdog is running would be a data race.
 	clock *watchdogClock
 
+	// notifyEnding, when set, replaces the watchdog's session_ending send
+	// (#10421). Test-only, with the same set-before-start rule as clock.
+	notifyEnding func(session *Session, body map[string]any)
+
 	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
 	// revocation lease for a session. Set by the layer that owns the agent's
 	// command WebSocket (the heartbeat), because this package has no transport
@@ -325,6 +329,15 @@ func (m *SessionManager) HasActiveSessions() bool {
 		}
 	}
 	return false
+}
+
+// HasSession reports whether sessionID is still registered with this manager
+// (#10316: the agent's banner sweep asks before hiding a session's banner).
+func (m *SessionManager) HasSession(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.sessions[sessionID]
+	return ok
 }
 
 // SetAtLoginWindow updates the login-window input mode on all active sessions.

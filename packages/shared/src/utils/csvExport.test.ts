@@ -88,6 +88,21 @@ describe('rowsToCsv', () => {
   it('renders null/undefined cells as empty', () => {
     expect(rowsToCsv([{ a: null, b: undefined }])).toBe('"a","b"\n"",""');
   });
+
+  // #9964: a customer-facing export labels its columns instead of leaking the
+  // row's camelCase keys; a key with no label keeps the key.
+  it('maps header keys through headerLabels, leaving unlabelled keys and the body as-is', () => {
+    const csv = rowsToCsv(
+      [{ cisPassRate: 80, extra: 'x' }],
+      { headerLabels: { cisPassRate: 'CIS pass rate (%)' } },
+    );
+    expect(csv).toBe('"CIS pass rate (%)","extra"\n"80","x"');
+  });
+
+  it('neutralizes a formula payload in a header LABEL too', () => {
+    const csv = rowsToCsv([{ a: 1 }], { headerLabels: { a: HYPERLINK } });
+    expect(csv.split('\n')[0]).toBe(escapeCsvCell(HYPERLINK));
+  });
 });
 
 describe('rowsToTsv', () => {

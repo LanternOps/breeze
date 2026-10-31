@@ -560,11 +560,19 @@ reject_grep 'continue-on-error:[[:space:]]*true' .github/workflows/security.yml 
 # must keep invoking the real gate, and the scanner binary must stay pinned and
 # checksum-verified before install.
 for audit_workflow in .github/workflows/ci.yml .github/workflows/security.yml; do
-  require_grep 'scripts/security/check-npm-audit\.sh' "$audit_workflow" \
-    "$audit_workflow must run the blocking dependency audit gate"
   require_grep 'scripts/security/install-osv-scanner\.sh' "$audit_workflow" \
     "$audit_workflow must install osv-scanner via the checksum-verified installer"
 done
+require_grep 'scripts/security/check-npm-audit\.sh' .github/workflows/security.yml \
+  ".github/workflows/security.yml must run the blocking dependency audit gate"
+# ci.yml runs the gate through the base/head comparison (W1, #10744), which
+# must itself keep invoking the real gate on the head.
+require_grep '^[[:space:]]*run: bash \.github/scripts/security-audit-compare\.sh' .github/workflows/ci.yml \
+  ".github/workflows/ci.yml must run the blocking dependency audit gate (.github/scripts/security-audit-compare.sh)"
+require_grep '^gate=scripts/security/check-npm-audit\.sh$' .github/scripts/security-audit-compare.sh \
+  ".github/scripts/security-audit-compare.sh must run the blocking dependency audit gate"
+require_grep '^bash "\$gate" --findings-json "\$head_json"$' .github/scripts/security-audit-compare.sh \
+  ".github/scripts/security-audit-compare.sh must scan the head with the blocking dependency audit gate"
 require_grep 'OSV_SCANNER_VERSION:-[0-9]+\.[0-9]+\.[0-9]+' scripts/security/install-osv-scanner.sh \
   "osv-scanner install must pin an explicit version"
 require_grep 'sha256sum -c -' scripts/security/install-osv-scanner.sh \
