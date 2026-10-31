@@ -77,7 +77,8 @@
       "recurrenceThreshold": "Escalader après",
       "recurrenceWindowDays": "épisodes en (jours)",
       "pauseResponses": "Suspendre les réponses automatiques jusqu’à ce qu’une personne les réinitialise",
-      "aiAgent": "Agent IA (active les réponses de triage par IA)"
+      "aiAgent": "Agent IA (active les réponses de triage par IA)",
+      "psaBoard": "Tableau du PSA pour les tickets d’alerte"
     },
     "deliveryModes": {
       "inherit": "Utiliser les règles de routage",
@@ -170,7 +171,11 @@
       "failed": "Impossible de charger les actifs",
       "orgRequired": "Sélectionnez une organisation propriétaire pour lier un actif.",
       "pingName": "Ping vers {{label}}"
-    }
+    },
+    "psaBoardDefault": "Utiliser le tableau par défaut de la connexion",
+    "psaBoardHelp": "Les tickets d’alerte de ce moniteur sont créés dans ce tableau plutôt que dans celui par défaut de la connexion.",
+    "psaBoardReadOnly": "Les tickets d’alerte vont au tableau #{{id}} du PSA",
+    "psaBoardUnavailable": "Impossible de charger les tableaux du PSA ; le remplacement du tableau est donc indisponible pour le moment."
   },
   "kinds": {
     "composite": "Composite (toutes ou une parmi plusieurs)",

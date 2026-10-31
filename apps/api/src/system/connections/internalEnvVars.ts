@@ -504,6 +504,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SECURITY_*
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
+  SECURITY_SCAN_MANUAL_QUEUE_TTL_MINUTES: 'timing knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT: 'worker throughput knob',
   SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS: 'timing knob',

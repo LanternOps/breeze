@@ -1,0 +1,7 @@
+{"ImportPath":"github.com/breeze-rmm/agent/nope","Action":"build-output","Output":"# github.com/breeze-rmm/agent/setupfail\n"}
+{"ImportPath":"github.com/breeze-rmm/agent/nope","Action":"build-output","Output":"setupfail/s_test.go:5:2: no required module provides package github.com/breeze-rmm/agent/nope; to add it:\n"}
+{"ImportPath":"github.com/breeze-rmm/agent/nope","Action":"build-output","Output":"\tgo get github.com/breeze-rmm/agent/nope\n"}
+{"ImportPath":"github.com/breeze-rmm/agent/nope","Action":"build-fail"}
+{"Time":"2026-10-30T08:02:49.137345-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/setupfail"}
+{"Time":"2026-10-30T08:02:49.137374-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/setupfail","Output":"FAIL\tgithub.com/breeze-rmm/agent/setupfail [setup failed]\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:02:49.13738-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/setupfail","Elapsed":0,"FailedBuild":"github.com/breeze-rmm/agent/nope"}

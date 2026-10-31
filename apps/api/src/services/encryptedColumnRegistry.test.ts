@@ -59,6 +59,17 @@ describe('encryptedColumnRegistry', () => {
     }
   });
 
+  it('device_network_isolations.break_glass_secret_enc is row-bound (#10089)', () => {
+    // A break-glass secret pasted onto another episode's row must not decrypt there: its HMAC codes would
+    // release a different device. Key rotation must also reach it, or a retired key strands the secret.
+    const spec = encryptedColumnRegistry.find(
+      (c) => c.table === 'device_network_isolations' && c.column === 'break_glass_secret_enc',
+    );
+    expect(spec, 'device_network_isolations.break_glass_secret_enc missing from encryptedColumnRegistry').toBeDefined();
+    expect(spec).toMatchObject({ kind: 'text', aadBinding: 'row' });
+    expect(spec?.idColumn).toBeUndefined();
+  });
+
   it('flows.webhook_secret_encrypted is row-bound', () => {
     // A flow's webhook signing secret pasted onto another flow's row must not decrypt.
     const spec = encryptedColumnRegistry.find((c) => c.table === 'flows' && c.column === 'webhook_secret_encrypted');

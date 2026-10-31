@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### AI per-device script history (#10417)
 
 - `get_script_execution_history` takes `deviceId` (and an optional `since`) in place of, or together with, `scriptId`, so the assistant can answer "did my script run on device X?". Each row now carries the script name, source and trigger type. Same `scripts:read` permission as the device Scripts tab. No migration, no new environment variable.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.
