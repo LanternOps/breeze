@@ -176,8 +176,10 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
           siteId: { type: 'string', description: 'Filter by site UUID' },
           search: { type: 'string', description: 'Search by hostname or display name (partial match)' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Filter by tags (devices must have all specified tags)' },
-          // Default 20 (was 25): a 25-row page sat within ~100 bytes of the chat
-          // budget, leaving no room for the org fields a multi-org caller gets (#10408).
+          // Default 20 (was 25): the 25-row budget-fixture page (DEVICE_ROW in
+          // aiToolsDevice.outputShape.test.ts) sat within ~100 chars of
+          // MAX_TOOL_RESULT_CHARS, leaving no room for the org fields a
+          // multi-org caller gets (#10408).
           ...pageParamSchema(20, 100),
         }
       }

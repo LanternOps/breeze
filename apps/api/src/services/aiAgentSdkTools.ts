@@ -2317,7 +2317,7 @@ export function buildBreezeSdkTools(
         status: z.enum(['active', 'acknowledged', 'resolved', 'suppressed']).optional(),
         severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
         deviceId: uuid.optional(),
-        ...keysetZodShape(15, 100),
+        ...keysetZodShape(12, 100),
         resolutionNote: z.string().max(1000).optional(),
       },
       makeHandler('manage_alerts', getAuth, onPreToolUse, onPostToolUse)

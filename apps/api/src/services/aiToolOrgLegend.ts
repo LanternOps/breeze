@@ -1,8 +1,10 @@
 /**
  * AI Tools — which organization a list row belongs to (#10408).
  *
- * A partner-wide caller (partner auth, a Wisp grant ceiling, system scope)
- * reads devices and alerts from many orgs in one page. Without the org on
+ * A caller whose reach spans several orgs — a partner user with more than one
+ * org, a Wisp session whose grant ceiling covers several orgs (chatCeiling.ts
+ * cuts `accessibleOrgIds` to the ceiling orgs), or system scope — reads
+ * devices and alerts from many orgs in one page. Without the org on
  * each row the model groups them wrongly, narrates the wrong customer, and
  * builds one proposal across orgs that the write path then refuses.
  *
@@ -14,7 +16,10 @@
  *
  * Byte budget: a list tool's default page must fit MAX_TOOL_RESULT_CHARS
  * uncompacted (aiToolOutputBudget.testkit.ts). Per-row names did not fit; the
- * per-row id plus the deduped legend does at the tools' default page sizes.
+ * per-row id plus the deduped legend does at the tools' default page sizes for
+ * a page spanning a handful of orgs. A page with a distinct org on every row
+ * may still be compacted — honestly (resume cursor kept; the legend is in
+ * first-seen order, so a kept row's org stays in the kept legend).
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -23,7 +28,8 @@ import type { AuthContext } from '../middleware/auth';
 
 /**
  * True when the caller's read reach covers more than one org. `null` means
- * unrestricted (system scope, or every org under the partner). Anything that
+ * unrestricted (system scope); partner callers, including `orgAccess='all'`,
+ * carry an explicit id list (computeAccessibleOrgIds). Anything that
  * is not an array or null (a hand-built context with no reach recorded) is
  * treated as single-org, which only omits the extra fields.
  */
@@ -35,8 +41,9 @@ export function readReachSpansOrgs(auth: Pick<AuthContext, 'accessibleOrgIds'>):
 
 /**
  * The org's display name for a row's `org_id` column, as a correlated scalar
- * subquery. It runs under the caller's RLS like the rest of the query, so an
- * org the caller cannot read yields null rather than a name.
+ * subquery. It is evaluated in the same statement and DB context as the rest
+ * of the query, so `organizations` RLS applies to non-system callers; a name
+ * the caller cannot read comes back null rather than leaking.
  */
 export function orgNameOf(orgIdColumn: PgColumn): SQL<string | null> {
   return sql<string | null>`(select ${organizations.name} from ${organizations} where ${organizations.id} = ${orgIdColumn})`;
