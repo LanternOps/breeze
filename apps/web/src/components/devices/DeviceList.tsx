@@ -501,6 +501,8 @@ type DeviceListProps = {
   devices: Device[];
   orgs?: { id: string; name: string }[];
   sites?: { id: string; name: string }[];
+  // Still accepted by callers but unused: the device-group filter lives in the
+  // chip bar, and group creation lives on the Device Groups page (#9865).
   groups?: {
     id: string;
     name: string;
@@ -510,9 +512,6 @@ type DeviceListProps = {
   // Still accepted by callers, but the device-group filter now lives in the
   // chip bar (server-resolved), so DeviceList no longer filters by membership.
   groupMembershipMap?: Map<string, Set<string>>;
-  onCreateGroup?: () => void;
-  autoSelectGroupId?: string | null;
-  onAutoSelectConsumed?: () => void;
   timezone?: string;
   onSelect?: (device: Device) => void;
   onAction?: (action: string, device: Device) => void;
@@ -881,9 +880,6 @@ const ATTENTION_EXPORT_WAVE = 500;
 
 export default function DeviceList({
   devices,
-  groups = [],
-  autoSelectGroupId,
-  onAutoSelectConsumed,
   timezone,
   onSelect,
   onAction,
@@ -1117,15 +1113,6 @@ export default function DeviceList({
     setColumnOrder(cols.map((c) => c.id));
     setVisibleColumns(new Set(cols.filter((c) => c.visible).map((c) => c.id)));
   };
-
-  // Notify the parent that a freshly-created group has been handled. The group
-  // filter itself now lives in the chip bar (server-resolved), so there is no
-  // local group selection to toggle here — just consume the one-shot signal.
-  useEffect(() => {
-    if (autoSelectGroupId && groups.some((g) => g.id === autoSelectGroupId)) {
-      onAutoSelectConsumed?.();
-    }
-  }, [autoSelectGroupId, groups, onAutoSelectConsumed]);
 
   // Reset to page 1 whenever a list-local narrowing changes (device search,
   // the VPN facet, the server-resolved id set). The page-level class segment
