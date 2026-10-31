@@ -10,6 +10,9 @@ DECLARE
   v_alert uuid := 'e2e10727-0000-4000-8000-000000000004';
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
+  -- Playwright runs one beforeAll per worker; serialize concurrent seeds so the
+  -- composite unique indexes are not raced (one worker inserts, the next upserts).
+  PERFORM pg_advisory_xact_lock(hashtext('e2e-org-subject-alerts-seed'));
   SELECT o.id, o.partner_id INTO v_org, v_partner
     FROM organizations o JOIN users u ON u.partner_id = o.partner_id
    WHERE u.email = 'admin@breeze.local' AND o.name = 'Default Organization' LIMIT 1;
