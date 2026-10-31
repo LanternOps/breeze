@@ -226,3 +226,8 @@ Update agents to a release containing this change before relying on the provider
 - **Upgrade behaviour:** events collected just before and after an agent upgrade can appear twice, once with the old id and once with the new one. Rows already stored keep their old ids. Needs an agent update.
 - **API:** an uploaded event id longer than 100 characters (the column size) now drops only that row, counted in `invalidDropped`. Before, it failed the insert of every row in the same batch of 100.
 - No migration, environment variable or setting.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

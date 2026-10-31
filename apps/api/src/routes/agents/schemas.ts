@@ -653,6 +653,19 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'unsupported_encoding',
   'invalid_argument',
   'scan_in_progress',
+  // Network-isolation containment (#10088): one per episode failure code, plus
+  // the four refusals. Classified by the isolation finalizer (W1b).
+  'isolation_unsupported_platform',
+  'isolation_mechanism_unavailable',
+  'isolation_apply_error',
+  'isolation_control_plane_unreachable',
+  'isolation_enforcement_not_observed',
+  'isolation_not_delivered',
+  'isolation_agent_unsupported',
+  'isolation_episode_mismatch',
+  'isolation_stale_generation',
+  'isolation_invalid_spec',
+  'isolation_busy',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];

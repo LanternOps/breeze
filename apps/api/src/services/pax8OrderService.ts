@@ -537,7 +537,7 @@ async function requireCurrentCompanyOrderReady(
 export async function getOrCreateDraftOrder(input: {
   partnerId: string;
   orgId: string;
-  actorUserId: string;
+  actorUserId: string | null;
 }): Promise<Pax8OrderRow> {
   const [mapping] = await db
     .select()

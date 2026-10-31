@@ -4,7 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
 const responsibilityMocks = vi.hoisted(() => ({
-  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+  syncLegacyContactRoles: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./responsibilities', () => responsibilityMocks);
 
@@ -683,7 +683,7 @@ describe('updateContact writes only what the patch names', () => {
     expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
   });
 
-  it('re-derives canonical responsibilities when a legacy siteId-only patch changes scope', async () => {
+  it('re-scopes canonical responsibilities when a legacy siteId-only patch re-pins the contact', async () => {
     const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: ['admin'] };
     const updated = { ...stored, siteId: SITE };
     const { exec } = makeExec([
@@ -693,19 +693,33 @@ describe('updateContact writes only what the patch names', () => {
       [stored],          // locked target re-read
     ], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
-      exec,
-      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
-    );
+    // legacy re-pin: the adapter re-derives scope from the new pin (spec §7.4/§8.3)
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(expect.anything(), {
+      contactId: CONTACT, orgId: ORG, siteId: SITE, previousSiteId: null, roles: ['admin'],
+    });
+  });
+
+  it('passes the previous pin to the adapter when a legacy siteId patch un-pins the contact', async () => {
+    const stored = { ...PLAIN_ORG_ROW, siteId: SITE, isPrimary: false, roles: ['billing'] };
+    const updated = { ...stored, siteId: null };
+    const { exec } = makeExec([
+      [stored],          // getContact
+      [],                // organization pre-lock
+      [stored],          // locked target re-read
+    ], { updateReturns: [[updated]] });
+    await updateContact(exec, CONTACT, ORG, { siteId: null }, ACTOR);
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(expect.anything(), {
+      contactId: CONTACT, orgId: ORG, siteId: null, previousSiteId: SITE, roles: ['billing'],
+    });
   });
 
   it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {
     const updated = { ...PLAIN_ORG_ROW, siteId: SITE, roles: ['admin'] };
     const { exec } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]], { updateReturns: [[updated]] });
     await updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR);
-    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+    expect(responsibilityMocks.syncLegacyContactRoles).toHaveBeenCalledWith(
       exec,
-      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, previousSiteId: SITE, roles: ['admin'] },
     );
   });
 
