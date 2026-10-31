@@ -645,6 +645,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_time_daily',
   'device_time_status',
   'device_vulnerabilities',
+  'device_wake_attempts',
+  'device_wake_status',
   'device_warranty',
   // #3834 — workload host inventory. Composite FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf tables, no children.

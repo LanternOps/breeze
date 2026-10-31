@@ -211,6 +211,7 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
       // #4755: composite (device_id, org_id) FK ON UPDATE CASCADE restamps it.
       'device_restore_point_attempts',
       'security_agent_device_status',
+      'device_wake_status',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
@@ -390,7 +391,13 @@ describe('device org-move disposition (#8634)', () => {
     // carries org_id to some row other than the device (a site, a config row)
     // which stays in the source org. Without one, the table belongs in the
     // restamp list, and listing it here would silently destroy its data.
+    // Approved wake lifecycle: source-network attempt/relay evidence is discarded,
+    // even though its device FK could restamp it. The real mover integration test
+    // pins deletion and clearing of status proof on the same transaction.
+    const reviewedDeletes = ['device_wake_attempts'];
+    expect(CORE_DEVICE_ORG_MOVE_DELETE_TABLES).toEqual(expect.arrayContaining(reviewedDeletes));
     const unjustified = CORE_DEVICE_ORG_MOVE_DELETE_TABLES.filter((name) => {
+      if (reviewedDeletes.includes(name)) return false;
       const table = tableByName.get(name);
       if (!table) return false; // covered by the stale-entry test above
       return !getTableConfig(table).foreignKeys.some((fk) => {

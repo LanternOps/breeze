@@ -249,3 +249,5 @@ export * from './wispConcerns';
 export * from './wispThreadLinks';
 export * from './wispThreadPosts';
 export * from './aiMemoryBlocks';
+
+export * from './deviceWake';

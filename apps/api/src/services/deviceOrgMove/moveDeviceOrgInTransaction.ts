@@ -1060,6 +1060,11 @@ export async function moveDeviceOrgInTransaction(
     await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
   }
 
+  // Wake proof is specific to the source org's network and must be earned again.
+  await tx.execute(sql`UPDATE device_wake_status
+    SET last_came_online_at = NULL, proof_fingerprint = NULL, consecutive_timeouts = 0
+    WHERE device_id = ${deviceId}::uuid`);
+
   // Ticket-linked billing rows denormalize org_id from their ticket (Phase 3 spec §2);
   // tickets bound to this device move org with it, so these must follow —
   // same stranded-org_id class as ticket_alert_links (#1261).
