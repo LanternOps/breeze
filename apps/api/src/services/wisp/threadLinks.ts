@@ -241,7 +241,7 @@ async function readStoredLinks(
   const rows = await inPartner(partnerId, () => db.select().from(wispThreadLinks)
     .where(and(eq(wispThreadLinks.threadId, threadId), eq(wispThreadLinks.partnerId, partnerId)))
     .orderBy(desc(wispThreadLinks.lastTouchedAt), desc(wispThreadLinks.id))
-    .limit(WISP_THREAD_LINK_LIMIT * 2));
+    .limit(WISP_THREAD_LINK_LIMIT + WISP_THREAD_AUTO_LINK_LIMIT));
 
   const out: WispThreadLink[] = [];
   const gone: string[] = [];
@@ -274,10 +274,13 @@ async function readStoredLinks(
   return out;
 }
 
-/** Stored-only read for list_links; preserve its existing output cap. */
+/** Stored-only read: keep every pin before the separately bounded auto links. */
 export async function listLinks(ctx: EntityResolveContext, threadId: string): Promise<WispThreadLink[]> {
   const links = await readStoredLinks(ctx, threadId, createEntityResolver(ctx));
-  return links.slice(0, WISP_THREAD_LINK_LIMIT);
+  return [
+    ...links.filter((link) => link.source !== 'auto'),
+    ...links.filter((link) => link.source === 'auto').slice(0, WISP_THREAD_AUTO_LINK_LIMIT),
+  ];
 }
 
 /** Pins, live concern subjects, then autos; concern rows are never persisted. */
