@@ -1,7 +1,10 @@
+import { captureException } from '@sentry/astro';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sparkles } from 'lucide-react';
 import type { WispEntityKind } from '@breeze/shared';
+import { usePermissions } from '@/lib/permissions';
+import { WispTalkError } from '@/lib/wispTalkError';
 import { useEntitlement } from '@/hooks/useEntitlement';
 import { useJwtClaims } from '@/lib/authScope';
 import { useWispEnabled } from '@/lib/wispVisibility';
@@ -25,20 +28,22 @@ export default function WispTalkButton({ kind, id, orgId, label, size = 'md' }: 
   size?: keyof typeof SIZE_CLASSES;
 }) {
   const { t } = useTranslation('ai');
+  const { can } = usePermissions();
+  const canUseAi = can('ai_sessions', 'use');
   const claims = useJwtClaims();
   const partnerToken = claims.status === 'resolved' && claims.claims.scope === 'partner';
-  const serverOn = useWispEnabled({ enabled: partnerToken });
+  const serverOn = useWispEnabled({ enabled: partnerToken && canUseAi });
   const entitlement = useEntitlement('wisp');
   const wisp = useAiStore((s) => s.wisp);
   const talk = useAiStore((s) => s.talkToWispAbout);
   const plain = useAiStore((s) => s.openPlainChatAbout);
   const request = useAiStore((s) => s.wispTalkFocusRequest);
   const resolveFocus = useAiStore((s) => s.resolveWispTalkFocus);
-  const [grant, setGrant] = useState<boolean | null>(null);
+  const [grant, setGrant] = useState<boolean | null | 'failed'>(null);
   const [busy, setBusy] = useState(false);
   const ownedRequest = useRef<typeof request>(null);
   const mounted = useRef(true);
-  const eligible = serverOn && partnerToken && entitlement.state === 'enabled';
+  const eligible = canUseAi && serverOn && partnerToken && entitlement.state === 'enabled';
   const active = wisp?.status === 'active' && (!wisp.scopeOrgId || wisp.scopeOrgId === orgId);
 
   useEffect(() => {
@@ -53,15 +58,15 @@ export default function WispTalkButton({ kind, id, orgId, label, size = 'md' }: 
     void activeThreadFor(orgId).then((thread) => {
       if (live) setGrant(thread !== null);
     }).catch((err: unknown) => {
-      console.error('[WispTalkButton] looking up the Wisp thread failed', err);
-      // Unknown grant state must not masquerade as an ordinary no-grant answer.
+      captureException(err, { extra: { orgId, kind, id } });
+      if (live) setGrant('failed');
     });
     return () => { live = false; };
-  }, [eligible, active, orgId]);
+  }, [eligible, active, orgId, kind, id]);
 
   const ownsRequest = busy && request?.target.kind === kind && request.target.id === id;
   ownedRequest.current = ownsRequest ? request : null;
-  if (claims.status !== 'resolved' || (eligible && !active && grant === null)) return null;
+  if (!canUseAi || claims.status !== 'resolved' || (eligible && !active && grant === null)) return null;
   const hasGrant = eligible && (active || grant === true);
   const click = async () => {
     if (busy) return;
@@ -71,8 +76,11 @@ export default function WispTalkButton({ kind, id, orgId, label, size = 'md' }: 
       if (hasGrant) await talk(target);
       else await plain(target);
     } catch (err) {
-      if (err instanceof ActionError && err.status === 401) return;
-      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('wisp.links.addFailed') });
+      if ((err instanceof ActionError || err instanceof WispTalkError) && err.status === 401) return;
+      if (err instanceof ActionError || (err instanceof WispTalkError && err.alreadyToasted)) return;
+      showToast({ type: 'error', message: err instanceof WispTalkError && err.code === 'pin_failed'
+        ? t('wisp.links.addFailed')
+        : t('wisp.talk.openFailed', { message: err instanceof Error ? err.message : '' }) });
     } finally {
       if (mounted.current) setBusy(false);
     }

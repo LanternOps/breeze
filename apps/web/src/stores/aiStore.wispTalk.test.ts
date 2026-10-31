@@ -7,6 +7,8 @@ vi.mock('@/lib/wispTalk', () => ({ activeThreadFor: h.activeThreadFor }));
 vi.mock('@/lib/wispLinksApi', () => ({ addWispLink: h.addWispLink }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: h.showToast }));
 
+import { WispTalkError } from '@/lib/wispTalkError';
+import { ActionError } from '@/lib/runAction';
 import { useAiStore, type WispState } from './aiStore';
 import { runLogoutHooks } from './logoutHooks';
 
@@ -74,7 +76,7 @@ describe('talkToWispAbout', () => {
     const pending = useAiStore.getState().talkToWispAbout(target);
     await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
     useAiStore.getState().resolveWispTalkFocus(true);
-    expect(await pending).toBe('declined_focus');
+    expect(await pending).toBe('failed');
     expect(h.addWispLink).not.toHaveBeenCalled();
     expect(useAiStore.getState().composerDraft).toBe('');
   });
@@ -85,7 +87,7 @@ describe('talkToWispAbout', () => {
     await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
     useAiStore.setState({ wisp: grant({ threadId: 'thread-other' }) });
     useAiStore.getState().resolveWispTalkFocus(true);
-    expect(await pending).toBe('declined_focus');
+    expect(await pending).toBe('superseded');
     expect(h.addWispLink).not.toHaveBeenCalled();
   });
 
@@ -113,7 +115,7 @@ describe('talkToWispAbout', () => {
 
   it('does not overwrite another session after pin returns', async () => {
     h.addWispLink.mockImplementation(async () => { useAiStore.setState({ sessionId: 'session-other' }); return { id: 'link-1' }; });
-    expect(await useAiStore.getState().talkToWispAbout(target)).toBe('declined_focus');
+    expect(await useAiStore.getState().talkToWispAbout(target)).toBe('superseded');
     expect(useAiStore.getState().composerDraft).toBe('');
   });
 });
@@ -137,7 +139,7 @@ it('a newer request cancels an older confirmation instead of leaving it pending'
   await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
   const second = useAiStore.getState().talkToWispAbout({ ...target, id: 'ticket-2' });
   await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest?.target.id).toBe('ticket-2'));
-  expect(await first).toBe('declined_focus');
+  expect(await first).toBe('superseded');
   useAiStore.getState().resolveWispTalkFocus(false);
   expect(await second).toBe('declined_focus');
   expect(h.addWispLink).not.toHaveBeenCalled();
@@ -191,7 +193,7 @@ it('logout cancels a pending confirmation before resetting the store', async () 
   const pending = useAiStore.getState().talkToWispAbout(target);
   await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
   runLogoutHooks();
-  expect(await pending).toBe('declined_focus');
+  expect(await pending).toBe('superseded');
   expect(useAiStore.getState()).toMatchObject({ wispTalkFocusRequest: null, wisp: null, sessionId: null, composerDraft: '' });
   expect(h.addWispLink).not.toHaveBeenCalled();
 });
@@ -214,6 +216,7 @@ it.each([true, false])('header action reveals the composer from History (grant=%
 
 it.each([false, true])('a superseded session create cannot prefill or open the newly selected conversation (grant=%s)', async (withGrant) => {
   let finish!: (response: Response) => void;
+  useAiStore.setState({ isOpen: !withGrant });
   h.activeThreadFor.mockResolvedValue(withGrant ? grant() : null);
   h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     if (url === '/ai/sessions' && init?.method === 'POST') return new Promise<Response>((resolve) => { finish = resolve; });
@@ -225,6 +228,96 @@ it.each([false, true])('a superseded session create cannot prefill or open the n
   await useAiStore.getState().loadSession('session-picked');
   expect(useAiStore.getState().sessionId).toBe('session-picked');
   finish(response({ id: 'session-stale', orgId: 'org-b' }));
-  await pending;
-  expect(useAiStore.getState()).toMatchObject({ sessionId: 'session-picked', composerDraft: '', composerFocusRequest: 0, isOpen: false });
+  expect(await pending).toBe('superseded');
+  expect(useAiStore.getState()).toMatchObject({ sessionId: 'session-picked', composerDraft: '', composerFocusRequest: 0, isOpen: !withGrant });
+});
+
+
+it.each([403, 500, 401])('plain session-create %s preserves typed failure and clears the next-open banner', async (status) => {
+  h.fetch.mockResolvedValue(response({ error: 'Plain create refused', code: 'create_refused' }, status));
+  const failure = await useAiStore.getState().openPlainChatAbout(target).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(WispTalkError);
+  expect(failure).toMatchObject({ code: 'session_create_failed', message: 'Plain create refused', status });
+  expect(useAiStore.getState()).toMatchObject({ isOpen: false, error: null, errorCode: null });
+  useAiStore.getState().open();
+  expect(useAiStore.getState().error).toBeNull();
+  expect(h.showToast).not.toHaveBeenCalled();
+});
+
+it('Wisp grant_inactive create preserves the reason in a typed error and clears the banner', async () => {
+  h.fetch.mockResolvedValue(response({ error: 'Grant inactive', code: 'grant_inactive' }, 409));
+  const failure = await useAiStore.getState().talkToWispAbout(target).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(WispTalkError);
+  expect(failure).toMatchObject({ code: 'session_create_failed', message: 'Grant inactive', status: 409 });
+  expect(useAiStore.getState()).toMatchObject({ error: null, errorCode: null, isOpen: false });
+});
+
+it.each([false, true])('a refused pin reveals the landed Wisp conversation (focus switched=%s)', async (switchFocus) => {
+  useAiStore.setState({ showHistory: true });
+  if (switchFocus) useAiStore.setState({ wisp: grant({ focusOrgId: 'org-a' }), sessionId: 'session-old' });
+  h.addWispLink.mockRejectedValue(new ActionError('Pin limit', 409, 'pin_limit'));
+  const pending = useAiStore.getState().talkToWispAbout(target).catch((error: unknown) => error);
+  if (switchFocus) {
+    await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
+    useAiStore.getState().resolveWispTalkFocus(true);
+  }
+  const failure = await pending;
+  expect(failure).toBeInstanceOf(WispTalkError);
+  expect(failure).toMatchObject({ code: 'pin_failed', message: 'Pin limit', status: 409, alreadyToasted: true });
+  expect(useAiStore.getState()).toMatchObject({ isOpen: true, showHistory: false, composerDraft: '', composerFocusRequest: 0, sessionId: 'session-new' });
+  if (switchFocus) expect(useAiStore.getState().wisp?.focusOrgId).toBe('org-b');
+});
+
+it('a session refusal after changing focus reports the reason and clears the banner', async () => {
+  useAiStore.setState({ wisp: grant({ focusOrgId: 'org-a' }), sessionId: 'session-old' });
+  h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/focus')) return response({ data: { focusOrgId: 'org-b', focusOrgName: 'Organization B' } });
+    if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Grant inactive', code: 'grant_inactive' }, 409);
+    return response({ success: true });
+  });
+  const pending = useAiStore.getState().talkToWispAbout(target).catch((error: unknown) => error);
+  await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
+  useAiStore.getState().resolveWispTalkFocus(true);
+  expect(await pending).toMatchObject({ code: 'session_create_failed', message: 'Grant inactive', status: 409 });
+  expect(useAiStore.getState()).toMatchObject({ error: null, errorCode: null, isOpen: false });
+  expect(h.addWispLink).not.toHaveBeenCalled();
+});
+
+it('a new session owner during the focus PATCH supersedes the talk action', async () => {
+  useAiStore.setState({ wisp: grant({ focusOrgId: 'org-a' }), sessionId: 'session-old' });
+  let finishFocus!: (value: Response) => void;
+  h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/focus')) return new Promise<Response>((resolve) => { finishFocus = resolve; });
+    if (url === '/ai/sessions/session-picked') return response({ session: { id: 'session-picked', type: 'general', status: 'active', orgId: 'org-b', wispGrantId: 'grant-1' }, messages: [] });
+    if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'session-new', orgId: 'org-b' });
+    return response({ success: true });
+  });
+  const pending = useAiStore.getState().talkToWispAbout(target);
+  await vi.waitFor(() => expect(useAiStore.getState().wispTalkFocusRequest).not.toBeNull());
+  useAiStore.getState().resolveWispTalkFocus(true);
+  await vi.waitFor(() => expect(finishFocus).toBeTypeOf('function'));
+  await useAiStore.getState().loadSession('session-picked');
+  finishFocus(response({ data: { focusOrgId: 'org-b', focusOrgName: 'Organization B' } }));
+  expect(await pending).toBe('superseded');
+  expect(useAiStore.getState()).toMatchObject({ sessionId: 'session-picked', isOpen: false, composerDraft: '' });
+  expect(h.addWispLink).not.toHaveBeenCalled();
+});
+
+it('a pending new owner during pin supersedes before its session id commits', async () => {
+  useAiStore.setState({ wisp: grant(), sessionId: 'session-old' });
+  let finishPin!: (value: { id: string }) => void;
+  let finishLoad!: (value: Response) => void;
+  h.addWispLink.mockImplementation(() => new Promise((resolve) => { finishPin = resolve; }));
+  h.fetch.mockImplementation(async (url: string) => {
+    if (url === '/ai/sessions/session-picked') return new Promise<Response>((resolve) => { finishLoad = resolve; });
+    return response({ data: [] });
+  });
+  const pending = useAiStore.getState().talkToWispAbout(target);
+  await vi.waitFor(() => expect(finishPin).toBeTypeOf('function'));
+  const loading = useAiStore.getState().loadSession('session-picked');
+  finishPin({ id: 'link-1' });
+  expect(await pending).toBe('superseded');
+  expect(useAiStore.getState()).toMatchObject({ isOpen: false, composerDraft: '', composerFocusRequest: 0 });
+  finishLoad(response({ session: { id: 'session-picked', type: 'general', status: 'active', orgId: 'org-b' }, messages: [] }));
+  await loading;
 });

@@ -874,6 +874,7 @@
       "link": "Bir öğe bağla"
     },
     "talk": {
+      "openFailed": "Sohbet açılamadı: {{message}}",
       "button": "Wisp ile konuş",
       "buttonPlain": "Bunu yapay zekâya sor",
       "draft": "{{label}} hakkında: ",

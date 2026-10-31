@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link2, Plus } from 'lucide-react';
 import { WISP_THREAD_LINK_LIMIT, type WispThreadLink } from '@breeze/shared';
@@ -24,7 +24,7 @@ export default function WispLinksPanel({
 }: {
   threadId: string;
   links: WispThreadLink[];
-  onLinksChange: (links: WispThreadLink[]) => void;
+  onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   canAdd?: boolean;
 }) {
   const { t } = useTranslation('ai');
@@ -46,8 +46,12 @@ export default function WispLinksPanel({
     setRemovingId(link.id);
     try {
       await removeWispLink(threadId, link.id);
-      onLinksChange(links.filter((l) => l.id !== link.id));
+      onLinksChange((prev) => prev.filter((l) => l.id !== link.id));
     } catch (err) {
+      if (err instanceof ActionError && err.status === 404) {
+        onLinksChange((prev) => prev.filter((l) => l.id !== link.id));
+        return; // Another request already removed it.
+      }
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('wisp.links.removeFailed') }); // ActionError already toasted
     } finally {
@@ -57,8 +61,9 @@ export default function WispLinksPanel({
 
   const onLinked = (link: WispThreadLink) => {
     const key = linkKey(link.ref.kind, link.ref.id);
-    const exists = links.some((l) => linkKey(l.ref.kind, l.ref.id) === key);
-    onLinksChange(exists ? links.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l)) : [...links, link]);
+    onLinksChange((prev) => prev.some((l) => linkKey(l.ref.kind, l.ref.id) === key)
+      ? prev.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l))
+      : [...prev, link]);
     setPickerOpen(false);
   };
 

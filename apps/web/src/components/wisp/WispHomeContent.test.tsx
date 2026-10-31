@@ -316,7 +316,7 @@ describe('WispHomeContent', () => {
     render(<WispHomeContent />);
     await screen.findByTestId('wisp-rail');
     const release = deferPoll();
-    act(() => (h.railProps?.onLinksChange as (l: unknown[]) => void)([...(h.railProps?.links as unknown[]), added]));
+    act(() => (h.railProps?.onLinksChange as (update: (prev: unknown[]) => unknown[]) => void)((prev) => [...prev, added]));
     await release({ kind: 'ready', payload: payload(), wisp });
     expect(linkIds(h.railProps)).toEqual(['l-1', 'l-2']);
     expect(linkIds(h.threadProps)).toEqual(['l-1', 'l-2']);

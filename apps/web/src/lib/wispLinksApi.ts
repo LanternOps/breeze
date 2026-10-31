@@ -77,7 +77,8 @@ export async function pinWispLink(threadId: string, linkId: string): Promise<Wis
   return body.data.link;
 }
 
-// W04-D1: wired after W02 (#10366) merges
+// W04-D1: listWispNeighbours and wisp.links.neighbours are intentionally unused
+// until W02 (#10366) merges. W04 adds no neighbours route or UI expansion.
 export async function listWispNeighbours(_threadId: string, _ref: { kind: WispEntityKind; id: string }): Promise<WispThreadLink[]> {
   throw new Error('Wisp neighbours are not wired yet');
 }

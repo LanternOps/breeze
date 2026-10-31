@@ -118,7 +118,7 @@ describe('InvoiceWorkspace', () => {
     render(<InvoiceWorkspace id="inv-1" />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
     const button = await screen.findByTestId('wisp-talk-button-mock');
-    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
+    expect(button).toHaveAttribute('data-label', 'Draft invoice');
     expect(button).toHaveAttribute('data-kind', 'invoice');
     expect(button).toHaveAttribute('data-id', 'inv-1');
     expect(button).toHaveAttribute('data-org', 'org-1');

@@ -874,6 +874,7 @@
       "link": "Collega un elemento"
     },
     "talk": {
+      "openFailed": "Impossibile aprire la chat: {{message}}",
       "button": "Parla con Wisp",
       "buttonPlain": "Chiedi all’IA",
       "draft": "Informazioni su {{label}}: ",

@@ -84,6 +84,7 @@ describe('QuoteWorkspace tabs', () => {
     });
     render(<QuoteWorkspace id="q-1" />);
     await waitFor(() => expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'quote', id: 'q-1', orgId: 'org-1', label: 'Draft quote' })));
+    expect(screen.getByTestId('wisp-talk-button-mock')).toHaveAttribute('data-label', 'Draft quote');
   });
 
   it('shows a status badge in the workspace header matching the quote status', async () => {

@@ -1,14 +1,17 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionError } from '@/lib/runAction';
+import { WispTalkError } from '@/lib/wispTalkError';
 
 const h = vi.hoisted(() => ({
   claims: { status: 'resolved', claims: { scope: 'partner', partnerId: 'p1', orgId: null } } as Record<string, unknown>,
-  server: true, entitlement: 'enabled', wisp: null as null | Record<string, unknown>,
+  canUseAi: true, capture: vi.fn(), server: true, entitlement: 'enabled', wisp: null as null | Record<string, unknown>,
   request: null as null | Record<string, unknown>,
   talk: vi.fn(), plain: vi.fn(), resolveFocus: vi.fn(), fetch: vi.fn(), toast: vi.fn(),
   visibilityOpts: undefined as undefined | { enabled?: boolean },
 }));
+vi.mock('@/lib/permissions', () => ({ usePermissions: () => ({ can: (resource: string, action: string) => resource === 'ai_sessions' && action === 'use' && h.canUseAi }) }));
+vi.mock('@sentry/astro', () => ({ captureException: h.capture }));
 vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => h.claims }));
 vi.mock('@/lib/wispVisibility', () => ({ useWispEnabled: (opts?: { enabled?: boolean }) => { h.visibilityOpts = opts; return h.server; } }));
 vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => ({ state: h.entitlement }) }));
@@ -28,13 +31,13 @@ const threadBody = (threadId = 'th1', status = 'active') => ({ data: {
   grant: { id: 'g1', status, orgId: null, expiresAt: '2099-01-01T00:00:00Z' },
 } });
 
+beforeEach(() => {
+  vi.clearAllMocks(); resetWispTalkTargetCache();
+  h.claims = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p1', orgId: null } };
+  h.canUseAi = true; h.server = true; h.entitlement = 'enabled'; h.wisp = null; h.request = null;
+  h.fetch.mockResolvedValue(res(200, threadBody())); h.talk.mockResolvedValue('opened'); h.plain.mockResolvedValue(undefined);
+});
 describe('WispTalkButton', () => {
-  beforeEach(() => {
-    vi.clearAllMocks(); resetWispTalkTargetCache();
-    h.claims = { status: 'resolved', claims: { scope: 'partner', partnerId: 'p1', orgId: null } };
-    h.server = true; h.entitlement = 'enabled'; h.wisp = null; h.request = null;
-    h.fetch.mockResolvedValue(res(200, threadBody())); h.talk.mockResolvedValue('opened'); h.plain.mockResolvedValue(undefined);
-  });
   it.each([
     ['flag off', () => { h.server = false; }],
     ['org token', () => { h.claims = { status: 'resolved', claims: { scope: 'organization' } }; }],
@@ -51,12 +54,15 @@ describe('WispTalkButton', () => {
     fireEvent.click(await screen.findByTestId('wisp-talk-button'));
     await waitFor(() => expect(h.talk).toHaveBeenCalledWith(target));
     expect(h.fetch).not.toHaveBeenCalled();
+    expect(screen.getByTestId('wisp-talk-button')).toHaveTextContent('Talk to Wisp');
     expect(screen.getByTestId('wisp-talk-button')).not.toBeDisabled();
   });
   it('without a grant falls through partner then record org and opens plain chat', async () => {
     h.fetch.mockResolvedValue(res(200, { data: null }));
     render(<WispTalkButton {...target} />);
-    fireEvent.click(await screen.findByTestId('wisp-talk-button'));
+    const button = await screen.findByTestId('wisp-talk-button');
+    expect(button).toHaveTextContent('Ask AI about this');
+    fireEvent.click(button);
     await waitFor(() => expect(h.plain).toHaveBeenCalledWith(target));
     expect(h.fetch).toHaveBeenNthCalledWith(1, '/wisp/thread', { skipOrgIdInjection: true });
     expect(h.fetch).toHaveBeenNthCalledWith(2, '/wisp/thread?orgId=o1', { skipOrgIdInjection: true });
@@ -103,6 +109,7 @@ describe('WispTalkButton', () => {
     await waitFor(() => expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
   it('renders an inline focus choice and resolves no without a browser dialog', async () => {
+    const confirm = vi.spyOn(window, 'confirm');
     let finish!: (value: string) => void;
     h.talk.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     const view = render(<WispTalkButton {...target} size="sm" />);
@@ -112,6 +119,7 @@ describe('WispTalkButton', () => {
     expect(screen.getByTestId('wisp-talk-focus-popover')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('wisp-talk-focus-no'));
     expect(h.resolveFocus).toHaveBeenCalledWith(false);
+    expect(confirm).not.toHaveBeenCalled();
     finish('declined_focus');
     expect(screen.getByTestId('wisp-talk-button')).toHaveClass('text-xs');
   });
@@ -119,4 +127,68 @@ describe('WispTalkButton', () => {
     h.claims = { status: 'resolved', claims: { scope: 'organization' } };
     render(<WispTalkButton {...target} />); expect(h.visibilityOpts).toEqual({ enabled: false });
   });
+});
+
+
+it.each([true, false])('hides every AI affordance without ai_sessions:use (server=%s)', async (server) => {
+  h.canUseAi = false; h.server = server;
+  render(<WispTalkButton {...target} />);
+  await waitFor(() => expect(screen.queryByTestId('wisp-talk-button')).not.toBeInTheDocument());
+  expect(h.fetch).not.toHaveBeenCalled();
+});
+
+it('a failed grant lookup logs record context and leaves plain chat available', async () => {
+  const error = new Error('lookup unavailable');
+  h.fetch.mockRejectedValueOnce(error);
+  render(<WispTalkButton {...target} />);
+  const button = await screen.findByTestId('wisp-talk-button');
+  expect(button).toHaveTextContent('Ask AI about this');
+  expect(h.capture).toHaveBeenCalledWith(expect.objectContaining({ message: error.message }), { extra: { orgId: 'o1', kind: 'ticket', id: 't1' } });
+  fireEvent.click(button);
+  await waitFor(() => expect(h.plain).toHaveBeenCalledWith(target));
+  expect(h.talk).not.toHaveBeenCalled();
+});
+
+it.each([
+  [403, 'Chat is forbidden', false],
+  [500, 'Chat service unavailable', false],
+  [409, 'Grant inactive', true],
+])('shows the session-create reason once (%s, Wisp=%s)', async (status, message, withGrant) => {
+  h.fetch.mockResolvedValue(res(200, withGrant ? threadBody() : { data: null }));
+  (withGrant ? h.talk : h.plain).mockRejectedValue(new WispTalkError('session_create_failed', message, { status }));
+  render(<WispTalkButton {...target} />);
+  fireEvent.click(await screen.findByTestId('wisp-talk-button'));
+  await waitFor(() => expect(h.toast).toHaveBeenCalledExactlyOnceWith({ type: 'error', message: `Could not open chat: ${message}` }));
+});
+
+it('does not toast a session-create 401 over the auth redirect', async () => {
+  h.server = false;
+  h.plain.mockRejectedValue(new WispTalkError('session_create_failed', 'Unauthorized', { status: 401 }));
+  render(<WispTalkButton {...target} />);
+  fireEvent.click(await screen.findByTestId('wisp-talk-button'));
+  await waitFor(() => expect(screen.getByTestId('wisp-talk-button')).not.toBeDisabled());
+  expect(h.plain).toHaveBeenCalled();
+  expect(h.toast).not.toHaveBeenCalled();
+});
+
+it('uses link copy only for an unhandled pin failure', async () => {
+  h.talk.mockRejectedValue(new WispTalkError('pin_failed', 'Pin limit'));
+  render(<WispTalkButton {...target} />);
+  fireEvent.click(await screen.findByTestId('wisp-talk-button'));
+  await waitFor(() => expect(h.toast).toHaveBeenCalledExactlyOnceWith({ type: 'error', message: 'Could not link that item.' }));
+});
+
+it.each(['yes', 'escape'])('resolves the inline focus choice via %s without window.confirm', async (choice) => {
+  const confirm = vi.spyOn(window, 'confirm');
+  let finish!: (value: string) => void;
+  h.talk.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const view = render(<WispTalkButton {...target} />);
+  fireEvent.click(await screen.findByTestId('wisp-talk-button'));
+  h.request = { target, from: 'Organization A', to: 'Organization B', resolve: vi.fn() };
+  view.rerender(<WispTalkButton {...target} />);
+  if (choice === 'yes') fireEvent.click(screen.getByTestId('wisp-talk-focus-yes'));
+  else fireEvent.keyDown(screen.getByTestId('wisp-talk-focus-popover'), { key: 'Escape' });
+  expect(h.resolveFocus).toHaveBeenCalledWith(choice === 'yes');
+  expect(confirm).not.toHaveBeenCalled();
+  finish(choice === 'yes' ? 'opened' : 'declined_focus');
 });

@@ -874,6 +874,7 @@
       "link": "Lier un élément"
     },
     "talk": {
+      "openFailed": "Impossible d’ouvrir le clavardage : {{message}}",
       "button": "Parler à Wisp",
       "buttonPlain": "Interroger l’IA à ce sujet",
       "draft": "À propos de {{label}}: ",

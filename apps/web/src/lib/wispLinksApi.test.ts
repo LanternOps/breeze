@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({ fetchWithAuth: vi.fn(), showToast: vi.fn() }));
 vi.mock('../stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
 vi.mock('../components/shared/Toast', () => ({ showToast: h.showToast }));
 
-import { addWispLink, listWispLinks, removeWispLink, pinWispLink } from './wispLinksApi';
+import { addWispLink, listWispLinks, removeWispLink, pinWispLink, listWispNeighbours } from './wispLinksApi';
 import { getWispPartnerEnabled, setWispPartnerEnabled } from './wispPartnerSettingsApi';
 import { ActionError } from './runAction';
 
@@ -86,4 +86,11 @@ it('pins through runAction without ambient org and encodes both ids', async () =
   expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/th%2F1/links/l%2F1/pin', { method: 'POST', skipOrgIdInjection: true });
   h.fetchWithAuth.mockResolvedValue(res(409, { error: 'Pin limit', code: 'link_limit' }));
   await expect(pinWispLink('th1', 'l1')).rejects.toMatchObject({ status: 409, code: 'link_limit' });
+});
+
+
+it('keeps neighbours unused until W02 (W04-D1), without making a request', async () => {
+  h.fetchWithAuth.mockClear();
+  await expect(listWispNeighbours('th1', { kind: 'ticket', id: 't1' })).rejects.toThrow('Wisp neighbours are not wired yet');
+  expect(h.fetchWithAuth).not.toHaveBeenCalled();
 });

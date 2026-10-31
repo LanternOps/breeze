@@ -11,10 +11,12 @@ const link = (source: WispThreadLink['source'], lastTouchedAt = new Date().toISO
 describe('WispLinkPill', () => {
   it.each(['user_pin', 'wisp_pin', 'auto', 'concern'] as const)('%s has the right actions', (source) => {
     const remove = vi.fn(), pin = vi.fn(), dismiss = vi.fn();
+    const key = source === 'concern' ? 'ticket:t1' : 'l1';
     render(<WispLinkPill link={link(source)} threadId="th1" onRemove={remove} onPin={pin} onDismiss={dismiss} />);
-    expect(screen.queryByTestId('wisp-link-remove-l1') !== null).toBe(source.endsWith('_pin'));
-    expect(screen.queryByTestId('wisp-link-pin-l1') !== null).toBe(source === 'auto');
-    expect(screen.queryByTestId('wisp-link-dismiss-l1') !== null).toBe(source === 'auto');
+    expect(screen.queryByTestId(`wisp-link-remove-${key}`) !== null).toBe(source.endsWith('_pin'));
+    expect(screen.queryByTestId(`wisp-link-pin-${key}`) !== null).toBe(source === 'auto');
+    expect(screen.queryByTestId(`wisp-link-dismiss-${key}`) !== null).toBe(source === 'auto');
+    expect(screen.getByTestId(`wisp-link-chip-${key}`)).toBeInTheDocument();
     expect(screen.getByRole('link')).toHaveAttribute('href', '/tickets/t1');
     if (source === 'auto') { fireEvent.click(screen.getByTestId('wisp-link-pin-l1')); expect(pin).toHaveBeenCalled(); }
   });

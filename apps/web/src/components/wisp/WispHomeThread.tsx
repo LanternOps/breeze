@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type Dispatch, type SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus } from 'lucide-react';
 import { isPinnedLink } from '@/lib/wispLinksApi';
@@ -117,7 +117,7 @@ export default function WispHomeThread({
   leading?: ReactNode;
   scopeLabel: string;
   links: WispThreadLink[] | null;
-  onLinksChange: (links: WispThreadLink[]) => void;
+  onLinksChange: Dispatch<SetStateAction<WispThreadLink[]>>;
   refreshKey?: number;
 }) {
   const { t } = useTranslation('ai');
@@ -200,10 +200,10 @@ export default function WispHomeThread({
 
   const onLinked = (link: WispThreadLink) => {
     // Derived concerns have null row ids; the entity key identifies what was pinned.
-    const current = links ?? [];
     const key = linkKey(link.ref.kind, link.ref.id);
-    const exists = current.some((l) => linkKey(l.ref.kind, l.ref.id) === key);
-    onLinksChange(exists ? current.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l)) : [...current, link]);
+    onLinksChange((prev) => prev.some((l) => linkKey(l.ref.kind, l.ref.id) === key)
+      ? prev.map((l) => (linkKey(l.ref.kind, l.ref.id) === key ? link : l))
+      : [...prev, link]);
     setPickerOpen(false);
   };
 

@@ -874,6 +874,7 @@
       "link": "Link an item"
     },
     "talk": {
+      "openFailed": "Could not open chat: {{message}}",
       "button": "Talk to Wisp",
       "buttonPlain": "Ask AI about this",
       "draft": "About {{label}}: ",

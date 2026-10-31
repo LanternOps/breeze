@@ -874,6 +874,7 @@
       "link": "Element verknüpfen"
     },
     "talk": {
+      "openFailed": "Chat konnte nicht geöffnet werden: {{message}}",
       "button": "Mit Wisp sprechen",
       "buttonPlain": "KI dazu fragen",
       "draft": "Zu {{label}}: ",
