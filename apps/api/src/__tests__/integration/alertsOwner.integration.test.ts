@@ -31,7 +31,7 @@ import { createSourcedAlert } from '../../services/alertService';
 import { alertSiteScopeCondition, alertSiteScopeByDeviceIds, getAlertWithOrgCheck } from '../../routes/alerts/helpers';
 import { alertInSiteScope, filterAlertsBySiteScope } from '../../routes/tickets/siteScope';
 
-const migrationFile = join(__dirname, '../../../migrations/2027-01-17-190000-alerts-owner-kind.sql');
+const migrationFile = join(__dirname, '../../../migrations/2027-01-18-100000-alerts-owner-kind.sql');
 afterAll(() => closeDb());
 
 function orgContext(orgId: string): DbAccessContext {
