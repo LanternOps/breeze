@@ -86,7 +86,10 @@ export function connectwiseTicketUiUrl(baseUrl: string, companyId: string, ticke
   }
   const host = url.host.replace(/^api-/i, '');
   const query = new URLSearchParams({ service_recid: String(ticketId), companyName: companyId });
-  return `${url.protocol}//${host}/v4_6_release/services/system_io/Service/fv_sr100_request.rails?${query.toString()}`;
+  // Built without a literal "//" inside the template: the report-visibility
+  // template scanner strips "//" as a comment (partnerOwnedVisibility.scan.test.ts).
+  const origin = [url.protocol, host].join("//");
+  return `${origin}/v4_6_release/services/system_io/Service/fv_sr100_request.rails?${query.toString()}`;
 }
 
 /** One listing page for the pickers; a full page is reported as truncated. */
