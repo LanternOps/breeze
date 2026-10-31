@@ -37,6 +37,8 @@ import {
 } from '../services/partnerWideAccess';
 import { createPSAProvider } from '../services/psa';
 import { psaTicketMappingOrgCondition } from '../services/psa/ticketScope';
+import { openPsaMappingCondition } from '../services/psaAlertTicketing/states';
+import { psaAlertTicketingRoutes } from './psaAlertTicketing';
 import {
   PsaConfigError,
   decryptCredentials,
@@ -430,6 +432,9 @@ async function getConnectionById(
 }
 
 psaRoutes.use('*', authMiddleware);
+
+// Alert → PSA ticket config (#10499 W2-A): /connections/:id/alert-ticketing[/options].
+psaRoutes.route('/connections', psaAlertTicketingRoutes);
 
 psaRoutes.get(
   '/connections',
@@ -843,6 +848,29 @@ psaRoutes.delete(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    // Lock the connection before counting its open alert-ticket mappings
+    // (#10499 W2-A). A mapping insert's FK check takes KEY SHARE on this row,
+    // so a concurrent admission waits for this transaction and then fails its
+    // FK check instead of slipping a mapping in between the count and delete.
+    await db
+      .select({ id: psaConnectionsTable.id })
+      .from(psaConnectionsTable)
+      .where(eq(psaConnectionsTable.id, connectionId))
+      .for('update');
+    const [open] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(psaTicketMappings)
+      .where(and(eq(psaTicketMappings.connectionId, connectionId), openPsaMappingCondition()));
+    const openMappings = Number(open?.count ?? 0);
+    if (openMappings > 0) {
+      return c.json({
+        error: `This connection has ${openMappings} alert ticket(s) mid-operation in the PSA. Wait for them to finish or resolve them before deleting the connection.`,
+        code: 'psa_connection_has_open_alert_tickets',
+        openMappings
+      }, 409);
+    }
+
+    // Terminal and idle mappings go with the connection.
     await db.delete(psaTicketMappings).where(eq(psaTicketMappings.connectionId, connectionId));
     await db.delete(psaConnectionsTable).where(eq(psaConnectionsTable.id, connectionId));
 

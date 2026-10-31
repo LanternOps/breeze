@@ -35,8 +35,7 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // To guard a file, add its line here; there is no total to bump (#10030).
 // MIN_GUARDED_FILES below is a floor that additions never touch.
 const TARGET_GLOBS = [
-  // Partner-wide groups: creation and policy assignment mutations surface outcomes.
-  'src/components/devices/CreateGroupModal.tsx',
+  // Partner-wide groups: policy assignment mutations surface outcomes.
   'src/components/configurationPolicies/PartnerGroupAssignmentSection.tsx',
   // Tool Catalog W4 (#5219): flow enable/disable/run/cancel mutations go through runAction.
   'src/components/flows/api.ts',
@@ -391,6 +390,9 @@ const TARGET_GLOBS = [
   // the connection list is empty — so a failed save on a populated page was
   // silent (#3291 review).
   'src/components/psa/PsaConnectionsPage.tsx',
+  // Alert -> PSA ticket settings (#10535): the PUT enables automatic ticket creation in the
+  // partner's PSA; a silent failure would leave the tech believing alerts are ticketed.
+  'src/components/psa/PsaAlertTicketingCard.tsx',
   // CIS hardening: the whole directory has exactly two mutations (baseline
   // create/update, trigger scan) and both now route through runAction. The scan
   // queues work that changes nothing on screen — the results land minutes later

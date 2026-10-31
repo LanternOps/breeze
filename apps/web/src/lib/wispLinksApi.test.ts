@@ -14,7 +14,7 @@ import { ActionError } from './runAction';
 
 const res = (status: number, body: unknown) =>
   ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
-const link = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: '#1', status: 'open', href: '/tickets/t-1', addedBy: 'user', createdAt: '' };
+const link = { id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: '#1', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '' };
 
 describe('wispLinksApi', () => {
   beforeEach(() => vi.clearAllMocks());

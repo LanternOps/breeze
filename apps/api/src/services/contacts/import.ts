@@ -62,7 +62,7 @@ import {
   updateContact,
   type UpdateContactInput,
 } from './crud';
-import { reconcileLegacyContactResponsibilities } from './responsibilities';
+import { syncLegacyContactRoles } from './responsibilities';
 import {
   CONTACT_ROLES,
   DEFAULT_CONTACT_IMPORT_SYSTEM,
@@ -876,7 +876,7 @@ async function createImportedContact(
     }).returning({ id: contacts.id });
 
     const contactId = (created as { id: string }).id;
-    await reconcileLegacyContactResponsibilities(db, {
+    await syncLegacyContactRoles(db, {
       contactId,
       orgId,
       siteId,

@@ -74,7 +74,7 @@ const payload = (over: Partial<WispHomePayload> = {}): WispHomePayload => ({
   needsYou: [],
   activity: { items: [], nextCursor: null },
   current: null,
-  links: [{ id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: '#1 Jam', status: 'open', href: '/tickets/t-1', addedBy: 'user', createdAt: '' }],
+  links: [{ id: 'l-1', ref: { kind: 'ticket', id: 't-1', orgId: 'o-1' }, label: '#1 Jam', status: 'open', href: '/tickets/t-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '' }],
   partner: { enabled: true },
   ...over,
 });
@@ -309,7 +309,7 @@ describe('WispHomeContent', () => {
     return (v: unknown) => act(async () => { release(v); });
   }
 
-  const added = { id: 'l-2', ref: { kind: 'device', id: 'd-1', orgId: 'o-1' }, label: 'host-1', status: 'online', href: '/devices/d-1', addedBy: 'user', createdAt: '' };
+  const added = { id: 'l-2', ref: { kind: 'device', id: 'd-1', orgId: 'o-1' }, label: 'host-1', status: 'online', href: '/devices/d-1', source: 'user_pin', lastTouchedAt: '2026-10-24T08:00:00Z', createdAt: '' };
 
   it('a link added in the rail while a poll is in flight survives that poll', async () => {
     h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp });

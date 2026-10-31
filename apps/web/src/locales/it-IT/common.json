@@ -1084,6 +1084,68 @@
       }
     },
     "psa": {
+      "PsaAlertTicketingCard": {
+        "title": "Ticket di avviso",
+        "scopeNote": "Valido per l’intero partner; nessuna sostituzione per organizzazione.",
+        "pausedBanner": "In pausa: il PSA ha rifiutato le credenziali. Esegui “Testa connessione” per riprendere.",
+        "yes": "Attivi",
+        "no": "Disattivati",
+        "selectPlaceholder": "Seleziona…",
+        "priorityDefault": "Predefinito del PSA",
+        "closedSuffix": "{{name}} (chiuso)",
+        "saved": "Impostazioni dei ticket di avviso salvate",
+        "saving": "Salvataggio…",
+        "save": "Salva",
+        "conflict": "Queste impostazioni sono state modificate altrove. Sono stati caricati i valori più recenti; verificali e salva di nuovo.",
+        "errors": {
+          "save": "Impossibile salvare le impostazioni dei ticket di avviso"
+        },
+        "status": {
+          "active": "I ticket di avviso sono abilitati per questa connessione.",
+          "notExternal": "Associa questa connessione come PSA di gestione dei servizi (modalità esterna) per usare i ticket di avviso.",
+          "disabled": "I ticket di avviso sono disattivati.",
+          "paused": "I ticket di avviso sono in pausa finché la connessione al PSA non funziona di nuovo.",
+          "companyLinksUnverified": "Conferma i collegamenti delle aziende per questa istanza del PSA.",
+          "invalidConfig": "Le impostazioni salvate dei ticket di avviso non sono valide. Verificale e salvale di nuovo.",
+          "unsupportedProvider": "I ticket di avviso non sono disponibili per questo provider PSA.",
+          "credentialsUnusable": "Le credenziali di questa connessione sono incomplete o illeggibili. Modifica la connessione e inseriscile di nuovo."
+        },
+        "fields": {
+          "enabled": "Abilita i ticket di avviso",
+          "board": "Bacheca",
+          "openStatus": "Stato dei nuovi ticket",
+          "closedStatus": "Stato chiuso",
+          "priorityHeading": "Priorità del PSA in base alla gravità dell’avviso",
+          "minSeverity": "Gravità minima",
+          "minSeverityHelp": "Bassa include i monitor a livello di avvertenza",
+          "closeOnResolve": "Chiudi il ticket quando l’avviso viene risolto",
+          "noteOnAcknowledge": "Aggiungi una nota quando l’avviso viene preso in carico",
+          "confirmCompanyLinks": "I collegamenti alle aziende delle organizzazioni corrispondono a questa istanza del PSA"
+        },
+        "severity": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "options": {
+          "error": "Impossibile caricare le opzioni dal PSA",
+          "retry": "Riprova",
+          "truncated": "Vengono mostrati solo i primi risultati del PSA."
+        },
+        "readOnly": {
+          "enabled": "Ticket di avviso"
+        },
+        "loadError": {
+          "message": "Impossibile caricare le impostazioni dei ticket di avviso",
+          "retry": "Riprova"
+        },
+        "configInvalid": {
+          "warning": "Le impostazioni salvate dei ticket di avviso non possono essere lette. Il salvataggio le sostituirà.",
+          "confirm": "Sostituisci le impostazioni illeggibili"
+        }
+      },
       "PsaCompanyImport": {
         "title": "Importa aziende",
         "subtitle": "Crea organizzazioni dalle aziende presenti in {{name}}.",
