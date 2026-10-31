@@ -430,6 +430,49 @@ describe('filterEngine hardware.health', () => {
   });
 });
 
+// #9863: warranty status lives in device_warranty (1:1 per device subject).
+// A device with no warranty row is 'unknown', the same word the Warranty card
+// and the list column use for "no coverage data".
+describe('filterEngine warranty.status', () => {
+  const renderWithParams = (cond: FilterCondition) => {
+    const q = dialect.sqlToQuery(buildConditionSQL(cond));
+    return { sql: q.sql, params: q.params };
+  };
+
+  it('registers an enum over the stored warranty statuses', () => {
+    const def = getFieldDefinition('warranty.status');
+    expect(def?.type).toBe('enum');
+    expect(def?.enumValues).toEqual(['active', 'expiring', 'expired', 'unknown', 'subscription_active']);
+    expect(def?.operators).toEqual(expect.arrayContaining(['equals', 'notEquals', 'in', 'notIn']));
+  });
+
+  it('reads the status from device_warranty correlated on the device subject', () => {
+    const { sql, params } = renderWithParams({ field: 'warranty.status', operator: 'equals', value: 'expired' });
+    expect(sql).toMatch(/from "device_warranty"/i);
+    expect(sql).toMatch(/"device_warranty"\."device_id" = "devices"\."id"/i);
+    // Compared as text so a bogus value cannot 500 with 22P02 on the pg enum.
+    expect(sql).toMatch(/"device_warranty"\."status"::text/i);
+    // No warranty row reads as 'unknown'.
+    expect(sql).toMatch(/coalesce\(/i);
+    expect(params).toEqual(expect.arrayContaining(['unknown', 'expired']));
+  });
+
+  it('supports in / notIn', () => {
+    const inSql = renderWithParams({ field: 'warranty.status', operator: 'in', value: ['expiring', 'expired'] }).sql;
+    expect(inSql).toMatch(/device_warranty/i);
+    expect(inSql).toMatch(/\) in \(/i);
+    const notInSql = renderWithParams({ field: 'warranty.status', operator: 'notIn', value: ['active'] }).sql;
+    expect(notInSql).toMatch(/not in \(/i);
+  });
+
+  // A case slip in `notEquals` must not compile to match-everything (#8773).
+  it('refuses an unknown warranty status in validateFilter and at build time', () => {
+    const result = validateFilter({ operator: 'AND', conditions: [{ field: 'warranty.status', operator: 'notEquals', value: 'Expired' }] });
+    expect(result.valid).toBe(false);
+    expect(() => buildConditionSQL({ field: 'warranty.status', operator: 'notEquals', value: 'Expired' })).toThrow(FilterValueError);
+  });
+});
+
 describe('filterEngine field registration (#968)', () => {
   it('registers the three boolean fields', () => {
     for (const key of ['patches.pending', 'alerts.critical', 'system.rebootRequired']) {

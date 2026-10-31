@@ -219,3 +219,7 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Device list warranty column (#9863)
+
+- The device list has an opt-in **Warranty Ends** column (Column chooser → Inventory) showing each device's warranty end date and status, sortable by date. The filter bar has a **Warranty Status** field (Active / Expiring / Expired / Unknown / Subscription Active); a device with no warranty record counts as unknown. `GET /devices` rows now carry `warrantyEndDate` and `warrantyStatus` (null when there is no record). No migration, no new environment variable.
