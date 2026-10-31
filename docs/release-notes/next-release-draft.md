@@ -219,3 +219,9 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### IOC sweeps — rules-changed signal (#10049)
+
+- Sweep summaries (`GET /security/sweeps`, `/security/sweeps/:id`, `/security/sweeps/groups/:groupId`, and the AI `ioc_hunt` sweep reads) carry `progress.ruleSetChanged`: the failed scans whose rule set was republished after the sweep was approved. It is counted under the same site and device restrictions as the rest of `progress`.
+- `GET /security/scans/:deviceId` now returns each scan's `sweepId` and `ruleSetErrors`.
+- The Sweeps tab shows **Rules changed since this sweep started** and **Sweep again** only when a scan actually failed for that reason. It no longer compares pinned and published versions, so a sweep that finished cleanly before a republish is no longer marked.

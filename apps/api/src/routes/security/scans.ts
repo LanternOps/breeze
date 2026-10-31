@@ -128,7 +128,11 @@ scansRoutes.get(
       startedAt: scan.startedAt?.toISOString() ?? null,
       finishedAt: scan.completedAt?.toISOString() ?? null,
       threatsFound: scan.threatsFound ?? 0,
-      durationSeconds: scan.duration ?? null
+      durationSeconds: scan.duration ?? null,
+      // The sweep this scan belongs to, and the rule-set errors it reported
+      // (e.g. `rule_set_changed` when a pinned set was republished) (#10049).
+      sweepId: scan.sweepId ?? null,
+      ruleSetErrors: Array.isArray(scan.ruleSetErrors) ? scan.ruleSetErrors : null
     }));
 
     return c.json(paginate(mapped, page, limit));
