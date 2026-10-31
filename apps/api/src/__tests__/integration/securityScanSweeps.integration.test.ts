@@ -601,19 +601,26 @@ describe('A9 tenancy', () => {
   });
 
   it('progress.ruleSetChanged counts only children failed by a republish, under the caller ceiling (#10049)', async () => {
-    const f = await seedPartnerFleet(2);
+    const f = await seedPartnerFleet(3);
     const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
     const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
     if (!created.ok) throw new Error(created.code);
     const [orgA, orgB] = f.orgs;
     const tdb = getTestDb();
-    const changed = JSON.stringify([{ id: f.setId, version: 1, code: 'rule_set_changed' }]);
-    // Org A: one child failed by a republish, one failed for another reason.
+    // rule_set_changed second in the array: containment, not a first-element lookup.
+    const changed = JSON.stringify([
+      { id: randomUUID(), code: 'fetch_failed' },
+      { id: f.setId, version: 1, code: 'rule_set_changed' },
+    ]);
+    // Org A: one child failed by a republish, one failed for another reason,
+    // and one that is not failed (never counted, whatever its errors say).
     await tdb.execute(sql`UPDATE security_scans SET status = 'failed', rule_set_errors = ${changed}::jsonb
                           WHERE device_id = ${orgA!.deviceIds[0]!}`);
     await tdb.execute(sql`UPDATE security_scans SET status = 'failed',
                             rule_set_errors = ${JSON.stringify([{ id: '*', code: 'dispatch_refused' }])}::jsonb
                           WHERE device_id = ${orgA!.deviceIds[1]!}`);
+    await tdb.execute(sql`UPDATE security_scans SET status = 'completed', engine = 'yara', rule_set_errors = ${changed}::jsonb
+                          WHERE device_id = ${orgA!.deviceIds[2]!}`);
     // Org B: one child failed by a republish.
     await tdb.execute(sql`UPDATE security_scans SET status = 'failed', rule_set_errors = ${changed}::jsonb
                           WHERE device_id = ${orgB!.deviceIds[0]!}`);
@@ -629,10 +636,22 @@ describe('A9 tenancy', () => {
     const orgAGroup = await asAuth(orgAUser, () => getSweepGroup(orgAUser, created.groupId));
     expect(orgAGroup!.progress).toMatchObject({ failed: 2, ruleSetChanged: 1 });
 
-    // A device-pinned caller pinned to the other failed device sees none.
-    const pinned = { ...partner, allowedDeviceIds: [orgA!.deviceIds[1]!] } as AuthContext;
-    const pinnedSummary = await asAuth(pinned, () => getSweep(pinned, sweepA.id));
-    expect(pinnedSummary!.progress).toMatchObject({ failed: 1, ruleSetChanged: 0 });
+    // Device pins: pinned to the republish-failed device it counts; to the other failed device it does not.
+    const pinnedTo = (id: string) => ({ ...partner, allowedDeviceIds: [id] }) as AuthContext;
+    const onChanged = pinnedTo(orgA!.deviceIds[0]!);
+    expect((await asAuth(onChanged, () => getSweep(onChanged, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 1, ruleSetChanged: 1 });
+    const onOther = pinnedTo(orgA!.deviceIds[1]!);
+    expect((await asAuth(onOther, () => getSweep(onOther, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 1, ruleSetChanged: 0 });
+
+    // Site allowlist: a caller restricted to org B's site sees nothing of org A's sweep.
+    const siteB = { ...partner, allowedSiteIds: [orgB!.siteId] } as AuthContext;
+    expect((await asAuth(siteB, () => getSweep(siteB, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 0, ruleSetChanged: 0 });
+    const siteA = { ...partner, allowedSiteIds: [orgA!.siteId] } as AuthContext;
+    expect((await asAuth(siteA, () => getSweep(siteA, sweepA.id)))!.progress)
+      .toMatchObject({ failed: 2, ruleSetChanged: 1 });
   });
 });
 
