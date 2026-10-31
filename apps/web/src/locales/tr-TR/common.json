@@ -1469,7 +1469,11 @@
           },
           "alertSuppressed": {
             "label": "Uyarı susturuldu",
-            "description": "Breeze AI bir uyarıyı susturduğunda tetiklenir. Panodan susturmak bu olayı henüz göndermez."
+            "description": "Bir uyarı susturulduğunda tetiklenir."
+          },
+          "alertEscalated": {
+            "label": "Uyarı yükseltildi",
+            "description": "Hâlâ etkin olan bir uyarı için yükseltme ilkesinin bir adımı çalıştığında tetiklenir."
           }
         },
         "fields": {
