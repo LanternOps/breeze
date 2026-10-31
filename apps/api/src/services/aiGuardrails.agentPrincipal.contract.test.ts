@@ -259,6 +259,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_network_asset_reachability',
   // W01 (#6755)
   'get_network_changes',
+  'get_partner_settings_inheritance', // #9763 Tier-1 read: partner settings inheritance counts + org drill-down
   'get_peripheral_activity',
   'get_playbook_history',
   'get_process_samples', // Full-control W13 (#6783): tier-1 recorded process snapshot, device-scoped
