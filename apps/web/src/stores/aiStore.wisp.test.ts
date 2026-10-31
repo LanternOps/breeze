@@ -10,6 +10,7 @@ vi.mock('@/lib/runAction', async (importOriginal) => {
 
 import { fetchWithAuth } from './auth';
 import { isActiveGrant, useAiStore, type WispState } from './aiStore';
+import { useAiModelPickerStore } from './aiModelPickerStore';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { i18n } from '@/lib/i18n';
@@ -312,6 +313,60 @@ describe('aiStore — Wisp rolls to a fresh session at the turn limit', () => {
     expect(s.wisp?.grantId).toBe('grant-1');
     expect(s.error).toBeNull();
     expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('the model picked for the refused message rides the rollover onto the fresh session (#10419 review)', async () => {
+    useAiModelPickerStore.setState({
+      choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'def', options: null } },
+      selection: { offeringId: 'haiku', options: { budgetThinking: 'on' } },
+      loading: false,
+    });
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('what changed overnight?');
+
+    const posts = messagePosts();
+    expect(posts[0]!.body.model).toEqual({ offeringId: 'haiku', options: { budgetThinking: 'on' } });
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1', offeringId: 'haiku', options: { budgetThinking: 'on' } });
+    expect(posts.map((p) => p.url)).toEqual(['/ai/sessions/sess-old/messages', '/ai/sessions/sess-new/messages']);
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+  });
+
+  it('a model picked on an earlier message (now the session\'s current) also carries over on the rollover', async () => {
+    useAiModelPickerStore.setState({
+      choices: { surface: 'chat', allowUserChoice: true, defaultOfferingId: 'def', choices: [], current: { offeringId: 'haiku', options: { speed: 'fast' } } },
+      selection: null,
+      loading: false,
+    });
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ success: true });
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(createBodies()[0]).toMatchObject({ wispGrantId: 'grant-1', offeringId: 'haiku', options: { speed: 'fast' } });
+  });
+
+  it('a close that fails during the rollover is logged, not hidden (#10419 review)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions/sess-old/messages') return response({ error: 'Session turn limit reached (50)', code: 'turn_limit_reached', recoverable: true }, 409);
+      if (url === '/ai/sessions/sess-new/messages') return sse([{ type: 'done' }]);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ id: 'sess-new', orgId: 'org-a' });
+      if (init?.method === 'DELETE') return response({ error: 'boom' }, 500);
+      return response({ data: [] });
+    });
+    await useAiStore.getState().sendMessage('hello');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sess-old'), expect.anything());
+    expect(useAiStore.getState().sessionId).toBe('sess-new');
+    warn.mockRestore();
   });
 
   it('a second turn_limit_reached on the fresh session is shown, not retried forever', async () => {

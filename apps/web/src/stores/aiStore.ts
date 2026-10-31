@@ -395,12 +395,30 @@ let resendingAfterTurnLimit = false;
  * and focus — what setWispFocus does for a focus change. True when the
  * store is bound to the new session.
  */
-async function rollWispSession(get: AiGet): Promise<boolean> {
+async function rollWispSession(get: AiGet, model?: AiModelChoice): Promise<boolean> {
   const w = get().wisp;
   if (!w) return false;
-  if (get().sessionId) await get().closeSession();
+  // The thread keeps its model across chunks: the pick for the refused
+  // message, else the model the spent session ran on (when the user may pick).
+  const picker = useAiModelPickerStore.getState().choices;
+  const carried: AiModelChoice | undefined = model
+    ?? (picker?.allowUserChoice && picker.current?.offeringId
+      ? { offeringId: picker.current.offeringId, options: { ...(picker.current.options ?? {}) } }
+      : undefined);
+  const oldSessionId = get().sessionId;
+  if (oldSessionId) {
+    await get().closeSession();
+    // A failed close leaves the old session bound (and open on the server);
+    // the roll goes ahead, but say so rather than letting the next create
+    // wipe the error.
+    if (get().sessionId === oldSessionId) {
+      console.warn(`[AiStore] Could not close Wisp session ${oldSessionId} at the turn limit; rolling anyway:`, get().error);
+    }
+  }
   useAiStore.setState({ ...CLEARED_SESSION });
-  await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined });
+  // Closing reset the picker, so the model is handed to the create (it stamps
+  // the new session) instead of the next chunk falling back to the default.
+  await get().createSession({ wispGrantId: w.grantId, orgId: wispSessionOrgId(w) ?? undefined, ...(carried ? { model: carried } : {}) });
   return get().sessionId !== null && get().wisp?.grantId === w.grantId;
 }
 
@@ -1080,7 +1098,7 @@ export const useAiStore = create<AiState>()(
           // message over. The optimistic bubble is re-added by the re-send.
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           if (!ownsStream()) return;
-          if (await rollWispSession(get)) {
+          if (await rollWispSession(get, model)) {
             resendingAfterTurnLimit = true;
             try {
               await get().sendMessage(trimmedContent);
