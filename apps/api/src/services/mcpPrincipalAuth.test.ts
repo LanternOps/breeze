@@ -239,7 +239,10 @@ describe('rebuildMcpOriginAuthContext — api_key origin', () => {
 });
 
 describe('rebuildMcpOriginAuthContext — oauth_grant origin', () => {
-  const oauthIntent = (o: Partial<ActionIntent> = {}) => intent({ originPrincipalKind: 'oauth_grant', originPrincipalId: GRANT_ID, ...o });
+  // originAuthEpoch: the requester's auth_epoch the bearer middleware verified
+  // when the intent was filed (#9758). liveUser() defaults to authEpoch 1.
+  const oauthIntent = (o: Partial<ActionIntent> = {}) =>
+    intent({ originPrincipalKind: 'oauth_grant', originPrincipalId: GRANT_ID, originAuthEpoch: 1, ...o });
   function seedGrant(g = grantRow(), user = liveUser(), client: Record<string, unknown> | null = { id: 'client-1', disabledAt: null }) {
     queue(tables.oauthGrants, [g]);
     queue(tables.users, [user]);
@@ -279,6 +282,29 @@ describe('rebuildMcpOriginAuthContext — oauth_grant origin', () => {
   ])('%s → mcp_origin_revoked', async (_label, seed) => {
     seed();
     expect(await rebuildMcpOriginAuthContext(oauthIntent())).toEqual({ error: 'mcp_origin_revoked' });
+  });
+
+  // #9758: a password change (or any other auth_epoch bump) between filing
+  // and release must refuse the release exactly, not rely on the best-effort
+  // grant-revocation sweep having landed.
+  it('releases when the requester auth_epoch still matches the one recorded at filing', async () => {
+    seedGrant(grantRow(), liveUser({ authEpoch: 7 }));
+    const rebuilt = await rebuildMcpOriginAuthContext(oauthIntent({ originAuthEpoch: 7 }));
+    if ('error' in rebuilt) throw new Error(`unexpected ${rebuilt.error}`);
+    expect(rebuilt.credential.kind).toBe('oauth_grant');
+    expect(checkMcpOriginReleaseAuthority(oauthIntent({ originAuthEpoch: 7 }), rebuilt)).toEqual({ ok: true });
+  });
+
+  it('refuses the release when the requester auth_epoch moved after filing (password change, grant sweep missed)', async () => {
+    // The grant is still active and the Redis marker is unset: exactly the
+    // state a failed post-commit OAuth sweep leaves behind.
+    seedGrant(grantRow(), liveUser({ authEpoch: 8 }));
+    expect(await rebuildMcpOriginAuthContext(oauthIntent({ originAuthEpoch: 7 }))).toEqual({ error: 'mcp_origin_revoked' });
+  });
+
+  it('refuses the release of an OAuth intent with no recorded auth_epoch (fails closed)', async () => {
+    seedGrant(grantRow(), liveUser({ authEpoch: 1 }));
+    expect(await rebuildMcpOriginAuthContext(oauthIntent({ originAuthEpoch: null }))).toEqual({ error: 'mcp_origin_revoked' });
   });
 
   it('a partner-scope OAuth context drops orgs the client is blocked in, as the bearer path does', async () => {

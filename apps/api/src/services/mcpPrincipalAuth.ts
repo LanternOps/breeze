@@ -64,6 +64,9 @@ export type McpApiKeyContext = {
   oauthGrantId?: string | null;
   // Set by bearerTokenAuth for OAuth callers (the token's client_id claim).
   oauthClientId?: string | null;
+  // Set by bearerTokenAuth for OAuth callers: the user's auth_epoch the
+  // request was admitted at. Recorded on a filed Tier-3 intent (#9758).
+  oauthAuthEpoch?: number | null;
   // API key creator, the signed `sub` (user id) for OAuth bearers, or the
   // principal's owner for a partner service principal key.
   createdBy?: string;
@@ -312,8 +315,9 @@ export class McpOriginTransientError extends Error {
  * them: key status/expiry, creator status + credential/MFA epoch
  * (`isApiKeyCreatorEpochStale`), the creator re-clamp
  * (`authorizeHumanApiKeyCreator`), and for OAuth `activeGrantCondition`, the
- * Redis revocation marker, the strict tenant check, the client kill switch
- * and the per-org client block. The human behind the credential must still
+ * Redis revocation marker, the account's `auth_epoch` against the one recorded
+ * on the intent at filing (#9758), the strict tenant check, the client kill
+ * switch and the per-org client block. The human behind the credential must still
  * be the intent's requester.
  *
  * `mcp_scope_lost` is returned (rather than `mcp_origin_revoked`) only when
@@ -451,11 +455,17 @@ async function loadLiveOAuthGrant(
   if (await isGrantRevoked(grant.id)) return REVOKED;
 
   const [user] = await db
-    .select({ status: users.status })
+    .select({ status: users.status, authEpoch: users.authEpoch })
     .from(users)
     .where(eq(users.id, grant.accountId))
     .limit(1);
   if (!user || user.status !== 'active') return REVOKED;
+  // #9758: the bearer path admits a token only while its auth_epoch claim
+  // matches the live row, and the intent recorded the epoch that call was
+  // verified at. A bump since (password change/reset, status change, global
+  // logout…) refuses the release here rather than relying on the post-commit
+  // grant sweep having landed. A missing snapshot fails closed.
+  if (intent.originAuthEpoch == null || user.authEpoch !== intent.originAuthEpoch) return REVOKED;
 
   const [client] = await db
     .select({ id: oauthClients.id, disabledAt: oauthClients.disabledAt })

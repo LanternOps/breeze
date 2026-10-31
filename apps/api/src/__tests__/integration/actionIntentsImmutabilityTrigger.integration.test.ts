@@ -201,6 +201,9 @@ describe('action_intents immutability trigger (live DB)', () => {
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
+    // 2027-01-18-100000 (#9758): the seeded intent starts NULL; the BEFORE
+    // UPDATE trigger raises before action_intents_origin_auth_epoch_chk.
+    origin_auth_epoch: { originAuthEpoch: 7 },
     action_name: { actionName: 'm365.mailbox.enable' },
     action_version: { actionVersion: 2 },
     arguments: { arguments: { mailbox: 'someone-else@example.com' } },

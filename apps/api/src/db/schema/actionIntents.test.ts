@@ -365,6 +365,9 @@ describe('action_intents schema', () => {
         // B-W06 (#6160): stamped only by the status-change trigger
         // (2027-01-04-121000-action-intents-status-changed-at.sql).
         'statusChangedAt',
+        // #9758: auth_epoch at filing for an MCP OAuth intent
+        // (2027-01-18-100000-action-intents-origin-auth-epoch.sql).
+        'originAuthEpoch',
       ].sort(),
     );
   });

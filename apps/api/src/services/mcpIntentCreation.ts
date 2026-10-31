@@ -125,6 +125,9 @@ export async function createMcpActionIntent(input: CreateMcpActionIntentInput): 
       idempotencyKey: mcpIntentIdempotencyKey(originRef, toolName, argumentDigest),
       correlationId: input.correlationRequestId,
       requestingClientLabel: input.clientLabel.slice(0, 255),
+      // #9758: the epoch the bearer middleware admitted this OAuth call at;
+      // release refuses once the requester's live auth_epoch has moved.
+      ...(auth.principal.kind === 'oauth_grant' ? { originAuthEpoch: apiKey.oauthAuthEpoch ?? undefined } : {}),
       maxLiveForOrigin: mcpIntentMaxLivePerPrincipal(),
       // #10027: the MCP gate files a non-read action rated below Tier 3 on a
       // registry-Tier-3 tool (edr_endpoint_action scan); approve it at Tier 3.

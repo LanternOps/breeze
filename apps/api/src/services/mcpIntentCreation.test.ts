@@ -125,6 +125,22 @@ describe('createMcpActionIntent', () => {
     expect(args.input).toEqual({ deviceId: 'd1', command: 'whoami' });
   });
 
+  // #9758: the epoch the bearer middleware verified rides into the intent row.
+  it('an OAuth origin passes the verified auth epoch as originAuthEpoch', async () => {
+    await createMcpActionIntent(input({
+      auth: { principal: { kind: 'oauth_grant', grantId: 'grant-1' }, user: { id: USER } } as never,
+      apiKey: { id: 'oauth:jti', orgId: ORG, oauthGrantId: 'grant-1', oauthAuthEpoch: 4, mcpDomains: null } as never,
+    }));
+    const [, args] = mocks.createActionIntent.mock.calls[0]!;
+    expect(args.originAuthEpoch).toBe(4);
+  });
+
+  it('an API-key origin passes no originAuthEpoch', async () => {
+    await createMcpActionIntent(input());
+    const [, args] = mocks.createActionIntent.mock.calls[0]!;
+    expect(args.originAuthEpoch).toBeUndefined();
+  });
+
   it('the argument digest equals the stored argument_digest (same canonicalisation)', async () => {
     const { mcpIntentIdempotencyKey } = await import('./mcpIntentEligibility');
     await createMcpActionIntent(input());
