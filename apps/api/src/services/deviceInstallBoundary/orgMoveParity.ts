@@ -38,6 +38,9 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'table:ai_operator_tasks': { boundary: 'work_in_flight', tables: ['ai_operator_tasks'] },
   'table:ai_operator_task_targets': { boundary: 'work_in_flight', tables: ['ai_operator_task_targets'] },
 
+  'table:device_wake_status': { boundary: 'install_state', tables: ['device_wake_status'] },
+  'table:device_wake_attempts': { boundary: 'work_in_flight', tables: ['device_wake_attempts'] },
+
   // The move's own locks, guards and step-up.
   'call:lockOrgTicketLinks': { moveOnly: 'ticket-link lock taken for the org change' },
   'call:lockActorAssurance': { moveOnly: 'step-up admission of the mover (the reattach consumes its own at request, §8)' },

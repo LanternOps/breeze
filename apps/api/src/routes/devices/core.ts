@@ -461,6 +461,7 @@ export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'device_restore_point_attempts',
   // #6960 W03 — composite (device_id, org_id) FK ON UPDATE CASCADE.
   'security_agent_device_status',
+  'device_wake_attempts',
   'device_wake_status',
 ];
 
@@ -471,10 +472,8 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
 // Delete-on-move disposition. A device-scoped table gets exactly one org-move disposition (restamp,
 // DEVICE_ORG_FK_CASCADE_TABLES, this list, or a reviewed exemption); moveOrg.coverage.test.ts
 // ('device org-move disposition (#8634)') enforces it from the schema, and requires each entry here to
-// carry a composite (x, org_id) FK to a source-org row or a reviewed lifecycle deletion reason.
+// carry a composite (x, org_id) FK to a source-org row.
 export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
-  // Wake attempts and their relay evidence belong to the source org; discard on move.
-  'device_wake_attempts',
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
   'topology_device_presence',

@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS device_wake_status (
   device_id uuid PRIMARY KEY,
   org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   readiness_state varchar(32),
-  reason_codes text[] DEFAULT '{}',
+  reason_codes text[] NOT NULL DEFAULT '{}',
   vendor varchar(32),
   fingerprint text,
   agent_version text,
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS device_wake_attempts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   device_id uuid NOT NULL,
+  -- Relay and target cannot be guaranteed to stay in one org, so deliberately use a non-composite FK.
   relay_device_id uuid REFERENCES devices(id) ON DELETE SET NULL,
   relay_hostname text,
   device_command_id uuid,
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS device_wake_attempts (
   bulk_id uuid,
   macs text[],
   broadcast text,
-  outcome varchar(16),
+  outcome varchar(16) NOT NULL,
   refusal_code varchar(32),
   boot_after_send boolean NOT NULL DEFAULT false,
   send_count integer NOT NULL DEFAULT 1,
@@ -103,6 +104,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON device_wake_attempts TO breeze_app;
 
 CREATE UNIQUE INDEX IF NOT EXISTS device_wake_attempts_open_uidx
   ON device_wake_attempts (device_id) WHERE outcome IN ('pending','sent');
+CREATE INDEX IF NOT EXISTS device_wake_attempts_relay_idx
+  ON device_wake_attempts (relay_device_id) WHERE relay_device_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS device_wake_attempts_deadline_idx
   ON device_wake_attempts (deadline_at) WHERE outcome IN ('pending','sent');
 CREATE INDEX IF NOT EXISTS device_wake_attempts_device_requested_idx

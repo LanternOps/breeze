@@ -18,7 +18,7 @@ async function fixture() {
   const device = await createDevice({ orgId: org.id, siteId: site.id });
   return { partner, org, site, device };
 }
-function attempt(t: Awaited<ReturnType<typeof fixture>>, outcome = 'pending', relayId: string | null = null) {
+function attempt(t: Awaited<ReturnType<typeof fixture>>, outcome: string | null = 'pending', relayId: string | null = null) {
   return sql`INSERT INTO device_wake_attempts (org_id, device_id, outcome, relay_device_id)
     VALUES (${t.org.id}::uuid, ${t.device.id}::uuid, ${outcome}, ${relayId}::uuid) RETURNING id`;
 }
@@ -49,6 +49,11 @@ describe('device wake tables', () => {
     expect(await errorCode(() => admin(attempt(t, 'sent')))).toBe('23505');
   });
 
+  it('rejects a NULL outcome with 23502', async () => {
+    const t = await fixture();
+    expect(await errorCode(() => admin(attempt(t, null)))).toBe('23502');
+  });
+
   it('a closed attempt does not block a new open one', async () => {
     const t = await fixture();
     await admin(attempt(t));
@@ -71,6 +76,9 @@ describe('device wake tables', () => {
     const targetSite = await createSite({ orgId: target.id });
     const actor = await createUser({ partnerId: t.partner.id });
     await admin(attempt(t, 'timed_out'));
+    const relay = await createDevice({ orgId: t.org.id, siteId: t.site.id });
+    await admin(attempt(t, 'pending', relay.id));
+    expect(await admin(sql`SELECT id FROM device_wake_attempts WHERE device_id = ${t.device.id}::uuid`)).toHaveLength(2);
     await admin(sql`INSERT INTO device_wake_status
       (device_id, org_id, readiness_state, fingerprint, last_came_online_at, proof_fingerprint, consecutive_timeouts)
       VALUES (${t.device.id}::uuid, ${t.org.id}::uuid, 'ready', 'adapter-v1', now(), 'adapter-v1', 3)`);

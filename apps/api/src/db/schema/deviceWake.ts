@@ -13,7 +13,7 @@ export const deviceWakeStatus = pgTable('device_wake_status', {
   deviceId: uuid('device_id').primaryKey(),
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   readinessState: varchar('readiness_state', { length: 32 }).$type<WakeReadinessState>(),
-  reasonCodes: text('reason_codes').array().default([]),
+  reasonCodes: text('reason_codes').array().notNull().default([]),
   vendor: varchar('vendor', { length: 32 }),
   fingerprint: text('fingerprint'),
   agentVersion: text('agent_version'),
@@ -46,7 +46,7 @@ export const deviceWakeAttempts = pgTable('device_wake_attempts', {
   bulkId: uuid('bulk_id'),
   macs: text('macs').array(),
   broadcast: text('broadcast'),
-  outcome: varchar('outcome', { length: 16 }).$type<WakeAttemptOutcome>(),
+  outcome: varchar('outcome', { length: 16 }).$type<WakeAttemptOutcome>().notNull(),
   refusalCode: varchar('refusal_code', { length: 32 }),
   bootAfterSend: boolean('boot_after_send').notNull().default(false),
   sendCount: integer('send_count').notNull().default(1),
@@ -59,6 +59,8 @@ export const deviceWakeAttempts = pgTable('device_wake_attempts', {
   check('device_wake_attempts_outcome_chk', sql`${t.outcome} IN ('pending', 'sent', 'send_failed', 'came_online', 'timed_out', 'unknown', 'refused')`),
   uniqueIndex('device_wake_attempts_open_uidx').on(t.deviceId)
     .where(sql`${t.outcome} IN ('pending','sent')`),
+  index('device_wake_attempts_relay_idx').on(t.relayDeviceId)
+    .where(sql`${t.relayDeviceId} IS NOT NULL`),
   index('device_wake_attempts_deadline_idx').on(t.deadlineAt)
     .where(sql`${t.outcome} IN ('pending','sent')`),
   index('device_wake_attempts_device_requested_idx').on(t.deviceId, t.requestedAt.desc()),
