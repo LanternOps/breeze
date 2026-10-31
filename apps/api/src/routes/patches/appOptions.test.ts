@@ -162,6 +162,31 @@ describe('GET /app-options', () => {
     }));
   });
 
+  it('offers observed Linux packages by bare name, one option across apt and yum (#9370)', async () => {
+    selectMock.mockReturnValue(selectRows([]));
+    selectDistinctMock.mockReturnValue(selectDistinctRows([
+      { source: 'linux', packageId: 'apt:docker-ce', vendor: null, displayName: 'docker-ce' },
+      { source: 'linux', packageId: 'yum:docker-ce', vendor: null, displayName: 'docker-ce' },
+      { source: 'third_party', packageId: 'docker-ce', vendor: null, displayName: 'Docker CE (winget)' },
+    ]));
+
+    const res = await appOptionsRoutes.request('/app-options');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const linux = body.data.filter((option: any) => option.source === 'linux');
+    expect(linux).toEqual([
+      { source: 'linux', packageId: 'docker-ce', vendor: null, displayName: 'docker-ce', inCatalog: false },
+    ]);
+    // Same name from a third-party source stays its own option.
+    expect(body.data.filter((option: any) => option.source === 'third_party')).toHaveLength(1);
+    expect(observedWhereMock()).toHaveBeenCalledWith(expect.objectContaining({
+      conditions: expect.arrayContaining([
+        expect.objectContaining({ op: 'inArray', right: expect.arrayContaining(['third_party', 'custom', 'linux']) }),
+      ]),
+    }));
+  });
+
   it('filters by search across name, vendor, and packageId', async () => {
     selectMock.mockReturnValue(selectRows([
       { source: 'third_party', packageId: 'Mozilla.Firefox', vendor: 'Mozilla', displayName: 'Firefox' },

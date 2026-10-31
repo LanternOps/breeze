@@ -6,9 +6,10 @@ import { db } from '../../db';
 import { devices, devicePatches, organizations, patches, thirdPartyPackageCatalog } from '../../db/schema';
 import { requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import { APP_RULE_SOURCES, canonicalAppRuleKey, linuxPackageName } from '@breeze/shared';
 
-// Keep in sync with THIRD_PARTY_PATCH_SOURCES in services/patchApprovalEvaluator.ts.
-const THIRD_PARTY_SOURCES = ['third_party', 'custom'] as const;
+// The patch sources an app rule can target (#9370 added 'linux').
+const RULE_SOURCES = APP_RULE_SOURCES;
 
 const appOptionsQuerySchema = z.object({
   search: z.string().max(255).optional(),
@@ -24,17 +25,18 @@ type AppOption = {
   inCatalog: boolean;
 };
 
-function appOptionKey(source: string, packageId: string): string {
-  const bucket = THIRD_PARTY_SOURCES.includes(source as (typeof THIRD_PARTY_SOURCES)[number])
-    ? 'third_party'
-    : source;
-  return `${bucket}|${packageId.toLowerCase()}`;
+// Linux patches carry the agent's `apt:`/`yum:` prefix; the rule names the
+// bare package, which also folds the same package from apt and dnf hosts
+// into one option.
+function optionPackageId(source: string, packageId: string): string {
+  return source === 'linux' ? linuxPackageName(packageId) : packageId;
 }
 
 export const appOptionsRoutes = new Hono();
 
 // GET /patches/app-options - options for policy app rules, combining curated
-// catalog rows with third-party applications observed in patch data.
+// catalog rows with third-party applications and Linux packages observed in
+// patch data.
 appOptionsRoutes.get(
   '/app-options',
   requireScope('organization', 'partner', 'system'),
@@ -55,7 +57,7 @@ appOptionsRoutes.get(
     // except for system scope: otherwise any authenticated user could
     // enumerate third-party software observed across ALL tenants.
     const observedConditions: SQL[] = [
-      inArray(patches.source, [...THIRD_PARTY_SOURCES]),
+      inArray(patches.source, [...RULE_SOURCES]),
       sql`${patches.packageId} IS NOT NULL`,
     ];
 
@@ -113,9 +115,11 @@ appOptionsRoutes.get(
 
     for (const row of observedRows) {
       if (!row.packageId) continue;
-      merged.set(appOptionKey(row.source, row.packageId), {
+      const packageId = optionPackageId(row.source, row.packageId);
+      if (!packageId) continue;
+      merged.set(canonicalAppRuleKey(row.source, packageId), {
         source: row.source,
-        packageId: row.packageId,
+        packageId,
         vendor: row.vendor,
         displayName: row.displayName,
         inCatalog: false,
@@ -123,7 +127,7 @@ appOptionsRoutes.get(
     }
 
     for (const row of catalogRows) {
-      merged.set(appOptionKey(row.source, row.packageId), {
+      merged.set(canonicalAppRuleKey(row.source, row.packageId), {
         source: row.source,
         packageId: row.packageId,
         vendor: row.vendor,

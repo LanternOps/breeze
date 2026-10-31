@@ -623,8 +623,16 @@ const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 // pinned explicitly rather than left to the zod version.
 const utf16Max = (max: number) => (v: string) => v.length <= max;
 
+/**
+ * Patch sources an app rule may target. 'linux' (#9370) names an apt/dnf
+ * package; the agent installs Linux updates one package at a time
+ * (`apt-get install --only-upgrade <pkg>`, `dnf update <pkg>`), so a package
+ * the approval evaluator drops is never handed to the package manager.
+ */
+export const APP_RULE_SOURCES = ['third_party', 'custom', 'linux'] as const;
+
 export const policyAppRuleSchema = z.object({
-  source: z.enum(['third_party', 'custom']),
+  source: z.enum(APP_RULE_SOURCES),
   packageId: z.string().min(1).refine(utf16Max(256), { message: 'Too long: expected <=256 characters' }),
   displayName: z.string().refine(utf16Max(255), { message: 'Too long: expected <=255 characters' }).optional(),
   action: z.enum(['block', 'pin']),
@@ -645,14 +653,30 @@ export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 const APP_RULE_THIRD_PARTY_BUCKET: readonly string[] = ['third_party', 'custom'];
 
 /**
+ * Package-manager prefixes the agent puts on Linux patch ids: the patch
+ * manager reports `apt:<name>` / `yum:<name>` (dnf hosts use the yum
+ * provider; 'dnf:' is accepted for hand-typed rules).
+ */
+const LINUX_PROVIDER_PREFIX = /^(?:apt|yum|dnf):/i;
+
+/** A Linux patch's package name without the agent's `apt:`/`yum:` prefix (#9370). */
+export function linuxPackageName(packageId: string): string {
+  return packageId.replace(LINUX_PROVIDER_PREFIX, '');
+}
+
+/**
  * Canonical app-rule identity: 'third_party' and 'custom' collapse to one
- * 'third_party' bucket, packageId is lowercased. The single implementation —
- * apps/api patchApprovalEvaluator.appRuleKey delegates here so the validator's
- * uniqueness check and the evaluator's lookup cannot disagree.
+ * 'third_party' bucket, packageId is lowercased. In the 'linux' bucket the
+ * package-manager prefix is dropped, so a rule for `docker-ce` matches the
+ * `apt:docker-ce` / `yum:docker-ce` id a Linux patch carries (#9370). The
+ * single implementation — apps/api patchApprovalEvaluator.appRuleKey and the
+ * web rule editor delegate here so the validator's uniqueness check and the
+ * evaluator's lookup cannot disagree.
  */
 export function canonicalAppRuleKey(source: string, packageId: string): string {
   const bucket = APP_RULE_THIRD_PARTY_BUCKET.includes(source) ? 'third_party' : source;
-  return `${bucket}|${packageId.toLowerCase()}`;
+  const id = packageId.toLowerCase();
+  return `${bucket}|${bucket === 'linux' ? linuxPackageName(id) : id}`;
 }
 
 /**

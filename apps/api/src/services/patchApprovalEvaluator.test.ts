@@ -29,6 +29,7 @@ import {
   buildAppRuleMap,
   buildAllowedPatchSources,
   comparePatchVersions,
+  compareLinuxPackageVersions,
   evaluateAppRule,
   evaluateAppRuleSets,
   isCategoryAllowed,
@@ -458,6 +459,101 @@ describe('app rules in resolveApprovedPatchesForDevice', () => {
 
     expect(result.map((r) => r.patchId)).toEqual([P2]);
     expect(result[0]?.approvalReason).toBe('category_rule');
+  });
+});
+
+describe('compareLinuxPackageVersions — dpkg/rpm ordering for linux pins (#9370)', () => {
+  it.each([
+    ['5:24.0.7-1~ubuntu.22.04~jammy', '5:24.0.9-1~ubuntu.22.04~jammy', -1],
+    ['5:24.0.7-1~ubuntu.22.04~jammy', '5:24.0.7-1~ubuntu.22.04~jammy', 0],
+    // numeric runs compare as numbers, not codepoints
+    ['5:10.0.0', '5:9.0.0', 1],
+    ['1.10', '1.9', 1],
+    // a higher epoch is newer regardless of the upstream version
+    ['1:1.0', '9.9', 1],
+    ['9.9', '0:9.9', 0],
+    // '~' sorts before everything, including the end of the string
+    ['1.0~rc1', '1.0', -1],
+    ['1.0~rc1', '1.0~rc2', -1],
+    // revision compares only after the upstream version ties
+    ['2.0-1', '2.0-2', -1],
+    ['2.0-10', '2.0-9', 1],
+    // rpm-style release strings
+    ['24.0.7-1.el9', '24.0.9-1.el9', -1],
+    ['3.0.7-27.el9_4', '3.0.7-27.el9', 1],
+  ])('%s vs %s → %i', (a, b, expected) => {
+    expect(compareLinuxPackageVersions(a, b)).toBe(expected);
+  });
+
+  it('returns null when either side is blank or the epoch is not numeric', () => {
+    expect(compareLinuxPackageVersions(null, '1.0')).toBeNull();
+    expect(compareLinuxPackageVersions('1.0', '  ')).toBeNull();
+    expect(compareLinuxPackageVersions('x:1.0', '1.0')).toBeNull();
+  });
+});
+
+describe('linux package app rules (#9370)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('a linux rule matches the provider-prefixed packageId the agent reports (apt and yum)', () => {
+    const rules = buildAppRuleMap([{ source: 'linux', packageId: 'docker-ce', action: 'block' }]);
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '5:24.0.9-1' }, rules)).toBe('blocked');
+    expect(evaluateAppRule({ source: 'linux', packageId: 'yum:docker-ce', version: '24.0.9-1.el9' }, rules)).toBe('blocked');
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce-cli', version: '5:24.0.9-1' }, rules)).toBe('allowed');
+  });
+
+  it('a linux rule never matches a third-party app of the same name, and vice versa', () => {
+    const linuxRules = buildAppRuleMap([{ source: 'linux', packageId: 'docker-ce', action: 'block' }]);
+    const tpRules = buildAppRuleMap([{ source: 'third_party', packageId: 'docker-ce', action: 'block' }]);
+    expect(evaluateAppRule({ source: 'third_party', packageId: 'docker-ce', version: '1' }, linuxRules)).toBe('allowed');
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '1' }, tpRules)).toBe('allowed');
+  });
+
+  it('a linux pin uses package-manager version ordering (epoch, numeric runs, tilde)', () => {
+    const rules = buildAppRuleMap([{ source: 'linux', packageId: 'docker-ce', action: 'pin', pinnedVersion: '5:9.0.0-1' }]);
+    // The tolerant winget comparator reads "5:10" < "5:9" by codepoint and would let this through.
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '5:10.0.0-1' }, rules)).toBe('held');
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '5:9.0.0-1' }, rules)).toBe('allowed');
+    // A pre-release below the pin is within it.
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: '5:9.0.0~rc1-1' }, rules)).toBe('allowed');
+    // Unknown candidate version cannot be proven within the pin.
+    expect(evaluateAppRule({ source: 'linux', packageId: 'apt:docker-ce', version: null }, rules)).toBe('held');
+  });
+
+  it('a ring linux block rule keeps the package out even though ring auto-approve would approve it', async () => {
+    mockPendingAndApprovals(
+      [
+        pendingRow({ patchId: P1, devicePatchId: 'dp-1', source: 'linux', packageId: 'apt:docker-ce', version: '5:24.0.9-1~ubuntu.22.04~jammy' }),
+        pendingRow({ patchId: P2, devicePatchId: 'dp-2', source: 'linux', packageId: 'apt:openssl', version: '3.0.2-0ubuntu1.20' }),
+      ],
+      []
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      sources: ['os'],
+      ringAppRules: [{ source: 'linux', packageId: 'docker-ce', action: 'block' }],
+    });
+
+    expect(result.map((r) => r.patchId)).toEqual([P2]);
+    expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+  });
+
+  it('a ring linux block rule overrides an explicit manual approval', async () => {
+    mockPendingAndApprovals(
+      [pendingRow({ patchId: P1, source: 'linux', packageId: 'yum:docker-ce', version: '24.0.9-1.el9' })],
+      [{ patchId: P1, status: 'approved', ringId: null }]
+    );
+
+    const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, {
+      ...baseRing,
+      sources: ['os'],
+      ringAppRules: [{ source: 'linux', packageId: 'docker-ce', action: 'block' }],
+    });
+
+    expect(result).toEqual([]);
   });
 });
 

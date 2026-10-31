@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
+import { canonicalAppRuleKey } from "@breeze/shared";
 export type RingAppAction = "block" | "pin";
 /** One per-app rule an Update Ring enforces (#8187); the shape of an entry in
  *  the API's `ringAppRulesSchema`. */
@@ -23,13 +24,12 @@ type Props = {
   rules: RingAppRule[];
   onChange: (rules: RingAppRule[]) => void;
 };
-// Canonical rule identity used everywhere else in the patch pipeline. The
-// evaluator treats third_party and custom as one bucket, so the UI must dedupe
-// them the same way before validation.
-const ruleKey = (rule: { source: string; packageId: string }) => {
-  const source = rule.source === "custom" ? "third_party" : rule.source;
-  return `${source}|${rule.packageId.toLowerCase()}`;
-};
+// Canonical rule identity shared with the API validator and evaluator:
+// third_party and custom are one bucket, and a Linux package's apt:/yum:
+// prefix is ignored (#9370), so the UI dedupes exactly as validation will.
+const ruleKey = (rule: { source: string; packageId: string }) =>
+  canonicalAppRuleKey(rule.source, rule.packageId);
+type ManualSource = "third_party" | "linux";
 export default function RingAppRulesSection({ rules, onChange }: Props) {
   const { t } = useTranslation(["patches", "common"]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -38,6 +38,7 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [manualPackageId, setManualPackageId] = useState("");
+  const [manualSource, setManualSource] = useState<ManualSource>("third_party");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!pickerOpen) return undefined;
@@ -126,6 +127,14 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
                 <span className="text-xs text-muted-foreground">
                   {rule.packageId}
                 </span>
+                {rule.source === "linux" && (
+                  <span
+                    data-testid={`app-rule-linux-tag-${key}`}
+                    className="rounded border px-1.5 text-[10px] uppercase text-muted-foreground"
+                  >
+                    {t("ringAppRules.linuxPackage")}
+                  </span>
+                )}
                 <select
                   value={rule.action}
                   data-testid={`app-rule-action-${key}`}
@@ -161,6 +170,11 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
                     }
                     className="h-8 w-28 rounded-md border bg-background px-2 text-xs"
                   />
+                )}
+                {rule.action === "pin" && rule.source === "linux" && (
+                  <span className="basis-full text-xs text-muted-foreground">
+                    {t("ringAppRules.linuxPinHint")}
+                  </span>
                 )}
                 <button
                   type="button"
@@ -228,6 +242,11 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
                     <span className="text-xs text-muted-foreground">
                       {option.vendor ?? option.packageId}
                     </span>
+                    {option.source === "linux" && (
+                      <span className="ml-auto text-[10px] uppercase text-muted-foreground">
+                        {t("ringAppRules.linuxPackage")}
+                      </span>
+                    )}
                     {option.inCatalog && (
                       <span className="ml-auto text-[10px] uppercase text-muted-foreground">
                         {t("ringAppRules.catalog",
@@ -254,6 +273,20 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
             )}
           </ul>
           <div className="mt-2 flex items-center gap-2 border-t pt-2">
+            <select
+              value={manualSource}
+              aria-label={t("ringAppRules.manualRuleType")}
+              data-testid="app-rules-manual-source"
+              onChange={(event) =>
+                setManualSource(event.target.value as ManualSource)
+              }
+              className="h-8 rounded-md border bg-background px-2 text-xs"
+            >
+              <option value="third_party">
+                {t("ringAppRules.appPackage")}
+              </option>
+              <option value="linux">{t("ringAppRules.linuxPackage")}</option>
+            </select>
             <input
               type="text"
               placeholder={t("ringAppRules.orEnterAPackageIDManually",
@@ -267,10 +300,10 @@ export default function RingAppRulesSection({ rules, onChange }: Props) {
               type="button"
               data-testid="app-rules-manual-add"
               disabled={!manualPackageId.trim()}
-              // Manual entries use 'third_party'; the evaluator matches third_party/custom as one bucket, so custom-source patches are still covered.
+              // Application entries use 'third_party'; the evaluator matches third_party/custom as one bucket, so custom-source patches are still covered. 'linux' names an apt/dnf package (#9370).
               onClick={() =>
                 addRule({
-                  source: "third_party",
+                  source: manualSource,
                   packageId: manualPackageId.trim(),
                 })
               }
