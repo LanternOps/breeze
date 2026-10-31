@@ -16,6 +16,7 @@
  * aborts the pass for anyone else; the affected rows simply stay due.
  */
 import { sql } from 'drizzle-orm';
+import { WORKLOAD_IMAGE_PROVENANCES, type WorkloadImageProvenance } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { containerImageUpstreamCache } from '../../db/schema';
 import {
@@ -73,6 +74,11 @@ interface ScannedGroup extends DueImageGroup {
   rank: number;
 }
 
+/** The column's CHECK constraint holds the vocabulary; anything else reads as no evidence. */
+function toProvenance(value: unknown): WorkloadImageProvenance | null {
+  return (WORKLOAD_IMAGE_PROVENANCES as readonly unknown[]).includes(value) ? (value as WorkloadImageProvenance) : null;
+}
+
 async function scanDueGroups(now: Date, maxGroups: number, onlyOrgIds?: readonly string[]): Promise<DueImageGroup[]> {
   const orgFilter = onlyOrgIds
     ? sql`AND w.org_id IN (SELECT value::uuid FROM jsonb_array_elements_text(${JSON.stringify(onlyOrgIds)}::jsonb))`
@@ -82,15 +88,17 @@ async function scanDueGroups(now: Date, maxGroups: number, onlyOrgIds?: readonly
   const rows = await withSystemDbAccessContext(
     () =>
       db.execute(sql`
-        SELECT org_id, image_repository, image_tag, image_digest, pinned, digest_unknown, rank
+        SELECT org_id, image_repository, image_tag, image_digest, pinned, digest_unknown, image_provenance, rank
         FROM (
           SELECT g.*, row_number() OVER (
-                   PARTITION BY g.org_id ORDER BY g.image_repository NULLS LAST, g.image_tag NULLS LAST, g.image_digest NULLS LAST
+                   PARTITION BY g.org_id ORDER BY g.image_repository NULLS LAST, g.image_tag NULLS LAST, g.image_digest NULLS LAST,
+                     g.image_provenance NULLS LAST
                  ) AS rank
           FROM (
             SELECT w.org_id, w.image_repository, w.image_tag, w.image_digest,
                    COALESCE(w.image_ref LIKE '%@sha256:%', false) AS pinned,
-                   (w.image_digest IS NULL AND COALESCE(r.complete = false, false)) AS digest_unknown
+                   (w.image_digest IS NULL AND COALESCE(r.complete = false, false)) AS digest_unknown,
+                   w.image_provenance
             FROM device_workloads w
             LEFT JOIN device_workload_runtimes r ON r.device_id = w.device_id AND r.runtime = w.runtime
             WHERE w.kind = 'container'
@@ -100,7 +108,7 @@ async function scanDueGroups(now: Date, maxGroups: number, onlyOrgIds?: readonly
                 OR w.upstream_checked_at < ${recheckBefore.toISOString()}::timestamp
                 OR (w.upstream_status = 'error' AND w.upstream_checked_at < ${errorRetryBefore.toISOString()}::timestamp)
               )
-            GROUP BY 1, 2, 3, 4, 5, 6
+            GROUP BY 1, 2, 3, 4, 5, 6, 7
           ) g
         ) ranked
         ORDER BY rank, org_id
@@ -116,6 +124,7 @@ async function scanDueGroups(now: Date, maxGroups: number, onlyOrgIds?: readonly
       imageDigest: (r.image_digest as string | null) ?? null,
       pinned: r.pinned === true,
       digestUnknown: r.digest_unknown === true,
+      imageProvenance: toProvenance(r.image_provenance),
       rank: Number(r.rank),
     }),
   );
@@ -189,6 +198,7 @@ async function writeOrg(orgId: string, writes: GroupWrite[], now: Date): Promise
       tag: w.group.imageTag,
       digest: w.group.imageDigest,
       pinned: w.group.pinned,
+      provenance: w.group.imageProvenance,
       status: w.status,
       upstream_digest: w.upstreamDigest,
     })),
@@ -201,13 +211,15 @@ async function writeOrg(orgId: string, writes: GroupWrite[], now: Date): Promise
           upstream_checked_at = ${now.toISOString()}::timestamp,
           behind_since = ${behindSinceOnUpstreamWrite(sql`v.status`, sql`w.behind_since`, sql`${now.toISOString()}::timestamp`)}
       FROM jsonb_to_recordset(${payload}::jsonb)
-        AS v(repository text, tag text, digest text, pinned boolean, status text, upstream_digest text)
+        AS v(repository text, tag text, digest text, pinned boolean, provenance text, status text, upstream_digest text)
       WHERE w.org_id = ${orgId}
         AND w.kind = 'container'
         AND w.image_repository IS NOT DISTINCT FROM v.repository
         AND w.image_tag IS NOT DISTINCT FROM v.tag
         AND w.image_digest IS NOT DISTINCT FROM v.digest
         AND COALESCE(w.image_ref LIKE '%@sha256:%', false) = v.pinned
+        -- #9067: a row whose provenance changed meanwhile was decided on other evidence.
+        AND w.image_provenance IS NOT DISTINCT FROM v.provenance
         -- A null digest under an incomplete snapshot is digest-unknown: never stamp it local.
         AND NOT (
           w.image_digest IS NULL AND NOT v.pinned AND EXISTS (

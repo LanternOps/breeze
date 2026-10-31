@@ -85,6 +85,16 @@ describe('resolveDelivery precedence', () => {
       { id: CH_PARTNER, orgId: null, partnerId: PARTNER, enabled: true });
   });
 
+  it('routes a backup_workload only through rules without a site filter', async () => {
+    // A workload has no device or topology site; the dispatcher supplies null.
+    selectQueue.push(orgLookup(), [
+      row({ id: 'site-filtered', priority: 1, conditions: { siteIds: [SITE_A] }, channelIds: [CH_PARTNER] }),
+      row({ id: 'org-workloads', priority: 2, conditions: {}, channelIds: [CH_ORG] }),
+    ]);
+    const result = await resolveDelivery({ orgId: ORG, severity: 'high', siteId: null });
+    expect(result).toMatchObject({ routingRuleId: 'org-workloads', channelIds: [CH_ORG] });
+  });
+
   it('1. monitor none → inbox only, no escalation even when the monitor names one', async () => {
     selectQueue.push(orgLookup(), monitor('none'));
     await expect(resolveDelivery({ orgId: ORG, severity: 'high', monitorId: 'm1' }))

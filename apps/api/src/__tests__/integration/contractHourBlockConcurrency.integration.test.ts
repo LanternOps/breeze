@@ -7,7 +7,7 @@ vi.mock('../../services/timeEntryEvents', () => ({ emitTimeEntryEvent: vi.fn().m
 
 import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { contractHourPeriods, invoiceLines, timeEntries } from '../../db/schema';
+import { contractHourPeriods, contracts, invoiceLines, timeEntries } from '../../db/schema';
 import { generateDueInvoice } from '../../services/contractService';
 import { createManualInvoice, issueInvoice } from '../../services/invoiceService';
 import { updateTimeEntry } from '../../services/timeEntryService';
@@ -17,7 +17,7 @@ const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbA
 const AT = new Date('2026-08-01T06:00:00Z');
 
 describe('block close concurrency (real DB) #8181', () => {
-  it('close vs. issueInvoice over the same entries: one winner, a clean 409, no hour on both', async () => {
+  it('close vs. issueInvoice over the same held entry: the close draws it, Issue is a clean 409 either way (#8970)', async () => {
     const f = await seedBlockFixture({ timing: 'arrears' });
     const e = await seedEntry(f, { minutes: 120, endedAt: '2026-07-15T12:00:00Z' });
     const draft = await sys(() => seedAdHocDraft(f, e));
@@ -27,9 +27,31 @@ describe('block close concurrency (real DB) #8181', () => {
     ]);
     const issue = results[1];
     const [row] = await sys(() => db.select({ s: timeEntries.billingStatus, l: timeEntries.contractLineId }).from(timeEntries).where(eq(timeEntries.id, e)));
+    // Close first -> SOURCE_ALREADY_BILLED; Issue first -> the entry is held
+    // (#8970) -> SOURCE_HELD_FOR_HOUR_BLOCK. Never billed hourly.
+    expect(row).toEqual({ s: 'contract', l: f.blockLineId });
+    expect(issue.status).toBe('rejected');
+    expect((issue as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+    expect(['SOURCE_ALREADY_BILLED', 'SOURCE_HELD_FOR_HOUR_BLOCK']).toContain((issue as PromiseRejectedResult).reason.code);
+    expectNoFault(results);
+  });
+
+  it('close vs. issueInvoice over an entry no window held at issue: one winner, a clean 409, no hour on both', async () => {
+    // Paused at issue time (no live window), resumed before the run claims July.
+    const f = await seedBlockFixture({ timing: 'arrears', status: 'paused' });
+    const e = await seedEntry(f, { minutes: 120, endedAt: '2026-07-15T12:00:00Z' });
+    const draft = await sys(() => seedAdHocDraft(f, e));
+    const resume = () => db.update(contracts).set({ status: 'active' }).where(eq(contracts.id, f.contractId));
+    const results = await Promise.allSettled([
+      sys(async () => { await resume(); return generateDueInvoice(f.contractId, AT); }),
+      sys(() => issueInvoice(draft.id, { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] })),
+    ]);
+    const issue = results[1];
+    const [row] = await sys(() => db.select({ s: timeEntries.billingStatus, l: timeEntries.contractLineId }).from(timeEntries).where(eq(timeEntries.id, e)));
     if (row!.s === 'contract') {
       expect(issue.status).toBe('rejected');
-      expect((issue as PromiseRejectedResult).reason).toMatchObject({ status: 409, code: 'SOURCE_ALREADY_BILLED' });
+      expect((issue as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      expect(['SOURCE_ALREADY_BILLED', 'SOURCE_HELD_FOR_HOUR_BLOCK']).toContain((issue as PromiseRejectedResult).reason.code);
     } else {
       expect(row!.s).toBe('billed');
       const [ledger] = await sys(() => db.select().from(contractHourPeriods).where(eq(contractHourPeriods.contractLineId, f.blockLineId)));
@@ -50,10 +72,13 @@ describe('block close concurrency (real DB) #8181', () => {
   });
 
   it('ordered: ad-hoc issue commits first -> the close skips the billed entry', async () => {
-    const f = await seedBlockFixture({ timing: 'arrears' });
+    // #8970: Issue refuses held time, so the entry is unheld at issue (contract
+    // paused, July unclaimed) and the contract resumes before the run claims July.
+    const f = await seedBlockFixture({ timing: 'arrears', status: 'paused' });
     const e = await seedEntry(f, { minutes: 120, endedAt: '2026-07-15T12:00:00Z' });
     const draft = await sys(() => seedAdHocDraft(f, e));
     await sys(() => issueInvoice(draft.id, { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] }));
+    await sys(() => db.update(contracts).set({ status: 'active' }).where(eq(contracts.id, f.contractId)));
     const r = await sys(() => generateDueInvoice(f.contractId, AT));
     expect(r.hourBlockCloses).toMatchObject([{ entryCount: 0, consumedHours: 0 }]);
     const [row] = await sys(() => db.select({ s: timeEntries.billingStatus, l: timeEntries.contractLineId }).from(timeEntries).where(eq(timeEntries.id, e)));
@@ -104,7 +129,7 @@ function expectNoFault(results: PromiseSettledResult<unknown>[]) {
 
 /** An ad-hoc draft carrying the entry, seeded directly: assembly (Task 6) now
  *  holds block-covered time, so this is the shape of a draft built before the
- *  block existed — exactly the one that can still race the close. */
+ *  block existed. Since #8970 Issue refuses it while the entry is held. */
 async function seedAdHocDraft(f: { orgId: string; partnerId: string; userId: string; currency: string }, entryId: string) {
   const actor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] };
   const inv = await createManualInvoice({ orgId: f.orgId, currencyCode: f.currency }, actor);

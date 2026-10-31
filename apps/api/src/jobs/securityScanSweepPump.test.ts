@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   cancel: vi.fn(),
   audit: vi.fn(),
   enqueue: vi.fn(),
+  orphans: vi.fn(),
   recording: null as null | ReturnType<typeof import('../testUtils/recordingDb').createRecordingDb>,
 }));
 
@@ -34,6 +35,13 @@ vi.mock('../db', async () => {
   };
 });
 vi.mock('../services/commandCancelPropagation', () => ({ cancelDeviceCommands: (...a: unknown[]) => h.cancel(...a) }));
+// #10057: the non-sweep finalize has its own suite (securityScanOrphanFinalize.test.ts).
+vi.mock('./securityScanOrphanFinalize', () => ({
+  finalizeOrphanedDeviceScans: (...a: unknown[]) => {
+    h.events.push(h.inContext ? 'orphans:in-context' : 'orphans');
+    return h.orphans(...a);
+  },
+}));
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: (...a: unknown[]) => {
     h.events.push(h.inContext ? 'audit:in-context' : 'audit');
@@ -65,6 +73,7 @@ type World = {
   orgRunning?: Array<{ orgId: string; count: number }>;
   partnerRunning?: Array<{ partnerId: string; count: number }>;
   candidates?: Array<Array<{ id: string; deviceId: string }>>;
+  waitingManual?: Array<{ id: string }>;
 };
 
 function respondWith(w: World) {
@@ -78,6 +87,7 @@ function respondWith(w: World) {
       if (text.includes('executed_at is null')) return w.undeliveredFinal ?? [];
       if (text.includes(`c.status in ('completed', 'failed')`)) return w.answeredFinal ?? [];
       if (text.includes('started_at <')) return w.ceilingFinal ?? [];
+      if (text.includes('queue_expires_at >')) return w.waitingManual ?? [];
       return [];
     }
     if (o.kind === 'update' && table === 'security_scan_sweeps') {
@@ -115,6 +125,7 @@ beforeEach(() => {
   h.recording!.ops.length = 0;
   h.cancel.mockReset().mockResolvedValue([]);
   h.audit.mockReset();
+  h.orphans.mockReset().mockResolvedValue({ expired: 0, failed: 0 });
   h.enqueue.mockReset().mockImplementation(async () => {
     h.events.push(h.inContext ? 'enqueue:in-context' : 'enqueue');
   });
@@ -125,8 +136,9 @@ describe('pumpSweeps', () => {
   it('single-flight: second concurrent pump returns skipped', async () => {
     respondWith({ locked: false });
     expect(await pumpSweeps(NOW, { enqueue: h.enqueue })).toEqual({
-      skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0,
+      skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0, deviceScansFinalized: 0, manualReadmitted: 0,
     });
+    expect(h.orphans).not.toHaveBeenCalled();
     expect(ops()).toHaveLength(1);
     expect(whereText(ops()[0]!)).toContain(`pg_try_advisory_xact_lock(hashtext('security-sweep-pump'))`);
     expect(h.enqueue).not.toHaveBeenCalled();
@@ -324,5 +336,35 @@ describe('pumpSweeps', () => {
     expect(limits).toEqual([5, 2]);
     // A device admitted for one sweep is not admitted again for another in the same tick.
     expect(whereParams(candidateQueries()[1]!)).toEqual(expect.arrayContaining(['dev-1', 'dev-2', 'dev-3']));
+  });
+
+  it('#10057 finalizes orphaned scheduled/manual scans in the same system transaction and reports them apart', async () => {
+    h.orphans.mockResolvedValue({ expired: 2, failed: 3 });
+    const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
+    expect(h.orphans).toHaveBeenCalledTimes(1);
+    expect(h.orphans).toHaveBeenCalledWith(NOW);
+    expect(h.events).toEqual(['context:open', 'orphans:in-context', 'context:close']);
+    expect(result.deviceScansFinalized).toBe(5);
+    // Sweep-only counter, unchanged by non-sweep rows.
+    expect(result.finalized).toBe(0);
+  });
+
+  it('#10057 gap 2 re-admits every waiting Scan now to the claim after commit (a lost or early job is healed)', async () => {
+    respondWith({ waitingManual: [{ id: 'm-1' }, { id: 'm-2' }] });
+    const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
+    expect(result.manualReadmitted).toBe(2);
+    expect(result.admitted).toBe(0);
+    expect(h.enqueue).toHaveBeenCalledWith([
+      { type: 'dispatch-scan', scanId: 'm-1', origin: 'manual' },
+      { type: 'dispatch-scan', scanId: 'm-2', origin: 'manual' },
+    ]);
+    expect(h.events.indexOf('enqueue')).toBeGreaterThan(h.events.indexOf('context:close'));
+    const stmt = ops().find((o) => o.kind === 'execute' && whereText(o).includes('queue_expires_at >'))!;
+    const text = whereText(stmt);
+    expect(text).toContain('sweep_id is null');
+    expect(text).toContain(`status = 'queued'`);
+    expect(text).toContain('command_id is null');
+    expect(text).toContain('limit');
+    expect(whereParams(stmt)).toContain(NOW.toISOString());
   });
 });

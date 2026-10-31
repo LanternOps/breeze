@@ -42,6 +42,11 @@ vi.mock('./flows/conversion/ledger', () => ({ conversionSummariesFor: vi.fn(asyn
 vi.mock('../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: vi.fn(async () => undefined),
 }));
+// #10409 — manage_maintenance_windows list/active_now also read policy
+// windows; that reader's site axis is pinned in policyMaintenanceWindows.test.ts.
+vi.mock('./policyMaintenanceWindows', () => ({
+  listPolicyMaintenanceWindows: vi.fn(async () => ({ windows: [], truncated: false })),
+}));
 
 // Override only the reused site-scope helpers (spread the rest so other
 // importers still get the real exports). These drive SR5-05 (automations) and

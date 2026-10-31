@@ -8,10 +8,17 @@ import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { inArray, sql } from 'drizzle-orm';
 
-const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock } = vi.hoisted(() => ({
+const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock, mockListPolicyMaintenanceWindows } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
   mockDeleteDeviceGroup: vi.fn(),
   isNotNullMock: vi.fn(),
+  mockListPolicyMaintenanceWindows: vi.fn(async () => ({ windows: [] as unknown[], truncated: false })),
+}));
+
+// #10409 — the policy-window reader has its own suite
+// (policyMaintenanceWindows.test.ts); here only its wiring into the tool.
+vi.mock('./policyMaintenanceWindows', () => ({
+  listPolicyMaintenanceWindows: mockListPolicyMaintenanceWindows,
 }));
 
 vi.mock('drizzle-orm', async (importOriginal) => {
@@ -857,6 +864,70 @@ describe('manage_maintenance_windows handler', () => {
     const result = JSON.parse(await tool.handler({ action: 'list' }, partnerAuth));
     expect(result.error).toBeUndefined();
     expect(Array.isArray(result.windows)).toBe(true);
+  });
+
+  // #10409 — a fleet whose windows all come from configuration policies used
+  // to list `{ windows: [], showing: 0 }` because only the legacy table was read.
+  const partnerAuth10409 = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: null,
+    scope: 'partner',
+    partnerId: 'partner-1',
+    accessibleOrgIds: ['org-1', 'org-2'],
+    canAccessOrg: () => true,
+    orgCondition: () => ({ mockCondition: 'orgs' }),
+  } as any;
+  const policyWindow = {
+    source: 'config_policy',
+    configPolicyId: 'pol-default',
+    policyName: 'Default Workstation Policy',
+    policyScope: 'partner_wide',
+    activeNow: true,
+    nextWindow: { startsAt: '2026-10-28T02:00:00.000Z', endsAt: '2026-10-28T04:00:00.000Z' },
+  };
+
+  it('list includes configuration-policy windows alongside legacy rows (#10409)', async () => {
+    mockListPolicyMaintenanceWindows.mockClear();
+    mockListPolicyMaintenanceWindows.mockResolvedValueOnce({ windows: [policyWindow], truncated: false });
+
+    const result = JSON.parse(await tool.handler({ action: 'list', limit: 10 }, partnerAuth10409));
+
+    expect(result.error).toBeUndefined();
+    expect(result.policyWindows).toEqual([policyWindow]);
+    expect(result.windows).toEqual([]);
+    expect(result.showing).toBe(1);
+    expect(mockListPolicyMaintenanceWindows).toHaveBeenCalledWith(partnerAuth10409, { limit: 10 });
+  });
+
+  it('list reports when the policy-window list was truncated (#10409)', async () => {
+    mockListPolicyMaintenanceWindows.mockResolvedValueOnce({ windows: [policyWindow], truncated: true });
+
+    const result = JSON.parse(await tool.handler({ action: 'list', limit: 1 }, partnerAuth10409));
+
+    expect(result.policyWindowsTruncated).toBe(true);
+  });
+
+  it('active_now includes policy windows open right now (#10409)', async () => {
+    mockListPolicyMaintenanceWindows.mockClear();
+    mockListPolicyMaintenanceWindows.mockResolvedValueOnce({ windows: [policyWindow], truncated: false });
+    // active_now's two legacy reads (active + scheduled) end at `.where()`.
+    const legacyRead = () => ({ from: () => ({ where: () => Promise.resolve([]) }) });
+    vi.mocked(db.select).mockImplementationOnce(legacyRead as never).mockImplementationOnce(legacyRead as never);
+
+    const result = JSON.parse(await tool.handler({ action: 'active_now' }, partnerAuth10409));
+
+    expect(result.error).toBeUndefined();
+    expect(result.activePolicyWindows).toEqual([policyWindow]);
+    expect(result.count).toBe(1);
+    expect(mockListPolicyMaintenanceWindows).toHaveBeenCalledWith(
+      partnerAuth10409,
+      expect.objectContaining({ activeOnly: true }),
+    );
+  });
+
+  it('description says list/active_now cover configuration-policy windows (#10409)', () => {
+    expect(tool.definition.description).toMatch(/configuration[- ]polic/i);
+    expect(tool.definition.description).toContain('get_effective_configuration');
   });
 });
 

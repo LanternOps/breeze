@@ -12,7 +12,13 @@ Breeze's data model supports white-label branding -- logo, colors, custom CSS, a
 </Aside>
 
 <Aside type="caution">
-  Today there is no supported way for an admin to set the logo, colors, or custom domain that render on the **end-user portal**, and on customer-facing quotes and invoices -- there is no dashboard control or API for writing those fields. The **Branding** tabs under Settings > Organization and Settings > Partner (described below) configure a separate dashboard/appearance preference and currently have no effect on what customers see on the portal, their quotes, or their invoices. Outbound email templates (**Settings → Partner → Email templates**) edit the inner HTML of customer ticket, quote, invoice, and portal-invite mail; they do not change the email card's accent bar and do not pull colors from the Branding tab.
+  What reaches customers depends on the level:
+
+  - **Partner Branding logo and colors appear on customer documents.** Quotes and invoices -- the web views and the PDFs -- use the logo and primary color saved under **Settings > Partner > Branding** (quote PDFs also set headings in the secondary color when it is dark enough to read), and agreement signing pages show the logo. An organization's own portal branding logo or primary color, when one is stored, wins field by field; today nothing in the dashboard writes those values, so in practice your partner Branding is what customers see.
+  - **The end-user portal does not use partner Branding.** The portal's logo, colors, and custom domain come only from the organization's portal branding record, and there is no dashboard control or API for writing those fields yet. The logo, colors, and theme on the **Settings > Organization > Branding** tab are a separate dashboard/appearance preference and do not change the portal or customer documents.
+  - **Organization custom CSS does reach the portal.** The **Custom CSS** field on **Settings > Organization > Branding** is saved with the organization's portal settings and injected into portal pages.
+
+  Outbound email templates (**Settings → Partner → Email templates**) edit the inner HTML of customer ticket, quote, invoice, and portal-invite mail; they do not change the email card's accent bar and do not pull colors from the Branding tab.
 </Aside>
 
 ---
@@ -45,7 +51,7 @@ Breeze currently supports a single logo per organization and per partner (MSP) -
 </Steps>
 
 <Aside type="caution">
-  Logo URLs are sanitized before rendering to prevent XSS attacks. Only `https://`, `http://`, and `/` (relative) URL schemes, or a data URL produced by the upload control itself, are accepted. Hand-typed `javascript:` URLs and pasted `blob:` URLs are rejected.
+  Logo URLs are sanitized before rendering to prevent XSS attacks. Only `https://`, `http://`, and `/` (relative) URL schemes, or a data URL produced by the upload control itself, are accepted. Hand-typed `javascript:` URLs and pasted `blob:` URLs are rejected. Quotes, invoices, and agreement pages only show a partner logo that was uploaded or uses `https://`.
 </Aside>
 
 <Aside type="caution">
@@ -95,7 +101,7 @@ This ensures buttons and headers remain readable regardless of the chosen brand 
 
 ## Organization Branding
 
-Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The visual fields below (logo, colors, custom domain, custom CSS) are read by the portal, quotes, and invoices when rendering, but -- as noted above -- there is currently no admin-facing way to write them. Only the portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) can be set today, from **Settings > Organization > Portal**.
+Each organization has its own branding record in the `portal_branding` table, keyed by `orgId` (unique constraint). The visual fields below (logo, colors, custom domain) are read by the portal when rendering, and the logo and primary color override your partner Branding on quotes and invoices when set, but -- as noted above -- there is currently no admin-facing way to write them. The portal feature toggles and support-contact fields (`enableTickets`, `enableAssetCheckout`, `enableSelfService`, `enablePasswordReset`, `supportEmail`, `supportPhone`, `welcomeMessage`, `footerText`) are set from **Settings > Organization > Portal**, and `customCss` from the **Custom CSS** field on **Settings > Organization > Branding**.
 
 ### Branding Schema
 
@@ -108,7 +114,7 @@ Each organization has its own branding record in the `portal_branding` table, ke
 | `accentColor` | varchar(50) | Optional accent color (hex) |
 | `customDomain` | varchar(255) | Custom portal domain (e.g., `support.acmecorp.com`) |
 | `domainVerified` | boolean | Whether the custom domain's DNS has been verified |
-| `welcomeMessage` | text | Welcome text displayed on the portal landing page |
+| `welcomeMessage` | text | Plain-text welcome shown at the top of the customer's landing page (Dashboard when enabled, otherwise Proposals) and on the sign-in page of a verified custom domain. Line breaks are kept; HTML is shown as text |
 | `supportEmail` | varchar(255) | Support email shown in emails and portal footer |
 | `supportPhone` | varchar(50) | Support phone number |
 | `footerText` | text | Custom footer text for the portal. Also printed on the organization's quotes and invoices, in place of the partner document footer |
@@ -146,10 +152,10 @@ The partner-level editor provides:
 - **Logo** -- upload an image (stored inline, capped at roughly 400 KB) or paste a hosted image URL
 - **Primary and secondary colors**
 - **Theme** -- `light`, `dark`, or `system`
-- **Custom CSS**
+- **Custom CSS** -- added to the end-user portal of every organization under the partner (see [Custom CSS](#custom-css))
 
 <Aside type="caution">
-  Neither the org-level nor partner-level cascade of these appearance preferences down to the organizations they manage is implemented today -- each level's settings are stored independently, and as covered above neither currently changes what renders on the end-user portal, quotes, or invoices.
+  Apart from Custom CSS, neither the org-level nor partner-level cascade of these appearance preferences down to the organizations they manage is implemented today -- each level's settings are stored independently. The partner **logo** and **colors** are used on customer quotes, invoices, and agreement signing pages (see the caution near the top of this page); they do not change the end-user portal. A hosted logo URL must use `https://` to appear on customer documents.
 </Aside>
 
 ---
@@ -174,11 +180,16 @@ Custom portal domains (e.g., `support.acmecorp.com`) are not configurable yet --
 
 | Asset | Minimum | Recommended | Maximum |
 |-------|---------|-------------|---------|
-| Logo | 64 x 64 px | 512 x 512 px | Uploaded images are resized client-side to a 256 px box before saving (partner-level editor) |
+| Logo | 64 x 64 px | 512 x 512 px | Uploaded images are scaled down client-side to 800 px on the long side (smaller if needed to stay under 400 KB after encoding) |
 
 ### Custom CSS
 
-Custom CSS is injected after the base stylesheet. Use it for fine-grained control over portal appearance:
+Custom CSS is injected after the base stylesheet. It can be set at two levels, and both apply:
+
+1. **Partner** (**Settings > Partner > Branding**) -- added to the portal of every organization under the partner.
+2. **Organization** (the org's portal settings) -- added after the partner's CSS, so an organization rule overrides a partner rule for the same selector.
+
+Use it for fine-grained control over portal appearance:
 
 ```css
 /* Adjust portal header spacing */
@@ -198,7 +209,7 @@ body {
 ```
 
 <Aside type="caution">
-  Custom CSS is injected as-is with no sanitization beyond length limits. Avoid CSS that breaks layout or hides critical UI elements. Test changes using the live preview before saving.
+  Saving is refused when the CSS is longer than 65,536 characters or contains `@import`, `expression(`, `behavior:`, `-moz-binding`, or a `url()` that is not `https:` or `data:`. Otherwise the CSS is injected as written. Avoid CSS that breaks layout or hides critical UI elements.
 </Aside>
 
 ---
@@ -213,7 +224,7 @@ body {
 | PATCH | `/organizations/:id/portal-settings` | Update the portal feature toggles and support-contact fields |
 
 <Aside type="caution">
-  These are the only writable fields today. The visual fields (logo, colors, custom CSS, custom domain) are rejected by this endpoint -- see the caution near the top of this page.
+  These are the only writable portal branding fields today, plus `customCss` (which the organization **Branding** tab saves through this endpoint). The visual fields (logo, colors, custom domain) are rejected by this endpoint -- see the caution near the top of this page.
 </Aside>
 
 ### Portal Branding
@@ -304,8 +315,11 @@ GET /portal/branding/support.acmecorp.com
 
 ## Troubleshooting
 
-**Logo doesn't show up on the customer portal, quotes, or invoices.**
-This is expected today -- see the caution near the top of this page. Neither the organization nor the partner branding editor currently writes the logo that the portal, quotes, and invoices render.
+**Logo doesn't show up on quotes or invoices.**
+Quotes and invoices use the logo saved under **Settings > Partner > Branding**. Check that a logo is saved there: an uploaded image is stored inline, and a pasted URL must start with `https://` (an `http://` URL is not used on customer documents). The organization-level Branding logo does not appear on documents.
+
+**Logo doesn't show up on the customer portal.**
+This is expected today -- see the caution near the top of this page. Neither the organization nor the partner branding editor currently writes the logo that the portal renders.
 
 **Live preview does not match saved branding.**
 The live preview reflects unsaved changes in the editor. Confirm the save operation completed (check for the "Branding settings saved" confirmation). Note that a saved appearance preference does not currently change what end users see on the portal itself -- see the caution near the top of this page.
