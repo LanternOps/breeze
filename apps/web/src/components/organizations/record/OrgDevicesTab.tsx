@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
-import { ORG_TAB_COLUMN_PRESET } from '@/components/devices/columnVisibility';
+import { ORG_TAB_COLUMN_PRESET, readColumnVisibility } from '@/components/devices/columnVisibility';
 import { navigateTo } from '@/lib/navigation';
 import { fetchAllPages } from '@/lib/fetchAllPages';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
@@ -58,6 +58,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
   // enrolment key, which the API gates on organizations:write (#7217).
   const canAddDevice = can('organizations', 'write');
   const [devices, setDevices] = useState<LoadState<Device>>(null);
+  const [warrantyRequested, setWarrantyRequested] = useState(() => readColumnVisibility(ORG_TAB_COLUMN_PRESET).has('warranty'));
   const [truncated, setTruncated] = useState(false);
   const [sites, setSites] = useState<SiteOption[]>([]);
   const [search, setSearch] = useState('');
@@ -70,7 +71,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
     setTruncated(false);
     void (async () => {
       try {
-        const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}`);
+        const res = await orgFetch(`/devices?limit=${ORG_DEVICES_LIMIT}${warrantyRequested ? '&includeWarranty=true' : ''}`);
         if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
         const body = await res.json();
         const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
@@ -94,7 +95,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
     return () => {
       cancelled = true;
     };
-  }, [orgFetch, orgId]);
+  }, [orgFetch, orgId, warrantyRequested]);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,6 +274,7 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
         </div>
       ) : (
         <DeviceList
+          onWarrantyRequiredChange={setWarrantyRequested}
           devices={filteredDevices}
           sites={sites}
           forceSingleOrg

@@ -106,8 +106,8 @@ function rigDeviceListRows(
   const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
-  // Four chained leftJoins (deviceHardware, deviceReliability #1720,
-  // deviceHardwareHealth #6854, deviceWarranty #9863), so each leftJoin returns an object exposing
+  // Three base joins plus the opt-in deviceWarranty join (#9863).
+  // Each leftJoin returns an object exposing
   // the next leftJoin and the terminal where().
   const chain: Record<string, unknown> = {};
   const leftJoin = vi.fn().mockReturnValue(chain);
@@ -431,12 +431,25 @@ describe('GET /devices — response shape', () => {
   // warranty end date and stored status from device_warranty, joined on the
   // device subject only (manual-asset warranty rows have device_id NULL), so
   // the Warranty column needs no per-row fetch.
+  it.each(['', '?includeWarranty=false'])('keeps warranty off the base list query (%s)', async (query) => {
+    const { leftJoin } = rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111' }]);
+    const response = await app.request(`/devices${query}`);
+    expect(response.status).toBe(200);
+    expect(leftJoin.mock.calls.map(([table]) => table)).not.toContain(deviceWarranty);
+    expect(leftJoin).toHaveBeenCalledTimes(3);
+    const projection = vi.mocked(db.select).mock.calls[0]?.[0];
+    expect(projection).not.toHaveProperty('warrantyEndDate');
+    expect(projection).not.toHaveProperty('warrantyStatus');
+    // No extra query for warranty enrichment on the default hot path.
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.execute).toHaveBeenCalledTimes(2);
+  });
   it('projects the warranty end date and status on list rows', async () => {
     const { leftJoin } = rigDeviceListRows([{
       id: '11111111-1111-4111-8111-111111111111', hostname: 'warranty-host',
       warrantyEndDate: '2026-12-31', warrantyStatus: 'expiring',
     }]);
-    const response = await app.request('/devices');
+    const response = await app.request('/devices?includeWarranty=true');
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.data[0]).toMatchObject({ warrantyEndDate: '2026-12-31', warrantyStatus: 'expiring' });
@@ -450,7 +463,7 @@ describe('GET /devices — response shape', () => {
   });
   it('returns null warranty fields when the device has no warranty row', async () => {
     rigDeviceListRows([{ id: '11111111-1111-4111-8111-111111111111', warrantyEndDate: null, warrantyStatus: null }]);
-    const row = (await (await app.request('/devices')).json()).data[0];
+    const row = (await (await app.request('/devices?includeWarranty=true')).json()).data[0];
     expect(Object.prototype.hasOwnProperty.call(row, 'warrantyEndDate')).toBe(true);
     expect(row).toMatchObject({ warrantyEndDate: null, warrantyStatus: null });
   });

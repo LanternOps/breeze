@@ -1285,7 +1285,8 @@ coreRoutes.get(
     const fetchLimit = isCursorMode ? limit + 1 : limit;
     const offset = isCursorMode ? 0 : Math.max(0, ((Number.parseInt(query.page ?? '1', 10) || 1) - 1) * limit);
 
-    const rows = await db
+    const includeWarranty = query.includeWarranty === 'true';
+    const listQuery = db
       .select({
         id: devices.id,
         orgId: devices.orgId,
@@ -1368,8 +1369,10 @@ coreRoutes.get(
         hardwareHealthSummary: deviceHardwareHealth.summary,
         // #9863 — Warranty column. Stored status, the same value the device's
         // Warranty card shows; null when no warranty row exists yet.
-        warrantyEndDate: deviceWarranty.warrantyEndDate,
-        warrantyStatus: deviceWarranty.status,
+        ...(includeWarranty ? {
+          warrantyEndDate: deviceWarranty.warrantyEndDate,
+          warrantyStatus: deviceWarranty.status,
+        } : {}),
         // RDS per-session helpers (plan 2 heartbeat ingest) — UI hint only,
         // see the truthy-guard comment in heartbeat.ts. Tasks 13/14 gate the
         // session picker on this being 'on-demand' at the list-row level.
@@ -1397,13 +1400,13 @@ coreRoutes.get(
       .from(devices)
       .leftJoin(deviceHardware, eq(devices.id, deviceHardware.deviceId))
       .leftJoin(deviceReliability, eq(devices.id, deviceReliability.deviceId))
-      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId))
-      // device_warranty holds at most one row per device: the partial unique
-      // index device_warranty_device_id_idx covers device_id IS NOT NULL, and a
-      // manual-asset row has device_id NULL so it never matches. The join
-      // therefore cannot fan a page out, and RLS (org-scoped) keeps it
-      // tenant-safe.
-      .leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
+      .leftJoin(deviceHardwareHealth, eq(devices.id, deviceHardwareHealth.deviceId));
+    // The default list keeps its existing joins and query budget. Warranty
+    // is opt-in, backed by a unique device_id index (manual assets cannot
+    // match); the org-scoped table's RLS also applies to this join.
+    const rows = await (includeWarranty
+      ? listQuery.leftJoin(deviceWarranty, eq(devices.id, deviceWarranty.deviceId))
+      : listQuery)
       .where(whereCondition)
       .orderBy(...orderBy)
       .limit(fetchLimit)

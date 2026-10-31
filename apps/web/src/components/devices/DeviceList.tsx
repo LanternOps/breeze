@@ -530,6 +530,7 @@ type DeviceListProps = {
   // through `onListFiltersChange` so the page's counts can see it.
   listFilters?: ListFilters;
   onListFiltersChange?: (next: ListFilters) => void;
+  onWarrantyRequiredChange?: (required: boolean) => void;
   // Initial page size if the user has no stored preference for this browser.
   // Once the component mounts, the live page size comes from localStorage
   // (see pageSizePreference.ts); subsequent changes to this prop are ignored.
@@ -904,6 +905,7 @@ export default function DeviceList({
   networkDevicesEnabled = false,
   listFilters,
   onListFiltersChange,
+  onWarrantyRequiredChange,
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
@@ -955,6 +957,10 @@ export default function DeviceList({
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
     () => new Set(readColumnVisibility(columnPreset)),
   );
+  const warrantyVisible = visibleColumns.has('warranty');
+  useEffect(() => {
+    onWarrantyRequiredChange?.(warrantyVisible);
+  }, [warrantyVisible, onWarrantyRequiredChange]);
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import DeviceList, { type Device } from './DeviceList';
@@ -64,4 +64,13 @@ it('sorts by end date, keeping devices without one last in both directions', () 
   expect(order()).toEqual([`device-${soon.id}-warranty`, `device-${later.id}-warranty`, `device-${none.id}-warranty`]);
   fireEvent.click(header);
   expect(order()).toEqual([`device-${later.id}-warranty`, `device-${soon.id}-warranty`, `device-${none.id}-warranty`]);
+});
+
+it('notifies the data owner when warranty visibility changes', () => {
+  const onWarrantyRequiredChange = vi.fn();
+  render(<DeviceList devices={[device('11111111-1111-4111-8111-111111111111', 'laptop')]} onWarrantyRequiredChange={onWarrantyRequiredChange} />);
+  expect(onWarrantyRequiredChange).toHaveBeenLastCalledWith(false);
+  fireEvent.click(screen.getByTestId('column-chooser-trigger'));
+  fireEvent.click(within(screen.getByTestId('column-chooser-option-warranty')).getByRole('checkbox'));
+  expect(onWarrantyRequiredChange).toHaveBeenLastCalledWith(true);
 });

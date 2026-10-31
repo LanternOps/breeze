@@ -228,4 +228,4 @@ Update agents to a release containing this change before relying on the provider
 
 ### Device list warranty column (#9863)
 
-- The device list has an opt-in **Warranty Ends** column (Column chooser → Inventory) showing each device's warranty end date and status, sortable by date. The filter bar has a **Warranty Status** field (Active / Expiring / Expired / Unknown / Subscription Active); a device with no warranty record counts as unknown. `GET /devices` rows now carry `warrantyEndDate` and `warrantyStatus` (null when there is no record). No migration, no new environment variable.
+- The device list has an opt-in **Warranty Ends** column (Column chooser → Inventory) showing each device's warranty end date and status, sortable by date. The filter bar has a **Warranty Status** field (Active / Expiring / Expired / Unknown / Subscription Active); a device with no warranty record counts as unknown. `GET /devices?includeWarranty=true` rows carry `warrantyEndDate` and `warrantyStatus` (null when there is no record). The default list query skips the warranty join. No migration, no new environment variable.
