@@ -1310,7 +1310,12 @@ export const eventLogRowSchema = z.object({
   level: z.enum(['info', 'warning', 'error', 'critical']),
   category: z.enum(['security', 'hardware', 'application', 'system']),
   source: z.string().min(1),
-  eventId: z.string().optional(),
+  // device_event_logs.event_id is varchar(100). Without this bound an
+  // over-long id passed validation and then failed the whole 100-row insert
+  // batch; now only that row is dropped (counted in invalidDropped). The
+  // agent bounds its own ids to 100 characters (#10731,
+  // agent/internal/collectors/eventlogs_ids.go).
+  eventId: z.string().max(100).optional(),
   // The agent truncates every event message to 500 chars on all collector
   // paths (eventlogs_{windows,darwin,linux}.go), but that cap is agent-side
   // only — a compromised or older agent could POST arbitrarily large messages

@@ -219,3 +219,10 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### Linux and macOS event-log ids (#10731)
+
+- **Repeated events from one process are no longer dropped.** Linux and macOS event ids were the source plus the process id, so the server kept only the first event from a long-running process (for example the first sshd authentication failure) and ignored the rest. Ids now end in a hash of the entry's own journald cursor (Linux) or unified-log mach timestamp, thread and trace id (macOS), so every entry is stored and a re-collected entry still deduplicates. macOS crash-report ids are unchanged unless longer than 100 characters.
+- **Upgrade behaviour:** events collected just before and after an agent upgrade can appear twice, once with the old id and once with the new one. Rows already stored keep their old ids. Needs an agent update.
+- **API:** an uploaded event id longer than 100 characters (the column size) now drops only that row, counted in `invalidDropped`. Before, it failed the insert of every row in the same batch of 100.
+- No migration, environment variable or setting.
