@@ -11,9 +11,9 @@ const payload = {
 beforeEach(() => { safeFetch.mockReset().mockResolvedValue({ ok: true, status: 200, text: async () => '' }); });
 describe('workload webhook channel payload', () => {
   it('renders owner template fields and the legacy device alias without null text', async () => {
-    await sendWebhookNotification({ url: 'https://example.com/hook', payloadTemplate: '{"subject":"{{device}}","kind":"{{ownerKind}}","label":"{{ownerLabel}}","name":"{{subjectName}}","ref":"{{owner.ref}}"}' }, payload);
+    await sendWebhookNotification({ url: 'https://example.com/hook', payloadTemplate: '{"subject":"{{device}}","legacyName":"{{deviceName}}","kind":"{{ownerKind}}","label":"{{ownerLabel}}","name":"{{subjectName}}","ref":"{{owner.ref}}"}' }, payload);
     const body = safeFetch.mock.calls[0]?.[1].body;
-    expect(JSON.parse(body)).toEqual({ subject: payload.subjectName, kind: 'backup_workload', label: payload.ownerLabel, name: payload.subjectName, ref: 'workload-1' });
+    expect(JSON.parse(body)).toEqual({ subject: payload.subjectName, legacyName: payload.subjectName, kind: 'backup_workload', label: payload.ownerLabel, name: payload.subjectName, ref: 'workload-1' });
     expect(body).not.toContain('null');
   });
   it('adds owner metadata to the default payload while preserving the null device', async () => {

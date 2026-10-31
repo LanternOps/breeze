@@ -432,7 +432,7 @@ describe('OrgOverviewTab — critical alert device link (ui-flow W03)', () => {
       subjectName: 'Microsoft 365 mail backup · Example organization' };
     const { container } = renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [workload] }) }));
     const chip = await screen.findByTestId('alert-subject-chip');
-    expect(chip).toHaveAttribute('href', '/backup#health');
+    expect(chip).toHaveAttribute('href', '/backup');
     expect(chip).toHaveTextContent(workload.subjectName);
     expect(screen.queryByTestId('device-record-link')).toBeNull();
     expect(container.querySelector('a[href*="/devices/null"]')).toBeNull();

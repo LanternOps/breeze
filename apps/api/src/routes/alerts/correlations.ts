@@ -242,7 +242,10 @@ export async function buildCorrelationGroups(auth: AuthContext): Promise<Correla
   const deviceRows = await db
     .select({ id: devices.id, hostname: devices.hostname })
     .from(devices)
-    .where(inArray(devices.id, orgAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : [])));
+    .where(and(
+      inArray(devices.id, [...new Set(orgAlerts.flatMap((alert) => isDeviceOwned(alert) ? [alert.deviceId] : []))]),
+      inArray(devices.orgId, [...new Set(orgAlerts.map(alert => alert.orgId))]),
+    ));
   const deviceNames = new Map(deviceRows.map((device) => [device.id, device.hostname]));
   const alertsWithSubjects: AlertWithDeviceHostname[] = await enrichAlertSubjects(orgAlerts.map((alert) => ({
     ...alert, deviceHostname: isDeviceOwned(alert) ? deviceNames.get(alert.deviceId) ?? null : null,

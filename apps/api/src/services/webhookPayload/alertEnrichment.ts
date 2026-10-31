@@ -101,12 +101,12 @@ async function readEnrichment(event: BreezeEvent) {
   const parsedOwner = alertWebhookDataV2Schema.shape.owner.safeParse(payload.owner);
   const payloadOwner = parsedOwner.success ? parsedOwner.data : null;
   const fallbackOwnerKind: NonNullable<typeof row>['ownerKind'] = payloadOwner?.kind ?? 'device';
-  // A triggered event can be enriched before its alert INSERT commits. Use
-  // the event's owner identity, still pinned to the event org, in that case.
-  const subjectRows = row && (row.alertId || payloadOwner || validUuid(payload.deviceId)) ? [{
+  // A triggered event can precede its alert INSERT or org snapshot visibility.
+  // Preserve the event's owner identity, still pinned to the event org.
+  const subjectRows = (row?.alertId || payloadOwner || validUuid(payload.deviceId)) ? [{
     ...row,
     orgId: event.orgId,
-    ...(!row.alertId ? {
+    ...(!row?.alertId ? {
       ownerKind: fallbackOwnerKind,
       ownerRef: payloadOwner?.kind === 'backup_workload' ? payloadOwner.ref : null,
       topologySiteId: payloadOwner?.kind === 'topology_site' ? validUuid(payloadOwner.ref) : null,

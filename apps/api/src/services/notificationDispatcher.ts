@@ -224,6 +224,9 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     .limit(1);
   const device = deviceRow && deviceRow.orgId === alert.orgId ? deviceRow : undefined;
 
+  const [subject] = await enrichAlertSubjects([{ ...alert, deviceName: device?.displayName || device?.hostname }]);
+  if (!subject) throw new Error('Alert subject missing');
+
   // Always send in-app notifications first (baseline notification)
   let inAppSent = false;
   try {
@@ -235,6 +238,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       orgId: alert.orgId,
       deviceId: alert.deviceId,
       deviceName: device?.displayName || device?.hostname,
+      subjectName: subject.subjectName,
+      ownerKind: subject.ownerKind,
       link: `/alerts/${alert.id}`
     });
     inAppSent = inAppResult.success;
@@ -950,6 +955,8 @@ async function sendEmailChannelNotification(
     severity: alert.severity as AlertSeverity,
     summary: alert.message || alert.title,
     deviceName: device?.displayName || device?.hostname,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     occurredAt: alert.triggeredAt,
     dashboardUrl,
     orgName: org?.name
@@ -1019,7 +1026,7 @@ async function sendChatWebhookChannelNotification(
     ? `${process.env.DASHBOARD_URL}/alerts/${alert.id}`
     : undefined;
 
-  const payloadTemplate = '{"text":"[{{severity}}] {{alertName}}: {{summary}}{{dashboardUrl}}"}';
+  const payloadTemplate = '{"text":"[{{severity}}] {{alertName}}{{subjectPart}}: {{summary}}{{dashboardUrl}}"}';
 
   return sendWebhookNotification(
     {
@@ -1035,11 +1042,14 @@ async function sendChatWebhookChannelNotification(
       summary: alert.message || alert.title,
       deviceId: alert.deviceId,
       deviceName: device?.displayName ?? device?.hostname ?? undefined,
+      subjectName: alert.subjectName,
+      ownerKind: alert.ownerKind,
       orgId: alert.orgId,
       orgName: org?.name,
       triggeredAt: alert.triggeredAt.toISOString(),
       ruleId: alert.ruleId ?? undefined,
       context: {
+        subjectPart: alert.ownerKind && alert.ownerKind !== 'device' && alert.subjectName ? ` · ${alert.subjectName}` : '',
         dashboardUrl: dashboardUrl ? ` ${dashboardUrl}` : ''
       }
     }
@@ -1064,6 +1074,8 @@ export async function sendSmsChannelNotification(
     severity: alert.severity as AlertSeverity,
     summary: alert.message || alert.title,
     deviceName: device?.displayName || device?.hostname,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     occurredAt: alert.triggeredAt,
     dashboardUrl,
     orgName: org?.name
@@ -1095,6 +1107,8 @@ async function sendPagerDutyChannelNotification(
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),
@@ -1150,6 +1164,8 @@ export async function sendPushoverChannelNotification(
     summary: alert.message || alert.title,
     deviceId: alert.deviceId,
     deviceName: device?.displayName ?? device?.hostname ?? undefined,
+    subjectName: alert.subjectName,
+    ownerKind: alert.ownerKind,
     orgId: alert.orgId,
     orgName: org?.name,
     triggeredAt: alert.triggeredAt.toISOString(),

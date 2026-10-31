@@ -18,7 +18,7 @@ export function isDeviceAlert<T extends AlertSubjectFields>(alert: T): alert is 
 
 export function alertSubjectHref(alert: AlertSubjectFields): string | undefined {
   if (isDeviceAlert(alert)) return `/devices/${alert.deviceId}`;
-  if (alert.ownerKind === 'backup_workload') return '/backup#health';
+  if (alert.ownerKind === 'backup_workload') return '/backup';
   if (alert.ownerKind === 'topology_site' && alert.topologySiteId) {
     return `/discovery#topology/site/${encodeURIComponent(alert.topologySiteId)}`;
   }
@@ -28,7 +28,13 @@ export function alertSubjectHref(alert: AlertSubjectFields): string | undefined 
 export default function AlertSubjectChip(alert: AlertSubjectFields) {
   const { t } = useTranslation('alerts');
   const nonDeviceOwner = alert.ownerKind === 'backup_workload' || alert.ownerKind === 'topology_site';
-  const label = alert.subjectName || alert.ownerLabel || (!nonDeviceOwner && alert.deviceName) || (
+  const subjectLabel = alert.subjectName || alert.ownerLabel || (!nonDeviceOwner && alert.deviceName);
+  // Generic API labels have no translated name; localize them in the console.
+  const localizedLabel = alert.ownerKind === 'backup_workload'
+    ? subjectLabel && subjectLabel.replace(/^SaaS backup(?= · |$)/, t('subject.backupWorkload'))
+    : alert.ownerKind === 'topology_site' && subjectLabel === 'Topology site' ? t('subject.topologySite')
+      : !nonDeviceOwner && subjectLabel === 'Device' ? t('subject.label') : subjectLabel;
+  const label = localizedLabel || (
     alert.ownerKind === 'backup_workload' ? t('subject.backupWorkload')
       : alert.ownerKind === 'topology_site' ? t('subject.topologySite') : t('subject.label')
   );

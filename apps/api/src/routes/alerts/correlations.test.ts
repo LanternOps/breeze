@@ -58,6 +58,7 @@ const {
   };
 
   const state = {
+    selectPredicates: [] as Array<{ table: unknown; predicate: Predicate }>,
     alerts: [] as Array<Record<string, any>>,
     correlations: [] as Array<Record<string, any>>,
     groups: [] as Array<Record<string, any>>,
@@ -73,7 +74,7 @@ const {
   class SelectQuery {
     private predicate: Predicate;
     constructor(private table: unknown, private projection?: Record<string, unknown>) {}
-    where(predicate: Predicate) { this.predicate = predicate; return this; }
+    where(predicate: Predicate) { this.predicate = predicate; state.selectPredicates.push({ table: this.table, predicate }); return this; }
     orderBy() { return this; }
     limit(limit: number) { return Promise.resolve(this.rows().slice(0, limit)); }
     then(resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) {
@@ -276,6 +277,7 @@ function makeApp() {
 }
 
 function seed() {
+  state.selectPredicates = [];
   state.alerts = [
     { id: ALERT_1, orgId: ORG_1, deviceId: DEVICE_1, status: 'active', severity: 'critical', title: 'CPU high', ruleId: 'rule-1', triggeredAt: new Date('2026-06-18T12:00:00Z'), createdAt: new Date('2026-06-18T12:00:00Z') },
     { id: ALERT_2, orgId: ORG_1, deviceId: DEVICE_1, status: 'active', severity: 'high', title: 'Memory high', ruleId: 'rule-2', triggeredAt: new Date('2026-06-18T12:02:00Z'), createdAt: new Date('2026-06-18T12:02:00Z') },
@@ -384,6 +386,19 @@ describe('/alerts correlation routes', () => {
     const res = await makeApp().request(`/alerts/${ALERT_3}/correlations`);
 
     expect(res.status).toBe(404);
+  });
+
+  it('deduplicates device lookups across historical alerts and scopes them to organizations', async () => {
+    state.alerts.push(...Array.from({ length: 1000 }, (_, index) => ({
+      ...state.alerts[0], id: `historical-${index}`,
+    })));
+    const res = await makeApp().request('/alerts/correlations');
+    expect(res.status).toBe(200);
+    const deviceRead = state.selectPredicates.find(read => read.table === tables.devices);
+    expect(deviceRead?.predicate).toEqual({ op: 'and', args: [
+      { op: 'inArray', col: tables.devices.id, vals: [DEVICE_1] },
+      { op: 'inArray', col: tables.devices.orgId, vals: [ORG_1] },
+    ] });
   });
 
   it('returns grouped correlations at GET /alerts/correlations', async () => {

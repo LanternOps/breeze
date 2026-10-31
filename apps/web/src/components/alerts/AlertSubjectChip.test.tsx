@@ -1,9 +1,36 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import '../../lib/i18n';
+import { afterEach, describe, expect, it } from 'vitest';
+import { i18n } from '../../lib/i18n';
+import germanAlerts from '../../locales/de-DE/alerts.json';
 import AlertSubjectChip, { alertSubjectHref, isDeviceAlert } from './AlertSubjectChip';
 
 describe('AlertSubjectChip', () => {
+  afterEach(async () => { await i18n.changeLanguage('en'); });
+
+  it('links workload subjects to the backup overview', () => {
+    render(<AlertSubjectChip ownerKind="backup_workload" subjectName="Microsoft 365 mail backup · Customer" />);
+    expect(screen.getByRole('link', { name: 'Microsoft 365 mail backup · Customer' })).toHaveAttribute('href', '/backup');
+  });
+
+  it.each([
+    ['device', 'Device', 'Betroffenes Objekt'],
+    ['topology_site', 'Topology site', 'Topologiestandort'],
+    ['backup_workload', 'SaaS backup', 'Backup-Workload'],
+    ['backup_workload', 'SaaS backup · Kunde', 'Backup-Workload · Kunde'],
+  ] as const)('localizes the generic %s API label %s', async (ownerKind, subjectName, label) => {
+    i18n.addResourceBundle('de-DE', 'alerts', germanAlerts, true, true);
+    await i18n.changeLanguage('de-DE');
+    render(<AlertSubjectChip ownerKind={ownerKind} subjectName={subjectName} ownerLabel={subjectName} />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveTextContent(label);
+  });
+
+  it('preserves named subjects when the console uses another language', async () => {
+    i18n.addResourceBundle('de-DE', 'alerts', germanAlerts, true, true);
+    await i18n.changeLanguage('de-DE');
+    render(<AlertSubjectChip ownerKind="backup_workload" subjectName="Microsoft 365 mail backup · Kunde" />);
+    expect(screen.getByTestId('alert-subject-chip')).toHaveTextContent('Microsoft 365 mail backup · Kunde');
+  });
+
   it('renders a deleted topology subject as text when its site is missing', () => {
     render(<AlertSubjectChip ownerKind="topology_site" subjectName="Former site" />);
     expect(screen.getByTestId('alert-subject-chip')).toHaveTextContent('Former site');

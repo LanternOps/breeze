@@ -30,13 +30,25 @@ describe('enrichAlertSubjects', () => {
     expect(row?.subjectName).toBe('Microsoft 365 mail backup · Example customer');
     const dialect = new PgDialect();
     const predicate = dialect.sqlToQuery(queries[0]?.where as never);
-    expect(predicate.sql).toContain('"backup_provider_devices"."org_id" =');
-    expect(predicate.sql).toContain('"backup_provider_devices"."id"::text =');
-    expect(predicate.params).toEqual([ORG, 'w1']);
+    expect(predicate.sql).toContain('"backup_provider_devices"."org_id" in');
+    expect(predicate.sql).toContain('"backup_provider_devices"."id"::text in');
+    expect(predicate.params).toEqual(['w1', ORG]);
     const join = dialect.sqlToQuery(queries[0]?.joins[0] as never).sql;
     expect(join).toContain('"backup_provider_customers"."org_id" = "backup_provider_devices"."org_id"');
     expect(join).toContain('"backup_provider_customers"."connection_id" = "backup_provider_devices"."connection_id"');
     expect(dialect.sqlToQuery(queries[0]?.joins[1] as never).sql).toBe('"organizations"."id" = "backup_provider_devices"."org_id"');
+  });
+  it.each([
+    { portal: true, portalShowProviderName: true, expected: 'Microsoft 365 mail backup (Cove Data Protection) · Example customer' },
+    { portal: true, portalShowProviderName: false, expected: 'Microsoft 365 mail backup · Example customer' },
+    { portal: false, portalShowProviderName: true, expected: 'Microsoft 365 mail backup · Example customer' },
+    { portal: false, portalShowProviderName: false, expected: 'Microsoft 365 mail backup · Example customer' },
+  ])('discloses the provider only for portal=$portal and opt-in=$portalShowProviderName', async ({ portal, portalShowProviderName, expected }) => {
+    results.push([{ id: 'w1', orgId: ORG, dataSources: ['m365_mail'], customerName: 'Example customer',
+      provider: 'cove', portalShowProviderName }]);
+    const [row] = await enrichAlertSubjects([{ orgId: ORG, ownerKind: 'backup_workload', ownerRef: 'w1' }], { portal });
+    expect(row?.subjectName).toBe(expected);
+    expect(row?.ownerLabel).toBe(expected.split(' · ')[0]);
   });
   it('does not attribute a foreign workload even under system context', async () => {
     results.push([{ id: 'w1', orgId: OTHER, customerName: 'Foreign customer', dataSources: ['m365_mail'] }]);

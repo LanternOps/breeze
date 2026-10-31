@@ -101,7 +101,7 @@ it('renders workload list and drawer subjects without device links or filters', 
   const { container } = render(<AlertsPage />);
   fireEvent.click(await screen.findByText(`${workload.subjectName} failed`));
   const dialog = await screen.findByRole('dialog');
-  expect(within(dialog).getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup#health');
+  expect(within(dialog).getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
   expect(screen.queryByTestId('device-filter-stub')).toBeNull();
   expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
 });

@@ -67,12 +67,12 @@ describe('AlertsFeed row links (ui-flow W03)', () => {
       subjectName: 'Microsoft 365 mail backup · Example organization' };
     const { container } = renderFeed(workload);
     const chip = screen.getByTestId('alert-subject-chip');
-    expect(chip).toHaveAttribute('href', '/backup#health');
+    expect(chip).toHaveAttribute('href', '/backup');
     expect(chip).toHaveTextContent(workload.subjectName);
     expect(screen.queryByTestId('device-record-link')).toBeNull();
     expect(container.querySelector('a[href*="/devices/null"]')).toBeNull();
     fireEvent.click(screen.getByText('Backup failed'));
-    expect(navigateTo).toHaveBeenCalledExactlyOnceWith('/backup#health');
+    expect(navigateTo).toHaveBeenCalledExactlyOnceWith('/backup');
   });
 
   it('links a topology subject to its site instead of its provenance device', () => {

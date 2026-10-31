@@ -969,7 +969,7 @@
     }
   },
   "subject": {
-    "label": "Konu",
+    "label": "Etkilenen öğe",
     "backupWorkload": "Yedekleme iş yükü",
     "topologySite": "Topoloji sitesi"
   }

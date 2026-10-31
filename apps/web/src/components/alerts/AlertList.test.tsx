@@ -160,7 +160,7 @@ vi.mock('../../lib/permissions', () => ({
 describe('AlertList org subjects', () => {
   it('renders a workload chip and omits its device filter', () => {
     const { container } = render(<AlertList alerts={[{ ...baseAlert, deviceId: null, deviceName: '', ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example organization' }]} />);
-    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup#health');
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
     expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     expect(screen.queryByRole('combobox', { name: 'Device' })).toBeNull();

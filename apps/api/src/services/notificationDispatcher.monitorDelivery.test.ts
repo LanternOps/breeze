@@ -146,6 +146,15 @@ const DEFAULT_ROW = {
 };
 
 describe('processAlertNotifications monitor delivery (#5290, on resolveDelivery since W05b)', () => {
+  it.each([true, false])('passes the subject to the in-app sender (workload=%s)', async (workload) => {
+    selectQueue.push([makeAlert({ deviceId: workload ? null : 'device-1', ownerKind: workload ? 'backup_workload' : 'device', ownerRef: workload ? 'workload-1' : null, monitorId: 'monitor-1' })]);
+    if (!workload) selectQueue.push([{ id: 'device-1', orgId: 'org-1', displayName: 'Server-1' }]);
+    if (workload) selectQueue.push([{ id: 'workload-1', orgId: 'org-1', dataSources: ['m365_mail'], customerName: 'Example customer', provider: 'cove', portalShowProviderName: false }]);
+    selectQueue.push(ORG_LOOKUP, ORG_LOOKUP, [{ kind: 'cpu', deliveryMode: 'none', deliveryChannelIds: [], escalationPolicyId: null }]);
+    await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+    expect(sendInAppNotificationMock).toHaveBeenCalledWith(expect.objectContaining({ subjectName: workload ? 'Microsoft 365 mail backup · Example customer' : 'Server-1', ownerKind: workload ? 'backup_workload' : 'device', deviceName: workload ? undefined : 'Server-1' }));
+  });
+
   it("routes a rule-less monitor alert to the monitor's own channels and schedules its escalation policy", async () => {
     selectQueue.push(
       [makeAlert({ ruleId: null, configPolicyId: null, monitorId: 'monitor-1' })], // 1 alert

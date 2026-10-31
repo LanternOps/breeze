@@ -6,7 +6,6 @@ import type { BreezeEvent } from '../eventBus';
 const { select } = vi.hoisted(() => ({ select: vi.fn() }));
 vi.mock('../../db', () => ({ db: { select }, withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../alertSubject', () => ({ enrichAlertSubjects: vi.fn(async () => []) }));
 import { ALERT_V2_EVENT_TYPES, isAlertV2EventType, alertWebhookDataV2Schema, alertWebhookDataV2PartnerSchema } from './alertV2';
 import { buildAlertWebhookProjections } from './alertEnrichment';
 
@@ -69,6 +68,19 @@ describe('frozen alert v2 contract', () => {
     expect(Object.keys(alertWebhookDataV2PartnerSchema.shape).sort()).toEqual([...Object.keys(FROZEN_V2_KEYS), 'orgExternalIds'].sort());
     expect(describeType(alertWebhookDataV2PartnerSchema.shape.orgExternalIds)).toBe('array<object{externalId:string,system:string}>');
   });
+  it('retains the device owner from the triggered fixture when real subject enrichment finds no rows', async () => {
+    const fixture = fixtures.find(({ name }) => name === 'alert.triggered.json')!.event;
+    const { org, partner } = await buildAlertWebhookProjections({
+      id: fixture.id, type: fixture.type, orgId: fixture.orgId, metadata: { timestamp: fixture.timestamp },
+      payload: fixture.data, source: 'contract', priority: 'normal',
+    });
+    for (const projection of [org, partner]) {
+      expect(projection.ownerKind).toBe('device');
+      expect(projection.owner).toEqual({ kind: 'device', ref: fixture.data.deviceId });
+      expect(projection.enrichmentIncomplete).toBe(true);
+    }
+  });
+
   it('preserves the subject-key triggered variant at the top level', async () => {
     const fixture = fixtures.find(({ name }) => name === 'alert.triggered.json')!.event;
     const payload = { ...fixture.data, episodeId: '66666666-6666-4666-8666-666666666666', subjectKey: 'disk:primary', responsesOwner: false };

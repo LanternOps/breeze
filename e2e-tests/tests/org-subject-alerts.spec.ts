@@ -39,7 +39,7 @@ test.describe('Org-subject alerts', () => {
     await expect(row).toBeVisible();
     const subject = row.getByTestId('alert-subject-chip');
     await expect(subject).toContainText('Microsoft 365 mail backup');
-    await expect(subject).toHaveAttribute('href', '/backup#health');
+    await expect(subject).toHaveAttribute('href', '/backup');
     expect(await row.innerHTML()).not.toContain('href="/devices/');
   });
 
@@ -49,7 +49,7 @@ test.describe('Org-subject alerts', () => {
     await expect(detail).toBeVisible();
     const subject = detail.getByTestId('alert-subject-chip');
     await expect(subject).toContainText('Microsoft 365 mail backup');
-    await expect(subject).toHaveAttribute('href', '/backup#health');
+    await expect(subject).toHaveAttribute('href', '/backup');
     await expect(detail.getByTestId('alert-device-action')).toHaveCount(0);
     expect(await detail.innerHTML()).not.toContain('href="/devices/');
   });

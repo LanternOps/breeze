@@ -969,7 +969,7 @@
     }
   },
   "subject": {
-    "label": "Asunto",
+    "label": "Elemento afectado",
     "backupWorkload": "Carga de respaldo",
     "topologySite": "Sitio de topología"
   }

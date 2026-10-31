@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { formatAlertSubject, type AlertSubjectSource } from '@breeze/shared';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts), Task 14 — `GET /alerts` (list) and
@@ -248,7 +249,8 @@ function baseAlertRow(id: string, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  enrichAlertSubjectsMock.mockImplementation(async (rows: unknown[]) => rows);
+  enrichAlertSubjectsMock.mockImplementation(async (rows: AlertSubjectSource[]) =>
+    rows.map(row => ({ ...row, ...formatAlertSubject(row) })));
   dbState.selectQueue = [];
   dbState.whereCalls = [];
   dbState.selectCalls = [];
@@ -494,8 +496,9 @@ describe('org-subject alert read payloads (W2)', () => {
   };
 
   beforeEach(() => {
-    enrichAlertSubjectsMock.mockImplementation(async (rows: Record<string, unknown>[]) =>
-      rows.map(row => ({ ...row, ...workloadSubject })));
+    enrichAlertSubjectsMock.mockImplementation(async (rows: AlertSubjectSource[]) =>
+      rows.map(row => ({ ...row, ...formatAlertSubject(row, row.ownerKind === 'backup_workload'
+        ? { dataSources: ['m365_mail'], customerName: 'Example organization' } : undefined) })));
   });
 
   it('enriches the list before filling legacy device placeholders for a workload alert', async () => {
@@ -521,7 +524,8 @@ describe('org-subject alert read payloads (W2)', () => {
       ...workloadSubject, deviceId: null,
       title: `${workloadSubject.subjectName} failed`, message: `Check ${workloadSubject.subjectName}`,
     });
-    expect(JSON.stringify(body.data[0])).not.toContain('/devices/null');
+    expect(body.data[0].deviceId).toBeNull();
+    expect(body.data[0].owner).toEqual({ kind: 'backup_workload', ref: 'workload-1' });
   });
 
   it('enriches the detail payload without loading a missing device', async () => {

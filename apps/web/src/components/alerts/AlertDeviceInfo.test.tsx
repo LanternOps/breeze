@@ -55,7 +55,7 @@ describe('AlertDeviceInfo', () => {
 describe('AlertDeviceInfo org subjects', () => {
   it('renders a workload subject without a null device link', () => {
     const { container } = render(<AlertDeviceInfo deviceId={null} deviceName="" ownerKind="backup_workload" subjectName="Microsoft 365 mail backup · Example organization" />);
-    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup#health');
+    expect(screen.getByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
     expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
   });
 

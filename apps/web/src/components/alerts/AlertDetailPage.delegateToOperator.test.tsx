@@ -170,7 +170,7 @@ vi.mock('../../lib/permissions', () => ({
 describe('AlertDetailPage org-subject actions', () => {
   it('renders a workload subject without delegation or any device link', async () => {
     const { container } = renderPage({ ...baseAlert, deviceId: null, deviceName: '', ownerKind: 'backup_workload', subjectName: 'Microsoft 365 mail backup · Example organization', context: { source: 'metric_anomaly', metricName: 'cpu' } });
-    expect(await screen.findByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup#health');
+    expect(await screen.findByTestId('alert-subject-chip')).toHaveAttribute('href', '/backup');
     expect(screen.queryByTestId('delegate-stub')).toBeNull();
     expect(container.querySelector('a[href*="/devices/"]')).toBeNull();
   });

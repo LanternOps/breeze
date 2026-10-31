@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { BreezeEvent } from '../eventBus';
+import { formatAlertSubject, type AlertSubjectSource } from '@breeze/shared';
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
@@ -13,14 +14,14 @@ vi.mock('../../db', () => ({ db: { select: mocks.select }, withSystemDbAccessCon
 vi.mock('../alertExternalTickets', () => ({ listAlertExternalTickets: mocks.listExternalTickets }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 vi.mock('../alertSubject', () => ({
-  enrichAlertSubjects: vi.fn(async (rows: Array<Record<string, unknown>>) => rows.map(row => {
-    const ownerKind = row.ownerKind ?? 'device';
-    const ownerLabel = ownerKind === 'backup_workload' ? 'Microsoft 365 mail backup' : row.deviceHostname;
-    return { ...row, ownerKind, owner: { kind: ownerKind, ref: row.ownerRef ?? row.deviceId ?? null },
-      ownerLabel, subjectName: ownerKind === 'backup_workload' ? `${ownerLabel} · ${row.orgName}` : ownerLabel };
-  })),
+  enrichAlertSubjects: vi.fn(async (rows: Array<AlertSubjectSource & Record<string, unknown>>, options: { portal?: boolean } = {}) => {
+    const { formatAlertSubject } = await import('@breeze/shared');
+    return rows.map(row => ({ ...row, ...formatAlertSubject(row, row.ownerKind === 'backup_workload'
+      ? { dataSources: ['m365_mail'], customerName: row.orgName } : undefined, options) }));
+  }),
 }));
 
+import { enrichAlertSubjects } from '../alertSubject';
 import { buildAlertWebhookProjections, alertWebhookUrl, __resetAlertUrlWarningForTests } from './alertEnrichment';
 
 const ALERT = '11111111-1111-4111-8111-111111111111';
@@ -74,6 +75,26 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('alert webhook enrichment', () => {
+  it('uses the portal subject only on the org projection and the partner subject only on the partner projection', async () => {
+    const enrich = vi.mocked(enrichAlertSubjects);
+    enrich.mockImplementationOnce(async rows => rows.map(row => ({
+      ...row, ...formatAlertSubject({ ...row, deviceName: 'Org-visible subject' }),
+    })));
+    enrich.mockImplementationOnce(async rows => rows.map(row => ({
+      ...row, ...formatAlertSubject({ ...row, deviceName: 'Partner-visible subject' }),
+    })));
+
+    const { org, partner } = await buildAlertWebhookProjections(event());
+
+    expect(enrich).toHaveBeenCalledTimes(2);
+    expect(enrich.mock.calls.filter(([, options]) => options?.portal === true)).toHaveLength(1);
+    expect(enrich).toHaveBeenNthCalledWith(1, [expect.objectContaining({ orgId: ORG })], { portal: true });
+    expect(enrich.mock.calls.filter(call => call.length === 1)).toHaveLength(1);
+    expect(enrich).toHaveBeenNthCalledWith(2, [expect.objectContaining({ orgId: ORG })]);
+    expect(org).toMatchObject({ ownerLabel: 'Org-visible subject', subjectName: 'Org-visible subject' });
+    expect(partner).toMatchObject({ ownerLabel: 'Partner-visible subject', subjectName: 'Partner-visible subject' });
+  });
+
   it('adds a workload owner without moving existing producer keys out of details', async () => {
     const ref = '77777777-7777-4777-8777-777777777777';
     const owner = { kind: 'backup_workload', ref };
