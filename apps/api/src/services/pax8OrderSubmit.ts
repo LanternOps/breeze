@@ -1,5 +1,6 @@
 import type { Pax8OrderStatus, Pax8SubmitState } from '@breeze/shared';
-import { runOutsideDbContext } from '../db';
+import { runOutsideDbContext, type Database } from '../db';
+import { Pax8IntegrationGenerationChangedError, type Pax8IntegrationSnapshot } from './pax8SyncService';
 import type { Pax8OrderLineRow, Pax8OrderRow } from './pax8OrderService';
 import { Pax8OrderError } from './pax8OrderService';
 import {
@@ -15,6 +16,19 @@ import { pax8OrderSubmitRepository } from './pax8OrderSubmitRepository';
 export interface SubmitBundle {
   order: Pax8OrderRow;
   lines: Pax8OrderLineRow[];
+  /** Captured inside the claim transaction; never exposed in tool output. */
+  integrationGeneration?: Pax8IntegrationSnapshot;
+  preClaimStatus?: 'draft' | 'awaiting_details' | 'ready';
+}
+
+export type VerifyClaim = (bundle: SubmitBundle, database: Database) => Promise<void>;
+
+export interface SubmitOrderInput {
+  partnerId: string;
+  orderId: string;
+  actorUserId: string;
+  verifyClaim?: VerifyClaim;
+  onPreflightFailure?: 'terminal' | 'reopen';
 }
 
 export interface SubmitLineOutcome {
@@ -27,14 +41,17 @@ export interface SubmitLineOutcome {
 export interface SubmitResult {
   orderId: string;
   status: Pax8OrderStatus;
+  refusalCode?: 'INTEGRATION_CHANGED' | 'PREFLIGHT_FAILED';
+  error?: string;
   lines: Array<{ lineId: string; submitState: Pax8SubmitState; error: string | null }>;
 }
 
 export interface Pax8OrderSubmitRepository {
   loadResolvedOrder(input: { partnerId: string; orderId: string }): Promise<SubmitBundle>;
-  claimOrder(input: { partnerId: string; orderId: string; actorUserId: string }): Promise<SubmitBundle>;
+  claimOrder(input: SubmitOrderInput): Promise<SubmitBundle>;
   createClient(bundle: SubmitBundle): Promise<Pax8Client>;
   claimLines(bundle: SubmitBundle): Promise<void>;
+  reopenUnsentOrder(bundle: SubmitBundle, error: string): Promise<SubmitResult>;
   persistPreflightFailure(bundle: SubmitBundle, errorBody: string): Promise<SubmitResult>;
   persistSubmitResults(
     bundle: SubmitBundle,
@@ -352,17 +369,35 @@ export function createPax8OrderSubmitService(deps: ServiceDeps) {
       return preflightBundle(bundle, client, deps.runOutsideDbContext);
     },
 
-    async submitOrder(input: { partnerId: string; orderId: string; actorUserId: string }): Promise<SubmitResult> {
+    async submitOrder(input: SubmitOrderInput): Promise<SubmitResult> {
       const bundle = await deps.repository.claimOrder(input);
+      const preflightFailure = async (
+        error: string,
+        refusalCode: 'INTEGRATION_CHANGED' | 'PREFLIGHT_FAILED' = 'PREFLIGHT_FAILED',
+      ): Promise<SubmitResult> => {
+        if (input.onPreflightFailure !== 'reopen') return deps.repository.persistPreflightFailure(bundle, error);
+        const clipped = error.slice(0, 2048);
+        const result = await deps.repository.reopenUnsentOrder(bundle, clipped);
+        return { ...result, refusalCode, error: clipped };
+      };
       let client: Pax8Client;
       try {
         client = await deps.repository.createClient(bundle);
       } catch (error) {
-        return deps.repository.persistPreflightFailure(bundle, errorText(error));
+        return preflightFailure(errorText(error), error instanceof Pax8IntegrationGenerationChangedError
+          ? 'INTEGRATION_CHANGED' : 'PREFLIGHT_FAILED');
       }
-      const preflight = await preflightBundle(bundle, client, deps.runOutsideDbContext);
+      let preflight: PreflightResult;
+      try {
+        preflight = await preflightBundle(bundle, client, deps.runOutsideDbContext);
+      } catch (error) {
+        // Payload construction may fail locally before isMock. It is still
+        // provably unsent and must follow the AI reopen policy.
+        if (input.onPreflightFailure === 'reopen') return preflightFailure(errorText(error));
+        throw error;
+      }
       if (!preflight.ok) {
-        return deps.repository.persistPreflightFailure(bundle, preflight.errorBody);
+        return preflightFailure(preflight.errorBody);
       }
       await deps.repository.claimLines(bundle);
       const execution = await deps.runOutsideDbContext(() => executeWrites(bundle, client));

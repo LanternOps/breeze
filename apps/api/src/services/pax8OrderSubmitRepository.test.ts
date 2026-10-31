@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   db: { select: vi.fn(), update: vi.fn() },
   validateLines: vi.fn(),
   events: [] as string[],
+  createClient: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -31,7 +32,10 @@ vi.mock('./pax8OrderService', () => {
   };
 });
 
-vi.mock('./pax8SyncService', () => ({ createPax8ClientForIntegration: vi.fn() }));
+vi.mock('./pax8SyncService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./pax8SyncService')>();
+  return { ...actual, createPax8ClientForIntegration: mocks.createClient };
+});
 
 import { pax8OrderSubmitRepository } from './pax8OrderSubmitRepository';
 
@@ -53,15 +57,16 @@ const order = {
 
 function selectChain(rows: unknown[], terminal: 'limit' | 'for' | 'orderBy', event?: string) {
   const chain: Record<string, unknown> = {};
+  chain.then = Promise.resolve(rows).then.bind(Promise.resolve(rows));
   chain.from = vi.fn(() => chain);
   chain.where = vi.fn(() => chain);
   chain.limit = vi.fn(async () => {
     if (terminal === 'limit' && event) mocks.events.push(event);
     return rows;
   });
-  chain.for = vi.fn(async () => {
+  chain.for = vi.fn(() => {
     if (terminal === 'for' && event) mocks.events.push(event);
-    return rows;
+    return Object.assign(Promise.resolve(rows), { limit: chain.limit });
   });
   chain.orderBy = vi.fn(async () => {
     if (terminal === 'orderBy' && event) mocks.events.push(event);
@@ -74,6 +79,7 @@ beforeEach(() => {
   mocks.db.select.mockReset();
   mocks.db.update.mockReset();
   mocks.validateLines.mockReset();
+  mocks.createClient.mockReset();
   mocks.events.length = 0;
 });
 
@@ -95,7 +101,8 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
       .mockReturnValueOnce(selectChain([{
         pax8CompanyId: 'company-1', status: 'Active', metadata: READY_METADATA,
       }], 'for', 'company-locked'))
-      .mockReturnValueOnce(selectChain([patchedLine], 'orderBy', 'lines-read'));
+      .mockReturnValueOnce(selectChain([patchedLine], 'orderBy', 'lines-read'))
+      .mockReturnValueOnce(selectChain([integration], 'limit'));
     const returning = vi.fn(async () => {
       mocks.events.push('parent-claimed');
       return [{ ...order, status: 'submitting', submittedAt: new Date() }];
@@ -195,4 +202,117 @@ describe('pax8OrderSubmitRepository.claimOrder', () => {
 
     expect(mocks.db.update).toHaveBeenCalledTimes(1);
   });
+});
+
+
+const integration = {
+  id: order.integrationId, partnerId: order.partnerId, isActive: true,
+  apiBaseUrl: 'https://api.example.test', tokenUrl: 'https://auth.example.test/token',
+  clientIdEncrypted: 'synthetic-client-ciphertext', clientSecretEncrypted: 'synthetic-secret-ciphertext',
+} as import('./pax8SyncService').Pax8IntegrationSnapshot;
+
+const line = {
+  id: 'line-1', orderId: order.id, partnerId: order.partnerId, orgId: order.orgId,
+  action: 'new_subscription', submitState: 'pending', contractLineId: 'contract-line-1',
+  quantity: '7.00', authorizedBaselineQuantity: null, sortOrder: 0,
+} as import('./pax8OrderService').Pax8OrderLineRow;
+
+function mutation(rows: unknown[]) {
+  const returning = vi.fn().mockResolvedValue(rows);
+  const where = vi.fn((_condition: unknown) => ({ returning }));
+  const set = vi.fn(() => ({ where }));
+  return { set, where, returning };
+}
+
+function prepareClaim(action: string = 'new_subscription', status: string = 'ready') {
+  const original = { ...order, status };
+  const claimed = { ...original, status: 'submitting', submittedAt: new Date('2026-10-31T12:00:00Z') };
+  const staged = { ...line, action };
+  mocks.db.select
+    .mockReturnValueOnce(selectChain([original], 'limit'))
+    .mockReturnValueOnce(selectChain([original], 'limit'))
+    .mockReturnValueOnce(selectChain([{ pax8CompanyId: 'company-1', status: 'Active', metadata: READY_METADATA }], 'for'))
+    .mockReturnValueOnce(selectChain([staged], 'orderBy'))
+    .mockReturnValueOnce(selectChain([integration], 'limit'))
+    .mockReturnValueOnce(selectChain([{ id: line.contractLineId, manualQuantity: '4.00', lineType: 'manual' }], 'limit'));
+  const parent = mutation([claimed]);
+  const baseline = mutation([{ id: line.id }]);
+  mocks.db.update.mockReturnValueOnce(parent).mockReturnValueOnce(baseline);
+  mocks.validateLines.mockImplementation(async (_order, lines) => { mocks.events.push('validated'); return lines; });
+  return { parent, baseline, claimed };
+}
+
+it.each(['new_subscription', 'change_quantity', 'cancel'])('captures and durably stores the %s approved baseline before verifyClaim', async (action) => {
+  const { baseline } = prepareClaim(action);
+  const verifyClaim = vi.fn(async (bundle: import('./pax8OrderSubmit').SubmitBundle) => {
+    expect(mocks.events).toContain('validated');
+    expect(bundle.lines[0]!.authorizedBaselineQuantity).toBe('4.00');
+    expect(baseline.returning).toHaveBeenCalled();
+  });
+  const bundle = await pax8OrderSubmitRepository.claimOrder({ partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1', verifyClaim });
+  expect(verifyClaim).toHaveBeenCalledWith(bundle, mocks.db);
+  expect(bundle.preClaimStatus).toBe('ready');
+  expect(bundle.integrationGeneration).toEqual(integration);
+  expect(baseline.set).toHaveBeenCalledWith(expect.objectContaining({ authorizedBaselineQuantity: '4.00' }));
+});
+
+it('propagates verifyClaim drift inside the claim context without constructing a client', async () => {
+  prepareClaim();
+  await expect(pax8OrderSubmitRepository.claimOrder({
+    partnerId: order.partnerId, orderId: order.id, actorUserId: 'actor-1',
+    verifyClaim: async () => { throw new Error('PREVIEW_MISMATCH'); },
+  })).rejects.toThrow('PREVIEW_MISMATCH');
+  expect(mocks.createClient).not.toHaveBeenCalled();
+});
+
+it.each(['apiBaseUrl', 'tokenUrl', 'clientIdEncrypted', 'clientSecretEncrypted', 'isActive'] as const)('refuses a client when the claimed integration %s changed', async (field) => {
+  mocks.db.select.mockReturnValueOnce(selectChain([], 'limit'));
+  mocks.createClient.mockResolvedValue({ integration: { ...integration, [field]: field === 'isActive' ? false : 'changed' }, client: {} });
+  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: integration }))
+    .rejects.toMatchObject({ name: 'Pax8IntegrationGenerationChangedError' });
+});
+
+it('accepts access-token churn without changing the claimed integration generation', async () => {
+  const client = {};
+  mocks.db.select.mockReturnValueOnce(selectChain([integration], 'limit'));
+  mocks.createClient.mockResolvedValue({ integration: { ...integration, accessTokenEncrypted: 'refreshed' }, client });
+  await expect(pax8OrderSubmitRepository.createClient({ order, lines: [], integrationGeneration: integration })).resolves.toBe(client);
+});
+
+it.each(['draft', 'awaiting_details', 'ready'])('reopens a provably unsent claim to %s with pending lines', async (preClaimStatus) => {
+  const claimed = { ...order, status: 'submitting', submittedAt: new Date('2026-10-31T12:00:00Z') };
+  mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([line], 'limit'));
+  const reset = mutation([{ id: order.id }]);
+  mocks.db.update.mockReturnValueOnce(reset);
+  const result = await pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: preClaimStatus as never }, 'preflight failed');
+  expect(result.status).toBe(preClaimStatus);
+  expect(result.lines[0]?.submitState).toBe('pending');
+  expect(reset.set).toHaveBeenCalledWith(expect.objectContaining({ status: preClaimStatus, submittedBy: null, submittedAt: null }));
+});
+
+it('refuses to reopen after a line has entered in_flight', async () => {
+  const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
+  mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit')).mockReturnValueOnce(selectChain([{ ...line, submitState: 'in_flight' }], 'limit'));
+  await expect(pax8OrderSubmitRepository.reopenUnsentOrder({ order: claimed, lines: [line], preClaimStatus: 'draft' }, 'failed')).rejects.toMatchObject({ status: 409 });
+  expect(mocks.db.update).not.toHaveBeenCalled();
+});
+
+it.each(['persistSubmitResults', 'persistReconcileResults'] as const)('%s preserves a succeeded remote outcome on a billing CAS conflict', async (method) => {
+  const claimed = { ...order, status: 'submitting', submittedAt: new Date() };
+  const sentLine = { ...line, authorizedBaselineQuantity: '4.00', submitState: 'in_flight' };
+  const recorded = { ...sentLine, submitState: 'succeeded', error: 'billing_conflict' };
+  mocks.db.select.mockReturnValueOnce(selectChain([claimed], 'limit'))
+    .mockReturnValueOnce(selectChain([recorded], 'limit'));
+  // The billing CAS sees a concurrent manual quantity edit and matches no row.
+  const billingWrite = mutation([]);
+  const lineWrite = mutation([{ id: line.id }]);
+  const parentWrite = mutation([{ id: order.id }]);
+  mocks.db.update.mockReturnValueOnce(billingWrite).mockReturnValueOnce(lineWrite).mockReturnValueOnce(parentWrite);
+  await pax8OrderSubmitRepository[method]({ order: claimed, lines: [sentLine] }, [{ lineId: line.id, submitState: 'succeeded', error: null, resultSubscriptionId: 'synthetic-subscription' }], 'synthetic-order');
+  expect(billingWrite.set).toHaveBeenCalledWith({ manualQuantity: '7.00' });
+  expect(lineWrite.set).toHaveBeenCalledWith(expect.objectContaining({ submitState: 'succeeded', resultSubscriptionId: 'synthetic-subscription', error: expect.stringContaining('billing_conflict') }));
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const query = new PgDialect().sqlToQuery(billingWrite.where.mock.calls[0]![0] as never);
+  expect(query.sql).toContain('"manual_quantity" =');
+  expect(query.params).toContain('4.00');
 });

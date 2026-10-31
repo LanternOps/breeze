@@ -221,6 +221,7 @@ Only the winning policy for each device applies; newly added providers start wit
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
 
 ### AI tools — Pax8 (#6754 W15)
+- Submit Pax8 orders with two-person approval of estimated costs and terminal cancellations; reconcile unknown outcomes while preserving concurrent billing quantity edits.
 - `get_pax8_status`: inspect integration health and company readiness with full partner access.
 - `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
 - `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.

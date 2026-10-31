@@ -18,7 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
-import { describePax8Action, humanizeToolAction } from './actionIntents/actionLabel';
+import { describePax8Action, describePax8Submit, humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import { isFlowToolName } from './flows/toolNames';
@@ -679,7 +679,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping', 'push', 'push_bulk'],
   // W15 PR A (#6785, Gate B): sync calls the vendor partner-wide; preflight sends staged content.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
-  manage_pax8_orders: ['preflight'],
+  manage_pax8_orders: ['preflight', 'submit', 'reconcile'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -773,6 +773,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
 // See docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md §3.2
 // for the full classification rationale.
 export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
+  manage_pax8_orders: ['submit'],
   // Financial / externally binding. `void` is not named in spec §3.2's
   // bullet list, but TOOL_PERMISSIONS maps it to the same `invoices:send`
   // RBAC action as issue/record_payment/void_payment — voiding an issued
@@ -1072,7 +1073,7 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_accounting_sync: ['link_mapping', 'unlink_mapping', 'sync_mapping'],
   // W15 PR A (#6785): local billing links, partner-wide sync and vendor isMock preflight.
   manage_pax8_subscriptions: ['sync', 'link', 'unlink'],
-  manage_pax8_orders: ['preflight'],
+  manage_pax8_orders: ['preflight', 'reconcile'],
   manage_ticket_response_templates: ['create', 'update'],
   manage_quotes: ['decline', 'create_pay_link'],
   manage_billing_catalog: ['update_item', 'archive_item', 'set_price', 'remove_price', 'set_org_price', 'remove_org_price', 'set_bundle_components'],
@@ -2856,6 +2857,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove_line: { resource: 'billing', action: 'manage' },
     preview: { resource: 'billing', action: 'manage' },
     preflight: { resource: 'billing', action: 'manage' },
+    submit: { resource: 'billing', action: 'manage' },
+    reconcile: { resource: 'billing', action: 'manage' },
   },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
@@ -4920,6 +4923,10 @@ export function buildApprovalDescription(
     }
     case 'manage_pax8_subscriptions':
     case 'manage_pax8_orders':
+      if (action === 'submit') {
+        parts.push(describePax8Submit(input));
+        break;
+      }
       parts.push(describePax8Action(toolName, action) ?? humanizeToolAction(toolName, action));
       break;
 

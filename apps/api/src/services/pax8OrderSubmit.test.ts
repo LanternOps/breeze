@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunOutsideDbContextFn } from '../db';
+import { Pax8IntegrationGenerationChangedError } from './pax8SyncService';
 import { Pax8ApiError } from './pax8Client';
 import {
   createPax8OrderSubmitService,
@@ -98,6 +99,7 @@ function setup(
     claimOrder: vi.fn().mockResolvedValue(claimed),
     createClient: vi.fn().mockResolvedValue(client),
     claimLines: vi.fn().mockResolvedValue(undefined),
+    reopenUnsentOrder: vi.fn().mockResolvedValue({ orderId: 'ord-1', status: 'draft', lines: [] }),
     persistPreflightFailure: vi.fn().mockImplementation(async (_bundle, errorBody) =>
       resultFor(claimed.lines.map((line) => ({
         lineId: line.id,
@@ -591,4 +593,66 @@ describe('reconcileOrder', () => {
       null,
     );
   });
+});
+
+
+describe('approved submit options', () => {
+  it('verifyClaim refuses drift before any client or line claim', async () => {
+    const { service, repository, client } = setup();
+    const verifyClaim = vi.fn().mockRejectedValue(new Error('PREVIEW_MISMATCH'));
+    vi.mocked(repository.claimOrder).mockImplementation(async (input) => {
+      await input.verifyClaim?.(bundle(), {} as never);
+      return bundle();
+    });
+    await expect(service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', verifyClaim }))
+      .rejects.toThrow('PREVIEW_MISMATCH');
+    expect(repository.createClient).not.toHaveBeenCalled();
+    expect(repository.claimLines).not.toHaveBeenCalled();
+    expect(client.createOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(['draft', 'awaiting_details', 'ready'] as const)('verifies an unchanged %s order before isMock', async (status) => {
+    const { service, repository, client } = setup();
+    const verifyClaim = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(repository.claimOrder).mockImplementation(async (input) => {
+      const claimed = { ...bundle(), preClaimStatus: status };
+      await input.verifyClaim?.(claimed, {} as never);
+      return claimed;
+    });
+    await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', verifyClaim });
+    expect(verifyClaim).toHaveBeenCalledOnce();
+    expect(verifyClaim).toHaveBeenCalledBefore(client.createOrder);
+  });
+
+  it('reopens a failed post-claim isMock without terminally failing or sending real writes', async () => {
+    const { service, repository, client } = setup();
+    client.createOrder.mockRejectedValueOnce(new Pax8ApiError('validation', 422, 'invalid provisioning'));
+    const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', onPreflightFailure: 'reopen' });
+    expect(result.status).toBe('draft');
+    expect(result.refusalCode).toBe('PREFLIGHT_FAILED');
+    expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), 'invalid provisioning');
+    expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+    expect(repository.claimLines).not.toHaveBeenCalled();
+    expect(client.createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('reopens an integration-generation refusal before any HTTP', async () => {
+    const { service, repository, client } = setup();
+    vi.mocked(repository.createClient).mockRejectedValue(new Pax8IntegrationGenerationChangedError());
+    const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', onPreflightFailure: 'reopen' });
+    expect(result.refusalCode).toBe('INTEGRATION_CHANGED');
+    expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('integration configuration changed'));
+    expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+    expect(client.createOrder).not.toHaveBeenCalled();
+  });
+});
+
+it('reopens a provably unsent quote when preflight payload construction throws', async () => {
+  const { service, repository, client } = setup([{ ...newLine, provisioningDetails: {} }], { source: 'quote' });
+  const result = await service.submitOrder({ partnerId: 'p1', orderId: 'ord-1', actorUserId: 'u1', onPreflightFailure: 'reopen' });
+  expect(result).toMatchObject({ status: 'draft', refusalCode: 'PREFLIGHT_FAILED' });
+  expect(repository.reopenUnsentOrder).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('invalid provisioning details'));
+  expect(repository.persistPreflightFailure).not.toHaveBeenCalled();
+  expect(repository.claimLines).not.toHaveBeenCalled();
+  expect(client.createOrder).not.toHaveBeenCalled();
 });

@@ -1029,6 +1029,8 @@ describe('AGENT_HUMAN_ONLY_ACTIONS (W02-D2, #6756)', () => {
       'manage_device_software:uninstall',
       // W04-D8 (#6758): group membership is the same self-scope path (triggers.deviceGroupIds).
       'manage_groups:add_devices', 'manage_groups:remove_devices',
+      // W15: billable orders and terminal cancellations require a person.
+      'manage_pax8_orders:submit',
       'manage_tags:add', 'manage_tags:remove',
       // W13 PR B (#6783): tenant-variable values are script inputs.
       'manage_tenant_variables:create', 'manage_tenant_variables:delete', 'manage_tenant_variables:update',

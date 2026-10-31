@@ -193,6 +193,10 @@ const W03_DOCUMENTED_TOOLS = [
 ] as const;
 
 describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
+  it.each(['submit', 'reconcile'])('W15: documents manage_pax8_orders:%s at Tier 3', (action) => {
+    expect(claims.filter((entry) => entry.tool === 'manage_pax8_orders' && entry.actions.includes(action))
+      .map((entry) => entry.claimedTier)).toEqual([3]);
+  });
   it.each(W04_DOCUMENTED)('W04 (#6758): %s is documented in a tool table with every action', (tool) => {
     const rows = claims.filter((c) => c.tool === tool);
     expect(rows.length, `${tool} needs a \`| Tool | Tier | Description |\` row in ${DOC_REL}`).toBeGreaterThan(0);

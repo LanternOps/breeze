@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTableName } from 'drizzle-orm';
 
 const m = vi.hoisted(() => ({
-  select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(),
+  material: vi.fn(), select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn(),
   getOrderWithLines: vi.fn(), createClient: vi.fn(), resolvePrice: vi.fn(),
   dependencies: vi.fn(), pricing: vi.fn(), contextDepth: 0, outsideDepth: 0,
   withContext: vi.fn(), outside: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock('./catalogService', () => ({
   resolvePrice: m.resolvePrice,
   CatalogServiceError: class CatalogServiceError extends Error { constructor(message: string, public status = 400, public code?: string) { super(message); } },
 }));
+vi.mock('./actionIntents/pax8OrderDigest', () => ({ pax8OrderDigestMaterial: m.material, hashPax8OrderMaterial: () => 'a'.repeat(64) }));
 import { previewPax8Order } from './pax8OrderPreview';
 import { Pax8ApiError } from './pax8Client';
 import { CatalogServiceError } from './catalogService';
@@ -40,6 +41,7 @@ const run = () => previewPax8Order({ partnerId, orderId, client: client as never
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.material.mockImplementation(async () => { expect(m.contextDepth).toBeGreaterThan(0); return { local: true }; });
   m.contextDepth = 0; m.outsideDepth = 0;
   m.outside.mockImplementation(async (fn) => {
     const saved = m.contextDepth; m.contextDepth = 0; m.outsideDepth++;
@@ -87,6 +89,22 @@ beforeEach(() => {
 });
 
 describe('previewPax8Order', () => {
+  it('returns a digest and exact submit assertions from the same local read context', async () => {
+    const result = await run();
+    expect(result.previewDigest).toBe('a'.repeat(64));
+    expect(result.submitWith).toMatchObject({ orderId, previewDigest: result.previewDigest, expectedCompany: result.company,
+      expectedLines: [expect.objectContaining({ lineId, quantity: '5', unitCost: '8.25', commitmentTerm: 'Annual' })] });
+    expect(m.material).toHaveBeenCalledTimes(1);
+  });
+  it('blocked previews never offer submitWith', async () => {
+    m.pricing.mockResolvedValue([]);
+    expect((await run()).submitWith).toBeUndefined();
+  });
+  it('cancel preview uses the current linked manual quantity for its approved baseline', async () => {
+    Object.assign(lines[0]!, { action: 'cancel', targetSubscriptionId: 'fixture-subscription', contractLineId: 'fixture-contract-line', authorizedBaselineQuantity: null });
+    Object.assign(rows.contract_lines![0]!, { manualQuantity: '3' });
+    expect((await run()).lines[0]?.fromQuantity).toBe('3');
+  });
   it('new line priced from the live pricing row matching billing and commitment term', async () => {
     m.pricing.mockResolvedValue([
       { commitmentTerm: 'Annual', billingTerm: 'Annual', partnerBuyRate: '99', currencyCode: 'USD' },

@@ -28,9 +28,9 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-type Pax8IntegrationSnapshot = typeof pax8Integrations.$inferSelect;
+export type Pax8IntegrationSnapshot = typeof pax8Integrations.$inferSelect;
 
-class Pax8IntegrationGenerationChangedError extends Error {
+export class Pax8IntegrationGenerationChangedError extends Error {
   constructor() {
     super('Pax8 integration configuration changed during sync');
     this.name = 'Pax8IntegrationGenerationChangedError';
@@ -42,7 +42,7 @@ class Pax8IntegrationGenerationChangedError extends Error {
  * Re-entering the same plaintext creates fresh ciphertext, so this exact tuple
  * is ABA-safe without adding a separate schema revision.
  */
-function integrationGenerationPredicate(integration: Pax8IntegrationSnapshot) {
+export function integrationGenerationPredicate(integration: Pax8IntegrationSnapshot) {
   return and(
     eq(pax8Integrations.id, integration.id),
     eq(pax8Integrations.partnerId, integration.partnerId),
