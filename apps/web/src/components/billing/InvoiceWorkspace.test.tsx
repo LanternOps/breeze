@@ -27,9 +27,9 @@ vi.mock('../../stores/orgStore', () => ({
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 // The real button self-gates on the Wisp flag + grant (its own suite covers that).
-vi.mock('@/components/wisp/WispLinkButton', () => ({
-  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
-    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
   ),
 }));
 
@@ -109,7 +109,7 @@ describe('InvoiceWorkspace', () => {
     expect(setPageContext).toHaveBeenCalledWith(expect.objectContaining({ type: 'record', kind: 'invoice', id: 'inv-1', orgId: 'org-1', label: 'Draft invoice' }));
   });
 
-  it('mounts the Link-to-Wisp button in the header with the loaded invoice and its org (W08 Task 10)', async () => {
+  it('mounts the Talk-to-Wisp button in the header with the loaded invoice and its org (W08 Task 10)', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/catalog')) return json({ data: [] });
       if (input === '/invoices/inv-1') return json({ data: invoice({}) });
@@ -117,7 +117,8 @@ describe('InvoiceWorkspace', () => {
     });
     render(<InvoiceWorkspace id="inv-1" />);
     await waitFor(() => expect(screen.getByTestId('invoice-editor')).toBeInTheDocument());
-    const button = await screen.findByTestId('wisp-link-button-mock');
+    const button = await screen.findByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
     expect(button).toHaveAttribute('data-kind', 'invoice');
     expect(button).toHaveAttribute('data-id', 'inv-1');
     expect(button).toHaveAttribute('data-org', 'org-1');

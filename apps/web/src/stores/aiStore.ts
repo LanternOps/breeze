@@ -13,6 +13,8 @@ import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { WISP_GRANT_UNUSABLE, wispSessionOrgId } from '@/lib/wispSession';
 import { showToast } from '@/components/shared/Toast';
+import { activeThreadFor, type WispTalkTarget } from '@/lib/wispTalk';
+import { addWispLink } from '@/lib/wispLinksApi';
 import {
   attachAnchorMissing,
   processStreamEvent,
@@ -64,6 +66,15 @@ export type WispState = {
   spentTodayCents?: number;
   budgetResetsAt?: string;
 } | null;
+
+export type WispTalkFocusRequest = {
+  target: WispTalkTarget;
+  from: string;
+  to: string;
+  resolve: (accepted: boolean) => void;
+};
+
+let wispTalkSequence = 0;
 
 interface AiState {
   isOpen: boolean;
@@ -137,10 +148,17 @@ interface AiState {
    * refused send can put its text back and a move can carry a draft.
    */
   composerDraft: string;
+  /** An explicit header action asks the mounted sidebar composer for focus. */
+  composerFocusRequest: number;
+  /** Transient inline confirmation, owned by the invoking header button. */
+  wispTalkFocusRequest: WispTalkFocusRequest | null;
   /** Wisp mode (W04); null = ordinary chat. Not persisted. */
   wisp: WispState;
 
   // Actions
+  talkToWispAbout: (target: WispTalkTarget) => Promise<'opened' | 'declined_focus' | 'no_grant'>;
+  openPlainChatAbout: (target: WispTalkTarget) => Promise<void>;
+  resolveWispTalkFocus: (accepted: boolean) => void;
   toggle: () => void;
   open: () => void;
   close: () => void;
@@ -695,6 +713,8 @@ export const useAiStore = create<AiState>()(
   refusalAlternatives: [],
   joinedMidResponse: false,
   composerDraft: '',
+  composerFocusRequest: 0,
+  wispTalkFocusRequest: null,
   wisp: null,
 
   toggle: () => {
@@ -1489,6 +1509,92 @@ export const useAiStore = create<AiState>()(
     return ready === 'not_found' ? 'not_found' : 'ok';
   },
 
+  resolveWispTalkFocus: (accepted) => {
+    const request = get().wispTalkFocusRequest;
+    set({ wispTalkFocusRequest: null });
+    request?.resolve(accepted);
+  },
+
+  openPlainChatAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    if (get().wisp) await get().exitWispMode();
+    if (sequence !== wispTalkSequence) return;
+    // A restored session can still be rehydrating its Wisp grant. Start an
+    // explicitly plain session instead of trusting a temporarily null header.
+    set({ ...CLEARED_SESSION });
+    await get().createSession({ orgId: target.orgId ?? undefined });
+    if (sequence !== wispTalkSequence) return;
+    if (!get().sessionId || get().wisp) throw new Error(get().error ?? i18n.t('ai:wisp.links.addFailed'));
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+    }));
+    // Bind a plain session before opening: the sidebar otherwise auto-enters
+    // an ambient org's grant while its own lookup is in flight.
+    get().open();
+  },
+
+  talkToWispAbout: async (target) => {
+    const sequence = ++wispTalkSequence;
+    get().resolveWispTalkFocus(false);
+    const initialWisp = get().wisp;
+    const initialSessionId = get().sessionId;
+    const unchanged = () => {
+      const current = get().wisp;
+      return sequence === wispTalkSequence && get().sessionId === initialSessionId
+        && current?.threadId === initialWisp?.threadId && current?.grantId === initialWisp?.grantId
+        && current?.focusOrgId === initialWisp?.focusOrgId && current?.status === initialWisp?.status;
+    };
+    const reusable = isActiveGrant(initialWisp) && (!initialWisp?.scopeOrgId || initialWisp.scopeOrgId === target.orgId);
+    const grant = reusable ? initialWisp : await activeThreadFor(target.orgId);
+    if (!unchanged()) return 'declined_focus';
+    if (!grant) {
+      await get().openPlainChatAbout(target);
+      return 'no_grant';
+    }
+    const needsFocusSwitch = !!grant.focusOrgId && !!target.orgId && grant.focusOrgId !== target.orgId;
+    if (needsFocusSwitch) {
+      const { useOrgStore } = await import('./orgStore');
+      if (!unchanged()) return 'declined_focus';
+      const orgName = (id: string | null) => (useOrgStore.getState().organizations ?? []).find((org) => org.id === id)?.name
+        ?? i18n.t('ai:wisp.header.scopeFallback');
+      const request: WispTalkFocusRequest = {
+        target, from: grant.focusOrgName ?? orgName(grant.focusOrgId), to: orgName(target.orgId), resolve: () => undefined,
+      };
+      const accepted = await new Promise<boolean>((resolve) => {
+        request.resolve = resolve;
+        set({ wispTalkFocusRequest: request });
+      });
+      // Unmount can resolve its own request directly; never clear a newer
+      // button's confirmation while this continuation unwinds.
+      if (get().wispTalkFocusRequest === request) set({ wispTalkFocusRequest: null });
+      if (!accepted || !unchanged()) return 'declined_focus';
+      // A newly discovered grant can be focused before creating its first
+      // session, avoiding a throwaway session anchored to the previous org.
+      if (get().wisp?.grantId !== grant.grantId) set({ wisp: grant, ...CLEARED_SESSION });
+      await get().setWispFocus(target.orgId, orgName(target.orgId));
+      if (sequence !== wispTalkSequence || get().wisp?.grantId !== grant.grantId
+        || get().wisp?.threadId !== grant.threadId || get().wisp?.focusOrgId !== target.orgId) return 'declined_focus';
+    } else if (get().wisp?.grantId !== grant.grantId || !get().sessionId) {
+      await get().enterWispMode(grant);
+    }
+    if (sequence !== wispTalkSequence) return 'declined_focus';
+    const current = get().wisp;
+    if (!get().sessionId || current?.grantId !== grant.grantId || current.threadId !== grant.threadId || !isActiveGrant(current)) {
+      throw new Error(get().error ?? i18n.t('ai:wisp.links.addFailed'));
+    }
+    const sessionId = get().sessionId;
+    await addWispLink(grant.threadId, { kind: target.kind, id: target.id, orgId: target.orgId });
+    if (sequence !== wispTalkSequence || get().sessionId !== sessionId || get().wisp?.grantId !== grant.grantId) return 'declined_focus';
+    set((state) => ({
+      composerDraft: state.composerDraft || i18n.t('ai:wisp.talk.draft', { label: target.label, defaultValue: 'About {{label}}: ' }),
+      composerFocusRequest: state.composerFocusRequest + 1,
+    }));
+    get().open();
+    return 'opened';
+  },
+
   enterWispMode: async (w) => {
     // A Wisp conversation starts fresh on the grant's thread; the plain chat
     // that was open stays in history (not closed — it is not the thread's).
@@ -1564,6 +1670,8 @@ useAiStore.subscribe((state) => {
 // rendered from memory. Reset to the initial state here, before auth.ts clears
 // storage, and stop anything still streaming into the old session.
 registerLogoutHook(() => {
+  ++wispTalkSequence;
+  useAiStore.getState().resolveWispTalkFocus(false);
   claimSessionOwnership();
   ++activeStreamToken;
   const reader = currentSendReader;

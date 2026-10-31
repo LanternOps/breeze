@@ -25,9 +25,9 @@ vi.mock('../../../stores/orgStore', () => ({
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
 // The real button self-gates on the Wisp flag + grant (its own suite covers that).
-vi.mock('@/components/wisp/WispLinkButton', () => ({
-  default: ({ kind, id, orgId }: { kind: string; id: string; orgId: string | null }) => (
-    <div data-testid="wisp-link-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} />
+vi.mock('@/components/wisp/WispTalkButton', () => ({
+  default: ({ kind, id, orgId, label }: { kind: string; id: string; orgId: string | null; label: string }) => (
+    <div data-testid="wisp-talk-button-mock" data-kind={kind} data-id={id} data-org={orgId ?? ''} data-label={label} />
   ),
 }));
 
@@ -93,9 +93,10 @@ describe('QuoteWorkspace tabs', () => {
     expect(screen.getByTestId('quote-workspace-status')).toHaveTextContent('Sent');
   });
 
-  it('mounts the Link-to-Wisp button in the header with the loaded quote and its org (W08 Task 10)', async () => {
+  it('mounts the Talk-to-Wisp button in the header with the loaded quote and its org (W08 Task 10)', async () => {
     render(<QuoteWorkspace id="q-1" />);
-    const button = await screen.findByTestId('wisp-link-button-mock');
+    const button = await screen.findByTestId('wisp-talk-button-mock');
+    expect(button.getAttribute('data-label')?.trim()).toBeTruthy();
     expect(button).toHaveAttribute('data-kind', 'quote');
     expect(button).toHaveAttribute('data-id', 'q-1');
     expect(button).toHaveAttribute('data-org', 'org-1');

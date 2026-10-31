@@ -102,7 +102,7 @@ const TARGET_GLOBS = [
   'src/components/wisp/WispLinksPanel.tsx',
   'src/components/wisp/WispNeedsYou.tsx',
   'src/components/wisp/WispEntityPicker.tsx',
-  'src/components/wisp/WispLinkButton.tsx',
+  'src/components/wisp/WispTalkButton.tsx',
   'src/components/settings/WispPartnerSettingsCard.tsx',
   'src/components/wisp/WispHomeContent.tsx',
   'src/components/wisp/WispHomeThread.tsx',
@@ -1029,7 +1029,7 @@ describe('no silent mutations in targeted set', () => {
     // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 270 → 272.
     // IOC sweeps W05 PR C (#6263) adds security/sweeps/sweepsApi.ts: 272 → 273.
     // Wisp W08b (#9921) adds wispLinksApi, wispPartnerSettingsApi, WispHomePage, WispLinksPanel,
-    // WispNeedsYou, WispEntityPicker, WispLinkButton, WispPartnerSettingsCard: 273 → 281; then
+    // WispNeedsYou, WispEntityPicker, WispTalkButton, WispPartnerSettingsCard: 273 → 281; then
     // WispHomeContent and WispHomeThread (G3): 281 → 283.
     // AI surface cohesion W05 (#10136) deletes WispToggle (the grant decides the panel's voice): 283 → 282.
     // Tool Catalog W4 flows/api.ts: 282 → 283.
