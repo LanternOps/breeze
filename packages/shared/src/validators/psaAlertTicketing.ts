@@ -81,8 +81,8 @@ export const connectwiseAlertTicketingSchema = z
 
 /**
  * What the server stores. Adds the server-written instance fingerprint the
- * admin confirmed company links against (a hash, never the base URL or company
- * id themselves — org sessions can read this column).
+ * admin confirmed company links against (a keyed HMAC fingerprint, never the
+ * base URL or company id themselves — org sessions can read this column).
  */
 export const connectwiseAlertTicketingStoredSchema = z
   .object({

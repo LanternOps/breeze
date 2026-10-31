@@ -878,3 +878,79 @@ describe('monitor read projection for org-scope callers', () => {
     expect(rows[1]).toMatchObject({ orgId: ORG, responses: [] });
   });
 });
+
+describe('per-monitor PSA board override (#10528, W2-A)', () => {
+  const fullPartner = () => auth({ scope: 'partner', partnerId: PARTNER, partnerOrgAccess: 'all', orgId: null });
+  const stubCompile = () => vi.spyOn(monitorCompiler, 'compileMonitorInTx').mockResolvedValue({
+    alertTemplateId: 't', alertRuleId: 'r', automationId: 'a', hash: 'h',
+  } as Awaited<ReturnType<typeof monitorCompiler.compileMonitorInTx>>);
+
+  function captureUpdate(row: Record<string, unknown>) {
+    const query = (result: unknown[]) => ({ from: () => ({ where: () => ({ limit: async () => result }) }) });
+    const select = vi.fn().mockReturnValue(query([row]));
+    const set = vi.fn((values: Record<string, unknown>) => ({ where: () => ({ returning: async () => [{ ...row, ...values }] }) }));
+    const tx = { update: vi.fn(() => ({ set })) };
+    const executor = { select, transaction: vi.fn(async (work: (value: typeof tx) => Promise<unknown>) => work(tx)) };
+    return { executor: executor as unknown as Parameters<typeof updateMonitorDefinition>[3], set };
+  }
+
+  it('an org-scope caller cannot set a board on create', async () => {
+    await expect(createMonitorDefinition(input({ psaBoardId: 12 }), auth()))
+      .rejects.toBeInstanceOf(MonitorOwnershipError);
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+  });
+
+  it('a partner user without full org access cannot set a board on an org monitor', async () => {
+    await expect(createMonitorDefinition(
+      input({ psaBoardId: 12 }),
+      auth({ scope: 'partner', partnerId: PARTNER, partnerOrgAccess: 'selected', accessibleOrgIds: [ORG] }),
+    )).rejects.toBeInstanceOf(MonitorOwnershipError);
+  });
+
+  it('a partner admin may set a board on an org-owned monitor (reaches the write)', async () => {
+    await expect(createMonitorDefinition(input({ orgId: ORG, psaBoardId: 12 }), fullPartner()))
+      .rejects.toThrow('transaction should not be reached in these cases');
+  });
+
+  it('an explicit null board is allowed for anyone (it sets nothing)', async () => {
+    await expect(createMonitorDefinition(input({ psaBoardId: null }), auth()))
+      .rejects.toThrow('transaction should not be reached in these cases');
+  });
+
+  it('an org-scope caller editing other fields keeps the stored board', async () => {
+    const row = existingRow({ psaBoardId: 12 });
+    const { executor, set } = captureUpdate(row);
+    const compile = stubCompile();
+    try {
+      await updateMonitorDefinition(row.id as string, { description: 'x' }, auth(), executor);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ psaBoardId: 12 }));
+      // Re-sending the unchanged value is not a change either.
+      await updateMonitorDefinition(row.id as string, { psaBoardId: 12 } as UpdateMonitorDefinitionInput, auth(), executor);
+    } finally { compile.mockRestore(); }
+  });
+
+  it('an org-scope caller cannot change or clear the board', async () => {
+    for (const psaBoardId of [14, null]) {
+      const { executor, set } = captureUpdate(existingRow({ psaBoardId: 12 }));
+      await expect(updateMonitorDefinition('monitor-1', { psaBoardId } as UpdateMonitorDefinitionInput, auth(), executor))
+        .rejects.toBeInstanceOf(MonitorOwnershipError);
+      expect(set).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a partner admin can change and clear the board', async () => {
+    const compile = stubCompile();
+    try {
+      for (const psaBoardId of [14, null]) {
+        const { executor, set } = captureUpdate(existingRow({ psaBoardId: 12 }));
+        await updateMonitorDefinition('monitor-1', { psaBoardId } as UpdateMonitorDefinitionInput, fullPartner(), executor);
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ psaBoardId }));
+      }
+    } finally { compile.mockRestore(); }
+  });
+
+  it('is hidden from an org-scope viewer of a partner-wide monitor', async () => {
+    mockExisting(existingRow({ orgId: null, partnerId: PARTNER, psaBoardId: 12 }));
+    expect(await getMonitorDefinition('monitor-1', auth())).toMatchObject({ psaBoardId: null });
+  });
+});

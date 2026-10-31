@@ -75,10 +75,18 @@ describe('resolveAlertTicketingConfig', () => {
 });
 
 describe('psaInstanceKey', () => {
-  it('is a hash: it never embeds the base URL host or company id', () => {
-    expect(instanceKey).toMatch(/^sha256:[0-9a-f]{64}$/);
+  it('is a keyed fingerprint: it never embeds the base URL host or company id', () => {
+    expect(instanceKey).toMatch(/^fp1:[^:]+:[0-9a-f]{64}$/);
     expect(instanceKey).not.toContain('example-psa');
     expect(instanceKey).not.toContain('msp');
+  });
+
+  it('is not the unkeyed SHA-256 of its inputs (an org reader cannot confirm a guessed host)', async () => {
+    const { createHash } = await import('node:crypto');
+    const hex = instanceKey.split(':').pop();
+    for (const input of ['connectwise\napi-na.example-psa.test\nmsp', 'psa-instance\nconnectwise\napi-na.example-psa.test\nmsp']) {
+      expect(hex).not.toBe(createHash('sha256').update(input).digest('hex'));
+    }
   });
 
   it('ignores the path, scheme case and host case, but not the host or company', () => {

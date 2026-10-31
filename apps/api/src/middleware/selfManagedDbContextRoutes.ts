@@ -421,6 +421,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // blocks and do everything else outside any context.
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/preview\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/import\/?$/ },
+  // PSA alert-ticket pickers (#10499 W2-A): up to three live PSA listings
+  // (boards, priorities, a board's statuses) at the 20s psaFetch timeout
+  // against a TENANT-CONTROLLED baseUrl — the same #1105 shape as /test. The
+  // handler reads the connection in a short withAuthDbAccessContext block and
+  // calls the PSA outside any context. The config GET/PUT stay ambient.
+  { method: 'GET', pattern: /^\/api\/v1\/psa\/connections\/[^/]+\/alert-ticketing\/options\/?$/ },
   // Live agent session listing — the handler issues a `list_sessions` command to
   // the agent and awaits the round-trip for up to LIST_SESSIONS_TIMEOUT_MS (10s).
   // That await is a network wait on a customer device, not a DB operation, so

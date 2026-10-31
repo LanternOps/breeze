@@ -9,13 +9,13 @@
  * network.
  */
 
-import { createHash } from 'node:crypto';
 import {
   alertTicketingStoredSchemaFor,
   psaProviderIdSchema,
   type AlertTicketingInactiveReason,
   type ConnectwiseAlertTicketingStored,
 } from '@breeze/shared';
+import { hmacFingerprint } from '../secretCrypto';
 
 export interface AlertTicketingConnectionRow {
   id: string;
@@ -49,9 +49,13 @@ export type ResolvedAlertTicketing =
  * the resolver goes inactive (`company_links_unverified`) until an admin
  * re-confirms after it changes.
  *
- * Hashed because `psa_connections` is readable by org sessions through its
- * partner-wide SELECT branch: the stored value must not reveal the MSP's PSA
- * host or login company.
+ * A keyed HMAC (`hmacFingerprint`), not a plain hash, because
+ * `psa_connections` is readable by org sessions through its partner-wide
+ * SELECT branch: host and company id are low-entropy, so an unkeyed digest
+ * could be confirmed by guessing. Fingerprints are comparable only within one
+ * encryption-key generation, so rotating `APP_ENCRYPTION_KEY_ID` makes every
+ * connection read `company_links_unverified` until an admin re-confirms. That
+ * fails closed (no new tickets), which is the safe direction.
  */
 export function psaInstanceKey(provider: string, credentials: Record<string, unknown> | null | undefined): string | null {
   if (!credentials) return null;
@@ -65,8 +69,7 @@ export function psaInstanceKey(provider: string, credentials: Record<string, unk
   }
   if (!host) return null;
   const companyId = typeof credentials.companyId === 'string' ? credentials.companyId.trim().toLowerCase() : '';
-  const digest = createHash('sha256').update(`${provider}\n${host}\n${companyId}`).digest('hex');
-  return `sha256:${digest}`;
+  return hmacFingerprint(`psa-instance\n${provider}\n${host}\n${companyId}`);
 }
 
 export function resolveAlertTicketingConfig(

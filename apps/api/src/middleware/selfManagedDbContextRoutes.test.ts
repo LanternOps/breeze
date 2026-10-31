@@ -157,6 +157,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections/conn-1/import'],
     ['POST', '/api/v1/psa/connections/conn-1/import/'],
     ['post', '/api/v1/psa/connections/conn-1/import'],
+    // Alert-ticket pickers (#10499 W2-A) list boards/statuses/priorities live.
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options'],
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options/'],
 
     // Live agent session listing — awaits a 10s agent round-trip (#1105), so it
     // must not hold a pooled connection idle-in-transaction.
@@ -436,6 +439,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/psa/connections//import/preview', 'empty connection id must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/extra', 'extra segment must not match'],
     ['POST', '/api/v1/psa/connections/conn-1/import/preview/extra', 'extra segment must not match'],
+    // Alert ticketing (#10499 W2-A): config GET/PUT are DB-only; only the live
+    // picker listing calls the PSA.
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing', 'config read is DB-only'],
+    ['PUT', '/api/v1/psa/connections/conn-1/alert-ticketing', 'config write is DB-only'],
+    ['POST', '/api/v1/psa/connections/conn-1/alert-ticketing/options', 'options is GET-only'],
+    ['GET', '/api/v1/psa/connections//alert-ticketing/options', 'empty connection id must not match'],
+    ['GET', '/api/v1/psa/connections/conn-1/alert-ticketing/options/extra', 'extra segment must not match'],
 
     // The sibling session routes do only DB work and MUST keep the ambient tx.
     ['GET', '/api/v1/devices/dev-1/sessions/active', 'active listing is DB-only'],
