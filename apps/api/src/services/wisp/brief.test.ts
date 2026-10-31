@@ -213,7 +213,7 @@ describe('buildBrief', () => {
     expect(brief.title).toBe('Good morning — nothing needs you');
     expect(brief.body).toBe('Nothing needs you right now.');
     expect(brief.sections.map((s) => s.heading)).toEqual(['Spend']);
-    expect(brief.sections[0]!.lines).toEqual(['0¢ of 200¢ today']);
+    expect(brief.sections[0]!.lines).toEqual(['$0.00 of $2.00 today']);
   });
 
   it('counts needs-you and open concerns, truncates the body to 3 highest-severity summaries', async () => {
@@ -268,7 +268,7 @@ describe('buildBrief', () => {
     const brief = await buildBrief(GRANT, NOW, { since });
     const byHeading = Object.fromEntries(brief.sections.map((s) => [s.heading, s.lines]));
     expect(byHeading.Overnight).toEqual(['2 assessments run', '1 specialist launched', '1 concern resolved']);
-    expect(byHeading.Spend).toEqual(['42¢ of 200¢ today']);
+    expect(byHeading.Spend).toEqual(['$0.42 of $2.00 today']);
     expect(byHeading.Watching).toEqual(['2 active watches', '1 readiness gap']);
     expect(h.listActivity).toHaveBeenCalledWith(CEILING, { limit: 100 });
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT, NOW);
@@ -331,7 +331,7 @@ describe('runMorningBriefs', () => {
       title: 'Good morning — nothing needs you',
       body: 'Nothing needs you right now.',
       briefLocalDate: '2026-10-24',
-      briefSections: [{ heading: 'Spend', lines: ['0¢ of 200¢ today'] }],
+      briefSections: [{ heading: 'Spend', lines: ['$0.00 of $2.00 today'] }],
     });
     expect(h.loadNudgeBookkeeping).toHaveBeenCalledTimes(1);
   });

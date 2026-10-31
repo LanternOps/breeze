@@ -509,6 +509,41 @@ describe('BackupDashboard usage history chart', () => {
     expect(screen.queryByText('Warning')).toBeNull();
   });
 
+  it('keeps skipped reparse points out of a recent job\'s red error line (#9543)', async () => {
+    const reparseNote =
+      '1 reparse point(s) were not backed up (junctions and mount points are skipped, not followed; 1 other): ' +
+      'C:\\a.exe (other reparse point, tag 0x8000001B)';
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url === '/backup/dashboard') {
+        return makeJsonResponse({
+          data: {
+            stats: [],
+            recentJobs: [
+              { id: 'job-stopped', device: 'edge-03', config: 'Primary S3', status: 'failed', started: '5m ago', duration: '3m', size: '85 B', errorLog: `backup stopped; ${reparseNote}` },
+              { id: 'job-clean', device: 'edge-04', config: 'Primary S3', status: 'completed', started: '6m ago', duration: '3m', size: '85 B', errorLog: reparseNote },
+            ],
+            storageProviders: [],
+            attentionItems: [],
+          },
+        });
+      }
+
+      if (url === '/backup/usage-history?days=14') {
+        return makeJsonResponse({ data: { points: [] } });
+      }
+
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<BackupDashboard />);
+
+    await screen.findByText('edge-04');
+    expect(screen.getByText('backup stopped')).toBeTruthy();
+    expect(screen.queryByText(/reparse point/i)).toBeNull();
+  });
+
   it('counts completed_with_errors jobs as successful restore points in the 24h success rate (#5396)', async () => {
     // completed_with_errors is a restorable snapshot, so it belongs in the
     // numerator (like completed) as well as the denominator — not just the

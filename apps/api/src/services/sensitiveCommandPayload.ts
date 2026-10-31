@@ -172,6 +172,9 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
  */
 export const TYPE_SCOPED_TERMINAL_STRIP_KEYS: Readonly<Record<string, readonly string[]>> = {
   [CommandTypes.NOTIFY_USER]: ['title', 'body'],
+  // PAM outcome notice (#8928): `reason` is the technician's deny reason as
+  // shown to the end user. `requestId` / `outcome` survive for forensics.
+  [CommandTypes.PAM_REQUEST_NOTIFY]: ['reason'],
   // Endpoint live chat (#8743): `message` holds the chat body and the sender
   // name. The top-level `conversationId` / `chatMessageId` survive: the chat
   // result handlers and forensics key on them. Bodies live (with retention)

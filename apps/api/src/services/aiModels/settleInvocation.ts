@@ -134,6 +134,8 @@ export interface SettleInvocationInput {
   userId: string | null;
   sessionId: string | null;
   agentRunId: string | null;
+  /** W5 (#5220): the flow run an `ai` step call belongs to (ai_invocations.flow_run_id). */
+  flowRunId?: string | null;
   sourceRef: string | null;
   usage: BilledUsage[];
   outcome: TurnOutcome;
@@ -253,6 +255,7 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       userId: input.userId,
       sessionId: input.sessionId,
       agentRunId: input.agentRunId,
+      flowRunId: input.flowRunId ?? null,
       sourceRef: input.sourceRef,
       offeringId: b.offeringId,
       connectionId: b.connectionId,

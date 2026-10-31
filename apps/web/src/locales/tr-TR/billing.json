@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",
+        "quantityInvalid": "Bir miktar girin (en fazla 2 ondalık basamak).",
+        "quantityTooLarge": "Miktar çok büyük (ondalık ayırıcıdan önce en fazla 10 basamak).",
         "siteOptional": "Site (isteğe bağlı — cihaz sayısını kapsar)",
         "allSites": "Tüm siteler",
         "linkCatalogItemOptional": "Katalog öğesine bağlantı (isteğe bağlı)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Bir PDF, PNG veya JPEG dosyası ekleyin.",
       "variables": "Anlaşma bilgileri",
       "unresolved": "Şunlar için bir değer girin: {{names}}",
+      "needsSignedCopy": "Breeze, teklif olmadan {{names}} alanını dolduramaz. Bu sözleşmeyi kaydetmek için imzalı kopyayı ekleyin.",
       "consequence": "Bu işlem {{org}} için imzalı bir anlaşma kaydeder. Sonradan silinemez.",
       "submit": "İmzalı anlaşmayı kaydet",
       "success": "İmzalı anlaşma kaydedildi.",
@@ -854,6 +857,11 @@
       "cover": "Eşlik eden mesaj (isteğe bağlı)",
       "expiry": "Bağlantının bitiş tarihi",
       "expiryPast": "Gelecekte bir son geçerlilik tarihi seçin.",
+      "expiryDefaultHint_one": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
+      "expiryDefaultHint_other": "Varsayılan: {{count}} gün, Faturalandırma ayarları → Anlaşmalar bölümünden.",
+      "autoReminderHint_one": "Otomatik hatırlatmalar her gün gönderilir, toplamda en fazla {{max}}.",
+      "autoReminderHint_other": "Otomatik hatırlatmalar her {{count}} günde bir gönderilir, toplamda en fazla {{max}}.",
+      "expiryDefaultUnavailable": "Faturalandırma ayarlarındaki varsayılan son kullanma süresi yüklenemedi; yerleşik varsayılan gösteriliyor.",
       "label": "Etiket (isteğe bağlı)",
       "createDraft": "Taslak oluştur ve önizle",
       "creating": "Oluşturuluyor…",
@@ -1127,7 +1135,9 @@
         "uploadImage": "Resim yüklenemedi.",
         "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
         "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
-        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
+        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
+        "saveExpiry": "Son geçerlilik tarihi kaydedilemedi.",
+        "saveIntroNotes": "Giriş notları kaydedilemedi."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -1295,6 +1305,7 @@
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
+        "autoValueBlank": "Boş",
         "autoHint": "Bu değerler, teklif gönderildiğinde tekliften çözümlenir.",
         "manualVariablesTitle": "Bu teklifi doldurun",
         "labelFieldLabel": "Bölüm etiketi",
@@ -1343,6 +1354,14 @@
       },
       "warnings": {
         "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Zengin metin başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
+      },
+      "intro": {
+        "expiryLabel": "Geçerlilik tarihi",
+        "expiryHelper": "Teklifin üzerine basılır. Müşteri bu günün sonuna kadar kabul edebilir. Süresiz için boş bırakın.",
+        "expiryPast": "Bu tarih geçti — müşteri süresi dolmuş bir teklifi kabul edemez.",
+        "notesLabel": "Giriş notları",
+        "notesHelper": "Teklifin ilk bölümünün üstüne basılır.",
+        "notesPlaceholder": "Müşteriye kısa bir not, ör. bu teklifin neleri kapsadığı."
       }
     },
     "actions": {
@@ -2088,6 +2107,7 @@
       "title": "Bu fatura gönderilsin mi?",
       "message": "{{amount}} tutarındaki fatura {{customer}} adresine e-postayla gönderilir."
     },
+    "sourceHeldForHourBlock": "Bu taslaktaki sürenin bir kısmı bu kuruluşun saat paketi için bekletiliyor ve paket dönemi kapandığında faturalanacak. Bu satırları kaldırın, ardından faturayı kesin.",
     "unsavedHint": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Kaydedildiğinde sorunun kilidi açılıyor.",
     "unsavedTitle": "“{{field}}” kaydedilmemiş bir değişiklik içeriyor — Sorun kaydedildiğinde kilidi açılıyor."
   },
@@ -2475,6 +2495,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Anlaşmalar",
+      "description": "İmza için gönderdiğiniz anlaşmaların varsayılanları. Gönderenler her istekte yine de farklı bir son kullanma tarihi seçebilir.",
+      "expiryDays": "Varsayılan bağlantı geçerlilik süresi (gün)",
+      "expiryDaysHelp": "Yeni bir anlaşma isteğinin imza bağlantısı, gönderen başka bir tarih seçmedikçe oluşturulmasından bu kadar gün sonra sona erer.",
+      "expiryDaysInvalid": "{{min}} ile {{max}} arasında tam sayı olarak gün girin.",
+      "remindersEnabled": "Otomatik hatırlatmalar gönder",
+      "remindersHelp": "Anlaşma imzalanana, reddedilene, iptal edilene veya süresi dolana kadar aynı imza bağlantısını alıcılara yeniden e-postayla gönderir.",
+      "intervalDays": "Hatırlatma sıklığı (gün)",
+      "intervalDaysInvalid": "{{min}} ile {{max}} arasında tam sayı olarak gün girin.",
+      "maxReminders": "Şu kadar hatırlatmadan sonra dur",
+      "maxRemindersHelp": "İstekteki tüm hatırlatmaları sayar, manuel veya otomatik.",
+      "maxRemindersInvalid": "{{min}} ile {{max}} arasında bir tam sayı girin.",
+      "readOnlyNoSend": "Anlaşma varsayılanlarını değiştirmek için anlaşma gönderme izni gerekir. Salt görüntüleme erişiminiz var."
+    },
     "company": {
       "addressInherited": "Şirket bilgileriyle aynı",
       "addressLine1": "Adres satırı 1",
@@ -2561,6 +2596,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Varsayılanlar",
     "documents": "Belgeler",
+    "agreements": "Anlaşmalar",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
     "payments": "Ödemeler"
@@ -2793,7 +2829,6 @@
       "delivery_failed": "Bildirim iletilemedi",
       "consent_required": "Ödeme yetkilendirmesi eksik. Güncel bir yetkilendirme isteyin."
     },
-    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
     "chargeResultUnknown": "Bu ödemeye ne olduğunu doğrulayamadık. Güncel durumunu göstermek için fatura yenileniyor.",
     "chargeStarted": "Ödeme girişimi başlatıldı",
@@ -2933,10 +2968,6 @@
     "saveFailed": "Hatırlatma ayarları kaydedilemedi",
     "loadFailed": "Hatırlatma ayarları yüklenemedi",
     "retry": "Yeniden dene",
-    "loading": "Ödeme ayarları yükleniyor…",
-    "templates": {
-      "paymentReminder": "Ödeme hatırlatması",
-      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
-    }
+    "loading": "Ödeme ayarları yükleniyor…"
   }
 }

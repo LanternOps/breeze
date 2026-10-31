@@ -13,7 +13,7 @@ import {
   partners,
   supportSessions,
 } from '../../db/schema';
-import { collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
+import { CLEARED_AGENT_CREDENTIALS, collectAgentCredentialHashes } from '../../services/agentCredentialHashes';
 import { getActiveOrgTenant } from '../../services/tenantStatus';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKeyCandidates, hashEnrollmentSecret } from '../../services/enrollmentKeySecurity';
@@ -22,6 +22,7 @@ import { getRedis } from '../../services/redis';
 import { rateLimiter } from '../../services/rate-limit';
 import { invalidateOrgDeviceCount } from '../../services/agentOrgRateLimit';
 import { enrollSchema } from './schemas';
+import { normalizeRebindProtocolVersion } from '../../services/deviceReattach/protocol';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { buildEnrollmentResponseBody } from './enrollmentResponse';
 import { recordAgentEnrollment } from '../../services/anomalyMetrics';
@@ -849,6 +850,12 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         [dev] = await tx
           .update(devices)
           .set({
+            // A full credential reset: every credential column starts from
+            // "none" (the one shared set, so a future credential column cannot
+            // survive), then the new install's current set is written. Issue
+            // #2621: that includes any staged rotation, which would otherwise
+            // keep authenticating and be promoted over the fresh credentials.
+            ...CLEARED_AGENT_CREDENTIALS,
             agentId: agentId,
             enrollmentIp,
             agentTokenHash: tokenHash,
@@ -861,24 +868,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             tokenIssuedAt,
             watchdogTokenIssuedAt: tokenIssuedAt,
             helperTokenIssuedAt: tokenIssuedAt,
-            previousTokenHash: null,
-            previousTokenExpiresAt: null,
-            previousWatchdogTokenHash: null,
-            previousWatchdogTokenExpiresAt: null,
-            previousHelperTokenHash: null,
-            previousHelperTokenExpiresAt: null,
-            // Issue #2621 — re-enrollment is a full credential reset, so it must
-            // also drop any staged rotation. Leaving it would let a staged set
-            // minted before the re-enrollment keep authenticating, and be
-            // promoted over the freshly issued credentials.
-            pendingTokenHash: null,
-            pendingWatchdogTokenHash: null,
-            pendingHelperTokenHash: null,
-            pendingTokenExpiresAt: null,
             deviceRole: data.deviceRole || 'unknown',
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,
             virtualizationPlatform: data.virtualizationPlatform ?? null,
+            // #8318 §6.2: re-enroll is a new install, so its declared rebind
+            // capability is rewritten (not blindly reset to 0).
+            rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
             // A new install: what the previous one reported about its backup
             // helper no longer holds. Backups and restores for this device
             // wait for the new install's first heartbeat, as for a new device.
@@ -947,6 +943,8 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,
             virtualizationPlatform: data.virtualizationPlatform ?? null,
+            // #8318 §6.2: a new install is what a reattach makes the source.
+            rebindProtocolVersion: normalizeRebindProtocolVersion(data.securityCapabilities?.rebindProtocolVersion),
             status: 'pending',
             isEphemeral: isSupportEnrollment,
             // #2764: forensic + UI linkage back to the row this enrollment may

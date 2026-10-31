@@ -9,13 +9,15 @@ import { showToast } from '../shared/Toast';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from '../topology/topologyFixtures';
 
 // Keep legacy discovery/action queues separate from the new parallel reads.
-const { fetchWithAuthMock, monitoringFetchMock } = vi.hoisted(() => ({
-  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(),
+const { fetchWithAuthMock, monitoringFetchMock, placementFetchMock } = vi.hoisted(() => ({
+  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(), placementFetchMock: vi.fn(),
 }));
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
+  // PhysicalPlacementCard's GET is routed away so it doesn't shift the Once queues or call counts.
   fetchWithAuth: (url: string, init?: RequestInit) =>
-    url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
+    url.endsWith('/placement') ? placementFetchMock(url, init)
+    : url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
       ? monitoringFetchMock(url, init) : init === undefined ? fetchWithAuthMock(url) : fetchWithAuthMock(url, init),
 }));
 
@@ -32,6 +34,16 @@ vi.mock('../shared/Toast', () => ({
 vi.mock('../topology/TopologyCanvas', () => ({ default: () => <div data-testid="topology-canvas" /> }));
 
 const showToastMock = vi.mocked(showToast);
+
+placementFetchMock.mockImplementation(async () => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    subject: { kind: 'asset', id: '11111111-1111-1111-1111-111111111111' },
+    authority: { kind: 'asset', id: '11111111-1111-1111-1111-111111111111', linked: false },
+    placement: null,
+  }),
+}));
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({
@@ -142,7 +154,7 @@ describe('NetworkDeviceDetailPage', () => {
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     expect(await screen.findByTestId('network-detail-reachability-card')).toBeInTheDocument();
     expect(screen.getByTestId('network-detail-health')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
+    await waitFor(() => expect(screen.getByTestId('network-detail-reach-snmp')).toHaveTextContent('Polling'));
     expect(screen.getByTestId('network-detail-health')).toHaveTextContent('Device health');
     openMonitoringTab();
     for (const id of ['poll-config', 'oid-table', 'charts', 'checks', 'thresholds']) {
@@ -200,16 +212,16 @@ describe('NetworkDeviceDetailPage', () => {
         return Promise.resolve(devicesResponse([]));
       });
       render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-      fireEvent.click(await screen.findByTestId('network-detail-check-now'));
-      await waitFor(() => expect(screen.getByTestId('network-detail-probe-status')).toBeInTheDocument());
+      fireEvent.click(await screen.findByTestId('network-detail-card-check-now'));
+      await waitFor(() => expect(screen.getByTestId('network-detail-card-probe-status')).toBeInTheDocument());
       const gets = () => fetchWithAuthMock.mock.calls.filter(([url]) => url === `/discovery/assets/${ASSET_ID}`).length;
       await act(async () => {});
       const before = gets();
       await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
       expect(gets()).toBe(before + 1);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      expect(screen.getByTestId('network-detail-probe-error')).toHaveTextContent("The agent didn't answer within a minute");
-      expect(screen.getByTestId('network-detail-check-now')).toBeEnabled();
+      expect(screen.getByTestId('network-detail-card-probe-error')).toHaveTextContent("The agent didn't answer within a minute");
+      expect(screen.getByTestId('network-detail-card-check-now')).toBeEnabled();
     } finally { vi.useRealTimers(); }
   });
 
@@ -226,7 +238,7 @@ describe('NetworkDeviceDetailPage', () => {
       return Promise.resolve(devicesResponse([]));
     });
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    fireEvent.click(await screen.findByTestId('network-detail-check-now'));
+    fireEvent.click(await screen.findByTestId('network-detail-card-check-now'));
     await waitFor(() => expect(screen.getByTestId('network-device-status')).toHaveTextContent(/Responding · probe/i));
     expect(fetchWithAuthMock.mock.calls.filter(([url]) => url.endsWith('/probe'))).toHaveLength(1);
   });
@@ -1457,7 +1469,7 @@ describe('NetworkDeviceDetailPage', () => {
   });
 
   describe('stat strip', () => {
-    it('renders sourced reachability, last poll, ping and open ports stats', async () => {
+    it('renders ping and open ports, leaving reachability and poll age to the badge and card', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({
           data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
@@ -1468,10 +1480,10 @@ describe('NetworkDeviceDetailPage', () => {
       await screen.findByTestId('network-device-detail');
 
       const stats = screen.getByTestId('network-detail-stats');
-      expect(stats.textContent).toContain('Responding · SNMP');
       expect(stats.textContent).toContain('2.4 ms');
-      await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
-      expect(screen.getByTestId('network-detail-stat-last-poll')).not.toHaveTextContent('Not configured');
+      expect(stats.textContent).not.toContain('Responding');
+      expect(screen.queryByTestId('network-detail-stat-last-poll')).toBeNull();
+      expect(screen.getByTestId('network-device-status')).toHaveTextContent('Responding · SNMP');
       // baseAsset.openPorts has 2 entries.
       expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
 

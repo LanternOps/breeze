@@ -599,6 +599,15 @@ const envObjectSchema = z
       .string()
       .optional()
       .describe('Lifetime (minutes) of a newly issued installer bootstrap token when none is chosen. Default 10080 (7 days); values above 43200 (30 days) are clamped.'),
+    // Ticket import byte bucket (#8313 W1): read per charge through
+    // positiveIntEnv (services/migrationWindowLimits.ts), which falls back to
+    // the default on anything but a plain positive integer. Declared so
+    // collectWarnings() reports such a value once at boot; not boot-refused,
+    // like the other knobs of its family.
+    TICKET_IMPORT_MAX_BYTES_PER_HOUR: z
+      .string()
+      .optional()
+      .describe('Attachment bytes one migration window may download and store per hour. A plain positive integer; default 2147483648 (2 GiB), never below 10485760 (one file).'),
     MFA_RECOVERY_CODE_PEPPER: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
     BREEZE_BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
@@ -766,6 +775,13 @@ const envObjectSchema = z
     // (flowRunRetentionDays(), integer 7..3650).
     FLOW_MAX_RUNNING_PER_OWNER: z.string().optional(),
     FLOW_RUN_RETENTION_DAYS: z.string().optional(),
+    // W05 (#5220): per-flow inbound webhook rate (flowWebhookRatePerMinute(),
+    // 1..6000), non-accepted delivery retention days
+    // (flowWebhookDeliveryRetentionDays(), 1..365) and the for-each parallel
+    // ceiling (flowForEachMaxParallel(), 1..10).
+    FLOW_WEBHOOK_RATE_PER_MINUTE: z.string().optional(),
+    FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS: z.string().optional(),
+    FLOW_FOREACH_MAX_PARALLEL: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -2356,7 +2372,7 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['FLOWS_ENABLED'],
         message:
-          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the Flows feature is dark).',
+          'FLOWS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (set false to keep Flows off).',
       });
     }
 
@@ -2543,6 +2559,9 @@ const envSchema = envObjectSchema
     for (const [knob, min, max, what] of [
       ['FLOW_MAX_RUNNING_PER_OWNER', 1, 500, 'running flow runs per flow owner; default 20'],
       ['FLOW_RUN_RETENTION_DAYS', 7, 3650, 'days before a finished flow run\'s bodies are pruned; default 90'],
+      ['FLOW_WEBHOOK_RATE_PER_MINUTE', 1, 6000, 'inbound webhook deliveries accepted per flow per minute; default 120'],
+      ['FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 1, 365, 'days a non-accepted flow webhook delivery row is kept; default 30'],
+      ['FLOW_FOREACH_MAX_PARALLEL', 1, 10, 'most for-each items one flow step runs at once; default 5'],
     ] as const) {
       const raw = (data[knob] ?? '').trim();
       if (raw && (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max)) {
@@ -2965,6 +2984,20 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
           `installer bootstrap tokens are issued with a ${MAX_BOOTSTRAP_TOKEN_TTL_MINUTES}-minute lifetime.`,
       });
     }
+  }
+
+  // TICKET_IMPORT_MAX_BYTES_PER_HOUR (services/migrationWindowLimits.ts) is a
+  // plain positive integer number of bytes. positiveIntEnv falls back to the
+  // 2 GiB default on anything else (`2e9`, `2GiB`, `2_147_483_648`, `12abc`,
+  // `0`); say so once at boot, so the operator learns their value is ignored.
+  const importBytesRaw = (env.TICKET_IMPORT_MAX_BYTES_PER_HOUR ?? '').trim();
+  if (importBytesRaw !== '' && !(/^\d+$/.test(importBytesRaw) && Number.parseInt(importBytesRaw, 10) > 0)) {
+    warnings.push({
+      key: 'TICKET_IMPORT_MAX_BYTES_PER_HOUR',
+      message:
+        `"${importBytesRaw}" is not a plain positive integer number of bytes; ` +
+        'the default of 2147483648 (2 GiB) per window per hour applies.',
+    });
   }
 
   // Warn about optional secrets that look insecure

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { RefreshCw, Power, SlidersHorizontal } from 'lucide-react';
+import { RefreshCw, Power, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { showToast } from '@/components/shared/Toast';
@@ -85,6 +85,10 @@ export default function WispThreadHeader({
   const setWispFocus = useAiStore((s) => s.setWispFocus);
   const storeUpdateWisp = useAiStore((s) => s.updateWisp);
   const updateWisp = onWispChange ?? storeUpdateWisp;
+  const chatSessionId = useAiStore((s) => s.sessionId);
+  const chatGrantId = useAiStore((s) => s.wisp?.grantId ?? null);
+  const closeSession = useAiStore((s) => s.closeSession);
+  const enterWispMode = useAiStore((s) => s.enterWispMode);
   const organizations = useOrgStore((s) => s.organizations);
   const { limits } = useEntitlement('wisp');
   const { budgetMax, tickMin } = readLimits(limits);
@@ -97,6 +101,27 @@ export default function WispThreadHeader({
   const [tick, setTick] = useState(String(wisp.floorTickMinutes));
   const [saving, setSaving] = useState(false);
   const [focusPending, setFocusPending] = useState(false);
+  /**
+   * #10142: set by a refresh while a chat was open under this grant. A
+   * session's grant revision is immutable (the server refuses to move it), so
+   * that conversation keeps the previous terms; the note offers a fresh one.
+   */
+  const [refreshedUnder, setRefreshedUnder] = useState<{ sessionId: string; fresh: NonNullable<WispState> } | null>(null);
+  const showRefreshHint = refreshedUnder !== null && refreshedUnder.sessionId === chatSessionId;
+
+  const startNewConversation = async () => {
+    const fresh = refreshedUnder?.fresh ?? wisp;
+    setRefreshedUnder(null);
+    try {
+      // As the side panel's "New conversation": the old session's summary
+      // lands on the thread, then the new one runs on the refreshed grant.
+      if (chatSessionId) await closeSession();
+      await enterWispMode(fresh);
+    } catch (err) {
+      console.error('[wisp] starting a new conversation after a refresh failed', err);
+      showToast({ type: 'error', message: t('wisp.home.threadOpenFailed') });
+    }
+  };
 
   // One focus change at a time: two racing PATCHes could leave the header
   // showing a focus the server no longer holds.
@@ -225,6 +250,30 @@ export default function WispThreadHeader({
         <p className="text-amber-600 dark:text-amber-400" data-testid="wisp-widening">{t('wisp.header.widening')}</p>
       )}
 
+      {showRefreshHint && (
+        <div className="flex items-start gap-2 rounded border border-primary/30 bg-primary/5 px-2 py-1.5" data-testid="wisp-refresh-hint" role="status">
+          <p className="flex-1 text-foreground">{t('wisp.header.refreshKeepsTerms')}</p>
+          <button
+            type="button"
+            data-testid="wisp-refresh-new-conversation"
+            onClick={() => void startNewConversation()}
+            className="shrink-0 font-medium text-primary hover:underline"
+          >
+            {t('wisp.header.startNewConversation')}
+          </button>
+          <button
+            type="button"
+            data-testid="wisp-refresh-hint-dismiss"
+            onClick={() => setRefreshedUnder(null)}
+            title={t('wisp.header.dismissNote')}
+            aria-label={t('wisp.header.dismissNote')}
+            className={iconButton}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {currentActivity && (
         <p className="flex items-center gap-1.5 text-muted-foreground" data-testid="wisp-live-line" aria-live="polite">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" aria-hidden="true" />
@@ -239,6 +288,7 @@ export default function WispThreadHeader({
           spentCents={wisp.spentTodayCents}
           budgetCents={wisp.budgetCentsPerDay}
           resetsAt={wisp.budgetResetsAt}
+          budgetMax={budgetMax}
           onRaise={wisp.pausedReason === 'partner_disabled' ? undefined : () => openSettings(true)}
         />
       )}
@@ -324,6 +374,7 @@ export default function WispThreadHeader({
         onGranted={(fresh) => {
           setRefreshOpen(false);
           updateWisp(fresh);
+          setRefreshedUnder(chatSessionId && chatGrantId === wisp.grantId ? { sessionId: chatSessionId, fresh } : null);
         }}
       />
     </div>

@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
+        "quantityInvalid": "Geben Sie eine Menge ein (bis zu 2 Dezimalstellen).",
+        "quantityTooLarge": "Die Menge ist zu groß (höchstens 10 Stellen vor dem Dezimalkomma).",
         "siteOptional": "Standort (optional – legt die Geräteanzahl fest)",
         "allSites": "Alle Seiten",
         "linkCatalogItemOptional": "Katalogelement verlinken (optional)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Hängen Sie eine PDF-, PNG- oder JPEG-Datei an.",
       "variables": "Angaben zur Vereinbarung",
       "unresolved": "Geben Sie einen Wert an für: {{names}}",
+      "needsSignedCopy": "Breeze kann {{names}} ohne Angebot nicht ausfüllen. Hängen Sie die unterschriebene Kopie an, um diese Vereinbarung zu erfassen.",
       "consequence": "Dies legt eine unterzeichnete Vereinbarung für {{org}} ab. Sie kann danach nicht gelöscht werden.",
       "submit": "Unterzeichnete Vereinbarung erfassen",
       "success": "Unterzeichnete Vereinbarung erfasst.",
@@ -854,6 +857,11 @@
       "cover": "Begleitnachricht (optional)",
       "expiry": "Link läuft ab am",
       "expiryPast": "Wählen Sie ein Ablaufdatum in der Zukunft.",
+      "expiryDefaultHint_one": "Standard: {{count}} Tag, aus Abrechnungseinstellungen → Vereinbarungen.",
+      "expiryDefaultHint_other": "Standard: {{count}} Tage, aus Abrechnungseinstellungen → Vereinbarungen.",
+      "autoReminderHint_one": "Automatische Erinnerungen werden täglich versendet, insgesamt höchstens {{max}}.",
+      "autoReminderHint_other": "Automatische Erinnerungen werden alle {{count}} Tage versendet, insgesamt höchstens {{max}}.",
+      "expiryDefaultUnavailable": "Der Standardablauf aus den Abrechnungseinstellungen konnte nicht geladen werden; der integrierte Standardwert wird angezeigt.",
       "label": "Bezeichnung (optional)",
       "createDraft": "Entwurf erstellen und Vorschau anzeigen",
       "creating": "Wird erstellt …",
@@ -1119,7 +1127,9 @@
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
         "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
         "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen.",
-        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen."
+        "lineAddedListStale": "Position hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um sie zu sehen.",
+        "saveExpiry": "Das Ablaufdatum konnte nicht gespeichert werden.",
+        "saveIntroNotes": "Die Einleitung konnte nicht gespeichert werden."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -1287,6 +1297,7 @@
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
+        "autoValueBlank": "Leer",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
         "manualVariablesTitle": "Für dieses Angebot ausfüllen",
         "labelFieldLabel": "Abschnittsbezeichnung",
@@ -1343,6 +1354,14 @@
       },
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Rich-Text unterstützt Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      },
+      "intro": {
+        "expiryLabel": "Gültig bis",
+        "expiryHelper": "Wird auf das Angebot gedruckt. Der Kunde kann bis zum Ende dieses Tages annehmen. Leer lassen für kein Ablaufdatum.",
+        "expiryPast": "Dieses Datum liegt in der Vergangenheit — ein abgelaufenes Angebot kann der Kunde nicht annehmen.",
+        "notesLabel": "Einleitung",
+        "notesHelper": "Wird über dem ersten Abschnitt des Angebots gedruckt.",
+        "notesPlaceholder": "Eine kurze Nachricht an den Kunden, z. B. worum es in diesem Angebot geht."
       }
     },
     "actions": {
@@ -2088,6 +2107,7 @@
       "title": "Diese Rechnung senden?",
       "message": "Die Rechnung über {{amount}} wird per E-Mail an {{customer}} gesendet."
     },
+    "sourceHeldForHourBlock": "Ein Teil der Zeit auf diesem Entwurf ist für ein Stundenkontingent reserviert und wird beim Abschluss des Kontingentzeitraums abgerechnet. Entfernen Sie diese Positionen und stellen Sie dann aus.",
     "unsavedHint": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist.",
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
@@ -2475,6 +2495,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Vereinbarungen",
+      "description": "Standardwerte für Vereinbarungen, die Sie zur Unterschrift senden. Absender können bei jeder Anfrage weiterhin ein anderes Ablaufdatum wählen.",
+      "expiryDays": "Standardablauf des Links (Tage)",
+      "expiryDaysHelp": "Der Signaturlink einer neuen Vereinbarungsanfrage läuft so viele Tage nach ihrer Erstellung ab, sofern der Absender kein anderes Datum wählt.",
+      "expiryDaysInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen {{min}} und {{max}} ein.",
+      "remindersEnabled": "Automatische Erinnerungen senden",
+      "remindersHelp": "Sendet den Signaturlink erneut per E-Mail an die Empfänger, bis die Vereinbarung unterzeichnet, abgelehnt, annulliert wird oder abläuft.",
+      "intervalDays": "Erinnern alle (Tage)",
+      "intervalDaysInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen {{min}} und {{max}} ein.",
+      "maxReminders": "Beenden nach (Erinnerungen)",
+      "maxRemindersHelp": "Zählt jede Erinnerung zur Anfrage, ob manuell oder automatisch.",
+      "maxRemindersInvalid": "Geben Sie eine ganze Zahl zwischen {{min}} und {{max}} ein.",
+      "readOnlyNoSend": "Das Ändern der Standardwerte für Vereinbarungen erfordert die Berechtigung, Vereinbarungen zu senden. Sie haben nur Lesezugriff."
+    },
     "company": {
       "addressInherited": "Wie in den Unternehmensdetails",
       "addressLine1": "Adresszeile 1",
@@ -2561,6 +2596,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Standardwerte",
     "documents": "Dokumente",
+    "agreements": "Vereinbarungen",
     "connections": "Verbindungen",
     "rates": "Tarife",
     "payments": "Zahlungen"
@@ -2793,7 +2829,6 @@
       "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
       "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
     "chargeResultUnknown": "Wir konnten nicht bestätigen, was mit dieser Zahlung passiert ist. Die Rechnung wird aktualisiert, um ihren aktuellen Status anzuzeigen.",
     "chargeStarted": "Zahlungsversuch gestartet",
@@ -2933,10 +2968,6 @@
     "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
     "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
     "retry": "Erneut versuchen",
-    "loading": "Zahlungseinstellungen werden geladen…",
-    "templates": {
-      "paymentReminder": "Zahlungserinnerung",
-      "paymentOverdue": "Erinnerung an überfällige Zahlung"
-    }
+    "loading": "Zahlungseinstellungen werden geladen…"
   }
 }

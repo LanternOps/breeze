@@ -48,6 +48,11 @@ const ORG_TARGET_WRITERS: Record<string, string> = {
   'routes/c2c/m365Auth.ts': 'GET /c2c/m365/consent-url',
   'routes/google.ts': 'POST /google/connection',
   'routes/dnsSecurity.ts': 'POST /dns-security/integrations',
+  // W12 (#6782): the default allow/blocklist config-policy writes moved to services/softwareInventoryPolicy.ts, so the
+  // route left the discovery below; its holding-org refusal still runs before the service call, and the AI tool that
+  // calls the same service refuses a holding org too. Pinned by name so neither guard can be dropped.
+  'routes/softwareInventory.ts': 'POST /software-inventory/approve, /deny, /clear (default allow/blocklist + config-policy link)',
+  'services/aiToolsSoftwareInventory.ts': 'manage_software_inventory approve / deny / clear (same service as the route)',
 };
 
 describe('contract: integration mappings and connections never target a holding org', () => {
@@ -76,7 +81,8 @@ const DISCOVERED_EXEMPT: Record<string, string> = {
 };
 
 /** Pinned: files the discovery finds (guarded + exempt). Update on purpose. */
-const DISCOVERED_FILES = 19;
+// 19 -> 18 (W12, #6782): routes/softwareInventory.ts no longer writes config tables itself (see ORG_TARGET_WRITERS).
+const DISCOVERED_FILES = 18;
 
 describe('contract: discovered org-targeted config writes refuse a holding org', () => {
   const discovered = walk(join(SRC, 'routes'))

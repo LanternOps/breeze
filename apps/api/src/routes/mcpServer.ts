@@ -24,11 +24,12 @@ import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { isPartnerServicePrincipalKeyFormat } from '../services/partnerServicePrincipalCredential';
+import { conversionSummarySql } from '../services/flows/conversion/ledger';
 import { partnerServicePrincipalMcpAuthMiddleware } from '../middleware/partnerServicePrincipalMcpAuth';
 import { bearerTokenAuthMiddleware } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, isReadOnlyResolution, TIER1_ACTIONS, TIER2_ACTIONS, TIER3_ACTIONS, TOOL_ACTION_INPUT_KEYS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
 import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { MCP_SKIP_AMBIENT_DB_CONTEXT_KEY } from '../middleware/mcpTenantToolSelfManagedContext';
@@ -66,6 +67,8 @@ import {
 import type { AiToolDomain } from '@breeze/shared';
 import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
 import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
+import { isFlowToolName } from '../services/flows/toolNames';
+import { callMcpFlowTool, listMcpFlowTools } from '../services/flows/mcpFlowTools';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
@@ -257,6 +260,9 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (body.method !== 'tools/call') return false;
     const name = body.params?.name;
     if (typeof name !== 'string') return false;
+    // Also true for a flow tool (`flow__<slug>` has the tenant shape), on
+    // purpose: handleFlowToolCall's reads and the run insert open their own
+    // system contexts, exactly like the tenant path (W5 PR C, #5220).
     if (isTenantToolName(name)) return true;
     const input = body.params?.arguments;
     if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
@@ -1596,6 +1602,32 @@ function extractActionEnum(inputSchema: unknown): string[] | null {
 }
 
 /**
+ * #10027: the read-only actions of a registry-Tier-3 tool that `tools/call`
+ * runs directly with MCP_TIER3_INTENTS_ENABLED on (see `readBelowIntentTier`).
+ * Classified by the real checkGuardrails, so the description cannot claim a
+ * lift the gate does not grant. Empty for an approval extra (floored to 3).
+ */
+function mcpDirectReadActionsForTool(toolName: string): string[] {
+  if (getToolTier(toolName) !== 3 || mcpTierFloor(toolName) >= 3) return [];
+  const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const candidates = new Set([...(TIER1_ACTIONS[toolName] ?? []), ...(TIER2_ACTIONS[toolName] ?? [])]);
+  return [...candidates].filter((action) => {
+    const check = checkGuardrails(toolName, { [key]: action });
+    return check.allowed && check.tier < 3 && isReadOnlyResolution(toolName, check);
+  }).sort();
+}
+
+function mcpIntentFlatSuffix(toolName: string): string {
+  const reads = mcpDirectReadActionsForTool(toolName);
+  if (reads.length === 0) return MCP_INTENT_FLAT_SUFFIX;
+  const key = TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action';
+  const noun = key === 'action' ? 'actions' : `${key} values`;
+  // Built from the flat suffix so the two wordings cannot drift.
+  return `${MCP_INTENT_FLAT_SUFFIX.slice(0, -1)} `
+    + `Read-only ${noun} ${reads.map((a) => `"${a}"`).join(', ')} run directly without approval.)`;
+}
+
+/**
  * Which of a tool's declared actions are gated over MCP — used to append a
  * "these actions require the web app" note to a mixed multiplexer's
  * `tools/list` description. Empty for a wholly-gated tool (it's suppressed
@@ -1892,7 +1924,7 @@ async function handleToolsList(
       description += ` (Actions ${quote(intentActions)} require approval in the Breeze mobile or web app: the call returns a pending action — use get_action_status.)`;
     }
     if (flatIntentTool) {
-      description += MCP_INTENT_FLAT_SUFFIX;
+      description += mcpIntentFlatSuffix(tool.name);
     }
     if (mfaGatedActions.length > 0) {
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
@@ -1964,8 +1996,29 @@ async function handleToolsList(
     console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
   }
 
+  // W5 PR C (#5220): flow tools (`flow__<slug>`), listed only when callable
+  // right now (tier 1; tier 2 with ai:write; tier 3 never) under the domain
+  // the flow tools live in. Same degrade-to-none rule as tenant tools.
+  // listMcpFlowTools answers [] with FLOWS_ENABLED off before any read.
+  let flowResult: typeof tenantResult = [];
+  try {
+    const flowDomain = mcpToolDomain('list_flows');
+    if (isDomainGranted(domainGrant, flowDomain)) {
+      const flowTools = await listMcpFlowTools(auth, resolveMcpExecutionOrgId(apiKey, auth, {}), { hasWrite });
+      flowResult = flowTools.map((t) => ({
+        ...buildMcpToolPresentation({ name: t.name, input_schema: t.inputSchema }, t.tier, flowDomain),
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
+    }
+  } catch (err) {
+    console.error('[MCP] Failed to resolve flow tools for tools/list:', err);
+    flowResult = [];
+  }
+
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'en');
-  const all = [...result.sort(byName), ...tenantResult.sort(byName)];
+  const all = [...result.sort(byName), ...tenantResult.sort(byName), ...flowResult.sort(byName)];
   const pageSize = mcpToolsListPageSize();
   if (pageSize <= 0) return jsonRpcResult(id, { tools: all });
 
@@ -2079,6 +2132,13 @@ async function handleToolsCall(
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
   const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
+
+  // W5 PR C (#5220): flow tools FIRST — `isTenantToolName('flow__x')` is true
+  // (the name parses as tenant slug `flow`), so a flow tool must never fall
+  // into the tenant branch below.
+  if (isFlowToolName(requestedToolName)) {
+    return handleFlowToolCall(id, requestedToolName, toolInput, auth, scopes, domainGrant, apiKey, c, correlation);
+  }
 
   // Tenant (BYO MCP) tools — Task A10. Named `<slug>__<name>` (never true of
   // any core registry name — asserted by aiToolsRegistryParity.test.ts), so
@@ -2215,7 +2275,26 @@ async function handleToolsCall(
   // Only an effective Tier 3 call can be lifted (isMcpApprovalRequired re-checks
   // this too); checking it here keeps the intent readable at the call site.
   const unattendedPrincipal = tier === 3 && isUnattendedTier3PrincipalOverMcp(apiKey);
-  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal });
+  // #10027: with MCP_TIER3_INTENTS_ENABLED on, a READ-ONLY call whose own
+  // classification (checkGuardrails, floored for approval extras) is below
+  // Tier 3 is not filed for approval: createActionIntent refuses a read below
+  // Tier 3 (tool_not_tier3), and a read has nothing to approve. These are the
+  // TIER1_ACTIONS / TIER2_READONLY_ACTIONS reads on a static-Tier-3 tool
+  // (execute_command list_processes, manage_services list, ...), the same
+  // `isReadOnlyResolution` formula headless agents use. A below-Tier-3 action
+  // that is NOT read-only (edr_endpoint_action scan) keeps the intent path;
+  // createMcpActionIntent files it at the tool's Tier 3
+  // (needsRegistryTier3Approval). Only the approval decision follows the
+  // action: `tier` stays the Math.max above, so the ai:execute /
+  // ai:execute_admin / production-allowlist gates and the Tier-3 ledger below
+  // still apply. With the flag off the gate is unchanged (B-W04 D-B37).
+  // Only an effective Tier 3 is ever lifted: Tier 4 has no approval path, so a
+  // per-action table entry must never let a Tier-4 tool past this gate.
+  const readBelowIntentTier = tier === 3
+    && Math.max(guardrailCheck.tier, mcpTierFloor(toolName)) < 3
+    && isReadOnlyResolution(toolName, guardrailCheck);
+  const approvalRequired = isMcpApprovalRequired(toolName, tier, { unattendedPrincipal })
+    && !(readBelowIntentTier && mcpTier3IntentsEnabled());
   // B-W04 (#6158, D-B30): with MCP_TIER3_INTENTS_ENABLED OFF this gate is
   // exactly today's (same position, same body). ON, a call this credential
   // can file continues through every gate below into the intent branch; any
@@ -2259,7 +2338,8 @@ async function handleToolsCall(
   // execution-org resolution — never executed here.
   const fileAsIntent = approvalRequired;
   // Past the gate with an effective Tier 3 call means approval was skipped for
-  // a named principal. Carried to the audit row so an unattended run is
+  // a named principal, or (#10027, flag on) the action itself is a read below Tier 3.
+  // Only the former is an approval bypass. Carried to the audit row so an unattended run is
   // distinguishable from every other Tier 3 row in an investigation.
   const approvalBypassPrincipal = unattendedPrincipal ? mcpPrincipalRef(apiKey) : null;
 
@@ -3047,6 +3127,101 @@ async function handleTenantToolCall(
 }
 
 /**
+ * W5 PR C (#5220): a `flow__<slug>` call (services/flows/mcpFlowTools.ts owns
+ * the live resolution, the tier gate and the run start; this maps it to
+ * JSON-RPC). Flag off / unknown / invisible ⇒ exactly the unknown-tool error
+ * (no existence oracle). Tier 3 ⇒ the standard approval-required result,
+ * never lifted by MCP_UNATTENDED_TIER3_PRINCIPALS. RBAC (automations
+ * read/write) and run_flow's rate-limit counter apply before any run exists.
+ */
+async function handleFlowToolCall(
+  id: string | number,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  domainGrant: McpDomainGrant,
+  apiKey: McpApiKeyContext | undefined,
+  c: Context | undefined,
+  correlation: McpRequestCorrelation,
+): Promise<JsonRpcResponse> {
+  const unknown = () => jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  if (isToolEnvGatedOff(toolName)) return unknown();
+  const domain = mcpToolDomain('list_flows');
+  if (!isDomainGranted(domainGrant, domain)) {
+    const denial = buildDomainNotGrantedError(toolName, domain);
+    return jsonRpcError(id, denial.code, denial.message, denial.data);
+  }
+
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth,
+      apiKey: apiKey ?? null,
+      toolName,
+      toolInput,
+      deviceArgsForTool: async () => undefined,
+    }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) return jsonRpcError(id, -32602, 'Invalid params');
+    console.error('[MCP] Failed to resolve execution org for flow tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+
+  const startTime = Date.now();
+  let outcome: Awaited<ReturnType<typeof callMcpFlowTool>>;
+  try {
+    outcome = await callMcpFlowTool(toolName, toolInput, auth, scopes, executionOrgId, async (tier) => {
+      const permError = await checkPermissionRequirements(auth, [{ resource: 'automations', action: tier === 1 ? 'read' : 'write' }]);
+      if (permError) return permError;
+      return checkToolRateLimit('run_flow', toolRateLimitIdentity(auth), {
+        orgId: apiKey?.orgId ?? auth.orgId ?? null,
+        partnerId: apiKey?.partnerId ?? auth.partnerId ?? null,
+      });
+    });
+  } catch (err) {
+    console.error('[MCP] Flow tool call failed:', toolName, err);
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined,
+      { flow_site: 'mcp.flow_tool_call', ...(executionOrgId ? { org_id: executionOrgId } : {}) }, { fingerprint: ['flow', 'mcp.flow_tool_call'] });
+    return jsonRpcError(id, -32000, 'Unable to start the flow');
+  }
+
+  switch (outcome.kind) {
+    case 'unknown':
+      return unknown();
+    case 'approval_required':
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+        isError: true,
+      });
+    case 'scope_required':
+      return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+    case 'refused':
+      return jsonRpcError(id, -32603, outcome.message);
+    case 'result': {
+      writeMcpToolAuditEvent(requestAuditSink(c), {
+        principal: apiKey,
+        auth,
+        correlation,
+        orgId: executionOrgId,
+        toolName,
+        tier: outcome.tier,
+        toolInput,
+        durationMs: Date.now() - startTime,
+        status: outcome.isError ? 'failure' : 'success',
+        result: outcome.text,
+      });
+      const structured = outcome.isError ? undefined : structuredFromSafeText(outcome.text);
+      return jsonRpcResult(id, {
+        content: [{ type: 'text', text: outcome.text }],
+        ...(structured ? { structuredContent: structured } : {}),
+        ...(outcome.isError ? { isError: true } : {}),
+      });
+    }
+  }
+}
+
+/**
  * Test-only direct access to the JSON-RPC `tools/list` / `tools/call`
  * handlers, bypassing the HTTP + API-key/bearer transport layer entirely.
  * Lets Task 7b's org-install-gate tests inject a controlled `AuthContext`
@@ -3679,7 +3854,9 @@ async function handleResourcesRead(
         name: automations.name,
         description: automations.description,
         enabled: automations.enabled,
-        trigger: automations.trigger
+        trigger: automations.trigger,
+        // W06 (#5221, Decision 9): additive `conversion: { id, state, flowId } | null`.
+        conversion: conversionSummarySql(automations.id),
       }, dualAxisResourceCondition(auth, orgCond(automations.orgId), automations, {
         // automations have NO catalog read branch — org-scope callers do NOT
         // see partner-wide automations (aligns with routes/automations.ts).

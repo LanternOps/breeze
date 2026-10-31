@@ -47,56 +47,19 @@ import type { BreezeEvent } from '../eventBus';
 import { liveOrgCondition, partnerFanoutOrgCondition } from '../partnerFanoutOrgs';
 import type { DurableEventSubscriber } from '../eventSubscriberRegistry';
 import { MAX_FLOW_CHAIN_DEPTH } from './flowExecutionContext';
+import { isFlowAdmissionRefusal } from '@breeze/shared';
 import { recordFlowChainDepthRefused, recordFlowEventAdmissionRefused } from './flowTriggerMetrics';
 import { nullFlowInputs } from './inputDefaults';
 import { createFlowRun } from './runService';
+import { eventInstant, eventOccurrenceKey } from './conversion/claims';
 import { buildTriggerScope, type FlowTriggerScope } from './triggerScope';
+import { eventMatchesFilter, isPlainContainer } from './eventFilter';
 
 const LOG = '[FlowEventTrigger]';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * Path segments that never match, own property or not: every Object.prototype
- * member name (`__proto__`, `constructor`, `toString`, `hasOwnProperty`, …)
- * and `prototype`. Refusing them outright (rather than "missing ⇒ null
- * matches") means a filter naming one can never be satisfied by accident.
- */
-const FORBIDDEN_SEGMENTS: ReadonlySet<string> = new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype']);
-
-function isPlainContainer(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object';
-}
-
-/**
- * The trigger filter (spec §6.1): every key is a dot path into the payload,
- * walked through OWN properties only; the value must be strictly equal, and
- * `null` matches a missing or null value. A path naming an Object.prototype
- * member (`__proto__`, `constructor`, `toString`, …) or `prototype` never
- * matches, and nothing inherited is ever read (`length` of a string is not
- * data) — a filter can only ever see data the event actually carried.
- */
-export function eventMatchesFilter(filter: Record<string, string | number | boolean | null>, payload: unknown): boolean {
-  for (const [path, expected] of Object.entries(filter)) {
-    const segments = path.split('.');
-    if (segments.some((seg) => seg.length === 0 || FORBIDDEN_SEGMENTS.has(seg))) return false;
-    let current: unknown = payload;
-    let found = true;
-    for (const seg of segments) {
-      if (!isPlainContainer(current) || !Object.hasOwn(current, seg)) {
-        found = false;
-        break;
-      }
-      current = (current as Record<string, unknown>)[seg];
-    }
-    const actual = found ? current : undefined;
-    if (expected === null) {
-      if (actual !== null && actual !== undefined) return false;
-      continue;
-    }
-    if (actual !== expected) return false;
-  }
-  return true;
-}
+// The filter match lives in a leaf module (the conversion shadow uses it too).
+export { eventMatchesFilter } from './eventFilter';
 
 // ── ancestry ────────────────────────────────────────────────────────────────
 
@@ -224,6 +187,8 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
   }
 
   let scope: Omit<FlowTriggerScope, 'kind' | 'orgId'> | null = null;
+  const occurrenceEventKey = eventOccurrenceKey(event.id);
+  const occurrenceAt = eventInstant(event.metadata?.timestamp);
   let orgLive: boolean | null = null;
   let firstError: unknown = null;
   for (const flow of candidates) {
@@ -261,10 +226,19 @@ export async function handleFlowEventTrigger(event: BreezeEvent): Promise<void> 
         dedupeKey: `event:${event.id}`,
         chainDepth,
         causedByRunId,
+        // #5221 B2 (Decision 6): the same `event:<id>` the legacy engine claims
+        // and stores in automation_runs, and the event's instant. Only a flow
+        // converted from a legacy automation consults it; an id that cannot be
+        // a key gives no key, so a switched flow leaves that event to legacy.
+        occurrence: { keys: occurrenceEventKey ? [occurrenceEventKey] : [], at: occurrenceAt },
       });
-      if (!result.created && result.reason === 'flow_queue_full') {
-        console.warn(`${LOG} active-run cap reached: flow ${flow.id} not started for event ${event.id} in org ${event.orgId}`);
-        recordFlowEventAdmissionRefused();
+      // Already admitted by the legacy engine (or another generation): handled, not retried.
+      if (!result.created && result.reason === 'occurrence_claimed') continue;
+      // Active-run cap or a monthly cap (W5): handled, never retried — a retry
+      // would only refuse again (the flow is not paused).
+      if (!result.created && isFlowAdmissionRefusal(result.reason)) {
+        console.warn(`${LOG} admission refused (${result.reason}): flow ${flow.id} not started for event ${event.id} in org ${event.orgId}`);
+        recordFlowEventAdmissionRefused(result.reason);
       }
     } catch (err) {
       console.error(`${LOG} run creation failed (flow=${flow.id}, event=${event.id})`, err);

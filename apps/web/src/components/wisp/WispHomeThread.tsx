@@ -60,6 +60,10 @@ async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promis
     if (after.sessionId === lastSessionId && after.wisp?.grantId === wisp.grantId) return true;
   }
   await useAiStore.getState().enterWispMode(wisp);
+  return boundTo(wisp);
+}
+
+function boundTo(wisp: Wisp): boolean {
   const bound = useAiStore.getState();
   return bound.wisp?.threadId === wisp.threadId && bound.sessionId !== null;
 }
@@ -69,6 +73,17 @@ const COLUMN = 'mx-auto w-full max-w-3xl';
 
 /** A paused thread is read-only: nothing to approve or reject from its history. */
 const noop = () => {};
+
+/**
+ * #10142 "New conversation", as the side panel's: close the open session (its
+ * summary lands on the thread, as a focus change does), then start a fresh
+ * one under the grant's current terms.
+ */
+async function startNewWispSession(wisp: Wisp): Promise<boolean> {
+  if (useAiStore.getState().sessionId) await useAiStore.getState().closeSession();
+  await useAiStore.getState().enterWispMode(wisp);
+  return boundTo(wisp);
+}
 
 /**
  * The Wisp conversation, the page's main column (W08 Task 9; W01 #10211 spec
@@ -124,16 +139,21 @@ export default function WispHomeThread({
   } = useAiStore();
   const storeThreadId = storeWisp?.threadId ?? null;
 
-  useEffect(() => {
-    if (!active) return;
+  /** Run one (re)bind; only the latest attempt may set the outcome. */
+  const rebind = (bind: () => Promise<boolean>) => {
     const token = ++attempt.current;
     setBinding('binding');
-    bindWispSession(wisp, lastSessionRef.current)
+    void bind()
       .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
       .catch((err: unknown) => {
         console.error('[WispHomeThread] opening the Wisp session failed', err);
         if (token === attempt.current) setBinding('failed');
       });
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    rebind(() => bindWispSession(wisp, lastSessionRef.current));
     // The grant id and thread id identify the session; other Wisp fields (spend, summary) changing must not rebind.
   },[active, wisp.grantId, wisp.threadId]);
 
@@ -184,17 +204,6 @@ export default function WispHomeThread({
     const exists = current.some((l) => l.id === link.id);
     onLinksChange(exists ? current.map((l) => (l.id === link.id ? link : l)) : [...current, link]);
     setPickerOpen(false);
-  };
-
-  const retry = () => {
-    const token = ++attempt.current;
-    setBinding('binding');
-    void bindWispSession(wisp, null)
-      .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
-      .catch((err: unknown) => {
-        console.error('[WispHomeThread] opening the Wisp session failed', err);
-        if (token === attempt.current) setBinding('failed');
-      });
   };
 
   /** Not live yet (or not live at all): `leading` still opens the column, the state line stands where the composer goes. */
@@ -248,7 +257,7 @@ export default function WispHomeThread({
             <button
               type="button"
               data-testid="wisp-home-thread-retry"
-              onClick={retry}
+              onClick={() => rebind(() => bindWispSession(wisp, null))}
               className="rounded border px-3 py-1 hover:bg-muted"
             >
               {t('wisp.thread.retry')}
@@ -292,6 +301,18 @@ export default function WispHomeThread({
                 <button type="button" onClick={clearError} className="shrink-0 hover:underline">{t('wisp.home.threadDismissError')}</button>
               </div>
             )}
+            <div className="flex justify-end px-3">
+              <button
+                type="button"
+                data-testid="wisp-home-new-conversation"
+                onClick={() => rebind(() => startNewWispSession(wisp))}
+                disabled={isLoading}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                {t('aiChatSidebar.newConversation')}
+              </button>
+            </div>
             <AiContinuationPrompt />
             <AiThinkingIndicator thinking={isStreaming && !!thinking} />
             <AiChatInput

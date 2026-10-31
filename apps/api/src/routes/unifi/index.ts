@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { db, runOutsideDbContext } from '../../db';
 import { devices, unifiCollectors, unifiDeviceTelemetry, unifiClients, unifiSiteMappings, unifiSyncRuns, sites } from '../../db/schema';
 import { createUnifiClient, UnifiApiError } from '../../services/unifi/unifiClient';
+import { buildMappingHostList } from '../../services/unifi/unifiMappingHosts';
 import { getConnection, getDecryptedApiKey, upsertConnection, deleteConnection, createSelfHostedIntegration } from '../../services/unifi/unifiConnectionService';
 import { listControllerSitesForIntegration } from '../../services/unifi/unifiControllerSiteService';
 import { listCollectors, upsertCollector, deleteCollector, upsertSelfHostedController } from '../../services/unifi/unifiCollectorService';
@@ -200,22 +201,10 @@ unifiRoutes.get('/hosts', partnerScopes, readPerm, async (c) => {
     const [hosts, allSites] = await runOutsideDbContext(() =>
       Promise.all([client.listHosts(), client.listSites()])
     );
-    // listSites already drops sites with a malformed id, so this map only ever holds
-    // genuinely mappable sites.
-    const sitesByHost = new Map<string, Array<{ id: string; name: string }>>();
-    for (const s of allSites) {
-      const list = sitesByHost.get(s.hostId) ?? [];
-      list.push({ id: s.id, name: s.name });
-      sitesByHost.set(s.hostId, list);
-    }
-    return c.json({
-      // Only surface mappable consoles: a host must have at least one valid site, and
-      // — when its type is known — be a console (drops cloud keys / non-console hosts).
-      // This stops the UI from offering host×site rows that can only save junk mappings.
-      hosts: hosts
-        .filter((h) => (h.type ?? 'console') === 'console' && (sitesByHost.get(h.id)?.length ?? 0) > 0)
-        .map((h) => ({ id: h.id, name: h.name, model: h.model, sites: sitesByHost.get(h.id) ?? [] })),
-    });
+    // Every host with a site is listed, whatever its type. The response is additive:
+    // type, unknownConsole and omitted are new; id/name/model/sites stay unchanged.
+    const list = buildMappingHostList(hosts, allSites);
+    return c.json({ hosts: list.hosts, omitted: list.omitted });
   } catch (err) {
     return c.json({ success: false, message: err instanceof Error ? err.message : String(err) }, 502);
   }

@@ -2,14 +2,26 @@ import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPro
 import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
+import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS, AI_RECORD_KINDS, type AiPageContext } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
 import {
-  composeStaticSystemPrompt, DOMAIN_NOTES, DOMAIN_VOCABULARY, listToolIndex, MAX_INLINE_ACTIONS, PAGE_CONTEXT_TOOL_DOMAINS,
+  composeStaticSystemPrompt, DOMAIN_NOTES, DOMAIN_VOCABULARY, listToolIndex, MAX_INLINE_ACTIONS, pageContextToolDomains,
   renderAlwaysOnIndex, renderDomainBlock, renderPageContextToolBlocks, renderToolIndexByDomain, resolveToolIndexMode,
 } from './aiToolIndex';
+
+const PAGE_FIXTURES = {
+  device: { type: 'device', id: 'dddddddd-1111-4222-8333-444455556666', hostname: 'WS-01' },
+  alert: { type: 'alert', id: 'aaaaaaaa-1111-4222-8333-444455556666', title: 'Disk full' },
+  dashboard: { type: 'dashboard' },
+  custom: { type: 'custom', label: 'billing devices scripts', data: { domain: 'billing' } },
+  topology: { type: 'topology', siteId: 'bbbbbbbb-1111-4222-8333-444455556666', subject: { kind: 'node', id: 'node-1' }, view: 'overview', graphRevision: 'rev-1' },
+} as const satisfies Record<Exclude<AiPageContext['type'], 'record'>, AiPageContext>;
+const RECORD_PAGES = AI_RECORD_KINDS.map((kind) => ({
+  type: 'record' as const, kind, id: 'dddddddd-1111-4222-8333-444455556666',
+  label: 'devices scripts security', orgId: 'aaaaaaaa-1111-4222-8333-444455556666',
+}));
 
 const COVERAGE_BURNDOWN_TOOLS = [
   ['Tickets & time', 'list_time_entries'],
@@ -215,8 +227,15 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     }
   });
 
-  it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
-    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
+  // W06 R1 (#5221): Flows default ON, so the flag-off case is stated explicitly.
+  it('with FLOWS_ENABLED=false the index never mentions the flow tools', () => {
+    vi.stubEnv('FLOWS_ENABLED', 'false');
+    try {
+      const flagOff = renderToolIndexByDomain(listChatSurfaceToolNames());
+      expect(flagOff).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -397,6 +416,27 @@ describe('W19 lazy chat tool index (#10065)', () => {
     expect(renderAlwaysOnIndex(simulated)).toBe(alwaysOn);
   });
 
+  // W5 PR C (#5220, orchestrator amendment 6): flow tools (`flow__<slug>`)
+  // are per-session dynamic descriptors, never rendered into the static
+  // always-on index or any domain block. With FLOWS_ENABLED=true the
+  // always-on index stays at W04's measured 2,494 B and the scripts block is
+  // unchanged by any number of flow tools.
+  it('flow tools never enter the index: always-on 2,494 B with flows on, blocks unchanged', () => {
+    vi.stubEnv('FLOWS_ENABLED', 'true');
+    try {
+      const flagOnNames = listChatSurfaceToolNames();
+      expect(flagOnNames.some((n) => n.startsWith('flow__'))).toBe(false);
+      const flowNames = ['flow__disk_cleanup', 'flow__sweep_offline', 'flow__weekly_report'];
+      const withFlows = [...flagOnNames, ...flowNames];
+      expect(bytes(renderAlwaysOnIndex(flagOnNames))).toBe(2494);
+      expect(renderAlwaysOnIndex(withFlows)).toBe(renderAlwaysOnIndex(flagOnNames));
+      expect(renderDomainBlock('scripts', withFlows)).toBe(renderDomainBlock('scripts', flagOnNames));
+      expect(renderToolIndexByDomain(withFlows)).not.toMatch(/flow__/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('B2: every per-domain block stays under 2 KB with the W03/W04 tools added', () => {
     for (const domain of AI_TOOL_DOMAINS) {
       expect(bytes(renderDomainBlock(domain, simulated)), domain).toBeLessThan(DOMAIN_BLOCK_BUDGET_BYTES);
@@ -404,9 +444,9 @@ describe('W19 lazy chat tool index (#10065)', () => {
   });
 
   it('B3: no page turn\'s index text reaches the 7,040 B worst-turn bound', () => {
-    for (const page of ['device', 'alert', 'dashboard', 'custom', 'topology'] as const) {
+    for (const page of [...Object.values(PAGE_FIXTURES), ...RECORD_PAGES]) {
       const turn = bytes(renderAlwaysOnIndex(simulated)) + bytes(renderPageContextToolBlocks(page, simulated));
-      expect(turn, page).toBeLessThan(INDEX_BUDGET_BYTES);
+      expect(turn, page.type).toBeLessThan(INDEX_BUDGET_BYTES);
     }
   });
 
@@ -468,26 +508,37 @@ describe('W19 lazy chat tool index (#10065)', () => {
     expect(renderDomainBlock('devices', ['system_cleanup'])).toBe('- **Devices**: system_cleanup (list/run/status)');
   });
 
-  it('the page-context table is closed, at most two domains per page, and pins the chosen rows', () => {
-    expect(PAGE_CONTEXT_TOOL_DOMAINS).toEqual({
+  it('the page-context domains are closed, at most two per page, and pin the chosen rows', () => {
+    expect(Object.fromEntries(Object.entries(PAGE_FIXTURES).map(([type, ctx]) => [type, pageContextToolDomains(ctx)]))).toEqual({
       device: ['devices', 'scripts'],
       alert: ['monitoring', 'devices'],
       dashboard: [],
       custom: [],
       topology: [],
     });
-    for (const domains of Object.values(PAGE_CONTEXT_TOOL_DOMAINS)) expect(domains.length).toBeLessThanOrEqual(2);
-    expect(Object.isFrozen(PAGE_CONTEXT_TOOL_DOMAINS)).toBe(true);
+    for (const ctx of [...Object.values(PAGE_FIXTURES), ...RECORD_PAGES]) expect(pageContextToolDomains(ctx).length).toBeLessThanOrEqual(2);
+  });
+
+  it.each(RECORD_PAGES)('record domains follow the kind: $kind', (ctx) => {
+    const expected = { ticket: ['tickets'], quote: ['billing'], invoice: ['billing'], contract: ['billing'], organization: ['accounts'], site: ['accounts'] } as const;
+    const domains = expected[ctx.kind];
+    expect(pageContextToolDomains(ctx)).toEqual(domains);
+    expect(pageContextToolDomains({ ...ctx, label: 'backup monitoring admin', orgId: undefined })).toEqual(domains);
+    expect(renderPageContextToolBlocks(ctx, names)).toBe(['### Tools for this page', ...domains.map((domain) => renderDomainBlock(domain, names))].join('\n'));
+  });
+
+  it.each(['constructor', 'not_a_kind'])('unknown record kind %s expands no domain', (kind) => {
+    expect(pageContextToolDomains({ type: 'record', kind } as never)).toEqual([]);
   });
 
   it('renders a page\'s domain blocks under one heading, and nothing for a page with no domains', () => {
-    const device = renderPageContextToolBlocks('device', names);
+    const device = renderPageContextToolBlocks(PAGE_FIXTURES.device, names);
     expect(device).toBe(['### Tools for this page', renderDomainBlock('devices', names), renderDomainBlock('scripts', names)].join('\n'));
-    expect(renderPageContextToolBlocks('dashboard', names)).toBe('');
-    expect(renderPageContextToolBlocks('topology', names)).toBe('');
+    expect(renderPageContextToolBlocks(PAGE_FIXTURES.dashboard, names)).toBe('');
+    expect(renderPageContextToolBlocks(PAGE_FIXTURES.topology, names)).toBe('');
     // A page domain with no declared tools is skipped, not rendered empty.
-    expect(renderPageContextToolBlocks('device', ['run_script'])).toBe(['### Tools for this page', renderDomainBlock('scripts', ['run_script'])].join('\n'));
-    expect(renderPageContextToolBlocks('device', ['query_devices'])).toBe('');
+    expect(renderPageContextToolBlocks(PAGE_FIXTURES.device, ['run_script'])).toBe(['### Tools for this page', renderDomainBlock('scripts', ['run_script'])].join('\n'));
+    expect(renderPageContextToolBlocks(PAGE_FIXTURES.device, ['query_devices'])).toBe('');
   });
 
   it.each([

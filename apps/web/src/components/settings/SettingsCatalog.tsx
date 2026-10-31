@@ -4,7 +4,7 @@ import { Search } from 'lucide-react';
 import '@/lib/i18n';
 import { useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { useToolSourcesGate } from '../../stores/featuresStore';
+import { useFlowsGate, useToolSourcesGate } from '../../stores/featuresStore';
 import { getJwtClaims } from '../../lib/authScope';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { useWispEnabled } from '../../lib/wispVisibility';
@@ -27,6 +27,7 @@ export default function SettingsCatalog({ group }: { group?: SettingsGroup } = {
   const autopayEnabled = useAutopayEnabled();
   const wispEnabled = useWispEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
+  const { enabled: flowsEnabled } = useFlowsGate();
   const extensionNav = useExtensionNavigation();
   // An extension is loaded when its registry entry contributes navigation; the
   // hook only yields hrefs it validated as `/extensions/<name>/...`.
@@ -43,6 +44,7 @@ export default function SettingsCatalog({ group }: { group?: SettingsGroup } = {
       getScope: () => getJwtClaims().scope,
       autopayEnabled,
       toolSourcesEnabled,
+      flowsEnabled,
       aiForOfficeEnabled: false,
       wispEnabled,
       serviceManagementMode,
@@ -56,7 +58,7 @@ export default function SettingsCatalog({ group }: { group?: SettingsGroup } = {
         description: e.descriptionKey ? t(/* i18n-dynamic */ e.descriptionKey, { defaultValue: '' }) : '',
       }))
       .filter((e) => !q || `${e.title} ${e.description}`.toLowerCase().includes(q));
-  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, autopayEnabled, wispEnabled, loadedExtensions, group, query, t]);
+  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, flowsEnabled, autopayEnabled, wispEnabled, loadedExtensions, group, query, t]);
 
   return (
     <div className="space-y-6" data-testid="settings-catalog">

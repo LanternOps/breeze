@@ -102,12 +102,17 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/renew-cert/challenge': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
   'POST /api/v1/agents/renew-cert': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
   'POST /api/v1/agents/renew-cert/confirm': 'device credential: agentBearerAuthMiddleware: agent bearer token + mTLS device identity',
+  // routes/agents/rebind.ts (#8318 wave 1b — reinstall reattach)
+  'POST /api/v1/agents/:id/rebind': 'device credential: agentAuthMiddleware (the SOURCE agent bearer token, main role), acts only on an intent naming this device and install as its source',
+  'POST /api/v1/agents/:id/rebind-confirm': 'confirm-only credential: the brz_rbc_ bearer compared in constant time with the intent\'s (or ledger\'s) confirmation hash for the source agent `:id`, rate-limited per id and per IP, mTLS-bound in enforce mode (outside agentAuthMiddleware by design)',
   // routes/agents/pamObservations.ts
   'POST /api/v1/agents/:id/commands/:commandId/pam-observations': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamReconciliation.ts
   'POST /api/v1/agents/:id/pam/reconciliation-bindings': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamElevationUnable.ts (#9517)
   'POST /api/v1/agents/:id/pam/elevation-unable': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/elevationWithdraw.ts (#8971)
+  'POST /api/v1/agents/:id/elevation-requests/:requestId/withdraw': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/patches.ts
   'PUT /api/v1/agents/:id/patches/pending': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'PUT /api/v1/agents/:id/patches/installed': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
@@ -354,6 +359,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',
+  'POST /api/v1/quotes/public/:token/pay': 'public: Signed public quote link token; spent only by the accepting jti (durable row record); mints Checkout for the quote\'s own converted invoice under its org',
   // routes/sso.ts
   'POST /api/v1/sso/link/start/:providerId': 'own account: Starts linking caller\'s own SSO identity; MFA required',
   'POST /api/v1/sso/reauth/start': 'own account: Caller\'s own IdP re-authentication start',
@@ -397,6 +403,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'POST /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'DELETE /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  // routes/flowWebhooks.ts
+  'POST /api/v1/webhooks/flows/:flowId': 'webhook: signature/token authenticated (services/flows/webhook/verify.ts), no user permission',
   // routes/webhooks/edr.ts
   'POST /api/v1/webhooks/edr/:connectionId': 'webhook: EDR push hint; connection lookup + adapter secret verification in handler',
   // routes/webhooks/emailProvider.ts

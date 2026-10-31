@@ -2,6 +2,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// Data-only module (no DB, no registry import), so importing it cannot make this contract vacuous.
+import { AGENT_HUMAN_ONLY_ACTIONS, AGENT_HUMAN_ONLY_TOOLS } from './aiToolExposure';
 
 /**
  * #6907 / #6911 — the `USER_OWNED_RELEASE_ACTIONS` registration contract for
@@ -155,8 +157,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // `resolveCommandCreatedBy` before the `device_commands.created_by` insert
   // — a synthetic (aiAgents) id degrades to NULL there instead of reaching
   // the FK raw.
-  ['services/aiToolsAgentLogs.ts:359', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:372', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:449', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
   ['services/aiToolsAgentMgmt.ts:477', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
@@ -170,10 +172,6 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // queueCommand -> resolveCommandCreatedBy path (create is a real bug,
   // fixed separately with approverReleaseMismatch).
   ['services/aiToolsBrowser.ts:611', 'aiDispatchDeviceCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
-  // object handed to the webhook worker's queueDelivery; the actual
-  // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:340', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
   ['services/aiToolsScripts.ts:877', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
@@ -376,8 +374,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
 
     const integrationsSrc = readFileSync(join(API_SRC, 'services/aiToolsIntegrations.ts'), 'utf8');
     expect(integrationsSrc).toMatch(/insert\(webhookDeliveries\)/);
-    // The DB insert values block must NOT mention userId — only the
-    // in-memory `event.metadata` a few lines below does.
+    // Delivery rows and ids-only jobs carry no user-owned foreign key.
     const deliveryInsert = /insert\(webhookDeliveries\)[\s\S]*?\.returning/.exec(integrationsSrc);
     expect(deliveryInsert, 'webhookDeliveries insert moved').not.toBeNull();
     expect(deliveryInsert![0]).not.toMatch(/userId/);
@@ -458,6 +455,26 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
     return /return\b/.test(branch.slice(m.index));
   }
 
+  // Full-control W11 (#6781): the W11 modules register each tool BEFORE its handler, with a literal `name:` and
+  // literal `if (action === …)` guards, so this scanner attributes their users-FK writes. Pinned so a refactor
+  // back to a constant name or a handler above the registration (which hid them) reds here.
+  it('sees the W11 users-FK writes and every one is agent-unreachable', () => {
+    const w11 = qualifying
+      .filter((s) => /aiTools(AccessReviews|AuditBaselines|PamRules)\.ts$/.test(s.file))
+      .flatMap((s) => s.actions.map((a) => `${s.tool}:${a}:${s.property}`));
+    expect([...new Set(w11)].sort()).toEqual([
+      'manage_access_reviews:decide_item:reviewedBy',
+      'manage_audit_baselines:create:createdBy',
+      'manage_audit_baselines:request_apply:requestedBy',
+      'manage_pam_rules:create_signer_group:createdByUserId',
+      'manage_pam_rules:set_config:updatedByUserId',
+    ]);
+    for (const entry of w11) {
+      const [tool, action] = entry.split(':') as [string, string];
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(tool) || AGENT_HUMAN_ONLY_ACTIONS.has(`${tool}:${action}`), entry).toBe(true);
+    }
+  });
+
   it('every agent-mintable users-FK write is in USER_OWNED_RELEASE_ACTIONS, or (tier 2 only) refuses an agent principal', () => {
     const missing: string[] = [];
     for (const site of qualifying) {
@@ -466,6 +483,10 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
         if (!agentMintable(site.tool, action, site.baseTier)) continue;
         const key = `${site.tool}:${action}`;
         if (allowlist.has(key)) continue;
+        // Class (b) read from the registries themselves (full-control W11, #6781): an agent can never mint an
+        // intent for a tool in AGENT_HUMAN_ONLY_TOOLS or an action in AGENT_HUMAN_ONLY_ACTIONS —
+        // checkAgentGuardrails denies the call before any intent exists. Removing the entry reds this test.
+        if (AGENT_HUMAN_ONLY_TOOLS.has(site.tool) || AGENT_HUMAN_ONLY_ACTIONS.has(key)) continue;
         // A whole-tool base-Tier-3 registration (e.g. manage_browser_policy,
         // create_remote_session, s1_isolate_device) is real tier 3 exactly
         // like a TIER3_*_ACTIONS entry — checkGuardrails resolves it from

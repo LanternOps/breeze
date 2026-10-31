@@ -327,6 +327,35 @@ describe('enqueueAssessment', () => {
     expect(input.triggerRef.wisp).toEqual({ grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark: null });
   });
 
+  // #10389: a floor tick for an org this grant has never assessed is its first
+  // look, so it runs as onboarding (framing + readiness note) rather than as a
+  // periodic "what changed" check.
+  it('a tick for a never-assessed org is recorded as onboarding; a tick with a watermark stays a tick', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    const first = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { wisp: { reason: unknown; watermark: unknown } } };
+    expect(first.triggerRef.wisp).toMatchObject({ reason: { kind: 'onboarding' }, watermark: null });
+
+    const finished = new Date('2026-10-24T08:00:00.000Z');
+    h.results.push([grantRow()]);
+    h.results.push([{ at: finished }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
+    const later = h.createAndEnqueueAgentRun.mock.calls[1]![0] as { triggerRef: { wisp: { reason: unknown; watermark: unknown } } };
+    expect(later.triggerRef.wisp).toMatchObject({ reason: { kind: 'tick' }, watermark: finished.toISOString() });
+  });
+
+  it('an event or watch reason for a never-assessed org keeps its reason', async () => {
+    for (const reason of [alertReason, { kind: 'watch' as const, watchId: WATCH }]) {
+      h.createAndEnqueueAgentRun.mockClear();
+      h.results.push([grantRow()]);
+      h.results.push([{ at: null }]);
+      await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason });
+      const input = h.createAndEnqueueAgentRun.mock.calls[0]![0] as { triggerRef: { wisp: { reason: unknown } } };
+      expect(input.triggerRef.wisp.reason).toEqual(reason);
+    }
+  });
+
   it('maps an admission skip to { skipped }', async () => {
     h.results.push([grantRow()]);
     h.results.push([{ at: null }]);
@@ -353,7 +382,10 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(arg).toMatchObject({
       partnerId: PARTNER, orgId: ORG, subject: { kind: 'org', id: ORG }, severity: 'info', signature: SIG, raisedByGrantId: GRANT,
     });
-    expect(arg.summary).toMatch(/no AI agent is configured/);
+    // #10292: assessments run as the TRIAGE agent, so the copy names that kind —
+    // an enabled agent of another kind (e.g. Patching) does not satisfy it.
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(arg.summary).not.toMatch(/no AI agent is configured/);
     expect(arg.summary).toMatch(/Settings → AI Agents/);
     expect(arg.evidence).toEqual({ href: '/settings/ai-agents', reason: 'no_effective_agent' });
     expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
@@ -387,9 +419,23 @@ describe('no_effective_agent readiness concern (#10143)', () => {
     expect(h.captureException).toHaveBeenCalled();
   });
 
+  // #10292: readiness means "an ENABLED Triage agent resolves" — the same
+  // partner-baseline → org-override merge admission uses. A Triage agent that
+  // resolves but is turned off (or set to mode off) cannot check either.
+  it.each(['agent_disabled', 'mode_off'] as const)('raises the same concern when the Triage agent resolves but %s', async (skipped) => {
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } })).resolves.toEqual({ skipped });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    const arg = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    expect(arg).toMatchObject({ partnerId: PARTNER, orgId: ORG, signature: SIG, raisedByGrantId: GRANT });
+    expect(arg.summary).toMatch(/Triage agent/);
+    expect(h.resolveConcernBySignature).not.toHaveBeenCalled();
+  });
+
   it('another admission skip raises nothing and closes a stale "no agent" concern (an agent resolved)', async () => {
     h.results.push([grantRow()], [{ at: null }]);
-    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'agent_disabled' });
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'cooldown' });
     await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } });
     expect(h.upsertConcern).not.toHaveBeenCalled();
     expect(h.resolveConcernBySignature).toHaveBeenCalledWith(PARTNER, SIG, 'ai_agent_configured');
@@ -651,6 +697,85 @@ describe('loadAssessmentContext', () => {
     const since = Date.parse(ctx!.changedSince!);
     expect(since).toBeGreaterThanOrEqual(before - 24 * 3600_000 - 1000);
     expect(since).toBeLessThanOrEqual(Date.now() - 24 * 3600_000 + 1000);
+  });
+
+  // #10389: with no watermark the run is the org's first look; a 24 h window
+  // on triggered_at hid a high alert open for weeks. The first look reads the
+  // org's OPEN alerts instead, worst first, still bounded at 25.
+  describe('first look (no watermark)', () => {
+    const firstLookRun = (reason: Record<string, unknown> = { kind: 'tick' }) => run({
+      triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason, watermark: null } },
+    });
+    const alertsSelect = () => {
+      const i = h.queries.findIndex((x) => x.table === alerts);
+      return { q: h.queries[i]!, chain: h.db.select.mock.results[i]!.value as Record<string, { mock: { calls: unknown[][] } }> };
+    };
+
+    it('lists the org\'s open alerts with no time bound, worst severity first, bounded at 25', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(firstLookRun());
+      expect(ctx!.firstLook).toBe(true);
+      const { q, chain } = alertsSelect();
+      const { sql: text, params } = compile(q.where[0]);
+      expect(text).toMatch(/"org_id" = \$\d+/);
+      expect(params).toContain(ORG);
+      expect(text).toMatch(/"status" in \(\$\d+, \$\d+\)/);
+      expect(params).toEqual(expect.arrayContaining(['active', 'acknowledged']));
+      expect(text).not.toMatch(/triggered_at/);
+      const order = chain.orderBy!.mock.calls[0]!.map((c) => compile(c).sql);
+      expect(order).toEqual(['"alerts"."severity" asc', '"alerts"."triggered_at" desc']);
+      expect(chain.limit!.mock.calls[0]![0]).toBe(25);
+      // The row is the open alert, stamped with when it fired.
+      expect(ctx!.digest.alerts).toEqual([{ id: 'a1', title: 'CPU high', severity: 'high', status: 'active', at: '2026-10-24T07:00:00.000Z' }]);
+    });
+
+    it('applies to an onboarding or event reason too, and the other sections keep the 24 h window', async () => {
+      for (const reason of [{ kind: 'onboarding' }, alertReason]) {
+        h.queries.length = 0;
+        h.db.select.mockClear();
+        queueDigest();
+        const ctx = await loadAssessmentContext(firstLookRun(reason));
+        expect(ctx!.firstLook).toBe(true);
+        expect(compile(alertsSelect().q.where[0]).sql).not.toMatch(/triggered_at/);
+        const ticketsQ = h.queries.find((x) => x.table === tickets)!;
+        expect(compile(ticketsQ.where[0]).sql).toMatch(/"updated_at" >= \$\d+/);
+      }
+    });
+
+    it('a run with a watermark is not a first look and keeps the triggered-since window', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(run());
+      expect(ctx!.firstLook).toBe(false);
+      const { q } = alertsSelect();
+      expect(compile(q.where[0]).sql).toMatch(/"triggered_at" >= \$\d+/);
+    });
+
+    it('the open-alerts read stays gated on alerts:read (ceiling and org term): no alerts query, empty section', async () => {
+      for (const c of [
+        ceiling({ permissionKeys: keys(['alerts:read']) }),
+        ceiling({ permissionKeys: new Set(['*:*']), orgTerms: new Map([[ORG, { permissionKeys: keys(['alerts:read']), siteIds: null }]]) }),
+      ]) {
+        h.queries.length = 0;
+        h.results.length = 0;
+        h.resolveGrantCeiling.mockResolvedValue(c);
+        h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+        h.results.push([], [], []);
+        const ctx = await loadAssessmentContext(firstLookRun());
+        expect(ctx!.firstLook).toBe(true);
+        expect(tablesQueried().has(alerts)).toBe(false);
+        expect(ctx!.digest.alerts).toEqual([]);
+        expect(ctx!.digest.tickets.map((r) => r.id)).toEqual(['t1']);
+      }
+    });
+
+    it('an onboarding reason is a first look even when a watermark exists', async () => {
+      queueDigest();
+      const ctx = await loadAssessmentContext(run({
+        triggerRef: { wisp: { grantId: GRANT, grantRevisionId: REV, reason: { kind: 'onboarding' }, watermark } },
+      }));
+      expect(ctx!.firstLook).toBe(true);
+      expect(compile(alertsSelect().q.where[0]).sql).not.toMatch(/triggered_at/);
+    });
   });
 
   it('resolves the reason watch from listWatches', async () => {

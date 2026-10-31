@@ -85,6 +85,7 @@ import { notifyFlowRunUnknownOutcome, publishFlowRunTerminalEvent } from './runE
 import { acquireRunLease, checkpoint, releaseRunLease, startLeaseHeartbeat, type FlowRunCheckpointStep } from './runLease';
 import * as store from './runStore';
 import { executeFlowStep, type StepOutcome } from './stepExecutor';
+import { effectiveForEachConcurrency, runForEachItems, type ForEachItemResult } from './forEachConcurrent';
 import { assertDelegatorAuthority, pauseFlow } from './versions';
 
 export type FlowSliceResult = { kind: 'done' } | { kind: 'no_slot' };
@@ -514,6 +515,17 @@ async function walkForEach(s: Slice, step: FlowStep, index: number): Promise<'co
     return 'continue';
   }
 
+  // W5 (#5220, Decision 11): a Tier-1/2, non-wait step with concurrency > 1
+  // runs its items in parallel — unless an item row is parked or closed on a
+  // live run, which only the sequential walk knows how to resume or end.
+  const pin = s.pins!.get(step.id)!;
+  if (effectiveForEachConcurrency(step, pin) > 1 && !items.value.some((_, i) => {
+    const state = settledRow(s.latest!.get(ledgerKey(step.id, i)));
+    return state === 'parked' || state === 'end';
+  })) {
+    return walkForEachConcurrent(s, step, index, items.value);
+  }
+
   const outputs: Array<FlowValue | null> = [];
   let failed = false;
   for (const [i, item] of items.value.entries()) {
@@ -553,7 +565,7 @@ async function walkUnit(
     case 'failed':
       // Only an onFailure 'continue' failure leaves a run going (a stop
       // failure is written with the run's terminal status).
-      return { flow: 'continue', status: 'failed', output: null };
+      return { flow: 'continue', status: 'failed', output: failedUnitOutput(row!) };
     case 'parked':
       return resumeParkedUnit(s, step, index, itemIndex, itemCount, row!);
     case 'end':
@@ -632,6 +644,24 @@ async function executeUnit(
   });
   if (!inserted) return STOP;
 
+  const exec = await runStepExecutor(s, step, pin, itemIndex, item, stepRowId);
+  if (exec.lost) return STOP;
+  s.activeMs += exec.elapsed;
+  return applyOutcome(s, step, index, itemIndex, itemCount, stepRowId, exec.outcome, exec.elapsed);
+}
+
+/**
+ * Execute one unit's step under a lease heartbeat. Shared by the sequential
+ * walk and the parallel for-each (W5): no run state is touched here.
+ */
+async function runStepExecutor(
+  s: Slice,
+  step: FlowStep,
+  pin: FlowStepPin,
+  itemIndex: number | null,
+  item: FlowValue | undefined,
+  stepRowId: string,
+): Promise<{ lost: true } | { lost: false; outcome: StepOutcome; elapsed: number }> {
   const heartbeat = startLeaseHeartbeat(s.runId, s.token, { stepId: step.id });
   const t0 = Date.now();
   let outcome: StepOutcome;
@@ -646,6 +676,7 @@ async function executeUnit(
       scope: scopeFor(s),
       auth: s.auth!,
       deadline: t0 + step.timeoutSec * 1000,
+      leaseToken: s.token,
       stepRowId,
     });
   } catch (err) {
@@ -664,10 +695,181 @@ async function executeUnit(
       `[FlowRunner] lease lost while the step ran; its result (${outcome.kind}) is dropped `
       + `(run=${s.runId}, step=${step.id}${itemIndex === null ? '' : `, item=${itemIndex}`})`,
     );
-    return STOP;
+    return { lost: true };
   }
-  s.activeMs += elapsed;
-  return applyOutcome(s, step, index, itemIndex, itemCount, stepRowId, outcome, elapsed);
+  return { lost: false, outcome, elapsed };
+}
+
+// ── W5: parallel for-each (#5220, Decision 11) ─────────────────────────────
+
+/** What an item that ended the batch said, for the run's terminal write. */
+type ItemEnd =
+  | { kind: 'failed'; code: FlowStepErrorCode; message: string; policy: boolean }
+  | { kind: 'unknown_outcome' };
+
+/**
+ * One for-each item of a parallel batch: insert its `running` row, execute,
+ * write its outcome — every write lease-fenced with an EMPTY run patch (no
+ * cursor, no active time, no lease release: only Tier ≤ 2, non-wait steps get
+ * here, so an item never parks). The batch writes the cursor and active time.
+ */
+async function executeUnitRow(
+  s: Slice,
+  step: FlowStep,
+  pin: FlowStepPin,
+  itemIndex: number,
+  item: FlowValue,
+  attempt: number,
+  ends: Map<number, ItemEnd>,
+): Promise<ForEachItemResult> {
+  const stepRowId = randomUUID();
+  const inserted = await checkpoint(s.runId, s.token, {}, {
+    insert: {
+      id: stepRowId, runId: s.runId, orgId: s.run.orgId, stepId: step.id, itemIndex, attempt,
+      tool: pin.tool, toolSource: pin.source, tier: pin.tier, status: 'running', startedAt: new Date(),
+    },
+  });
+  if (!inserted) return { kind: 'stop' };
+
+  const exec = await runStepExecutor(s, step, pin, itemIndex, item, stepRowId);
+  if (exec.lost) return { kind: 'stop' };
+  const { outcome, elapsed: durationMs } = exec;
+  const finishedAt = new Date();
+  const rendered = outcome.kind === 'skipped' ? null : (outcome.renderedInput ?? null);
+  const ai = aiUsageColumns(outcome);
+  const write = (values: StepRowValues) => checkpoint(s.runId, s.token, {}, {
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...ai, ...values } },
+  });
+
+  switch (outcome.kind) {
+    case 'skipped':
+      return (await write({ status: 'skipped', output: null, finishedAt })) ? { kind: 'done', status: 'skipped', output: null } : { kind: 'stop' };
+    case 'completed':
+      return (await write({ status: 'completed', output: outcome.output, outputTruncated: outcome.truncated, finishedAt }))
+        ? { kind: 'done', status: 'completed', output: outcome.output }
+        : { kind: 'stop' };
+    case 'failed':
+      if (!(await write({ status: 'failed', errorCode: outcome.code, error: outcome.message, finishedAt }))) return { kind: 'stop' };
+      ends.set(itemIndex, { kind: 'failed', code: outcome.code, message: outcome.message, policy: outcome.policy });
+      return { kind: 'failed', terminal: outcome.policy };
+    case 'unknown_outcome':
+      if (!(await write({ status: 'unknown_outcome', errorCode: 'unknown_outcome', error: outcome.message, finishedAt }))) return { kind: 'stop' };
+      ends.set(itemIndex, { kind: 'unknown_outcome' });
+      return { kind: 'failed', terminal: true };
+    case 'park_approval':
+    case 'park_wait': {
+      // Unreachable (Tier ≤ 2, never wait). Never park inside a batch.
+      const message = 'A parallel for-each item cannot wait or ask for approval.';
+      if (!(await write({ status: 'failed', errorCode: 'step_failed', error: message, finishedAt }))) return { kind: 'stop' };
+      ends.set(itemIndex, { kind: 'failed', code: 'step_failed', message, policy: true });
+      return { kind: 'failed', terminal: true };
+    }
+    default: {
+      const exhaustive: never = outcome;
+      throw new Error(`unhandled step outcome ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * The parallel for-each walk: the coordinator launches the unsettled items in
+ * index order (resume derives settled items from the ledger, never from the
+ * cursor), then ONE checkpoint writes the cursor and the batch's wall-clock
+ * active time — or the run's terminal write when an item ended the batch.
+ */
+async function walkForEachConcurrent(s: Slice, step: FlowStep, index: number, items: FlowValue[]): Promise<'continue' | 'stop'> {
+  const pin = s.pins!.get(step.id)!;
+  const ends = new Map<number, ItemEnd>();
+  const t0 = Date.now();
+  const { results, halted } = await runForEachItems({
+    count: items.length,
+    parallelism: effectiveForEachConcurrency(step, pin),
+    stopOnFailure: step.onFailure === 'stop',
+    settled: (i) => {
+      const row = s.latest!.get(ledgerKey(step.id, i));
+      const state = settledRow(row);
+      if (state === 'done') return { kind: 'done', status: row!.status as 'completed' | 'skipped', output: (row!.output ?? null) as FlowValue | null };
+      // Only an onFailure 'continue' failure leaves a run going.
+      if (state === 'failed') return { kind: 'failed', terminal: false };
+      return null;
+    },
+    beforeLaunch: async () => {
+      if (s.activeMs + (Date.now() - t0) > FLOW_RUN_LIMITS.maxActiveMs) return 'timeout';
+      const control = await read(() => store.readRunControl(s.runId), 'flows.runSlice.control');
+      if (!control || control.leaseToken !== s.token || TERMINAL.has(control.status)) return 'stop';
+      return control.cancelRequestedAt ? 'cancelled' : 'ok';
+    },
+    runItem: (i) => executeUnitRow(s, step, pin, i, items[i]!, (s.latest!.get(ledgerKey(step.id, i))?.attempt ?? 0) + 1, ends),
+  });
+  s.activeMs += Math.max(0, Date.now() - t0);
+
+  if (halted === 'stop') return 'stop';
+  // Every drift-class failure in the batch pauses the flow, whatever ended the
+  // batch (the sequential rule; PR review: a cancel or timeout halt must not
+  // swallow an in-flight item's drift).
+  const pauses = new Set([...ends.values()].flatMap((e) => (e.kind === 'failed' && PAUSE_FOR_CODE[e.code] ? [PAUSE_FOR_CODE[e.code]!] : [])));
+  const applyPauses = async () => {
+    for (const pause of pauses) await safePause(s.run, s.publication.publicationSeq, pause);
+  };
+  const firstEnd = [...ends.entries()].sort(([a], [b]) => a - b);
+  const unknown = firstEnd.find(([, e]) => e.kind === 'unknown_outcome');
+  if (unknown) {
+    await finish(s, { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${step.id} may or may not have taken effect.` }, undefined, {
+      unknownStepId: step.id,
+    });
+    await applyPauses();
+    return 'stop';
+  }
+  if (halted === 'cancelled') {
+    await finish(s, { status: 'cancelled', errorCode: 'cancelled', error: 'The run was cancelled.' });
+    await applyPauses();
+    return 'stop';
+  }
+  if (halted === 'timeout') {
+    await finish(s, { status: 'failed', errorCode: 'run_timeout', error: 'The run exceeded its active-time limit.' });
+    await applyPauses();
+    return 'stop';
+  }
+  const ending = firstEnd.find(([, e]) => e.kind === 'failed' && (e.policy || step.onFailure === 'stop'));
+  if (halted === 'failure' && ending) {
+    const end = ending[1] as Extract<ItemEnd, { kind: 'failed' }>;
+    await finish(s, { status: 'failed', errorCode: end.code, error: `Step ${step.id}: ${end.message}` });
+    await applyPauses();
+    return 'stop';
+  }
+
+  const outputs = results.map((r) => (r?.kind === 'done' && r.status === 'completed' ? r.output : null));
+  const failed = results.some((r) => r?.kind === 'failed');
+  const cursor = nextCursor(s, index, null, null);
+  const ok = await checkpoint(s.runId, s.token, { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs });
+  if (!ok) return 'stop';
+  // A non-terminal drift-class failure under continue still pauses the flow (the sequential rule).
+  await applyPauses();
+  record(s, step.id, failed ? 'failed' : 'completed', outputs);
+  if (failed) s.anyContinueFailure = true;
+  return 'continue';
+}
+
+/**
+ * W6 (#5221): what a failed unit puts in the scope — its recorded output (a
+ * fleet step's device sets survive a partial failure) or null.
+ */
+export function failedUnitOutput(row: Pick<FlowRunStepRow, 'output'> | { output: unknown }): FlowValue | null {
+  return (row.output ?? null) as FlowValue | null;
+}
+
+/**
+ * W5 (#5220, Decision 13): an `ai` step's model usage on its step row
+ * (`flow_run_steps_ai_usage_chk`: all three set, or none). Whole cents.
+ */
+export function aiUsageColumns(outcome: StepOutcome): Pick<StepRowValues, 'aiInputTokens' | 'aiOutputTokens' | 'aiCostCents'> {
+  const u = outcome.kind === 'skipped' ? undefined : outcome.aiUsage;
+  if (!u) return {};
+  return {
+    aiInputTokens: Math.max(0, Math.round(u.inputTokens)),
+    aiOutputTokens: Math.max(0, Math.round(u.outputTokens)),
+    aiCostCents: Math.max(0, Math.round(u.costCents)),
+  };
 }
 
 async function applyOutcome(
@@ -685,8 +887,9 @@ async function applyOutcome(
   const approvalMode = outcome.kind !== 'skipped' && outcome.approvalMode === 'pre_approved' ? 'pre_approved' as const : undefined;
   const cursor = nextCursor(s, index, itemIndex, itemCount);
   const advance = { currentStepId: cursor.stepId, currentItemIndex: cursor.itemIndex, activeMs: s.activeMs };
+  const ai = aiUsageColumns(outcome);
   const write = (values: StepRowValues): FlowRunCheckpointStep => ({
-    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...values } },
+    update: { id: stepRowId, values: { renderedInput: rendered, durationMs, ...(approvalMode ? { approvalMode } : {}), ...ai, ...values } },
   });
 
   switch (outcome.kind) {
@@ -700,7 +903,10 @@ async function applyOutcome(
       return ok ? { flow: 'continue', status: 'completed', output: outcome.output } : STOP;
     }
     case 'failed': {
-      const stepWrite = write({ status: 'failed', errorCode: outcome.code, error: outcome.message, finishedAt });
+      const stepWrite = write({
+        status: 'failed', errorCode: outcome.code, error: outcome.message, finishedAt,
+        ...(outcome.output !== undefined ? { output: outcome.output } : {}),
+      });
       const pause = PAUSE_FOR_CODE[outcome.code] ?? null;
       if (outcome.policy || step.onFailure === 'stop') {
         await finish(s, { status: 'failed', errorCode: outcome.code, error: `Step ${step.id}: ${outcome.message}` }, stepWrite, { pause });
@@ -708,7 +914,7 @@ async function applyOutcome(
       }
       const ok = await checkpoint(s.runId, s.token, advance, stepWrite);
       if (pause) await safePause(s.run, s.publication.publicationSeq, pause);
-      return ok ? { flow: 'continue', status: 'failed', output: null } : STOP;
+      return ok ? { flow: 'continue', status: 'failed', output: outcome.output ?? null } : STOP;
     }
     case 'unknown_outcome':
       await finish(s, { status: 'failed', errorCode: 'unknown_outcome', error: `Step ${step.id}: ${outcome.message}` },

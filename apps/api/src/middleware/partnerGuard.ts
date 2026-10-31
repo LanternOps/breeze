@@ -10,6 +10,7 @@ const SIGNED_WEBHOOK_PATHS: ReadonlySet<string> = new Set([
   '/api/v1/webhooks/quickbooks',
 ]);
 const EDR_PUSH_WEBHOOK_PATH = /^\/api\/v1\/webhooks\/edr\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FLOW_WEBHOOK_PATH = /^\/api\/v1\/webhooks\/flows\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Paths the global partner-status guard skips (mounted in index.ts). They must
@@ -38,6 +39,9 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   // guard change can never parse that secret as a JWT or act for a partner before
   // the route's own secret check. Exact `/webhooks/edr/<uuid>` only.
   if (EDR_PUSH_WEBHOOK_PATH.test(path)) return true;
+  // Flow webhook ingress (Tool Catalog W05): HMAC/token authenticated in the
+  // handler, never by a bearer. Exact `/webhooks/flows/<uuid>` only.
+  if (FLOW_WEBHOOK_PATH.test(path)) return true;
   // Public trust pages: GETs must never trigger staff account activation (spec trust-center §13)
   if (path.startsWith('/api/v1/trust/card/') || path.startsWith('/api/v1/trust/public/')) return true;
   if (path.startsWith('/api/v1/trust/attestation/')) return true;   // signed attestation + JWKS (Trust Center W3b)

@@ -73,6 +73,10 @@ function tab(over: Partial<TabState> = {}): TabState {
     composerDraft: '',
     joinedMidResponse: false,
     errorAction: null,
+    // A known plain chat: these suites cover plain-session behaviour, and an
+    // unknown mode would make the first send look up a Wisp grant first
+    // (#10142, workspaceStore.wisp.test.ts).
+    wisp: { kind: 'plain' },
     ...over,
   };
 }
@@ -340,6 +344,63 @@ describe('workspace store sendMessage title handling', () => {
       method: 'PATCH',
       body: JSON.stringify({ title: 'Renamed mid-flight' }),
     });
+  });
+});
+
+describe('workspace store sendMessage refused before the turn ran (#10108)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageHarness.data.clear();
+    useWorkspaceStore.setState({ tabs: [], activeTabId: null, _readers: new Map() });
+  });
+
+  it('a generic refusal (503) drops the optimistic bubble and restores the draft', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeResponse({ error: 'AI is not configured on this deployment', code: 'ai_not_configured' }, false, 503)
+    );
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'Is the disk still full?');
+
+    const t = useWorkspaceStore.getState().tabs[0]!;
+    expect(t.messages).toEqual([]);
+    expect(t.composerDraft).toBe('Is the disk still full?');
+    expect(t.error).toBe('AI is not configured on this deployment');
+    expect(t.isStreaming).toBe(false);
+  });
+
+  it('a coded 409 that is not turn_in_progress also restores the draft', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Session is closed', code: 'session_closed' }, false, 409));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    const t = useWorkspaceStore.getState().tabs[0]!;
+    expect(t.messages).toEqual([]);
+    expect(t.composerDraft).toBe('hello');
+    expect(t.error).toBe('Session is closed');
+    expect(t.isStreaming).toBe(false);
+  });
+
+  it('a credits refusal (402) drops the bubble and restores the draft', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'Out of AI credits', code: 'insufficient_credits' }, false, 402));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    const t = useWorkspaceStore.getState().tabs[0]!;
+    expect(t.messages).toEqual([]);
+    expect(t.composerDraft).toBe('hello');
+    expect(t.error).toBe('Out of AI credits');
+  });
+
+  it('a refusal with no error text falls back to the generic message', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'tab-1', sessionId: 'session-1' })], activeTabId: 'tab-1' });
+    fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ code: 'session_closed' }, false, 409));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(useWorkspaceStore.getState().tabs[0]!.error).toBe('Failed to send message');
   });
 });
 

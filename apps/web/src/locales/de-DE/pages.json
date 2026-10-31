@@ -190,7 +190,8 @@
     "wispChat": "Breeze AI",
     "aiTasks": "KI-Aufgaben",
     "aiTask": "KI-Aufgabe",
-    "settingsAi": "KI-Einstellungen"
+    "settingsAi": "KI-Einstellungen",
+    "settingsFlowLimits": "Ablauflimits"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -281,6 +282,10 @@
       "wispMemory": {
         "title": "Wisp-Gedächtnis",
         "description": "Prüfen, bestätigen und widerrufen, was Wisp sich merkt."
+      },
+      "flowLimits": {
+        "title": "Ablauflimits",
+        "description": "Monatliche Ausführungslimits und das KI-Token-Limit für Abläufe."
       }
     },
     "groups": {

@@ -5,7 +5,7 @@ description: Push signed JSON event notifications to external HTTP endpoints wit
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks are scoped to an organization and support custom headers, HMAC-SHA256 signature verification, automatic retries with exponential backoff, and a full delivery history with per-delivery status tracking.
+Webhooks let you push real-time event notifications from Breeze to any external HTTP endpoint. When a device enrolls, an alert fires, a script completes, or any other tracked event occurs, Breeze sends a signed JSON payload to each webhook configured for that event type. Webhooks belong to an organization or a partner and support custom headers, HMAC-SHA256 signature verification, automatic retries on a fixed schedule, and a full delivery history with per-delivery status tracking.
 
 ---
 
@@ -24,7 +24,8 @@ Webhooks let you push real-time event notifications from Breeze to any external 
      "name": "PagerDuty Alerts",
      "url": "https://events.pagerduty.com/integration/abc123/enqueue",
      "secret": "whsec_your_signing_secret",
-     "events": ["alert.triggered", "alert.escalated", "device.offline"],
+     "events": ["alert.triggered", "alert.acknowledged", "device.offline"],
+     "payloadVersion": 2,
      "headers": [
        { "key": "X-Custom-Source", "value": "breeze-rmm" }
      ]
@@ -39,7 +40,8 @@ Webhooks let you push real-time event notifications from Breeze to any external 
      "orgId": "11111111-1111-1111-1111-111111111111",
      "name": "PagerDuty Alerts",
      "url": "https://events.pagerduty.com/integration/abc123/enqueue",
-     "events": ["alert.triggered", "alert.escalated", "device.offline"],
+     "events": ["alert.triggered", "alert.acknowledged", "device.offline"],
+     "payloadVersion": 2,
      "headers": [{ "key": "X-Custom-Source", "value": "breeze-rmm" }],
      "status": "active",
      "hasSecret": true,
@@ -56,15 +58,31 @@ Webhooks let you push real-time event notifications from Breeze to any external 
   Both the `secret` and the `url` are encrypted at rest using AES-256-GCM. The `secret` is never returned in API responses — only the `hasSecret` boolean indicates whether one is configured. The `url` is returned by GET responses, but any credentials embedded in it (HTTP basic-auth userinfo and signed query tokens) are stripped before the value is sent to the client.
 </Aside>
 
+### Create request fields
+
+| Field | Type | Required | Meaning |
+|-------|------|----------|---------|
+| `name` | string | Yes | Webhook name |
+| `url` | string | Yes | Destination URL |
+| `events` | string[] | Yes | Subscribed event types; `*` receives all events |
+| `payloadVersion` | `1` or `2` | No | Payload version; defaults to `2` |
+| `secret` | string | With HMAC | Signing secret; use a Bearer token header instead when appropriate |
+| `headers` | array of key/value objects | No | Custom request headers |
+| `ownerScope` | `organization` or `partner` | No | Owner of the webhook; defaults to `organization` |
+| `orgId` | UUID string | For organization webhooks created in partner or system scope | Organization that owns the webhook; omit for partner webhooks |
+| `partnerId` | UUID string | For partner webhooks created in system scope | Partner that owns the webhook; partner sessions use their authenticated partner |
+
 ### Organization Scoping
 
-Webhooks follow the standard multi-tenant access model:
+Webhooks belong to one organization or to a partner. Organization webhooks receive that organization's events. Organization sessions use their authenticated organization; partner and system sessions supply `orgId` when creating an organization webhook.
 
-| Auth Scope | Behavior |
-|------------|----------|
-| **Organization** | `orgId` is set automatically from the authenticated context. |
-| **Partner** | `orgId` must be provided in the request body. The API verifies the partner has access to that organization. |
-| **System** | `orgId` must be provided in the request body. |
+Partner administrators with access to **all** of their partner's organizations can choose **All organizations** when creating a webhook (`ownerScope: "partner"`, without `orgId`). System sessions also supply `partnerId`. Ownership cannot be changed after creation. Organization users and partner users with access to selected organizations cannot see partner webhooks or their delivery history.
+
+Partner webhooks receive events from every live organization belonging to their partner. Holding organizations (the unassigned pool), quick-support organizations, and suspended or deleted organizations are excluded. The delivery envelope's `orgId` identifies the event's organization. Receivers can filter on that value; this release has no per-organization subscription filter. If an organization leaves the partner, its queued deliveries are stopped before sending.
+
+New partner webhooks default to payload v2. Their v2 alert payloads include `orgExternalIds`, which lets receivers map the organization to external systems. Test sends from partner webhooks carry `orgId: null` and appear as **Test** in delivery history.
+
+An organization's tenant export includes delivery metadata for its own events sent through partner webhooks. The stored payload and receiver response text are excluded, as are the partner's webhook configuration and secrets.
 
 ---
 
@@ -80,15 +98,18 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `device.online` | A device has come online (heartbeat received) |
 | `device.offline` | A device has stopped sending heartbeats |
 | `device.updated` | Device metadata or configuration has changed |
+| `device.reinstalled` | A reinstalled machine was reattached to its existing device record: the record keeps its id, org, site and history, a new install takes it over, and the install incarnation advances. Payload: `deviceId`, `sourceDeviceId`, `orgId`, `sourceOrgId`, `siteId`, `installIncarnation`, `previousIncarnation`, `evidenceLevel`, `actorUserId`, `reattachmentId` |
 
 ### Alert Events
 
 | Event | Description |
 |-------|-------------|
 | `alert.triggered` | A monitoring rule has fired a new alert |
-| `alert.acknowledged` | An alert has been acknowledged by a user |
+| `alert.acknowledged` | An alert has been acknowledged by a user or service principal |
 | `alert.resolved` | An alert condition has cleared |
-| `alert.escalated` | An alert has been escalated to a higher tier |
+| `alert.suppressed` | Breeze AI has suppressed an alert. Suppressing an alert from the dashboard or `POST /alerts/:id/suppress` does not publish this event yet |
+
+`alert.escalated` is not sent by Breeze; the API rejects a new subscription to it with `400`; a stored one shows as "Never delivered" in the dashboard, and the dashboard edit form removes it on save.
 
 ### Script Events
 
@@ -144,7 +165,7 @@ A ticket migration window lets a partner admin import ticket history from anothe
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
+| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported`, `attachmentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `attachmentsImported` counts the files attached to imported comments. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
 
 ### Integration Events
 
@@ -190,23 +211,23 @@ Integration events report the health of an organization's own connections: an in
 
 ## Delivery Mechanism
 
-When an event is emitted on the Breeze event bus, the webhook delivery system routes it to all active webhooks in the same organization that are subscribed to that event type. Each delivery follows this sequence:
+When an event is emitted on the Breeze event bus, the webhook delivery system routes it to subscribed active webhooks owned by that organization and, for live organizations, its partner. Each delivery follows this sequence:
 
 <Steps>
-1. The event bus fires the event. The `initializeWebhookDelivery` subscriber matches the event type against all configured webhooks for the organization.
+1. The event bus fires the event. The webhook subscriber matches the event type against eligible organization and partner webhooks.
 
 2. A delivery record is created in the `webhook_deliveries` table with status `pending` and `attempts` set to `0`.
 
-3. The delivery job is queued onto the Redis list `breeze:webhooks:delivery`.
+3. A BullMQ job carrying only the delivery and webhook ids, generation, and attempt count is queued on `webhook-delivery`.
 
-4. The `WebhookDeliveryWorker` picks up the job, validates the destination URL (including DNS resolution to block SSRF), and sends an HTTP POST with the signed payload.
+4. The worker claims the delivery row as `retrying`, validates the destination URL (including DNS resolution to block SSRF), and sends an HTTP POST with the signed payload.
 
-5. If the response status is `2xx`, the delivery is marked `delivered`. Otherwise, the retry logic takes over.
+5. A `2xx` response marks the row `delivered`. A failure marks it `scheduled` with the next attempt time, or `failed` after the last attempt.
 </Steps>
 
 ### Payload Format
 
-Every webhook delivery sends a JSON POST body with the following structure:
+The original v1 JSON POST body has this structure. See [Payload versions](#payload-versions) for the v2 envelope.
 
 ```json
 {
@@ -227,12 +248,191 @@ Every webhook delivery sends a JSON POST body with the following structure:
 | `id` | Unique event ID (UUID) |
 | `type` | The event type string (e.g., `alert.triggered`) |
 | `timestamp` | ISO 8601 timestamp of when the event was created |
-| `orgId` | The organization the event belongs to |
+| `orgId` | The organization the event belongs to; `null` for partner-webhook test sends |
 | `data` | Event-specific payload; contents vary by event type |
+
+## Payload versions
+
+Each webhook has a `payloadVersion`: `1` or `2`. Webhooks created before this release stay on `1`; their payload is unchanged byte for byte. New webhooks default to `2`. Webhooks created through the API without `payloadVersion` also default to `2`.
+
+Choose the version in the edit form, or send `PATCH /webhooks/:id` with `{ "payloadVersion": 2 }`. You can switch back to `1`. Each delivery keeps the payload version it was recorded at, including manual replays and legacy rows. Editing the webhook stops its scheduled retries when they next come due.
+
+The v2 envelope is `{ id, type, timestamp, orgId, schemaVersion: 2, replayOf, data }`, in that order. The v1 envelope has no `schemaVersion` or `replayOf`. For non-alert events, v2 changes only the envelope; `data` is the same as v1. A test delivery (`POST /webhooks/:id/test`) uses the webhook's version with sample `data`; it does not enrich that sample.
+
+### Alert event data
+
+Only `alert.triggered`, `alert.acknowledged`, `alert.resolved`, and `alert.suppressed` use the v2 alert data below. Other event types keep their original data.
+
+#### v1: alert.triggered
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string | Alert id |
+| `ruleId` | string or null | Rule id; null for rule-less or sourced alerts |
+| `deviceId` | string | Device id |
+| `severity` | string | Alert severity |
+| `title` | string | Alert title |
+| `message` | string | Alert message |
+| `monitorId` | string or null | Always present on alert-service paths; null when there is no monitor |
+| `kind` | string or null | Always present on alert-service paths; null when there is no monitor |
+| `episodeId` | string or null, when present | Episode id for the subject-key path |
+| `subjectKey` | string or null, when present | Subject identity; null on the ordinary rule-alert path |
+| `responsesOwner` | boolean, when present | Whether this alert owns the response actions |
+| `source` | string, when present | Source of a rule-less or sourced alert |
+| Producer-specific extra keys | varies | Some producers add extra keys such as `networkChangeEventId`, `vendor`, `connectionId`, `provider`, `detectionId`, `requiresHuman`, `automationId`, `runId`, `flowRunId`, and `anomalyId` |
+
+#### v1: alert.acknowledged
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string | Alert id |
+| `ruleId` | string or null | Rule id |
+| `deviceId` | string | Device id |
+| `acknowledgedBy` | string or null | Id of the acknowledging user; null for a service principal |
+| `acknowledgedByPrincipalId` | string (optional) | Partner API service principal id; present only for a principal acknowledgment |
+
+#### v1: alert.resolved
+
+Several paths publish this event: the alert service, REST resolve, bulk actions, mobile, correlation-group actions, Breeze AI, warranty checks, and the subject-alert outbox. Fields vary by producer.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string | Alert id; always present |
+| `ruleId` | string or null, when present | Rule id; omitted by some producers |
+| `deviceId` | string | Device id; always present |
+| `resolutionNote` | string or null, when present | Resolution note; omitted by some producers |
+| `resolvedAt` | ISO 8601 string | Resolution time; always present |
+| `resolvedBy` | string or null | Resolving user id; always present, null for system or service principal resolutions |
+| `resolvedByPrincipalId` | string (optional) | Partner API service principal id; present only for a principal resolution, which counts as a person's resolve and starts no automatic AI verdict run |
+| `triggeredAt` | ISO 8601 string | Trigger time; always present |
+| `resolutionReason` | string or null, when present | Resolution reason; alert-service paths only |
+| `subjectKey` | string, when present | Subject identity; subject recoveries only |
+
+#### v1: alert.suppressed
+
+The AI suppression tool publishes this event. The REST suppress route does not publish it.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string | Alert id |
+| `ruleId` | string or null | Rule id |
+| `deviceId` | string | Device id |
+| `suppressedBy` | string | Suppressing user id |
+| `suppressedUntil` | ISO 8601 string or null | Suppression end time; null for indefinite suppression |
+| `durationHours` | number or null | Suppression duration in hours; null for indefinite suppression |
+
+#### v2: all four alert events
+
+Every key below is always present. A value that does not apply or is unavailable is `null`. The status comes from the event type, even if the alert has since changed. Valid payload values take precedence over the current alert row.
+
+`externalTickets` is also captured when the delivery is first enriched. A
+reference written afterward is absent from that stored payload, and retries do
+not refresh it. For current state, call
+`GET /api/v1/partner-api/alerts/<alertId>/external-tickets` with `alerts:read`
+(or the staff `GET /api/v1/alerts/<alertId>/external-tickets` route). V1 payloads
+are unchanged.
+
+Visibility follows webhook ownership. Partner-owned webhooks receive every
+partner-principal reference on the alert plus mappings from PSA connections
+owned by that partner or by the alert's organization. Org-owned webhooks receive
+only mappings from PSA connections owned by the alert's organization with no
+partner owner. They never receive partner-principal references or partner-owned
+PSA connection mappings. Org-scoped users of the staff GET route receive the
+same restricted view as an org-owned webhook.
+
+Hostname, site, and organization name are read when the delivery is first recorded, not at the moment the event happened. Retries resend the stored payload unchanged. `enrichmentIncomplete: true` means the alert row could not be read (it was not yet committed, the id was invalid, or the enrichment query failed), so enriched fields may be `null`; look the alert up by `alertId`. A missing device or site leaves its fields `null` without setting the flag.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `alertId` | string or null | Alert id |
+| `ruleId` | string or null | Rule id |
+| `monitorId` | string or null | Monitor id |
+| `deviceId` | string or null | Device id |
+| `episodeId` | string or null | Alert episode id |
+| `status` | `active`, `acknowledged`, `resolved`, or `suppressed` | State represented by this event; `alert.triggered` means `active` |
+| `severity` | `critical`, `high`, `medium`, `low`, `info`, or null | Alert severity |
+| `title` | string or null | Alert title |
+| `message` | string or null | Alert message |
+| `triggeredAt` | ISO 8601 string or null | Trigger time |
+| `acknowledgedAt` | ISO 8601 string or null | Acknowledgment time |
+| `resolvedAt` | ISO 8601 string or null | Resolution time |
+| `deviceHostname` | string or null | Device hostname |
+| `siteId` | string or null | Topology alert's owning site, otherwise the device's site |
+| `siteName` | string or null | Site name |
+| `orgName` | string or null | Organization name |
+| `alertUrl` | string | Dashboard link to the alert, or `/alerts` when the alert id is unavailable; relative when no dashboard base URL is configured |
+| `externalTickets` | array of objects | References and PSA mappings permitted for the webhook owner at enrichment time (org-owned webhooks receive only org-owned PSA mappings). Each object has exactly `source` (`partner_api` or `psa`), `externalId`, nullable `externalUrl`, and nullable `externalNumber`; empty when none exist |
+| `acknowledgedByPrincipalId` | string or null | Partner API service principal that acknowledged the alert; null when absent |
+| `resolvedByPrincipalId` | string or null | Partner API service principal that resolved the alert; null when absent. A principal resolution counts as a person's resolve and starts no automatic AI verdict run |
+| `enrichmentIncomplete` | boolean | The alert row could not be read or the enrichment query failed; missing device or site alone does not set it |
+| `subjectKey` | string or null | Alert subject identity |
+| `resolutionNote` | string or null | Resolution note |
+| `resolvedBy` | string or null | Resolving user id |
+| `resolutionReason` | string or null | Resolution reason |
+| `acknowledgedBy` | string or null | Acknowledging user id |
+| `suppressedBy` | string or null | Suppressing user id from the event |
+| `suppressedUntil` | ISO 8601 string or null | Suppression end time |
+| `responsesOwner` | boolean or null | Whether this alert owns response actions, when supplied by the event |
+| `kind` | string or null | Monitor or producer kind from the event |
+| `source` | string or null | Alert source from the event |
+| `details` | object | Producer-specific extras, such as `durationHours` or `networkChangeEventId`. These keys are not a stable contract; `{}` when there are none |
+
+A complete v2 `alert.triggered` example:
+
+```json
+{
+  "id": "60ecc32d-4bde-4716-930d-a433a86836aa",
+  "type": "alert.triggered",
+  "timestamp": "2027-01-12T12:34:56.000Z",
+  "orgId": "11111111-1111-4111-8111-111111111111",
+  "schemaVersion": 2,
+  "replayOf": null,
+  "data": {
+    "alertId": "22222222-2222-4222-8222-222222222222",
+    "ruleId": "33333333-3333-4333-8333-333333333333",
+    "monitorId": "44444444-4444-4444-8444-444444444444",
+    "deviceId": "55555555-5555-4555-8555-555555555555",
+    "episodeId": null,
+    "status": "active",
+    "severity": "high",
+    "title": "Low disk space",
+    "message": "Available disk space is below 10%.",
+    "triggeredAt": "2027-01-12T12:34:56.000Z",
+    "acknowledgedAt": null,
+    "resolvedAt": null,
+    "deviceHostname": "WORKSTATION-01",
+    "siteId": "66666666-6666-4666-8666-666666666666",
+    "siteName": "Main office",
+    "orgName": "Example Organization",
+    "alertUrl": "https://app.example.com/alerts/22222222-2222-4222-8222-222222222222",
+    "externalTickets": [],
+    "acknowledgedByPrincipalId": null,
+    "resolvedByPrincipalId": null,
+    "enrichmentIncomplete": false,
+    "subjectKey": null,
+    "resolutionNote": null,
+    "resolvedBy": null,
+    "resolutionReason": null,
+    "acknowledgedBy": null,
+    "suppressedBy": null,
+    "suppressedUntil": null,
+    "responsesOwner": true,
+    "kind": "disk",
+    "source": null,
+    "details": {}
+  }
+}
+```
+
+### Replays and deduplication
+
+A manual retry creates a new event with a new `id`. It carries `X-Breeze-Replay-Of: <original event id>` in either version, and `replayOf` in the v2 body. A replay of a replay keeps the original event id as its root.
+
+Deduplicate transport on the original event id: `replayOf ?? id` for v2, or `X-Breeze-Replay-Of` falling back to `id` for v1. Deduplicate tickets on `alertId` plus your own ticket state, not on `alertId + type`: a suppressed alert can return to active and be acknowledged again.
 
 ### Request Headers
 
-Every delivery includes these headers:
+Deliveries use these headers; signature and replay headers apply as noted:
 
 | Header | Description |
 |--------|-------------|
@@ -244,6 +444,7 @@ Every delivery includes these headers:
 | `X-Breeze-Timestamp` | Unix timestamp (milliseconds) of the delivery attempt |
 | `X-Breeze-Signature` | HMAC-SHA256 signature (only if a secret is configured) |
 | `X-Breeze-Signature-Timestamp` | Timestamp used in the signature computation |
+| `X-Breeze-Replay-Of` | Original event id on a manual retry, in either payload version; absent on original deliveries |
 
 Any custom headers configured on the webhook are merged into the request after the standard headers.
 
@@ -251,48 +452,25 @@ Any custom headers configured on the webhook are merged into the request after t
 
 ## Retry Logic
 
-Failed deliveries are retried automatically using exponential backoff. The default retry policy is:
+Every non-2xx response, timeout, or transport error is retried on this fixed schedule. Each request has a **30-second timeout**.
 
-| Parameter | Default Value |
-|-----------|---------------|
-| Maximum retries | 5 |
-| Initial delay | 1,000 ms (1 second) |
-| Backoff multiplier | 2x |
-| Maximum delay | 300,000 ms (5 minutes) |
-| Delivery timeout | 30,000 ms (30 seconds) |
+| Attempt | Delay after the previous attempt |
+|---------|----------------------------------|
+| 1 | Immediately |
+| 2 | 1 minute |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
+| 6 | 6 hours |
+| 7 | 12 hours |
 
-The delay between retries follows the formula:
+Each delay has **±20% jitter**. The base schedule spans about **21 hours** from the first attempt to the last; a seventh failure leaves the delivery `failed`. The per-webhook `retry_policy` is ignored.
 
-```
-delay = min(initialDelay * (multiplier ^ attempt), maxDelay)
-```
+Retry state lives in Postgres, with BullMQ delayed jobs waking each attempt. A wake-up lost to a failed enqueue or to Redis data loss is re-driven by the recovery sweep once the delivery is more than 15 minutes overdue. Each attempt is claimed before sending, so two workers cannot send the same attempt. If a worker stops mid-request, recovery marks the delivery `failed` with an unknown outcome instead of re-sending a potentially delivered request.
 
-This produces the following schedule for the default policy:
+Editing or disabling a webhook stops its scheduled retries; each is marked `failed` (`superseded_by_edit:`) when it next comes due, including retries re-driven by the recovery sweep. Replay it manually if needed. A delivery keeps the payload version it was recorded at; this also applies to manual replays and legacy rows.
 
-| Attempt | Delay |
-|---------|-------|
-| 1st retry | 1 second |
-| 2nd retry | 2 seconds |
-| 3rd retry | 4 seconds |
-| 4th retry | 8 seconds |
-| 5th retry | 16 seconds |
-
-### Custom Retry Policy
-
-You can override the default retry policy per webhook by setting the `retryPolicy` field in the database. There is no dashboard control or API field for this today -- creating and updating a webhook through the API or the dashboard does not accept a `retryPolicy` value, so this requires direct database access (self-hosted operators, or Breeze support on hosted accounts). The policy object accepts:
-
-```json
-{
-  "maxRetries": 10,
-  "initialDelayMs": 2000,
-  "backoffMultiplier": 3,
-  "maxDelayMs": 600000
-}
-```
-
-### Dead Letter Queue
-
-After all retries are exhausted, the delivery job is moved to a dead letter queue (Redis key `breeze:webhooks:dlq`). Jobs in the DLQ can be inspected and retried through the worker API.
+The Redis dead-letter queue is retired. On first start after upgrading, Breeze drains the old Redis delivery list and DLQ: pending rows and old in-memory retries are re-driven; entries whose delivery no longer exists or already finished are dropped and counted. DLQ entries become `failed` deliveries available for manual replay when their webhook still exists. Entries that fail to process stay in Redis and are retried by the recovery sweep.
 
 <Aside type="caution">
   Redirects are rejected (`redirect: "error"`). If your endpoint returns a 3xx redirect, the delivery will be treated as a failure and retried.
@@ -338,7 +516,7 @@ The `X-Breeze-Signature` header value is prefixed with `sha256=`:
 X-Breeze-Signature: sha256=a1b2c3d4e5f6...
 ```
 
-The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used in the signature computation.
+The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used in the signature computation. The signature covers the raw body for both payload versions.
 
 ### Verification Examples
 
@@ -386,11 +564,29 @@ The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used
 
 ---
 
+## Example: alert to ConnectWise Manage through middleware
+
+This outline uses a low-code automation platform such as Rewst between Breeze and ConnectWise Manage. Adapt the fields and priority mapping to your Manage configuration.
+
+1. Create a v2 webhook subscribed to `alert.triggered`, `alert.acknowledged`, and `alert.resolved`. Point it at the middleware's incoming webhook URL.
+2. Verify the request before processing it. Use the HMAC recipe above with `X-Breeze-Signature-Timestamp` and the raw body. If the platform can only check a static header, use Breeze's Bearer token option and validate the `Authorization` header instead.
+3. Deduplicate received requests on `replayOf ?? id`. Store the key after processing succeeds so a failed middleware attempt can be retried.
+4. On `alert.triggered`, map `data.severity` to your Manage priority ids. For example, map `critical` and `high` to your urgent queue, and send null severity for review. Use `data.orgName` to look up the company, `data.deviceHostname` and `data.title` in the ticket summary, and `data.alertUrl` in the description. Keep the lookup explicit when organization names are ambiguous or enrichment is incomplete.
+5. Store an `alertId` → ticket id mapping. On `alert.acknowledged`, update the mapped ticket according to your workflow. Use the alert id and current ticket state to decide whether to create or update; repeated alert states must not create duplicate tickets.
+6. On `alert.resolved`, close the mapped ticket with your configured Manage closed status. If no mapping exists, send the event for review rather than creating a new closed ticket.
+7. Grant a dedicated principal `alerts:write`. When the Manage ticket closes, call `POST /api/v1/partner-api/alerts/<alertId>/resolve` with an optional `note`. Ignore webhook events whose `acknowledgedByPrincipalId` or `resolvedByPrincipalId` is your own principal id so the write-back does not loop.
+
+<Aside type="note">
+  The exact Rewst trigger setup is not yet confirmed, including whether its webhook trigger verifies an HMAC signature or only a static header. This section will be updated when that setup is confirmed.
+</Aside>
+
+---
+
 ## Delivery History
 
 Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
-From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose retries are exhausted with no later success also opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
+From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending, scheduled or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose delivery ends `failed` after its last attempt, with no later success, opens a connection-health incident on **Integrations**. For a dead endpoint, that is about 21 hours after the first failed attempt, rather than minutes. Decrypt failures open an incident immediately. See [Connection Health Checks](/features/notifications/#connection-health-checks).
 
 ### Listing Deliveries
 
@@ -404,7 +600,7 @@ All query parameters are optional. Results are ordered by most recent first.
 |-----------|------|-------------|
 | `page` | integer | Page number (default: 1) |
 | `limit` | integer | Results per page (default: 50, max: 100) |
-| `status` | string | Filter by delivery status: `pending`, `delivered`, `failed`, `retrying` |
+| `status` | string | Filter by delivery status: `pending`, `scheduled`, `delivered`, `failed`, `retrying` |
 
 Response:
 
@@ -441,6 +637,7 @@ When you fetch a single webhook via `GET /webhooks/:id`, the response includes a
 {
   "id": "webhook-uuid",
   "name": "PagerDuty Alerts",
+  "payloadVersion": 2,
   "status": "active",
   "deliveryStats": {
     "total": 1284,
@@ -448,6 +645,7 @@ When you fetch a single webhook via `GET /webhooks/:id`, the response includes a
     "delivered": 1250,
     "failed": 30,
     "retrying": 2,
+    "scheduled": 0,
     "lastDeliveredAt": "2026-02-18T12:34:57.123Z"
   }
 }
@@ -455,7 +653,7 @@ When you fetch a single webhook via `GET /webhooks/:id`, the response includes a
 
 ### Retrying a Failed Delivery
 
-You can manually retry any delivery that has a `failed` status. The retry creates a new delivery record with the same event type and payload, and queues it for immediate processing.
+You can manually retry any delivery that has a `failed` status. The retry creates a new delivery record with the same event type and payload, and queues it for immediate processing. The endpoint returns 202 Accepted even when queuing fails: the delivery stays `pending`, and the recovery sweep sends it within about 15–20 minutes.
 
 ```bash
 POST /webhooks/:id/retry/:deliveryId
@@ -513,13 +711,13 @@ Response (202 Accepted):
 }
 ```
 
-The test delivery is queued through the same delivery pipeline as real events, so it exercises the full path including HMAC signing, URL validation, and retry logic.
+The test endpoint returns 202 Accepted even when queuing fails: the delivery stays `pending`, and the recovery sweep sends it within about 15–20 minutes. The AI `test_webhook` tool likewise reports the delivery as accepted when queuing fails. A test delivery uses the same HMAC signing, URL validation, and delivery pipeline as real events; a failing endpoint follows the full retry schedule.
 
 ---
 
 ## Updating a Webhook
 
-Update any combination of name, URL, secret, events, headers, or status:
+Update any combination of name, URL, secret, events, headers, status, or payload version:
 
 ```bash
 PATCH /webhooks/:id
@@ -527,9 +725,22 @@ Content-Type: application/json
 
 {
   "events": ["device.enrolled", "device.offline", "alert.triggered"],
+  "payloadVersion": 2,
   "status": "paused"
 }
 ```
+
+| Request field | Type | Meaning |
+|---------------|------|---------|
+| `name` | string | Webhook name |
+| `url` | string | Destination URL |
+| `events` | string[] | Replacement subscription list |
+| `payloadVersion` | `1` or `2` | Version for future deliveries; stored deliveries keep their recorded version |
+| `secret` | string or null | Signing secret; null removes it when switching to Bearer authentication |
+| `headers` | array of key/value objects | Replacement custom headers |
+| `status` | string | One of the values below |
+
+All update fields are optional.
 
 | Status Value | Description |
 |--------------|-------------|
@@ -576,10 +787,10 @@ Breeze validates webhook URLs at both creation time and delivery time to prevent
 
 | Method | Path | Description |
 |--------|------|-------------|
-| **GET** | `/webhooks` | List webhooks for the organization (paginated, filterable by `status` and `orgId`) |
+| **GET** | `/webhooks` | List accessible webhooks (paginated, filterable by `status`, `ownerScope`, and `orgId`; an `orgId` filter returns only that organization's own webhooks) |
 | **POST** | `/webhooks` | Create a new webhook |
 | **GET** | `/webhooks/:id` | Get webhook details including delivery statistics |
-| **PATCH** | `/webhooks/:id` | Update webhook name, URL, secret, events, headers, or status |
+| **PATCH** | `/webhooks/:id` | Update webhook name, URL, secret, events, headers, status, or payload version |
 | **DELETE** | `/webhooks/:id` | Delete a webhook and all its delivery records |
 | **GET** | `/webhooks/:id/deliveries` | List delivery history (paginated, filterable by `status`) |
 | **POST** | `/webhooks/:id/test` | Send a test delivery |
@@ -610,9 +821,10 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `url` | text | Destination URL (HTTPS; self-hosted deployments may use HTTP to private addresses); encrypted at rest using AES. GET responses strip any credentials embedded in the URL (HTTP basic-auth userinfo and signed query tokens) before returning it. |
 | `secret` | text | Encrypted HMAC signing secret (AES-256-GCM) |
 | `events` | text[] | Array of subscribed event type strings |
+| `payload_version` | smallint | `1` or `2`, enforced by a CHECK; existing webhooks stay on `1`, new webhooks default to `2` |
 | `headers` | JSONB | Custom headers sent with each delivery |
 | `status` | enum | `active`, `disabled`, or `error` |
-| `retry_policy` | JSONB | Optional custom retry policy override |
+| `retry_policy` | JSONB | Retired; ignored by the fixed retry schedule |
 | `success_count` | integer | Cumulative successful deliveries |
 | `failure_count` | integer | Cumulative failed deliveries |
 | `last_delivery_at` | timestamp | Timestamp of the most recent delivery attempt |
@@ -629,10 +841,15 @@ All webhook routes require authentication and are scoped to `organization`, `par
 | `webhook_id` | UUID | Foreign key to `webhooks` |
 | `event_type` | varchar(100) | The event type that triggered this delivery |
 | `event_id` | varchar(100) | The unique event ID |
-| `payload` | JSONB | The full event payload sent to the endpoint |
-| `status` | enum | `pending`, `delivered`, `failed`, or `retrying` |
+| `payload` | JSONB | The stored event data sent to the endpoint |
+| `payload_version` | smallint | Recorded payload version; default `1` for legacy rows. A NOT VALID CHECK permits only `1` or `2` for new or updated rows without scanning the existing table |
+| `event_timestamp` | timestamptz, nullable | Stored wire event timestamp; legacy null values fall back to delivery creation time |
+| `replay_root_event_id` | varchar(100), nullable | Original event id for manual replays; null for original deliveries |
+| `status` | enum | `pending` (awaiting first attempt), `scheduled` (awaiting retry), `retrying` (in flight), `delivered`, or `failed` |
 | `attempts` | integer | Number of delivery attempts made |
-| `next_retry_at` | timestamp | Scheduled time for the next retry (if retrying) |
+| `next_retry_at` | timestamp | Due time (`scheduled`), execution lease (`retrying`), or the recovery sweep’s 15-minute lease on a re-driven `pending` row |
+| `failed_at` | timestamp, nullable | When the delivery became `failed`; null on legacy rows |
+| `webhook_generation` | integer, nullable | Webhook approval generation when recorded; retries stop after an edit. Legacy null rows fall back to the webhook’s current generation |
 | `response_status` | integer | HTTP response status code from the endpoint |
 | `response_body` | text | Response body (truncated to 1,000 characters) |
 | `response_time_ms` | integer | Round-trip time in milliseconds |
@@ -650,8 +867,8 @@ On hosted Breeze, the URL must use HTTPS and must not resolve to a private, loop
 **Webhook is not receiving events.**
 Check the webhook status -- if it is `paused` or `failed`, deliveries are not processed. Verify that the `events` array includes the event types you expect. Use `POST /webhooks/:id/test` to confirm the endpoint is reachable.
 
-**Deliveries are stuck in `retrying` status.**
-The worker retries failed deliveries using exponential backoff. Check the `nextAttemptAt` field on the delivery to see when the next attempt is scheduled. If retries have been exhausted (default: 5 attempts), the delivery moves to `failed` and the job enters the dead letter queue.
+**Deliveries remain in `scheduled` status.**
+Check `nextAttemptAt`: retries wait 1 minute, 5 minutes, 30 minutes, 2 hours, 6 hours, then 12 hours, each with ±20% jitter. The recovery sweep re-drives deliveries more than 15 minutes overdue. After the seventh failed attempt the delivery becomes `failed`; use manual retry once the endpoint is repaired.
 
 **Signature verification fails on my endpoint.**
 Ensure you are computing the HMAC over the correct input: the raw `X-Breeze-Signature-Timestamp` header value, followed by a dot (`.`), followed by the raw request body. Use the `X-Breeze-Signature-Timestamp` header (not `X-Breeze-Timestamp`) as the timestamp component. The signature uses SHA-256 and is hex-encoded.
@@ -660,10 +877,10 @@ Ensure you are computing the HMAC over the correct input: the raw `X-Breeze-Sign
 The worker re-validates the URL before each delivery attempt. On hosted Breeze, if your DNS records have changed and the hostname now resolves to a private IP range, deliveries will fail — update the webhook URL to point to a publicly routable address. On self-hosted deployments, private targets are deliverable; only metadata/loopback/link-local resolutions fail.
 
 **"Only failed deliveries can be retried" error.**
-The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `retrying`, or already `delivered` cannot be retried through this endpoint.
+The manual retry endpoint (`POST /webhooks/:id/retry/:deliveryId`) only accepts deliveries with status `failed`. Deliveries that are `pending`, `scheduled`, `retrying`, or already `delivered` cannot be retried through this endpoint.
 
 **"Organization context required" error.**
-Webhook routes require an organization scope. If you are authenticated with a partner or system scope, pass the `orgId` query parameter (for list) or include it in the request body (for create) to specify which organization's webhooks you are managing.
+For an organization webhook created in partner or system scope, include `orgId` in the request body. For a partner webhook, use `ownerScope: "partner"` without `orgId`; system sessions must also provide `partnerId`. A list request with an `orgId` filter returns only that organization's own webhooks. Omit that filter to include partner webhooks your session can manage.
 
 **Response body is truncated.**
 Webhook delivery response bodies are truncated to 1,000 characters to prevent excessive storage consumption. If you need the full response for debugging, check your endpoint's own logs.

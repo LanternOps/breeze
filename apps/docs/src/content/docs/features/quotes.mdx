@@ -34,6 +34,15 @@ Each line's internal cost details (SKU, cost, markup, profit) collapse into a on
 
 Give a quote a **title** (for example, "Server refresh -- Q1" or "New-hire onboarding bundle"). The title appears at the top of the quote and on the PDF the customer sees, so a proposal reads as a named piece of work rather than just a number.
 
+### Valid Until and Intro Notes
+
+The top of a draft quote has two fields that print on the proposal:
+
+- **Valid until** -- the last day the customer can accept the quote. It prints in the proposal's header, and the quote expires once that day has passed (UTC). Leave it blank for a quote that does not expire. The editor warns you if the date you pick has already passed.
+- **Intro notes** -- a short note to the customer (up to 5,000 characters), printed above the first section of the proposal. Leave it blank to print no intro.
+
+Both save when you leave the field, like the other editor fields.
+
 ### Footer Line
 
 **Footer line (every page)** is one short line (up to 160 characters) printed at the bottom of every page of the quote, such as a validity date. Leave it blank to use the default footer; the editor shows which default applies or notes that none is set. The organization's own footer text (its Portal settings) wins over your partner document footer (Billing settings), so the default is the organization's footer when it has one, and yours otherwise. The footer line is separate from **Terms & Conditions**, which is where fine print belongs. Available since v0.117.0.
@@ -137,7 +146,7 @@ When a customer accepts a quote that has a deposit, Breeze issues the invoice wi
 
 When a customer accepts a quote, Breeze turns it into the documents that bill it:
 
-- **One-time lines** become an **invoice** (with the deposit due first, if one was set). When you take [online payments](/features/online-payments/) and money is due on acceptance, the customer's accept button reads **Sign & pay** (or **Sign & pay deposit**) with the amount, and signing goes straight to Stripe checkout. Otherwise, or if checkout can't be opened at that moment, the customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away.
+- **One-time lines** become an **invoice** (with the deposit due first, if one was set). When you take [online payments](/features/online-payments/) and money is due on acceptance, the customer's accept button reads **Sign & pay** (or **Sign & pay deposit**) with the amount, and signing goes straight to Stripe checkout. Otherwise, or if checkout can't be opened at that moment, the customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away. If they close the tab without paying, opening the quote link again shows **Acceptance recorded — one more step** with a **Pay** button for whatever is still due on that invoice. The link no longer shows the proposal itself, and it keeps working only until the original link would have expired (the quote's valid-until date, or 30 days after it was first sent when it has none). The emailed invoice link is the one that lasts.
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).

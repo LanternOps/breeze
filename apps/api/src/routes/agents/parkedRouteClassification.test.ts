@@ -35,6 +35,8 @@ const EXPECTED: Record<string, Classification> = {
   // guards (role checks, body limits) — not endpoints.
   'ALL /:id/*': 'middleware',
   'ALL /*': 'middleware',
+  // #10190 W03: requireAgentRole on the prompt-identity sub-paths.
+  'ALL /:id/prompt-identity/*': 'middleware',
 
   // --- allowed for a parked device ----------------------------------------
   'POST /:id/heartbeat': 'allow',
@@ -43,6 +45,8 @@ const EXPECTED: Record<string, Classification> = {
   'GET /:id/commands': 'allow',
   'POST /:id/commands/:commandId/result': 'allow',
   'POST /:id/uninstall-intent': 'allow',
+  // #8318 §6.3: phase 1 of a reattach. A parked device is the typical source.
+  'POST /:id/rebind': 'allow',
 
   // --- agent-authenticated, refused for a parked device -------------------
   'GET /:id/config': 'deny',
@@ -51,6 +55,8 @@ const EXPECTED: Record<string, Classification> = {
   'POST /:id/pam/reconciliation-bindings': 'deny',
   // #9517: a parked device runs no PAM flow, so it has nothing to report.
   'POST /:id/pam/elevation-unable': 'deny',
+  // #8971: a parked device runs no PAM flow, so it has nothing to withdraw.
+  'POST /:id/elevation-requests/:requestId/withdraw': 'deny',
   'PUT /:id/security/status': 'deny',
   'PUT /:id/management/posture': 'deny',
   'PUT /:id/security/recovery-keys': 'deny',
@@ -74,6 +80,8 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/workloads': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
+  // #10190 W03: a parked device draws no prompts under an MSP identity.
+  'GET /:id/prompt-identity/logo': 'deny',
   'POST /:id/reliability': 'deny',
   'PUT /:id/changes': 'deny',
   'PUT /:id/peripherals/events': 'deny',
@@ -109,6 +117,8 @@ const EXPECTED: Record<string, Classification> = {
   'GET /quarantined': 'outside_agent_auth',
   'POST /:id/approve': 'outside_agent_auth',
   'POST /:id/deny': 'outside_agent_auth',
+  // #8318 §6.4: authenticates itself with the reattach confirm-only token.
+  'POST /:id/rebind-confirm': 'outside_agent_auth',
   'PATCH /org/:orgId/settings/mtls': 'outside_agent_auth',
   'GET /org/:orgId/settings/helper': 'outside_agent_auth',
   'PATCH /org/:orgId/settings/helper': 'outside_agent_auth',
@@ -185,11 +195,12 @@ describe('parked-device route classification', () => {
     expect(shouldSkipAgentAuth(path, idSegment)).toBe(true);
   });
 
-  it('exactly six endpoints are open to a parked device', () => {
+  it('exactly seven endpoints are open to a parked device', () => {
     expect(Object.entries(EXPECTED).filter(([, cls]) => cls === 'allow').map(([key]) => key).sort()).toEqual([
       'GET /:id/commands',
       'POST /:id/commands/:commandId/result',
       'POST /:id/heartbeat',
+      'POST /:id/rebind',
       'POST /:id/rotate-token',
       'POST /:id/rotate-token/confirm',
       'POST /:id/uninstall-intent',

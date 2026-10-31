@@ -3,12 +3,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   FLOW_PAUSED_REASONS,
-  FLOW_RUN_ERROR_CODES,
   FLOW_RUN_STATUSES,
   FLOW_RUN_STEP_STATUSES,
-  FLOW_STEP_ERROR_CODES,
   FLOW_TRIGGER_KINDS,
   FLOW_TRIGGERED_VIA,
+} from '@breeze/shared';
+import {
+  FLOW_ADMISSION_REFUSALS,
+  FLOW_WEBHOOK_AUTH_FAILURES,
+  FLOW_WEBHOOK_AUTH_MODES,
+  FLOW_WEBHOOK_DELIVERY_STATUSES,
 } from '@breeze/shared';
 import { actionIntentOriginPrincipalKindEnum, actionIntentSourceEnum } from './actionIntents';
 
@@ -20,19 +24,22 @@ import { actionIntentOriginPrincipalKindEnum, actionIntentSourceEnum } from './a
 // approach: the actionIntentApprovalScopeEnum pin in actionIntents.test.ts.
 
 const MIGRATION = '2027-01-06-130000-flow-runs.sql';
+// Tool Catalog W05 (#5220) swaps W04's named CHECKs by name in its own file
+// (W04's file is never edited); a swapped CHECK is pinned against the newest file.
+const W5_MIGRATION = '2027-01-07-140000-flow-webhooks-tools-budgets.sql';
 
-function migrationSql(): string {
-  return readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8')
+function migrationSql(file: string = MIGRATION): string {
+  return readFileSync(join(__dirname, '../../../migrations', file), 'utf8')
     .split('\n')
     .filter((line) => !line.trimStart().startsWith('--'))
     .join('\n');
 }
 
 /** The single-quoted literals of the first `IN (...)` list in the named CHECK constraint. */
-function checkLiterals(sql: string, constraint: string): string[] {
+function checkLiterals(sql: string, constraint: string, file: string = MIGRATION): string[] {
   const header = new RegExp(`CONSTRAINT\\s+${constraint}\\s+CHECK\\b`, 'gi');
   const hits = [...sql.matchAll(header)];
-  expect(hits, `CHECK ${constraint} must be declared exactly once in ${MIGRATION}`).toHaveLength(1);
+  expect(hits, `CHECK ${constraint} must be declared exactly once in ${file}`).toHaveLength(1);
   const rest = sql.slice(hits[0]!.index!);
   const list = /\bIN\s*\(([^)]*)\)/i.exec(rest.slice(0, rest.indexOf(';')));
   expect(list, `CHECK ${constraint} has no IN (...) list`).not.toBeNull();
@@ -49,12 +56,9 @@ function checkLiterals(sql: string, constraint: string): string[] {
 const PINS: Array<[constraint: string, expected: readonly string[]]> = [
   ['flow_runs_status_chk', FLOW_RUN_STATUSES],
   ['flow_run_steps_status_chk', FLOW_RUN_STEP_STATUSES],
-  ['flow_runs_triggered_via_chk', FLOW_TRIGGERED_VIA],
-  ['flow_runs_error_code_chk', FLOW_RUN_ERROR_CODES],
-  ['flow_run_steps_error_code_chk', FLOW_STEP_ERROR_CODES],
   ['flows_paused_reason_values_chk', FLOW_PAUSED_REASONS],
-  // W05 writes 'webhook' and 'tool'; the CHECK admits them now so W05 needs no swap.
-  ['flow_runs_trigger_kind_chk', [...FLOW_TRIGGER_KINDS, 'webhook', 'tool']],
+  // W04 admitted 'webhook' and 'tool' ahead of W05, so this CHECK needs no swap.
+  ['flow_runs_trigger_kind_chk', FLOW_TRIGGER_KINDS],
   // FlowToolSource ('core' | 'tenant' | 'builtin') is a type, not an array.
   ['flow_run_steps_tool_source_chk', ['core', 'tenant', 'builtin']],
   ['flow_run_steps_approval_mode_chk', ['none', 'intent', 'pre_approved']],
@@ -62,6 +66,88 @@ const PINS: Array<[constraint: string, expected: readonly string[]]> = [
   ['action_intents_source_chk', actionIntentSourceEnum],
   ['action_intents_origin_principal_kind_chk', actionIntentOriginPrincipalKindEnum],
 ];
+
+// W05 (#5220): swapped (widened) W04 CHECKs and the new W5 CHECKs, read from the W5 file.
+// W06 (#5221) swaps the two error-code CHECKs again; they are pinned against the W6 file
+// in flowConversions.schema.test.ts.
+const W5_PINS: Array<[constraint: string, expected: readonly string[]]> = [
+  ['flow_runs_triggered_via_chk', FLOW_TRIGGERED_VIA],
+  ['flow_webhook_deliveries_status_chk', FLOW_WEBHOOK_DELIVERY_STATUSES],
+  ['flow_webhook_deliveries_auth_mode_chk', FLOW_WEBHOOK_AUTH_MODES],
+  ['flows_webhook_auth_failure_chk', FLOW_WEBHOOK_AUTH_FAILURES],
+  ['flows_last_admission_refusal_chk', FLOW_ADMISSION_REFUSALS],
+];
+
+describe(`${W5_MIGRATION} CHECK lists match the shared arrays`, () => {
+  const sql = migrationSql(W5_MIGRATION);
+  for (const [constraint, expected] of W5_PINS) {
+    it(constraint, () => {
+      expect([...checkLiterals(sql, constraint, W5_MIGRATION)].sort()).toEqual([...expected].sort());
+    });
+  }
+
+  it('swaps each widened W04 CHECK with DROP … IF EXISTS before ADD (idempotent)', () => {
+    const flat = sql.replace(/\s+/g, ' ');
+    for (const [table, constraint] of [
+      ['flow_runs', 'flow_runs_triggered_via_chk'],
+      ['flow_runs', 'flow_runs_via_matches_kind_chk'],
+      ['flow_runs', 'flow_runs_error_code_chk'],
+      ['flow_run_steps', 'flow_run_steps_error_code_chk'],
+      ['action_intents', 'action_intents_external_tool_chk'],
+    ] as const) {
+      const drop = flat.indexOf(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${constraint};`);
+      const add = flat.indexOf(`ALTER TABLE ${table} ADD CONSTRAINT ${constraint} CHECK`);
+      expect(drop, `${constraint} drop`).toBeGreaterThanOrEqual(0);
+      expect(add, `${constraint} add`).toBeGreaterThan(drop);
+    }
+  });
+
+  it('pairs every trigger kind with its via explicitly (mcp/ai_agent only with tool)', () => {
+    const flat = sql.replace(/\s+/g, ' ');
+    expect(flat).toContain("((trigger_kind = 'webhook') = (triggered_via = 'webhook'))");
+    expect(flat).toContain("(trigger_kind <> 'tool' OR triggered_via IN ('ai_tool', 'mcp', 'ai_agent'))");
+    expect(flat).toContain("(trigger_kind <> 'manual' OR triggered_via IN ('ui', 'api', 'ai_tool'))");
+  });
+
+  it('leaves the W04 pre-approval CHECK untouched (webhook and tool runs never honour pre-approvals)', () => {
+    expect(sql).not.toMatch(/flow_runs_pre_approvals_chk/);
+  });
+
+  it('declares every org FK of the new tables DEFERRABLE INITIALLY IMMEDIATE', () => {
+    const flat = sql.replace(/\s+/g, ' ');
+    for (const fk of [
+      'flow_webhook_deliveries_org_partner_fk', 'flow_webhook_deliveries_run_fk', 'flow_usage_counters_org_partner_fk',
+    ]) {
+      expect(flat, fk).toMatch(new RegExp(
+        `CONSTRAINT ${fk} FOREIGN KEY \\([^)]*\\) REFERENCES \\w+ ?\\([^)]*\\) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE`,
+      ));
+    }
+  });
+
+  it('uses the conditional connection_health_incidents RLS predicate and no partner-wide SELECT branch', () => {
+    const flat = sql.replace(/\s+/g, ' ');
+    const predicate = "public.breeze_current_scope() = 'system' OR (org_id IS NOT NULL AND public.breeze_has_org_access(org_id)) OR (org_id IS NULL AND public.breeze_has_partner_access(partner_id))";
+    for (const table of ['flow_webhook_deliveries', 'flow_usage_counters']) {
+      expect(flat).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`);
+      expect(flat).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`);
+      expect(flat).toContain(`CREATE POLICY ${table}_isolation ON ${table} FOR ALL USING ( ${predicate} ) WITH CHECK ( ${predicate} );`);
+    }
+    expect(flat).not.toMatch(/breeze_current_partner_id\(\)/);
+  });
+
+  it('one NULLS NOT DISTINCT unique key covers flow rows and owner-total rows', () => {
+    expect(sql.replace(/\s+/g, ' ')).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS flow_usage_counters_key_uq ON flow_usage_counters (partner_id, org_id, flow_id, period_key) NULLS NOT DISTINCT;',
+    );
+  });
+
+  it('writes no rows and opens no inner transaction', () => {
+    expect(sql).not.toMatch(/^\s*(INSERT|UPDATE|DELETE|MERGE)\b/im);
+    expect(sql).not.toMatch(/set_config\(\s*'breeze\.scope'/i);
+    expect(sql).not.toMatch(/^\s*BEGIN\s*;/im);
+    expect(sql).not.toMatch(/^\s*COMMIT\s*;/im);
+  });
+});
 
 describe(`${MIGRATION} CHECK lists match the shared arrays`, () => {
   const sql = migrationSql();

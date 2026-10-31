@@ -20,6 +20,13 @@ import (
 // a restarting agent would.
 func serveOneHelperHandshake(t *testing.T, ln net.Listener, accepted chan<- struct{}) chan<- struct{} {
 	t.Helper()
+	return serveOneHelperHandshakeWith(t, ln, accepted, false)
+}
+
+// serveOneHelperHandshakeWith is serveOneHelperHandshake with the auth
+// response's AgentHandlesTCCNotice set as given (#10190 W04).
+func serveOneHelperHandshakeWith(t *testing.T, ln net.Listener, accepted chan<- struct{}, agentHandlesTCCNotice bool) chan<- struct{} {
+	t.Helper()
 
 	drop := make(chan struct{})
 	go func() {
@@ -43,6 +50,8 @@ func serveOneHelperHandshake(t *testing.T, ln net.Listener, accepted chan<- stru
 			SessionKey:    hex.EncodeToString(key),
 			AgentID:       "agent-under-test",
 			AllowedScopes: []string{"*"},
+
+			AgentHandlesTCCNotice: agentHandlesTCCNotice,
 		})
 		if err != nil {
 			return
@@ -90,7 +99,7 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	restore := runTCCCheckLoop
 	t.Cleanup(func() { runTCCCheckLoop = restore })
 	gotKind := make(chan string, 1)
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string, _ bool) {
 		gotKind <- binaryKind
 		<-stop
 		close(loopReturned)
@@ -141,5 +150,50 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	// (#8058), so Run must hand it the client's own kind.
 	if kind := <-gotKind; kind != ipc.HelperBinaryDesktopHelper {
 		t.Fatalf("TCC loop got binaryKind %q, want %q", kind, ipc.HelperBinaryDesktopHelper)
+	}
+}
+
+// #10190 W04: Run hands the TCC loop what this connection's auth response
+// said about the permission notice, so the helper stays quiet only for an
+// agent that shows it itself.
+func TestRunPassesTheAgentsTCCNoticeFlagToTheLoop(t *testing.T) {
+	for _, flag := range []bool{false, true} {
+		dir, err := os.MkdirTemp("", "bzh")
+		if err != nil {
+			t.Fatalf("temp dir: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		ln, err := net.Listen("unix", filepath.Join(dir, "h.sock"))
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+
+		restore := runTCCCheckLoop
+		got := make(chan bool, 1)
+		runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, _ string, agentHandlesNotice bool) {
+			got <- agentHandlesNotice
+			<-stop
+		}
+		accepted := make(chan struct{})
+		drop := serveOneHelperHandshakeWith(t, ln, accepted, flag)
+		client := NewWithOptions(filepath.Join(dir, "h.sock"), ipc.HelperRoleUser, ipc.HelperBinaryDesktopHelper, ipc.DesktopContextUserSession)
+		runReturned := make(chan error, 1)
+		go func() { runReturned <- client.Run() }()
+		select {
+		case v := <-got:
+			if v != flag {
+				t.Fatalf("auth response flag %v reached the loop as %v", flag, v)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the TCC loop never started")
+		}
+		close(drop)
+		select {
+		case <-runReturned:
+		case <-time.After(15 * time.Second):
+			t.Fatal("Run did not return after the connection dropped")
+		}
+		runTCCCheckLoop = restore
 	}
 }

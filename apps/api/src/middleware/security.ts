@@ -143,6 +143,12 @@ interface SecurityMiddlewareOptions {
   skipHeadersPathPrefix?: string;
   /** Predicate form of skipHeadersPathPrefix (tunnel-host requests, spec 2026-10-06 §3). Headers only. */
   skipHeadersWhen?: (c: Context) => boolean;
+  /**
+   * Paths whose CSP says `frame-ancestors 'self'` instead of `'none'`; every other directive is unchanged. index.ts
+   * passes `isSameOriginFramePath` (middleware/sameOriginFrame.ts): the inline PDF routes the portal embeds in an
+   * iframe (#10192, #10290).
+   */
+  sameOriginFrameWhen?: (path: string) => boolean;
 }
 
 /**
@@ -203,7 +209,8 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   const isUnsafeInlineRequested = unsafeInlineNormalized === 'true' || unsafeInlineNormalized === '1';
   const isUnsafeInlineAllowed = nodeEnv !== 'production' && isUnsafeInlineRequested;
 
-  // Pre-build the CSP header value (it doesn't change per-request)
+  // Pre-build the CSP header values (they don't change per-request)
+  const FRAME_ANCESTORS_NONE = "frame-ancestors 'none'";
   const cspDirectives = [
     "default-src 'self'",
     isUnsafeInlineAllowed ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'",
@@ -211,7 +218,7 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
     "img-src 'self' data: blob:",
     "font-src 'self'",
     buildConnectSrc(nodeEnv, cspConnectHosts),
-    "frame-ancestors 'none'",
+    FRAME_ANCESTORS_NONE,
     "base-uri 'self'",
     "form-action 'self'",
   ];
@@ -222,6 +229,9 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
   }
 
   const cspValue = cspDirectives.join('; ');
+  const sameOriginFrameCspValue = cspDirectives
+    .map((d) => (d === FRAME_ANCESTORS_NONE ? "frame-ancestors 'self'" : d))
+    .join('; ');
 
   // Build Report-To header if CSP_REPORT_URI is set
   const reportToValue = cspReportUri
@@ -274,7 +284,7 @@ export function securityMiddleware(options?: SecurityMiddlewareOptions): Middlew
       || options?.skipHeadersWhen?.(c) === true;
     if (!skipHeaders) {
       // --- Content Security Policy ---
-      c.header('Content-Security-Policy', cspValue);
+      c.header('Content-Security-Policy', options?.sameOriginFrameWhen?.(path) === true ? sameOriginFrameCspValue : cspValue);
 
       // --- Report-To (for CSP reporting) ---
       if (reportToValue) {

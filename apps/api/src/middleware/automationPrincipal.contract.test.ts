@@ -55,6 +55,10 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // Ticket W06 writes (#10160): a machine principal's user id is not a users
   // row, so uploaded_by_user_id / author FKs have no human to attribute.
   'services/aiToolsTicketAttachments.ts:if (isAutomationPrincipal(auth)) return agentRefusal(action);': 'automation',
+  // Full-control W11 (#6781, W11-D8): audit-baseline writes and PAM writes store a users FK and are
+  // human-only; neither an agent nor a flow is a person who can own the row.
+  'services/aiToolsAuditBaselines.ts:if (isAutomationPrincipal(auth)) return automationRefusal(action);': 'automation',
+  "services/aiToolsPamRules.ts:if (isAutomationPrincipal(auth)) return jsonError('PAM policy is changed by a person, not an automated run', 'AGENT_REFUSED');": 'automation',
   'services/aiToolsTicketOpsShared.ts:return isAutomationPrincipal(auth);': 'automation',
   // Same upstream-approval-instead-of-MFA rule for delivery-rail writes.
   "services/aiToolsDelivery.ts:if (!isAutomationPrincipal(auth) && !hasSatisfiedMfa(auth)) fail(403, 'MFA required');": 'automation',
@@ -66,6 +70,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   "services/topology/aiDiagnosticApproval.ts:if (isAutomationPrincipal(current.auth)) throw new TopologyOperationError('human_approval_required', 403);": 'automation',
   'services/topology/siteConfiguration.ts:if (isAutomationPrincipal(ctx.auth) || !hasSatisfiedMfa(ctx.auth))': 'automation',
   'routes/alerts/alerts.ts:if (isAutomationPrincipal(auth)) {': 'automation',
+  // #9528: the name-level org-list fallback for a partner caller without
+  // organizations:read is for people; a machine principal gets the strict gate.
+  "routes/orgs.ts:if (auth.scope !== 'partner' || isAutomationPrincipal(auth)) return requireOrgRead(c, next);": 'automation',
   'services/aiToolsCompliance.ts:if (isAutomationPrincipal(auth)) return EXECUTABLE_RULES_MANAGE_POLICY_DENIED_MESSAGE;': 'automation',
   'services/aiToolsRestoreAuthorization.ts:if (isAutomationPrincipal(auth)) return fallback;': 'automation',
   'services/securityScanSweepTargets.ts:if (isAutomationPrincipal(auth)) return Promise.resolve(null);': 'automation',
@@ -96,6 +103,9 @@ export const REVIEWED_AI_AGENT_SITES: Record<string, Classification> = {
   // Task A9: starting a run uses the flow's delegation; only a person (or an
   // API key acting as its creator) may, never an agent or another flow.
   "services/flows/runService.ts:if (isAutomationPrincipal(auth) || !auth.user?.id) return { ok: false, error: 'interactive_user_required' };": 'automation',
+  // W5 PR C (#5220): a HUMAN-lane tool run (chat / MCP) needs a person behind
+  // the credential; the agent lane is the separate `agent_tier1` triggerer.
+  "services/flows/toolRuns.ts:if (isAutomationPrincipal(auth) || !auth.user?.id) return false;": 'automation',
 
   // --- agent_only: needs the agent identity / agent run state --------------
   // Ticket actor attribution (agentId) and the agent-run triage lane.
@@ -211,6 +221,9 @@ const AUTOMATION_KIND_SETS: Record<string, string> = {
 
 /** Lines that are not a principal branch at all. Explicit, reviewed. */
 const OUT_OF_SCOPE_SITES: Record<string, string> = {
+  "services/flows/toolRuns.ts:agent_tier1: 'ai_agent',": 'W5 PR C: triggerer kind → flow_runs.triggered_via value, not a principal branch',
+  "services/flows/agentFlowTools.ts:return startToolRun(gated, args, 'ai_agent', { kind: 'agent_tier1', agentRunId: run.id, orgId: run.orgId }, { parentAgentRunId: run.id });":
+    'W5 PR C: the flow_runs.triggered_via lane value of an agent-started run, not a principal branch',
   "middleware/principalKind.ts:export function isAiAgentPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',
   "middleware/principalKind.ts:return auth.principal?.kind === 'ai_agent';": 'the helper definition',
   "middleware/principalKind.ts:export function isAutomationPrincipal(auth: Pick<AuthContext, 'principal'>): boolean {": 'the helper definition',

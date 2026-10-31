@@ -21,6 +21,7 @@
     "./pgErrors": "./src/pgErrors/index.ts",
     "./testing/topologyFleet": "./src/testing/topologyFleet.ts",
     "./validators/complianceInlineSettings": "./src/validators/complianceInlineSettings.ts",
+    "./validators/ai": "./src/validators/ai.ts",
     "./validators/topology": "./src/validators/topology.ts",
     "./validators/topologyConfiguration": "./src/validators/topologyConfiguration.ts",
     "./validators/topologyDiagnostics": "./src/validators/topologyDiagnostics.ts",
@@ -28,7 +29,10 @@
     "./validators/topologyInvestigation": "./src/validators/topologyInvestigation.ts",
     "./validators/topologyMonitoring": "./src/validators/topologyMonitoring.ts",
     "./validators/topologyPresence": "./src/validators/topologyPresence.ts",
-    "./entitlements": "./src/entitlements/index.ts"
+    "./entitlements": "./src/entitlements/index.ts",
+    "./promptHost": "./src/promptHost/index.ts",
+    "./promptCatalog": "./src/promptCatalog/index.ts",
+    "./utils/brandContrast": "./src/utils/brandContrast.ts"
   },
   "scripts": {
     "test": "vitest",
@@ -36,6 +40,7 @@
   },
   "dependencies": {
     "disposable-email-domains": "^1.0.62",
+    "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "zod": "^4.6.7"

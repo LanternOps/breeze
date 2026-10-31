@@ -5,7 +5,7 @@ import type { FlowDetailDto, FlowValidationResult } from '@breeze/shared';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
-import { enableFlow } from './api';
+import { enableFlow, type EnableFlowResult } from './api';
 
 interface EnableErrorBody {
   error?: string;
@@ -25,6 +25,8 @@ const SIMPLE_ERRORS: Record<string, string> = {
   partner_wide_forbidden: 'enable.partnerWideForbidden',
   interactive_session_required: 'enable.interactiveRequired',
   slug_unavailable: 'enable.slugUnavailable',
+  webhook_secret_missing: 'enable.webhookSecretMissing',
+  ai_budget_unavailable: 'enable.aiBudgetUnavailable',
   flow_not_found: 'errors.notFound',
   MFA_REQUIRED: 'errors:MFA_REQUIRED',
 };
@@ -51,7 +53,8 @@ export function FlowEnableDialog({
   flow: FlowDetailDto;
   validation: FlowValidationResult;
   onClose: () => void;
-  onEnabled: () => void;
+  /** Receives the enable result: `webhookSecretInvalidated` must be shown (#10270). */
+  onEnabled: (result: EnableFlowResult) => void;
   /** Called on a 409 (version conflict / already enabled) so the caller can reload the flow. */
   onStale?: () => void;
 }) {
@@ -79,8 +82,8 @@ export function FlowEnableDialog({
       const preApprovedStepIds = tier3
         .filter((s) => checked.has(s.id) && eligibility[s.id]?.eligible === true)
         .map((s) => s.id);
-      await enableFlow(flow.id, { expectedVersion: flow.definitionVersion, preApprovedStepIds });
-      onEnabled();
+      const result = await enableFlow(flow.id, { expectedVersion: flow.definitionVersion, preApprovedStepIds });
+      onEnabled(result);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (err instanceof ActionError) {

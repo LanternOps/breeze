@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
+        "quantityInvalid": "Informe uma quantidade (até 2 casas decimais).",
+        "quantityTooLarge": "A quantidade é grande demais (no máximo 10 dígitos antes da vírgula decimal).",
         "siteOptional": "Site (opcional — limita a contagem de dispositivos)",
         "allSites": "Todos os sites",
         "linkCatalogItemOptional": "Vincular item do catálogo (opcional)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Anexe um arquivo PDF, PNG ou JPEG.",
       "variables": "Dados do acordo",
       "unresolved": "Informe um valor para: {{names}}",
+      "needsSignedCopy": "O Breeze não consegue preencher {{names}} sem uma cotação. Anexe a cópia assinada para registrar este acordo.",
       "consequence": "Isso arquiva um acordo assinado para {{org}}. Ele não poderá ser excluído depois.",
       "submit": "Registrar acordo assinado",
       "success": "Acordo assinado registrado.",
@@ -854,6 +857,11 @@
       "cover": "Mensagem de apresentação (opcional)",
       "expiry": "O link expira em",
       "expiryPast": "Escolha uma data de expiração futura.",
+      "expiryDefaultHint_one": "Padrão: {{count}} dia, em Configurações de faturamento → Acordos.",
+      "expiryDefaultHint_other": "Padrão: {{count}} dias, em Configurações de faturamento → Acordos.",
+      "autoReminderHint_one": "Os lembretes automáticos são enviados todos os dias, até {{max}} no total.",
+      "autoReminderHint_other": "Os lembretes automáticos são enviados a cada {{count}} dias, até {{max}} no total.",
+      "expiryDefaultUnavailable": "Não foi possível carregar o vencimento padrão das Configurações de faturamento; o padrão interno está sendo exibido.",
       "label": "Rótulo (opcional)",
       "createDraft": "Criar rascunho e visualizar",
       "creating": "Criando…",
@@ -1119,7 +1127,9 @@
         "uploadImage": "Não foi possível enviar a imagem.",
         "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
         "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
-        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "saveExpiry": "Não foi possível salvar a data de vencimento.",
+        "saveIntroNotes": "Não foi possível salvar as notas de introdução."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -1287,6 +1297,7 @@
         "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
+        "autoValueBlank": "Em branco",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
         "manualVariablesTitle": "Preencha para esta proposta",
         "labelFieldLabel": "Rótulo da seção",
@@ -1343,6 +1354,14 @@
       },
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O texto formatado oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+      },
+      "intro": {
+        "expiryLabel": "Válida até",
+        "expiryHelper": "Impressa na proposta. O cliente pode aceitar até o fim deste dia. Deixe em branco para não ter vencimento.",
+        "expiryPast": "Esta data já passou — o cliente não pode aceitar uma proposta vencida.",
+        "notesLabel": "Notas de introdução",
+        "notesHelper": "Impressas acima da primeira seção da proposta.",
+        "notesPlaceholder": "Uma nota curta para o cliente, por ex. o que esta proposta cobre."
       }
     },
     "actions": {
@@ -2088,6 +2107,7 @@
       "title": "Enviar esta fatura?",
       "message": "A fatura de {{amount}} será enviada por e-mail para {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte do tempo deste rascunho está reservada para um banco de horas e será faturada no fechamento do período do banco. Remova essas linhas e depois emita a fatura.",
     "unsavedHint": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva.",
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },
@@ -2475,6 +2495,21 @@
     }
   },
   "partnerBillingSettings": {
+    "agreements": {
+      "title": "Acordos",
+      "description": "Padrões para os acordos que você envia para assinatura. Os remetentes ainda podem escolher outra expiração em cada solicitação.",
+      "expiryDays": "Expiração padrão do link (dias)",
+      "expiryDaysHelp": "O link de assinatura de uma nova solicitação de acordo expira este número de dias após a criação, a menos que o remetente escolha outra data.",
+      "expiryDaysInvalid": "Informe um número inteiro de dias de {{min}} a {{max}}.",
+      "remindersEnabled": "Enviar lembretes automáticos",
+      "remindersHelp": "Reenvia por e-mail o mesmo link de assinatura aos destinatários até que o acordo seja assinado, recusado, anulado ou expire.",
+      "intervalDays": "Lembrar a cada (dias)",
+      "intervalDaysInvalid": "Informe um número inteiro de dias de {{min}} a {{max}}.",
+      "maxReminders": "Parar após (lembretes)",
+      "maxRemindersHelp": "Conta todos os lembretes da solicitação, manuais ou automáticos.",
+      "maxRemindersInvalid": "Informe um número inteiro de {{min}} a {{max}}.",
+      "readOnlyNoSend": "Alterar os padrões de acordos exige permissão para enviar acordos. Você tem acesso somente leitura."
+    },
     "company": {
       "addressInherited": "Igual aos dados da empresa",
       "addressLine1": "Endereço - linha 1",
@@ -2561,6 +2596,7 @@
   "partnerBillingSettingsTabs": {
     "defaults": "Padrões",
     "documents": "Documentos",
+    "agreements": "Acordos",
     "connections": "Conexões",
     "rates": "Tarifas",
     "payments": "Pagamentos"
@@ -2793,7 +2829,6 @@
       "delivery_failed": "Falha na entrega do aviso",
       "consent_required": "A autorização de pagamento está ausente. Solicite uma nova autorização."
     },
-    "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
     "chargeResultUnknown": "Não foi possível confirmar o que aconteceu com este pagamento. Atualizando a fatura para mostrar o status atual.",
     "chargeStarted": "Tentativa de pagamento iniciada",
@@ -2933,10 +2968,6 @@
     "saveFailed": "Não foi possível salvar as configurações de lembretes",
     "loadFailed": "Não foi possível carregar as configurações de lembretes",
     "retry": "Tentar novamente",
-    "loading": "Carregando configurações de pagamento…",
-    "templates": {
-      "paymentReminder": "Lembrete de pagamento",
-      "paymentOverdue": "Lembrete de pagamento em atraso"
-    }
+    "loading": "Carregando configurações de pagamento…"
   }
 }

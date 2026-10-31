@@ -307,7 +307,7 @@ Organizations can enable or disable the Helper on a per-org basis. The toggle is
 
 ### Enabling / Disabling Helper Chat
 
-The Helper toggle is managed through organization settings or the **Deploy Breeze Assist to devices** toggle on a configuration policy's **Breeze Helper** feature (the policy takes precedence when one applies). When a device's effective Helper setting is off, the agent stops and removes the Helper on its next heartbeat, and the Helper API refuses every request from that device with `403` and code `helper_disabled` ("Breeze Helper is disabled for this device by policy"), so a client can tell it apart from a credential failure.
+The Helper toggle is managed through organization settings or the **Deploy Breeze Assist to devices** toggle on a configuration policy's **Breeze Helper** feature (the policy takes precedence when one applies). A newly created Breeze Helper policy feature starts with the toggle on. When a device's effective Helper setting is off, the agent stops and removes a Helper it installed on its next heartbeat, and the Helper API refuses every request from that device with `403` and code `helper_disabled` ("Breeze Helper is disabled for this device by policy"), so a client can tell it apart from a credential failure.
 
 ```bash
 # Check current helper settings (returned in heartbeat response)
@@ -317,7 +317,17 @@ The Helper toggle is managed through organization settings or the **Deploy Breez
 }
 ```
 
-The agent reads `helperEnabled` from each heartbeat response. When the effective setting turns off, the agent stops the Helper in every user session and uninstalls it.
+The agent reads `helperEnabled` from each heartbeat response. When the effective setting turns off, the agent stops the Helper in every user session and uninstalls it, provided the agent installed it.
+
+The agent records each Helper install it makes. A Helper installed another way (Intune, a software policy, or by hand) is left alone while the setting is off: the agent does not start, update or remove it, and the device page reports it as not installed by Breeze (`helperInstallIssue: unmanaged_install`). Turning the setting on adopts that copy when the agent installs the next Helper version the server offers.
+
+On Windows the agent also checks the WebView2 Runtime before it starts the Helper. If the runtime is older than the installed Helper build needs, the agent does not start the Helper and the device reports `webview2_outdated`; update the WebView2 Runtime on the device to clear it. A Helper that keeps closing right after it starts is reported as `crash_loop`, with the exit codes in the agent log, and the agent tries it again after 6 hours or when a new Helper version is installed.
+
+The device page's **Breeze Assist** row shows the last reported state: **Installed**, **Not deployed**, or **Unavailable** with the reason (`webview2_outdated`, `crash_loop` or `unmanaged_install`). In the device list these three show as **Assist unavailable**, with the reason in the tooltip, because Assist is on disk in each case. All of this needs agent 0.125.0; an older server shows the new reasons as unknown.
+
+<Aside type="caution" title="Known issue in v0.125.0">
+  Crash-loop detection does not fire yet: a crash-looping Helper keeps restarting and is not reported as `crash_loop` ([#10302](https://github.com/LanternOps/breeze/issues/10302)).
+</Aside>
 
 ### Window and Tray Behavior
 

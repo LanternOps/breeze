@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { useApprovalTheme, type, spacing, radii, palette } from '../../../theme';
+import { DENY_REASON_MAX_LENGTH, DENY_REASON_SHOWN_TO_END_USER_HINT } from '../approvalCopy';
 
 interface Props {
   visible: boolean;
   onCancel: () => void;
   onSubmit: (reason: string | undefined) => void;
+  /** True when the reason is relayed to the end user (PAM elevation). */
+  showsToEndUser?: boolean;
 }
 
-export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
+export function DenyReasonSheet({ visible, onCancel, onSubmit, showsToEndUser = false }: Props) {
   const theme = useApprovalTheme('dark');
   const [reason, setReason] = useState('');
 
@@ -47,9 +50,15 @@ export function DenyReasonSheet({ visible, onCancel, onSubmit }: Props) {
             <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
               Optional. Helps the requesting session understand.
             </Text>
+            {showsToEndUser && (
+              <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
+                {DENY_REASON_SHOWN_TO_END_USER_HINT}
+              </Text>
+            )}
             <TextInput
               value={reason}
               onChangeText={setReason}
+              maxLength={DENY_REASON_MAX_LENGTH}
               placeholder="Reason"
               placeholderTextColor={theme.textLo}
               multiline

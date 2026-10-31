@@ -21,8 +21,8 @@
  * mixed set, and D-R2-6's reveal; this file adds the per-stage membership
  * clauses spec §9(c) names.
  *
- * CANCEL CASES (3, 4) are BLOCKED on #9979: there is no task-cancel path for
- * recipe tasks. They are written skipped, as R1c skipped its cancel case.
+ * CANCEL CASES (3, 4) are BLOCKED on the cancel route (P3-5; see #9979):
+ * there is no task-cancel path for recipe tasks. They are written skipped, as R1c skipped its cancel case.
  * Case 4's unblocked twin (a forced `no_account_resolved` hand-off between
  * the stages) is not skipped.
  *
@@ -375,11 +375,10 @@ describe('(b) staging: no provisioning before the account exists and is frozen',
     }, 180_000);
   }
 
-  // BUG (#9979, missing surface): there is no task-cancel path for recipe
-  // tasks. taskTransitions.ts declares `stop` / `settle_cancelled`, but no
-  // service, route or job writes them, and a task in `stopping` still mints
-  // its next child. Cases 3 and 4 therefore cannot be exercised until #9979
-  // is fixed. Case 4's unblocked twin follows.
+  // BLOCKED on the cancel route (missing surface, P3-5; see #9979). The
+  // coordinator half of #9979 is fixed (a `stopping` task never mints and
+  // always settles), but no route/service writes `stop` on a human's cancel,
+  // so cases 3 and 4 cannot be driven yet. Case 4's unblocked twin follows.
   skipDb('3. cancelled at each k (both stages): the hand-off names the remaining ordinals, no operation settles after the cancel, and no create is re-minted [BLOCKED #9979]', async () => {
     // Unskipping this without writing the case must fail, never pass empty.
     expect.fail('BLOCKED on #9979: write this case when a task-cancel path exists');

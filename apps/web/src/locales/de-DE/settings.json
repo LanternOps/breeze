@@ -217,6 +217,7 @@
       "enrollment-keys_write": "Geräte-Registrierungsschlüssel erstellen. Erfordert ein Ablaufdatum und mindestens eine Quell-IP oder einen CIDR-Bereich.",
       "contracts_write": "Verträge und Vertragspositionen lesen, erstellen und bearbeiten sowie Positionen entfernen. Aktivieren, Pausieren oder Kündigen nicht möglich.",
       "tickets_write": "Tickets erstellen, aktualisieren, zuweisen, deren Status ändern und kommentieren. Löschen oder Verschieben von Tickets nicht möglich.",
+      "alerts_write": "Alarme in jeder Organisation bestätigen und lösen, auf die der Principal zugreifen kann. Gewährt keinen Zugriff auf Alarmdetails (alerts:read) und erlaubt weder Unterdrücken noch Verwerfen oder Löschen.",
       "ai_read": "Verbindung zum MCP-Endpunkt herstellen und schreibgeschützte Tools verwenden. Für jeden anderen ai:*-Bereich erforderlich.",
       "ai_write": "MCP-Tools, die Daten ändern.",
       "ai_execute": "MCP-Tools, die Aktionen auf Geräten ausführen.",
@@ -278,8 +279,7 @@
       "actionPlan": "Aktionsplan",
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
-    },
-    "overridesOrgTab": "Die hier festgelegten Felder überschreiben und sperren dasselbe Feld auf der KI-Registerkarte jeder Organisation."
+    }
   },
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
@@ -761,9 +761,9 @@
     "enrollment": {
       "title": "Geräteregistrierung",
       "ttl": "Standardgültigkeit von Links",
-      "ttlHint": "Legt vorab fest, wie lange neue Registrierungslinks und Installer gültig bleiben. Organisationen können einen abweichenden Standard wählen.",
+      "ttlHint": "Legt vorab fest, wie lange neue Registrierungslinks und Installer gültig bleiben.",
       "deviceCount": "Standardanzahl Geräte pro Link",
-      "deviceCountHint": "Wie viele Rechner ein Registrierungslink standardmäßig registrieren darf. Organisationen können einen abweichenden Standard wählen.",
+      "deviceCountHint": "Wie viele Rechner ein Registrierungslink standardmäßig registrieren darf.",
       "maxTtl": "Maximale Gültigkeit von Links",
       "maxTtlHint": "Eine Obergrenze für die Lebensdauer von Schlüsseln, nicht nur dafür, was ein Administrator anfordern darf: Nichts, was unter diesem Partner ausgestellt wird, bleibt länger nutzbar — Registrierungslinks, MCP-Bereitstellungseinladungen und die untergeordneten Anmeldedaten, die beim Einlösen eines Installers ausgestellt werden.",
       "maxTtlWarning": "Organisationen können diesen Wert nicht erhöhen. Eine kurze Obergrenze verkürzt auch die Zeit, die ein Rechner nach dem Einlösen eines Links zum Abschluss der Registrierung hat — nicht nur die Zeit zum Herunterladen."
@@ -789,13 +789,16 @@
   "agentVersionPins": {
     "title": "Versionsziele aktualisieren",
     "description": "Hängen Sie den Agenten und den Watchdog an eine bestimmte registrierte Version an oder belassen Sie ihn bei <strong>Neueste beworbene Version</strong>, um die weltweit beworbene Version zu verfolgen. Agent und Watchdog sind unabhängig.",
-    "partnerDescription": "Eine PIN hier ist die Standardeinstellung für alle Ihre Organisationen. Eine Organisation kann es außer Kraft setzen.",
     "organizationDescription": "Eine Organisations-PIN überschreibt den Partnerstandard.",
     "components": {
       "agent": "Agentenziel",
       "watchdog": "Watchdog-Ziel"
     },
     "inheritDefault": "Partnerstandard übernehmen ({{version}})",
+    "inheritDefaultLatest": "Partnerstandard übernehmen (neueste freigegebene)",
+    "latestOverride": "Immer neueste freigegebene, Partner-Pin ignorieren",
+    "latestOverrideVersion": "Immer neueste freigegebene ({{version}}), Partner-Pin ignorieren",
+    "latestOrganization": "Für diese Organisation festgelegt: immer neueste freigegebene",
     "latestVersion": "Zuletzt befördert ({{version}})",
     "latest": "Zuletzt befördert",
     "pinnedAll": "Für alle Organisationen angepinnt",
@@ -907,12 +910,12 @@
     "logoPreview": "Logo-Vorschau",
     "noLogo": "Kein Logo",
     "uploadImage": "Bild hochladen",
-    "imageHelp": "PNG, JPEG oder WebP · max. 400 KB nach der Kodierung · Größe angepasst an 256×256",
+    "imageHelp": "PNG, JPEG oder WebP, bis zu 400 KB nach der Kodierung; große Bilder werden auf 800 px verkleinert.",
     "invalidSavedLogo": "Die gespeicherten Logodaten sind ungültig. Entfernen Sie es oder laden Sie ein neues hoch.",
     "pasteUrl": "Oder fügen Sie ein Bild ein URL",
     "customCss": "Benutzerdefiniertes CSS",
     "customCssPlaceholder": "/* Benutzerdefiniertes CSS wird auf alle untergeordneten Organisationen angewendet */",
-    "customCssHelp": "CSS Überschreibungen wurden auf das Portal für alle untergeordneten Organisationen angewendet."
+    "customCssHelp": "Wird im Portal jedes Kunden eingebunden, vor dem eigenen benutzerdefinierten CSS der Organisation, das es überschreiben kann. @import und url() ohne HTTPS sind nicht erlaubt."
   },
   "partnerSecurity": {
     "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
@@ -997,7 +1000,7 @@
     "networkProxy": {
       "title": "Netzwerk-Proxy",
       "label": "Netzwerk-Proxy über einen eigenen Ursprung bereitstellen",
-      "help": "Gilt für alle Organisationen; Organisationen können dies nicht überschreiben. Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
+      "help": "Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
     }
   },
   "partnerSettingsPage": {
@@ -1125,7 +1128,6 @@
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
     "saveSettings": "Einstellungen speichern",
-    "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
     "modules": {
       "title": "Module",
@@ -1173,6 +1175,106 @@
     "knownGuests": {
       "added": "Bekanntes Gastgerät hinzugefügt",
       "removed": "Bekanntes Gastgerät entfernt"
+    },
+    "inheritance": {
+      "badge": {
+        "locks": "Sperrt Organisationen",
+        "locksConditional": "Sperrt Organisationen, wenn aktiviert",
+        "overridable": "Organisation kann abweichen",
+        "overridableCap": "Organisation kann abweichen, bis {{limit}}",
+        "partnerOnly": "Partnerweit"
+      },
+      "badgeHelp": {
+        "locks": "Solange dies gesetzt ist, verwendet jede Organisation Ihren Wert. Ein eigener Wert der Organisation wird ignoriert.",
+        "locksConditional": "Wenn aktiviert, verwendet jede Organisation Ihren Wert statt ihres eigenen. Wenn deaktiviert, verwenden die Organisationen ihren eigenen.",
+        "overridable": "Ihr Wert ist der Standard. Eine Organisation, die einen eigenen Wert festlegt, verwendet stattdessen diesen.",
+        "overridableCap": "Ihr Wert ist der Standard. Eine Organisation kann einen eigenen Wert festlegen, höchstens {{limit}}.",
+        "partnerOnly": "Organisationen haben hierfür keine eigene Einstellung. Ihr Wert gilt für alle."
+      },
+      "badgeHelpLabel": "Über „{{badge}}“ ({{field}})",
+      "legend": {
+        "title": "So gelten die Einstellungen:",
+        "locks": "jede Organisation verwendet Ihren Wert",
+        "overridable": "Ihr Wert ist der Standard; eine Organisation kann einen eigenen festlegen",
+        "partnerOnly": "gilt für alle Organisationen; es gibt keine Organisationseinstellung"
+      },
+      "value": {
+        "on": "Ein",
+        "off": "Aus",
+        "minutes_one": "{{count}} Min.",
+        "minutes_other": "{{count}} Min.",
+        "hours_one": "{{count}} Stunde",
+        "hours_other": "{{count}} Stunden",
+        "days_one": "{{count}} Tag",
+        "days_other": "{{count}} Tage"
+      },
+      "line": {
+        "appliesToAll_one": "Gilt für {{count}} Organisation",
+        "appliesToAll_other": "Gilt für alle {{count}} Organisationen",
+        "hadOwnValue_one": "{{count}} hatte einen eigenen Wert",
+        "hadOwnValue_other": "{{count}} hatten einen eigenen Wert",
+        "notSet": "Nicht festgelegt.",
+        "someSetOwn_one": "{{count}} von {{total}} Organisationen legt einen eigenen fest",
+        "someSetOwn_other": "{{count}} von {{total}} Organisationen legen einen eigenen fest",
+        "restUsePlatformDefault": "die übrigen verwenden den Plattformstandard ({{value}})",
+        "orgsUsePlatformDefault": "Organisationen verwenden den Plattformstandard ({{value}})",
+        "noneSetOwn": "Keine Organisation hat einen eigenen Wert",
+        "defaultFor_one": "Standard für {{count}} Organisation",
+        "defaultFor_other": "Standard für {{count}} Organisationen",
+        "override_one": "{{count}} weicht ab",
+        "override_other": "{{count}} weichen ab",
+        "setOwn_one": "{{count}} legt einen eigenen fest",
+        "setOwn_other": "{{count}} legen einen eigenen fest",
+        "clamped_one": "{{count}} wird auf Ihre Obergrenze begrenzt",
+        "clamped_other": "{{count}} werden auf Ihre Obergrenze begrenzt",
+        "notInForce": "Nicht wirksam (Ziel deaktiviert).",
+        "orgsUseOwnDestination": "Organisationen verwenden ihr eigenes Ziel",
+        "haveOne_one": "{{count}} hat eines",
+        "haveOne_other": "{{count}} haben eines",
+        "partnerOnlyDefault": "Plattformstandard ({{value}}) gilt für alle Organisationen",
+        "partnerOnlyBlank": "Nicht festgelegt. Der Plattformstandard gilt für alle Organisationen",
+        "consumerAll": "{{consumer}}: gilt für alle Organisationen",
+        "consumerOwn_one": "{{consumer}}: {{count}} Organisation verwendet einen eigenen Wert",
+        "consumerOwn_other": "{{consumer}}: {{count}} Organisationen verwenden einen eigenen Wert",
+        "noOrgs": "Noch keine Organisationen",
+        "savedValue": "Gespeicherter Wert:",
+        "restricted": "Die Aufschlüsselung nach Organisation erfordert vollen Partnerzugriff"
+      },
+      "drill": {
+        "bucket": {
+          "ownValue": "Organisationen mit eigenem Wert",
+          "overrides": "Organisationen, die von Ihrem Standard abweichen",
+          "shadowed": "Organisationen, deren eigener Wert nicht wirksam ist",
+          "clamped": "Auf Ihre Obergrenze begrenzte Organisationen"
+        },
+        "loading": "Organisationen werden geladen…",
+        "error": "Die Organisationen konnten nicht geladen werden.",
+        "empty": "Keine Organisationen in dieser Liste.",
+        "loadMore": "Mehr laden",
+        "set": "Festgelegt",
+        "notSet": "Nicht festgelegt",
+        "inEffect": "Wirksam",
+        "notInEffect": "Nicht wirksam",
+        "ownValue": "Eigener Wert:",
+        "channels": "Kanäle",
+        "readOnly": "Schreibgeschützt. Ändern Sie den Wert einer Organisation in deren eigenen Einstellungen."
+      },
+      "summary": {
+        "title": "Über Ihre Organisationen",
+        "locks_one": "{{count}} Einstellung sperrt Organisationen",
+        "locks_other": "{{count}} Einstellungen sperren Organisationen",
+        "overridable_one": "{{count}} kann abweichend festgelegt werden",
+        "overridable_other": "{{count}} können abweichend festgelegt werden",
+        "differ_one": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "differ_other": "Bei {{count}} weichen Organisationen von Ihren Standards ab",
+        "noneDiffer": "Alle Organisationen verwenden auf diesem Tab Ihre Werte.",
+        "hint": "Wählen Sie eine Einstellung oder eine Zahl unter einem Feld, um die Organisationen aufzulisten.",
+        "unavailable": "Die Aufschlüsselung nach Organisation ist gerade nicht verfügbar.",
+        "back": "Zurück zur Übersicht"
+      },
+      "fields": {
+        "defaultProvider": "Standard-Fernwartungsanbieter"
+      }
     }
   },
   "partnerSendingDomains": {
@@ -1517,7 +1619,18 @@
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
       "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
-      "ticket_merged": "Ticket zusammengeführt"
+      "ticket_merged": "Ticket zusammengeführt",
+      "ticket_comment_notification": "Benachrichtigung über öffentliche Antwort",
+      "ticket_autoresponse": "Eingangsbestätigung für Ticket",
+      "ticket_resolved": "Ticket gelöst",
+      "quote_send": "Angebot",
+      "agreement_request_send": "Anfrage zur Vereinbarung",
+      "invoice_send": "Rechnung",
+      "portal_invite": "Portaleinladung",
+      "staff_invite": "Mitarbeitereinladung",
+      "invoice_autopay": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
+      "payment_reminder": "Zahlungserinnerung",
+      "payment_overdue": "Erinnerung an überfällige Zahlung"
     }
   },
   "inboundEmail": {
@@ -1746,7 +1859,11 @@
     },
     "colors": {
       "primary": "Primärfarbe",
-      "secondary": "Sekundärfarbe"
+      "secondary": "Sekundärfarbe",
+      "primaryInheritedSource": "Markenfarbe des Partners",
+      "primaryHelp": "Akzentfarbe auf Angeboten, Rechnungen und anderen Kundendokumenten dieser Organisation. Leer lassen, um die Markenfarbe des Partners zu verwenden.",
+      "primaryInvalid": "Geben Sie eine Hex-Farbe wie #2563eb ein.",
+      "primaryLoadError": "Die gespeicherte Primärfarbe konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis sie geladen ist."
     },
     "theme": {
       "title": "Thema",
@@ -1789,6 +1906,12 @@
     "description": "Optimieren Sie die Standardrichtlinien und das Registrierungsverhalten für {{organization}}.",
     "save": "Standardeinstellungen speichern",
     "managedByPartner": "Verwaltet durch Partner",
+    "inheritance": {
+      "inherited": "Geerbter Standardwert",
+      "overridden": "Für diese Organisation festgelegt",
+      "reset": "Auf Standard zurücksetzen",
+      "resetLabel": "{{setting}} auf Standard zurücksetzen"
+    },
     "policies": {
       "title": "Standardrichtlinien",
       "fields": {
@@ -1976,6 +2099,49 @@
         "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
         "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
         "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      },
+      "tiles": {
+        "awaitingYou": "Wartet auf Ihren Kunden",
+        "devicesProtected": "Endpunktschutz",
+        "securityScore": "Sicherheitsbewertung",
+        "actionItems": "Offene Aufgaben",
+        "patchesApplied": "In diesem Monat installierte Patches",
+        "backup": "Letzte verifizierte Sicherung",
+        "service": "Erbrachte Leistungen (90 Tage)",
+        "support": "Kundensupport"
+      },
+      "tileStatus": {
+        "noData": "Noch nicht verfügbar",
+        "notConfigured": "Nicht eingerichtet",
+        "stale": "Möglicherweise veraltet"
+      },
+      "bands": {
+        "strong": "Stark",
+        "good": "Gut",
+        "fair": "Mittel",
+        "at_risk": "Gefährdet"
+      },
+      "values": {
+        "protectedOfTotal": "{{protected}} von {{total}} geschützt",
+        "awaitingCounts": "Angebote: {{proposals}} · Rechnungen: {{invoices}}",
+        "serviceCounts": "Pünktlich: {{onTime}} · Verspätet: {{late}} · Versäumt: {{missed}}",
+        "nextDue": "Nächste Fälligkeit: {{name}}, {{date}}",
+        "openRequests_one": "{{count}} offene Anfrage",
+        "openRequests_other": "{{count}} offene Anfragen",
+        "threatCounts": "Erkannt: {{detected}} · Behoben: {{resolved}}",
+        "unknownAll": "Für alle {{total}} Geräte noch unbekannt",
+        "unknownSome_one": "{{count}} noch unbekannt",
+        "unknownSome_other": "{{count}} noch unbekannt"
+      },
+      "securityRows": {
+        "openVulnerabilities": "Offene Schwachstellen",
+        "knownExploited": "Bekannt ausgenutzt (KEV)",
+        "threatEvents": "Bedrohungsereignisse auf Endpunkten"
+      },
+      "backupRows": {
+        "devices": "Gesicherte Geräte",
+        "breaches": "Offene RPO-/RTO-Verstöße",
+        "providers": "Sicherung von Drittanbietern"
       }
     },
     "loading": "Portaleinstellungen werden geladen…",
@@ -2120,6 +2286,7 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
+      "welcomeMessageHelp": "Wird oben auf der Startseite des Kunden im Portal angezeigt und auf der Anmeldeseite des Portals, wenn die Organisation eine verifizierte eigene Domain nutzt. Nur Text; Zeilenumbrüche bleiben erhalten.",
       "footerText": "Fußzeilentext",
       "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
       "footerTextInheritedSource": "Partner-Dokumentfußzeile"
@@ -2992,6 +3159,7 @@
           "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
+          "unsupported_user_scope": "Installation pro Benutzer, die Breeze noch nicht anwenden kann",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
         },
         "failureClasses": {
@@ -4171,7 +4339,9 @@
     "active": "Aktiv",
     "revoked": "Widerrufen",
     "expired": "Abgelaufen",
-    "statusFilterLabel": "API-Schlüsselstatus"
+    "statusFilterLabel": "API-Schlüsselstatus",
+    "expires": "Läuft ab",
+    "neverExpires": "Niemals"
   },
   "apiKeysPage": {
     "loadingAPIKeys": "API-Schlüssel werden geladen...",
@@ -4212,7 +4382,8 @@
     "rotating": "Rotierend...",
     "rotateKey": "Schlüssel rotieren",
     "revoking": "Widerrufen...",
-    "revokeKey": "Schlüssel widerrufen"
+    "revokeKey": "Schlüssel widerrufen",
+    "revokedToast": "API-Schlüssel \"{{name}}\" widerrufen"
   },
   "approverDevicesSection": {
     "thisDeviceCanNowApproveRequests": "Dieses Gerät kann jetzt Anfragen genehmigen",
@@ -4866,6 +5037,11 @@
     "eGOktaProduction": "z. B. Okta Production",
     "providerPreset": "Anbietervoreinstellung",
     "selectAPresetToAutoFillRecommendedSettings": "Wählen Sie eine Voreinstellung aus, um die empfohlenen Einstellungen automatisch auszufüllen",
+    "replacePresetFields": {
+      "title": "Durch die Standardwerte von {{preset}} ersetzen?",
+      "message": "Wenn Sie die Voreinstellung {{preset}} anwenden, werden die aktuellen Bereiche und die Attributzuordnung einschließlich Ihrer Änderungen ersetzt, und jeder Claim, den die Voreinstellung nicht festlegt (z. B. das Gruppenattribut), wird geleert. Gespeichert wird erst, wenn Sie den Anbieter speichern.",
+      "confirm": "Ersetzen"
+    },
     "connectionSettings": "Verbindungseinstellungen",
     "issuerURL": "Emittent URL",
     "httpsYourTenantOktaCom": "https://your-tenant.okta.com",
@@ -6082,6 +6258,11 @@
       "fleetAddDescription": "Fügen Sie einen neuen Standort hinzu und wählen Sie die Organisation, zu der er gehört.",
       "empty": "Noch keine Standorte. Fügen Sie einer Organisation einen Standort hinzu, um loszulegen.",
       "viewDevicesAt": "Geräte an {{name}} anzeigen"
+    },
+    "toasts": {
+      "created": "Standort {{name}} erstellt",
+      "saved": "Standort {{name}} gespeichert",
+      "deleted": "Standort {{name}} gelöscht"
     }
   },
   "siteList": {
@@ -6257,7 +6438,11 @@
       "label": "Etikett",
       "notes": "Notizen"
     },
-    "empty": "Noch keine bekannten Gäste."
+    "empty": "Noch keine bekannten Gäste.",
+    "removeConfirm": {
+      "title": "Bekanntes Gastgerät entfernen?",
+      "message": "{{label}} ({{mac}}) entfernen? Geräte mit dieser MAC-Adresse werden in Ihren verwalteten Organisationen nicht mehr automatisch genehmigt."
+    }
   },
   "userInviteForm": {
     "title": "Benutzer einladen",
@@ -6278,7 +6463,8 @@
     },
     "placeholders": {
       "name": "Jane Smith",
-      "email": "name@company.com"
+      "email": "name@company.com",
+      "role": "Rolle auswählen"
     },
     "orgAccess": {
       "title": "Organisationszugriff",
@@ -6378,7 +6564,8 @@
       "copyLink": "Link kopieren",
       "mfaReset": "MFA für {{email}} zurückgesetzt",
       "roleUpdated": "Rolle aktualisiert",
-      "orgAccessUpdated": "Organisationszugriff aktualisiert"
+      "orgAccessUpdated": "Organisationszugriff aktualisiert",
+      "userRemoved": "{{name}} entfernt"
     },
     "resetMfa": {
       "title": "MFA zurücksetzen?",
@@ -6905,7 +7092,6 @@
     "productDefault": "Produktstandard ({{minutes}} Minuten)",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "description": "Wie lange eine laufende Breeze AI-Runde auf die Genehmigung einer geschützten Aktion (Tier 2/3) wartet, bevor sie aufgegeben wird.",
-    "orgOverrideNote": "Organisationen können diesen Wert in ihren eigenen KI-Einstellungen überschreiben; der Organisationswert gewinnt, wenn er gesetzt ist.",
     "notForUnattendedNote": "Dies ist nicht für nächtliche oder unbeaufsichtigte Arbeiten gedacht — langlaufende Arbeiten durchlaufen die Genehmigungswarteschlange mit eigener Ablaufzeit."
   },
   "orgAiApprovalTimeout": {

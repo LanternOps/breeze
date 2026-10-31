@@ -113,6 +113,7 @@ function truncate(s: string, max: number): string {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const rank = (c: Concern) => SEVERITY_DESC.indexOf(c.severity);
+const usd = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
 
 /** A live readiness concern (assessmentFinalizer `applyReadiness`): org subject, `evidence.readiness`. */
 function isReadinessGap(c: Concern): boolean {
@@ -182,7 +183,8 @@ export async function buildBrief(
     ...(resolvedCount > 0 ? [plural(resolvedCount, 'concern resolved', 'concerns resolved')] : []),
   ]);
 
-  push('Spend', [`${spend.spentTodayCents}¢ of ${spend.budgetCentsPerDay}¢ today`]);
+  // Dollars, matching the web spend meter ("$0.42 of $2.00 today"); AI spend is USD.
+  push('Spend', [`${usd(spend.spentTodayCents)} of ${usd(spend.budgetCentsPerDay)} today`]);
 
   const activeWatches = watches.filter((w) => w.status === 'active').length;
   const gaps = live.filter(isReadinessGap).length;

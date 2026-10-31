@@ -57,6 +57,7 @@ import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { edrWebhookRoutes } from './routes/webhooks/edr';
+import { flowWebhookRoutes } from './routes/flowWebhooks';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
@@ -89,6 +90,7 @@ import { trustPageRoutes } from './routes/trustPage';
 import { trustPagePublicRoutes } from './routes/trustPagePublic';
 import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
 import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
+import { bySameOriginFramePath, isSameOriginFramePath } from './middleware/sameOriginFrame';
 // Trust Center W2 (#8770) — W02a stub routers, filled by W02b/d/f/g.
 import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
 import { trustPageContentRoutes } from './routes/trustPageContent';
@@ -306,11 +308,9 @@ import {
 // role, so this file's own import closure no longer has to pull in the
 // entire worker-module graph. The handful of imports below are the
 // "phase 2 specials" that stay directly in index.ts (not registry entries):
-// the webhook-delivery singleton (`shutdownRuntime`'s preamble calls
-// `getWebhookWorker().stop()` before any other shutdown phase runs), and the
-// event-dispatch/relay consumers, which have their own role gating distinct
-// from the registry's placement filter.
-import { getWebhookWorker } from './workers/webhookDelivery';
+// the event-dispatch/relay consumers, which have their own role gating
+// distinct from the registry's placement filter. The registry closes the
+// webhook-delivery BullMQ worker during its shutdown phase.
 import {
   startRegisteredWorkers,
   startRedisIndependentWorkers,
@@ -536,18 +536,24 @@ const SECURE_HEADERS_OPTIONS = {
 // `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
 // It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
 // overwrite a handler's CORP.
+// #10192/#10290: the PDF routes the portal iframes (middleware/sameOriginFrame.ts) get
+// X-Frame-Options: SAMEORIGIN here and CSP `frame-ancestors 'self'` from securityMiddleware below — chosen by
+// path for the same reason. Every other route keeps DENY / 'none'.
 app.use(
   '*',
   exceptTunnelHttp(
     routeReferrerPolicyWins(
-      byTrustCrossOriginPath(
-        secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
-        secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+      bySameOriginFramePath(
+        byTrustCrossOriginPath(
+          secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+          secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+        ),
+        secureHeaders({ ...SECURE_HEADERS_OPTIONS, xFrameOptions: 'SAMEORIGIN' }),
       )
     )
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface, sameOriginFrameWhen: isSameOriginFramePath }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -994,6 +1000,14 @@ api.route('/webhooks', resendWebhookRoutes);
 // isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
 // NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
 api.route('/webhooks', edrWebhookRoutes);
+// Flow webhook ingress (Tool Catalog W05, #5220) — public, no session auth: the
+// Breeze HMAC signature / X-Breeze-Webhook-Token is verified in
+// services/flows/webhook/ingest.ts (uniform 401). partnerGuard skips the exact
+// /webhooks/flows/<uuid> path; the global body gate caps it at 262,144 B and it
+// has its own isolated per-IP bucket. Mounted at its own prefix, not under the
+// authenticated /flows router. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient
+// auth transaction exists on an unauthenticated route.
+api.route('/webhooks/flows', flowWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1458,7 +1472,6 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   shutdownInProgress = true;
   console.log(`[shutdown] Received ${signal}, shutting down gracefully...`);
 
-  getWebhookWorker().stop();
   // The sampler is already unref'd, so this is tidiness rather than a
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.

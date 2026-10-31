@@ -388,6 +388,12 @@ describe('org merge flows executor against real Postgres (review follow-up)', ()
             (${L}::uuid, 'asset_sync_m1', 'L other', ${def(['wait'])}::jsonb, 1),
             (${S}::uuid, 'asset_sync', 'S sync', ${def(['hudu__get_asset'])}::jsonb, 1)`);
         await db.execute(sql`INSERT INTO flows (partner_id, slug, name, definition, effective_tier) VALUES (${P}::uuid, 'pw_merge', 'PW', ${def(['wait'])}::jsonb, 1)`);
+        // #10270: a webhook secret minted in the same instant as the rewrite. One
+        // transaction, so now() is the mint's timestamp and the merge's too.
+        await db.execute(sql`
+          UPDATE flows SET webhook_secret_encrypted = 'v3:it:sealed', webhook_secret_fingerprint = 'fp',
+                 webhook_secret_rotated_at = now(), updated_at = now()
+           WHERE org_id = ${L}::uuid AND slug = 'asset_sync'`);
 
         await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
         const resolved = await CUSTOM_RESOLVE_EXECUTORS.flows!(L, S);
@@ -397,9 +403,11 @@ describe('org merge flows executor against real Postgres (review follow-up)', ()
         expect(resolved.notes.join(' ')).toMatch(/renamed 1/);
 
         const rows = (await db.execute(sql`
-          SELECT slug, definition, definition_version, org_id, partner_id FROM flows
+          SELECT slug, definition, definition_version, org_id, partner_id,
+                 updated_at > webhook_secret_rotated_at AS edited_after_mint FROM flows
            WHERE org_id = ${S}::uuid OR partner_id = ${P}::uuid ORDER BY slug`)) as unknown as Array<{
           slug: string; definition: { steps: Array<{ tool: string }> }; definition_version: number; org_id: string | null; partner_id: string | null;
+          edited_after_mint: boolean | null;
         }>;
         const renamedSource = ((await db.execute(sql`
           SELECT slug FROM tool_sources WHERE org_id = ${S}::uuid AND name = 'L Hudu'`)) as unknown as Array<{ slug: string }>)[0]!.slug;
@@ -409,6 +417,8 @@ describe('org merge flows executor against real Postgres (review follow-up)', ()
         // The colliding loser flow skips the taken _m1 (another loser flow) and lands on _m2.
         expect(bySlug.get('asset_sync_m2')!.definition.steps.map((st) => st.tool)).toEqual([`${renamedSource}__get_asset`, 'wait']);
         expect(bySlug.get('asset_sync_m2')!.definition_version).toBe(2);
+        // The rewrite must never read as "no edit since the mint" (versions.ts webhookSecretSurvivesEnable).
+        expect(bySlug.get('asset_sync_m2')!.edited_after_mint).toBe(true);
         expect(bySlug.get('asset_sync')!.definition.steps[0]!.tool).toBe('hudu__get_asset');
         expect(bySlug.get('asset_sync_m1')!.org_id).toBe(S);
         expect(bySlug.get('pw_merge')).toMatchObject({ org_id: null, partner_id: P, definition_version: 1 });

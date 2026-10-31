@@ -28,6 +28,9 @@ export type FlowCatalogEntry =
   | { source: 'tenant'; name: string; descriptor: TenantToolDescriptor; validate: ValidateFunction }
   | { source: 'builtin'; name: FlowBuiltinName };
 
+/** An owner's flow catalog: step tool name → what it resolves to. */
+export type FlowCatalog = Map<string, FlowCatalogEntry>;
+
 /**
  * Core tools that are agent-reachable but never flow-eligible:
  *  - the flow authoring tools — a flow never drafts or reads flows;
@@ -71,8 +74,11 @@ export function listFlowEligibleCoreTools(): string[] {
   return listAgentReachableTools().filter((name) => !FLOW_EXCLUDED_CORE_TOOLS.has(name));
 }
 
-export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<Map<string, FlowCatalogEntry>> {
-  const catalog = new Map<string, FlowCatalogEntry>();
+export async function loadFlowCatalog(owner: ToolOwnerRef): Promise<FlowCatalog> {
+  const catalog: FlowCatalog = new Map();
+  // W5 PR B (#5220): every shared built-in is in the catalog. Built-ins are
+  // authorized by rule 7 (FLOW_BUILTIN_PERMISSIONS), revalidated at run time
+  // and parked at Tier 3 like any other step (plan Decision 12).
   for (const name of Object.keys(FLOW_BUILTIN_STEPS) as FlowBuiltinName[]) {
     catalog.set(name, { source: 'builtin', name });
   }

@@ -399,6 +399,28 @@ describe('GET /tickets/:id/attachments/:attachmentId/content (W08 #3902)', () =>
     expect(res.status).toBe(200);
   });
 
+  // #8313 W1 (spec 2026-10-19 §4.3): an import reservation is a pending row
+  // with NO uploader and provisional metadata (generic type, zero digest).
+  // It is served to no one, a tickets:manage holder included, until the
+  // import's claim replaces the metadata.
+  it('404s a pending IMPORT reservation (no uploader) for every caller, tickets:manage included', async () => {
+    const reservation = { commentId: null, uploadedByUserId: null, storageBackend: 's3', storageKey: `ticket-attachments/${ATT_ID}`, data: null, contentType: 'application/octet-stream', sha256: '0'.repeat(64) };
+    dbRowMock.mockReturnValue(joinRow(reservation, null));
+    expect((await content()).status).toBe(404);
+    authRef.current = { ...authRef.current, permissions: { permissions: [{ resource: 'tickets', action: 'manage' }] } } as never;
+    expect((await content()).status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('serves an attached imported file outside the allowlist download-only, with nosniff', async () => {
+    dbRowMock.mockReturnValue(joinRow({ uploadedByUserId: null, contentType: 'application/octet-stream', originalFilename: 'minutes.docx' }));
+    const res = await content();
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream');
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('Content-Disposition')).toBe(`attachment; filename="minutes.docx"; filename*=UTF-8''minutes.docx`);
+  });
+
   it('404s when the parent comment is soft-deleted and the caller lacks tickets:manage', async () => {
     dbRowMock.mockReturnValue(joinRow({}, { deletedAt: new Date() }));
     const res = await content();

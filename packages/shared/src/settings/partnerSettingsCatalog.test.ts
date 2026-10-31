@@ -11,6 +11,7 @@ import type {
   PartnerSettings,
 } from '../types';
 import type { AiApprovalSettings } from '../validators/aiApprovalSettings';
+import type { FlowLimitsSettings } from '../validators/flowBudgets';
 import { AI_BUDGET_DEFAULTS } from '../constants/aiBudgetDefaults';
 import {
   CATALOG_BY_ID,
@@ -105,6 +106,11 @@ const LEAVES = {
   aiApprovals: {
     interactiveTimeoutMinutes: true,
   } satisfies LeafMap<AiApprovalSettings>,
+  flows: {
+    monthlyRunsPerOwner: true,
+    monthlyRunsPerFlow: true,
+    aiTokensPerRun: true,
+  } satisfies LeafMap<FlowLimitsSettings>,
   remoteAccessProviders: {
     providers: true,
     defaultProviderId: true,
@@ -202,6 +208,9 @@ describe('partner settings catalog', () => {
         "aiBudgets.alertThresholdPercents",
         "aiBudgets.toolRateLimitMultiplier",
         "aiApprovals.interactiveTimeoutMinutes",
+        "flows.monthlyRunsPerOwner",
+        "flows.monthlyRunsPerFlow",
+        "flows.aiTokensPerRun",
         "remoteAccessProviders.providers",
         "remoteAccessProviders.defaultProviderId",
         "networkProxy.dedicatedTunnelOrigin",

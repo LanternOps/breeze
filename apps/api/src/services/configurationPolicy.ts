@@ -1,3 +1,4 @@
+import { findPartnerOwnedGroupIds } from './deviceGroupOwnership';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
@@ -118,6 +119,8 @@ export const remoteAccessConsentSettingsSchema = z.object({
   notifyOnSessionEnd: z.boolean().default(true),
   showActiveIndicator: z.boolean().default(true),
   technicianIdentityLevel: technicianIdentityLevelSchema.default('name_email'),
+  // #10190 W06 (OD-5 (c), Gate A): default ON.
+  allowUserEndSession: z.boolean().default(true),
 });
 
 // Write-path validation for the WHOLE remote_access inlineSettings blob: the
@@ -135,6 +138,7 @@ export const remoteAccessInlineSettingsSchema = remoteAccessCapabilitySettingsSc
   notifyOnSessionEnd: z.boolean().optional(),
   showActiveIndicator: z.boolean().optional(),
   technicianIdentityLevel: technicianIdentityLevelSchema.optional(),
+  allowUserEndSession: z.boolean().optional(),
 });
 
 // Exported so the route can import the same schema (single source of truth).
@@ -181,8 +185,12 @@ export type ConfigAssignmentLevel = 'partner' | 'organization' | 'site' | 'devic
 
 // Discriminated union so a valid result can't carry a stray error string and
 // an invalid result can't omit one — every `return` in validateAssignmentTarget
-// below conforms.
-export type AssignmentTargetValidation = { valid: true } | { valid: false; error: string };
+// below conforms. The structured partner-group refusal carries its HTTP class;
+// routes must not infer that class from human-readable error text.
+export type AssignmentTargetValidation =
+  | { valid: true }
+  | { valid: false; error: string; code?: undefined }
+  | { valid: false; error: string; code: 'PARTNER_GROUP_TARGET_UNSUPPORTED'; status: 400 };
 
 const LEVEL_PRIORITY: Record<ConfigAssignmentLevel, number> = {
   device: 5,
@@ -1112,6 +1120,7 @@ async function decomposeInlineSettings(
         notifyOnSessionEnd: parsed.notifyOnSessionEnd,
         showActiveIndicator: parsed.showActiveIndicator,
         technicianIdentityLevel: parsed.technicianIdentityLevel,
+        allowUserEndSession: parsed.allowUserEndSession,
       });
       break;
     }
@@ -1457,6 +1466,7 @@ async function assembleInlineSettings(
         collectCategories: row.collectCategories,
         minimumLevel: row.minimumLevel,
         collectionIntervalMinutes: row.collectionIntervalMinutes,
+        applicationProviders: row.applicationProviders ?? [],
         rateLimitPerHour: row.rateLimitPerHour,
       };
     }
@@ -1568,6 +1578,7 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+        allowUserEndSession: row.allowUserEndSession,
       };
     }
 
@@ -1842,6 +1853,22 @@ export type FeatureLinkWriteOptions = {
   securityAgentsArmAuthorized?: boolean;
 };
 
+/**
+ * OD-11 (#10190): a newly created Breeze Assist (helper) feature link deploys
+ * Assist unless the request decides `enabled` itself. Create path only:
+ * updates store what they are sent. Devices with no helper policy are
+ * unaffected (HELPER_DEFAULTS.enabled stays false in helperSettings.ts),
+ * because defaulting those on would silently install software on every
+ * existing customer's machines (OD-11 option c, rejected).
+ */
+function withHelperCreateDefaults(inlineSettings: unknown): Record<string, unknown> {
+  const settings =
+    inlineSettings !== null && typeof inlineSettings === 'object' && !Array.isArray(inlineSettings)
+      ? (inlineSettings as Record<string, unknown>)
+      : {};
+  return settings.enabled === undefined ? { ...settings, enabled: true } : settings;
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
@@ -1853,6 +1880,10 @@ export async function addFeatureLink(
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  if (featureType === 'helper') {
+    inlineSettings = withHelperCreateDefaults(inlineSettings);
   }
 
   if (featureType === 'pam' && inlineSettings !== undefined && inlineSettings !== null) {
@@ -2436,8 +2467,11 @@ export async function validateAssignmentTarget(
         const [group] = await db
           .select({ id: deviceGroups.id })
           .from(deviceGroups)
-          .innerJoin(organizations, eq(deviceGroups.orgId, organizations.id))
-          .where(and(eq(deviceGroups.id, targetId), eq(organizations.partnerId, partnerId)))
+          .leftJoin(organizations, eq(deviceGroups.orgId, organizations.id))
+          .where(and(eq(deviceGroups.id, targetId), or(
+            eq(organizations.partnerId, partnerId),
+            and(isNull(deviceGroups.orgId), eq(deviceGroups.partnerId, partnerId)),
+          )))
           .limit(1);
         return group
           ? { valid: true }
@@ -2499,9 +2533,16 @@ export async function validateAssignmentTarget(
         .from(deviceGroups)
         .where(and(eq(deviceGroups.id, targetId), eq(deviceGroups.orgId, policyOrgId)))
         .limit(1);
-      return group
-        ? { valid: true }
-        : { valid: false, error: 'Device group target not found in the policy organization' };
+      if (group) return { valid: true };
+      if ((await findPartnerOwnedGroupIds([targetId])).length > 0) {
+        return {
+          valid: false,
+          error: 'Partner-wide device groups can only be targeted by partner-wide policies',
+          code: 'PARTNER_GROUP_TARGET_UNSUPPORTED',
+          status: 400,
+        };
+      }
+      return { valid: false, error: 'Device group target not found in the policy organization' };
     }
 
     case 'device': {

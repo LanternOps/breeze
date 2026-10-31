@@ -85,8 +85,45 @@ export function recordSignedAgreementFromForm(fields: Record<string, unknown>): 
 
 /** Upper bound on recipients per request (the shared link goes to each). */
 export const AGREEMENT_REQUEST_MAX_RECIPIENTS = 50;
-/** Default lifetime of a request when the sender sets none (OD8 A). */
+/** Built-in lifetime of a request when the sender sets none and the partner
+ *  default is unreadable (also the partners column DEFAULT). The partner's own
+ *  default is resolved by services/agreementRequestDefaults.ts (#9075 W4a). */
 export const AGREEMENT_REQUEST_DEFAULT_EXPIRY_DAYS = 30;
+
+// #9075 W4a (OD8 B): partner-level agreement defaults, edited under
+// Settings → Billing → Agreements. Bounds mirror the partners CHECKs in
+// migration 2027-01-07-130000-agreement-defaults.sql.
+export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN = 1;
+export const AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX = 365;
+/** Automatic reminders: "every N days since the last email"; null = off. */
+export const AGREEMENT_REMINDER_INTERVAL_DAYS_MIN = 1;
+export const AGREEMENT_REMINDER_INTERVAL_DAYS_MAX = 30;
+/** Automatic reminders stop once a request has had this many (manual ones count). */
+export const AGREEMENT_MAX_REMINDERS_MIN = 1;
+export const AGREEMENT_MAX_REMINDERS_MAX = 10;
+export const AGREEMENT_MAX_REMINDERS_DEFAULT = 3;
+
+/** The agreement fields of PATCH /partner/billing-settings. */
+export const agreementDefaultsSettingsFields = {
+  agreementDefaultExpiryDays: z.number().int()
+    .min(AGREEMENT_DEFAULT_EXPIRY_DAYS_MIN).max(AGREEMENT_DEFAULT_EXPIRY_DAYS_MAX).optional(),
+  agreementReminderIntervalDays: z.number().int()
+    .min(AGREEMENT_REMINDER_INTERVAL_DAYS_MIN).max(AGREEMENT_REMINDER_INTERVAL_DAYS_MAX).nullable().optional(),
+  agreementMaxReminders: z.number().int()
+    .min(AGREEMENT_MAX_REMINDERS_MIN).max(AGREEMENT_MAX_REMINDERS_MAX).optional(),
+};
+export const AGREEMENT_DEFAULTS_SETTINGS_KEYS = Object.keys(agreementDefaultsSettingsFields) as Array<
+  keyof typeof agreementDefaultsSettingsFields
+>;
+
+/** GET /contracts/agreement-requests/defaults — the resolved values the Send
+ *  dialog pre-fills from. `autoReminder` null = automatic reminders are off. */
+export interface AgreementRequestDefaultsDto {
+  defaultExpiryDays: number;
+  autoReminder: { intervalDays: number; maxReminders: number } | null;
+}
+
+export const agreementRequestDefaultsQuerySchema = z.object({ orgId: z.string().guid() });
 
 // Lower-cased and trimmed BEFORE the format check, so `Jane@Example.COM `
 // is stored as the one canonical address (agreement_request_recipients has a

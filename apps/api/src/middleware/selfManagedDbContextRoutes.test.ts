@@ -28,6 +28,15 @@ describe('isSelfManagedDbContextRoute', () => {
     // Invoice-page exit from an off-session 3DS payment cancels the PaymentIntent in Stripe.
     ['POST', '/api/v1/portal/invoices/def-456/autopay-confirmation'],
     ['POST', '/api/v1/invoices/public/tok-789/autopay-confirmation'],
+    // #9585: the portal invoice detail and PDF read partner-axis rows in system
+    // contexts of their own, outside the org transaction they open themselves.
+    // HEAD runs the GET handler (Hono), so it must opt out with it.
+    ['GET', '/api/v1/portal/invoices/def-456'],
+    ['GET', '/api/v1/portal/invoices/def-456/'],
+    ['HEAD', '/api/v1/portal/invoices/def-456'],
+    ['GET', '/api/v1/portal/invoices/def-456/pdf'],
+    ['GET', '/api/v1/portal/invoices/def-456/pdf/'],
+    ['HEAD', '/api/v1/portal/invoices/def-456/pdf'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/overview'],
@@ -301,6 +310,12 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
     ['GET', '/api/v1/portal/invoices/def-456/settle', 'portal settle is POST-only'],
+    ['GET', '/api/v1/portal/invoices', 'the portal invoice list keeps the ambient org tx'],
+    ['GET', '/api/v1/portal/invoices/', 'the portal invoice list keeps the ambient org tx'],
+    ['GET', '/api/v1/portal/invoices//pdf', 'empty id segment must not match'],
+    ['GET', '/api/v1/portal/invoices/def-456/pdf/extra', 'deeper portal PDF path must not match'],
+    ['POST', '/api/v1/portal/invoices/def-456', 'only the GET (and HEAD) detail read opts out'],
+    ['GET', '/api/v1/portal/quotes/def-456', 'the portal quote detail keeps the ambient org tx'],
     ['GET', '/api/v1/portal/auth/logout', 'portal logout is POST-only'],
     ['POST', '/api/v1/portal/auth/login', 'portal login keeps its own handling'],
     ['POST', '/api/v1/portal/invoices//settle', 'empty id segment must not match'],
@@ -771,4 +786,28 @@ it('#8973 W4 self-manages only the D12 apply-revision POST of the business-calen
   expect(isSelfManagedDbContextRoute('POST', `/api/v1/business-calendars/${C}/holidays`)).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/business-calendars/not-a-uuid/apply-revision')).toBe(false);
+});
+
+// #10190 W04 — GET /helper/config names the caller-verify logo by the sha the
+// heartbeat's promptIdentity block carries. That lookup is the heartbeat's own
+// resolver, which opens a short system read of its own (and may start a
+// background logo load); it must run with no request transaction held (#1105).
+// The handler reads permissions and branding in one short helper context.
+describe('#10190 helper config', () => {
+  it.each([
+    ['GET', '/api/v1/helper/config'],
+    ['GET', '/api/v1/helper/config/'],
+    ['get', '/api/v1/helper/config'],
+  ])('opts out: %s %s', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+  });
+
+  it.each([
+    ['POST', '/api/v1/helper/config', 'no such write route; a method must not borrow the opt-out'],
+    ['GET', '/api/v1/helper/config/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/helper/device-info', 'sibling read keeps the ambient tx'],
+    ['GET', '/api/v1/helper/configx', 'prefix must not match'],
+  ])('keeps ambient tx: %s %s (%s)', (method, path) => {
+    expect(isSelfManagedDbContextRoute(method, path)).toBe(false);
+  });
 });

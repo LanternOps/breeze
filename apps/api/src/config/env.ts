@@ -222,10 +222,12 @@ export function toolSourcesEnabled(): boolean {
 }
 
 // Tool Catalog W3 (#5218). Platform kill switch for Flows (flow documents,
-// flow AI tools, /api/v1/flows). Default OFF. Read at CALL time so a test can
-// flip it per-case without vi.resetModules().
+// flow AI tools, /api/v1/flows). Default ON since W06 R1 (#5221, plan
+// Decision 11): unset or empty is on; `FLOWS_ENABLED=false` keeps Flows off
+// and standalone Jobs writable. Read at CALL time so a test can flip it
+// per-case without vi.resetModules().
 export function flowsEnabled(): boolean {
-  return envFlag('FLOWS_ENABLED', false);
+  return envFlag('FLOWS_ENABLED', true);
 }
 
 // Topology rollout deployment kill switch. Partner and organization flags are
@@ -472,6 +474,33 @@ export function flowMaxRunningPerOwner(): number {
  */
 export function flowRunRetentionDays(): number {
   return positiveIntEnv('FLOW_RUN_RETENTION_DAYS', 90, 7, 3650);
+}
+
+/**
+ * Tool catalog W05 (#5220): inbound webhook deliveries accepted per minute for
+ * one flow (Redis limiter; over it the intake answers 429). Default 120,
+ * clamped 1..6000.
+ */
+export function flowWebhookRatePerMinute(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_RATE_PER_MINUTE', 120, 1, 6000);
+}
+
+/**
+ * Tool catalog W05 (#5220): days a non-accepted flow webhook delivery row
+ * (refused / org_unresolved / invalid_body) is kept; accepted rows live as
+ * long as their run. Default 30, clamped 1..365.
+ */
+export function flowWebhookDeliveryRetentionDays(): number {
+  return positiveIntEnv('FLOW_WEBHOOK_DELIVERY_RETENTION_DAYS', 30, 1, 365);
+}
+
+/**
+ * Tool catalog W05 (#5220): the most for-each items one flow step runs at
+ * once; the step's own `forEach.concurrency` is capped by this. Default 5,
+ * clamped 1..10.
+ */
+export function flowForEachMaxParallel(): number {
+  return positiveIntEnv('FLOW_FOREACH_MAX_PARALLEL', 5, 1, 10);
 }
 
 /** Per-API-instance `sync-domain` concurrency (spec §5.3). */

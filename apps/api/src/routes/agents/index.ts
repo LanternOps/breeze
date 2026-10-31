@@ -8,6 +8,7 @@ import { commandsRoutes } from './commands';
 import { pamObservationRoutes } from './pamObservations';
 import { pamReconciliationRoutes } from './pamReconciliation';
 import { pamElevationUnableRoutes } from './pamElevationUnable';
+import { elevationWithdrawRoutes } from './elevationWithdraw';
 import { agentSecurityRoutes } from './security';
 import { agentYaraRuleSetRoutes } from './yaraRuleSets';
 import { agentRecoveryKeysRoutes } from './recoveryKeys';
@@ -34,6 +35,8 @@ import { unifiTelemetryRoutes } from './unifiTelemetry';
 import { topologyAdjacencyRoutes } from './topologyAdjacency';
 import { wingetBootstrapRoutes } from './wingetBootstrap';
 import { agentStorageSessionRoutes } from './storageSessions';
+import { rebindRoutes } from './rebind';
+import { promptIdentityLogoRoutes } from './promptIdentityLogo';
 
 export const agentRoutes = new Hono();
 
@@ -46,8 +49,11 @@ export const AGENT_AUTH_SKIP_ID_SEGMENTS = new Set([
   'download',
 ]);
 export const AGENT_AUTH_SKIP_EXACT_ID_SEGMENTS = new Set(['install.sh', 'uninstall.sh']);
-// Routes of the exact shape /:id/<action> that use user JWT auth.
-export const AGENT_AUTH_SKIP_ACTIONS = new Set(['approve', 'deny']);
+// Routes of the exact shape /:id/<action> that authenticate themselves: user
+// JWT (approve, deny), or the reattach confirm-only token (rebind-confirm,
+// #8318 §6.4 — agent auth never matches that token, and the confirming
+// install's own credentials are about to be retired).
+export const AGENT_AUTH_SKIP_ACTIONS = new Set(['approve', 'deny', 'rebind-confirm']);
 
 export function shouldSkipAgentAuth(path: string, id: string): boolean {
   if (AGENT_AUTH_SKIP_ID_SEGMENTS.has(id)) return true;
@@ -70,6 +76,14 @@ agentRoutes.route('/', downloadRoutes);
 // Mount mTLS routes (special paths like /renew-cert, /quarantined, /org/*)
 agentRoutes.route('/', mtlsRoutes);
 
+// The reattach rebind routes (#8318 §6.3, §6.4). Mounted BEFORE the `:id/*`
+// sub-apps: several of those register `use('*', requireAgentRole)`, which
+// Hono applies to every later route under this router, and
+// `/:id/rebind-confirm` carries no agent context (it authenticates with its
+// confirm-only token, like approve/deny above with a user JWT). Phase 1
+// checks the agent role itself.
+agentRoutes.route('/', rebindRoutes);
+
 // Mount enrollment
 agentRoutes.route('/', enrollmentRoutes);
 
@@ -80,6 +94,7 @@ agentRoutes.route('/', commandsRoutes);
 agentRoutes.route('/', pamObservationRoutes);
 agentRoutes.route('/', pamReconciliationRoutes);
 agentRoutes.route('/', pamElevationUnableRoutes);
+agentRoutes.route('/', elevationWithdrawRoutes);
 agentRoutes.route('/', agentSecurityRoutes);
 agentRoutes.route('/', agentYaraRuleSetRoutes);
 agentRoutes.route('/', agentRecoveryKeysRoutes);
@@ -105,3 +120,5 @@ agentRoutes.route('/', unifiTelemetryRoutes);
 agentRoutes.route('/', topologyAdjacencyRoutes);
 agentRoutes.route('/', wingetBootstrapRoutes);
 agentRoutes.route('/', agentStorageSessionRoutes);
+// #10190 W03: the MSP logo for device prompts (read-only, self-managed context).
+agentRoutes.route('/', promptIdentityLogoRoutes);

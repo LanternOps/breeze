@@ -34,6 +34,16 @@ describe('securityMiddleware', () => {
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
     });
 
+    it("sameOriginFrameWhen swaps only frame-ancestors to 'self' on matching paths (#10192)", async () => {
+      const app = createApp({ cspReportUri: 'https://report.example.com/csp', sameOriginFrameWhen: (p) => p === '/test' });
+      const framed = (await app.request('/test')).headers.get('Content-Security-Policy') ?? '';
+      const denied = (await app.request('/health')).headers.get('Content-Security-Policy') ?? '';
+      expect(framed).toContain("frame-ancestors 'self'");
+      expect(framed).not.toContain("frame-ancestors 'none'");
+      expect(denied).toContain("frame-ancestors 'none'");
+      expect(framed.replace("frame-ancestors 'self'", "frame-ancestors 'none'")).toBe(denied);
+    });
+
     it('includes report-uri when cspReportUri is set', async () => {
       const app = createApp({ cspReportUri: 'https://report.example.com/csp' });
       const res = await app.request('/test');

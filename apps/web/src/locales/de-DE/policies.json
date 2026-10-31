@@ -674,7 +674,18 @@
         "maxEventsPerCycle2": "maxEventsPerCycle",
         "minimumLevel": "MinimumLevel",
         "collectionIntervalMinutes2": "CollectionIntervalMinutes",
-        "rateLimitPerHour2": "rateLimitPerHour"
+        "rateLimitPerHour2": "rateLimitPerHour",
+        "applicationProvidersHeading": "Anwendungsanbieter (Warnung und Information)",
+        "applicationProvidersHelp": "Anwendungsereignisse der Stufen Fehler und Kritisch werden von allen Anbietern erfasst; Warnungen und Informationen nur von den integrierten Anbietern ({{providers}}) und den hier aufgeführten Anbietern. Verwenden Sie den exakten Anbieternamen aus der Spalte „Quelle“ der Ereignisanzeige oder aus Get-WinEvent -ListProvider.",
+        "applicationProvidersScope": "Für ein Gerät gilt nur die maßgebliche Ereignisprotokollrichtlinie. Anbieterlisten verschiedener Richtlinien werden nicht zusammengeführt.",
+        "providerNameLabel": "Name des Anwendungsereignisanbieters",
+        "addProvider": "Anbieter hinzufügen",
+        "removeProvider": "Entfernen",
+        "removeProviderNamed": "{{provider}} entfernen",
+        "providerNameInvalid": "Verwenden Sie 1–{{max}} Zeichen, beginnend mit einem Buchstaben oder einer Ziffer. Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Punkte, Unterstriche, Dollarzeichen, runde Klammern und Bindestriche.",
+        "providerLimitReached": "Sie können bis zu {{max}} zusätzliche Anbieter auflisten. Entfernen Sie einen, um einen weiteren hinzuzufügen.",
+        "providerAlreadyListed": "Dieser Anbieter ist bereits aufgeführt.",
+        "providerLimit": "{{total}} von {{max}} zusätzlichen Anbietern"
       },
       "featureTabShell": {
         "override": "Überschreiben",
@@ -899,7 +910,17 @@
         "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
         "ringDetailsNoHold": "Rollout-Reihenfolge {{order}} · keine Wartezeit vor der Genehmigung",
         "ringDetailsWithHold_one": "Rollout-Reihenfolge {{order}} · {{count}} Tag Wartezeit vor der Genehmigung",
-        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung"
+        "ringDetailsWithHold_other": "Rollout-Reihenfolge {{order}} · {{count}} Tage Wartezeit vor der Genehmigung",
+        "rebootPreviewHeading": "Vorschau",
+        "rebootPreviewDescription": "Das sieht die Person am Computer, wenn jetzt ein Neustart geplant wird. Die Uhrzeiten sind Beispiele.",
+        "rebootPreviewDefaultMarker": "Standard",
+        "rebootPreviewDefaultTitle": "Neustart zum Abschließen der Updateinstallation",
+        "rebootPreviewDefaultBody": "Ihr IT-Support-Team muss diesen Computer neu starten, um die Installation der Updates abzuschließen.",
+        "rebootPreviewConsequence": "Wenn Sie nichts tun, wird dieser Computer um {{time}} neu gestartet. Speichern Sie Ihre Arbeit vorher.",
+        "rebootPreviewRestartNow": "Jetzt neu starten",
+        "rebootPreviewPostponeUntil": "Verschieben bis {{time}}",
+        "rebootPreviewDeadline": "Durch Verschieben wird der Neustart nie später als {{time}} durchgeführt.",
+        "rebootPreviewOk": "OK"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",
@@ -986,6 +1007,9 @@
         "showIndicatorHelp": "Banner auf dem Bildschirm anzeigen, während ein Techniker verbunden ist.",
         "notifyOnEnd": "Hinweis bei Sitzungsende",
         "notifyOnEndHelp": "Endbenutzer benachrichtigen, wenn die Sitzung endet.",
+        "allowUserEnd": "Benutzer darf die Sitzung beenden",
+        "allowUserEndHelp": "Die Person am Gerät kann die Sitzung nach einer Bestätigung über die Anzeige auf dem Bildschirm beenden. Der Techniker sieht „Vom Benutzer beendet“.",
+        "allowUserEndNeedsIndicator": "Aktivieren Sie die Anzeige für aktive Sitzungen, damit Benutzer eine Sitzung beenden können.",
         "identityLevel": "Techniker-Identität",
         "identityLevelHelp": "Wie viel von der Identität des Technikers der Endbenutzer sieht. Der MSP-Name wird immer angezeigt.",
         "identityNameEmail": "Name und E-Mail",
@@ -1184,9 +1208,9 @@
         "enableWarrantyExpiryAlerts": "Aktivieren Sie Garantieablaufwarnungen",
         "generateAlertsWhenFixedTermDeviceWarranties": "Generieren Sie Benachrichtigungen, wenn befristete Gerätegarantien bald ablaufen.",
         "warningThresholdDays": "Warnschwelle (Tage)",
-        "generateAWarningAlertWhenWarrantyExpires": "Generieren Sie eine Warnmeldung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
-        "criticalThresholdDays": "Kritischer Schwellenwert (Tage)",
-        "generateACriticalAlertWhenWarrantyExpires": "Generieren Sie eine kritische Warnung, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
+        "warnThresholdHelp": "Warnung mit Schweregrad „Infos“, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft.",
+        "urgentThresholdDays": "Dringlichkeitsschwelle (Tage)",
+        "urgentThresholdHelp": "Warnung mit Schweregrad „Niedrig“, wenn die Garantie innerhalb dieser Anzahl von Tagen abläuft. Eine abgelaufene Garantie löst eine Warnung mit Schweregrad „Mittel“ aus.",
         "enabled": "aktiviert",
         "warnDays": "warnDays",
         "criticalDays": "kritischeTage",
@@ -1206,6 +1230,20 @@
         "title": "Geräte in dieser Richtlinie melden doppelt",
         "body": "Diese Bedingungen existieren sowohl als angehängter Monitor als auch als Alt-Regel oder -Überwachung: {{names}}"
       }
+    },
+    "partnerGroupAssignment": {
+      "title": "Gerätegruppen (alle Org.)",
+      "description": "Wählen Sie eine partnerweite Gerätegruppe als Ziel. Eine Gruppenzuweisung gilt auf Gerätegruppenebene und hat daher Vorrang vor Zuweisungen anderer Richtlinien auf Organisations- und Standortebene.",
+      "selectGroup": "Gerätegruppe auswählen",
+      "assign": "Zuweisen",
+      "remove": "Entfernen",
+      "assigned": "Gerätegruppe zugewiesen",
+      "removed": "Gerätegruppenzuweisung entfernt",
+      "failedToLoad": "Gerätegruppen konnten nicht geladen werden",
+      "failedToAssign": "Gerätegruppe konnte nicht zugewiesen werden",
+      "failedToRemove": "Gerätegruppenzuweisung konnte nicht entfernt werden",
+      "empty": "Noch keine partnerweiten Gerätegruppen. Erstellen Sie eine unter Gerätegruppen → Alle Org.",
+      "loading": "Gerätegruppen werden geladen…"
     }
   },
   "software": {
@@ -1513,7 +1551,8 @@
       "devicesFinished": "{{finished}} von {{total}} Geräten abgeschlossen",
       "setupNeeded": "Einrichtung erforderlich",
       "managerUnavailableSummary_one": "Auf {{count}} Gerät fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
-      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl."
+      "managerUnavailableSummary_other": "Auf {{count}} Geräten fehlt der Paketmanager. Das ist eine einmalige Geräteeinrichtung – installieren Sie dort winget (Windows) oder Homebrew (macOS); bis dahin schlägt jede Paketmanager-Bereitstellung darauf fehl.",
+      "deviceOutputTail": "Geräteausgabe (letzte Zeilen)"
     },
     "deploymentWizard": {
       "selectSoftware": "Wählen Sie Software",

@@ -213,6 +213,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('stripeSessionRevocationSweep'),
   consumers('quoteExpiryReaper'),
   consumers('agreementRequestExpiryReaper'),
+  // #9075 W4a: automatic agreement-request reminders.
+  consumers('agreementRequestAutoReminder'),
   consumers('suppressionExpiryReaper'),
   consumers('ticketNotifyWorker'),
   // Caller verification (#6354 W01) — post-commit effects publisher; one
@@ -329,7 +331,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // under its registry name.
   consumers('parkedDeviceExpiry'),
   consumers('parkedDevicePurge'),
+  // #8318 wave 1b — reinstall reattach: the per-minute intent expiry sweep.
+  // One Worker, unconditional, attached under its registry name.
+  consumers('deviceReattachIntentSweep'),
   consumers('deviceGroupJobs', ['deviceGroupReevaluationWorker']),
+  consumers('partnerGroupEvaluationJobs', ['partnerGroupEvaluationWorker', 'partnerGroupSweepWorker']),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as

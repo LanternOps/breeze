@@ -569,7 +569,9 @@
       "after": "peşinde",
       "between": "arasındadır",
       "withinLast": "sonuncu içinde",
-      "notWithinLast": "sonuncusu içinde değil"
+      "notWithinLast": "sonuncusu içinde değil",
+      "below": "daha düşük",
+      "atLeast": "en az"
     },
     "value": {
       "noValue": "Değere gerek yok",
@@ -591,7 +593,9 @@
       },
       "enumOverrides": {
         "decommissioned": "Çıkarıldı"
-      }
+      },
+      "softwareName": "Yazılım adı",
+      "softwareVersion": "Yazılım sürümü"
     }
   },
   "account": {
@@ -1292,11 +1296,19 @@
           "waiting": "Bekleniyor"
         },
         "ticketCount": "{{filtered}} / {{total}} bilet",
-        "title": "Senkronize Biletler",
+        "title": "PSA Biletleri",
         "unlinked": "Bağlantı kaldırıldı"
       }
     },
     "webhooks": {
+      "ownership": {
+        "label": "Sahiplik",
+        "allOrganizations": "Tüm kuruluşlar",
+        "thisOrganizationOnly": "Yalnızca bu kuruluş",
+        "all": "Tümü",
+        "organization": "Kuruluş",
+        "test": "Test gönderimi"
+      },
       "WebhookDeliveryHistory": {
         "deliveryAttempts": "{{count}} teslimat denemeleri",
         "empty": "Henüz teslimat girişimi yok.",
@@ -1349,6 +1361,10 @@
             "description": "Bir cihaz bağlandığında tetiklenir.",
             "label": "Cihaz Çevrimiçi"
           },
+          "deviceReinstalled": {
+            "description": "Yeniden kurulan bir makine mevcut cihaz kaydına yeniden bağlandığında tetiklenir.",
+            "label": "Cihaz Yeniden Kuruldu"
+          },
           "scriptCompleted": {
             "description": "Bir komut dosyası tamamlandığında tetiklenir.",
             "label": "Komut Dosyası Tamamlandı"
@@ -1384,6 +1400,14 @@
           "integrationHealthResolved": {
             "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
             "label": "Bağlantı sağlık olayı çözüldü"
+          },
+          "alertAcknowledged": {
+            "label": "Uyarı onaylandı",
+            "description": "Bir uyarı onaylandığında tetiklenir."
+          },
+          "alertSuppressed": {
+            "label": "Uyarı susturuldu",
+            "description": "Breeze AI bir uyarıyı susturduğunda tetiklenir. Panodan susturmak bu olayı henüz göndermez."
           }
         },
         "fields": {
@@ -1435,6 +1459,22 @@
           "secretRequired": "HMAC kimlik doğrulaması için gizli bilgi gereklidir",
           "tokenRequired": "Taşıyıcı kimlik doğrulaması için jeton gereklidir",
           "urlRequired": "URL'si gerekli"
+        },
+        "neverDelivered": {
+          "marker": "Hiç iletilmez",
+          "explanation": "Breeze bu olayı hiçbir zaman göndermez. Bu webhook kaydedildiğinde olay kaldırılır.",
+          "banner": "Breeze bu olayı hiçbir zaman göndermez; bu nedenle bu webhook hiç teslimat yapmamıştır. Kaydetmeden önce başka bir olay seçin."
+        },
+        "payloadVersion": {
+          "title": "Veri sürümü",
+          "v2": {
+            "label": "v2 (önerilen)",
+            "description": "Uyarı olayları ana makine adını, konumu, kuruluşu, durumu ve uyarıya bağlantıyı içerir."
+          },
+          "v1": {
+            "label": "v1 (özgün)",
+            "description": "Mevcut entegrasyonlar için korunan özgün uyarı verileri."
+          }
         }
       },
       "WebhookList": {
@@ -1516,7 +1556,8 @@
           "enabled": "Web kancası etkinleştirildi",
           "retryQueued": "Teslimat yeniden deneme kuyruğa alındı",
           "testQueued": "Test teslimatı kuyruğa alındı",
-          "updated": "Web kancası güncellendi"
+          "updated": "Web kancası güncellendi",
+          "deleted": "\"{{name}}\" web kancası silindi"
         },
         "title": "Web kancaları"
       }

@@ -1,5 +1,5 @@
 import TopologyEntry from '../topology/TopologyEntry';
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { useHashState } from "@/lib/useHashState";
 import { eventLogFilterFromHash, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { usePermissions } from "@/lib/permissions";
@@ -40,13 +40,13 @@ import {
   History,
   Bot,
   MessageSquare,
-  ArrowLeft,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
 import { formatOsLabel } from "./formatOsLabel";
 import { formatTimeAgo } from "@/lib/formatTime";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
 import DeviceActions from "./DeviceActions";
@@ -78,6 +78,7 @@ import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import PhysicalPlacementCard from "./PhysicalPlacementCard";
 import { EntityLink } from "@/components/shared/EntityLink";
 import WispLinkButton from "@/components/wisp/WispLinkButton";
 import DeviceBillingCard from "./DeviceBillingCard";
@@ -159,7 +160,6 @@ type Tab = CoreTab | ExtTab;
 type DeviceDetailsProps = {
   device: Device;
   timezone?: string;
-  onBack?: () => void;
   onAction?: (action: string, device: Device) => void;
   /**
    * Timestamp of the newest CPU/RAM sample behind `device.cpuPercent` /
@@ -398,10 +398,46 @@ function NetworkAssetRow({ deviceId, orgId }: { deviceId: string; orgId?: string
   );
 }
 
+/** One cell of the Overview stat strip; an unknown value is muted so the eye
+ *  lands on the stats that are actually there. */
+function HeaderStat({
+  icon,
+  label,
+  value,
+  title,
+  testId,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  title?: string;
+  testId?: string;
+}) {
+  const unknown = value === "—";
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <span className="shrink-0" aria-hidden="true">
+          {icon}
+        </span>
+        <span className="min-w-0 truncate">{label}</span>
+      </div>
+      <p
+        data-testid={testId}
+        title={title}
+        className={`mt-1 truncate text-lg font-semibold tabular-nums ${
+          unknown ? "text-muted-foreground/60" : ""
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
 export default function DeviceDetails({
   device,
   timezone,
-  onBack,
   onAction,
   metricsSampledAt,
   workingOrgId,
@@ -872,31 +908,21 @@ export default function DeviceDetails({
 
   return (
     <div className="space-y-6">
-      {/* #9025: onBack was only rendered in the error state, so the happy path
-          had no Back control at all. Quiet by design — the breadcrumb above
-          remains the primary wayfinding. */}
-      {onBack && (
-        <button
-          type="button"
-          data-testid="device-detail-back"
-          onClick={onBack}
-          className="-mb-2 flex items-center gap-1.5 text-sm text-muted-foreground transition hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          {t("deviceDetailPage.backToDevices")}
-        </button>
-      )}
       {/* #9028: below md the card tightens (no icon tile, smaller padding),
           the title clamps to two lines and the status pills wrap onto their own
           line, so the header stays ~200px tall at 390px. md+ is unchanged. */}
+      {/* Title and actions sit side by side only from 2xl; below that the
+          action row stacks under the title. Side by side, the cluster is
+          capped at 70% so it wraps onto a second row instead of squeezing
+          the title down to an ellipsis. */}
       <div className="rounded-lg border bg-card p-4 shadow-xs md:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex min-w-0 items-start gap-4">
+        <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-start 2xl:justify-between">
+          <div className="flex min-w-0 flex-1 items-start gap-4">
             <div className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted md:flex">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 flex-col items-start gap-1.5 md:flex-row md:items-center md:gap-3">
+              <div className="flex min-w-0 flex-col items-start gap-1.5 md:flex-row md:flex-wrap md:items-center md:gap-3">
                 <h1
                   className="line-clamp-2 text-xl font-semibold tracking-tight [overflow-wrap:anywhere] md:line-clamp-1"
                   title={deviceName}
@@ -944,23 +970,26 @@ export default function DeviceDetails({
                   resting underline so they read as links beside plain text. */}
               <p
                 data-testid="device-header-subline"
-                className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground"
+                className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground"
               >
+                {/* Facts on one line, location on the next. Items are set
+                    apart by spacing rather than "·" separators: a separator
+                    strands itself at a line edge whenever the row wraps. */}
                 {showHostname && (
-                  <>
-                    <span data-testid="device-header-hostname" className="font-mono">
-                      {device.hostname}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                  </>
+                  <span data-testid="device-header-hostname" className="font-mono">
+                    {device.hostname}
+                  </span>
                 )}
                 <span>{formatOsLabel(device.os, device.osVersion, device.osBuild)}</span>
-                <span aria-hidden="true">·</span>
                 <span>
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <span aria-hidden="true">·</span>
+              </p>
+              <p
+                data-testid="device-header-location"
+                className="mt-0.5 text-sm text-muted-foreground"
+              >
                 <span>
                   <Trans
                     t={t}
@@ -1011,9 +1040,12 @@ export default function DeviceDetails({
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <WispLinkButton kind="device" id={device.id} orgId={device.orgId} />
-            <DeviceActions device={device} onAction={onAction} />
+          <div className="2xl:max-w-[70%] 2xl:shrink-0">
+            <DeviceActions
+              device={device}
+              onAction={onAction}
+              extraActions={<WispLinkButton kind="device" id={device.id} orgId={device.orgId} />}
+            />
           </div>
         </div>
       </div>
@@ -1051,79 +1083,47 @@ export default function DeviceDetails({
             {device.status !== "decommissioned" && (
               <DeviceQueuedActions deviceId={device.id} />
             )}
-            {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
-                User/Idle) — side by side on ≥xl (stacked and wrapping below,
-                since the Activity rail narrows this card at lg). Stats are
-                content-sized (flex, not an equal-width grid) with non-wrapping labels and values so e.g.
-                "14d 13h 24m" stays on one line; the username (arbitrary
-                length) truncates first, and the "Logged-in User" label
-                itself is also allowed to truncate as a last resort under
-                extreme width constraints (#7153) — both blocks get min-w-0
-                so the Health block can't starve the Activity block. */}
+            {/* Six stats on one even grid (6 across at xl, 3 at sm, 2 below)
+                instead of two content-sized flex groups with a divider, which
+                crowded CPU/RAM/Uptime together and spread the rest. Every cell
+                is min-w-0 and truncates, so an arbitrarily long username or
+                "14d 13h 24m" never pushes a neighbour out (#7153). */}
             <div
               data-testid="device-health-strip"
-              className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6"
+              className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-lg border bg-card px-5 py-4 sm:grid-cols-3 xl:grid-cols-6"
             >
-              <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
-                <div className="shrink-0">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
-                    <Cpu className="h-3.5 w-3.5" />
-                    CPU
-                  </div>
-                  <p data-testid="device-stat-cpu" className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatStat(device.cpuPercent)}
-                  </p>
-                </div>
-                <div className="shrink-0">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
-                    <MemoryStick className="h-3.5 w-3.5" />
-                    RAM
-                  </div>
-                  <p data-testid="device-stat-ram" className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatStat(device.ramPercent)}
-                  </p>
-                </div>
-                <div className="shrink-0">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5" />
-                    {t("deviceDetails.uptime")}{" "}
-                  </div>
-                  <p className="mt-1 whitespace-nowrap text-lg font-semibold">
-                    {formatUptime(device.uptimeSeconds)}
-                  </p>
-                </div>
-              </div>
-              <div
-                className="hidden w-px self-stretch bg-border xl:block"
-                aria-hidden="true"
+              <HeaderStat
+                icon={<Cpu className="h-3.5 w-3.5" />}
+                label="CPU"
+                value={formatStat(device.cpuPercent)}
+                testId="device-stat-cpu"
               />
-              <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
-                <div className="shrink-0">
-                  <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5" />
-                    {t("deviceDetails.lastSeen")}{" "}
-                  </div>
-                  <p className="mt-1 whitespace-nowrap text-lg font-semibold">
-                    {formatLastSeen(device.lastSeen, effectiveTimezone)}
-                  </p>
-                </div>
-                <div className="min-w-[9rem] flex-1">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    <User className="h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {t("deviceDetails.loggedInUser")}
-                    </span>
-                  </div>
-                  <p
-                    className="mt-1 truncate text-lg font-semibold"
-                    title={device.lastUser || undefined}
-                  >
-                    {device.lastUser || "—"}
-                  </p>
-                </div>
-                <div className="shrink-0">
-                  <DeviceUserIdleStat deviceId={device.id} />
-                </div>
+              <HeaderStat
+                icon={<MemoryStick className="h-3.5 w-3.5" />}
+                label="RAM"
+                value={formatStat(device.ramPercent)}
+                testId="device-stat-ram"
+              />
+              <HeaderStat
+                icon={<Clock className="h-3.5 w-3.5" />}
+                label={t("deviceDetails.uptime")}
+                value={formatUptime(device.uptimeSeconds)}
+              />
+              <HeaderStat
+                icon={<Clock className="h-3.5 w-3.5" />}
+                label={t("deviceDetails.lastSeen")}
+                value={formatLastSeen(device.lastSeen, effectiveTimezone)}
+                title={lastSeenValid ? formatDateTime(device.lastSeen, { timeZone: effectiveTimezone }) : undefined}
+              />
+              <HeaderStat
+                icon={<User className="h-3.5 w-3.5" />}
+                label={t("deviceDetails.loggedInUser")}
+                value={device.lastUser || "—"}
+                title={device.lastUser || undefined}
+                testId="device-stat-user"
+              />
+              <div className="min-w-0">
+                <DeviceUserIdleStat deviceId={device.id} />
               </div>
             </div>
 
@@ -1143,6 +1143,8 @@ export default function DeviceDetails({
             />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
+
+            <PhysicalPlacementCard subject="device" id={device.id} />
 
             <DeviceBillingCard deviceId={device.id} />
 

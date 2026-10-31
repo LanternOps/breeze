@@ -39,7 +39,15 @@ Compliance reports give you a point-in-time snapshot of your fleet's patch statu
 | **`low`** | Minor improvement or non-security fix with minimal operational impact |
 | **`unknown`** | Severity not yet classified by the patch source |
 
-A patch whose source published no severity is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
+**Derived ratings for Windows updates (agent 0.125.0+).** Windows Update often sends no MSRC rating. When it doesn't, the agent derives one from the update's classification and title, and the badge carries a small **Derived rating** note:
+
+- Security Updates and Critical Updates, and other updates titled "security update" or "cumulative update" (not preview cumulative updates), are rated **important**. A derived rating is never **critical**: only a real MSRC rating can be.
+- Update Rollups are rated **important** only when the title mentions security.
+- Definition updates (including Defender security intelligence), drivers, feature packs, tools and upgrades stay unrated.
+
+A derived rating counts for ring auto-approval like any other, so a ring that auto-approves **important** now also approves Windows cumulative and security updates that used to be unrated. A ring that auto-approves only **critical** is unaffected. A later real MSRC rating replaces the derived one.
+
+A patch whose source published no severity, and that the agent cannot rate, is shown as a muted **Unrated** badge with the note **"Will not auto-approve"**. Breeze never guesses a rating for it: an unrated patch is *not* treated as Low, and it is excluded from auto-approval — even when every severity box is ticked — unless the update ring explicitly opts in. See [Update Rings](/features/update-rings/#auto-approving-unrated-patches). Third-party application patches are a separate path and are unaffected by that opt-in.
 
 ### Approval States
 
@@ -90,7 +98,7 @@ The detail below documents the winget execution path specifically. Chocolatey (W
 
 The Breeze agent runs winget directly, in the agent's own **SYSTEM** process, against **machine scope** — there is no dependency on a user being logged in, and no separate helper process in the loop. Scanning, installing, and uninstalling third-party patches all happen the same way regardless of whether anyone is signed in to the device, consistent with how OS patches are already applied.
 
-Machine-wide (SYSTEM-scope) installs are fully scanned and patched. Per-user (per-profile) winget installs are also detected, on a best-effort basis through a helper running in the interactive user's session, so they appear in the patch list -- but they cannot be installed or remediated from the SYSTEM agent context, and attempting to do so returns an error.
+Machine-wide (SYSTEM-scope) installs are fully scanned and patched. Per-user (per-profile) winget installs are also detected, on a best-effort basis through a helper running in the interactive user's session, so they appear in the patch list -- but they cannot be installed or remediated from the SYSTEM agent context. Breeze therefore never sends them to the device: patch jobs, AI patch plans, and vulnerability remediation skip them (the device Patches tab shows them as excluded, "a per-user install that Breeze cannot apply yet"), and a direct install request for one is rejected with HTTP 409. An update ring or a manual approval cannot override this.
 
 <Aside type="note">
 This requires winget (the **App Installer**) to already be present on the device. It ships by default on Windows 10, Windows 11, and Windows Server 2025. On Windows Server 2019 and 2022, winget is often missing, and automatic provisioning of winget on those servers is a planned follow-up rather than something Breeze does today. Until it ships, a Server 2019/2022 device without winget reports the third-party engine as unavailable and simply detects no third-party patches — expected behavior, since servers of that vintage typically aren't running desktop apps like browsers or Zoom in the first place.
@@ -460,6 +468,14 @@ When `rebootAllowDeferral` is on and a restart is scheduled while someone is sig
 - Doing nothing — closing the dialog or letting its countdown run out — changes nothing. The restart proceeds exactly as scheduled; silence never postpones and never accelerates it.
 
 The deadline is an absolute cutoff, not a second budget: once it passes, the restart proceeds regardless of how much postponement budget is left. Once the postponement budget is spent, or the deadline no longer leaves room to defer, no further dialog is shown: the remaining warnings go back to being plain notifications, and they say "This restart can no longer be postponed." The final warning, fired as the OS-owned countdown begins, never offers a postponement either — by that point the countdown belongs to the operating system, not Breeze.
+
+**What the user sees.** A restart warning ladder runs from the moment the restart is scheduled until the machine goes down: a lead warning when the restart is booked, then reminders at 60, 15 and 5 minutes before the restart, then a final warning at one minute. Reminders that would land too close to the previous warning are skipped, so a short delay shows fewer rungs (a delay under two minutes collapses to the final warning alone).
+
+- **Dialog or notification.** With `rebootAllowDeferral` on, a warning that can still be postponed is a system-modal **Yes / No** message box on Windows (**Yes** is **Restart now**, **No** is the postpone button), and the equivalent native dialog on macOS and Linux. With postponing off, or once postponements are used up, every warning is a plain notification (on Windows and Linux, shown under the **Breeze** app name).
+- **Two-minute auto-close.** A dialog closes itself after 2 minutes, or sooner if the next warning is due first, with no decision recorded. The restart then proceeds as scheduled. A rung with less than 20 seconds before the next one shows a notification instead of a dialog.
+- **Postponing re-plans the schedule.** Each **Postpone** adds the postponement window to the restart's *scheduled* time, not to the moment of the click, and the ladder is rebuilt for the new time. The lead warning of the rebuilt ladder is a notification with the new time, so the dialog you just answered doesn't reopen; the reminders that follow offer the remaining postponements. The console's **Postponed N of M** badge updates after the device's next heartbeat.
+- **The final warning never offers buttons.** At one minute before the restart (**Restarting Now**, "Save your work now") the countdown belongs to the operating system, so there is nothing left to postpone. For delays of two minutes or more Breeze starts the OS shutdown countdown with a 60-second grace (a shorter delay uses the whole delay), so on Windows the system also typically shows its own "You're about to be signed out — Windows will shut down in 1 minute" notice at that moment. That notice comes from Windows, not Breeze, and can't be customised.
+- **Do Not Disturb and Focus Assist.** Notifications (toasts) can be hidden by Windows Focus Assist, macOS Focus or Do Not Disturb. A user who has one of these on may never see a notification-only warning, including the final one, before the restart. On Windows the dialogs are system-modal message boxes; macOS and Linux use native dialogs. None of them are toasts.
 
 If nobody is signed in or the desktop prompt can't be delivered — a server sitting at the logon screen, a headless machine — there's no dialog. The restart proceeds on schedule and the existing warnings are unaffected; this is expected behavior, not a failure, and there's no setting to change it.
 
