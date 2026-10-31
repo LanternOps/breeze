@@ -40,17 +40,29 @@ func rawFrame(t *testing.T, id string, seq uint64) []byte {
 	return frame
 }
 
-// recvTimesOut arms a short read deadline and asserts Recv returns a timeout
-// that callers recognise as one (the same net.Error / os.ErrDeadlineExceeded
-// checks the helper and breeze-backup loops use).
+// idleDeadline is how long recvTimesOut waits. The bytes under test are already
+// in the socket buffer when Recv starts, so the deadline only has to outlast the
+// gap between arming it and the first Read; a generous value keeps a stalled CI
+// host from timing out before those bytes are consumed (which would make the
+// test pass without exercising the resume path).
+const idleDeadline = 300 * time.Millisecond
+
+// recvTimesOut arms a read deadline and asserts Recv returns a timeout that
+// callers recognise as one (the same net.Error / os.ErrDeadlineExceeded checks
+// the helper and breeze-backup loops use).
 func recvTimesOut(t *testing.T, c *Conn) {
 	t.Helper()
-	if err := c.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+	if err := c.SetReadDeadline(time.Now().Add(idleDeadline)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
-	env, err := c.Recv()
+	_, err := c.Recv()
+	assertTimeout(t, err)
+}
+
+func assertTimeout(t *testing.T, err error) {
+	t.Helper()
 	if err == nil {
-		t.Fatalf("Recv returned envelope %q before the frame was complete", env.ID)
+		t.Fatal("Recv returned an envelope before the frame was complete")
 	}
 	var netErr net.Error
 	if !errors.Is(err, os.ErrDeadlineExceeded) && !(errors.As(err, &netErr) && netErr.Timeout()) {
@@ -131,7 +143,7 @@ func TestRecvTimeoutWithNoBytesStillIdle(t *testing.T) {
 	recvOK(t, reader, "only", 1)
 }
 
-// TestRecvTimeoutsAcrossLargeFrame delivers a near-limit body in many slices,
+// TestRecvTimeoutsAcrossLargeFrame delivers a 256 KiB body in several slices,
 // each separated by a timed-out Recv, the way a large frame trickles through a
 // pipe whose writer is descheduled between chunks.
 func TestRecvTimeoutsAcrossLargeFrame(t *testing.T) {
@@ -188,7 +200,9 @@ func TestRecvTooLargeReportsHeaderBytes(t *testing.T) {
 
 // TestRecvResumesFrameAfterReadDeadlineNetPipe repeats the header-then-late-body
 // case over net.Pipe, whose synchronous Write hands bytes straight to the
-// reader with no kernel buffer.
+// reader with no kernel buffer. net.Pipe's Write returns only once the reader
+// has consumed the bytes, so the header write completing proves Recv holds the
+// header; only then is the deadline forced. No step depends on timing.
 func TestRecvResumesFrameAfterReadDeadlineNetPipe(t *testing.T) {
 	readerRaw, writerRaw := net.Pipe()
 	defer func() { _ = readerRaw.Close() }()
@@ -196,23 +210,95 @@ func TestRecvResumesFrameAfterReadDeadlineNetPipe(t *testing.T) {
 	reader := NewConn(readerRaw)
 	frame := rawFrame(t, "piped", 1)
 
-	// net.Pipe's Write blocks until the reader has consumed the bytes, so each
-	// piece goes on its own goroutine and is awaited before moving on.
-	writePiece := func(b []byte) chan error {
-		done := make(chan error, 1)
-		go func() { _, err := writerRaw.Write(b); done <- err }()
-		return done
+	if err := reader.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
 	}
+	recvErr := make(chan error, 1)
+	go func() { _, err := reader.Recv(); recvErr <- err }()
 
-	headerDone := writePiece(frame[:4])
-	recvTimesOut(t, reader) // consumes the header, then times out on the body
-	if err := <-headerDone; err != nil {
+	if _, err := writerRaw.Write(frame[:4]); err != nil {
 		t.Fatalf("write header: %v", err)
 	}
+	// Header consumed; Recv is now blocked on the body. Fire the deadline.
+	if err := reader.SetReadDeadline(time.Now()); err != nil {
+		t.Fatalf("force deadline: %v", err)
+	}
+	assertTimeout(t, <-recvErr)
 
-	bodyDone := writePiece(frame[4:])
+	bodyDone := make(chan error, 1)
+	go func() { _, err := writerRaw.Write(frame[4:]); bodyDone <- err }()
 	recvOK(t, reader, "piped", 1)
 	if err := <-bodyDone; err != nil {
 		t.Fatalf("write body: %v", err)
+	}
+}
+
+// TestRecvBadFrameAfterResumeIsConsumedOnce: a resumed frame that fails HMAC
+// validation is reported once and dropped; the next Recv reads the following
+// frame rather than re-parsing the bad one.
+func TestRecvBadFrameAfterResumeIsConsumedOnce(t *testing.T) {
+	readerRaw, writerRaw := createSocketPair(t)
+	defer func() { _ = readerRaw.Close() }()
+	defer func() { _ = writerRaw.Close() }()
+	reader := NewConn(readerRaw)
+
+	bad := rawFrame(t, "bad", 1)
+	// Corrupt one hex digit of the HMAC; length and JSON stay valid.
+	i := strings.Index(string(bad), `"hmac":"`) + len(`"hmac":"`)
+	if bad[i] == '0' {
+		bad[i] = '1'
+	} else {
+		bad[i] = '0'
+	}
+
+	mustWrite(t, writerRaw, bad[:4])
+	recvTimesOut(t, reader)
+	mustWrite(t, writerRaw, bad[4:])
+	if err := reader.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := reader.Recv(); err == nil || !strings.Contains(err.Error(), "HMAC mismatch") {
+		t.Fatalf("Recv error = %v, want HMAC mismatch", err)
+	}
+
+	mustWrite(t, writerRaw, rawFrame(t, "good", 2))
+	recvOK(t, reader, "good", 2)
+}
+
+// TestRecvFramingErrorIsSticky: once the stream has lost sync, every later
+// Recv reports the same error without consuming more bytes or blocking.
+func TestRecvFramingErrorIsSticky(t *testing.T) {
+	cases := []struct {
+		name   string
+		header []byte
+		want   string
+	}{
+		{"too large", []byte(`{"id`), "message too large: 2065852772"},
+		{"zero length", []byte{0, 0, 0, 0}, "zero-length message"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			readerRaw, writerRaw := createSocketPair(t)
+			defer func() { _ = readerRaw.Close() }()
+			defer func() { _ = writerRaw.Close() }()
+			reader := NewConn(readerRaw)
+
+			// Deliver the bad header across a timeout, then a valid frame that
+			// must not be mistaken for a fresh boundary.
+			mustWrite(t, writerRaw, tc.header[:2])
+			recvTimesOut(t, reader)
+			mustWrite(t, writerRaw, tc.header[2:])
+			mustWrite(t, writerRaw, rawFrame(t, "later", 1))
+
+			for attempt := 0; attempt < 2; attempt++ {
+				if err := reader.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+					t.Fatalf("set read deadline: %v", err)
+				}
+				_, err := reader.Recv()
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("attempt %d: Recv error = %v, want %q", attempt, err, tc.want)
+				}
+			}
+		})
 	}
 }
