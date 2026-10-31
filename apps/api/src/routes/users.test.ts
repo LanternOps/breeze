@@ -23,7 +23,7 @@ vi.mock('../services/avatarStorage', async (importOriginal) => {
     ...actual,
     writeAvatar: vi.fn(async (userId: string, mime: 'image/png' | 'image/jpeg' | 'image/webp', data: Buffer) => {
       avatarStore.set(userId, { mime, data });
-      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar`, updatedAt: new Date() };
+      return { ext: actual.extForMime(mime), size: data.length, avatarUrl: `/api/v1/users/${userId}/avatar?v=test-version`, updatedAt: new Date() };
     }),
     statAvatar: vi.fn(async (userId: string) => {
       const a = avatarStore.get(userId);
@@ -3828,7 +3828,7 @@ describe('user routes', () => {
 
         expect(res.status).toBe(200);
         const data = await res.json();
-        expect(data.avatarUrl).toBe(`/api/v1/users/${ME_ID}/avatar`);
+        expect(data.avatarUrl).toBe(`/api/v1/users/${ME_ID}/avatar?v=test-version`);
         expect(data.mime).toBe('image/png');
         expect(data.size).toBe(PNG_BYTES.length);
       });

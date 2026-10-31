@@ -1292,7 +1292,7 @@ describe('mobile routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
-    it('should leave deviceless alert visible to a site-restricted caller', async () => {
+    it('should hide deviceless alert to a site-restricted caller', async () => {
       authState.permissions = { allowedSiteIds: [SITE_A] };
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
@@ -1307,8 +1307,8 @@ describe('mobile routes', () => {
         method: 'POST'
       });
 
-      expect(res.status).toBe(200);
-      expect(db.update).toHaveBeenCalled();
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it('should not narrow an unrestricted caller (allowedSiteIds undefined)', async () => {
@@ -1449,7 +1449,7 @@ describe('mobile routes', () => {
       expect(db.update).toHaveBeenCalled();
     });
 
-    it('should leave deviceless alert visible to a site-restricted caller', async () => {
+    it('should hide deviceless alert to a site-restricted caller', async () => {
       authState.permissions = { allowedSiteIds: [SITE_A] };
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
@@ -1466,8 +1466,8 @@ describe('mobile routes', () => {
         body: JSON.stringify({ note: 'done' })
       });
 
-      expect(res.status).toBe(200);
-      expect(db.update).toHaveBeenCalled();
+      expect(res.status).toBe(404);
+      expect(db.update).not.toHaveBeenCalled();
     });
 
     it('should not narrow an unrestricted caller (allowedSiteIds undefined)', async () => {

@@ -223,3 +223,8 @@ Update agents to a release containing this change before relying on the provider
 ### IOC sweep limits in Compose (#10050)
 
 The `SECURITY_SWEEP_*` limits and `IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD` are now passed to the API by both Compose files and listed, with their defaults, in `.env.example`. Set them in `.env` to tune sweeps; leaving them unset keeps the defaults. Earlier releases needed a manual edit of the `api` service to change them.
+### AI tools — Pax8 (#6754 W15)
+- `get_pax8_status`: inspect integration health and company readiness with full partner access.
+- `search_pax8_products`: find mapped products and read provisioning requirements, commitments and live vendor pricing.
+- `manage_pax8_subscriptions`: inspect seat drift, request a supervised sync, or link and unlink billing contract lines.
+- `manage_pax8_orders`: stage and edit drafts, preview live costs and commitments, and request a supervised dry run.

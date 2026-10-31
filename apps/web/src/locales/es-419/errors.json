@@ -33,5 +33,6 @@
   "NO_UPDATES_PROVIDED": "No se proporcionaron cambios",
   "PARTNER_GROUP_TARGET_UNSUPPORTED": "Los grupos de dispositivos de todo el socio solo pueden ser destinatarios de políticas de configuración del socio",
   "PARTNER_GROUP_READ_ONLY": "Este grupo de dispositivos de todo el socio no se puede modificar aquí",
-  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Los grupos de dispositivos de todo el socio no se pueden usar en filtros de grupos, y sus filtros no pueden hacer referencia a grupos u organizaciones"
+  "PARTNER_GROUP_FILTER_UNSUPPORTED": "Los grupos de dispositivos de todo el socio no se pueden usar en filtros de grupos, y sus filtros no pueden hacer referencia a grupos u organizaciones",
+  "SCAN_ALREADY_QUEUED": "Ya hay un análisis en cola para este dispositivo."
 }

@@ -1134,7 +1134,7 @@
       "groups": {
         "business": "Attività",
         "general": "Generale",
-        "businessDescription": "Numeri interni dell’MSP — rispetto degli SLA, fatturabilità dei tecnici e crediti scaduti — riservati al personale."
+        "businessDescription": "Numeri sull’attività dell’MSP stesso, non sui dispositivi dei clienti — riservati al personale."
       },
       "delivery": {
         "contactsLoading": "Caricamento dei contatti dell’organizzazione…",

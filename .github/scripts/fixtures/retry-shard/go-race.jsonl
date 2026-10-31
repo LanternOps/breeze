@@ -1,0 +1,39 @@
+{"Time":"2026-10-30T08:24:01.26221-06:00","Action":"start","Package":"github.com/breeze-rmm/agent/racy"}
+{"Time":"2026-10-30T08:24:01.758777-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace"}
+{"Time":"2026-10-30T08:24:01.758856-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"=== RUN   TestCounterRace\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.759165-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"==================\n"}
+{"Time":"2026-10-30T08:24:01.759189-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"WARNING: DATA RACE\n"}
+{"Time":"2026-10-30T08:24:01.759196-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"Read at 0x00c000112188 by goroutine 8:\n"}
+{"Time":"2026-10-30T08:24:01.759202-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  github.com/breeze-rmm/agent/racy.TestCounterRace.func1()\n"}
+{"Time":"2026-10-30T08:24:01.759219-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      agent/racy/r_test.go:13 +0x68\n"}
+{"Time":"2026-10-30T08:24:01.759229-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"\n"}
+{"Time":"2026-10-30T08:24:01.759239-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"Previous write at 0x00c000112188 by goroutine 7:\n"}
+{"Time":"2026-10-30T08:24:01.759248-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  github.com/breeze-rmm/agent/racy.TestCounterRace.func1()\n"}
+{"Time":"2026-10-30T08:24:01.759253-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      agent/racy/r_test.go:13 +0x78\n"}
+{"Time":"2026-10-30T08:24:01.759258-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"\n"}
+{"Time":"2026-10-30T08:24:01.759262-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"Goroutine 8 (running) created at:\n"}
+{"Time":"2026-10-30T08:24:01.759266-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  github.com/breeze-rmm/agent/racy.TestCounterRace()\n"}
+{"Time":"2026-10-30T08:24:01.759271-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      agent/racy/r_test.go:13 +0x6c\n"}
+{"Time":"2026-10-30T08:24:01.759276-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  testing.tRunner()\n"}
+{"Time":"2026-10-30T08:24:01.759281-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      $GOROOT/src/testing/testing.go:2193 +0x164\n"}
+{"Time":"2026-10-30T08:24:01.759289-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  testing.(*T).Run.gowrap1()\n"}
+{"Time":"2026-10-30T08:24:01.759293-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      $GOROOT/src/testing/testing.go:2258 +0x34\n"}
+{"Time":"2026-10-30T08:24:01.759304-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"\n"}
+{"Time":"2026-10-30T08:24:01.759328-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"Goroutine 7 (finished) created at:\n"}
+{"Time":"2026-10-30T08:24:01.759331-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  github.com/breeze-rmm/agent/racy.TestCounterRace()\n"}
+{"Time":"2026-10-30T08:24:01.759335-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      agent/racy/r_test.go:13 +0x6c\n"}
+{"Time":"2026-10-30T08:24:01.759338-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  testing.tRunner()\n"}
+{"Time":"2026-10-30T08:24:01.759341-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      $GOROOT/src/testing/testing.go:2193 +0x164\n"}
+{"Time":"2026-10-30T08:24:01.759344-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"  testing.(*T).Run.gowrap1()\n"}
+{"Time":"2026-10-30T08:24:01.759347-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"      $GOROOT/src/testing/testing.go:2258 +0x34\n"}
+{"Time":"2026-10-30T08:24:01.75935-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"==================\n"}
+{"Time":"2026-10-30T08:24:01.759356-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"    testing.go:1865: race detected during execution of test\n","OutputType":"error"}
+{"Time":"2026-10-30T08:24:01.759368-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Output":"--- FAIL: TestCounterRace (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.759371-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/racy","Test":"TestCounterRace","Elapsed":0}
+{"Time":"2026-10-30T08:24:01.759377-06:00","Action":"run","Package":"github.com/breeze-rmm/agent/racy","Test":"TestFine"}
+{"Time":"2026-10-30T08:24:01.75938-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestFine","Output":"=== RUN   TestFine\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.759385-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Test":"TestFine","Output":"--- PASS: TestFine (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.759388-06:00","Action":"pass","Package":"github.com/breeze-rmm/agent/racy","Test":"TestFine","Elapsed":0}
+{"Time":"2026-10-30T08:24:01.759403-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.760147-06:00","Action":"output","Package":"github.com/breeze-rmm/agent/racy","Output":"FAIL\tgithub.com/breeze-rmm/agent/racy\t0.498s\n","OutputType":"frame"}
+{"Time":"2026-10-30T08:24:01.760157-06:00","Action":"fail","Package":"github.com/breeze-rmm/agent/racy","Elapsed":0.498}

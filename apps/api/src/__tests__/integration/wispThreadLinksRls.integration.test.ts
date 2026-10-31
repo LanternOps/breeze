@@ -108,7 +108,7 @@ type LinkInsert = typeof wispThreadLinks.$inferInsert;
 const linkValues = (f: Fixture, orgId: string | null, extra: Partial<LinkInsert> = {}): LinkInsert => ({
   threadId: f.threadA, partnerId: f.partnerA, orgId,
   entityKind: orgId ? 'ticket' : 'user', entityId: randomUUID(),
-  label: 'T-1042 Printer offline', addedByUserId: f.userA, ...extra,
+  label: 'T-1042 Printer offline', addedByUserId: f.userA, source: 'user_pin', ...extra,
 });
 
 const insertLink = (f: Fixture, orgId: string | null, extra: Partial<LinkInsert> = {}) =>
