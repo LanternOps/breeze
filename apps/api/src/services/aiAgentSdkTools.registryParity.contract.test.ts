@@ -26,6 +26,7 @@
  * aiGuardrails.readonly.contract.test.ts.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { aiTools } from './aiToolNames';
 import { TOOL_TIERS, SESSION_TOOL_DESCRIPTIONS, attachRegistryMeta, buildBreezeSdkTools } from './aiAgentSdkTools';
@@ -650,10 +651,19 @@ describe('SDK action enum === registry action enum (#10161)', () => {
     expect(actionEnumDrift().filter((n) => !KNOWN_SDK_ACTION_ENUM_DRIFT.has(n))).toEqual([]);
   });
 
-  it('pins the two tools #10161 fixed', () => {
+  it('pins the two tools #10161 fixed: the declared chat shapes parse merge and cancel payloads', () => {
     const drift = actionEnumDrift();
     expect(drift).not.toContain('manage_tickets');
     expect(drift).not.toContain('system_cleanup');
+    const declared = declaredToolsByName();
+    const A = '11111111-1111-4111-8111-111111111111';
+    const B = '22222222-2222-4222-8222-222222222222';
+    const tickets = z.object(declared.get('manage_tickets')!.inputSchema as z.ZodRawShape)
+      .safeParse({ action: 'merge', ticketId: A, intoTicketId: B, notifyRequester: false });
+    expect(tickets.success).toBe(true);
+    expect((tickets.data as Record<string, unknown>).intoTicketId).toBe(B); // not stripped
+    expect(z.object(declared.get('system_cleanup')!.inputSchema as z.ZodRawShape)
+      .safeParse({ deviceId: A, action: 'cancel', cleanupRunId: B }).success).toBe(true);
   });
 
   it('KNOWN_SDK_ACTION_ENUM_DRIFT has no stale entries — the list may only shrink', () => {

@@ -382,6 +382,18 @@ type FailSystemCleanupArgs = {
 };
 
 export async function failSystemCleanupRunAndCancelCommand(args: FailSystemCleanupArgs): Promise<boolean> {
+  return (await failSystemCleanupRunAndCancelCommandDetailed(args)) !== null;
+}
+
+/**
+ * The same transaction, reporting whether the COMMAND was cancelled too:
+ * `null` = lost the run CAS (nothing changed); `commandCancelled: false` =
+ * the run is failed but the device had already claimed its command, so the
+ * cleaner may still run to completion (#10161 review).
+ */
+async function failSystemCleanupRunAndCancelCommandDetailed(
+  args: FailSystemCleanupArgs,
+): Promise<{ commandCancelled: boolean } | null> {
   return withDbAccessContext(dbContextFor({ orgId: args.orgId }), () =>
     db.transaction((tx) => failSystemCleanupRunInTransaction(tx, args)),
   );
@@ -390,7 +402,7 @@ export async function failSystemCleanupRunAndCancelCommand(args: FailSystemClean
 async function failSystemCleanupRunInTransaction(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   args: FailSystemCleanupArgs,
-): Promise<boolean> {
+): Promise<{ commandCancelled: boolean } | null> {
   const [run] = await tx
     .update(deviceFilesystemCleanupRuns)
     .set({ status: 'failed', error: args.error, updatedAt: new Date() })
@@ -403,7 +415,7 @@ async function failSystemCleanupRunInTransaction(
       eq(deviceFilesystemCleanupRuns.status, 'running'),
     ))
     .returning({ id: deviceFilesystemCleanupRuns.id, commandId: deviceFilesystemCleanupRuns.commandId });
-  if (!run) return false;
+  if (!run) return null;
 
   {
     const completedAt = new Date();
@@ -428,10 +440,10 @@ async function failSystemCleanupRunInTransaction(
       .returning({ id: deviceCommands.id });
     // Losing this CAS is fine and expected: the agent already claimed it,
     // so a real result is on its way and the late-result branch in the
-    // handler records it without flipping the status back.
-    void cancelled;
+    // handler records it without flipping the status back. The caller is
+    // told, so an operator is never told a started cleaner was stopped.
+    return { commandCancelled: cancelled !== undefined };
   }
-  return true;
 }
 
 function dbContextFor(device: { orgId: string }): DbAccessContext {
@@ -649,7 +661,8 @@ export async function resolveSystemCleanupRunStatus(args: {
 }
 
 export type SystemCleanupCancelResult =
-  | { ok: true; cleanupRunId: string; commandId: string | null }
+  /** commandCancelled false: the device had already claimed the command; the cleaner may still finish. */
+  | { ok: true; cleanupRunId: string; commandId: string | null; commandCancelled: boolean }
   | { ok: false; status: 404; error: 'run_not_found' }
   | { ok: false; status: 409; error: 'not_running'; runStatus: string };
 
@@ -683,10 +696,10 @@ export async function cancelSystemCleanupRun(args: {
   if (!run) return { ok: false, status: 404, error: 'run_not_found' };
   if (run.status !== 'running') return { ok: false, status: 409, error: 'not_running', runStatus: run.status };
 
-  const finalised = await failSystemCleanupRunAndCancelCommand({
+  const finalised = await failSystemCleanupRunAndCancelCommandDetailed({
     runId: cleanupRunId, deviceId: device.id, orgId: device.orgId, error: 'cancelled_by_operator',
   });
-  if (!finalised) {
+  if (finalised === null) {
     // Lost the CAS: a real result (or another cancel) landed between the read
     // above and here. Re-read rather than assume `failed`: the winner could be
     // a completed `executed` run, and reporting a successful run as failed is
@@ -698,5 +711,5 @@ export async function cancelSystemCleanupRun(args: {
       .limit(1);
     return { ok: false, status: 409, error: 'not_running', runStatus: current?.status ?? 'failed' };
   }
-  return { ok: true, cleanupRunId, commandId: run.commandId ?? null };
+  return { ok: true, cleanupRunId, commandId: run.commandId ?? null, commandCancelled: finalised.commandCancelled };
 }

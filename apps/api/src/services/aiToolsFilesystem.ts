@@ -955,12 +955,16 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           if (cancelled.status === 404) return JSON.stringify({ error: 'Cleanup run not found' });
           // Same F-4 lesson as run_in_progress below: a bare error next to a
           // status reads like success, so say plainly nothing was cancelled.
+          // A re-read that still says `running` means the cancel lost its
+          // CAS for some other reason; never call that "no longer running".
           return JSON.stringify({
             error: 'not_running',
             refused: true,
             cleanupRunId,
             status: cancelled.runStatus,
-            note: `Nothing was cancelled: this run is no longer running (status ${cancelled.runStatus}).`,
+            note: cancelled.runStatus === 'running'
+              ? 'Nothing was cancelled: the cancel did not take effect and the run still reads running. Check status before trying again.'
+              : `Nothing was cancelled: this run is no longer running (status ${cancelled.runStatus}).`,
           });
         }
         void createAuditLogAsync({
@@ -973,6 +977,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           details: {
             cleanupRunId,
             commandId: cancelled.commandId,
+            commandCancelled: cancelled.commandCancelled,
             surface: 'ai_tool',
             ...(flowActor ? flowActor.originDetails : {}),
           },
@@ -980,11 +985,25 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }).catch((auditError: unknown) => {
           console.error('[system_cleanup] cancel audit write failed (non-fatal)', { deviceId: device.id, error: auditError });
         });
+        // Only a command the device had not claimed is actually stopped. A
+        // claimed one keeps running on the device, so do not say "cancelled"
+        // for it (#10161 review): the cleaner may still delete files.
+        if (cancelled.commandCancelled) {
+          return JSON.stringify({
+            cleanupRunId,
+            status: 'failed',
+            cancelled: true,
+            commandCancelled: true,
+            note: 'Cancelled before the device started it: no cleaner ran.',
+          });
+        }
         return JSON.stringify({
           cleanupRunId,
           status: 'failed',
-          cancelled: true,
-          note: 'The run is marked failed and its command was cancelled if the device had not claimed it. A cleaner the device already started may still finish; its result is recorded on the run but does not change this status.',
+          cancelled: false,
+          runMarkedFailed: true,
+          commandCancelled: false,
+          note: 'The device had already started this run, so it could not be stopped. The run is marked failed, but the cleaner may still finish and free space; its result is recorded on the run without changing this status.',
         });
       }
 

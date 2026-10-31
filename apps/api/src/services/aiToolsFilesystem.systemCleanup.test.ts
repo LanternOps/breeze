@@ -47,7 +47,7 @@ const serviceState = vi.hoisted(() => ({
   runResult: { ok: true, commandId: 'cmd-run-1', cleanupRunId: 'run-9' } as Record<string, unknown>,
   awaited: { status: 'completed', result: { catalogVersion: 1, actions: [], volumesBefore: [] } } as Record<string, unknown>,
   statusResult: { ok: false, status: 404, error: 'run_not_found' } as Record<string, unknown>,
-  cancelResult: { ok: true, cleanupRunId: '44444444-4444-4444-8444-444444444444', commandId: 'cmd-run-1' } as Record<string, unknown>,
+  cancelResult: { ok: true, cleanupRunId: '44444444-4444-4444-8444-444444444444', commandId: 'cmd-run-1', commandCancelled: true } as Record<string, unknown>,
   cancelArgs: [] as Record<string, unknown>[],
   listArgs: [] as Record<string, unknown>[],
   runArgs: [] as Record<string, unknown>[],
@@ -141,7 +141,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     serviceState.awaitArgs = [];
     serviceState.statusArgs = [];
     serviceState.cancelArgs = [];
-    serviceState.cancelResult = { ok: true, cleanupRunId: RUN_ID, commandId: 'cmd-run-1' };
+    serviceState.cancelResult = { ok: true, cleanupRunId: RUN_ID, commandId: 'cmd-run-1', commandCancelled: true };
     auditState.rows = [];
     serviceState.listResult = { ok: true, commandId: 'cmd-list-1' };
     serviceState.runResult = { ok: true, commandId: 'cmd-run-1', cleanupRunId: 'run-9', deadlineAt: DEADLINE };
@@ -445,20 +445,53 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
       expect(auditState.rows).toHaveLength(0);
     });
 
-    it('fails a running run through the shared service, audits once, and says a started cleaner may still finish', async () => {
+    it('cancels a run the device had not started through the shared service, and audits once as the user', async () => {
       const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
       const result = JSON.parse(raw);
       expect(serviceState.cancelArgs).toEqual([{ device: { id: DEVICE_ID, orgId: ORG_ID }, cleanupRunId: RUN_ID }]);
-      expect(result).toMatchObject({ cleanupRunId: RUN_ID, status: 'failed', cancelled: true });
-      expect(result.note).toMatch(/already started/i);
+      expect(result).toMatchObject({ cleanupRunId: RUN_ID, status: 'failed', cancelled: true, commandCancelled: true });
+      expect(result.note).toMatch(/before the device started/i);
       expect(auditState.rows).toHaveLength(1);
       expect(auditState.rows[0]).toMatchObject({
         orgId: ORG_ID,
+        actorType: 'user',
+        actorId: 'user-1',
         action: 'device.filesystem.system_cleanup.cancel',
         resourceId: DEVICE_ID,
         initiatedBy: 'ai',
         result: 'success',
-        details: { cleanupRunId: RUN_ID, commandId: 'cmd-run-1', surface: 'ai_tool' },
+        details: { cleanupRunId: RUN_ID, commandId: 'cmd-run-1', commandCancelled: true, surface: 'ai_tool' },
+      });
+    });
+
+    // Review (silent-failure): a claimed command keeps running on the device. The model must not be told
+    // "cancelled" when the cleaner may still delete files.
+    it('does not claim a cancel when the device had already started the cleaner', async () => {
+      serviceState.cancelResult = { ok: true, cleanupRunId: RUN_ID, commandId: 'cmd-run-1', commandCancelled: false };
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      const result = JSON.parse(raw);
+      expect(result).toMatchObject({ cleanupRunId: RUN_ID, status: 'failed', cancelled: false, runMarkedFailed: true, commandCancelled: false });
+      expect(result.note).toMatch(/already started/i);
+      expect(result.note).toMatch(/may still finish/i);
+      expect(auditState.rows[0]).toMatchObject({ details: { commandCancelled: false } });
+    });
+
+    it('audits a flow principal\'s cancel as system automation with its run, never as ai_agent', async () => {
+      dbMockState.userRows = [];
+      await getTool('system_cleanup').handler(
+        { deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID },
+        makeAuth({
+          principal: { kind: 'flow', flowId: 'flow-1', runId: 'flow-run-1' },
+          user: { id: 'flow-1', email: 'flow+flow-1@breeze.internal', name: 'Nightly' },
+          aiOrigin: { kind: 'flow', flowRunId: 'flow-run-1' },
+        } as Partial<AuthContext>),
+      );
+      expect(auditState.rows).toHaveLength(1);
+      expect(auditState.rows[0]).toMatchObject({
+        actorType: 'system',
+        actorId: '00000000-0000-0000-0000-000000000000',
+        initiatedBy: 'automation',
+        details: { aiInitiatorKind: 'flow', flowRunId: 'flow-run-1', surface: 'ai_tool' },
       });
     });
 
@@ -481,6 +514,15 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
       expect(JSON.parse(raw)).toMatchObject({ error: 'not_running', refused: true, status: 'executed' });
       expect(JSON.parse(raw).cancelled).toBeUndefined();
       expect(auditState.rows).toHaveLength(0);
+    });
+
+    it('does not say "no longer running" when the re-read still shows the run running', async () => {
+      serviceState.cancelResult = { ok: false, status: 409, error: 'not_running', runStatus: 'running' };
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      const result = JSON.parse(raw);
+      expect(result).toMatchObject({ refused: true, status: 'running' });
+      expect(result.note).not.toMatch(/no longer running/i);
+      expect(result.note).toMatch(/did not take effect/i);
     });
 
     it('refuses a device the caller cannot reach before calling the service', async () => {

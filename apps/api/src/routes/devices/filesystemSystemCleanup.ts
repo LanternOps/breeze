@@ -318,7 +318,7 @@ filesystemSystemCleanupRoutes.post(
       resourceType: 'device',
       resourceId: deviceId,
       resourceName: device.hostname,
-      details: { cleanupRunId, commandId: cancelled.commandId },
+      details: { cleanupRunId, commandId: cancelled.commandId, commandCancelled: cancelled.commandCancelled },
       result: 'success',
     });
 
