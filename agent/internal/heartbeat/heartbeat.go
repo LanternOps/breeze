@@ -410,6 +410,9 @@ type HelperSettings struct {
 	// ("auto" | "always-on" | "on-demand"); empty means auto. Applied to the
 	// sessionbroker lifecycle, NOT to the Tauri Assist manager.
 	LifecycleMode string `json:"lifecycleMode,omitempty"`
+	// Branding is the partner/organization runtime branding decision (OD3);
+	// nil = not sent (older server), the Agent keeps its last-known branding.
+	Branding *helper.BrandingDecision `json:"branding,omitempty"`
 }
 
 type Command struct {

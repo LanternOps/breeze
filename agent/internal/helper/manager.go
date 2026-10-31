@@ -35,6 +35,9 @@ type Settings struct {
 	ShowDeviceInfo     bool   `json:"showDeviceInfo" yaml:"show_device_info"`
 	ShowRequestSupport bool   `json:"showRequestSupport" yaml:"show_request_support"`
 	PortalUrl          string `json:"portalUrl,omitempty" yaml:"portal_url,omitempty"`
+	// Branding is the heartbeat branding decision; nil = not sent, keep the
+	// last-known branding (never cleared by absence).
+	Branding *BrandingDecision `json:"branding,omitempty" yaml:"-"`
 }
 
 const watcherStopTimeout = 2 * time.Second
@@ -48,6 +51,9 @@ type Config struct {
 	DeviceName         string `yaml:"device_name,omitempty"`
 	DeviceStatus       string `yaml:"device_status,omitempty"`
 	LastCheckin        string `yaml:"last_checkin,omitempty"`
+	// Branding is the persisted runtime branding (OD3); omitted when unset so
+	// an unbranded config is byte-identical to before.
+	Branding *Branding `yaml:"branding,omitempty"`
 }
 
 // SpawnFunc launches a helper in the given session with extra CLI args.
@@ -485,7 +491,7 @@ func (m *Manager) Apply(settings *Settings) {
 
 	activeSessions := m.sessionEnumerator.ActiveSessions()
 	activeKeys := make(map[string]bool, len(activeSessions))
-	cfg := settingsToConfig(settings)
+	baseCfg := settingsToConfig(settings)
 
 	for _, si := range activeSessions {
 		activeKeys[si.Key] = true
@@ -496,13 +502,19 @@ func (m *Manager) Apply(settings *Settings) {
 		}
 
 		if settings.Enabled {
+			// Each session keeps its own branding, read from its own file so a
+			// missing decision keeps the last-known value across restarts.
+			cfg := m.sessionConfig(state, baseCfg, settings.Branding)
 			if !state.configUnchanged(cfg) {
 				if err := m.writeSessionConfig(state, cfg, si); err != nil {
 					log.Error("failed to write per-session config", "session", si.Key, "error", err.Error())
 					continue
 				}
 				if !m.helperSupportsConfigFlag() {
-					if err := m.writeLegacyConfig(cfg); err != nil {
+					// The legacy file is shared by all sessions, so it carries no branding.
+					legacyCfg := *cfg
+					legacyCfg.Branding = nil
+					if err := m.writeLegacyConfig(&legacyCfg); err != nil {
 						log.Warn("failed to write legacy helper config fallback", "error", err.Error())
 					}
 				}
@@ -686,6 +698,44 @@ func settingsToConfig(s *Settings) *Config {
 	}
 }
 
+// sessionConfig returns the config to write for one session: the shared
+// settings plus that session's branding after applying the decision. An
+// invalid decision is logged once and leaves the last valid branding. If the
+// stored branding cannot be read, the last branding this Manager wrote stands
+// in for it: an absent decision must never clear on a transient read failure.
+//
+// Known gap (follow-up): the read here and the write that follows are not
+// serialized with ClearBranding, which re-enrollment runs in another process.
+// A heartbeat landing in that window can rewrite the old tenant's branding;
+// it is corrected by the next set/cleared decision for the new scope.
+func (m *Manager) sessionConfig(state *sessionState, base *Config, d *BrandingDecision) *Config {
+	cfg := *base
+	current, readErr := readBranding(state.configPath)
+	if readErr != nil {
+		current = nil
+		if state.lastConfig != nil {
+			current = state.lastConfig.Branding
+		}
+		if !state.brandingReadLogged {
+			log.Warn("could not read stored helper branding; keeping last known", "session", state.key, "error", readErr.Error())
+			state.brandingReadLogged = true
+		}
+	} else {
+		state.brandingReadLogged = false
+	}
+	next, err := resolveBranding(current, d)
+	if err != nil {
+		if !state.brandingRejectLogged {
+			log.Warn("rejected helper branding from server", "session", state.key, "error", err.Error())
+			state.brandingRejectLogged = true
+		}
+	} else {
+		state.brandingRejectLogged = false
+	}
+	cfg.Branding = next
+	return &cfg
+}
+
 func (m *Manager) legacyConfigPath() string {
 	return filepath.Join(m.baseDir, "helper_config.yaml")
 }
@@ -737,6 +787,10 @@ func (m *Manager) writeSessionConfig(state *sessionState, cfg *Config, si Sessio
 	}
 
 	copied := *cfg
+	if cfg.Branding != nil {
+		b := *cfg.Branding
+		copied.Branding = &b
+	}
 	state.lastConfig = &copied
 	state.lastApplied = time.Now()
 	return nil

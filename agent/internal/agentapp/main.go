@@ -25,6 +25,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
+	"github.com/breeze-rmm/agent/internal/helper"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
@@ -1710,6 +1711,19 @@ func clearPromptIdentityAfterEnrol() {
 	}
 }
 
+// helperBrandingBaseDir is where the per-session helper configs live (a seam
+// for tests).
+var helperBrandingBaseDir = config.ConfigDir
+
+// clearHelperBrandingBeforeEnrol drops the persisted Helper branding (OD3): a
+// new enrolment may belong to another partner or organization. Local only. A
+// failure is logged, not fatal: the next heartbeat's decision replaces it.
+func clearHelperBrandingBeforeEnrol() {
+	if err := helper.ClearBranding(helperBrandingBaseDir()); err != nil {
+		logging.L("enroll").Warn("could not clear persisted Helper branding before enrollment", "error", err.Error())
+	}
+}
+
 // enrollPreflightFailure reports a config directory the agent could not
 // create or secure BEFORE the enroll request, so nothing exists server-side.
 func enrollPreflightFailure(cfgFile string, err error) *enrollFailure {
@@ -1962,6 +1976,7 @@ func enrollWithConfig(cfg *config.Config, cfgFile, enrollmentKey, secret string)
 		}
 	}
 
+	clearHelperBrandingBeforeEnrol()
 	if err := saveEnrollmentFn(cfg, cfgFile); err != nil {
 		return enrollSaveFailure(cfg, cfgFile, err)
 	}
