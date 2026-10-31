@@ -18,7 +18,7 @@ import type {
   SoftwareDeploymentAggregateStatus,
   SoftwareDeploymentCounts,
 } from "./DeploymentList";
-import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from "@breeze/shared";
+import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS, commandOutputExcerpt } from "@breeze/shared";
 import { describeInFlight, type InFlightStage } from "./deploymentInFlight";
 import RestorePointBadge, { type RestorePointBadgeOutcome } from "../restorePoints/RestorePointBadge";
 
@@ -556,6 +556,13 @@ export default function DeploymentProgress({
                   result.errorMessage,
                 );
                 const inFlight = describeInFlight(result);
+                // #10307: the vendor's reason (e.g. ctrld "Invalid provisioning
+                // code") is often only in the output, never in the exit code.
+                // ANSI-stripped, bounded tail; rendered as a text node only.
+                const outputExcerpt =
+                  result.status === "failed"
+                    ? commandOutputExcerpt(result.output)
+                    : null;
                 const style = result.queuedOffline
                   ? queuedOfflineStyle
                   : managerUnavailable
@@ -648,7 +655,20 @@ export default function DeploymentProgress({
                           {result.errorMessage}
                         </span>
                       ) : (
-                        "—"
+                        !outputExcerpt && "—"
+                      )}
+                      {outputExcerpt && (
+                        <div
+                          className="mt-1 max-w-md"
+                          data-testid={`deployment-result-output-${result.id}`}
+                        >
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {t("policies:software.deploymentProgress.deviceOutputTail")}
+                          </p>
+                          <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border bg-muted/40 px-2 py-1 font-mono text-xs text-foreground">
+                            {outputExcerpt.text}
+                          </pre>
+                        </div>
                       )}
                     </td>
                   </tr>

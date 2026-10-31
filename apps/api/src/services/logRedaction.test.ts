@@ -285,6 +285,13 @@ describe('value-shape redaction on the agent-log path (#3109)', () => {
 });
 
 describe('EDR provider credential field names (#8165 regression pin)', () => {
+  it('redacts the Emsisoft Api-Key header and apiKey field names', () => {
+    expect(redactLogFields({ 'Api-Key': 'k', apiKey: 'k' })).toEqual({
+      'Api-Key': '[REDACTED]',
+      apiKey: '[REDACTED]',
+    });
+  });
+
   it('redacts GravityZone and OAuth-style credential fields', () => {
     expect(redactLogFields({ apiKey: 'k', clientSecret: 's', authorization: 'Basic abc' })).toEqual({
       apiKey: '[REDACTED]',

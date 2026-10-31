@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex. Gestion des postes de travail",
         "unitPrice": "Prix unitaire",
         "quantity": "Quantité",
+        "quantityInvalid": "Saisissez une quantité (jusqu’à 2 décimales).",
+        "quantityTooLarge": "La quantité est trop grande (au plus 10 chiffres avant la virgule).",
         "siteOptional": "Site (facultatif : limite le comptage des appareils)",
         "allSites": "Tous les sites",
         "linkCatalogItemOptional": "Lier un article du catalogue (facultatif)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
       "variables": "Informations de la convention",
       "unresolved": "Renseignez une valeur pour : {{names}}",
+      "needsSignedCopy": "Breeze ne peut pas renseigner {{names}} sans devis. Joignez la copie signée pour enregistrer cet accord.",
       "consequence": "Ceci archive une convention signée pour {{org}}. Elle ne pourra pas être supprimée ensuite.",
       "submit": "Enregistrer la convention signée",
       "success": "Convention signée enregistrée.",
@@ -1126,7 +1129,9 @@
         "uploadImage": "Impossible de téléverser l'image.",
         "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle.",
         "sectionAddedListStale": "Section ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir.",
-        "lineAddedListStale": "Ligne ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir."
+        "lineAddedListStale": "Ligne ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir.",
+        "saveExpiry": "Impossible d'enregistrer la date d'expiration.",
+        "saveIntroNotes": "Impossible d'enregistrer les notes d'introduction."
       },
       "image": {
         "alt": "Image du devis",
@@ -1294,6 +1299,7 @@
         "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",
+        "autoValueBlank": "Vide",
         "autoHint": "Ces valeurs sont résolues à partir du devis lors de l'envoi de la proposition.",
         "manualVariablesTitle": "À remplir pour cette proposition",
         "labelFieldLabel": "Libellé de la section",
@@ -1350,6 +1356,14 @@
       },
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le texte enrichi prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
+      },
+      "intro": {
+        "expiryLabel": "Valable jusqu'au",
+        "expiryHelper": "Imprimée sur la proposition. Le client peut l'accepter jusqu'à la fin de cette journée. Laissez vide pour aucune expiration.",
+        "expiryPast": "Cette date est passée — le client ne peut pas accepter une proposition expirée.",
+        "notesLabel": "Notes d'introduction",
+        "notesHelper": "Imprimées au-dessus de la première section de la proposition.",
+        "notesPlaceholder": "Un court mot au client, par ex. ce que couvre cette proposition."
       }
     },
     "actions": {
@@ -1460,6 +1474,9 @@
       "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à ce devis en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification.",
       "acceptOnBehalf": {
         "button": "Accepter au nom du client",
+        "emptyDraftTitle": "Ajoutez au moins un article avant l'acceptation.",
+        "emptySentTitle": "Ce devis ne contient aucun article. Utilisez Réviser le devis pour émettre une version avec des articles.",
+        "errorQuoteEmpty": "Ce devis ne contient aucun article. Fermez cette boîte de dialogue et ajoutez un article, ou utilisez Réviser le devis s'il a déjà été envoyé.",
         "title": "Enregistrer l'acceptation du client",
         "methodLabel": "Comment le client a-t-il donné son accord ?",
         "method": {
@@ -2095,6 +2112,7 @@
       "title": "Envoyer cette facture ?",
       "message": "La facture de {{amount}} sera envoyée par e-mail à {{customer}}."
     },
+    "sourceHeldForHourBlock": "Une partie du temps de ce brouillon est réservée à un forfait d’heures et sera facturée à la clôture de la période du forfait. Retirez ces lignes, puis émettez la facture.",
     "unsavedHint": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée.",
     "unsavedTitle": "« {{field}} » contient une modification non enregistrée — l’émission sera disponible une fois enregistrée."
   },
@@ -2816,7 +2834,6 @@
       "delivery_failed": "Échec de l’envoi de l’avis",
       "consent_required": "L’autorisation de paiement est manquante. Demandez une nouvelle autorisation."
     },
-    "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
     "chargeResultUnknown": "Nous n’avons pas pu confirmer ce qu’il est advenu de ce paiement. Actualisation de la facture pour afficher son état actuel.",
     "chargeStarted": "Tentative de paiement lancée",
@@ -2956,10 +2973,6 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de rappel",
     "loadFailed": "Impossible de charger les paramètres de rappel",
     "retry": "Réessayer",
-    "loading": "Chargement des paramètres de paiement…",
-    "templates": {
-      "paymentReminder": "Rappel de paiement",
-      "paymentOverdue": "Rappel de paiement en retard"
-    }
+    "loading": "Chargement des paramètres de paiement…"
   }
 }

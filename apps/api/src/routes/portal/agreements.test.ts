@@ -81,7 +81,7 @@ function app(authMethod: 'bearer' | 'cookie' = 'bearer') {
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
       user: { id: 'pu-1', orgId: ORG, email: SESSION_EMAIL, name: 'Dana', contactId: null, receiveNotifications: true, status: 'active' },
-      token: 't', authMethod, partnerId: PARTNER, timezone: 'UTC',
+      token: 't', authMethod, partnerId: PARTNER, timezone: 'America/Denver',
     });
     await next();
   });
@@ -154,7 +154,11 @@ describe('GET /agreements', () => {
     h.rows.set(contractTemplateVersions, [{ versionId: VERSION, versionNumber: 2, templateName: 'BAA' }]);
     const res = await app().request('/agreements');
     expect(res.status).toBe(200);
-    expect((await res.json()).data).toEqual([
+    const body = await res.json();
+    // #10291: the zone every surface formats `expiresAt` in (org → partner → UTC),
+    // so the SSR list and the hydrated detail agree on the calendar day.
+    expect(body.timezone).toBe('America/Denver');
+    expect(body.data).toEqual([
       { id: REQ, name: 'BAA', templateName: 'BAA', status: 'sent', sentAt: '2026-10-20T10:00:00.000Z', expiresAt: FUTURE.toISOString(), canSign: true },
       { id: 'r-2', name: 'BAA', templateName: 'BAA', status: 'viewed', sentAt: null, expiresAt: FUTURE.toISOString(), canSign: false },
     ]);
@@ -231,6 +235,7 @@ describe('GET /agreements/:id', () => {
     expect(data.html).toContain('Acme Dental');
     expect(data.parties).toEqual({ partnerName: 'Best MSP', orgName: 'Acme Dental' });
     expect(data.signedAgreementId).toBeNull();
+    expect(data.timezone).toBe('America/Denver'); // #10291
     expect(m.markViewed).toHaveBeenCalledWith(REQ, ORG, expect.any(Date));
   });
 

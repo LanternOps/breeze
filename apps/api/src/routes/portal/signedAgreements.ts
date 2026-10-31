@@ -40,14 +40,14 @@ function notFound(c: Context): Response {
   return c.json({ error: 'Signed agreement not found', code: ERROR_CODES.NOT_FOUND }, 404);
 }
 
-function portalAuthOf(c: Context): { userId: string; orgId: string; email: string; partnerId: string | null } {
-  const auth = c.get('portalAuth') as { user: { id: string; orgId: string; email: string }; partnerId?: string | null };
-  return { userId: auth.user.id, orgId: auth.user.orgId, email: auth.user.email, partnerId: auth.partnerId ?? null };
+function portalAuthOf(c: Context): { userId: string; orgId: string; email: string; partnerId: string | null; timezone: string } {
+  const auth = c.get('portalAuth') as { user: { id: string; orgId: string; email: string }; partnerId?: string | null; timezone: string };
+  return { userId: auth.user.id, orgId: auth.user.orgId, email: auth.user.email, partnerId: auth.partnerId ?? null, timezone: auth.timezone };
 }
 
 // GET /signed-agreements — the org's signed agreements, newest first.
 portalSignedAgreementRoutes.get('/signed-agreements', async (c) => {
-  const { orgId } = portalAuthOf(c);
+  const { orgId, timezone } = portalAuthOf(c);
   const docs = await db
     .select({
       id: contractDocuments.id,
@@ -99,7 +99,8 @@ portalSignedAgreementRoutes.get('/signed-agreements', async (c) => {
       createdAt: d.createdAt.toISOString(),
     };
   });
-  return c.json({ data });
+  // The org zone the portal formats signedAt/createdAt in (#10291).
+  return c.json({ data, timezone });
 });
 
 // GET /signed-agreements/:documentId/file?copy=certified|original — the

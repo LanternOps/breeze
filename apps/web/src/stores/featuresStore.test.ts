@@ -16,7 +16,7 @@ describe('featuresStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
       softwarePackages: { uploadsEnabled: true },
@@ -52,7 +52,7 @@ describe('featuresStore', () => {
       res({ features: { billing: true, support: true } })
     );
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('network'));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -82,7 +82,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(res({}, false, 500));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -119,7 +119,7 @@ describe('featuresStore', () => {
   it('coerces missing fields to false', async () => {
     fetchMock.mockResolvedValueOnce(res({}));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false });
   });
 });
 
@@ -134,5 +134,67 @@ describe('preAssignmentEnrollment', () => {
     fetchMock.mockResolvedValueOnce(res({ features: { preAssignmentEnrollment: 'yes' } }));
     await useFeaturesStore.getState().load();
     expect(useFeaturesStore.getState().features.preAssignmentEnrollment).toBe(false);
+  });
+});
+
+describe('sendingDomains (#9949)', () => {
+  it('reads the flag from /config and defaults closed', async () => {
+    useFeaturesStore.setState({ loaded: false });
+    fetchMock.mockResolvedValueOnce(res({ features: { sendingDomains: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.sendingDomains).toBe(true);
+
+    useFeaturesStore.setState({ loaded: false });
+    fetchMock.mockResolvedValueOnce(res({ features: { sendingDomains: 'yes' } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.sendingDomains).toBe(false);
+  });
+});
+
+describe('configOk (#9949)', () => {
+  it('is true only after /config answered', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    useFeaturesStore.setState({ loaded: false, configOk: false });
+    fetchMock.mockResolvedValueOnce(res({}, false, 502));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: false });
+
+    // A failed re-read after a good one must not keep the old configOk.
+    useFeaturesStore.setState({ loaded: false, configOk: true });
+    fetchMock.mockRejectedValueOnce(new Error('network'));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: false });
+
+    useFeaturesStore.setState({ loaded: false, configOk: false });
+    fetchMock.mockResolvedValueOnce(res({}));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState()).toMatchObject({ loaded: true, configOk: true });
+    errSpy.mockRestore();
+  });
+});
+
+describe('load() de-duplication (#9949)', () => {
+  it('concurrent callers share one /config request', async () => {
+    vi.clearAllMocks();
+    useFeaturesStore.setState({ loaded: false });
+    let resolve!: (r: Response) => void;
+    fetchMock.mockReturnValueOnce(new Promise<Response>((r) => { resolve = r; }));
+    const first = useFeaturesStore.getState().load();
+    const second = useFeaturesStore.getState().load();
+    resolve(res({ features: { sendingDomains: true } }));
+    await Promise.all([first, second]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useFeaturesStore.getState().features.sendingDomains).toBe(true);
+  });
+
+  it('a load after a settled one is reset fetches again', async () => {
+    vi.clearAllMocks();
+    useFeaturesStore.setState({ loaded: false });
+    fetchMock.mockResolvedValueOnce(res({}));
+    await useFeaturesStore.getState().load();
+    useFeaturesStore.setState({ loaded: false });
+    fetchMock.mockResolvedValueOnce(res({}));
+    await useFeaturesStore.getState().load();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

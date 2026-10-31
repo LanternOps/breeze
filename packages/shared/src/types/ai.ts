@@ -122,6 +122,20 @@ export type AiContentBlock =
 // Page Context (injected from frontend)
 // ============================================
 
+export const AI_RECORD_KINDS = ['ticket', 'quote', 'invoice', 'contract', 'organization', 'site'] as const;
+export type AiRecordKind = (typeof AI_RECORD_KINDS)[number];
+
+/** IDs only. The server reads everything else. */
+export interface AiRecordPageContext {
+  type: 'record';
+  kind: AiRecordKind;
+  id: string;
+  /** Client hint only; never authorization authority. */
+  orgId?: string;
+  /** Display label for the web badge only. */
+  label?: string;
+}
+
 export type AiPageContext =
   // `orgId` is the org the device belongs to, supplied so the web client can
   // tell that an open chat session belongs to a different tenant than the page
@@ -133,7 +147,8 @@ export type AiPageContext =
   | { type: 'custom'; label: string; data: Record<string, unknown> }
   // Topology M4 (#6000): IDs only. The server pins the session to `siteId`
   // after authorizing it; the client value is never authority afterwards.
-  | AiTopologyPageContext;
+  | AiTopologyPageContext
+  | AiRecordPageContext;
 
 export interface AiTopologyPageContext {
   type: 'topology';
@@ -210,6 +225,15 @@ export interface AiRunResultArtifactRef {
 
 /** Fixed, server-built phases of a topology investigation turn (M4 #6000); never model text. */
 export type AiTopologyProgressPhase = 'gathering_evidence' | 'analyzing' | 'validating' | 'awaiting_approval';
+
+/**
+ * #9431: how an approval card's wait ended, as far as the session knows.
+ * `not_approved` covers a denial and a timeout alike (the legacy wait cannot
+ * tell them apart); `ended` means the wait stopped without a decision here
+ * (settled by a new message or interrupt, or a durable intent that can still
+ * be decided in Approvals).
+ */
+export type AiApprovalOutcome = 'approved' | 'not_approved' | 'ended';
 
 export type AiStreamEvent =
   | { type: 'message_start'; messageId: string }
@@ -302,6 +326,13 @@ export type AiStreamEvent =
    * approval card; this informational event replaces it.
    */
   | { type: 'unattended_release'; executionId: string; intentId: string; toolName: string; description: string; deviceContext?: { hostname: string; displayName?: string; status: string; lastSeenAt?: string }; scriptRunContext?: AiScriptRunContext | null; scriptProposal?: AiApprovalScriptProposalSummary }
+  /**
+   * #9431: the wait behind an `approval_required` card ended — decided here,
+   * in another window, in Approvals or on mobile, timed out or settled.
+   * Published to every listener on the session so no surface keeps showing
+   * Approve / Deny for a request that is no longer waiting.
+   */
+  | { type: 'approval_resolved'; executionId: string; outcome: AiApprovalOutcome }
   | { type: 'plan_approval_required'; planId: string; steps: ActionPlanStep[] }
   | { type: 'plan_step_start'; planId: string; stepIndex: number; toolName: string }
   | { type: 'plan_step_complete'; planId: string; stepIndex: number; toolName: string; isError: boolean }

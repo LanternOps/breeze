@@ -31,6 +31,7 @@ const DETAIL: PortalAgreementDetail = {
   branding: { partnerName: 'Lantern IT', logoUrl: null, seller: null },
   canSign: true,
   signedAgreementId: null,
+  timezone: 'UTC',
 };
 
 function detail(over: Partial<PortalAgreementDetail> = {}, reqOver: Partial<PortalAgreementDetail['request']> = {}): PortalAgreementDetail {
@@ -43,7 +44,31 @@ function sign(name = 'Dana Buyer') {
   fireEvent.click(screen.getByTestId('agreement-accept'));
 }
 
+const longDay = (y: number, m: number, d: number) =>
+  new Date(Date.UTC(y, m, d)).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+
 describe('AgreementDetailView', () => {
+  // #10291: the detail is hydrated in the browser zone; the list is SSR in UTC.
+  // Both format in the org zone from the API, so they print the same day.
+  it('shows the expiry as the calendar day in the org zone', () => {
+    render(<AgreementDetailView detail={detail({ timezone: 'America/Denver' }, { expiresAt: '2026-11-10T06:59:59.999Z' })} />);
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(longDay(2026, 10, 9));
+    expect(text).not.toContain(longDay(2026, 10, 10));
+    // The effective date is a calendar day and never shifts.
+    expect(text).toContain(longDay(2026, 10, 1));
+  });
+
+  it('shows the signed date as the calendar day in the org zone', () => {
+    render(<AgreementDetailView detail={detail(
+      { timezone: 'America/Denver', signedAgreementId: DOC },
+      { status: 'signed', signedAt: '2026-11-10T06:59:59.999Z' },
+    )} />);
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(longDay(2026, 10, 9));
+    expect(text).not.toContain(longDay(2026, 10, 10));
+  });
+
   it('shows the sign panel to a named recipient with no email field', () => {
     render(<AgreementDetailView detail={detail()} />);
     expect(screen.getByTestId('agreement-sign')).toBeTruthy();

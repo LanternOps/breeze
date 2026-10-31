@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",
+        "quantityInvalid": "Enter a quantity (up to 2 decimals).",
+        "quantityTooLarge": "Quantity is too large (at most 10 digits before the decimal point).",
         "siteOptional": "Site (optional — scopes the device count)",
         "allSites": "All sites",
         "linkCatalogItemOptional": "Link catalog item (optional)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Attach a PDF, PNG or JPEG file.",
       "variables": "Agreement details",
       "unresolved": "Provide a value for: {{names}}",
+      "needsSignedCopy": "Breeze can't fill {{names}} without a quote. Attach the signed copy to record this agreement.",
       "consequence": "This files a signed agreement for {{org}}. It cannot be deleted afterwards.",
       "submit": "Record signed agreement",
       "success": "Signed agreement recorded.",
@@ -1126,7 +1129,9 @@
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
         "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
-        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it.",
+        "saveExpiry": "Could not save the expiry date.",
+        "saveIntroNotes": "Could not save the intro notes."
       },
       "image": {
         "alt": "Quote image",
@@ -1294,6 +1299,7 @@
         "noPublishedVersion": "This template has no published version yet. Publish it before adding it to a quote.",
         "pinnedVersion": "Pinned to v{{version}}",
         "autoVariablesTitle": "Filled automatically from the quote",
+        "autoValueBlank": "Blank",
         "autoHint": "These values resolve from the quote when the proposal is sent.",
         "manualVariablesTitle": "Fill in for this proposal",
         "labelFieldLabel": "Section label",
@@ -1350,6 +1356,14 @@
       },
       "warnings": {
         "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Rich text supports headings, bold, italic, underline, lists and links."
+      },
+      "intro": {
+        "expiryLabel": "Valid until",
+        "expiryHelper": "Printed on the proposal. The customer can accept through the end of this day. Leave blank for no expiry.",
+        "expiryPast": "This date has passed — the customer cannot accept an expired proposal.",
+        "notesLabel": "Intro notes",
+        "notesHelper": "Printed above the first section of the proposal.",
+        "notesPlaceholder": "A short note to the customer, e.g. what this proposal covers."
       }
     },
     "actions": {
@@ -1460,6 +1474,9 @@
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} quote. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check.",
       "acceptOnBehalf": {
         "button": "Accept on behalf",
+        "emptyDraftTitle": "Add at least one item before accepting.",
+        "emptySentTitle": "This quote has no items. Use Revise quote to issue a version with items.",
+        "errorQuoteEmpty": "This quote has no items. Close this dialog and add an item, or use Revise quote if it was already sent.",
         "title": "Record the customer's acceptance",
         "methodLabel": "How did they agree?",
         "method": {
@@ -2095,6 +2112,7 @@
       "title": "Send this invoice?",
       "message": "This emails the invoice to {{customer}} for {{amount}}."
     },
+    "sourceHeldForHourBlock": "Some time on this draft is held for this organization's block hours and will be billed when the block period closes. Remove those lines, then Issue.",
     "unsavedHint": "“{{field}}” has an unsaved change — Issue unlocks once it saves.",
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
@@ -2816,7 +2834,6 @@
       "delivery_failed": "Notice delivery failed",
       "consent_required": "Payment authorization is missing. Request updated authorization."
     },
-    "noticeTemplate": "Invoice with automatic payment notice",
     "chargeFailed": "Could not start payment. Please try again.",
     "chargeResultUnknown": "We could not confirm what happened to this payment. Refreshing the invoice to show its current status.",
     "chargeStarted": "Payment attempt started",
@@ -2956,10 +2973,6 @@
     "saveFailed": "Could not save reminder settings",
     "loadFailed": "Could not load reminder settings",
     "retry": "Retry",
-    "loading": "Loading payment settings…",
-    "templates": {
-      "paymentReminder": "Payment reminder",
-      "paymentOverdue": "Overdue payment reminder"
-    }
+    "loading": "Loading payment settings…"
   }
 }

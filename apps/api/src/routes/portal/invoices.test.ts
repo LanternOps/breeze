@@ -1,5 +1,12 @@
 const portalSentry=vi.hoisted(()=>vi.fn());
 vi.mock('../../services/sentry',()=>({captureException:portalSentry}));
+// The detail route preloads the partner's autopay rollout flag (#9585); keep that read
+// off this file's queue-driven db mock. The real-DB behaviour is in
+// portalInvoiceDbContext.integration.test.ts.
+vi.mock('../../services/autopay/autopayGate', async (original) => ({
+  ...await original<typeof import('../../services/autopay/autopayGate')>(),
+  isAutopayEnabledForPartner: vi.fn(async () => true),
+}));
 const bankRoutes=vi.hoisted(()=>({setup:vi.fn(),collect:vi.fn(),offer:vi.fn(async()=>null)}));
 vi.mock('../../services/autopay/bankPayment',async original=>({
  ...await original<typeof import('../../services/autopay/bankPayment')>(),
@@ -34,13 +41,15 @@ vi.mock('../../services/invoiceService', async (importActual) => {
   };
 });
 
-const { getInvoicePdfMock, renderInvoicePdfMock } = vi.hoisted(() => ({
+const { getInvoicePdfMock, renderInvoicePdfMock, renderPartnerContextMock } = vi.hoisted(() => ({
   getInvoicePdfMock: vi.fn(),
   renderInvoicePdfMock: vi.fn(),
+  renderPartnerContextMock: vi.fn(),
 }));
 vi.mock('../../services/invoicePdf', () => ({
   getInvoicePdf: getInvoicePdfMock,
   renderInvoicePdf: renderInvoicePdfMock,
+  loadInvoiceRenderPartnerContext: renderPartnerContextMock,
   // The db is mocked, so the ticket-label expressions are never compiled here.
   invoiceLineTicketNumberSql: vi.fn(() => 'ticket_label_sql'),
   invoiceLineTicketSubjectSql: vi.fn(() => 'ticket_subject_sql'),
@@ -54,7 +63,11 @@ const { dbResults, insertValuesMock, mappings, ctx } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
   mappings: new Map<string,Record<string,unknown>>(),
-  ctx: { depth: 0 },
+  // depth: open system contexts. orgTx: open organization-scoped transactions
+  // (the handler's own, or the portal middleware mirror's). nestedUnderOrgTx:
+  // every system-context open / context escape made while an org tx was open
+  // (#9585 item 3). orgContexts: every org context opened, to pin its scope.
+  ctx: { depth: 0, orgTx: 0, nestedUnderOrgTx: [] as string[], orgContexts: [] as unknown[] },
 }));
 // The fail-closed Checkout-session revocation phases run BEFORE this
 // suite's transaction and issue their own queries. This file drives a
@@ -95,12 +108,24 @@ vi.mock('../../db', () => {
   // system-context connection read is covered by the integration test.
   return {
     db: makeChain(),
-    runOutsideDbContext: <T>(fn: () => T): T => fn(),
+    runOutsideDbContext: <T>(fn: () => T): T => {
+      if (ctx.orgTx > 0) ctx.nestedUnderOrgTx.push('runOutsideDbContext');
+      return fn();
+    },
     // Tracks nesting so a test can prove the settle runs with NO context held (#7065).
     withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => {
+      if (ctx.orgTx > 0) ctx.nestedUnderOrgTx.push('withSystemDbAccessContext');
       ctx.depth++;
       try { return await fn(); } finally { ctx.depth--; }
     },
+    withDbAccessContext: async <T>(context: { scope: string }, fn: () => Promise<T>): Promise<T> => {
+      if (context.scope !== 'organization') throw new Error(`unexpected ${context.scope} context in a portal route`);
+      ctx.orgContexts.push(context);
+      ctx.orgTx++;
+      try { return await fn(); } finally { ctx.orgTx--; }
+    },
+    // readWithPartnerAxisVisibility (getInvoiceAutopayOffer) consults this.
+    getCurrentDbAccessContext: () => undefined,
   };
 });
 
@@ -285,7 +310,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('GET /invoices/:id returns the customer view + stamps viewed', async () => {
     getPortalInvoiceRowMock.mockResolvedValue(invoiceRow());
-    dbResults.push([{ id: 'l1', name: 'Seat', quantity: '1.00' }]);
+    // Queue order (#9585): [partner], [branding] (preloaded before the org tx), then [line rows].
+    dbResults.push([], [], [{ id: 'l1', name: 'Seat', quantity: '1.00' }]);
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -391,8 +417,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 
   it('GET /invoices/:id serializes the exact safe line keyset even if the service row has internal fields', async () => {
     getPortalInvoiceRowMock.mockResolvedValue(invoiceRow({ lineShowDate: true }));
-    // Queue order for the assembler: [line rows], [partner], [branding].
-    dbResults.push([{
+    // Queue order (#9585): [partner], [branding] (preloaded before the org tx), then [line rows].
+    dbResults.push([], [], [{
       id: 'line-id-1', parentLineId: 'parent-1', ticketId: 'tk-internal-uuid', ticketSubject: 'Internal subject',
       sourceType: 'time_entry', sourceId: 'source-1',
       costBasis: '10.00', revenueAllocation: { labor: '25.00' }, isUnapprovedTime: true,
@@ -404,7 +430,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
       workedMinutes: 30,
       // #8604: the date toggle is frozen ON on the invoice row.
       workDate: '2026-09-16',
-    }], [], []);
+    }]);
 
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -429,9 +455,9 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     // The shipped bug sent an undefined partnerId into the partners query.
     // The partnerId now comes straight from the authorized invoice row.
     getPortalInvoiceRowMock.mockResolvedValue(invoiceRow({ partnerId: 'partner-7' }));
-    dbResults.push([]);                                                                 // lines
     dbResults.push([{ name: 'Lantern IT', billingEmail: 'bill@lantern.test', documentTheme: null, documentPageSize: null, settings: null }]); // partners (system ctx)
     dbResults.push([{ logoUrl: 'https://cdn/logo.png', primaryColor: '#123456' }]);    // portal_branding
+    dbResults.push([]);                                                                 // lines
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -439,8 +465,9 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
       partnerName: 'Lantern IT', contactEmail: 'bill@lantern.test', logoUrl: 'https://cdn/logo.png', primaryColor: '#123456',
     });
     expect(body.invoice).not.toHaveProperty('partnerId');
-    // Walk the bound params of the partners where() (2nd where, after lines): undefined must never reach postgres.js.
-    const whereArg = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[1]![0];
+    // Walk the bound params of the partners where() (the 1st: it is preloaded before the lines, #9585):
+    // undefined must never reach postgres.js.
+    const whereArg = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
     const params = boundParams(whereArg);
     expect(params).toContain('partner-7');
     expect(params).not.toContain(undefined);
@@ -493,9 +520,12 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
   it('GET /invoices/:id/pdf renders on demand if no artifact exists', async () => {
     getPortalInvoiceRowMock.mockResolvedValue(invoiceRow());
     getInvoicePdfMock.mockResolvedValueOnce(null).mockResolvedValueOnce(Buffer.from('%PDF-rendered'));
+    const partnerContext = { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: false };
+    renderPartnerContextMock.mockResolvedValueOnce(partnerContext);
     const res = await app().request(`/invoices/${INV_ID}/pdf`, { method: 'GET' });
     expect(res.status).toBe(200);
-    expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID);
+    expect(renderPartnerContextMock).toHaveBeenCalledWith('p1');
+    expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID, { partnerContext });
   });
 
   it('POST /invoices/:id/pay charges directly on the partner key (no Connect) + carries session_id', async () => {
@@ -832,7 +862,7 @@ describe('GET /invoices/:id carries how this invoice will be paid (D-4)', () => 
     expect(body.autopayStatus).toEqual(scheduled);
     expect(body.autopayEnrolled).toBe(true);
     expect(body.autopay).toBeNull();
-    expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID });
+    expect(portalAutopay.status).toHaveBeenCalledWith(expect.anything(), { invoiceId: INV_ID, orgId: ORG_ID }, { partnerAutopayEnabled: expect.any(Function) });
   });
   // R9: unknown enrollment fails closed: no setup or bank offer, and the failure is reported.
   it('a failed status read offers nothing that saves a method and reports it', async () => {
@@ -922,4 +952,133 @@ it('portal Checkout PaymentIntents carry "Invoice … · MSP"', async () => {
   dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD', invoiceNumber: 'INV-7', partnerName: 'Example MSP' }], [{ id: 'connection' }], []);
   expect((await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' })).status).toBe(200);
   expect(sessionsCreateMock.mock.calls.at(-1)![0]).toMatchObject({ payment_intent_data: { description: 'Invoice INV-7 · Example MSP' } });
+});
+
+// #9585 item 3: the portal invoice detail and PDF routes manage their own DB
+// context. This app mirrors routes/portal/auth.ts's decision (the real
+// isSelfManagedDbContextRoute predicate, else an org-scoped withDbAccessContext
+// around the whole handler), so while the routes did not opt out, every
+// partner-axis read below ran with the middleware's org transaction open.
+import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
+import { withDbAccessContext } from '../../db';
+
+const PORTAL_ORG_CTX = {
+  scope: 'organization', orgId: ORG_ID, accessibleOrgIds: [ORG_ID], accessiblePartnerIds: [], userId: null, currentPartnerId: null,
+};
+
+function productionApp(orgId = ORG_ID) {
+  const a = new Hono();
+  a.use('/api/v1/portal/*', async (c, next) => {
+    c.set('portalAuth', {
+      user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
+      token: 't', authMethod: 'bearer', partnerId: 'p1', timezone: 'UTC',
+    });
+    if (isSelfManagedDbContextRoute(c.req.method, c.req.path)) return next();
+    return withDbAccessContext({ ...PORTAL_ORG_CTX, orgId, accessibleOrgIds: [orgId] } as never, () => next());
+  });
+  a.route('/api/v1/portal', portalInvoiceRoutes);
+  return a;
+}
+
+describe('portal invoice detail and PDF own their DB context (#9585)', () => {
+  // The org-transaction depth each call ran at: 0 = no transaction open.
+  const at: Record<string, number[]> = {};
+  const track = (name: string) => { (at[name] ??= []).push(ctx.orgTx); };
+  const partnerAxisReaders = () => [onlinePayMock, portalAutopay.offer, bankRoutes.offer, renderPartnerContextMock, renderInvoicePdfMock, markViewedMock];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Earlier suites leave unconsumed *Once values queued on these; reset them outright.
+    for (const m of [onlinePayMock, portalAutopay.offer, portalAutopay.status, bankRoutes.offer, renderPartnerContextMock, renderInvoicePdfMock]) m.mockReset();
+    ctx.orgTx = 0; ctx.nestedUnderOrgTx = []; ctx.orgContexts = [];
+    dbResults.length = 0;
+    for (const k of Object.keys(at)) delete at[k];
+    getPortalInvoiceRowMock.mockReset();
+    getPortalInvoiceRowMock.mockImplementation(async () => { track('row'); return invoiceRow(); });
+    markViewedMock.mockImplementation(async () => { track('markViewed'); });
+    reservation.inFlight.mockImplementation(async () => { track('inFlight'); return { inProgress: false, amount: '0.00' }; });
+    portalAutopay.status.mockImplementation(async () => { track('autopayStatus'); return { enrolled: false, status: null }; });
+    // The partner-axis readers: each opens its own system context.
+    onlinePayMock.mockImplementation(async () => { track('onlinePay'); return true; });
+    portalAutopay.offer.mockImplementation(async () => { track('cardOffer'); return { eligible: true } as never; });
+    bankRoutes.offer.mockImplementation(async () => { track('bankOffer'); return { available: true } as never; });
+    renderPartnerContextMock.mockImplementation(async () => { track('renderPartnerContext'); return { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: true }; });
+    renderInvoicePdfMock.mockImplementation(async () => { track('render'); return {}; });
+    getInvoicePdfMock.mockReset();
+  });
+
+  it('GET /invoices/:id runs every system-context read outside the org transaction, and every org read inside it', async () => {
+    const res = await productionApp().request(`/api/v1/portal/invoices/${INV_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // No system context opened, and no context escaped, while an org tx was open.
+    expect(ctx.nestedUnderOrgTx).toEqual([]);
+    for (const read of ['onlinePay', 'cardOffer', 'bankOffer']) expect(at[read], read).toEqual([0]);
+    // The org-scoped reads still run under the portal org scope, never on the bare pool.
+    for (const read of ['row', 'markViewed', 'inFlight', 'autopayStatus']) {
+      expect(at[read]?.length, read).toBeGreaterThan(0);
+      expect(at[read]!.every((d) => d === 1), read).toBe(true);
+    }
+    // Exactly the scope the portal middleware sets: this org, no partner access.
+    expect(ctx.orgContexts.length).toBeGreaterThan(0);
+    for (const opened of ctx.orgContexts) expect(opened).toEqual(PORTAL_ORG_CTX);
+    // The preloaded answers still reach the response.
+    expect(body).toMatchObject({ onlinePaymentAvailable: true, autopay: { eligible: true }, bankAutopay: { available: true } });
+    expect(onlinePayMock).toHaveBeenCalledWith('p1');
+  });
+
+  it('GET /invoices/:id keeps the autopay offers gated on enrollment (enrolled: no card offer; unknown: neither)', async () => {
+    portalAutopay.status.mockImplementationOnce(async () => ({ enrolled: true, status: null }));
+    const enrolled = await (await productionApp().request(`/api/v1/portal/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(enrolled.autopay).toBeNull();
+    expect(enrolled.bankAutopay).toEqual({ available: true });
+
+    portalAutopay.offer.mockClear(); bankRoutes.offer.mockClear();
+    portalAutopay.status.mockImplementationOnce(async () => { throw new Error('db down'); });
+    const unknown = await (await productionApp().request(`/api/v1/portal/invoices/${INV_ID}`, { method: 'GET' })).json();
+    expect(unknown).toMatchObject({ autopay: null, bankAutopay: null });
+    expect(portalAutopay.offer).not.toHaveBeenCalled();
+    expect(bankRoutes.offer).not.toHaveBeenCalled();
+  });
+
+  it('GET /invoices/:id/pdf preloads the partner bundle outside the org transaction and renders inside it', async () => {
+    getInvoicePdfMock.mockResolvedValueOnce(null).mockResolvedValueOnce(Buffer.from('%PDF-rendered'));
+    const res = await productionApp().request(`/api/v1/portal/invoices/${INV_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(ctx.nestedUnderOrgTx).toEqual([]);
+    expect(at.renderPartnerContext).toEqual([0]);
+    expect(at.row).toEqual([1]);
+    expect(at.render).toEqual([1]);
+    expect(renderPartnerContextMock).toHaveBeenCalledWith('p1');
+    expect(renderInvoicePdfMock).toHaveBeenCalledWith(INV_ID, { partnerContext: { partnerId: 'p1', partner: { id: 'p1' }, onlinePaymentAvailable: true } });
+    for (const opened of ctx.orgContexts) expect(opened).toEqual(PORTAL_ORG_CTX);
+  });
+
+  it('GET /invoices/:id/pdf streams a stored PDF without any partner-axis read', async () => {
+    getInvoicePdfMock.mockResolvedValue(Buffer.from('%PDF-stored'));
+    const res = await productionApp().request(`/api/v1/portal/invoices/${INV_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(renderPartnerContextMock).not.toHaveBeenCalled();
+    expect(renderInvoicePdfMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '/pdf'])('GET /invoices/:id%s refuses another org\'s invoice under the caller\'s org scope, before any partner-axis read', async (suffix) => {
+    const OTHER_ORG = '99999999-9999-4999-8999-999999999999';
+    getPortalInvoiceRowMock.mockImplementation(async () => { track('row'); throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'); });
+    const res = await productionApp(OTHER_ORG).request(`/api/v1/portal/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
+    expect(getPortalInvoiceRowMock).toHaveBeenCalledWith(INV_ID, OTHER_ORG);
+    expect(at.row).toEqual([1]);
+    for (const opened of ctx.orgContexts) expect(opened).toEqual({ ...PORTAL_ORG_CTX, orgId: OTHER_ORG, accessibleOrgIds: [OTHER_ORG] });
+    for (const reader of partnerAxisReaders()) expect(reader).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '/pdf'])('GET /invoices/:id%s refuses a draft before any partner-axis read', async (suffix) => {
+    getPortalInvoiceRowMock.mockImplementation(async () => invoiceRow({ status: 'draft' }));
+    const res = await productionApp().request(`/api/v1/portal/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    for (const reader of partnerAxisReaders()) expect(reader).not.toHaveBeenCalled();
+  });
 });

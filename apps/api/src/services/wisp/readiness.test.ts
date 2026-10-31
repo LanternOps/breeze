@@ -56,7 +56,7 @@ vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
 import { WATCH_KINDS } from '@breeze/shared';
 import { organizations } from '../../db/schema/orgs';
 import { backupConfigs } from '../../db/schema/backup';
-import { backupProviderCustomers } from '../../db/schema/backupProviders';
+import { backupProviderCustomers, backupProviderDevices } from '../../db/schema/backupProviders';
 import { deviceVulnerabilities } from '../../db/schema/vulnerabilityManagement';
 import { edrDetections, edrEndpoints } from '../../db/schema/edrProviders';
 import { configPolicyAssignments } from '../../db/schema/configurationPolicies';
@@ -142,10 +142,51 @@ describe('readinessInventory', () => {
     expect(check(r, 'patch_compliance').serviceable).toBe(false);
   });
 
-  it('backup_health flips on a mapped backup-vendor customer', async () => {
+  // #10404: get_backup_status reports vendor backups per synced device
+  // (backup_provider_devices). A mapping with nothing synced gives the tool
+  // nothing to report, so readiness must not call backups watchable.
+  it('backup_health flips on synced backup-vendor devices under an active connection', async () => {
+    h.rowsByTable.set(backupProviderCustomers, [{ orgId: ORG_A }]);
+    h.rowsByTable.set(backupProviderDevices, [{ orgId: ORG_A }]);
+    const [r] = await readinessInventory(ceiling([ORG_A]));
+    expect(check(r, 'backup_health')).toEqual({ watchKind: 'backup_health', serviceable: true, reason: null });
+    expect(r?.missingIntegrations).toEqual(['edr/vulnerability']);
+    const join = h.joinsByTable.get(backupProviderDevices)?.[0];
+    const q = compile(join);
+    expect(q.sql).toContain('"backup_provider_connections"."is_active"');
+  });
+
+  it('a mapped backup-vendor customer with no synced devices is not watchable, and the integration is not reported missing', async () => {
     h.rowsByTable.set(backupProviderCustomers, [{ orgId: ORG_A }]);
     const [r] = await readinessInventory(ceiling([ORG_A]));
-    expect(check(r, 'backup_health').serviceable).toBe(true);
+    expect(check(r, 'backup_health')).toEqual({
+      watchKind: 'backup_health',
+      serviceable: false,
+      reason: 'backup vendor mapped but no devices synced',
+    });
+    expect(r?.missingIntegrations).toEqual(['edr/vulnerability']);
+    expect(renderReadinessSummary(r!)).toContain('backups (backup vendor mapped but no devices synced)');
+  });
+
+  it('a backup config plus a mapped-but-unsynced vendor is serviceable with no reason', async () => {
+    h.rowsByTable.set(backupConfigs, [{ orgId: ORG_A }]);
+    h.rowsByTable.set(backupProviderCustomers, [{ orgId: ORG_A }]);
+    const [r] = await readinessInventory(ceiling([ORG_A]));
+    expect(check(r, 'backup_health')).toEqual({ watchKind: 'backup_health', serviceable: true, reason: null });
+  });
+
+  it('the mapped-customer read only counts customers under an active connection', async () => {
+    await readinessInventory(ceiling([ORG_A]));
+    const join = h.joinsByTable.get(backupProviderCustomers)?.[0];
+    expect(compile(join).sql).toContain('"backup_provider_connections"."is_active"');
+  });
+
+  it('synced vendor devices for one org do not make another org watchable', async () => {
+    h.rowsByTable.set(organizations, [orgRow(ORG_A, 'Acme'), orgRow(ORG_B, 'Beta')]);
+    h.rowsByTable.set(backupProviderDevices, [{ orgId: ORG_B }]);
+    const [a, b] = await readinessInventory(ceiling([ORG_A, ORG_B]));
+    expect(check(a, 'backup_health').serviceable).toBe(false);
+    expect(check(b, 'backup_health').serviceable).toBe(true);
   });
 
   it('security_findings flips on vulnerability rows, EDR detections or EDR endpoints', async () => {

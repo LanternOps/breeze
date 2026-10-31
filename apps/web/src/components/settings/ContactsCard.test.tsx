@@ -400,6 +400,86 @@ describe('ContactsCard mutations', () => {
   });
 });
 
+// #9954: the org record's header shows the primary contact from the summary,
+// which this card cannot see. The card says when it wrote; the host refetches.
+describe('ContactsCard — tells its host when contacts changed (#9954)', () => {
+  async function renderWithCallback() {
+    const onContactsChanged = vi.fn();
+    render(<ContactsCard orgId={ORG_ID} onContactsChanged={onContactsChanged} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
+    return onContactsChanged;
+  }
+
+  it('after a create succeeds', async () => {
+    mockApi();
+    const onContactsChanged = await renderWithCallback();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Katherine Johnson' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(onContactsChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it('after an edit succeeds', async () => {
+    mockApi();
+    const onContactsChanged = await renderWithCallback();
+    fireEvent.click(screen.getByTestId('org-contacts-edit-c-alan'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('contact-form-primary-input'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(onContactsChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it('after a delete succeeds', async () => {
+    mockApi();
+    const onContactsChanged = await renderWithCallback();
+    fireEvent.click(screen.getByTestId('org-contacts-delete-c-ada'));
+    await waitFor(() => expect(onContactsChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it('not when the save is refused', async () => {
+    mockApi();
+    const onContactsChanged = await renderWithCallback();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Katherine Johnson' } });
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ error: 'Nope' }, 400));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    expect(onContactsChanged).not.toHaveBeenCalled();
+  });
+
+  it('not when the delete is refused', async () => {
+    mockApi();
+    const onContactsChanged = await renderWithCallback();
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ error: 'Nope' }, 500));
+    fireEvent.click(screen.getByTestId('org-contacts-delete-c-ada'));
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    expect(onContactsChanged).not.toHaveBeenCalled();
+  });
+
+  it('a throwing host callback does not turn a saved contact into an error toast', async () => {
+    mockApi();
+    const onContactsChanged = vi.fn(() => { throw new Error('host broke'); });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(<ContactsCard orgId={ORG_ID} onContactsChanged={onContactsChanged} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Katherine Johnson' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
+    expect(onContactsChanged).toHaveBeenCalledTimes(1);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(consoleSpy).toHaveBeenCalledWith('[ContactsCard] onContactsChanged threw', expect.any(Error));
+    consoleSpy.mockRestore();
+  });
+});
+
 describe('ContactsCard import panel', () => {
   it('toggles the CSV importer inline', async () => {
     mockApi();
@@ -417,9 +497,11 @@ describe('ContactsCard import panel', () => {
     );
   });
 
-  it('refetches the list once the embedded importer actually writes', async () => {
+  it('refetches the list, and tells its host, once the embedded importer actually writes', async () => {
     mockApi();
-    await renderCard();
+    const onContactsChanged = vi.fn();
+    render(<ContactsCard orgId={ORG_ID} onContactsChanged={onContactsChanged} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('org-contacts-import-button'));
     await waitFor(() =>
       expect(screen.getByTestId('bulk-contact-import-panel')).toBeInTheDocument(),
@@ -455,6 +537,7 @@ describe('ContactsCard import panel', () => {
 
     // onImported fires only when the commit actually wrote something.
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(listsBefore));
+    expect(onContactsChanged).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -618,7 +701,7 @@ describe('ContactsCard — Offboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
       loaded: false,
     });
   }
@@ -683,7 +766,7 @@ describe('ContactsCard — Onboard a person launcher', () => {
   async function resetFeatures() {
     const { useFeaturesStore } = await import('../../stores/featuresStore');
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false, sendingDomains: false },
       loaded: false,
     });
   }
@@ -741,6 +824,6 @@ describe('ContactsCard — Onboard a person launcher', () => {
     const astro = readFileSync(join(__dirname, '../../pages/organizations/[id].astro'), 'utf8');
     expect(astro).toMatch(/<OrganizationRecordPage[^>]*client:load/);
     const record = readFileSync(join(__dirname, '../organizations/record/OrganizationRecordPage.tsx'), 'utf8');
-    expect(record).toMatch(/effectiveTab === 'contacts' && <ContactsCard/);
+    expect(record).toMatch(/effectiveTab === 'contacts' && \(?\s*<ContactsCard/);
   });
 });

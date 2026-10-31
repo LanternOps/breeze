@@ -33,6 +33,7 @@ vi.mock('../unassignedPool/visibility', () => ({
 
 import {
   agentDeniedToolNames,
+  assertReadWithinCeiling,
   assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingSnapshotHash,
@@ -438,6 +439,33 @@ describe('resolveGrantCeiling', () => {
 // Org-axis precedence: the grantor's organization_users rows narrow the
 // ceiling per org (permissions.ts getUserPermissions resolves org first).
 // ---------------------------------------------------------------------------
+
+describe('assertReadWithinCeiling (#10104: paused-grant history reads)', () => {
+  it('a PAUSED ceiling passes an org inside it — where assertWithinCeiling refuses it as inactive', () => {
+    const paused = ceiling({ status: 'paused' });
+    expect(() => assertWithinCeiling(paused, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'inactive' }));
+    expect(() => assertReadWithinCeiling(paused, { orgId: 'org-a' })).not.toThrow();
+  });
+  it('still refuses an org outside the ceiling, active or paused', () => {
+    for (const status of ['active', 'paused'] as const) {
+      expect(() => assertReadWithinCeiling(ceiling({ status }), { orgId: 'org-b' })).toThrow(expect.objectContaining({ code: 'org' }));
+    }
+  });
+  it('still applies the site terms: ceiling-wide and the org membership term', () => {
+    const paused = ceiling({ status: 'paused', siteIds: new Set(['s1']) });
+    expect(() => assertReadWithinCeiling(paused, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'site' }));
+    const memberSites = ceiling({ status: 'paused', orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: new Set(['s1']) }]]) });
+    expect(() => assertReadWithinCeiling(memberSites, { orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'site' }));
+  });
+  it('a partner-level (null org) subject still needs a partner-wide grant', () => {
+    expect(() => assertReadWithinCeiling(ceiling({ status: 'paused', partnerWide: false }), { orgId: null })).toThrow(expect.objectContaining({ code: 'org' }));
+    expect(() => assertReadWithinCeiling(ceiling({ status: 'paused', partnerWide: true }), { orgId: null })).not.toThrow();
+  });
+  it('an org-scoped grant never reads past its scope org', () => {
+    const scoped = ceiling({ status: 'paused', scopeOrgId: 'org-a', partnerWide: false, orgIds: new Set(['org-a', 'org-b']) });
+    expect(() => assertReadWithinCeiling(scoped, { orgId: 'org-b' })).toThrow(expect.objectContaining({ code: 'org' }));
+  });
+});
 
 describe('assertWithinCeiling — per-org terms (organization_users precedence)', () => {
   const twoOrgs = (o: Partial<GrantCeiling> = {}) => ceiling({

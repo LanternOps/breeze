@@ -263,6 +263,8 @@
         "descriptionPlaceholder": "ex.: Gerenciamento de estações de trabalho",
         "unitPrice": "Preço unitário",
         "quantity": "Quantidade",
+        "quantityInvalid": "Informe uma quantidade (até 2 casas decimais).",
+        "quantityTooLarge": "A quantidade é grande demais (no máximo 10 dígitos antes da vírgula decimal).",
         "siteOptional": "Site (opcional — limita a contagem de dispositivos)",
         "allSites": "Todos os sites",
         "linkCatalogItemOptional": "Vincular item do catálogo (opcional)",
@@ -769,6 +771,7 @@
       "fileWrongType": "Anexe um arquivo PDF, PNG ou JPEG.",
       "variables": "Dados do acordo",
       "unresolved": "Informe um valor para: {{names}}",
+      "needsSignedCopy": "O Breeze não consegue preencher {{names}} sem uma cotação. Anexe a cópia assinada para registrar este acordo.",
       "consequence": "Isso arquiva um acordo assinado para {{org}}. Ele não poderá ser excluído depois.",
       "submit": "Registrar acordo assinado",
       "success": "Acordo assinado registrado.",
@@ -1126,7 +1129,9 @@
         "uploadImage": "Não foi possível enviar a imagem.",
         "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
         "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
-        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "saveExpiry": "Não foi possível salvar a data de vencimento.",
+        "saveIntroNotes": "Não foi possível salvar as notas de introdução."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -1294,6 +1299,7 @@
         "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
+        "autoValueBlank": "Em branco",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
         "manualVariablesTitle": "Preencha para esta proposta",
         "labelFieldLabel": "Rótulo da seção",
@@ -1350,6 +1356,14 @@
       },
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O texto formatado oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+      },
+      "intro": {
+        "expiryLabel": "Válida até",
+        "expiryHelper": "Impressa na proposta. O cliente pode aceitar até o fim deste dia. Deixe em branco para não ter vencimento.",
+        "expiryPast": "Esta data já passou — o cliente não pode aceitar uma proposta vencida.",
+        "notesLabel": "Notas de introdução",
+        "notesHelper": "Impressas acima da primeira seção da proposta.",
+        "notesPlaceholder": "Uma nota curta para o cliente, por ex. o que esta proposta cobre."
       }
     },
     "actions": {
@@ -1460,6 +1474,9 @@
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com este orçamento em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação.",
       "acceptOnBehalf": {
         "button": "Aceitar em nome do cliente",
+        "emptyDraftTitle": "Adicione pelo menos um item antes de aceitar.",
+        "emptySentTitle": "Este orçamento não tem itens. Use Revisar orçamento para emitir uma versão com itens.",
+        "errorQuoteEmpty": "Este orçamento não tem itens. Feche esta caixa de diálogo e adicione um item, ou use Revisar orçamento se ele já foi enviado.",
         "title": "Registrar o aceite do cliente",
         "methodLabel": "Como o cliente concordou?",
         "method": {
@@ -2095,6 +2112,7 @@
       "title": "Enviar esta fatura?",
       "message": "A fatura de {{amount}} será enviada por e-mail para {{customer}}."
     },
+    "sourceHeldForHourBlock": "Parte do tempo deste rascunho está reservada para um banco de horas e será faturada no fechamento do período do banco. Remova essas linhas e depois emita a fatura.",
     "unsavedHint": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva.",
     "unsavedTitle": "“{{field}}” tem uma alteração não salva — a emissão será liberada quando ela for salva."
   },
@@ -2816,7 +2834,6 @@
       "delivery_failed": "Falha na entrega do aviso",
       "consent_required": "A autorização de pagamento está ausente. Solicite uma nova autorização."
     },
-    "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
     "chargeResultUnknown": "Não foi possível confirmar o que aconteceu com este pagamento. Atualizando a fatura para mostrar o status atual.",
     "chargeStarted": "Tentativa de pagamento iniciada",
@@ -2956,10 +2973,6 @@
     "saveFailed": "Não foi possível salvar as configurações de lembretes",
     "loadFailed": "Não foi possível carregar as configurações de lembretes",
     "retry": "Tentar novamente",
-    "loading": "Carregando configurações de pagamento…",
-    "templates": {
-      "paymentReminder": "Lembrete de pagamento",
-      "paymentOverdue": "Lembrete de pagamento em atraso"
-    }
+    "loading": "Carregando configurações de pagamento…"
   }
 }

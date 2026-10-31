@@ -41,6 +41,8 @@ import {
   deviceTargetedTaskFieldsSchema,
   operatorTaskDraftSchema,
   operatorTaskListQuerySchema,
+  selfInheritanceField,
+  SELF_INHERITANCE_MESSAGE,
   type CreateOperatorTaskInput,
   type IdentityOffboardingInput,
   type IdentityOnboardingInput,
@@ -337,7 +339,8 @@ aiOperatorTasksRoutes.post(
 /**
  * Org-wide keyset-paginated task list — every task the caller's accessible
  * orgs admitted, newest-created first. Optional `deviceId`/`state` filters
- * per spec §12's `GET /tasks` contract.
+ * per spec §12's `GET /tasks` contract, plus an optional `orgId` that narrows
+ * to one accessible org (#10112).
  *
  * Sorted by `created_at`, not `updated_at` (review fix, PR #5254) — see
  * `operatorTasksListCursor.ts`'s header for why a keyset needs an immutable
@@ -351,9 +354,18 @@ aiOperatorTasksRoutes.get(
   zValidator('query', operatorTaskListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { cursor: cursorToken, limit, deviceId, state } = c.req.valid('query');
+    const { cursor: cursorToken, limit, deviceId, state, orgId } = c.req.valid('query');
 
-    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state });
+    // Optional single-org filter (#10112) — same contract as `GET /ai/agents/runs`.
+    // `fetchWithAuth` injects `?orgId=<selected>` whenever the org switcher has
+    // one org selected; the schema used to strip it, so the switcher (and the
+    // Wisp entity picker's Tasks tab) never narrowed this list. It must name an
+    // org the caller can already see: the filter narrows, never widens.
+    if (orgId && !auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Access to this organization denied' }, 403);
+    }
+
+    const result = await listOperatorTasks(auth, { cursorToken, limit, deviceId, state, orgId });
     if (!result.ok) return c.json({ error: 'Invalid or malformed cursor' }, 400);
     return c.json({ data: result.data, nextCursor: result.nextCursor });
   },
@@ -399,6 +411,20 @@ const IDENTITY_TOGGLE_TOOLS: Readonly<Record<keyof IdentityOffboardingInput['eff
 });
 
 type ContactRow = { id: string; name: string | null; email: string | null };
+
+/**
+ * The person leaving named as their own inheritor, once the person is a
+ * resolved contact (#10076). The input validator catches an inheritor equal to
+ * the named `contactId`; only a resolved row shows a hint that resolves to the
+ * inheritor, or a `forwardTo` that is the person's own address. Same 400 shape
+ * as the validator's, with the reason as the error so the form can show it.
+ */
+function selfInheritanceRefusal(input: IdentityOffboardingInput, person: ContactRow) {
+  const field = selfInheritanceField(input, { contactId: person.id, email: person.email });
+  return field
+    ? { error: SELF_INHERITANCE_MESSAGE, code: 'INVALID_INPUT', issues: [{ path: field, message: SELF_INHERITANCE_MESSAGE }] }
+    : null;
+}
 
 /**
  * Who the caller means, READ-ONLY, in the caller's own (RLS-scoped) db
@@ -488,6 +514,8 @@ async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperato
       .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, input.contactId))).limit(1);
     // Non-enumerating: the same answer whether it exists elsewhere or nowhere.
     if (!row) return c.json({ error: 'Contact not found' }, 404);
+    const selfInheritance = selfInheritanceRefusal(input, row);
+    if (selfInheritance) return c.json(selfInheritance, 400);
     label = row.name ?? row.email ?? label;
   }
   if (input.deviceIds.length > 0) {
@@ -629,6 +657,8 @@ aiOperatorTasksRoutes.post(
       return c.json({ error: 'Name the person with at least two characters, or choose a contact.', code: 'INVALID_INPUT' }, 400);
     }
     const person = await draftPerson(body.orgId, input);
+    const selfInheritance = person.resolved ? selfInheritanceRefusal(input, person.resolved) : null;
+    if (selfInheritance) return c.json(selfInheritance, 400);
     const degraded = new Set(readiness.degradedEffects);
     const plannedEffectTools = (Object.keys(IDENTITY_TOGGLE_TOOLS) as Array<keyof typeof IDENTITY_TOGGLE_TOOLS>)
       .filter((toggle) => input.effects[toggle])

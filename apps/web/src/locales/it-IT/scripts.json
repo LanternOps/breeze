@@ -982,7 +982,8 @@
     },
     "confirm": {
       "title": "Conferma esecuzione",
-      "description": "Esegui \"{{name}}\" su {{count}} dispositivo/i come {{runAs}}. Gli script vengono accodati e iniziano l'esecuzione immediatamente."
+      "description": "Esegui \"{{name}}\" su {{count}} dispositivo/i come {{runAs}}. Gli script vengono accodati e iniziano l'esecuzione immediatamente.",
+      "descriptionOffline": "Esegui “{{name}}” su {{count}} dispositivo/i come {{runAs}}. Gli script vengono accodati ora: i dispositivi online iniziano subito e {{offline}} dispositivo/i offline verranno eseguiti quando tornano online."
     },
     "selectedCount": "{{count}} dispositivo/i selezionato/i",
     "executeBlocked": "L’esecuzione non è disponibile: un dispositivo selezionato non può eseguire questo script qui (potrebbe appartenere a un’organizzazione diversa da quella mostrata o non essere più accessibile).",
@@ -1027,6 +1028,7 @@
       "submitting": "Invio a {{count}} gruppo/i...",
       "warningsTitle": "Note del server",
       "confirmDescription": "Esegui “{{name}}” su {{groups}} gruppo/i di dispositivi come {{runAs}}. Gli script vengono messi in coda e iniziano subito.",
+      "confirmDescriptionOffline": "Esegui “{{name}}” su {{groups}} gruppo/i di dispositivi come {{runAs}}. Gli script vengono accodati ora: i dispositivi online iniziano subito e {{offline}} dispositivo/i offline verranno eseguiti quando tornano online.",
       "confirmMembers": "In questo momento {{count}} dispositivo/i univoco/i fanno parte di questi gruppi; l'appartenenza viene riletta alla conferma.",
       "confirmMembersUnknown": "Il numero di dispositivi non è ancora noto; l'appartenenza viene letta alla conferma.",
       "errors": {
