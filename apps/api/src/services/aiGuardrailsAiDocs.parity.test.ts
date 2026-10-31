@@ -264,3 +264,14 @@ describe('features/ai.mdx ↔ aiGuardrails tier tables parity (#2686)', () => {
     expect(mismatches, driftMessage(DOC_REL, mismatches)).toEqual([]);
   });
 });
+
+
+describe('W15 Pax8 documentation', () => {
+  it.each(['get_pax8_status', 'search_pax8_products', 'manage_pax8_subscriptions', 'manage_pax8_orders'])('%s documents every action', (tool) => {
+    const rows = claims.filter((c) => c.tool === tool);
+    expect(rows.length).toBeGreaterThan(0);
+    const actions = toolActionEnum(tool) ?? [];
+    const documented = rows.flatMap((c) => c.actions);
+    expect(actions.filter((a) => !documented.includes(a))).toEqual([]);
+  });
+});

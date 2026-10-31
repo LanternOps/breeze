@@ -50,6 +50,11 @@ export interface Pax8OrderSubmitRepository {
   ): Promise<{ resolved: number; stillUnknown: number }>;
 }
 
+/** Optional evidence lets adapters distinguish a vendor dry run from a local no-op. */
+export type PreflightResult =
+  | { ok: true; sentToPax8?: boolean; reason?: 'NO_NEW_SUBSCRIPTIONS' }
+  | { ok: false; errorBody: string; cause?: unknown };
+
 interface ServiceDeps {
   repository: Pax8OrderSubmitRepository;
   runOutsideDbContext: typeof runOutsideDbContext;
@@ -155,14 +160,14 @@ async function preflightBundle(
   bundle: SubmitBundle,
   client: Pax8Client,
   outside: typeof runOutsideDbContext,
-): Promise<{ ok: true } | { ok: false; errorBody: string }> {
+): Promise<PreflightResult> {
   const createInput = buildCreateOrderInput(bundle);
-  if (!createInput) return { ok: true };
+  if (!createInput) return { ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' };
   try {
     await outside(() => client.createOrder(createInput, { isMock: true }));
-    return { ok: true };
+    return { ok: true, sentToPax8: true };
   } catch (error) {
-    return { ok: false, errorBody: errorText(error) };
+    return { ok: false, errorBody: errorText(error), cause: error };
   }
 }
 
@@ -340,9 +345,9 @@ function reconcileSubscriptionLine(
 
 export function createPax8OrderSubmitService(deps: ServiceDeps) {
   return {
-    async preflightOrder(input: { partnerId: string; orderId: string }) {
+    async preflightOrder(input: { partnerId: string; orderId: string }): Promise<PreflightResult> {
       const bundle = await deps.repository.loadResolvedOrder(input);
-      if (newSubscriptionLines(bundle).length === 0) return { ok: true } as const;
+      if (newSubscriptionLines(bundle).length === 0) return { ok: true, sentToPax8: false, reason: 'NO_NEW_SUBSCRIPTIONS' };
       const client = await deps.repository.createClient(bundle);
       return preflightBundle(bundle, client, deps.runOutsideDbContext);
     },
