@@ -647,3 +647,56 @@ export async function resolveSystemCleanupRunStatus(args: {
     },
   };
 }
+
+export type SystemCleanupCancelResult =
+  | { ok: true; cleanupRunId: string; commandId: string | null }
+  | { ok: false; status: 404; error: 'run_not_found' }
+  | { ok: false; status: 409; error: 'not_running'; runStatus: string };
+
+/**
+ * Operator cancel of a system run (#6485 F-5), shared by
+ * `POST /devices/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel` and
+ * the AI tool's `cancel` action (#10161), so the two lanes cannot drift.
+ *
+ * CASes on the RUN row (not the command, whose generic cancel 409s the moment
+ * the agent claims it) through `failSystemCleanupRunAndCancelCommand`, the
+ * same atomic fail-the-run-then-cancel-the-command transaction the lazy
+ * timeout uses. A command the agent already claimed keeps running on the
+ * device; its late result is recorded on the run without changing `failed`.
+ *
+ * Runs in the CALLER's DB context, like `resolveSystemCleanupRunStatus`;
+ * `device` must already be access-verified. Writes no audit row: each caller
+ * audits its own surface.
+ */
+export async function cancelSystemCleanupRun(args: {
+  device: { id: string; orgId: string };
+  cleanupRunId: string;
+}): Promise<SystemCleanupCancelResult> {
+  const { device, cleanupRunId } = args;
+  const runScope = and(
+    eq(deviceFilesystemCleanupRuns.id, cleanupRunId),
+    eq(deviceFilesystemCleanupRuns.deviceId, device.id),
+    eq(deviceFilesystemCleanupRuns.orgId, device.orgId),
+    eq(deviceFilesystemCleanupRuns.kind, 'system'),
+  );
+  const [run] = await db.select().from(deviceFilesystemCleanupRuns).where(runScope).limit(1);
+  if (!run) return { ok: false, status: 404, error: 'run_not_found' };
+  if (run.status !== 'running') return { ok: false, status: 409, error: 'not_running', runStatus: run.status };
+
+  const finalised = await failSystemCleanupRunAndCancelCommand({
+    runId: cleanupRunId, deviceId: device.id, orgId: device.orgId, error: 'cancelled_by_operator',
+  });
+  if (!finalised) {
+    // Lost the CAS: a real result (or another cancel) landed between the read
+    // above and here. Re-read rather than assume `failed`: the winner could be
+    // a completed `executed` run, and reporting a successful run as failed is
+    // its own false report.
+    const [current] = await db
+      .select({ status: deviceFilesystemCleanupRuns.status })
+      .from(deviceFilesystemCleanupRuns)
+      .where(runScope)
+      .limit(1);
+    return { ok: false, status: 409, error: 'not_running', runStatus: current?.status ?? 'failed' };
+  }
+  return { ok: true, cleanupRunId, commandId: run.commandId ?? null };
+}

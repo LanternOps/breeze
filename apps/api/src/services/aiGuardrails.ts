@@ -516,7 +516,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // apt-get/dnf, journalctl, tmutil, brew) as root/LocalSystem with a 90-minute
   // ceiling, and some of its handlers cannot be undone (`Previous
   // Installations` deletes Windows.old, which is the rollback path).
-  system_cleanup: ['run'],
+  // `cancel` (#10161) mirrors POST …/run/:cleanupRunId/cancel, a requireMfa()
+  // route that mutates: the MFA-route invariant (TOOL_EXTRA_PERMISSIONS note)
+  // puts it at Tier 3.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   // Fleet tools — Tier 3 actions (require user approval)
@@ -915,7 +918,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // maintenance operations a tech could run by hand on the box, and nothing in
   // it is externally binding or financial. Its irreversibility (Windows.old)
   // is a property of the ACTION the tech picked, not of the approval class.
-  system_cleanup: ['run'],
+  // `cancel` (#10161) fails one run on one device and reaches no one: the
+  // requester approves.
+  system_cleanup: ['run', 'cancel'],
   manage_startup_items: ['disable', 'enable'],
   manage_scheduled_tasks: ['run', 'disable', 'enable'],
   manage_configuration_policy: ['create', 'update', 'delete'],
@@ -1941,6 +1946,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // /devices/:id/filesystem/system-cleanup/list (DEVICES_EXECUTE).
     list: { resource: 'devices', action: 'execute' },
     run: { resource: 'devices', action: 'execute' },
+    // POST …/run/:cleanupRunId/cancel (DEVICES_EXECUTE).
+    cancel: { resource: 'devices', action: 'execute' },
     status: { resource: 'devices', action: 'read' },
   },
   file_operations: {

@@ -614,3 +614,49 @@ describe('registry description reconciliation', () => {
     }
   });
 });
+
+/**
+ * #10161: the chat SDK validates against its DECLARED shape, not the registry JSON schema MCP advertises. An
+ * action the registry lists but the SDK enum lacks is rejected in chat while MCP accepts it (manage_tickets
+ * merge_preview/merge; system_cleanup's hand-written enum). Every declared action enum must equal the registry's.
+ */
+/**
+ * Pre-existing drift found when this check landed (#10161), out of that issue's scope and tracked for a
+ * follow-up. FROZEN, shrink-only: fix the drift and delete the entry; never add one.
+ *   manage_alerts      registry `suppress`, SDK lacks it (chat cannot suppress)
+ *   generate_report    registry `download`, SDK lacks it
+ *   manage_automations / manage_maintenance_windows  SDK allows create/update/delete the registry does not list
+ */
+const KNOWN_SDK_ACTION_ENUM_DRIFT: ReadonlySet<string> = new Set([
+  'manage_alerts', 'generate_report', 'manage_automations', 'manage_maintenance_windows',
+]);
+
+describe('SDK action enum === registry action enum (#10161)', () => {
+  function actionEnumDrift(): string[] {
+    const drift: string[] = [];
+    for (const [name, decl] of declaredToolsByName()) {
+      const sdkAction = (decl.inputSchema as Record<string, { options?: unknown[] } | undefined>).action;
+      const registryEnum = (aiTools.get(name)?.definition.input_schema as { properties?: { action?: { enum?: string[] } } } | undefined)
+        ?.properties?.action?.enum;
+      if (!Array.isArray(sdkAction?.options) || !registryEnum) continue;
+      const sdk = (sdkAction.options as string[]).slice().sort();
+      const registry = [...registryEnum].sort();
+      if (JSON.stringify(sdk) !== JSON.stringify(registry)) drift.push(name);
+    }
+    return drift.sort();
+  }
+
+  it('every declared tool with an action enum matches its registry definition', () => {
+    expect(actionEnumDrift().filter((n) => !KNOWN_SDK_ACTION_ENUM_DRIFT.has(n))).toEqual([]);
+  });
+
+  it('pins the two tools #10161 fixed', () => {
+    const drift = actionEnumDrift();
+    expect(drift).not.toContain('manage_tickets');
+    expect(drift).not.toContain('system_cleanup');
+  });
+
+  it('KNOWN_SDK_ACTION_ENUM_DRIFT has no stale entries — the list may only shrink', () => {
+    expect([...KNOWN_SDK_ACTION_ENUM_DRIFT].sort()).toEqual(actionEnumDrift().filter((n) => KNOWN_SDK_ACTION_ENUM_DRIFT.has(n)));
+  });
+});

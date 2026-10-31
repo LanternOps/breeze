@@ -219,3 +219,9 @@ Dynamic device groups can now match software versions below, at least, or equal 
 Add up to 20 Application event providers in an Event Logs configuration policy to collect their Warning and Information events alongside the built-in providers.
 Only the winning policy for each device applies; newly added providers start with the next collection pass, without a history back-fill.
 Update agents to a release containing this change before relying on the provider list. Older agents ignore it.
+
+### AI assistant — ticket merge and cleanup cancel in chat (#10161)
+
+- **Merging tickets works from chat.** `manage_tickets` `merge_preview` and `merge` (with `intoTicketId` and `notifyRequester`) were offered to the model but rejected or stripped by chat's input check; chat now accepts them. MCP behaviour is unchanged. `merge` still needs approval.
+- **`system_cleanup` gains `cancel`.** It ends a running OS-native cleanup run, the same path as the panel's cancel. The run is marked failed and a command the device has not picked up is cancelled; a cleaner the device already started can still finish. Needs approval (supervised Tier 3), so it is not available over MCP.
+- No migration, setting or environment variable.

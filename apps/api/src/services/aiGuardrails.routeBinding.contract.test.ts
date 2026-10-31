@@ -633,6 +633,7 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'system_cleanup', action: 'list', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/list' },
   { tool: 'system_cleanup', action: 'run', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run' },
   { tool: 'system_cleanup', action: 'status', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'get', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId' },
+  { tool: 'system_cleanup', action: 'cancel', routeFile: 'devices/filesystemSystemCleanup.ts', method: 'post', path: '/:id/filesystem/system-cleanup/run/:cleanupRunId/cancel' },
   { tool: 'analyze_disk_usage', input: { refresh: true }, routeFile: 'devices/filesystem.ts', method: 'post', path: '/:id/filesystem/scan' },
   { tool: 'analyze_disk_usage', routeFile: 'devices/filesystem.ts', method: 'get', path: '/:id/filesystem' },
   { tool: 'analyze_boot_performance', input: { triggerCollection: true }, routeFile: 'devices/bootMetrics.ts', method: 'post', path: '/:id/collect-boot-metrics' },

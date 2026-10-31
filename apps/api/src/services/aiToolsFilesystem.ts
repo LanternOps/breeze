@@ -51,6 +51,7 @@ import {
   awaitSystemCleanupResult,
   parseAgentJson,
   queueSystemCleanupList,
+  cancelSystemCleanupRun,
   resolveSystemCleanupRunStatus,
   startSystemCleanupRun,
   systemCleanupCatalogSchema,
@@ -843,7 +844,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
 
   // ============================================
   // system_cleanup - Tier 2 list (asks the device live), Tier 1 status,
-  // Tier 3 run (spec §9.1)
+  // Tier 3 run (spec §9.1) and cancel (#10161)
   // ============================================
   //
   // THIN on purpose. Every decision — the MIN_AGENT_VERSION gate, action-id
@@ -864,15 +865,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     selfManagedDbContext: ['list'],
     definition: {
       name: 'system_cleanup',
-      description: 'List, run or check OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux cache/journal) beyond scanner reach. list is read-only; re-poll pending with commandId. run needs approval, returns cleanupRunId; poll status until executed/failed, do not re-run. status is read-only.',
+      description: 'List, run, check or cancel OS-native cleaners (Windows Disk Cleanup/DISM, macOS snapshots/Homebrew, Linux cache/journal) beyond scanner reach. list is read-only; re-poll pending with commandId. run returns cleanupRunId; poll status until executed/failed, do not re-run. run and cancel need approval.',
       input_schema: {
         type: 'object' as const,
         properties: {
           deviceId: { type: 'string', description: 'The device UUID' },
-          action: { type: 'string', enum: ['list', 'run', 'status'], description: 'list (read-only catalog), run (start selected actions; returns a cleanupRunId), or status (read-only progress/result of a run)' },
+          action: { type: 'string', enum: ['list', 'run', 'status', 'cancel'], description: 'list (read-only catalog), run (start selected actions; returns a cleanupRunId), status (read-only progress/result of a run), or cancel (end a running run)' },
           actionIds: { type: 'array', items: { type: 'string' }, description: 'Catalog action ids to run, from a prior list call (required for run)' },
           params: { type: 'object', description: 'Optional per-action parameters. journalVacuumBytes (67108864-4294967296) bounds journalctl --vacuum-size.' },
-          cleanupRunId: { type: 'string', description: 'The cleanupRunId returned by run (required for status)' },
+          cleanupRunId: { type: 'string', description: 'The cleanupRunId returned by run (required for status and cancel)' },
           commandId: { type: 'string', description: 'For list only: the commandId of a catalog request that answered "pending", to re-check it instead of starting a new one' },
         },
         required: ['deviceId', 'action'],
@@ -880,14 +881,15 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     },
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
-      const action = input.action as 'list' | 'run' | 'status';
+      const action = input.action as 'list' | 'run' | 'status' | 'cancel';
 
       // Throws (never returns) when the surface minted no origin — an
       // unattributed destructive device command is refused, not degraded.
       const aiOrigin = requireAiOrigin(auth, 'system_cleanup');
 
-      // `status` reads a run row; the device need not be online for that.
-      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action !== 'status'));
+      // `status` reads a run row and `cancel` fails one (its pending command is
+      // exactly what an offline device has not claimed); neither needs it online.
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, action !== 'status' && action !== 'cancel'));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const device = {
@@ -928,6 +930,63 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       const [userRow] = await inToolDbPhase(auth, () =>
         db.select({ id: users.id }).from(users).where(eq(users.id, auth.user.id)).limit(1));
       const requestedBy = userRow ? auth.user.id : null;
+      // Tool catalog W04 (#5219), Decision 16: a flow is system automation
+      // carrying its run — never 'ai_agent' (the fallback below for a
+      // non-users actor) and never its synthetic attribution id.
+      const flowActor = aiOrigin.kind === 'flow'
+        ? aiOriginAuditActor(aiOrigin, { agentActorId: null, humanActorId: null })
+        : null;
+      const auditActor = flowActor
+        ? { actorType: flowActor.actorType, actorId: flowActor.actorId, initiatedBy: flowActor.initiatedBy }
+        : {
+          actorType: requestedBy ? 'user' as const : 'ai_agent' as const,
+          actorId: auth.user.id,
+          actorEmail: auth.user.email,
+          initiatedBy: 'ai' as const,
+        };
+
+      if (action === 'cancel') {
+        const cleanupRunId = typeof input.cleanupRunId === 'string' ? input.cleanupRunId : '';
+        if (!cleanupRunId) return JSON.stringify({ error: 'cleanupRunId is required for the cancel action' });
+        // The SAME lookup + CAS the human cancel route uses
+        // (POST …/run/:cleanupRunId/cancel), scoped to the verified device.
+        const cancelled = await cancelSystemCleanupRun({ device: { id: device.id, orgId: device.orgId }, cleanupRunId });
+        if (!cancelled.ok) {
+          if (cancelled.status === 404) return JSON.stringify({ error: 'Cleanup run not found' });
+          // Same F-4 lesson as run_in_progress below: a bare error next to a
+          // status reads like success, so say plainly nothing was cancelled.
+          return JSON.stringify({
+            error: 'not_running',
+            refused: true,
+            cleanupRunId,
+            status: cancelled.runStatus,
+            note: `Nothing was cancelled: this run is no longer running (status ${cancelled.runStatus}).`,
+          });
+        }
+        void createAuditLogAsync({
+          orgId: device.orgId,
+          ...auditActor,
+          action: 'device.filesystem.system_cleanup.cancel',
+          resourceType: 'device',
+          resourceId: device.id,
+          resourceName: access.device.hostname,
+          details: {
+            cleanupRunId,
+            commandId: cancelled.commandId,
+            surface: 'ai_tool',
+            ...(flowActor ? flowActor.originDetails : {}),
+          },
+          result: 'success',
+        }).catch((auditError: unknown) => {
+          console.error('[system_cleanup] cancel audit write failed (non-fatal)', { deviceId: device.id, error: auditError });
+        });
+        return JSON.stringify({
+          cleanupRunId,
+          status: 'failed',
+          cancelled: true,
+          note: 'The run is marked failed and its command was cancelled if the device had not claimed it. A cleaner the device already started may still finish; its result is recorded on the run but does not change this status.',
+        });
+      }
 
       if (action === 'list') {
         // A re-check of a catalog request that answered `pending` earlier:
@@ -998,22 +1057,9 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
       // result handler owns completion (the measured
       // device.filesystem.system_cleanup.run row with bytes and per-action
       // status) for every path, AI or human.
-      // Tool catalog W04 (#5219), Decision 16: a flow is system automation
-      // carrying its run — never 'ai_agent' (the fallback below for a
-      // non-users actor) and never its synthetic attribution id.
-      const flowActor = aiOrigin.kind === 'flow'
-        ? aiOriginAuditActor(aiOrigin, { agentActorId: null, humanActorId: null })
-        : null;
       void createAuditLogAsync({
         orgId: device.orgId,
-        ...(flowActor
-          ? { actorType: flowActor.actorType, actorId: flowActor.actorId, initiatedBy: flowActor.initiatedBy }
-          : {
-            actorType: requestedBy ? 'user' : 'ai_agent',
-            actorId: auth.user.id,
-            actorEmail: auth.user.email,
-            initiatedBy: 'ai',
-          }),
+        ...auditActor,
         action: 'device.filesystem.system_cleanup.run',
         resourceType: 'device',
         resourceId: device.id,

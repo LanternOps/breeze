@@ -47,6 +47,8 @@ const serviceState = vi.hoisted(() => ({
   runResult: { ok: true, commandId: 'cmd-run-1', cleanupRunId: 'run-9' } as Record<string, unknown>,
   awaited: { status: 'completed', result: { catalogVersion: 1, actions: [], volumesBefore: [] } } as Record<string, unknown>,
   statusResult: { ok: false, status: 404, error: 'run_not_found' } as Record<string, unknown>,
+  cancelResult: { ok: true, cleanupRunId: '44444444-4444-4444-8444-444444444444', commandId: 'cmd-run-1' } as Record<string, unknown>,
+  cancelArgs: [] as Record<string, unknown>[],
   listArgs: [] as Record<string, unknown>[],
   runArgs: [] as Record<string, unknown>[],
   awaitArgs: [] as unknown[][],
@@ -72,6 +74,10 @@ vi.mock('./systemCleanup', async (importOriginal) => {
     resolveSystemCleanupRunStatus: vi.fn(async (args: Record<string, unknown>) => {
       serviceState.statusArgs.push(args);
       return serviceState.statusResult;
+    }),
+    cancelSystemCleanupRun: vi.fn(async (args: Record<string, unknown>) => {
+      serviceState.cancelArgs.push(args);
+      return serviceState.cancelResult;
     }),
   };
 });
@@ -134,6 +140,8 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     serviceState.runArgs = [];
     serviceState.awaitArgs = [];
     serviceState.statusArgs = [];
+    serviceState.cancelArgs = [];
+    serviceState.cancelResult = { ok: true, cleanupRunId: RUN_ID, commandId: 'cmd-run-1' };
     auditState.rows = [];
     serviceState.listResult = { ok: true, commandId: 'cmd-list-1' };
     serviceState.runResult = { ok: true, commandId: 'cmd-run-1', cleanupRunId: 'run-9', deadlineAt: DEADLINE };
@@ -154,7 +162,7 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
     expect(tool.deviceArgs).toEqual(['deviceId']);
     const props = tool.definition.input_schema.properties as Record<string, unknown>;
     expect(Object.keys(props).sort()).toEqual(['action', 'actionIds', 'cleanupRunId', 'commandId', 'deviceId', 'params']);
-    expect((props.action as { enum: string[] }).enum).toEqual(['list', 'run', 'status']);
+    expect((props.action as { enum: string[] }).enum).toEqual(['list', 'run', 'status', 'cancel']);
     expect(tool.definition.input_schema.required).toEqual(['deviceId', 'action']);
   });
 
@@ -425,6 +433,61 @@ describe('system_cleanup AI tool (spec §9.1, §9.3 items 1-2)', () => {
       };
       const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'status', cleanupRunId: RUN_ID }, makeAuth());
       expect(JSON.parse(raw).status).toBe('running');
+    });
+  });
+
+  // #10161 (W05 triage REMAP #44): the AI twin of POST …/run/:cleanupRunId/cancel, over the SAME service call.
+  describe('cancel action', () => {
+    it('requires cleanupRunId and touches nothing without it', async () => {
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel' }, makeAuth());
+      expect(JSON.parse(raw).error).toBe('cleanupRunId is required for the cancel action');
+      expect(serviceState.cancelArgs).toHaveLength(0);
+      expect(auditState.rows).toHaveLength(0);
+    });
+
+    it('fails a running run through the shared service, audits once, and says a started cleaner may still finish', async () => {
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      const result = JSON.parse(raw);
+      expect(serviceState.cancelArgs).toEqual([{ device: { id: DEVICE_ID, orgId: ORG_ID }, cleanupRunId: RUN_ID }]);
+      expect(result).toMatchObject({ cleanupRunId: RUN_ID, status: 'failed', cancelled: true });
+      expect(result.note).toMatch(/already started/i);
+      expect(auditState.rows).toHaveLength(1);
+      expect(auditState.rows[0]).toMatchObject({
+        orgId: ORG_ID,
+        action: 'device.filesystem.system_cleanup.cancel',
+        resourceId: DEVICE_ID,
+        initiatedBy: 'ai',
+        result: 'success',
+        details: { cleanupRunId: RUN_ID, commandId: 'cmd-run-1', surface: 'ai_tool' },
+      });
+    });
+
+    it('works on an offline device (a pending command is exactly what cancel stops)', async () => {
+      dbMockState.deviceRows = [{ ...dbMockState.deviceRows[0] as Record<string, unknown>, status: 'offline' }];
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      expect(JSON.parse(raw)).toMatchObject({ cancelled: true });
+    });
+
+    it('answers not found for a run that is not this device\'s system run, and audits nothing', async () => {
+      serviceState.cancelResult = { ok: false, status: 404, error: 'run_not_found' };
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      expect(JSON.parse(raw)).toEqual({ error: 'Cleanup run not found' });
+      expect(auditState.rows).toHaveLength(0);
+    });
+
+    it('refuses a run that already finished, reporting its real status rather than claiming a cancel', async () => {
+      serviceState.cancelResult = { ok: false, status: 409, error: 'not_running', runStatus: 'executed' };
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      expect(JSON.parse(raw)).toMatchObject({ error: 'not_running', refused: true, status: 'executed' });
+      expect(JSON.parse(raw).cancelled).toBeUndefined();
+      expect(auditState.rows).toHaveLength(0);
+    });
+
+    it('refuses a device the caller cannot reach before calling the service', async () => {
+      dbMockState.deviceRows = [];
+      const raw = await getTool('system_cleanup').handler({ deviceId: DEVICE_ID, action: 'cancel', cleanupRunId: RUN_ID }, makeAuth());
+      expect(JSON.parse(raw).error).toBeDefined();
+      expect(serviceState.cancelArgs).toHaveLength(0);
     });
   });
 
