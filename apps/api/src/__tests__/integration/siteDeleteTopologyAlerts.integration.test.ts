@@ -81,9 +81,10 @@ describe('DELETE /orgs/sites/:id with site-owned topology alerts (T3)', () => {
       WHERE confrelid = 'public.alerts'::regclass AND contype = 'f' AND confdeltype = 'a'
         AND conrelid <> 'public.alerts'::regclass`) as unknown as Array<{ tbl: string }>;
     // alert_correlations / alert_notifications left this list when
-    // 2026-12-13-110200 made their alert FKs ON DELETE CASCADE.
+    // 2026-12-13-110200 made their alert FKs ON DELETE CASCADE;
+    // psa_ticket_mappings left when 2027-01-17-210000 (#10499 W2-A) did.
     expect([...new Set(rows.map((r) => r.tbl))].sort()).toEqual([
-      'log_correlations', 'network_change_events', 'psa_ticket_mappings',
+      'log_correlations', 'network_change_events',
     ]);
   });
 });

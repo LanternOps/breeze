@@ -1136,6 +1136,13 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   manage_device_software: new Set(['name', 'version']),
   manage_software_inventory: new Set(['name', 'vendor', 'version', 'versions', 'hostname', 'osVersion', 'softwareName']),
   manage_fleet_findings: new Set(['title']),
+  // #10383: get_fleet_findings returns the same cached finding title (a log-correlation
+  // finding's title echoes the matched rule name or event pattern).
+  get_fleet_findings: new Set(['title']),
+  // #10383: generate_report device_inventory data returns the device-reported osVersion
+  // (fenced as for manage_software_inventory). hostname/agentVersion stay verbatim, per the
+  // hostname rule and query_agent_versions.
+  generate_report: new Set(['osVersion']),
   manage_custom_fields: new Set(['name', 'fieldKey', 'values', 'previous', 'defaultValue', 'options']),
   // Full-control W13 (#6783, W13-D11): audit messages / resource names / errors, agent health reasons, process names,
   // posture product names and versions, hostnames, link-group and manual-asset names, notes and locations, and
@@ -1168,6 +1175,9 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // reported data — the same field this tool's task-prompt sibling
   // (runnerPrompt.ts) already sanitizes when it inlines them directly.
   manage_alerts: new Set(['title', 'message']),
+  // #10383: manage_alert_rules get_rule returns the rule's recentAlerts[].title, the same
+  // device-derived alert title manage_alerts fences.
+  manage_alert_rules: new Set(['title']),
   // A device's own hostname/display name are self-reported at enrollment,
   // not admin-assigned.
   query_devices: new Set(['hostname', 'displayName']),
