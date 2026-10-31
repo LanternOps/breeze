@@ -147,6 +147,15 @@ describe('DashboardTiles', () => {
     expect(heading.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('dates the agreements card in the dashboard org zone, not the SSR runtime zone (#10291)', () => {
+    const agreements = [
+      { id: 'a1', name: 'MSA', templateName: 'MSA', status: 'sent' as const, sentAt: null, expiresAt: '2026-11-10T06:59:59.999Z', canSign: true },
+    ];
+    render(<DashboardTiles dashboard={dashboard} agreements={agreements} />); // dashboard.timezone = America/Denver
+    expect(screen.getByTestId('dashboard-agreements-awaiting-row-a1').textContent)
+      .toContain(`Expires ${new Date(2026, 10, 9).toLocaleDateString()}`);
+  });
+
   it('says so warmly when nothing is awaiting the customer', () => {
     render(
       <DashboardTiles

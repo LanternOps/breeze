@@ -8,11 +8,18 @@ export default function WispWelcome({
   scopeLabel,
   onSuggest,
   intro = true,
+  briefNote = true,
 }: {
   scopeLabel: string;
   onSuggest: (prompt: string) => void;
   /** False when a brief is already in the thread: "your first brief arrives" would contradict it, so only the chips show. */
   intro?: boolean;
+  /**
+   * False on a chat surface (side panel, /ai/chat tab): a new conversation in a
+   * thread that may already have briefs only greets; "your first brief arrives"
+   * is the home's first-visit line (#10195).
+   */
+  briefNote?: boolean;
 }) {
   const { t } = useTranslation('ai');
 
@@ -22,7 +29,7 @@ export default function WispWelcome({
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t('wisp.title')}</p>
           <p className="text-sm">{t('wisp.welcome.title', { scope: scopeLabel })}</p>
-          <p className="mt-1 text-sm">{t('wisp.welcome.body')}</p>
+          {briefNote && <p className="mt-1 text-sm">{t('wisp.welcome.body')}</p>}
         </div>
       )}
       <div className="flex flex-wrap gap-2">

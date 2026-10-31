@@ -54,7 +54,7 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
     - **Firewall**: `Get-NetFirewallProfile` queries all three profiles (Domain, Private, Public)
     - **Encryption**: `Get-BitLockerVolume` reads BitLocker protection status and encryption percentage per volume
     - **Local admins**: `Get-LocalGroupMember -Group 'Administrators'` enumerates the local Administrators group
-    - **Password policy**: `Win32_AccountPolicy` CIM class reads min length, max age, lockout threshold, and history count
+    - **Password policy**: `secedit /export /areas SECURITYPOLICY` reads min length, complexity, max and min age, lockout threshold, and history count from the local security policy. If the export fails, `NetUserModalsGet` (what `net accounts` uses) supplies everything except complexity, which then shows as Unknown. A max age of 0 means passwords never expire, which fails the 90-day check
   </TabItem>
   <TabItem label="macOS">
     - **AV detection**: CylancePROTECT / Aurora Endpoint Defense via its app bundle (`/Applications/Cylance/CylanceUI.app`) and launch daemon (`com.cylance.agent_service`), then Microsoft Defender for Endpoint via `mdatp health --output json`, with app bundle fallback. Cylance is attributed first; Defender takes the provider only when nothing else was found or when it is the only product with real-time protection on
@@ -232,7 +232,7 @@ Each device runs one scan at a time. The server hands scans to devices in small 
 
 ### Running it again
 
-Sweeping again with the same rule sets, scope and scan type while one is active is refused with a link to the running sweep. Once it has finished, a new sweep starts fresh against the current published versions. A sweep does not remember its devices, so choosing **Sweep again with the current rules** reopens the dialog with the rule sets and scan type filled in and asks for the scope again.
+Sweeping again with the same rule sets, scope and scan type while one is active is refused with a link to the running sweep. Once it has finished, a new sweep starts fresh against the current published versions. A sweep does not remember its devices, so choosing **Sweep again with the current rules** reopens the dialog with the rule sets, scan type and any custom paths filled in and asks for the scope again.
 
 ### Degraded coverage
 
@@ -517,9 +517,9 @@ GET /security/dashboard?orgId={orgId}
 | Field | Description |
 |-------|-------------|
 | `totalDevices` | Total number of devices with posture data |
-| `protectedDevices` | Devices with low risk and online status |
-| `atRiskDevices` | Devices with medium or high risk |
-| `unprotectedDevices` | Devices with critical risk level |
+| `protectedDevices` | Devices at posture risk level `low` that are online (posture score 85 or higher) |
+| `atRiskDevices` | Devices at posture risk level `medium` or `high` |
+| `unprotectedDevices` | Devices at posture risk level `critical` |
 | `offlineDevices` | Devices not currently reporting |
 | `totalThreatsDetected` | Total threat count across all devices |
 | `activeThreats` | Threats in `active` status |
@@ -535,6 +535,8 @@ GET /security/dashboard?orgId={orgId}
 | `adminAudit` | Summary of default/weak/stale admin account issues with top affected devices |
 | `recommendations` | Top security recommendations with priority and category |
 | `trend` | 30-day score trend as timestamp/score data points |
+
+`protectedDevices`, `atRiskDevices` and `unprotectedDevices` measure overall posture risk (falling back to per-device status when no posture snapshot exists), not antivirus coverage: a device with real-time protection on still counts as at risk when its posture score is below 85. For antivirus coverage, read the `antivirus` block. The **Antivirus** page tiles and the **Security** overview card both use it: the total is `protected + unprotected + unknown`, and coverage is `protected` divided by that total.
 
 ### Score Breakdown
 

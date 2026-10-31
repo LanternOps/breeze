@@ -400,7 +400,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     if (!agent) return null;
 
     const [org] = await db
-      .select({ id: organizations.id, partnerId: organizations.partnerId })
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
       .from(organizations)
       .where(eq(organizations.id, run.orgId))
       .limit(1);
@@ -686,6 +686,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       run: run as RunRow,
       agent: agent as AgentRow,
       orgPartnerId: org.partnerId,
+      orgName: org.name ?? null,
       device,
       alert,
       ticket,
@@ -1955,8 +1956,10 @@ export function agentRunWispGrant(
  */
 function assessmentPromptContext(
   a: NonNullable<RunContext['assessment']>,
+  org: AgentRunAssessmentPromptContext['org'],
 ): AgentRunAssessmentPromptContext {
   return {
+    org,
     reason: a.reason,
     threadSummary: a.threadSummary,
     openConcerns: a.openConcerns,
@@ -1965,6 +1968,7 @@ function assessmentPromptContext(
     watchLines: a.watch ? watchPromptLines(a.watch) : null,
     readiness: a.readiness,
     nudgeFeedback: a.nudgeFeedback,
+    firstLook: a.firstLook,
   };
 }
 
@@ -1998,7 +2002,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     research: ctx.research ?? null,
     provenFixes: ctx.provenFixes ?? null,
-    assessment: ctx.assessment ? assessmentPromptContext(ctx.assessment) : null,
+    assessment: ctx.assessment
+      ? assessmentPromptContext(ctx.assessment, { id: ctx.run.orgId, name: ctx.orgName ?? null })
+      : null,
   };
 }
 
@@ -2598,7 +2604,9 @@ async function driveSdkLoop(
     [
       ...buildOutcomeSdkTools(
         outcomeToolsForRun(run),
-        designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
+        // `assessment` is consumed only by record_concern (#10387), which only
+        // an assessment run is given.
+        { design: designRefs, patch: patchRefs, research: researchRefs, assessment: { orgId: run.orgId } },
       ),
       ...flowSdkTools,
     ],

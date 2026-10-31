@@ -23,7 +23,7 @@ import {
   folderCheckState,
   selectedFolderFileTotal,
 } from './folderSelection';
-import { formatNumber } from '@/lib/i18n/format';
+import { formatBytes } from './backupDashboardHelpers';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
@@ -107,15 +107,6 @@ function snapshotOptionLabel(snapshot: Snapshot): string {
   return parts.join(' — ');
 }
 
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return '-';
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / (1024 ** exponent);
-  const precision = value >= 10 || exponent === 0 ? 0 : 1;
-  return `${formatNumber(value, { minimumFractionDigits: precision, maximumFractionDigits: precision })} ${units[exponent]}`;
-}
 
 function formatDateTime(value: string | null | undefined): string {
   return formatUserDateTime(value, {
@@ -349,7 +340,7 @@ export default function SnapshotBrowser() {
       .map((item) => ({
         id: item.path,
         name: item.name,
-        size: typeof item.sizeBytes === 'number' ? formatBytes(item.sizeBytes) : undefined,
+        size: typeof item.sizeBytes === 'number' ? formatBytes(item.sizeBytes, '-') : undefined,
         modified: item.modifiedAt ? formatDateTime(item.modifiedAt) : undefined,
       })),
     [dirs, selectedFolder]
@@ -599,7 +590,7 @@ export default function SnapshotBrowser() {
                     <Database className="h-3.5 w-3.5" />
                     {t('snapshotBrowser.snapshotDetails')} </div>
                   <div className="mt-2 space-y-1 text-sm text-foreground">
-                    <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes)}</div>
+                    <div>{t('snapshotBrowser.size')} {formatBytes(selectedSnapshot.sizeBytes, '-')}</div>
                     <div>{t('snapshotBrowser.files')} {selectedSnapshot.fileCount ?? '-'}</div>
                     <div data-testid="snapshot-location" className="break-all">
                       {t('snapshotBrowser.location')}{' '}

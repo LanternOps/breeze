@@ -3,6 +3,7 @@ import { reportRunOwnerColumns } from '../reportRunOwner';
 import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
 import {
+  POSTURE_DEVICE_ROW_CSV_LABELS,
   rowsToCsv,
   type HardwareLifecycleSummary,
   type PortalRunDto,
@@ -811,6 +812,14 @@ export async function renderRunPdf(
   return Buffer.from(document.output('arraybuffer'));
 }
 
+/**
+ * Customer-facing header labels per report type for the portal CSV (#9964). A
+ * type without an entry keeps its row keys as the header.
+ */
+const PORTAL_CSV_HEADER_LABELS: Partial<Record<string, Readonly<Record<string, string>>>> = {
+  security_compliance_posture: POSTURE_DEVICE_ROW_CSV_LABELS,
+};
+
 export async function renderRunCsv(
   runId: string,
   orgId: string,
@@ -820,5 +829,5 @@ export async function renderRunCsv(
   if (!result || !Array.isArray(result.rows)) {
     throw new PortalReportNoTabularDataError();
   }
-  return rowsToCsv(result.rows);
+  return rowsToCsv(result.rows, { headerLabels: PORTAL_CSV_HEADER_LABELS[row.type] });
 }

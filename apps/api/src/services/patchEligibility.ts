@@ -168,6 +168,8 @@ export async function evaluatePatchInstallEligibility(args: {
       // Linux (#7800) entries have no vendor releaseDate, so deferral windows
       // anchor on when we first saw the patch instead of failing closed.
       firstSeenAt: devicePatches.createdAt,
+      // 'machine' | 'user' | NULL (#2727). A 'user' row is detection-only.
+      scope: devicePatches.scope,
     })
     .from(devicePatches)
     .innerJoin(patches, eq(devicePatches.patchId, patches.id))
@@ -191,6 +193,13 @@ export async function evaluatePatchInstallEligibility(args: {
     // Without a requested list the query itself is status-filtered; with one,
     // every listed row came back and its status decides.
     if (requested && !isOutstanding(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
+    // A per-user WinGet install (#2727) cannot be applied by the SYSTEM agent:
+    // dispatching it fails the job, or — after an agent restart wiped its
+    // in-memory user-scope set — installs a second, machine-wide copy. Deny it
+    // here, before any approval rule, so every dispatcher (patch jobs, the AI
+    // patch plan, the release-time effect digest) agrees with the web UI's
+    // disabled Install button (#10249).
+    if (row.scope === 'user') { deny(row.patchId, 'unsupported_user_scope'); continue; }
     if (args.excludeSuperseded && row.supersededBy) { deny(row.patchId, 'superseded'); continue; }
     pendingPatches.push(row);
   }
@@ -471,21 +480,27 @@ export async function resolveDevicePatchEvaluation(
     // executor threads them (jobs/patchJobExecutor.ts) — partnerId feeds the
     // cross-partner ring guard in the evaluator.
     const [ringRow] = await db
-      .select({ deferralDays: patchPolicies.deferralDays, partnerId: patchPolicies.partnerId })
+      .select({
+        deferralDays: patchPolicies.deferralDays,
+        partnerId: patchPolicies.partnerId,
+        enabled: patchPolicies.enabled,
+      })
       .from(patchPolicies)
       .where(and(eq(patchPolicies.id, ringId), eq(patchPolicies.kind, 'ring')))
       .limit(1);
-    if (ringRow) {
+    if (ringRow && ringRow.enabled === true) {
       config.deferralDays = ringRow.deferralDays;
       config.ringPartnerId = ringRow.partnerId;
     } else {
-      // The ring resolved as valid a moment ago and is gone now (deleted
-      // between the two reads). Keeping its category/auto-approve rules with
-      // a zeroed deferral window would fail OPEN — the direction
-      // `disabledForMalformedField` refuses — and treating it as "no ring"
-      // would drop its app rules, the only ones there are (#8186). Fail
-      // closed: deny everything, as for any unresolvable ring, and say so.
-      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read — denying every candidate (ring_reference_invalid)`;
+      // The ring resolved as valid a moment ago and is gone now: deleted or
+      // disabled between the two reads (a delete is a soft delete, so the row
+      // survives with `enabled = false`; #8909). Keeping its
+      // category/auto-approve rules with a zeroed deferral window would fail
+      // OPEN — the direction `disabledForMalformedField` refuses — and
+      // treating it as "no ring" would drop its app rules, the only ones there
+      // are (#8186). Fail closed: deny everything, as for any unresolvable
+      // ring, and say so.
+      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read (${ringRow ? 'disabled' : 'missing'}) — denying every candidate (ring_reference_invalid)`;
       console.warn(message);
       captureException(new Error(message));
       return {

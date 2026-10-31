@@ -5,6 +5,8 @@ import {
   createTemplateVersionSchema,
   contractVariableSchema,
   AUTO_CONTRACT_VARIABLES,
+  QUOTE_ONLY_CONTRACT_VARIABLES,
+  autoVariablesNeedingQuote,
 } from './contractTemplates';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -125,5 +127,38 @@ describe('AUTO_CONTRACT_VARIABLES', () => {
     for (const name of AUTO_CONTRACT_VARIABLES) {
       expect(contractVariableSchema.safeParse({ name, kind: 'auto' }).success).toBe(true);
     }
+  });
+});
+
+describe('QUOTE_ONLY_CONTRACT_VARIABLES (#9296)', () => {
+  it('is the subset of auto variables only a quote can fill', () => {
+    expect(QUOTE_ONLY_CONTRACT_VARIABLES).toEqual([
+      'quote.number', 'quote.title',
+      'totals.one_time', 'totals.monthly', 'totals.annual', 'totals.total',
+      'dates.expiry',
+    ]);
+    for (const name of QUOTE_ONLY_CONTRACT_VARIABLES) expect(AUTO_CONTRACT_VARIABLES).toContain(name);
+  });
+});
+
+describe('autoVariablesNeedingQuote (#9296)', () => {
+  it('returns declared auto variables a quote-less render cannot fill, in declared order', () => {
+    expect(autoVariablesNeedingQuote([
+      { name: 'client.name', kind: 'auto' },
+      { name: 'totals.monthly', kind: 'auto' },
+      { name: 'po.number', kind: 'manual' },
+      { name: 'quote.number', kind: 'auto' },
+      { name: 'dates.effective', kind: 'auto' },
+    ])).toEqual(['totals.monthly', 'quote.number']);
+  });
+
+  it('treats an auto variable the resolver does not know as unfillable too', () => {
+    expect(autoVariablesNeedingQuote([{ name: 'custom.auto', kind: 'auto' }])).toEqual(['custom.auto']);
+  });
+
+  it('is empty for null / undefined / manual-only lists', () => {
+    expect(autoVariablesNeedingQuote(null)).toEqual([]);
+    expect(autoVariablesNeedingQuote(undefined)).toEqual([]);
+    expect(autoVariablesNeedingQuote([{ name: 'po.number', kind: 'manual' }])).toEqual([]);
   });
 });

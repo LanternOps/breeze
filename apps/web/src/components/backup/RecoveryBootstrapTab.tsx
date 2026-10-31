@@ -15,7 +15,7 @@ import {
   TerminalSquare,
   Trash2,
 } from 'lucide-react';
-import { cn, formatBytes } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../../lib/runAction';
 import {
@@ -24,7 +24,7 @@ import {
   useUnattestedRestoreStepUp,
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
-import { formatTime } from './backupDashboardHelpers';
+import { formatBytes, formatTime } from './backupDashboardHelpers';
 import BareMetalRecoveryPanel from './BareMetalRecoveryPanel';
 import RestoreResultNotices, { isAdvisoryRestoreWarning } from './RestoreResultNotices';
 import { useTranslation } from 'react-i18next';

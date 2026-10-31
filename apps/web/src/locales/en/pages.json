@@ -85,6 +85,7 @@
     "logs": "Logs",
     "monitoring": "Network",
     "oauthConsent": "Authorize access",
+    "oauthError": "App connection failed",
     "onedrive": "OneDrive",
     "organizations": "Organizations",
     "organizationsDetail": "Organization",
@@ -210,6 +211,33 @@
     "referenceIdLabel": "Reference ID:",
     "dashboardLink": "Go to dashboard",
     "signInLink": "Sign in"
+  },
+  "oauthErrorPage": {
+    "invalidClient": {
+      "heading": "This app can't connect",
+      "body": "Breeze doesn't recognize the app that sent you here, or the app isn't allowed to connect to this Breeze server. Check that the app is set up with this server's address, then try again."
+    },
+    "invalidRedirectUri": {
+      "heading": "This app's return address isn't registered",
+      "body": "The app asked Breeze to send you back to an address it never registered, so Breeze stopped here to protect your account. The app's developer or your administrator needs to fix the app's redirect URL."
+    },
+    "sessionExpired": {
+      "heading": "This sign-in has expired",
+      "body": "The connection took too long, or it was started in a different browser. Go back to the app and connect again."
+    },
+    "invalidRequest": {
+      "heading": "The app sent a request Breeze can't accept",
+      "body": "The app's connection request was incomplete or asked for something this server doesn't support. Go back to the app and try again. If it keeps happening, contact the app's developer."
+    },
+    "serverError": {
+      "heading": "Breeze couldn't finish connecting",
+      "body": "Something went wrong on our end. Wait a few minutes, then go back to the app and try again."
+    },
+    "generic": {
+      "heading": "This connection couldn't be completed",
+      "body": "Go back to the app and start the connection again. If it keeps happening, contact your Breeze administrator."
+    },
+    "nextStep": "No access was granted. You can close this page."
   },
   "settingsIndex": {
     "heading": "Settings",

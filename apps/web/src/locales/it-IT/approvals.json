@@ -108,7 +108,7 @@
       "cancelled": "Annullata",
       "completed": "Completata",
       "denied": "Negata",
-      "refused": "Approvazione respinta",
+      "refused": "Approvata, poi bloccata",
       "approved": "Approvata",
       "reported": "Segnalata",
       "unknown": "Sconosciuto"

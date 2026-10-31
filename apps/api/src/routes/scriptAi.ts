@@ -209,8 +209,10 @@ scriptAiRoutes.post(
     // between them with no connection checked out.
     const inRequestDb = <T>(fn: () => Promise<T>): Promise<T> => withAuthDbAccessContext(auth, fn);
 
-    // Run pre-flight checks (rate limits, budget, session status)
-    const preflight = await inRequestDb(() => runPreFlightChecks(sessionId, content, auth, undefined, c));
+    // Run pre-flight checks (rate limits, budget, session status). #10415: not
+    // wrapped in inRequestDb — the pre-flight opens its own DB phases with it
+    // and runs the Redis rate limit between them.
+    const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c, undefined, inRequestDb);
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'ai_not_configured') return c.json(AI_NOT_CONFIGURED_BODY, 503);
