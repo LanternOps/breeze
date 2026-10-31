@@ -254,14 +254,36 @@ describe('processTriggerEvent device binding', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('event_device_outside_automation_scope'));
   });
 
-  it.each([undefined, 123])('keeps static-condition fallback without a string deviceId (%s)', async (value) => {
-    selectRows([automation]);
-
-    await __testOnly.processTriggerEvent(event(value === undefined ? {} : { deviceId: value }));
-
-    expect(createRunMock).toHaveBeenCalledWith(expect.objectContaining({ automation }));
-    expect(createRunMock.mock.calls[0]![0]).not.toHaveProperty('boundDeviceIds');
+  it.each([
+    ['org alert automation', { ...automation, conditions: null }],
+    ['partner-wide alert automation', { ...automation, orgId: null, partnerId, conditions: null }],
+    ['automation with explicit device targets', { ...automation, conditions: { type: 'devices', deviceIds: [deviceId] } }],
+  ])('skips an %s for a device-less alert', async (_label, row) => {
+    selectRows([row]);
+    const result = await __testOnly.processTriggerEvent(event({
+      alertId: 'alert-1', deviceId: null, owner: { kind: 'backup_workload', ref: 'workload-1' },
+    }));
+    expect(result).toEqual({ skipped: 'alert_has_no_device' });
+    expect(createRunMock).not.toHaveBeenCalled();
+    expect(addMock).not.toHaveBeenCalled();
     expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('alert_has_no_device'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(automation.id));
+  });
+
+  it.each([undefined, 123])('skips an alert without a string deviceId (%s)', async (value) => {
+    selectRows([automation]);
+    expect(await __testOnly.processTriggerEvent(event(value === undefined ? {} : { deviceId: value })))
+      .toEqual({ skipped: 'alert_has_no_device' });
+    expect(createRunMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps static-condition fallback for non-alert events', async () => {
+    const row = { ...automation, trigger: { type: 'event', eventType: 'backup.completed' } };
+    selectRows([row]);
+    await __testOnly.processTriggerEvent({ ...event({}), eventType: 'backup.completed' });
+    expect(createRunMock).toHaveBeenCalledWith(expect.objectContaining({ automation: row }));
+    expect(createRunMock.mock.calls[0]?.[0]).not.toHaveProperty('boundDeviceIds');
   });
 
   it.each([true, false])('checks partner ownership for partner-wide automations (matches: %s)', async (matches) => {
@@ -290,9 +312,9 @@ describe('processTriggerEvent device binding', () => {
     }), expect.any(Object));
   });
 
-  it('preserves the managed missing-device skip', async () => {
+  it('uses the alert missing-device skip for managed automations', async () => {
     selectRows([{ ...automation, managedByAgentId: 'agent-1' }]);
-    expect(await __testOnly.processTriggerEvent(event({}))).toEqual({ skipped: 'managed_automation_event_has_no_device' });
+    expect(await __testOnly.processTriggerEvent(event({}))).toEqual({ skipped: 'alert_has_no_device' });
     expect(createRunMock).not.toHaveBeenCalled();
   });
 });

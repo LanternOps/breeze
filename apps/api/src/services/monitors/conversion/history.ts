@@ -1,3 +1,4 @@
+import { isDeviceOwned } from '../../alertOwner';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { alerts, alertRules, monitorDefinitions, monitorConversions, monitorConversionOutputs, configPolicyMonitors } from '../../../db/schema';
 import { OPEN_ALERT_STATUSES } from './loadSources';
@@ -12,16 +13,18 @@ export async function carryOpenAlerts(tx: DbExecutor, source: {
     : source.sourceTable === 'network_monitors'
       ? sql`${alerts.context}->>'source' = 'network_monitor' AND ${alerts.context}->>'monitorId' = ${source.sourceId}`
       : eq(alerts.configPolicyId, source.sourceId);
-  const original = await tx.select({ id: alerts.id, ruleId: alerts.ruleId, configPolicyId: alerts.configPolicyId,
+  const loaded = await tx.select({ id: alerts.id, ruleId: alerts.ruleId, configPolicyId: alerts.configPolicyId,
     monitorId: alerts.monitorId, context: alerts.context, deviceId: alerts.deviceId, subjectKey: alerts.subjectKey }).from(alerts)
     .where(and(source.orgId ? eq(alerts.orgId, source.orgId) : undefined, match, inArray(alerts.status, [...OPEN_ALERT_STATUSES]))).for('update');
   // Refuse malformed historical JSON before changing any references.
   // The ledger's context contract is object-or-null; never coerce away history.
-  for (const row of original) {
+  const original = loaded.map((row) => {
     if (row.context !== null && (typeof row.context !== 'object' || Array.isArray(row.context))) {
       throw new Error(`Alert ${row.id} has unsupported context`);
     }
-  }
+    if (!isDeviceOwned(row)) throw new Error('alert_has_no_device');
+    return row;
+  });
   const network = source.sourceTable === 'network_monitors';
   const subjectIdentity = (deviceId: string, subjectKey: string | null) => JSON.stringify([deviceId, subjectKey ?? '']);
   const reserved = new Set(original.map(row => subjectIdentity(row.deviceId, row.subjectKey)));
