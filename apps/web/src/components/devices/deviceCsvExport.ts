@@ -138,9 +138,19 @@ export function exportColumns(columns: readonly ColumnId[]): ColumnId[] {
   return ['hostname', ...columns.filter((c) => c !== 'hostname')];
 }
 
+// Numeric cells export raw numbers (MB / GB / seconds / percent), so the unit
+// goes in the header — COLUMN_LABELS is shared with the Column chooser and
+// stays unit-less.
+const EXPORT_HEADER_OVERRIDES: Partial<Record<ColumnId, string>> = {
+  ramTotal: 'RAM (MB)',
+  diskTotal: 'Disk (GB)',
+  uptime: 'Uptime (s)',
+  power: 'Power (%)',
+};
+
 export function buildDevicesCsv(input: DevicesCsvInput): string {
   const columns = exportColumns(input.columns);
-  const header = [...columns.map((c) => COLUMN_LABELS[c]), ...input.customFieldDefs.map((d) => d.name)];
+  const header = [...columns.map((c) => EXPORT_HEADER_OVERRIDES[c] ?? COLUMN_LABELS[c]), ...input.customFieldDefs.map((d) => d.name)];
   const rows = input.devices.map((d) => [
     ...columns.map((c) => columnCell(c, d, input)),
     ...input.customFieldDefs.map((def) => customFieldCell(def, d)),

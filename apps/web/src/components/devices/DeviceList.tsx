@@ -876,6 +876,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
     (d.deviceClass ?? "agent") === "network" ? (d.source ?? null) : null,
 };
 
+// Ids per export wave = 5 attention-counts requests (100 ids each) in flight.
+const ATTENTION_EXPORT_WAVE = 500;
+
 export default function DeviceList({
   devices,
   groups = [],
@@ -1546,11 +1549,17 @@ export default function DeviceList({
         const ids = rows
           .filter((d) => (d.deviceClass ?? "agent") === "agent")
           .map((d) => d.id);
-        const { counts, failed } = await loadDeviceAttentionCounts(ids);
-        attentionFailed = failed.size > 0;
+        // Bounded fan-out: the loader fires every 100-id request of one call at
+        // once, so feed it a few requests' worth of ids at a time instead of
+        // ~100 simultaneous requests on a 10k-device fleet.
         attention = new Map<string, AttentionExportValue>();
-        for (const id of ids) {
-          attention.set(id, failed.has(id) ? "failed" : (counts[id] ?? null));
+        for (let i = 0; i < ids.length; i += ATTENTION_EXPORT_WAVE) {
+          const wave = ids.slice(i, i + ATTENTION_EXPORT_WAVE);
+          const { counts, failed } = await loadDeviceAttentionCounts(wave);
+          if (failed.size > 0) attentionFailed = true;
+          for (const id of wave) {
+            attention.set(id, failed.has(id) ? "failed" : (counts[id] ?? null));
+          }
         }
       }
       const csv = buildDevicesCsv({

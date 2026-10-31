@@ -8,6 +8,7 @@ import { useCustomFieldDefinitionsStore } from '../../stores/customFieldDefiniti
 import { fetchWithAuth } from '../../stores/auth';
 import { downloadBlob } from '../../lib/downloadBlob';
 import { csvRow } from '../../lib/csvExport';
+import { showToast } from '../shared/Toast';
 
 // #9726: Export CSV on the Devices list — the full filtered set (not the drawn
 // page), or the checked rows; visible columns in drawn order.
@@ -25,6 +26,7 @@ vi.mock('../../lib/permissions', () => ({
   hasPermission: () => true,
 }));
 vi.mock('../../lib/downloadBlob', () => ({ downloadBlob: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const downloadMock = vi.mocked(downloadBlob);
@@ -65,6 +67,7 @@ const firstCell = (line: string) => line.slice(1, line.indexOf('"', 1));
 beforeEach(() => {
   fetchMock.mockReset();
   downloadMock.mockReset();
+  vi.mocked(showToast).mockReset();
   writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS]);
   useCustomFieldDefinitionsStore.setState({ definitions: [], status: 'idle' });
 });
@@ -198,5 +201,79 @@ describe('DeviceList — Export CSV (#9726)', () => {
     const out = lines(await exportedCsv());
 
     expect(out[1]).toBe(row('host-01', 'unavailable'));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+  });
+
+  it('excludes decommissioned devices by default', async () => {
+    writeColumnVisibility(['hostname']);
+    render(<DeviceList devices={[device(1), device(2, { status: 'decommissioned' })]} pageSize={10} />);
+
+    fireEvent.click(screen.getByTestId('device-list-export-csv'));
+    const out = lines(await exportedCsv());
+
+    expect(out.slice(1).map((l) => firstCell(l))).toEqual(['host-01']);
+  });
+
+  it('is disabled and does nothing when no device matches', () => {
+    render(<DeviceList devices={fleet} pageSize={10} listFilters={{ search: 'zzz-no-match', vpn: 'all' }} />);
+
+    const button = screen.getByTestId('device-list-export-csv');
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(downloadMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores a second click while an export is in flight', async () => {
+    let release!: () => void;
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = () => resolve({ ok: true, status: 200, json: async () => ({ counts: {} }) } as unknown as Response);
+        }),
+    );
+    writeColumnVisibility(['hostname', 'attention']);
+    render(<DeviceList devices={[fleet[0]!]} pageSize={10} />);
+    fetchMock.mockClear();
+
+    const button = screen.getByTestId('device-list-export-csv');
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button.textContent).toContain('Exporting');
+    fireEvent.click(button);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    release();
+    await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button).not.toBeDisabled());
+  });
+
+  it('shows an error toast and re-enables the button when the download throws', async () => {
+    downloadMock.mockImplementation(() => {
+      throw new Error('boom');
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeColumnVisibility(['hostname']);
+    render(<DeviceList devices={[fleet[0]!]} pageSize={10} />);
+
+    const button = screen.getByTestId('device-list-export-csv');
+    fireEvent.click(button);
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(button).not.toBeDisabled());
+  });
+
+  it('only fetches attention for agent rows, not network rows', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ counts: {} }) } as unknown as Response);
+    writeColumnVisibility(['hostname', 'attention']);
+    const network = device(2, { deviceClass: 'network' });
+    render(<DeviceList devices={[fleet[0]!, network]} pageSize={10} />);
+    fetchMock.mockClear();
+
+    fireEvent.click(screen.getByTestId('device-list-export-csv'));
+    await exportedCsv();
+
+    const ids = fetchMock.mock.calls.flatMap(([u]) =>
+      new URL(String(u), 'http://x').searchParams.get('ids')!.split(','),
+    );
+    expect(ids).toEqual([fleet[0]!.id]);
   });
 });
