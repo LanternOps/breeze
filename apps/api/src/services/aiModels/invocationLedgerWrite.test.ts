@@ -63,3 +63,15 @@ describe('recordInvocation prompt provenance (W11 #7609)', () => {
     expect(inserted.at(-1)).toMatchObject({ occurredAt: new Date('2026-09-15T12:00:00Z') });
   });
 });
+
+describe('recordInvocation model role (#10413)', () => {
+  const shadow: NewInvocation = { ...base, ledgerMode: 'shadow' };
+  it('writes model_role from modelRole, also after the pending-settlement JSON round trip', async () => {
+    await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, modelRole: 'background', fallbackUsed: false })));
+    expect(inserted.at(-1)).toMatchObject({ modelRole: 'background', fallbackUsed: false });
+  });
+  it('writes NULL for a row settled before the role existed (a replayed pending settlement)', async () => {
+    await recordInvocation(shadow);
+    expect(inserted.at(-1)).toMatchObject({ modelRole: null });
+  });
+});
